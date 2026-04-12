@@ -60,6 +60,11 @@ const elements = {
   confirmText: document.getElementById("confirm-text"),
   confirmCancel: document.getElementById("confirm-cancel"),
   confirmOk: document.getElementById("confirm-ok"),
+  copyRemoteUrlButton: document.getElementById("copy-remote-url-button"),
+  remoteQrImage: document.getElementById("remote-qr-image"),
+  remoteQrPlaceholder: document.getElementById("remote-qr-placeholder"),
+  remoteUrlLink: document.getElementById("remote-url-link"),
+  remoteUrlHint: document.getElementById("remote-url-hint"),
 };
 
 function setFormMessage(message, isError = false) {
@@ -137,6 +142,7 @@ function render() {
     : "还没有歌曲";
   renderListHeader(data.playlist, data.history || []);
   renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
+  renderRemoteAccess(data.remote_access);
 
   document.querySelectorAll(".mode-button").forEach((button) => {
     button.classList.toggle("active", button.dataset.mode === data.playback_mode);
@@ -156,6 +162,80 @@ function render() {
   );
   elements.listStage.classList.toggle("is-history-view", state.listView === "history");
   renderConfirmPopover();
+}
+
+function renderRemoteAccess(remoteAccess) {
+  const preferredUrl = String(remoteAccess?.preferred_url || "");
+  const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
+  const localUrl = String(remoteAccess?.local_url || "");
+  const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
+
+  elements.remoteUrlLink.href = displayUrl;
+  elements.remoteUrlLink.textContent = displayUrl;
+
+  if (lanUrls.length > 1) {
+    elements.remoteUrlHint.textContent = `同网地址候选：${lanUrls.join(" · ")}`;
+  } else if (lanUrls.length === 1) {
+    elements.remoteUrlHint.textContent = "手机和服务端在同一个局域网内时，可直接扫码访问。";
+  } else {
+    elements.remoteUrlHint.textContent = "暂未识别到局域网地址，可手动复制当前地址访问。";
+  }
+
+  renderRemoteQr(displayUrl);
+}
+
+function renderRemoteQr(url) {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) {
+    elements.remoteQrImage.classList.add("hidden");
+    elements.remoteQrPlaceholder.textContent = "暂无可用访问地址";
+    elements.remoteQrPlaceholder.classList.remove("hidden");
+    return;
+  }
+
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
+  if (elements.remoteQrImage.dataset.qrUrl === qrUrl) {
+    return;
+  }
+
+  elements.remoteQrImage.dataset.qrUrl = qrUrl;
+  elements.remoteQrImage.classList.add("hidden");
+  elements.remoteQrPlaceholder.textContent = "正在生成二维码...";
+  elements.remoteQrPlaceholder.classList.remove("hidden");
+  elements.remoteQrImage.onload = () => {
+    elements.remoteQrPlaceholder.classList.add("hidden");
+    elements.remoteQrImage.classList.remove("hidden");
+  };
+  elements.remoteQrImage.onerror = () => {
+    elements.remoteQrImage.classList.add("hidden");
+    elements.remoteQrPlaceholder.textContent = "二维码加载失败，请复制下方链接到手机访问。";
+    elements.remoteQrPlaceholder.classList.remove("hidden");
+  };
+  elements.remoteQrImage.src = qrUrl;
+}
+
+async function copyRemoteUrl() {
+  const url = elements.remoteUrlLink.href;
+  if (!url) {
+    setFormMessage("当前没有可复制的手机访问地址。", true);
+    return;
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      const input = document.createElement("input");
+      input.value = url;
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand("copy");
+      input.remove();
+    }
+    setFormMessage("手机访问链接已复制。");
+  } catch {
+    setFormMessage("复制失败，请手动复制页面中的链接。", true);
+  }
 }
 
 function renderListHeader(playlist, history) {
@@ -839,6 +919,10 @@ elements.addForm.addEventListener("submit", async (event) => {
 
 elements.queueNextButton.addEventListener("click", async () => {
   await handleAdd("next");
+});
+
+elements.copyRemoteUrlButton.addEventListener("click", async () => {
+  await copyRemoteUrl();
 });
 
 elements.discardBackupButton.addEventListener("click", async () => {

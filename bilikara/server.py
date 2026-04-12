@@ -40,6 +40,8 @@ class AppContext:
         self.cache_manager.prewarm_binary()
         self._closed = False
         self._server: ThreadingHTTPServer | None = None
+        self._host = HOST
+        self._port = PORT
         self._shutdown_on_last_client = False
         self._client_lock = threading.RLock()
         self._client_last_seen: dict[str, float] = {}
@@ -61,6 +63,7 @@ class AppContext:
         payload["session_flags"] = {
             "auto_restored_backup": self.auto_restored_backup,
         }
+        payload["remote_access"] = self.remote_access_snapshot()
         return payload
 
     def add_item(self, item, *, position: str) -> None:
@@ -116,11 +119,27 @@ class AppContext:
     def bind_server(self, server: ThreadingHTTPServer, *, shutdown_on_last_client: bool) -> None:
         with self._client_lock:
             self._server = server
+            bound_host, bound_port = server.server_address[:2]
+            self._host = str(bound_host)
+            self._port = int(bound_port)
             self._shutdown_on_last_client = shutdown_on_last_client
             self._client_last_seen.clear()
             self._client_seen_once = False
             self._no_clients_since = None
             self._shutdown_requested = False
+
+    def remote_access_snapshot(self) -> dict[str, object]:
+        host = self._host
+        port = self._port
+        browser_host = "127.0.0.1" if host == "0.0.0.0" else host
+        local_url = f"http://{browser_host}:{port}/remote"
+        lan_urls = [f"{base}/remote" for base in _network_access_urls(host, port)]
+        preferred_url = lan_urls[0] if lan_urls else local_url
+        return {
+            "local_url": local_url,
+            "lan_urls": lan_urls,
+            "preferred_url": preferred_url,
+        }
 
     def touch_client(self, client_id: str) -> None:
         client_key = str(client_id or "").strip()

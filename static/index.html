@@ -122,6 +122,39 @@
               <p class="help-text" id="form-message"></p>
             </form>
           </section>
+
+          <section class="remote-panel">
+            <div class="request-head remote-head">
+              <div>
+                <p class="section-tag">Mobile Remote</p>
+                <h2>手机点歌入口</h2>
+              </div>
+              <button type="button" id="copy-remote-url-button" class="toolbar-button">
+                复制链接
+              </button>
+            </div>
+            <div class="remote-card">
+              <div class="remote-qr-wrap">
+                <img
+                  id="remote-qr-image"
+                  class="remote-qr-image hidden"
+                  alt="手机访问二维码"
+                />
+                <div id="remote-qr-placeholder" class="remote-qr-placeholder">
+                  正在生成二维码...
+                </div>
+              </div>
+              <div class="remote-copy">
+                <p class="remote-copy-label">手机浏览器打开</p>
+                <a id="remote-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
+                  /remote
+                </a>
+                <p id="remote-url-hint" class="remote-url-hint">
+                  请确保手机和服务端在同一个局域网内。
+                </p>
+              </div>
+            </div>
+          </section>
         </section>
 
         <aside class="queue-card list-card">
