@@ -49,7 +49,7 @@ FFPROBE_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffprobe.exe" if os.name == "nt" else
 FFMPEG_BUNDLED_PATH = VENDOR_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 BB_DOWN_VERSION_FILE = BB_DOWN_DIR / "VERSION"
 
-HOST = os.getenv("BILIKARA_HOST", "127.0.0.1")
+HOST = os.getenv("BILIKARA_HOST", "0.0.0.0")
 PORT = int(os.getenv("BILIKARA_PORT", "8080"))
 MAX_CACHE_ITEMS = max(0, int(os.getenv("BILIKARA_MAX_CACHE_ITEMS", "3")))
 COOKIE = os.getenv("BILIKARA_BILIBILI_COOKIE", "").strip()

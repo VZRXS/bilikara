@@ -1,0 +1,250 @@
+:root {
+  --bg: #f4efe6;
+  --panel: rgba(255, 252, 247, 0.92);
+  --line: rgba(67, 53, 41, 0.1);
+  --ink: #201915;
+  --muted: #73655a;
+  --accent: #ca5b3c;
+  --accent-deep: #8f311d;
+  --accent-soft: rgba(202, 91, 60, 0.12);
+  --green: #2d7c61;
+  --shadow: 0 18px 40px rgba(79, 56, 39, 0.12);
+  --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.9), transparent 30%),
+    linear-gradient(180deg, #f7f2ea 0%, #ead8c4 100%);
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+.remote-shell {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  padding: 18px 16px 28px;
+  display: grid;
+  gap: 14px;
+}
+
+.hero-card,
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+}
+
+.hero-card {
+  padding: 20px;
+}
+
+.panel {
+  padding: 18px;
+}
+
+.eyebrow,
+.panel-tag {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  margin-top: 8px;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.hero-copy {
+  margin-top: 10px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.muted,
+.message,
+.queue-note {
+  color: var(--muted);
+}
+
+#current-title {
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+#current-meta {
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
+.request-form {
+  display: grid;
+  gap: 12px;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 92px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px 15px;
+  background: rgba(255, 255, 255, 0.84);
+  outline: none;
+}
+
+textarea:focus {
+  border-color: rgba(202, 91, 60, 0.42);
+  box-shadow: 0 0 0 4px rgba(202, 91, 60, 0.1);
+}
+
+.action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.primary-button,
+.secondary-button,
+.ghost-button {
+  border: none;
+  border-radius: 16px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: white;
+}
+
+.secondary-button,
+.ghost-button {
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+}
+
+.message {
+  min-height: 20px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.message.error {
+  color: var(--accent-deep);
+}
+
+.count-chip,
+.queue-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.list {
+  display: grid;
+  gap: 10px;
+}
+
+.queue-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(67, 53, 41, 0.08);
+}
+
+.queue-title {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.queue-note {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.queue-item.ready .queue-state {
+  background: rgba(45, 124, 97, 0.12);
+  color: var(--green);
+}
+
+.queue-empty {
+  padding: 22px 16px;
+  text-align: center;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--muted);
+}
+
+@media (max-width: 520px) {
+  .remote-shell {
+    padding: 14px 12px 20px;
+  }
+
+  .hero-card,
+  .panel {
+    border-radius: 20px;
+    padding: 16px;
+  }
+
+  .action-row {
+    grid-template-columns: 1fr;
+  }
+
+  .queue-item {
+    grid-template-columns: 1fr;
+  }
+
+  .queue-state {
+    justify-self: start;
+  }
+}
