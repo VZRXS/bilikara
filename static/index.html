@@ -188,6 +188,24 @@
                       <div class="queue-current-label">
                         <span class="queue-current-indicator" id="queue-current-indicator" aria-hidden="true"></span>
                         <p class="queue-current-tag" id="queue-current-tag">播放中</p>
+                        <button
+                          type="button"
+                          class="cache-retry-button queue-current-retry hidden"
+                          id="queue-current-retry"
+                          title="重新下载缓存"
+                          aria-label="重新下载缓存"
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                            />
+                          </svg>
+                        </button>
                       </div>
                     </div>
                     <button class="next-button queue-current-next" id="next-button">切歌</button>
@@ -214,16 +232,34 @@
           <div class="song-progress-badge">
             <span class="song-index-label"></span>
             <span class="song-badge-check hidden">✓</span>
+            <button
+              type="button"
+              class="cache-retry-button song-retry-button hidden"
+              data-action="retry-cache"
+              title="重新下载缓存"
+              aria-label="重新下载缓存"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                />
+              </svg>
+            </button>
           </div>
           <span class="song-size-label"></span>
         </div>
         <div class="song-main">
           <div class="song-top-row">
             <h3 class="song-title"></h3>
+            <p class="song-note hidden"></p>
             <span class="song-requester hidden"></span>
           </div>
           <div class="song-bottom-row">
-            <p class="song-note hidden"></p>
             <div class="song-actions">
               <button data-action="play-now">立即播放</button>
               <button data-action="move-next" class="secondary">顶歌</button>

@@ -1,5 +1,6 @@
 const pollIntervalMs = 1000;
 const bannerAutoHideMs = 5000;
+const stalledRetrySeconds = 5;
 
 const state = {
   clientId: createClientId(),
@@ -58,6 +59,7 @@ const elements = {
   queueCurrentTag: document.getElementById("queue-current-tag"),
   queueCurrentTitle: document.getElementById("queue-current-title"),
   queueCurrentRequester: document.getElementById("queue-current-requester"),
+  queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
   nextButton: document.getElementById("next-button"),
@@ -391,6 +393,8 @@ function renderQueueCurrent(currentItem) {
     elements.queueCurrent.dataset.state = "idle";
     elements.queueCurrentTag.textContent = "播放中";
     elements.queueCurrentTitle.textContent = "还没有歌曲";
+    elements.queueCurrentRetry.classList.add("hidden");
+    elements.queueCurrentRetry.removeAttribute("data-id");
     return;
   }
 
@@ -402,6 +406,7 @@ function renderQueueCurrent(currentItem) {
   const requesterText = requesterBadgeText(currentItem.requester_name);
   elements.queueCurrentRequester.textContent = requesterText;
   elements.queueCurrentRequester.classList.toggle("hidden", !requesterText);
+  syncRetryButton(elements.queueCurrentRetry, currentItem);
 }
 
 function currentStatusForItem(item) {
@@ -694,6 +699,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     const indexLabel = node.querySelector(".song-index-label");
     const sizeLabel = node.querySelector(".song-size-label");
     const readyIndicator = node.querySelector(".song-badge-check");
+    const retryButton = node.querySelector(".song-retry-button");
     const note = node.querySelector(".song-note");
     const titleNode = node.querySelector(".song-title");
     const requesterNode = node.querySelector(".song-requester");
@@ -712,6 +718,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     const sizeText = cacheSizeLabelForItem(item);
     sizeLabel.textContent = sizeText;
     sizeLabel.classList.toggle("hidden", !sizeText);
+    syncRetryButton(retryButton, item);
 
     titleNode.textContent = item.display_title;
     const ownerTooltip = ownerTooltipForEntry(item);
@@ -747,6 +754,44 @@ function badgeStateForItem(item, index, currentItem, cachePolicy) {
     return "active";
   }
   return "idle";
+}
+
+function shouldShowRetryButton(item) {
+  if (!item) {
+    return false;
+  }
+  if (item.local_media_url || item.cache_status === "ready") {
+    return false;
+  }
+  if (item.cache_status === "failed") {
+    return true;
+  }
+  if (item.cache_status !== "downloading") {
+    return false;
+  }
+  const lastActivity = Number(item.cache_activity_at || 0);
+  if (lastActivity <= 0) {
+    return false;
+  }
+  return (Date.now() / 1000) - lastActivity >= stalledRetrySeconds;
+}
+
+function syncRetryButton(button, item) {
+  if (!button) {
+    return;
+  }
+  const visible = shouldShowRetryButton(item);
+  button.classList.toggle("hidden", !visible);
+  if (!visible) {
+    button.removeAttribute("data-id");
+    button.removeAttribute("title");
+    button.removeAttribute("aria-label");
+    return;
+  }
+  const tooltip = "点击重新下载";
+  button.dataset.id = item.id;
+  button.title = tooltip;
+  button.setAttribute("aria-label", tooltip);
 }
 
 function renderHistory(history) {
@@ -1339,6 +1384,7 @@ async function handlePlaylistAction(button) {
     remove: ["/api/playlist/remove", { item_id: itemId }],
     "move-next": ["/api/playlist/move-next", { item_id: itemId }],
     "play-now": ["/api/playlist/play-now", { item_id: itemId }],
+    "retry-cache": ["/api/cache/retry", { item_id: itemId }],
   };
 
   const target = actionMap[action];
@@ -1446,6 +1492,20 @@ elements.historyToggleButton.addEventListener("click", () => {
 elements.nextButton.addEventListener("click", async () => {
   try {
     state.data = await apiPost("/api/player/next");
+    render();
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
+});
+
+elements.queueCurrentRetry.addEventListener("click", async () => {
+  const itemId = elements.queueCurrentRetry.dataset.id;
+  if (!itemId) {
+    return;
+  }
+  try {
+    state.data = await apiPost("/api/cache/retry", { item_id: itemId });
+    setFormMessage("已重新开始缓存。");
     render();
   } catch (error) {
     setFormMessage(error.message, true);

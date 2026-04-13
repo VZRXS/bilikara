@@ -135,6 +135,46 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertFalse(item_dir.exists())
         self.assertFalse(log_path.exists())
 
+    def test_enrich_snapshot_includes_cache_activity_timestamp(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.item_activity_at["song-a"] = 123.0
+                payload = {
+                    "current_item": {"id": "song-a"},
+                    "playlist": [{"id": "song-a"}],
+                }
+                enriched = manager.enrich_snapshot(payload)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(enriched["current_item"]["cache_activity_at"], 123.0)
+        self.assertEqual(enriched["playlist"][0]["cache_activity_at"], 123.0)
+
+    def test_retry_item_requeues_failed_cache_item(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                self.store.add_item(item, requester_name="cache-test-user")
+                self.store.update_item(
+                    "song-a",
+                    cache_status="failed",
+                    cache_message="缓存失败",
+                    persist_backup=False,
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-a"}
+                with patch.object(manager, "enqueue") as enqueue_mock:
+                    manager.retry_item("song-a")
+                    retried = self.store.get_item("song-a")
+                    self.assertIsNotNone(retried)
+                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_message, "准备重新下载")
+                    enqueue_mock.assert_called_once_with("song-a")
+            finally:
+                manager.shutdown()
+
     def test_ensure_ffmpeg_syncs_bundled_binary_into_runtime_tools(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"
         tools_dir = Path(self.temp_dir.name) / "tools" / "ffmpeg"

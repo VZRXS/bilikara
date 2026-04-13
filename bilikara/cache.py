@@ -44,6 +44,7 @@ CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
 CREATE_NO_WINDOW = 0x08000000
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
+RETRY_REQUESTED_MESSAGE = "__retry_requested__"
 
 
 class CacheCancelledError(RuntimeError):
@@ -73,6 +74,8 @@ class CacheManager:
         self.ffmpeg_prepare_lock = threading.Lock()
         self.active_process: subprocess.Popen[str] | None = None
         self.active_item_id: str | None = None
+        self.item_activity_at: dict[str, float] = {}
+        self.retry_requested_ids: set[str] = set()
         self.log_dir = LOG_DIR / "bbdown"
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
@@ -120,12 +123,18 @@ class CacheManager:
         current_item = payload.get("current_item")
         if isinstance(current_item, dict):
             current_item["cache_size_bytes"] = int(item_bytes.get(str(current_item.get("id") or ""), 0))
+            current_item["cache_activity_at"] = float(
+                self.item_activity_at.get(str(current_item.get("id") or ""), 0.0)
+            )
 
         playlist = payload.get("playlist")
         if isinstance(playlist, list):
             for item in playlist:
                 if isinstance(item, dict):
                     item["cache_size_bytes"] = int(item_bytes.get(str(item.get("id") or ""), 0))
+                    item["cache_activity_at"] = float(
+                        self.item_activity_at.get(str(item.get("id") or ""), 0.0)
+                    )
         return payload
 
     def set_max_cache_items(self, max_cache_items: int) -> int:
@@ -165,6 +174,9 @@ class CacheManager:
 
     def prepare_session(self) -> None:
         self._clear_cache_root()
+        with self.lock:
+            self.item_activity_at.clear()
+            self.retry_requested_ids.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -177,6 +189,7 @@ class CacheManager:
                 selected_audio_variant_id="",
                 persist_backup=False,
             )
+            self._record_item_activity(item.id)
         self.sync_with_playlist()
 
     def prewarm_binary(self) -> None:
@@ -190,6 +203,9 @@ class CacheManager:
             process = self.active_process
         self._terminate_process(process)
         self._clear_cache_root()
+        with self.lock:
+            self.item_activity_at.clear()
+            self.retry_requested_ids.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -202,6 +218,46 @@ class CacheManager:
                 selected_audio_variant_id="",
                 persist_backup=False,
             )
+            self._record_item_activity(item.id)
+
+    def retry_item(self, item_id: str) -> None:
+        item = self.store.get_item(item_id)
+        if not item:
+            raise ValueError("没有找到要重新下载的歌曲")
+        if item.local_media_url or item.cache_status == "ready":
+            raise ValueError("这首歌已经缓存完成，无需重新下载")
+        if item.cache_status not in {"downloading", "failed"}:
+            raise ValueError("当前缓存状态不能重新下载")
+        if not self._should_cache(item_id):
+            raise ValueError("当前不在自动缓存窗口中")
+
+        log_path = self._item_log_path(item_id)
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
+
+        with self.lock:
+            active_process = self.active_process if self.active_item_id == item_id else None
+            if active_process is not None:
+                self.retry_requested_ids.add(item_id)
+
+        self.store.update_item(
+            item_id,
+            cache_status="pending",
+            cache_progress=0.0,
+            cache_message="准备重新下载",
+            local_relative_path="",
+            local_media_url="",
+            audio_variants=[],
+            selected_audio_variant_id="",
+            persist_backup=False,
+        )
+        self._record_item_activity(item_id)
+
+        if active_process is not None:
+            self._terminate_process(active_process)
+            return
+
+        self._remove_cache_dir(item_id)
+        self.enqueue(item_id)
 
     def sync_with_playlist(self) -> None:
         items = self.store.list_items()
@@ -429,6 +485,7 @@ class CacheManager:
             cache_message="等待缓存队列",
             persist_backup=False,
         )
+        self._record_item_activity(item_id)
 
         item_dir = CACHE_DIR / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
@@ -468,10 +525,18 @@ class CacheManager:
             cache_message=self._cache_start_message(item),
             persist_backup=False,
         )
+        self._record_item_activity(item_id)
 
         try:
             cache_result = self._download_selected_streams(item, binary_path, ffmpeg_path, item_dir, log_path)
         except CacheCancelledError as exc:
+            if str(exc) == RETRY_REQUESTED_MESSAGE:
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                self._remove_cache_dir(item_id)
+                fresh_item = self.store.get_item(item_id)
+                if fresh_item and self._should_cache(item_id):
+                    self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                return
             self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
             self._drop_item_cache(item_id, str(exc))
             return
@@ -500,6 +565,7 @@ class CacheManager:
                 cache_message=f"缓存失败: {last_message}",
                 persist_backup=False,
             )
+            self._record_item_activity(item_id)
             return
 
         media_file = cache_result["media_file"]
@@ -515,6 +581,7 @@ class CacheManager:
             selected_audio_variant_id=cache_result["selected_audio_variant_id"],
             persist_backup=False,
         )
+        self._record_item_activity(item_id)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
 
     def _download_selected_streams(
@@ -662,6 +729,7 @@ class CacheManager:
                     continue
                 last_message = line
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+                self._record_item_activity(item_id)
                 progress = self._extract_progress(line)
                 changes = {"cache_message": self._display_stage_message(stage_label, line, progress)}
                 if progress is not None:
@@ -680,6 +748,9 @@ class CacheManager:
                     self.active_process = None
                     self.active_item_id = None
 
+        if self._take_retry_request(item_id):
+            raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
+
         if return_code != 0:
             raise DownloadCommandError(last_message)
 
@@ -689,6 +760,7 @@ class CacheManager:
             cache_message=f"{stage_label} 完成",
             persist_backup=False,
         )
+        self._record_item_activity(item_id)
 
     def _mux_downloaded_streams(
         self,
@@ -724,6 +796,7 @@ class CacheManager:
             cache_message=f"正在混流 {len(audio_files)} 条音轨",
             persist_backup=False,
         )
+        self._record_item_activity(item_id)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
 
         process = subprocess.Popen(
@@ -749,6 +822,7 @@ class CacheManager:
                     continue
                 last_message = line
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+                self._record_item_activity(item_id)
                 self.store.update_item(
                     item_id,
                     cache_message=f"正在混流 {len(audio_files)} 条音轨",
@@ -767,6 +841,9 @@ class CacheManager:
                     self.active_process = None
                     self.active_item_id = None
 
+        if self._take_retry_request(item_id):
+            raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
+
         if return_code != 0:
             raise DownloadCommandError(last_message)
         if not output_file.exists():
@@ -778,6 +855,7 @@ class CacheManager:
             cache_message="混流完成，正在收尾",
             persist_backup=False,
         )
+        self._record_item_activity(item_id)
         variant_files = self._build_audio_variant_outputs(
             item,
             ffmpeg_path,
@@ -856,6 +934,7 @@ class CacheManager:
             )
             if process.returncode != 0 or not variant_path.exists():
                 raise DownloadCommandError(process.stderr.strip() or process.stdout.strip() or f"生成音轨变体失败: {label}")
+            self._record_item_activity(item.id)
             variant_files.append((variant_id, label, variant_path))
         return variant_files
 
@@ -1303,6 +1382,7 @@ class CacheManager:
             selected_audio_variant_id="",
             persist_backup=False,
         )
+        self._record_item_activity(item.id)
         self.enqueue(item.id)
 
     def _drop_item_cache(self, item_id: str, message: str) -> None:
@@ -1318,6 +1398,7 @@ class CacheManager:
             selected_audio_variant_id="",
             persist_backup=False,
         )
+        self._record_item_activity(item_id)
 
     def _remove_cache_dir(self, item_id: str) -> None:
         shutil.rmtree(CACHE_DIR / item_id, ignore_errors=True)
@@ -1334,6 +1415,17 @@ class CacheManager:
                 shutil.rmtree(child, ignore_errors=True)
             else:
                 child.unlink(missing_ok=True)
+
+    def _record_item_activity(self, item_id: str) -> None:
+        with self.lock:
+            self.item_activity_at[item_id] = datetime.now().timestamp()
+
+    def _take_retry_request(self, item_id: str) -> bool:
+        with self.lock:
+            if item_id not in self.retry_requested_ids:
+                return False
+            self.retry_requested_ids.discard(item_id)
+            return True
 
     def _should_cache(self, item_id: str) -> bool:
         with self.lock:

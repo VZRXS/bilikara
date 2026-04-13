@@ -135,6 +135,9 @@ class AppContext:
     def set_cache_limit(self, max_cache_items: int) -> None:
         self.cache_manager.set_max_cache_items(max_cache_items)
 
+    def retry_cache_item(self, item_id: str) -> None:
+        self.cache_manager.retry_item(item_id)
+
     def issue_player_control(
         self,
         *,
@@ -404,6 +407,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if mode not in {"online", "local"}:
                     raise ValueError("mode 必须是 online 或 local")
                 CONTEXT.set_mode(mode)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/cache/retry":
+                self._require_id(body)
+                CONTEXT.retry_cache_item(body["item_id"])
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/player/audio-variant":
