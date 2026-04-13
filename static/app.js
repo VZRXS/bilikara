@@ -156,30 +156,6 @@ function disconnectClient() {
   }).catch(() => {});
 }
 
-function sendClientDiagnostic(level, message, details = "") {
-  const payload = JSON.stringify({
-    level: String(level || "info"),
-    message: String(message || "").trim(),
-    details: String(details || "").trim(),
-  });
-  if (!payload || payload === "{}") {
-    return;
-  }
-
-  if (navigator.sendBeacon) {
-    const blob = new Blob([payload], { type: "application/json" });
-    navigator.sendBeacon("/api/client/log", blob);
-    return;
-  }
-
-  fetch("/api/client/log", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: payload,
-    keepalive: true,
-  }).catch(() => {});
-}
-
 function render() {
   const data = state.data;
   if (!data) {
@@ -1893,11 +1869,9 @@ elements.listStage.addEventListener("wheel", (event) => {
 }, { passive: false });
 
 async function startPolling() {
-  sendClientDiagnostic("info", "startPolling invoked", window.location.href);
   try {
     await fetchState();
   } catch (error) {
-    sendClientDiagnostic("error", "initial fetchState failed", error?.message || String(error));
     setFormMessage(error.message, true);
   }
   window.setInterval(async () => {
@@ -1908,22 +1882,6 @@ async function startPolling() {
     }
   }, pollIntervalMs);
 }
-
-window.addEventListener("error", (event) => {
-  sendClientDiagnostic(
-    "error",
-    event.message || "window error",
-    [event.filename, event.lineno, event.colno].filter(Boolean).join(":"),
-  );
-});
-
-window.addEventListener("unhandledrejection", (event) => {
-  const reason = event.reason;
-  const details = reason && typeof reason === "object" && "stack" in reason
-    ? String(reason.stack || reason.message || reason)
-    : String(reason || "");
-  sendClientDiagnostic("error", "unhandled promise rejection", details);
-});
 
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);

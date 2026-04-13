@@ -12,8 +12,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-import urllib.error
-import urllib.request
 
 from .bilibili import BilibiliError, fetch_owner_info, fetch_video_item
 from .cache import CacheManager
@@ -28,7 +26,6 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
-from .launcher import append_startup_log
 from .store import PlaylistStore
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
@@ -372,19 +369,6 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         try:
             body = self._read_json_body()
-            if route == "/api/client/log":
-                level = str(body.get("level") or "info").strip() or "info"
-                message = str(body.get("message") or "").strip()
-                details = str(body.get("details") or "").strip()
-                user_agent = str(self.headers.get("User-Agent") or "").strip()
-                if message:
-                    append_startup_log(
-                        f"CLIENT[{level}] {message}"
-                        + (f" | {details}" if details else "")
-                        + (f" | ua={user_agent}" if user_agent else "")
-                    )
-                self._write_json({"ok": True})
-                return
             if route == "/api/playlist/add":
                 self._handle_add(body)
                 return
@@ -558,12 +542,6 @@ class BilikaraHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
-    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
-        append_startup_log(
-            f"HTTP {self.command} {self.path} -> {code}"
-            + (f" ({size} bytes)" if size not in {"-", None} else "")
-        )
-
     def _handle_add(self, body: dict) -> None:
         url = str(body.get("url") or "").strip()
         position = str(body.get("position") or "tail")
@@ -699,36 +677,24 @@ def _serve(
     shutdown_on_last_client: bool = False,
     status_label: str = "bilikara",
 ) -> None:
-    append_startup_log(
-        f"_serve start(host={host}, port={port}, auto_open_browser={auto_open_browser}, "
-        f"auto_select_port={auto_select_port}, shutdown_on_last_client={shutdown_on_last_client})"
-    )
     actual_port = _find_available_port(host, port) if auto_select_port else port
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
-    append_startup_log(f"HTTP server bound on {url}")
     print(f"{status_label} running on {url}")
     print(f"{status_label} mobile remote: {url}/remote")
 
-    threading.Thread(target=_log_local_healthcheck, args=(url,), daemon=True).start()
-
     if auto_open_browser:
-        append_startup_log(f"Scheduling browser open for {url}")
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
     try:
-        append_startup_log("Entering serve_forever()")
         server.serve_forever()
     except KeyboardInterrupt:
-        append_startup_log("KeyboardInterrupt received, stopping server")
         pass
     finally:
-        append_startup_log("Server shutdown starting")
         CONTEXT.shutdown()
         server.server_close()
-        append_startup_log("Server shutdown complete")
 
 
 def run(
@@ -775,23 +741,6 @@ def _find_available_port(host: str, preferred_port: int) -> int:
                 continue
             return candidate
     raise OSError(f"无法为 bilikara 找到可用端口，起始端口: {preferred_port}")
-
-
-def _log_local_healthcheck(base_url: str) -> None:
-    time.sleep(0.6)
-    for path in ("/", "/api/state"):
-        target = f"{base_url}{path}"
-        try:
-            request = urllib.request.Request(target, headers={"X-Bilikara-Client": "startup-healthcheck"})
-            with urllib.request.urlopen(request, timeout=5) as response:
-                content_type = response.headers.get_content_type()
-                append_startup_log(
-                    f"HEALTHCHECK {path} -> {response.status} ({content_type})"
-                )
-        except urllib.error.URLError as exc:
-            append_startup_log(f"HEALTHCHECK {path} failed: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            append_startup_log(f"HEALTHCHECK {path} unexpected failure: {exc}")
 
 
 def _network_access_urls(host: str, port: int) -> list[str]:

@@ -32,6 +32,8 @@
 
 带 tag 的版本通过 GitHub Actions 打包，在 Releases 下载对应平台的压缩包，直接运行可执行文件。
 
+Windows 打包版默认会优先尝试绑定当前探测到的局域网 IPv4；如果探测不到，会回退到 `0.0.0.0` 继续保留局域网访问能力。如果你希望手动指定监听地址，仍可通过 `BILIKARA_HOST` 覆盖。
+
 **脚本启动**
 
 ```bash
@@ -68,16 +70,18 @@ python start_bilikara.py
 - 如果你希望改到别的位置，仍然可以通过 `BILIKARA_HOME` 覆盖
 - Windows 和 macOS 的最终包通常需要在各自系统上分别构建；也就是说，Windows 包最好在 Windows 上打，macOS 包最好在 macOS 上打
 - Windows 打包脚本会依次尝试 `py`、`python`、`python3`；如果都不存在，需要先安装 Python 3
+- 如需排查打包版启动问题，可使用 `python build_bundle.py --console` 生成带控制台窗口的调试包
 
 ## 可选环境变量
 
-- `BILIKARA_HOST`：监听地址，默认 `127.0.0.1`
+- `BILIKARA_HOST`：监听地址；脚本启动默认 `0.0.0.0`，Windows 打包版默认优先使用探测到的局域网 IPv4，失败时回退到 `0.0.0.0`
 - `BILIKARA_PORT`：监听端口，默认 `8080`
 - `BILIKARA_HOME`：自定义应用数据目录；不设置时，打包版默认写入应用目录内的 `runtime/`
 - `BILIKARA_MAX_CACHE_ITEMS`：自动缓存窗口大小，默认 `3`
 - `BILIKARA_BILIBILI_COOKIE`：用于 BBDown 下载会员清晰度或受限内容的 cookie
 - `BB_DOWN_PATH`：自定义本地 `BBDown` 可执行文件路径
 - `FFMPEG_PATH`：自定义本地 `ffmpeg` 可执行文件路径
+- `BILIKARA_STARTUP_LOG`：设为 `1` 时，启动日志会写入 `runtime/data/logs/startup.log`，用于排查打包版启动问题
 
 ## 技术说明
 
@@ -87,6 +91,7 @@ python start_bilikara.py
 - 启动后会后台静默检查 `BBDown` 是否需要更新
 - 启动后也会后台准备 `FFmpeg`，并把可用版本同步到应用目录内的 `runtime/tools/bbdown/`
 - Windows 打包版会以隐藏进程方式调用 `BBDown`，避免点歌时弹出命令行窗口
+- Windows 打包版默认优先监听一个具体局域网 IPv4，探测不到时再回退到 `0.0.0.0`，以尽量保留局域网手机访问能力
 - `BBDown` 下载日志会写到应用数据目录下的 `data/logs/bbdown/`
 - 本次已唱记录会单独写入 `data/played_sessions/played-YYYY-MM-DD_HH-MM-SS-ffffff.json`
 - 如果 `BBDown` 返回“请尝试升级到最新版本后重试”这类提示，程序会自动强制刷新一次本地 BBDown 并重试当前下载
@@ -99,6 +104,7 @@ python start_bilikara.py
 - 在线外挂播放器的清晰度能力受 B 站嵌入播放器本身限制，不适合作为高清主播放方案，为本地缓存不可用时的 fallback 方案
 - 本地缓存依赖运行环境能访问 B 站和 GitHub Release (下载 BBDown)
 - `FFmpeg` 状态会显示在右上角 `BBDown` 展开面板中，方便定位“BBDown 已就绪但混流失败”这类问题
+- 如果 Windows 打包版出现启动异常或页面打不开，可先尝试 `python build_bundle.py --console`，或设置 `BILIKARA_STARTUP_LOG=1` 收集启动日志
 - 为了让本地播放支持拖动和快进，后端对缓存媒体实现了 `Range` 请求支持
 - **仅在 Ubuntu (ssh) 和 Windows 平台测试过。我不会前端，全是 Codex 写的。**
 

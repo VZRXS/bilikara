@@ -8,6 +8,10 @@ import traceback
 from pathlib import Path
 
 
+def startup_logging_enabled() -> bool:
+    return os.getenv("BILIKARA_STARTUP_LOG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _fallback_app_home() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent / "runtime"
@@ -21,6 +25,8 @@ def startup_log_path() -> Path:
 
 
 def append_startup_log(message: str) -> None:
+    if not startup_logging_enabled():
+        return
     try:
         log_path = startup_log_path()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -31,6 +37,8 @@ def append_startup_log(message: str) -> None:
 
 
 def _install_startup_exception_hooks() -> None:
+    if not startup_logging_enabled():
+        return
     previous_excepthook = sys.excepthook
     previous_threading_hook = getattr(threading, "excepthook", None)
 
@@ -57,11 +65,12 @@ def _install_startup_exception_hooks() -> None:
 
 def run_with_startup_logging() -> None:
     _install_startup_exception_hooks()
-    append_startup_log(
-        "Launcher start "
-        f"(frozen={getattr(sys, 'frozen', False)}, "
-        f"executable={Path(sys.executable).resolve()}, cwd={Path.cwd()}, pid={os.getpid()})"
-    )
+    if startup_logging_enabled():
+        append_startup_log(
+            "Launcher start "
+            f"(frozen={getattr(sys, 'frozen', False)}, "
+            f"executable={Path(sys.executable).resolve()}, cwd={Path.cwd()}, pid={os.getpid()})"
+        )
     try:
         from .config import APP_HOME, ROOT_DIR, STATIC_DIR
         from .server import run
@@ -69,8 +78,9 @@ def run_with_startup_logging() -> None:
         append_startup_log("Import failure:\n" + traceback.format_exc().rstrip())
         raise
 
-    append_startup_log(
-        f"Resolved paths (root={ROOT_DIR}, app_home={APP_HOME}, static={STATIC_DIR})"
-    )
-    append_startup_log("Calling bilikara.server.run()")
+    if startup_logging_enabled():
+        append_startup_log(
+            f"Resolved paths (root={ROOT_DIR}, app_home={APP_HOME}, static={STATIC_DIR})"
+        )
+        append_startup_log("Calling bilikara.server.run()")
     run()
