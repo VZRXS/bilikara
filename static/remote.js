@@ -6,12 +6,15 @@ const state = {
   data: null,
   submitting: false,
   listView: "queue",
+  playerControlPendingAction: "",
 };
 
 const elements = {
   currentTitle: document.getElementById("current-title"),
   currentMeta: document.getElementById("current-meta"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
+  playerControlPanel: document.getElementById("player-control-panel"),
+  playerControlHint: document.getElementById("player-control-hint"),
   requestForm: document.getElementById("request-form"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
@@ -78,6 +81,7 @@ function render() {
 
   renderCurrentItem(data.current_item, data.playback_mode);
   renderAudioVariantBar(data.current_item, data.playback_mode);
+  renderPlayerControls(data.current_item, data.playback_mode);
   renderListHeader(data.playlist || [], data.history || []);
   renderQueue(Array.isArray(data.playlist) ? data.playlist : []);
   renderHistory(Array.isArray(data.history) ? data.history : []);
@@ -140,6 +144,58 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     elements.audioVariantBar.appendChild(button);
   });
   elements.audioVariantBar.classList.remove("hidden");
+}
+
+function canRemoteControlPlayer(currentItem, playbackMode) {
+  return Boolean(currentItem && playbackMode === "local" && currentItem.local_media_url);
+}
+
+function currentPlayerStatus(currentItem) {
+  const playerStatus = state.data?.player_status;
+  if (!currentItem || !playerStatus) {
+    return null;
+  }
+  if (String(playerStatus.item_id || "") !== String(currentItem.id || "")) {
+    return null;
+  }
+  return playerStatus;
+}
+
+function renderPlayerControls(currentItem, playbackMode) {
+  if (!currentItem) {
+    elements.playerControlPanel.classList.add("hidden");
+    elements.playerControlHint.textContent = "";
+    return;
+  }
+
+  const canControl = canRemoteControlPlayer(currentItem, playbackMode);
+  const playerStatus = currentPlayerStatus(currentItem);
+  const isPaused = Boolean(playerStatus?.is_paused);
+  const toggleButton = elements.playerControlPanel.querySelector('[data-control-action="toggle-play"]');
+  elements.playerControlPanel.classList.remove("hidden");
+  elements.playerControlPanel.querySelectorAll("button[data-control-action]").forEach((button) => {
+    const isPending = button.dataset.controlAction === state.playerControlPendingAction;
+    button.disabled = !canControl || Boolean(state.playerControlPendingAction);
+    button.classList.toggle("is-pending", isPending);
+  });
+
+  if (toggleButton) {
+    toggleButton.textContent = isPaused ? "播放" : "暂停";
+    toggleButton.classList.toggle("is-paused", isPaused);
+    toggleButton.classList.toggle("is-playing", !isPaused);
+  }
+
+  if (playbackMode !== "local") {
+    elements.playerControlHint.textContent = "当前是在线播放，暂不支持远程控制播放。";
+    return;
+  }
+  if (!currentItem.local_media_url) {
+    elements.playerControlHint.textContent = "当前歌曲还没有完成本地缓存，暂时无法远程控制。";
+    return;
+  }
+  elements.playerControlHint.textContent = isPaused
+    ? "当前已暂停，可以恢复播放或前后跳转。"
+    : "当前正在播放，可以暂停或前后跳转。";
 }
 
 function renderListHeader(playlist, history) {
@@ -271,6 +327,47 @@ async function handleAddByHistory(url, position) {
   }
 }
 
+async function sendPlayerControl(action, deltaSeconds = 0) {
+  const currentItem = state.data?.current_item;
+  const playbackMode = state.data?.playback_mode;
+  if (!currentItem || !canRemoteControlPlayer(currentItem, playbackMode)) {
+    return;
+  }
+
+  const message = action === "toggle-play"
+    ? "已发送播放/暂停指令。"
+    : deltaSeconds > 0
+      ? "已发送快进 15 秒指令。"
+      : "已发送后退 15 秒指令。";
+
+  try {
+    state.playerControlPendingAction = action;
+    if (action === "toggle-play") {
+      const existingStatus = currentPlayerStatus(currentItem) || { item_id: currentItem.id, is_paused: false };
+      state.data.player_status = {
+        ...existingStatus,
+        item_id: currentItem.id,
+        is_paused: !Boolean(existingStatus.is_paused),
+      };
+      renderPlayerControls(currentItem, playbackMode);
+    } else {
+      renderPlayerControls(currentItem, playbackMode);
+    }
+    state.data = await apiPost("/api/player/control", {
+      action,
+      item_id: currentItem.id,
+      delta_seconds: deltaSeconds,
+    });
+    setFormMessage(message);
+    render();
+  } catch (error) {
+    setFormMessage(error.message, true);
+    await fetchState().catch(() => {});
+  }
+  state.playerControlPendingAction = "";
+  renderPlayerControls(state.data?.current_item, state.data?.playback_mode);
+}
+
 function disconnectClient() {
   if (state.disconnectSent) {
     return;
@@ -335,6 +432,16 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
   } catch (error) {
     setFormMessage(error.message, true);
   }
+});
+
+elements.playerControlPanel.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-control-action]");
+  if (!button) {
+    return;
+  }
+  const action = button.dataset.controlAction || "";
+  const deltaSeconds = Number(button.dataset.delta || "0");
+  await sendPlayerControl(action, deltaSeconds);
 });
 
 elements.queueViewButton.addEventListener("click", () => {

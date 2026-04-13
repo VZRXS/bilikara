@@ -15,6 +15,8 @@ const state = {
   backupBannerTimer: null,
   localAdvanceInFlight: false,
   pendingPlaybackRestore: null,
+  lastAppliedPlayerControlSeq: 0,
+  lastReportedPlayerStatusSignature: "",
   dragItemId: "",
   dragTargetId: "",
   dragTargetAfter: false,
@@ -157,6 +159,7 @@ function render() {
 
   renderAudioVariantBar(currentItem, data.playback_mode);
   renderPlayer(currentItem, data.playback_mode);
+  applyRemotePlayerControl(data.player_control_command, currentItem, data.playback_mode);
   renderQueueCurrent(currentItem);
   if (!state.dragItemId) {
     renderPlaylist(data.playlist, data.current_item, data.cache_policy);
@@ -472,6 +475,9 @@ function renderPlayer(currentItem, playbackMode) {
     `;
     const video = elements.playerFrame.querySelector("video");
     if (video) {
+      const reportCurrentVideoStatus = () => {
+        reportPlayerStatus(currentItem.id, video);
+      };
       const pendingRestore = state.pendingPlaybackRestore;
       if (
         pendingRestore
@@ -489,11 +495,18 @@ function renderPlayer(currentItem, playbackMode) {
             video.play().catch(() => {});
           }
           state.pendingPlaybackRestore = null;
+          reportCurrentVideoStatus();
         }, { once: true });
       }
+      video.addEventListener("loadedmetadata", reportCurrentVideoStatus);
+      video.addEventListener("play", reportCurrentVideoStatus);
+      video.addEventListener("pause", reportCurrentVideoStatus);
+      video.addEventListener("seeked", reportCurrentVideoStatus);
       video.addEventListener("ended", async () => {
+        reportCurrentVideoStatus();
         await handleLocalPlaybackEnded();
       });
+      window.setTimeout(reportCurrentVideoStatus, 0);
     }
     return;
   }
@@ -504,6 +517,81 @@ function renderPlayer(currentItem, playbackMode) {
       <p class="empty-hint">${escapeHtml(currentItem.cache_message || "正在后台缓存")}</p>
     </div>
   `;
+}
+
+function applyRemotePlayerControl(command, currentItem, playbackMode) {
+  const seq = Number(command?.seq || 0);
+  if (!Number.isInteger(seq) || seq <= state.lastAppliedPlayerControlSeq) {
+    return;
+  }
+
+  const action = String(command?.action || "");
+  const commandItemId = String(command?.item_id || "");
+
+  if (
+    playbackMode === "local"
+    && currentItem
+    && (!commandItemId || commandItemId === currentItem.id)
+  ) {
+    const video = elements.playerFrame.querySelector("video");
+    if (video) {
+      if (action === "toggle-play") {
+        if (video.paused) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      } else if (action === "seek-relative") {
+        const deltaSeconds = Number(command?.delta_seconds || 0);
+        if (Number.isFinite(deltaSeconds) && deltaSeconds !== 0) {
+          const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+          const nextTime = Math.max(0, Number(video.currentTime || 0) + deltaSeconds);
+          video.currentTime = Number.isFinite(duration)
+            ? Math.min(nextTime, duration)
+            : nextTime;
+        }
+      }
+    }
+  }
+
+  if (!action) {
+    return;
+  }
+
+  state.lastAppliedPlayerControlSeq = seq;
+  ackRemotePlayerControl(seq);
+}
+
+async function ackRemotePlayerControl(seq) {
+  try {
+    await apiPost("/api/player/control-ack", { seq });
+  } catch {
+    // Ignore ack failures and let the next polling cycle recover.
+  }
+}
+
+function reportPlayerStatus(itemId, video) {
+  const normalizedItemId = String(itemId || "").trim();
+  if (!normalizedItemId || !video) {
+    return;
+  }
+
+  const currentTime = Number(video.currentTime || 0);
+  const signature = [
+    normalizedItemId,
+    video.paused ? "paused" : "playing",
+    Math.round(currentTime),
+  ].join("|");
+  if (signature === state.lastReportedPlayerStatusSignature) {
+    return;
+  }
+  state.lastReportedPlayerStatusSignature = signature;
+
+  apiPost("/api/player/status", {
+    item_id: normalizedItemId,
+    is_paused: video.paused,
+    current_time: currentTime,
+  }).catch(() => {});
 }
 
 function renderPlaylist(playlist, currentItem, cachePolicy) {
