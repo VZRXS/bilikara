@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections import defaultdict
@@ -196,6 +197,8 @@ class PlaylistStore:
                 for variant in item.audio_variants
                 if isinstance(variant, dict)
             }
+            if not allowed_variant_ids:
+                allowed_variant_ids = self._predicted_audio_variant_ids_unlocked(item)
             if normalized_variant_id not in allowed_variant_ids:
                 return False
             item.selected_audio_variant_id = normalized_variant_id
@@ -408,6 +411,20 @@ class PlaylistStore:
             if item.id == item_id:
                 return item
         return None
+
+    @staticmethod
+    def _variant_id(label: str, index: int) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        return normalized or f"track_{index + 1}"
+
+    def _predicted_audio_variant_ids_unlocked(self, item: PlaylistItem) -> set[str]:
+        predicted_ids: set[str] = set()
+        for index, label in enumerate(item.selected_parts or []):
+            normalized_label = str(label or "").strip()
+            if not normalized_label:
+                continue
+            predicted_ids.add(self._variant_id(normalized_label, index))
+        return predicted_ids
 
     def _insert_cycle_item_unlocked(self, item: PlaylistItem) -> None:
         if not self.playlist:

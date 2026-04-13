@@ -5,6 +5,7 @@ import re
 import urllib.parse
 import urllib.request
 import uuid
+import re
 from dataclasses import dataclass
 
 from .config import BILIBILI_HEADERS
@@ -167,6 +168,11 @@ def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> Vid
         if page.page == preferred_page:
             return page
     return pages[0]
+
+
+def _variant_id(label: str, index: int) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return normalized or f"track_{index + 1}"
 def fetch_owner_info(raw_input: str) -> tuple[int, str, str]:
     reference = resolve_video_reference(raw_input)
     data = _fetch_view_data(reference)
@@ -260,6 +266,7 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         selected_cids=[page.cid for page in selected_pages],
         selected_durations=[page.duration for page in selected_pages],
         selected_parts=[page.part for page in selected_pages],
+        selected_audio_variant_id=_variant_id(part_title, selected_page_numbers.index(video_page)),
         video_page=video_page,
         owner_mid=owner_mid,
         owner_name=owner_name,

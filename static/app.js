@@ -436,13 +436,57 @@ function audioVariantsForItem(item) {
   return item.audio_variants.filter((variant) => variant && variant.media_url);
 }
 
+function variantIdForLabel(label, index) {
+  const normalized = String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || `track_${index + 1}`;
+}
+
+function partOptionsForItem(item) {
+  const cachedVariants = audioVariantsForItem(item);
+  if (cachedVariants.length) {
+    return cachedVariants;
+  }
+  if (!item || !Array.isArray(item.selected_parts) || item.selected_parts.length <= 1) {
+    return [];
+  }
+  return item.selected_parts
+    .map((label, index) => {
+      const normalizedLabel = String(label || "").trim();
+      if (!normalizedLabel) {
+        return null;
+      }
+      return {
+        id: variantIdForLabel(normalizedLabel, index),
+        label: normalizedLabel,
+        media_url: "",
+      };
+    })
+    .filter(Boolean);
+}
+
 function selectedAudioVariantForItem(item) {
-  const variants = audioVariantsForItem(item);
+  const variants = partOptionsForItem(item);
   if (!variants.length) {
     return null;
   }
   const selectedId = String(item.selected_audio_variant_id || "").trim();
-  return variants.find((variant) => variant.id === selectedId) || variants[0];
+  if (selectedId) {
+    const selected = variants.find((variant) => variant.id === selectedId);
+    if (selected) {
+      return selected;
+    }
+  }
+  if (item && Array.isArray(item.selected_pages) && Array.isArray(item.selected_parts)) {
+    const currentPage = Number(item.page || 0);
+    const pageIndex = item.selected_pages.findIndex((page) => Number(page) === currentPage);
+    if (pageIndex >= 0 && pageIndex < variants.length) {
+      return variants[pageIndex];
+    }
+  }
+  return variants[0];
 }
 
 function selectedMediaUrlForItem(item) {
@@ -457,7 +501,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     return;
   }
 
-  const variants = audioVariantsForItem(currentItem);
+  const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
     elements.audioVariantBar.innerHTML = "";
     elements.audioVariantBar.classList.add("hidden");

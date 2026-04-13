@@ -1229,6 +1229,7 @@ select:disabled {
 .song-size-label {
   width: 100%;
   min-height: 12px;
+  margin-top: 3px;
   font-size: 11px;
   line-height: 1.1;
   color: var(--muted);

@@ -872,8 +872,16 @@ class CacheManager:
             }
             for variant_id, label, path in variant_files
         ]
+        existing_variant_id = str(item.selected_audio_variant_id or "").strip()
+        allowed_variant_ids = {
+            str(variant.get("id") or "").strip()
+            for variant in audio_variants
+            if isinstance(variant, dict)
+        }
         selected_audio_variant_id = (
-            str(audio_variants[0].get("id") or "").strip() if audio_variants else ""
+            existing_variant_id
+            if existing_variant_id and existing_variant_id in allowed_variant_ids
+            else (str(audio_variants[0].get("id") or "").strip() if audio_variants else "")
         )
         return {
             "media_file": output_file,

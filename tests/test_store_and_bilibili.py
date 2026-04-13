@@ -209,6 +209,17 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.current_item.owner_name, "example-up")
         self.assertEqual(self.store.history[0].owner_name, "example-up")
 
+    def test_set_audio_variant_accepts_predicted_part_before_cache_ready(self):
+        item = self.make_item("a", song_key="song-a")
+        item.selected_pages = [1, 2]
+        item.selected_parts = ["on vocal", "off vocal"]
+        self.store.add_item(item, requester_name="A")
+
+        changed = self.store.set_audio_variant("a", "off_vocal")
+
+        self.assertTrue(changed)
+        self.assertEqual(self.store.current_item.selected_audio_variant_id, "off_vocal")
+
     def test_history_restores_from_state_file(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         restored_store = PlaylistStore(
@@ -371,6 +382,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.owner_mid, 114514)
         self.assertEqual(item.owner_name, "example-up")
         self.assertEqual(item.owner_url, "https://space.bilibili.com/114514")
+        self.assertEqual(item.selected_audio_variant_id, "part_2")
 
 
 if __name__ == "__main__":
