@@ -1,5 +1,5 @@
-from bilikara.server import run
+from bilikara.launcher import run_with_startup_logging
 
 
 if __name__ == "__main__":
-    run()
+    run_with_startup_logging()

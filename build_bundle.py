@@ -40,21 +40,27 @@ def main() -> None:
 def _bundled_binary_args(data_separator: str) -> list[str]:
     args: list[str] = []
     bundled: list[str] = []
+    missing: list[str] = []
     for binary_name in ("ffmpeg", "ffprobe"):
         binary_path = _resolve_bundle_binary_path(binary_name)
         if not binary_path:
+            missing.append(binary_name)
             continue
         bundled.append(str(binary_path.resolve()))
+
+    if missing:
+        missing_text = ", ".join(missing)
+        raise RuntimeError(
+            f"Missing required external tools for bundle build: {missing_text}. "
+            "Install ffmpeg/ffprobe and ensure they are available on PATH."
+        )
 
     for source in bundled:
         args.extend(["--add-binary", f"{source}{data_separator}vendor"])
 
-    if bundled:
-        print("Bundling external tools:")
-        for source in bundled:
-            print(f"  - {source}")
-    else:
-        print("Warning: ffmpeg was not found on PATH during bundle build.")
+    print("Bundling external tools:")
+    for source in bundled:
+        print(f"  - {source}")
 
     return args
 

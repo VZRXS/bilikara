@@ -26,6 +26,7 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
+from .launcher import append_startup_log
 from .store import PlaylistStore
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
@@ -46,7 +47,6 @@ class AppContext:
         self.auto_restored_backup = self.store.restore_backup()
         self.cache_manager = CacheManager(self.store, max_cache_items=MAX_CACHE_ITEMS)
         self.cache_manager.prepare_session()
-        self.cache_manager.prewarm_binary()
         self._closed = False
         self._server: ThreadingHTTPServer | None = None
         self._host = HOST
@@ -59,10 +59,8 @@ class AppContext:
         self._shutdown_requested = False
         self._client_grace_seconds = 4.0
         self._client_stale_seconds = 120.0
-        self._client_watchdog = threading.Thread(target=self._client_watchdog_loop, daemon=True)
-        self._client_watchdog.start()
-        self._owner_enrichment = threading.Thread(target=self._owner_enrichment_loop, daemon=True)
-        self._owner_enrichment.start()
+        self._client_watchdog: threading.Thread | None = None
+        self._owner_enrichment: threading.Thread | None = None
         self._player_control_lock = threading.RLock()
         self._player_control_seq = 0
         self._player_control_ack_seq = 0
@@ -71,6 +69,8 @@ class AppContext:
         self._player_status: dict[str, object] | None = None
         self._remote_access_lock = threading.RLock()
         self._remote_access = self._build_remote_access_payload(self._host, self._port, [])
+        self._startup_lock = threading.RLock()
+        self._startup_started = False
 
     def snapshot(self) -> dict:
         payload = self.store.snapshot()
@@ -226,6 +226,7 @@ class AppContext:
             self._shutdown_requested = False
         with self._remote_access_lock:
             self._remote_access = self._build_remote_access_payload(self._host, self._port, [])
+        self._start_background_tasks_once()
         threading.Thread(target=self._refresh_remote_access_snapshot, daemon=True).start()
 
     def remote_access_snapshot(self) -> dict[str, object]:
@@ -309,6 +310,17 @@ class AppContext:
                 owner_name=owner_name,
                 owner_url=owner_url,
             )
+
+    def _start_background_tasks_once(self) -> None:
+        with self._startup_lock:
+            if self._startup_started or self._closed:
+                return
+            self._startup_started = True
+            self.cache_manager.prewarm_binary()
+            self._client_watchdog = threading.Thread(target=self._client_watchdog_loop, daemon=True)
+            self._client_watchdog.start()
+            self._owner_enrichment = threading.Thread(target=self._owner_enrichment_loop, daemon=True)
+            self._owner_enrichment.start()
 
     def _refresh_remote_access_snapshot(self) -> None:
         host = self._host
@@ -666,24 +678,34 @@ def _serve(
     shutdown_on_last_client: bool = False,
     status_label: str = "bilikara",
 ) -> None:
+    append_startup_log(
+        f"_serve start(host={host}, port={port}, auto_open_browser={auto_open_browser}, "
+        f"auto_select_port={auto_select_port}, shutdown_on_last_client={shutdown_on_last_client})"
+    )
     actual_port = _find_available_port(host, port) if auto_select_port else port
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
+    append_startup_log(f"HTTP server bound on {url}")
     print(f"{status_label} running on {url}")
     print(f"{status_label} mobile remote: {url}/remote")
 
     if auto_open_browser:
+        append_startup_log(f"Scheduling browser open for {url}")
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
     try:
+        append_startup_log("Entering serve_forever()")
         server.serve_forever()
     except KeyboardInterrupt:
+        append_startup_log("KeyboardInterrupt received, stopping server")
         pass
     finally:
+        append_startup_log("Server shutdown starting")
         CONTEXT.shutdown()
         server.server_close()
+        append_startup_log("Server shutdown complete")
 
 
 def run(
