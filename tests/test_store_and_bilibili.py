@@ -7,6 +7,7 @@ from unittest.mock import patch
 from bilikara.bilibili import VideoPage, fetch_video_item, resolve_video_reference, select_matching_pages
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
+from bilikara.title_cleanup import clean_display_title
 
 
 class PlaylistStoreTest(unittest.TestCase):
@@ -96,6 +97,17 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.clear_playlist()
         self.assertEqual(self.store.current_item.id, "a")
         self.assertEqual(self.store.playlist, [])
+
+    def test_snapshot_uses_cleaned_display_titles(self):
+        item = self.make_item("a")
+        item.title = "【纯k投屏 | ニコカラ | 少女歌剧】星のダイアローグ"
+        item.part_title = "on_vocal"
+        item.display_title = f"{item.title} - {item.part_title}"
+        self.store.add_item(item)
+
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot["current_item"]["display_title"], "星のダイアローグ")
+        self.assertEqual(snapshot["history"][0]["display_title"], "星のダイアローグ")
 
     def test_history_updates_and_moves_latest_duplicate_to_top(self):
         self.store.add_item(self.make_item("a", song_key="song-a"))
@@ -231,6 +243,14 @@ class PlaylistStoreTest(unittest.TestCase):
 
 
 class BilibiliParserTest(unittest.TestCase):
+    def test_clean_display_title_removes_brackets_and_part_suffix(self):
+        cleaned = clean_display_title(
+            title="【纯k投屏 | ニコカラ | 少女歌剧】星のダイアローグ",
+            display_title="【纯k投屏 | ニコカラ | 少女歌剧】星のダイアローグ - on_vocal",
+            part_title="on_vocal",
+        )
+        self.assertEqual(cleaned, "星のダイアローグ")
+
     def test_resolve_bv_input(self):
         reference = resolve_video_reference("BV1xx411c7mD")
         self.assertEqual(reference.bvid, "BV1xx411c7mD")

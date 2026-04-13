@@ -1127,12 +1127,13 @@ input[type="text"]:focus {
 
 .song-title {
   min-width: 0;
-  font-size: 14px;
-  line-height: 1.35;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.32;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   white-space: normal;
   overflow: hidden;
 }

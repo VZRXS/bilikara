@@ -170,7 +170,11 @@ function renderQueue(playlist) {
   playlist.forEach((item, index) => {
     const node = elements.queueItemTemplate.content.firstElementChild.cloneNode(true);
     node.classList.toggle("ready", item.cache_status === "ready");
-    node.querySelector(".queue-title").textContent = `${index + 1}. ${item.display_title}`;
+    const orderNode = node.querySelector(".queue-order");
+    if (orderNode) {
+      orderNode.textContent = String(index + 1);
+    }
+    node.querySelector(".queue-title").textContent = item.display_title;
     node.querySelector(".queue-note").textContent = item.cache_message || "等待缓存";
     node.querySelector(".queue-state").textContent = queueStateLabel(item);
     elements.queueList.appendChild(node);

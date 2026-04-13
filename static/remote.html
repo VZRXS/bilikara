@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>bilikara remote</title>
     <link rel="stylesheet" href="/remote.css" />
+    <link rel="stylesheet" href="/remote-queue.css" />
   </head>
   <body>
     <main class="remote-shell">
@@ -83,11 +84,22 @@
 
     <template id="queue-item-template">
       <article class="queue-item">
-        <div class="queue-main">
-          <h3 class="queue-title"></h3>
-          <p class="queue-note"></p>
+        <div class="queue-item-head">
+          <button type="button" class="queue-drag-handle" data-drag-handle aria-label="拖动排序">
+            <span aria-hidden="true">⋮⋮</span>
+          </button>
+          <span class="queue-order" aria-hidden="true"></span>
+          <div class="queue-main">
+            <h3 class="queue-title"></h3>
+            <p class="queue-note"></p>
+          </div>
+          <span class="queue-state"></span>
         </div>
-        <span class="queue-state"></span>
+        <div class="queue-actions">
+          <button type="button" data-action="play-now" class="primary-button">立即播放</button>
+          <button type="button" data-action="move-next" class="secondary-button">顶歌</button>
+          <button type="button" data-action="remove" class="ghost-button danger-button">删除</button>
+        </div>
       </article>
     </template>
 
@@ -108,5 +120,6 @@
     </template>
 
     <script src="/remote.js" defer></script>
+    <script src="/remote-queue.js" defer></script>
   </body>
 </html>
