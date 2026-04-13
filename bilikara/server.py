@@ -370,6 +370,19 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         try:
             body = self._read_json_body()
+            if route == "/api/client/log":
+                level = str(body.get("level") or "info").strip() or "info"
+                message = str(body.get("message") or "").strip()
+                details = str(body.get("details") or "").strip()
+                user_agent = str(self.headers.get("User-Agent") or "").strip()
+                if message:
+                    append_startup_log(
+                        f"CLIENT[{level}] {message}"
+                        + (f" | {details}" if details else "")
+                        + (f" | ua={user_agent}" if user_agent else "")
+                    )
+                self._write_json({"ok": True})
+                return
             if route == "/api/playlist/add":
                 self._handle_add(body)
                 return
@@ -542,6 +555,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        append_startup_log(
+            f"HTTP {self.command} {self.path} -> {code}"
+            + (f" ({size} bytes)" if size not in {"-", None} else "")
+        )
 
     def _handle_add(self, body: dict) -> None:
         url = str(body.get("url") or "").strip()
