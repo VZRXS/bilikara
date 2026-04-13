@@ -703,7 +703,7 @@ def run(
     port: int = PORT,
     open_browser: bool = True,
     auto_select_port: bool = True,
-    shutdown_on_last_client: bool | None = False,
+    shutdown_on_last_client: bool | None = True,
 ) -> None:
     close_when_browser_exits = False if shutdown_on_last_client is None else shutdown_on_last_client
     _serve(

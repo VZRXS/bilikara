@@ -2,7 +2,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from bilikara.server import AppContext
+from bilikara.server import AppContext, run
 
 
 class AppContextRemoteAccessTest(unittest.TestCase):
@@ -38,6 +38,15 @@ class AppContextRemoteAccessTest(unittest.TestCase):
         self.assertEqual(snapshot["local_url"], "http://127.0.0.1:8080/remote")
         self.assertEqual(snapshot["lan_urls"], ["http://192.168.0.8:8080/remote"])
         self.assertEqual(snapshot["preferred_url"], "http://192.168.0.8:8080/remote")
+
+
+class RunDefaultsTest(unittest.TestCase):
+    def test_run_defaults_enable_shutdown_on_last_client(self):
+        with patch("bilikara.server._serve") as serve:
+            run()
+
+        serve.assert_called_once()
+        self.assertTrue(serve.call_args.kwargs["shutdown_on_last_client"])
 
 
 if __name__ == "__main__":
