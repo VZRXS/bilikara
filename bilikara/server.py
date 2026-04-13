@@ -12,6 +12,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+import urllib.error
+import urllib.request
 
 from .bilibili import BilibiliError, fetch_owner_info, fetch_video_item
 from .cache import CacheManager
@@ -710,6 +712,8 @@ def _serve(
     print(f"{status_label} running on {url}")
     print(f"{status_label} mobile remote: {url}/remote")
 
+    threading.Thread(target=_log_local_healthcheck, args=(url,), daemon=True).start()
+
     if auto_open_browser:
         append_startup_log(f"Scheduling browser open for {url}")
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
@@ -771,6 +775,23 @@ def _find_available_port(host: str, preferred_port: int) -> int:
                 continue
             return candidate
     raise OSError(f"无法为 bilikara 找到可用端口，起始端口: {preferred_port}")
+
+
+def _log_local_healthcheck(base_url: str) -> None:
+    time.sleep(0.6)
+    for path in ("/", "/api/state"):
+        target = f"{base_url}{path}"
+        try:
+            request = urllib.request.Request(target, headers={"X-Bilikara-Client": "startup-healthcheck"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                content_type = response.headers.get_content_type()
+                append_startup_log(
+                    f"HEALTHCHECK {path} -> {response.status} ({content_type})"
+                )
+        except urllib.error.URLError as exc:
+            append_startup_log(f"HEALTHCHECK {path} failed: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            append_startup_log(f"HEALTHCHECK {path} unexpected failure: {exc}")
 
 
 def _network_access_urls(host: str, port: int) -> list[str]:
