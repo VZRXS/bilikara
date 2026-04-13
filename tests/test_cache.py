@@ -48,6 +48,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             state_file=temp_path / "state.json",
             backup_file=temp_path / "playlist_backup.json",
         )
+        self.store.add_session_user("cache-test-user")
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -124,7 +125,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
-                self.store.add_item(self.make_item("song-a"))
+                self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
                 log_path = manager._item_log_path("song-a")
                 manager._append_log_line(log_path, "缓存日志")
                 manager._drop_item_cache("song-a", "释放缓存")
