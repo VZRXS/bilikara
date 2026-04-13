@@ -350,18 +350,6 @@ h2 {
   color: var(--muted);
 }
 
-.cache-panel-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  text-align: right;
-}
-
-.cache-panel-tool-hint {
-  white-space: nowrap;
-}
-
 .cache-slider-block {
   width: min(190px, 100%);
 }
@@ -743,14 +731,24 @@ input[type="text"]:focus {
   flex-direction: column;
   min-height: 0;
   backface-visibility: hidden;
+  pointer-events: none;
 }
 
 .list-face-front {
   gap: 10px;
+  pointer-events: auto;
 }
 
 .list-face-back {
   transform: rotateY(180deg);
+}
+
+.list-stage.is-history-view .list-face-front {
+  pointer-events: none;
+}
+
+.list-stage.is-history-view .list-face-back {
+  pointer-events: auto;
 }
 
 .queue-card-head h2 {

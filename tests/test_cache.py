@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from bilikara.cache import CacheManager
+from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 
 
@@ -51,6 +52,22 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def make_item(self, item_id: str) -> PlaylistItem:
+        return PlaylistItem(
+            id=item_id,
+            original_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+            bvid="BV1xx411c7mD",
+            aid=123,
+            cid=456,
+            page=1,
+            title=f"title-{item_id}",
+            part_title="P1",
+            display_title=f"title-{item_id} - P1",
+            cover_url="",
+            embed_url="https://player.bilibili.com/player.html?aid=123",
+        )
+
     def test_cache_metrics_reports_usage_by_item(self):
         first = self.cache_dir / "song-a"
         second = self.cache_dir / "song-b"
@@ -93,11 +110,29 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 log_path = manager._item_log_path("song-a")
                 manager._append_log_line(log_path, "缓存中")
+                self.assertTrue(log_path.exists())
+                self.assertIn("缓存中", log_path.read_text(encoding="utf-8"))
             finally:
                 manager.shutdown()
 
-        self.assertTrue(log_path.exists())
-        self.assertIn("缓存中", log_path.read_text(encoding="utf-8"))
+    def test_drop_item_cache_removes_related_log_file(self):
+        log_dir = Path(self.temp_dir.name) / "logs"
+        item_dir = self.cache_dir / "song-a"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        (item_dir / "video.mp4").write_bytes(b"123")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                self.store.add_item(self.make_item("song-a"))
+                log_path = manager._item_log_path("song-a")
+                manager._append_log_line(log_path, "缓存日志")
+                manager._drop_item_cache("song-a", "释放缓存")
+            finally:
+                manager.shutdown()
+
+        self.assertFalse(item_dir.exists())
+        self.assertFalse(log_path.exists())
 
     def test_ensure_ffmpeg_syncs_bundled_binary_into_runtime_tools(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"

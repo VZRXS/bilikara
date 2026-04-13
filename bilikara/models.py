@@ -25,6 +25,9 @@ class PlaylistItem:
     audio_variants: list[dict[str, str]] = field(default_factory=list)
     selected_audio_variant_id: str = ""
     video_page: int = 1
+    owner_mid: int = 0
+    owner_name: str = ""
+    owner_url: str = ""
     cache_status: str = "pending"
     cache_progress: float = 0.0
     cache_message: str = "等待缓存"
@@ -53,6 +56,9 @@ class HistoryEntry:
     original_url: str
     resolved_url: str
     requested_at: float
+    owner_mid: int = 0
+    owner_name: str = ""
+    owner_url: str = ""
     request_count: int = 1
 
     def serialize(self) -> dict[str, Any]:
@@ -63,4 +69,33 @@ class HistoryEntry:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "HistoryEntry":
+        return cls(**dict(payload))
+
+
+@dataclass
+class SessionPlayedEntry:
+    key: str
+    item_id: str
+    display_title: str
+    title: str
+    part_title: str
+    original_url: str
+    resolved_url: str
+    bvid: str
+    aid: int
+    cid: int
+    page: int
+    played_at: float
+    owner_mid: int = 0
+    owner_name: str = ""
+    owner_url: str = ""
+
+    def serialize(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.serialize()
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "SessionPlayedEntry":
         return cls(**dict(payload))

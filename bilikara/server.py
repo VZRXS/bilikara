@@ -13,13 +13,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from .bilibili import BilibiliError, fetch_video_item
+from .bilibili import BilibiliError, fetch_owner_info, fetch_video_item
 from .cache import CacheManager
 from .config import (
     BACKUP_FILE,
     CACHE_DIR,
     HOST,
     MAX_CACHE_ITEMS,
+    PLAYED_SESSION_DIR,
     PORT,
     STATE_FILE,
     STATIC_DIR,
@@ -30,10 +31,18 @@ from .store import PlaylistStore
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 
+class DuplicateSessionRequestError(ValueError):
+    def __init__(self, item, session_entry=None, active_item=None) -> None:
+        self.item = item
+        self.session_entry = session_entry
+        self.active_item = active_item
+        super().__init__(f"本次已经点过《{item.display_title}》")
+
+
 class AppContext:
     def __init__(self) -> None:
         ensure_directories()
-        self.store = PlaylistStore(STATE_FILE, BACKUP_FILE)
+        self.store = PlaylistStore(STATE_FILE, BACKUP_FILE, PLAYED_SESSION_DIR)
         self.auto_restored_backup = self.store.restore_backup()
         self.cache_manager = CacheManager(self.store, max_cache_items=MAX_CACHE_ITEMS)
         self.cache_manager.prepare_session()
@@ -52,6 +61,8 @@ class AppContext:
         self._client_stale_seconds = 120.0
         self._client_watchdog = threading.Thread(target=self._client_watchdog_loop, daemon=True)
         self._client_watchdog.start()
+        self._owner_enrichment = threading.Thread(target=self._owner_enrichment_loop, daemon=True)
+        self._owner_enrichment.start()
 
     def snapshot(self) -> dict:
         payload = self.store.snapshot()
@@ -205,6 +216,23 @@ class AppContext:
         for client_id in expired:
             self._client_last_seen.pop(client_id, None)
 
+    def _owner_enrichment_loop(self) -> None:
+        for source_url in self.store.missing_owner_urls():
+            if self._closed:
+                return
+            try:
+                owner_mid, owner_name, owner_url = fetch_owner_info(source_url)
+            except Exception:  # noqa: BLE001
+                continue
+            if not owner_name:
+                continue
+            self.store.update_owner_info_for_url(
+                source_url,
+                owner_mid=owner_mid,
+                owner_name=owner_name,
+                owner_url=owner_url,
+            )
+
 
 CONTEXT = AppContext()
 atexit.register(CONTEXT.shutdown)
@@ -313,6 +341,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             )
         except BilibiliError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except DuplicateSessionRequestError as exc:
+            self._write_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": "duplicate_session_request",
+                    "duplicate_item": exc.item.to_dict(),
+                    "session_entry": exc.session_entry.to_dict() if exc.session_entry else None,
+                    "active_item": exc.active_item.to_dict() if exc.active_item else None,
+                },
+                status=HTTPStatus.CONFLICT,
+            )
         except ValueError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001
@@ -327,7 +367,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
     def _handle_add(self, body: dict) -> None:
         url = str(body.get("url") or "").strip()
         position = str(body.get("position") or "tail")
+        allow_repeat = bool(body.get("allow_repeat"))
         item = fetch_video_item(url)
+        existing_session_entry = CONTEXT.store.session_request_for_item(item)
+        active_duplicate = CONTEXT.store.active_duplicate_for_item(item)
+        if (existing_session_entry or active_duplicate) and not allow_repeat:
+            raise DuplicateSessionRequestError(item, existing_session_entry, active_duplicate)
         CONTEXT.add_item(item, position=position)
         self._write_json({"ok": True, "data": CONTEXT.snapshot()})
 

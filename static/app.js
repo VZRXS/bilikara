@@ -97,7 +97,11 @@ async function apiPost(url, payload = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    throw new Error(data.error || "请求失败");
+    const error = new Error(data.error || "请求失败");
+    error.status = response.status;
+    error.code = data.code || "";
+    error.payload = data;
+    throw error;
   }
   return data.data;
 }
@@ -166,6 +170,20 @@ function render() {
   );
   elements.listStage.classList.toggle("is-history-view", state.listView === "history");
   renderConfirmPopover();
+}
+
+function activeScrollableList() {
+  return state.listView === "history" ? elements.historyList : elements.playlist;
+}
+
+function normalizeWheelDelta(event, container) {
+  if (event.deltaMode === 1) {
+    return event.deltaY * 18;
+  }
+  if (event.deltaMode === 2) {
+    return event.deltaY * container.clientHeight;
+  }
+  return event.deltaY;
 }
 
 function renderRemoteAccess(remoteAccess) {
@@ -517,6 +535,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     const sizeLabel = node.querySelector(".song-size-label");
     const readyIndicator = node.querySelector(".song-badge-check");
     const note = node.querySelector(".song-note");
+    const titleNode = node.querySelector(".song-title");
 
     indexLabel.textContent = String(index + 1);
 
@@ -533,7 +552,10 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     sizeLabel.textContent = sizeText;
     sizeLabel.classList.toggle("hidden", !sizeText);
 
-    node.querySelector(".song-title").textContent = item.display_title;
+    titleNode.textContent = item.display_title;
+    const ownerTooltip = ownerTooltipForEntry(item);
+    node.title = ownerTooltip;
+    titleNode.title = ownerTooltip;
 
     const noteText = noteForItem(item);
     note.textContent = noteText;
@@ -576,6 +598,9 @@ function renderHistory(history) {
     const node = elements.historyTemplate.content.firstElementChild.cloneNode(true);
     const title = node.querySelector(".history-title");
     title.textContent = entry.display_title;
+    const ownerTooltip = ownerTooltipForEntry(entry);
+    node.title = ownerTooltip;
+    title.title = ownerTooltip;
     node.querySelector(".history-time").textContent = formatHistoryTime(entry.requested_at);
     node.querySelector(".history-count").textContent = `点歌 ${entry.request_count} 次`;
     node.querySelectorAll("button").forEach((button) => {
@@ -612,6 +637,14 @@ function formatHistoryTime(timestamp) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function ownerTooltipForEntry(entry) {
+  const ownerName = String(entry?.owner_name || "").trim();
+  if (!ownerName) {
+    return "";
+  }
+  return `UP主: ${ownerName}`;
 }
 
 function formatBBDownStatus(bbdown) {
@@ -884,7 +917,27 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-async function handleAdd(position) {
+function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
+  const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || "这首歌";
+  const count = Number(sessionEntry?.request_count || 0);
+  if (activeItem && count > 0) {
+    return `《${title}》当前列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
+  }
+  if (activeItem) {
+    return `《${title}》当前列表里已经有了，仍要继续点歌吗？`;
+  }
+  return `《${title}》本次已经点过 ${count || 1} 次，仍要继续点歌吗？`;
+}
+
+async function submitAddRequest(url, position, options = {}) {
+  return apiPost("/api/playlist/add", {
+    url,
+    position,
+    allow_repeat: Boolean(options.allowRepeat),
+  });
+}
+
+async function handleAdd(position, anchorPoint) {
   const url = elements.urlInput.value.trim();
   if (!url) {
     setFormMessage("请输入 B 站视频链接或 BV 号", true);
@@ -893,22 +946,56 @@ async function handleAdd(position) {
 
   setFormMessage("正在解析视频信息并加入列表...");
   try {
-    state.data = await apiPost("/api/playlist/add", { url, position });
+    state.data = await submitAddRequest(url, position);
     elements.urlInput.value = "";
     setFormMessage(position === "next" ? "已顶歌到下一首" : "已加入列表末尾");
     render();
   } catch (error) {
+    if (error.code === "duplicate_session_request") {
+      openConfirm({
+        type: "duplicate-add",
+        url,
+        position,
+        preserveInput: true,
+        message: duplicateConfirmMessage(
+          error.payload?.duplicate_item,
+          error.payload?.session_entry,
+          error.payload?.active_item,
+        ),
+        x: anchorPoint?.x ?? anchorPointForEvent({}, elements.addForm).x,
+        y: anchorPoint?.y ?? anchorPointForEvent({}, elements.addForm).y,
+      });
+      setFormMessage("这首歌已经在当前列表中，或本次已经点过，确认后可继续加入。");
+      return;
+    }
     setFormMessage(error.message, true);
   }
 }
 
-async function handleAddByUrl(url, position) {
+async function handleAddByUrl(url, position, anchorPoint) {
   setFormMessage("正在从历史记录加入列表...");
   try {
-    state.data = await apiPost("/api/playlist/add", { url, position });
+    state.data = await submitAddRequest(url, position);
     setFormMessage(position === "next" ? "已从历史顶歌到下一首" : "已从历史加入列表");
     render();
   } catch (error) {
+    if (error.code === "duplicate_session_request") {
+      openConfirm({
+        type: "duplicate-add",
+        url,
+        position,
+        preserveInput: false,
+        message: duplicateConfirmMessage(
+          error.payload?.duplicate_item,
+          error.payload?.session_entry,
+          error.payload?.active_item,
+        ),
+        x: anchorPoint?.x ?? anchorPointForEvent({}, elements.historyList).x,
+        y: anchorPoint?.y ?? anchorPointForEvent({}, elements.historyList).y,
+      });
+      setFormMessage("这首歌已经在当前列表中，或本次已经点过，确认后可继续加入。");
+      return;
+    }
     setFormMessage(error.message, true);
   }
 }
@@ -1016,11 +1103,13 @@ async function handlePlaylistAction(button) {
 
 elements.addForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await handleAdd("tail");
+  const point = anchorPointForEvent(event.submitter || event, elements.addForm);
+  await handleAdd("tail", point);
 });
 
-elements.queueNextButton.addEventListener("click", async () => {
-  await handleAdd("next");
+elements.queueNextButton.addEventListener("click", async (event) => {
+  const point = anchorPointForEvent(event, elements.queueNextButton);
+  await handleAdd("next", point);
 });
 
 elements.copyRemoteUrlButton.addEventListener("click", async () => {
@@ -1158,7 +1247,8 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!url) {
     return;
   }
-  await handleAddByUrl(url, button.dataset.action === "history-next" ? "next" : "tail");
+  const point = anchorPointForEvent(event, button);
+  await handleAddByUrl(url, button.dataset.action === "history-next" ? "next" : "tail", point);
 });
 
 elements.confirmCancel.addEventListener("click", () => {
@@ -1181,6 +1271,18 @@ elements.confirmOk.addEventListener("click", async () => {
       closeConfirm();
       setFormMessage("已移除这首歌。");
       render();
+      return;
+    }
+    if (intent.type === "duplicate-add" && intent.url) {
+      state.data = await submitAddRequest(intent.url, intent.position || "tail", { allowRepeat: true });
+      closeConfirm();
+      if (!intent.preserveInput) {
+        elements.urlInput.value = "";
+      } else {
+        elements.urlInput.value = "";
+      }
+      setFormMessage(intent.position === "next" ? "已确认插队到下一首" : "已确认加入列表");
+      render();
     }
   } catch (error) {
     setFormMessage(error.message, true);
@@ -1192,7 +1294,10 @@ document.addEventListener("click", (event) => {
     if (
       event.target.closest("#confirm-popover") ||
       event.target.closest("#clear-playlist-button") ||
-      event.target.closest('button[data-action="remove"]')
+      event.target.closest('button[data-action="remove"]') ||
+      event.target.closest("#queue-next-button") ||
+      event.target.closest("#add-form") ||
+      event.target.closest("#history-list")
     ) {
       return;
     }
@@ -1316,6 +1421,29 @@ elements.playlist.addEventListener("drop", async (event) => {
     setFormMessage(error.message, true);
   }
 });
+
+elements.listStage.addEventListener("wheel", (event) => {
+  const list = activeScrollableList();
+  if (!list) {
+    return;
+  }
+
+  const deltaY = normalizeWheelDelta(event, list);
+  if (!deltaY || list.scrollHeight <= list.clientHeight) {
+    return;
+  }
+
+  const nextScrollTop = list.scrollTop + deltaY;
+  const maxScrollTop = list.scrollHeight - list.clientHeight;
+  const clampedScrollTop = Math.max(0, Math.min(nextScrollTop, maxScrollTop));
+
+  if (clampedScrollTop === list.scrollTop) {
+    return;
+  }
+
+  event.preventDefault();
+  list.scrollTop = clampedScrollTop;
+}, { passive: false });
 
 async function startPolling() {
   try {

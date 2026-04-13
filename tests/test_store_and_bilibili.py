@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,9 +15,11 @@ class PlaylistStoreTest(unittest.TestCase):
         temp_path = Path(self.temp_dir.name)
         self.state_file = temp_path / "state.json"
         self.backup_file = temp_path / "playlist_backup.json"
+        self.session_archive_dir = temp_path / "played_sessions"
         self.store = PlaylistStore(
             state_file=self.state_file,
             backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
         )
 
     def tearDown(self) -> None:
@@ -102,12 +105,93 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.history[0].display_title, "title-c - P1")
         self.assertEqual(self.store.history[0].request_count, 2)
         self.assertEqual(self.store.history[1].display_title, "title-b - P1")
+        self.assertTrue(hasattr(self.store.history[0], "owner_name"))
+
+    def test_session_history_updates_for_duplicate_request_in_current_run(self):
+        self.store.add_item(self.make_item("a", song_key="song-a"))
+        self.store.add_item(self.make_item("b", song_key="song-a"))
+        self.assertEqual(len(self.store.session_history), 1)
+        self.assertEqual(self.store.session_history[0].display_title, "title-b - P1")
+        self.assertEqual(self.store.session_history[0].request_count, 2)
+
+    def test_session_history_does_not_restore_from_state_file(self):
+        self.store.add_item(self.make_item("a", song_key="song-a"))
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+        self.assertEqual(restored_store.session_history, [])
+        self.assertIsNone(restored_store.session_request_for_item(self.make_item("z", song_key="song-a")))
+
+    def test_session_played_archive_tracks_items_that_become_current(self):
+        self.store.add_item(self.make_item("a", song_key="song-a"))
+        self.store.add_item(self.make_item("b", song_key="song-b"))
+
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertRegex(self.store.session_played_file.name, r"^played-\d{4}-\d{2}-\d{2}_")
+        self.assertEqual(self.store.session_played_file.parent, self.session_archive_dir)
+        self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a"])
+
+        self.store.advance_to_next()
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
+        self.assertEqual(payload["items"][1]["display_title"], "title-b - P1")
+
+    def test_session_played_archive_does_not_restore_into_new_run(self):
+        self.store.add_item(self.make_item("a", song_key="song-a"))
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+
+        self.assertEqual(restored_store.session_played, [])
+
+    def test_active_duplicate_for_item_matches_current_or_playlist(self):
+        first = self.make_item("a", song_key="song-a")
+        second = self.make_item("b", song_key="song-b")
+        duplicate = self.make_item("c", song_key="song-a")
+        self.store.add_item(first)
+        self.store.add_item(second)
+        found = self.store.active_duplicate_for_item(duplicate)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.id, "a")
+
+    def test_missing_owner_urls_collects_entries_without_owner_name(self):
+        item = self.make_item("a", song_key="song-a")
+        item.owner_name = ""
+        self.store.add_item(item)
+        self.assertEqual(
+            self.store.missing_owner_urls(),
+            [item.resolved_url],
+        )
+
+    def test_update_owner_info_for_url_updates_playlist_and_history(self):
+        item = self.make_item("a", song_key="song-a")
+        item.owner_name = ""
+        item.owner_mid = 0
+        item.owner_url = ""
+        self.store.add_item(item)
+
+        changed = self.store.update_owner_info_for_url(
+            item.resolved_url,
+            owner_mid=114514,
+            owner_name="示例UP",
+            owner_url="https://space.bilibili.com/114514",
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(self.store.current_item.owner_name, "示例UP")
+        self.assertEqual(self.store.history[0].owner_name, "示例UP")
 
     def test_history_restores_from_state_file(self):
         self.store.add_item(self.make_item("a", song_key="song-a"))
         restored_store = PlaylistStore(
             state_file=self.state_file,
             backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
         )
         self.assertEqual(len(restored_store.history), 1)
         self.assertEqual(restored_store.history[0].display_title, "title-a - P1")
@@ -126,6 +210,7 @@ class PlaylistStoreTest(unittest.TestCase):
         restored_store = PlaylistStore(
             state_file=self.state_file,
             backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
         )
         self.assertEqual(restored_store.playlist, [])
         self.assertTrue(restored_store.backup_summary()["available"])
@@ -183,6 +268,10 @@ class BilibiliParserTest(unittest.TestCase):
                 "bvid": "BV1xx411c7mD",
                 "title": "示例视频",
                 "pic": "https://example.com/cover.jpg",
+                "owner": {
+                    "mid": 114514,
+                    "name": "示例UP",
+                },
                 "pages": [
                     {"cid": 456, "page": 1, "part": "第一段"},
                     {"cid": 789, "page": 2, "part": "第二段"},
@@ -196,6 +285,9 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_cids, [456, 789])
         self.assertEqual(item.display_title, "示例视频 - 第二段")
+        self.assertEqual(item.owner_mid, 114514)
+        self.assertEqual(item.owner_name, "示例UP")
+        self.assertEqual(item.owner_url, "https://space.bilibili.com/114514")
 
 
 if __name__ == "__main__":

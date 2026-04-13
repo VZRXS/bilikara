@@ -1243,6 +1243,7 @@ class CacheManager:
                     shutil.rmtree(child, ignore_errors=True)
                 else:
                     child.unlink(missing_ok=True)
+                self._remove_item_log(child.name)
 
     def _clear_cache_root(self) -> None:
         for child in CACHE_DIR.iterdir():
@@ -1250,6 +1251,7 @@ class CacheManager:
                 shutil.rmtree(child, ignore_errors=True)
             else:
                 child.unlink(missing_ok=True)
+        self._clear_log_root()
 
     def _path_size(self, path: Path) -> int:
         if not path.exists():
@@ -1319,6 +1321,19 @@ class CacheManager:
 
     def _remove_cache_dir(self, item_id: str) -> None:
         shutil.rmtree(CACHE_DIR / item_id, ignore_errors=True)
+        self._remove_item_log(item_id)
+
+    def _remove_item_log(self, item_id: str) -> None:
+        self._item_log_path(item_id).unlink(missing_ok=True)
+
+    def _clear_log_root(self) -> None:
+        if not self.log_dir.exists():
+            return
+        for child in self.log_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
 
     def _should_cache(self, item_id: str) -> bool:
         with self.lock:

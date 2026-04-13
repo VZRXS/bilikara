@@ -37,6 +37,7 @@ STATIC_DIR = ROOT_DIR / "static"
 DATA_DIR = APP_HOME / "data"
 CACHE_DIR = DATA_DIR / "cache"
 LOG_DIR = DATA_DIR / "logs"
+PLAYED_SESSION_DIR = DATA_DIR / "played_sessions"
 STATE_FILE = DATA_DIR / "state.json"
 BACKUP_FILE = DATA_DIR / "playlist_backup.json"
 TOOLS_DIR = APP_HOME / "tools"
@@ -52,6 +53,7 @@ BB_DOWN_VERSION_FILE = BB_DOWN_DIR / "VERSION"
 HOST = os.getenv("BILIKARA_HOST", "0.0.0.0")
 PORT = int(os.getenv("BILIKARA_PORT", "8080"))
 MAX_CACHE_ITEMS = max(0, int(os.getenv("BILIKARA_MAX_CACHE_ITEMS", "3")))
+# MAX_CACHE_ITEMS = min(max(0, int(os.getenv("BILIKARA_MAX_CACHE_ITEMS", "3"))), 5)  # force max=5
 COOKIE = os.getenv("BILIKARA_BILIBILI_COOKIE", "").strip()
 BB_DOWN_PATH_OVERRIDE = os.getenv("BB_DOWN_PATH", "").strip()
 FFMPEG_PATH_OVERRIDE = os.getenv("FFMPEG_PATH", "").strip()
@@ -72,4 +74,5 @@ def ensure_directories() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    PLAYED_SESSION_DIR.mkdir(parents=True, exist_ok=True)
     BB_DOWN_DIR.mkdir(parents=True, exist_ok=True)

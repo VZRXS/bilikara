@@ -3,21 +3,35 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import HistoryEntry, PlaylistItem
+from .models import HistoryEntry, PlaylistItem, SessionPlayedEntry
 
 
 class PlaylistStore:
-    def __init__(self, state_file: Path, backup_file: Path) -> None:
+    def __init__(
+        self,
+        state_file: Path,
+        backup_file: Path,
+        session_archive_dir: Path | None = None,
+    ) -> None:
         self.state_file = state_file
         self.backup_file = backup_file
+        self.session_archive_dir = session_archive_dir or state_file.parent / "played_sessions"
         self.lock = threading.RLock()
         self.playback_mode = "local"
         self.current_item: PlaylistItem | None = None
         self.playlist: list[PlaylistItem] = []
         self.history: list[HistoryEntry] = []
+        self.session_history: list[HistoryEntry] = []
+        self.session_started_at = time.time()
+        self.session_played_file = (
+            self.session_archive_dir
+            / f"played-{self._session_file_label(self.session_started_at)}.json"
+        )
+        self.session_played: list[SessionPlayedEntry] = []
         self.updated_at = time.time()
         self._restore_history_from_state()
         self._save_session()
@@ -29,6 +43,7 @@ class PlaylistStore:
                 "playlist": [item.to_dict() for item in self.playlist],
                 "current_item": self.current_item.to_dict() if self.current_item else None,
                 "history": [entry.to_dict() for entry in self.history],
+                "session_history": [entry.to_dict() for entry in self.session_history],
                 "updated_at": self.updated_at,
                 "backup": self._backup_summary_unlocked(),
             }
@@ -49,9 +64,11 @@ class PlaylistStore:
 
     def add_item(self, item: PlaylistItem, position: str = "tail") -> None:
         with self.lock:
+            self._record_session_request_unlocked(item)
             self._record_history_unlocked(item)
             if self.current_item is None:
                 self.current_item = item
+                self._record_session_played_unlocked(item)
                 self._touch(persist_backup=True)
                 return
             if position == "next":
@@ -83,6 +100,8 @@ class PlaylistStore:
             if not self.current_item and not self.playlist:
                 return False
             self.current_item = self.playlist.pop(0) if self.playlist else None
+            if self.current_item:
+                self._record_session_played_unlocked(self.current_item)
             self._touch(persist_backup=True)
             return True
 
@@ -136,6 +155,7 @@ class PlaylistStore:
             if index is None:
                 return False
             self.current_item = self.playlist.pop(index)
+            self._record_session_played_unlocked(self.current_item)
             self._touch(persist_backup=True)
             return True
 
@@ -223,6 +243,91 @@ class PlaylistStore:
         with self.lock:
             return self._backup_summary_unlocked()
 
+    def session_request_for_item(self, item: PlaylistItem) -> HistoryEntry | None:
+        with self.lock:
+            key = self._history_key(item)
+            for entry in self.session_history:
+                if entry.key == key:
+                    return HistoryEntry.from_dict(entry.serialize())
+            return None
+
+    def active_duplicate_for_item(self, item: PlaylistItem) -> PlaylistItem | None:
+        with self.lock:
+            key = self._history_key(item)
+            if self.current_item and self._history_key(self.current_item) == key:
+                return PlaylistItem.from_dict(self.current_item.serialize())
+            for existing in self.playlist:
+                if self._history_key(existing) == key:
+                    return PlaylistItem.from_dict(existing.serialize())
+            return None
+
+    def missing_owner_urls(self) -> list[str]:
+        with self.lock:
+            urls: list[str] = []
+            seen: set[str] = set()
+
+            def collect(url: str, owner_name: str) -> None:
+                candidate = str(url or "").strip()
+                if not candidate or str(owner_name or "").strip() or candidate in seen:
+                    return
+                seen.add(candidate)
+                urls.append(candidate)
+
+            if self.current_item:
+                collect(self.current_item.resolved_url or self.current_item.original_url, self.current_item.owner_name)
+            for item in self.playlist:
+                collect(item.resolved_url or item.original_url, item.owner_name)
+            for entry in self.history:
+                collect(entry.resolved_url or entry.original_url, entry.owner_name)
+            return urls
+
+    def update_owner_info_for_url(
+        self,
+        source_url: str,
+        *,
+        owner_mid: int,
+        owner_name: str,
+        owner_url: str,
+    ) -> bool:
+        with self.lock:
+            changed = False
+            source = str(source_url or "").strip()
+            if not source:
+                return False
+
+            def matches(entry_url: str, fallback_url: str) -> bool:
+                return source in {str(entry_url or "").strip(), str(fallback_url or "").strip()}
+
+            def update_target(target: Any) -> None:
+                nonlocal changed
+                if not matches(getattr(target, "resolved_url", ""), getattr(target, "original_url", "")):
+                    return
+                if (
+                    int(getattr(target, "owner_mid", 0) or 0) == owner_mid
+                    and str(getattr(target, "owner_name", "") or "") == owner_name
+                    and str(getattr(target, "owner_url", "") or "") == owner_url
+                ):
+                    return
+                target.owner_mid = owner_mid
+                target.owner_name = owner_name
+                target.owner_url = owner_url
+                changed = True
+
+            if self.current_item:
+                update_target(self.current_item)
+            for item in self.playlist:
+                update_target(item)
+            for entry in self.history:
+                update_target(entry)
+            for entry in self.session_history:
+                update_target(entry)
+            for entry in self.session_played:
+                update_target(entry)
+
+            if changed:
+                self._touch(persist_backup=True)
+            return changed
+
     def _find_index(self, item_id: str) -> int | None:
         for index, item in enumerate(self.playlist):
             if item.id == item_id:
@@ -249,6 +354,20 @@ class PlaylistStore:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
+    def _save_session_played(self) -> None:
+        if not self.session_played:
+            self.session_played_file.unlink(missing_ok=True)
+            return
+        self.session_archive_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "session_started_at": self.session_started_at,
+            "updated_at": self.updated_at,
+            "items": [entry.serialize() for entry in self.session_played],
+        }
+        self.session_played_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     def _save_backup(self) -> None:
         if not self.current_item and not self.playlist:
             self.backup_file.unlink(missing_ok=True)
@@ -269,6 +388,7 @@ class PlaylistStore:
     def _touch(self, *, persist_backup: bool) -> None:
         self.updated_at = time.time()
         self._save_session()
+        self._save_session_played()
         if persist_backup:
             self._save_backup()
 
@@ -346,6 +466,9 @@ class PlaylistStore:
             display_title=item.display_title,
             original_url=item.original_url,
             resolved_url=item.resolved_url,
+            owner_mid=item.owner_mid,
+            owner_name=item.owner_name,
+            owner_url=item.owner_url,
             requested_at=now,
             request_count=1,
         )
@@ -356,6 +479,53 @@ class PlaylistStore:
             self.history.pop(index)
             break
         self.history.insert(0, entry)
+
+    def _record_session_request_unlocked(self, item: PlaylistItem) -> None:
+        now = time.time()
+        key = self._history_key(item)
+        entry = HistoryEntry(
+            key=key,
+            display_title=item.display_title,
+            original_url=item.original_url,
+            resolved_url=item.resolved_url,
+            owner_mid=item.owner_mid,
+            owner_name=item.owner_name,
+            owner_url=item.owner_url,
+            requested_at=now,
+            request_count=1,
+        )
+        for index, existing in enumerate(self.session_history):
+            if existing.key != key:
+                continue
+            entry.request_count = existing.request_count + 1
+            self.session_history.pop(index)
+            break
+        self.session_history.insert(0, entry)
+
+    def _record_session_played_unlocked(self, item: PlaylistItem) -> None:
+        self.session_played.append(
+            SessionPlayedEntry(
+                key=self._history_key(item),
+                item_id=item.id,
+                display_title=item.display_title,
+                title=item.title,
+                part_title=item.part_title,
+                original_url=item.original_url,
+                resolved_url=item.resolved_url,
+                bvid=item.bvid,
+                aid=item.aid,
+                cid=item.cid,
+                page=item.page,
+                played_at=time.time(),
+                owner_mid=item.owner_mid,
+                owner_name=item.owner_name,
+                owner_url=item.owner_url,
+            )
+        )
+
+    @staticmethod
+    def _session_file_label(timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp).astimezone().strftime("%Y-%m-%d_%H-%M-%S-%f")
 
     def _backup_summary_unlocked(self) -> dict[str, Any]:
         payload = self._read_backup_payload_unlocked()

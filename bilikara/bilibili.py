@@ -167,6 +167,14 @@ def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> Vid
         if page.page == preferred_page:
             return page
     return pages[0]
+def fetch_owner_info(raw_input: str) -> tuple[int, str, str]:
+    reference = resolve_video_reference(raw_input)
+    data = _fetch_view_data(reference)
+    owner = data.get("owner") or {}
+    owner_mid = int(owner.get("mid") or 0)
+    owner_name = str(owner.get("name") or "").strip()
+    owner_url = f"https://space.bilibili.com/{owner_mid}" if owner_mid else ""
+    return owner_mid, owner_name, owner_url
 
 
 def fetch_video_item(raw_input: str) -> PlaylistItem:
@@ -187,7 +195,7 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         message = payload.get("message") or "获取视频信息失败"
         raise BilibiliError(message)
 
-    data = payload["data"]
+    data = _fetch_view_data(reference)
     pages = parse_video_pages(data)
     if not pages:
         raise BilibiliError("视频没有可播放的分 P 信息")
@@ -202,6 +210,10 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
     title = str(data.get("title") or "").strip()
     part_title = video_page_info.part
     display_title = f"{title} - {part_title}"
+    owner = data.get("owner") or {}
+    owner_mid = int(owner.get("mid") or 0)
+    owner_name = str(owner.get("name") or "").strip()
+    owner_url = f"https://space.bilibili.com/{owner_mid}" if owner_mid else ""
     embed_query = urllib.parse.urlencode(
         {
             "aid": aid,
@@ -249,4 +261,26 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         selected_durations=[page.duration for page in selected_pages],
         selected_parts=[page.part for page in selected_pages],
         video_page=video_page,
+        owner_mid=owner_mid,
+        owner_name=owner_name,
+        owner_url=owner_url,
     )
+
+
+def _fetch_view_data(reference: VideoReference) -> dict:
+    if reference.bvid:
+        api_url = (
+            "https://api.bilibili.com/x/web-interface/view?"
+            f"bvid={urllib.parse.quote(reference.bvid)}"
+        )
+    else:
+        api_url = (
+            "https://api.bilibili.com/x/web-interface/view?"
+            f"aid={reference.aid}"
+        )
+
+    payload = request_json(api_url)
+    if payload.get("code") != 0:
+        message = payload.get("message") or "获取视频信息失败"
+        raise BilibiliError(message)
+    return payload["data"]
