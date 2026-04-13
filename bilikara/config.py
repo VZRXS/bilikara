@@ -7,6 +7,20 @@ from pathlib import Path
 APP_NAME = "bilikara"
 
 
+def _default_host() -> str:
+    override = os.getenv("BILIKARA_HOST", "").strip()
+    if override:
+        return override
+
+    # Windows packaged apps are more likely to hit firewall/loopback friction
+    # when binding to 0.0.0.0 on first launch. Prefer localhost by default there,
+    # and allow opting back into LAN access via BILIKARA_HOST=0.0.0.0.
+    if getattr(sys, "frozen", False) and os.name == "nt":
+        return "127.0.0.1"
+
+    return "0.0.0.0"
+
+
 def _resource_root() -> Path:
     if getattr(sys, "frozen", False):
         meipass = getattr(sys, "_MEIPASS", "")
@@ -50,7 +64,7 @@ FFPROBE_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffprobe.exe" if os.name == "nt" else
 FFMPEG_BUNDLED_PATH = VENDOR_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 BB_DOWN_VERSION_FILE = BB_DOWN_DIR / "VERSION"
 
-HOST = os.getenv("BILIKARA_HOST", "0.0.0.0")
+HOST = _default_host()
 PORT = int(os.getenv("BILIKARA_PORT", "8080"))
 MAX_CACHE_ITEMS = max(0, int(os.getenv("BILIKARA_MAX_CACHE_ITEMS", "3")))
 # MAX_CACHE_ITEMS = min(max(0, int(os.getenv("BILIKARA_MAX_CACHE_ITEMS", "3"))), 5)  # force max=5
