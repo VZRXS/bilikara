@@ -11,6 +11,7 @@ const state = {
 const elements = {
   currentTitle: document.getElementById("current-title"),
   currentMeta: document.getElementById("current-meta"),
+  audioVariantBar: document.getElementById("audio-variant-bar"),
   requestForm: document.getElementById("request-form"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
@@ -76,6 +77,7 @@ function render() {
   }
 
   renderCurrentItem(data.current_item, data.playback_mode);
+  renderAudioVariantBar(data.current_item, data.playback_mode);
   renderListHeader(data.playlist || [], data.history || []);
   renderQueue(Array.isArray(data.playlist) ? data.playlist : []);
   renderHistory(Array.isArray(data.history) ? data.history : []);
@@ -93,6 +95,51 @@ function renderCurrentItem(current, playbackMode) {
 
   elements.currentTitle.textContent = "当前还没有正在播放的歌曲";
   elements.currentMeta.textContent = "点歌后会进入主队列，轮到时由服务端页面播放。";
+}
+
+function audioVariantsForItem(item) {
+  if (!item || !Array.isArray(item.audio_variants)) {
+    return [];
+  }
+  return item.audio_variants.filter((variant) => variant && variant.media_url);
+}
+
+function selectedAudioVariantForItem(item) {
+  const variants = audioVariantsForItem(item);
+  if (!variants.length) {
+    return null;
+  }
+  const selectedId = String(item.selected_audio_variant_id || "").trim();
+  return variants.find((variant) => variant.id === selectedId) || variants[0];
+}
+
+function renderAudioVariantBar(currentItem, playbackMode) {
+  if (playbackMode !== "local" || !currentItem) {
+    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.classList.add("hidden");
+    return;
+  }
+
+  const variants = audioVariantsForItem(currentItem);
+  if (variants.length <= 1) {
+    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.classList.add("hidden");
+    return;
+  }
+
+  const selectedVariant = selectedAudioVariantForItem(currentItem);
+  elements.audioVariantBar.innerHTML = "";
+  variants.forEach((variant) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "audio-variant-button";
+    button.textContent = variant.label || variant.id;
+    button.dataset.itemId = currentItem.id;
+    button.dataset.variantId = variant.id;
+    button.classList.toggle("active", variant.id === selectedVariant?.id);
+    elements.audioVariantBar.appendChild(button);
+  });
+  elements.audioVariantBar.classList.remove("hidden");
 }
 
 function renderListHeader(playlist, history) {
@@ -251,6 +298,36 @@ elements.refreshButton.addEventListener("click", async () => {
   try {
     await fetchState();
     setFormMessage("列表已刷新。");
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
+});
+
+elements.audioVariantBar.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-variant-id]");
+  const currentItem = state.data?.current_item;
+  if (!button || !currentItem) {
+    return;
+  }
+  if (button.dataset.itemId !== currentItem.id) {
+    return;
+  }
+
+  const nextVariantId = button.dataset.variantId || "";
+  const selectedVariant = selectedAudioVariantForItem(currentItem);
+  if (!nextVariantId || nextVariantId === selectedVariant?.id) {
+    return;
+  }
+
+  try {
+    state.data = await apiPost("/api/player/audio-variant", {
+      item_id: currentItem.id,
+      variant_id: nextVariantId,
+    });
+    render();
+    const activeItem = state.data?.current_item;
+    const activeVariant = activeItem ? selectedAudioVariantForItem(activeItem) : null;
+    setFormMessage(`已切换到 ${activeVariant?.label || nextVariantId}`);
   } catch (error) {
     setFormMessage(error.message, true);
   }

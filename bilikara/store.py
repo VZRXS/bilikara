@@ -144,6 +144,25 @@ class PlaylistStore:
             self.playback_mode = mode
             self._touch(persist_backup=True)
 
+    def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
+        with self.lock:
+            item = self._find_item_unlocked(item_id)
+            if not item:
+                return False
+            normalized_variant_id = str(variant_id or "").strip()
+            if not normalized_variant_id:
+                return False
+            allowed_variant_ids = {
+                str(variant.get("id") or "").strip()
+                for variant in item.audio_variants
+                if isinstance(variant, dict)
+            }
+            if normalized_variant_id not in allowed_variant_ids:
+                return False
+            item.selected_audio_variant_id = normalized_variant_id
+            self._touch(persist_backup=True)
+            return True
+
     def update_item(
         self,
         item_id: str,
@@ -261,6 +280,8 @@ class PlaylistStore:
             cache_message="等待缓存",
             local_relative_path="",
             local_media_url="",
+            audio_variants=[],
+            selected_audio_variant_id="",
         )
         return payload
 
@@ -272,6 +293,8 @@ class PlaylistStore:
             cache_message="等待缓存",
             local_relative_path="",
             local_media_url="",
+            audio_variants=[],
+            selected_audio_variant_id="",
         )
         return sanitized
 

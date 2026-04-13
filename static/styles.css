@@ -556,6 +556,37 @@ h2 {
   display: block;
 }
 
+.audio-variant-bar {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.audio-variant-button {
+  border: 1px solid rgba(208, 90, 63, 0.16);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.audio-variant-button.active {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 10px 22px rgba(208, 90, 63, 0.18);
+}
+
+.audio-variant-button:hover {
+  transform: translateY(-1px);
+}
+
 .empty-state {
   padding: 24px;
   text-align: center;

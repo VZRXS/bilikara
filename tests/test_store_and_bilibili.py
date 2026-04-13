@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from bilikara.bilibili import fetch_video_item, resolve_video_reference
+from bilikara.bilibili import VideoPage, fetch_video_item, resolve_video_reference, select_matching_pages
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 
@@ -155,6 +155,25 @@ class BilibiliParserTest(unittest.TestCase):
         reference = resolve_video_reference("https://www.bilibili.com/video/BV1WvfWBXExJ/")
         self.assertEqual(reference.bvid, "BV1WvfWBXExJ")
 
+    def test_select_matching_pages_filters_duration_outlier(self):
+        pages = [
+            VideoPage(page=1, cid=101, duration=25, part="preview"),
+            VideoPage(page=2, cid=102, duration=301, part="on vocal"),
+            VideoPage(page=3, cid=103, duration=303, part="off vocal"),
+            VideoPage(page=4, cid=104, duration=302, part="duet"),
+        ]
+        selected = select_matching_pages(pages, preferred_page=1)
+        self.assertEqual([page.page for page in selected], [2, 3, 4])
+
+    def test_select_matching_pages_prefers_longer_duration_when_no_cluster(self):
+        pages = [
+            VideoPage(page=1, cid=101, duration=120, part="P1"),
+            VideoPage(page=2, cid=102, duration=220, part="P2"),
+            VideoPage(page=3, cid=103, duration=330, part="P3"),
+        ]
+        selected = select_matching_pages(pages, preferred_page=2)
+        self.assertEqual([page.page for page in selected], [3])
+
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item(self, mock_request_json):
         mock_request_json.return_value = {
@@ -173,6 +192,9 @@ class BilibiliParserTest(unittest.TestCase):
         item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
         self.assertEqual(item.page, 2)
         self.assertEqual(item.cid, 789)
+        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.selected_pages, [1, 2])
+        self.assertEqual(item.selected_cids, [456, 789])
         self.assertEqual(item.display_title, "示例视频 - 第二段")
 
 

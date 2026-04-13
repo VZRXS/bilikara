@@ -101,6 +101,9 @@ class AppContext:
     def set_mode(self, mode: str) -> None:
         self.store.set_mode(mode)
 
+    def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
+        return self.store.set_audio_variant(item_id, variant_id)
+
     def set_cache_limit(self, max_cache_items: int) -> None:
         self.cache_manager.set_max_cache_items(max_cache_items)
 
@@ -273,6 +276,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if mode not in {"online", "local"}:
                     raise ValueError("mode 必须是 online 或 local")
                 CONTEXT.set_mode(mode)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/player/audio-variant":
+                self._require_id(body)
+                variant_id = str(body.get("variant_id") or "").strip()
+                if not variant_id:
+                    raise ValueError("missing variant_id")
+                if not CONTEXT.set_audio_variant(body["item_id"], variant_id):
+                    raise ValueError("invalid audio variant")
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/cache-policy":

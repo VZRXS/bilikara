@@ -129,6 +129,27 @@ h1 {
   line-height: 1.5;
 }
 
+.audio-variant-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.audio-variant-button {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.audio-variant-button.active {
+  background: var(--accent);
+  color: white;
+}
+
 .request-form {
   display: grid;
   gap: 12px;

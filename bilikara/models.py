@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -18,6 +18,13 @@ class PlaylistItem:
     display_title: str
     cover_url: str
     embed_url: str
+    selected_pages: list[int] = field(default_factory=list)
+    selected_cids: list[int] = field(default_factory=list)
+    selected_durations: list[int] = field(default_factory=list)
+    selected_parts: list[str] = field(default_factory=list)
+    audio_variants: list[dict[str, str]] = field(default_factory=list)
+    selected_audio_variant_id: str = ""
+    video_page: int = 1
     cache_status: str = "pending"
     cache_progress: float = 0.0
     cache_message: str = "等待缓存"

@@ -6,6 +6,7 @@ const state = {
   disconnectSent: false,
   data: null,
   playerSignature: "",
+  playerContext: null,
   listView: "queue",
   cacheSettingsOpen: false,
   cacheLimitSaving: false,
@@ -13,6 +14,7 @@ const state = {
   backupBannerDismissed: false,
   backupBannerTimer: null,
   localAdvanceInFlight: false,
+  pendingPlaybackRestore: null,
   dragItemId: "",
   dragTargetId: "",
   dragTargetAfter: false,
@@ -32,6 +34,7 @@ const elements = {
   cacheLimitScale: document.getElementById("cache-limit-scale"),
   currentTitle: document.getElementById("current-title"),
   playerFrame: document.getElementById("player-frame"),
+  audioVariantBar: document.getElementById("audio-variant-bar"),
   addForm: document.getElementById("add-form"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
@@ -148,6 +151,7 @@ function render() {
     button.classList.toggle("active", button.dataset.mode === data.playback_mode);
   });
 
+  renderAudioVariantBar(currentItem, data.playback_mode);
   renderPlayer(currentItem, data.playback_mode);
   renderQueueCurrent(currentItem);
   if (!state.dragItemId) {
@@ -327,18 +331,97 @@ function currentStatusForItem(item) {
   return { state: "pending", label: "待缓存" };
 }
 
+function audioVariantsForItem(item) {
+  if (!item || !Array.isArray(item.audio_variants)) {
+    return [];
+  }
+  return item.audio_variants.filter((variant) => variant && variant.media_url);
+}
+
+function selectedAudioVariantForItem(item) {
+  const variants = audioVariantsForItem(item);
+  if (!variants.length) {
+    return null;
+  }
+  const selectedId = String(item.selected_audio_variant_id || "").trim();
+  return variants.find((variant) => variant.id === selectedId) || variants[0];
+}
+
+function selectedMediaUrlForItem(item) {
+  const selectedVariant = selectedAudioVariantForItem(item);
+  return selectedVariant?.media_url || item.local_media_url || "";
+}
+
+function renderAudioVariantBar(currentItem, playbackMode) {
+  if (playbackMode !== "local" || !currentItem) {
+    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.classList.add("hidden");
+    return;
+  }
+
+  const variants = audioVariantsForItem(currentItem);
+  if (variants.length <= 1) {
+    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.classList.add("hidden");
+    return;
+  }
+
+  const selectedVariant = selectedAudioVariantForItem(currentItem);
+  elements.audioVariantBar.innerHTML = "";
+  variants.forEach((variant) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "audio-variant-button";
+    button.textContent = variant.label || variant.id;
+    button.dataset.itemId = currentItem.id;
+    button.dataset.variantId = variant.id;
+    button.classList.toggle("active", variant.id === selectedVariant?.id);
+    elements.audioVariantBar.appendChild(button);
+  });
+  elements.audioVariantBar.classList.remove("hidden");
+}
+
 function renderPlayer(currentItem, playbackMode) {
+  const selectedMediaUrl = currentItem ? selectedMediaUrlForItem(currentItem) : "";
   const signature = [
     currentItem ? currentItem.id : "none",
     playbackMode,
-    currentItem ? currentItem.local_media_url : "",
+    selectedMediaUrl,
     currentItem ? currentItem.cache_status : "",
   ].join("|");
 
   if (signature === state.playerSignature) {
     return;
   }
+
+  const previousPlayerContext = state.playerContext;
+  if (
+    !state.pendingPlaybackRestore
+    && playbackMode === "local"
+    && currentItem
+    && selectedMediaUrl
+    && previousPlayerContext?.playbackMode === "local"
+    && previousPlayerContext.itemId === currentItem.id
+    && previousPlayerContext.mediaUrl
+    && previousPlayerContext.mediaUrl !== selectedMediaUrl
+  ) {
+    const currentVideo = elements.playerFrame.querySelector("video");
+    if (currentVideo) {
+      state.pendingPlaybackRestore = {
+        itemId: currentItem.id,
+        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
+        currentTime: Number(currentVideo.currentTime || 0),
+        wasPlaying: !currentVideo.paused,
+      };
+    }
+  }
+
   state.playerSignature = signature;
+  state.playerContext = {
+    itemId: currentItem ? currentItem.id : "",
+    mediaUrl: selectedMediaUrl,
+    playbackMode,
+  };
 
   if (!currentItem) {
     elements.playerFrame.innerHTML =
@@ -360,17 +443,36 @@ function renderPlayer(currentItem, playbackMode) {
     return;
   }
 
-  if (currentItem.local_media_url) {
+  if (selectedMediaUrl) {
     elements.playerFrame.innerHTML = `
       <video
         controls
         autoplay
         preload="metadata"
-        src="${escapeHtml(currentItem.local_media_url)}"
+        src="${escapeHtml(selectedMediaUrl)}"
       ></video>
     `;
     const video = elements.playerFrame.querySelector("video");
     if (video) {
+      const pendingRestore = state.pendingPlaybackRestore;
+      if (
+        pendingRestore
+        && pendingRestore.itemId === currentItem.id
+        && pendingRestore.variantId === selectedAudioVariantForItem(currentItem)?.id
+      ) {
+        video.addEventListener("loadedmetadata", () => {
+          if (Number.isFinite(pendingRestore.currentTime)) {
+            video.currentTime = Math.min(
+              pendingRestore.currentTime,
+              Number.isFinite(video.duration) ? video.duration : pendingRestore.currentTime,
+            );
+          }
+          if (pendingRestore.wasPlaying) {
+            video.play().catch(() => {});
+          }
+          state.pendingPlaybackRestore = null;
+        }, { once: true });
+      }
       video.addEventListener("ended", async () => {
         await handleLocalPlaybackEnded();
       });
@@ -986,6 +1088,43 @@ elements.modeSwitch.addEventListener("click", async (event) => {
     state.data = await apiPost("/api/mode", { mode: button.dataset.mode });
     render();
   } catch (error) {
+    setFormMessage(error.message, true);
+  }
+});
+
+elements.audioVariantBar.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-variant-id]");
+  if (!button || !state.data?.current_item) {
+    return;
+  }
+
+  const currentItem = state.data.current_item;
+  if (button.dataset.itemId !== currentItem.id) {
+    return;
+  }
+
+  const nextVariantId = button.dataset.variantId || "";
+  const selectedVariant = selectedAudioVariantForItem(currentItem);
+  if (!nextVariantId || nextVariantId === selectedVariant?.id) {
+    return;
+  }
+
+  const video = elements.playerFrame.querySelector("video");
+  state.pendingPlaybackRestore = {
+    itemId: currentItem.id,
+    variantId: nextVariantId,
+    currentTime: video ? Number(video.currentTime || 0) : 0,
+    wasPlaying: video ? !video.paused : true,
+  };
+  try {
+    state.data = await apiPost("/api/player/audio-variant", {
+      item_id: currentItem.id,
+      variant_id: nextVariantId,
+    });
+    state.playerSignature = "";
+    render();
+  } catch (error) {
+    state.pendingPlaybackRestore = null;
     setFormMessage(error.message, true);
   }
 });

@@ -14,6 +14,7 @@ VIDEO_PATH_RE = re.compile(r"/video/(?P<vid>(BV[0-9A-Za-z]+|av\d+))", re.IGNOREC
 BV_RE = re.compile(r"^(BV[0-9A-Za-z]+)$", re.IGNORECASE)
 AV_RE = re.compile(r"^(av\d+)$", re.IGNORECASE)
 SHORT_HOSTS = {"b23.tv", "bili2233.cn"}
+DURATION_TOLERANCE_SECONDS = 3
 
 
 @dataclass
@@ -23,6 +24,14 @@ class VideoReference:
     bvid: str = ""
     aid: int = 0
     page: int = 1
+
+
+@dataclass(frozen=True)
+class VideoPage:
+    page: int
+    cid: int
+    duration: int
+    part: str
 
 
 class BilibiliError(RuntimeError):
@@ -77,6 +86,89 @@ def resolve_video_reference(raw_input: str) -> VideoReference:
     )
 
 
+def parse_video_pages(data: dict) -> list[VideoPage]:
+    raw_pages = data.get("pages") or []
+    pages: list[VideoPage] = []
+    for index, payload in enumerate(raw_pages, start=1):
+        if not isinstance(payload, dict):
+            continue
+        page_number = int(payload.get("page") or index)
+        cid = int(payload.get("cid") or 0)
+        if cid <= 0:
+            continue
+        duration = int(payload.get("duration") or 0)
+        part = str(payload.get("part") or f"P{page_number}").strip() or f"P{page_number}"
+        pages.append(VideoPage(page=page_number, cid=cid, duration=duration, part=part))
+    return pages
+
+
+def select_matching_pages(
+    pages: list[VideoPage],
+    *,
+    preferred_page: int,
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> list[VideoPage]:
+    if len(pages) <= 1:
+        return list(pages)
+
+    sorted_pages = sorted(pages, key=lambda item: (item.duration, item.page))
+    best_cluster: list[VideoPage] = []
+    left = 0
+
+    for right, current in enumerate(sorted_pages):
+        while current.duration - sorted_pages[left].duration > tolerance_seconds:
+            left += 1
+        candidate = sorted_pages[left : right + 1]
+        if _is_better_cluster(candidate, best_cluster, preferred_page):
+            best_cluster = list(candidate)
+
+    if len(best_cluster) <= 1:
+        return best_cluster or [_preferred_or_first_page(pages, preferred_page)]
+    return sorted(best_cluster, key=lambda item: item.page)
+
+
+def _is_better_cluster(candidate: list[VideoPage], current: list[VideoPage], preferred_page: int) -> bool:
+    if len(candidate) != len(current):
+        return len(candidate) > len(current)
+
+    candidate_duration = _cluster_representative_duration(candidate)
+    current_duration = _cluster_representative_duration(current)
+    if candidate_duration != current_duration:
+        return candidate_duration > current_duration
+
+    candidate_has_preferred = any(page.page == preferred_page for page in candidate)
+    current_has_preferred = any(page.page == preferred_page for page in current)
+    if candidate_has_preferred != current_has_preferred:
+        return candidate_has_preferred
+
+    candidate_spread = _cluster_spread(candidate)
+    current_spread = _cluster_spread(current)
+    if candidate_spread != current_spread:
+        return candidate_spread < current_spread
+
+    return [page.page for page in candidate] < [page.page for page in current]
+
+
+def _cluster_spread(cluster: list[VideoPage]) -> int:
+    if not cluster:
+        return 10**9
+    durations = [page.duration for page in cluster]
+    return max(durations) - min(durations)
+
+
+def _cluster_representative_duration(cluster: list[VideoPage]) -> float:
+    if not cluster:
+        return 0.0
+    return sum(page.duration for page in cluster) / len(cluster)
+
+
+def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> VideoPage:
+    for page in pages:
+        if page.page == preferred_page:
+            return page
+    return pages[0]
+
+
 def fetch_video_item(raw_input: str) -> PlaylistItem:
     reference = resolve_video_reference(raw_input)
     if reference.bvid:
@@ -96,24 +188,26 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         raise BilibiliError(message)
 
     data = payload["data"]
-    pages = data.get("pages") or []
+    pages = parse_video_pages(data)
     if not pages:
         raise BilibiliError("视频没有可播放的分 P 信息")
 
-    page_number = min(reference.page, len(pages))
-    page_info = pages[page_number - 1]
+    preferred_page = min(reference.page, len(pages))
+    selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+    selected_page_numbers = [page.page for page in selected_pages]
+    video_page = preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0]
+    video_page_info = next(page for page in selected_pages if page.page == video_page)
     aid = int(data["aid"])
     bvid = str(data["bvid"])
-    cid = int(page_info["cid"])
     title = str(data.get("title") or "").strip()
-    part_title = str(page_info.get("part") or f"P{page_number}").strip()
+    part_title = video_page_info.part
     display_title = f"{title} - {part_title}"
     embed_query = urllib.parse.urlencode(
         {
             "aid": aid,
             "bvid": bvid,
-            "cid": cid,
-            "page": page_number,
+            "cid": video_page_info.cid,
+            "page": video_page,
             "high_quality": 1,
             "danmaku": 0,
             "autoplay": 1,
@@ -122,17 +216,37 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
     )
     embed_url = f"https://player.bilibili.com/player.html?{embed_query}"
 
+    resolved_url_with_page = urllib.parse.urlunparse(
+        urllib.parse.urlparse(reference.resolved_url)._replace(
+            query=urllib.parse.urlencode(
+                [
+                    (key, value)
+                    for key, value in urllib.parse.parse_qsl(
+                        urllib.parse.urlparse(reference.resolved_url).query,
+                        keep_blank_values=True,
+                    )
+                    if key != "p"
+                ] + [("p", str(video_page))]
+            )
+        )
+    )
+
     return PlaylistItem(
         id=uuid.uuid4().hex[:12],
         original_url=reference.original_url,
-        resolved_url=reference.resolved_url,
+        resolved_url=resolved_url_with_page,
         bvid=bvid,
         aid=aid,
-        cid=cid,
-        page=page_number,
+        cid=video_page_info.cid,
+        page=video_page,
         title=title,
         part_title=part_title,
         display_title=display_title,
         cover_url=str(data.get("pic") or ""),
         embed_url=embed_url,
+        selected_pages=selected_page_numbers,
+        selected_cids=[page.cid for page in selected_pages],
+        selected_durations=[page.duration for page in selected_pages],
+        selected_parts=[page.part for page in selected_pages],
+        video_page=video_page,
     )

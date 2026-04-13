@@ -11,6 +11,7 @@ import stat
 import subprocess
 import tarfile
 import threading
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -36,12 +37,21 @@ from .config import (
 from .store import PlaylistStore
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
+AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp3", ".flac", ".ogg", ".opus", ".wav"}
 PROGRESS_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
 CREATE_NO_WINDOW = 0x08000000
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
+
+
+class CacheCancelledError(RuntimeError):
+    pass
+
+
+class DownloadCommandError(RuntimeError):
+    pass
 
 
 class CacheManager:
@@ -163,6 +173,8 @@ class CacheManager:
                 cache_message=self._waiting_message(),
                 local_relative_path="",
                 local_media_url="",
+                audio_variants=[],
+                selected_audio_variant_id="",
                 persist_backup=False,
             )
         self.sync_with_playlist()
@@ -186,6 +198,8 @@ class CacheManager:
                 cache_message="缓存已在退出时清空",
                 local_relative_path="",
                 local_media_url="",
+                audio_variants=[],
+                selected_audio_variant_id="",
                 persist_backup=False,
             )
 
@@ -232,6 +246,8 @@ class CacheManager:
         if not item:
             self._remove_cache_dir(item_id)
             return
+        self._cache_item_multi(item_id, item, allow_refresh_retry=allow_refresh_retry)
+        return
 
         self.store.update_item(
             item_id,
@@ -405,6 +421,500 @@ class CacheManager:
         )
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
 
+    def _cache_item_multi(self, item_id: str, item, *, allow_refresh_retry: bool) -> None:
+        self.store.update_item(
+            item_id,
+            cache_status="queued",
+            cache_progress=0.0,
+            cache_message="等待缓存队列",
+            persist_backup=False,
+        )
+
+        item_dir = CACHE_DIR / item_id
+        item_dir.mkdir(parents=True, exist_ok=True)
+        log_path = self._item_log_path(item_id)
+        self._append_log_line(log_path, "")
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
+
+        try:
+            binary_path = self._ensure_bbdown()
+        except Exception as exc:  # noqa: BLE001
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message=f"BBDown 不可用: {exc}",
+                persist_backup=False,
+            )
+            return
+
+        try:
+            ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
+        except Exception as exc:  # noqa: BLE001
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message=f"FFmpeg 不可用: {exc}",
+                persist_backup=False,
+            )
+            return
+
+        if not self._should_cache(item_id):
+            return
+
+        self.store.update_item(
+            item_id,
+            cache_status="downloading",
+            cache_message=self._cache_start_message(item),
+            persist_backup=False,
+        )
+
+        try:
+            cache_result = self._download_selected_streams(item, binary_path, ffmpeg_path, item_dir, log_path)
+        except CacheCancelledError as exc:
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
+            self._drop_item_cache(item_id, str(exc))
+            return
+        except DownloadCommandError as exc:
+            last_message = str(exc)
+            if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
+                )
+                try:
+                    self._ensure_bbdown(force_refresh=True)
+                    shutil.rmtree(item_dir, ignore_errors=True)
+                    item_dir.mkdir(parents=True, exist_ok=True)
+                    self._cache_item_multi(item_id, item, allow_refresh_retry=False)
+                    return
+                except Exception as refresh_exc:  # noqa: BLE001
+                    self._append_log_line(
+                        log_path,
+                        f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
+                    )
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message=f"缓存失败: {last_message}",
+                persist_backup=False,
+            )
+            return
+
+        media_file = cache_result["media_file"]
+        relative_path = str(media_file.relative_to(CACHE_DIR))
+        self.store.update_item(
+            item_id,
+            cache_status="ready",
+            cache_progress=100.0,
+            cache_message=self._ready_message(item),
+            local_relative_path=relative_path,
+            local_media_url=self._build_media_url(relative_path),
+            audio_variants=cache_result["audio_variants"],
+            selected_audio_variant_id=cache_result["selected_audio_variant_id"],
+            persist_backup=False,
+        )
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
+
+    def _download_selected_streams(
+        self,
+        item,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        item_dir: Path,
+        log_path: Path,
+    ) -> dict[str, object]:
+        selected_pages = self._selected_pages_for_item(item)
+        video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
+        download_stage_count = len(selected_pages) + 1
+
+        video_file = self._download_page_stream(
+            item,
+            binary_path,
+            ffmpeg_path,
+            item_dir,
+            log_path,
+            page=video_page,
+            stream_kind="video",
+            stage_index=0,
+            stage_count=download_stage_count,
+        )
+
+        audio_files: list[tuple[Path, str]] = []
+        for stage_offset, page in enumerate(selected_pages, start=1):
+            audio_files.append(
+                (
+                    self._download_page_stream(
+                        item,
+                        binary_path,
+                        ffmpeg_path,
+                        item_dir,
+                        log_path,
+                        page=page,
+                        stream_kind="audio",
+                        stage_index=stage_offset,
+                        stage_count=download_stage_count,
+                    ),
+                    self._part_label_for_page(item, page),
+                )
+            )
+
+        return self._mux_downloaded_streams(
+            item,
+            ffmpeg_path,
+            item_dir,
+            log_path,
+            video_file=video_file,
+            audio_files=audio_files,
+        )
+
+    def _download_page_stream(
+        self,
+        item,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        item_dir: Path,
+        log_path: Path,
+        *,
+        page: int,
+        stream_kind: str,
+        stage_index: int,
+        stage_count: int,
+    ) -> Path:
+        page_url = self._page_url(item.resolved_url, page)
+        target_dir = item_dir / f"{stream_kind}-p{page}"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        command = [
+            str(binary_path),
+            page_url,
+            "-p",
+            str(page),
+            "--work-dir",
+            str(target_dir),
+            "--ffmpeg-path",
+            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
+            "--file-pattern",
+            f"{stream_kind}-p{page}",
+            "--skip-mux",
+            "--skip-subtitle",
+            "--skip-cover",
+            "--skip-ai",
+            "--video-only" if stream_kind == "video" else "--audio-only",
+        ]
+        if COOKIE:
+            command.extend(["-c", COOKIE])
+
+        label = "视频轨" if stream_kind == "video" else "音轨"
+        stage_label = f"下载{label} P{page}"
+        self._run_item_command(
+            item.id,
+            command,
+            ffmpeg_path,
+            log_path,
+            stage_label=stage_label,
+            stage_index=stage_index,
+            stage_count=stage_count,
+        )
+
+        allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
+        stream_file = self._find_stream_file(target_dir, allowed_extensions)
+        if not stream_file:
+            raise DownloadCommandError(f"{stage_label} 完成后未找到输出文件")
+        return stream_file
+
+    def _run_item_command(
+        self,
+        item_id: str,
+        command: list[str],
+        ffmpeg_path: Path,
+        log_path: Path,
+        *,
+        stage_label: str,
+        stage_index: int,
+        stage_count: int,
+    ) -> None:
+        progress_start = 94.0 * stage_index / max(stage_count, 1)
+        progress_span = 94.0 / max(stage_count, 1)
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            bufsize=1,
+            cwd=str(BB_DOWN_DIR),
+            env=self._tool_process_env(ffmpeg_path),
+            **self._hidden_process_kwargs(),
+        )
+        last_message = stage_label
+        with self.lock:
+            self.active_process = process
+            self.active_item_id = item_id
+        try:
+            assert process.stdout is not None
+            for raw_line in self._iter_output_messages(process.stdout):
+                line = self._normalize_output_line(raw_line)
+                if not line:
+                    continue
+                last_message = line
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+                progress = self._extract_progress(line)
+                changes = {"cache_message": self._display_stage_message(stage_label, line, progress)}
+                if progress is not None:
+                    changes["cache_progress"] = progress_start + (progress / 100.0) * progress_span
+                self.store.update_item(item_id, persist_backup=False, **changes)
+                if self.stop_event.is_set():
+                    self._terminate_process(process)
+                    raise CacheCancelledError("缓存已停止")
+                if not self._should_cache(item_id):
+                    self._terminate_process(process)
+                    raise CacheCancelledError(self._outside_window_message())
+            return_code = process.wait()
+        finally:
+            with self.lock:
+                if self.active_process is process:
+                    self.active_process = None
+                    self.active_item_id = None
+
+        if return_code != 0:
+            raise DownloadCommandError(last_message)
+
+        self.store.update_item(
+            item_id,
+            cache_progress=progress_start + progress_span,
+            cache_message=f"{stage_label} 完成",
+            persist_backup=False,
+        )
+
+    def _mux_downloaded_streams(
+        self,
+        item,
+        ffmpeg_path: Path,
+        item_dir: Path,
+        log_path: Path,
+        *,
+        video_file: Path,
+        audio_files: list[tuple[Path, str]],
+    ) -> dict[str, object]:
+        item_id = item.id
+        output_dir = item_dir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_file = output_dir / "video.mp4"
+        output_file.unlink(missing_ok=True)
+
+        command = [str(ffmpeg_path), "-y", "-i", str(video_file)]
+        for audio_file, _label in audio_files:
+            command.extend(["-i", str(audio_file)])
+        command.extend(["-map", "0:v:0"])
+        for index in range(len(audio_files)):
+            command.extend(["-map", f"{index + 1}:a:0"])
+        command.extend(["-c", "copy", "-movflags", "+faststart"])
+        for index, (_audio_file, label) in enumerate(audio_files):
+            command.extend([f"-metadata:s:a:{index}", f"title={label}"])
+            command.extend([f"-disposition:a:{index}", "default" if index == 0 else "0"])
+        command.append(str(output_file))
+
+        self.store.update_item(
+            item_id,
+            cache_progress=95.0,
+            cache_message=f"正在混流 {len(audio_files)} 条音轨",
+            persist_backup=False,
+        )
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            bufsize=1,
+            cwd=str(BB_DOWN_DIR),
+            env=self._tool_process_env(ffmpeg_path),
+            **self._hidden_process_kwargs(),
+        )
+        last_message = "ffmpeg mux"
+        with self.lock:
+            self.active_process = process
+            self.active_item_id = item_id
+        try:
+            assert process.stdout is not None
+            for raw_line in self._iter_output_messages(process.stdout):
+                line = self._normalize_output_line(raw_line)
+                if not line:
+                    continue
+                last_message = line
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+                self.store.update_item(
+                    item_id,
+                    cache_message=f"正在混流 {len(audio_files)} 条音轨",
+                    persist_backup=False,
+                )
+                if self.stop_event.is_set():
+                    self._terminate_process(process)
+                    raise CacheCancelledError("缓存已停止")
+                if not self._should_cache(item_id):
+                    self._terminate_process(process)
+                    raise CacheCancelledError(self._outside_window_message())
+            return_code = process.wait()
+        finally:
+            with self.lock:
+                if self.active_process is process:
+                    self.active_process = None
+                    self.active_item_id = None
+
+        if return_code != 0:
+            raise DownloadCommandError(last_message)
+        if not output_file.exists():
+            raise DownloadCommandError("FFmpeg 混流完成，但未生成输出文件")
+
+        self.store.update_item(
+            item_id,
+            cache_progress=99.0,
+            cache_message="混流完成，正在收尾",
+            persist_backup=False,
+        )
+        variant_files = self._build_audio_variant_outputs(
+            item,
+            ffmpeg_path,
+            item_dir,
+            log_path,
+            video_file=video_file,
+            audio_files=audio_files,
+        )
+        audio_variants = [
+            {
+                "id": variant_id,
+                "label": label,
+                "media_url": self._build_media_url(str(path.relative_to(CACHE_DIR))),
+            }
+            for variant_id, label, path in variant_files
+        ]
+        selected_audio_variant_id = (
+            str(audio_variants[0].get("id") or "").strip() if audio_variants else ""
+        )
+        return {
+            "media_file": output_file,
+            "audio_variants": audio_variants,
+            "selected_audio_variant_id": selected_audio_variant_id,
+        }
+
+    def _build_audio_variant_outputs(
+        self,
+        item,
+        ffmpeg_path: Path,
+        item_dir: Path,
+        log_path: Path,
+        *,
+        video_file: Path,
+        audio_files: list[tuple[Path, str]],
+    ) -> list[tuple[str, str, Path]]:
+        if len(audio_files) <= 1:
+            return [("default", audio_files[0][1] if audio_files else "Default", item_dir / "output" / "video.mp4")]
+
+        variant_files: list[tuple[str, str, Path]] = []
+        variants_dir = item_dir / "variants"
+        variants_dir.mkdir(parents=True, exist_ok=True)
+
+        for index, (audio_file, label) in enumerate(audio_files):
+            variant_id = self._variant_id(label, index)
+            variant_path = variants_dir / f"{variant_id}.mp4"
+            variant_path.unlink(missing_ok=True)
+            command = [
+                str(ffmpeg_path),
+                "-y",
+                "-i",
+                str(video_file),
+                "-i",
+                str(audio_file),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                "-metadata:s:a:0",
+                f"title={label}",
+                str(variant_path),
+            ]
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+            process = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                cwd=str(BB_DOWN_DIR),
+                env=self._tool_process_env(ffmpeg_path),
+                **self._hidden_process_kwargs(),
+            )
+            if process.returncode != 0 or not variant_path.exists():
+                raise DownloadCommandError(process.stderr.strip() or process.stdout.strip() or f"生成音轨变体失败: {label}")
+            variant_files.append((variant_id, label, variant_path))
+        return variant_files
+
+    @staticmethod
+    def _variant_id(label: str, index: int) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+        return normalized or f"track_{index + 1}"
+
+    @staticmethod
+    def _page_url(base_url: str, page: int) -> str:
+        parsed = urllib.parse.urlparse(base_url)
+        query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        filtered_query = [(key, value) for key, value in query if key != "p"]
+        filtered_query.append(("p", str(page)))
+        return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(filtered_query)))
+
+    @staticmethod
+    def _selected_pages_for_item(item) -> list[int]:
+        pages = [int(page) for page in (item.selected_pages or [item.page]) if int(page) > 0]
+        unique_pages: list[int] = []
+        for page in pages:
+            if page not in unique_pages:
+                unique_pages.append(page)
+        return unique_pages or [max(int(item.page), 1)]
+
+    @staticmethod
+    def _part_label_for_page(item, page: int) -> str:
+        selected_pages = list(item.selected_pages or [])
+        selected_parts = list(item.selected_parts or [])
+        try:
+            index = selected_pages.index(page)
+        except ValueError:
+            return f"P{page}"
+        if index < len(selected_parts) and str(selected_parts[index] or "").strip():
+            return str(selected_parts[index]).strip()
+        return f"P{page}"
+
+    @staticmethod
+    def _cache_start_message(item) -> str:
+        page_count = len(item.selected_pages or [])
+        if page_count > 1:
+            return f"正在缓存 1 路视频轨 + {page_count} 路音轨"
+        return "正在缓存视频"
+
+    @staticmethod
+    def _ready_message(item) -> str:
+        page_count = len(item.selected_pages or [])
+        if page_count > 1:
+            return f"缓存完成，共 {page_count} 条音轨"
+        return "缓存完成"
+
+    @staticmethod
+    def _display_stage_message(stage_label: str, line: str, progress: float | None) -> str:
+        if progress is not None:
+            return f"{stage_label} {round(progress)}%"
+        if line:
+            return f"{stage_label}: {line}"
+        return stage_label
+
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         with self.binary_prepare_lock:
             override = Path(BB_DOWN_PATH_OVERRIDE) if BB_DOWN_PATH_OVERRIDE else None
@@ -510,6 +1020,17 @@ class CacheManager:
             path
             for path in item_dir.rglob("*")
             if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS
+        ]
+        if not media_files:
+            return None
+        return max(media_files, key=lambda path: path.stat().st_size)
+
+    @staticmethod
+    def _find_stream_file(target_dir: Path, allowed_extensions: set[str]) -> Path | None:
+        media_files = [
+            path
+            for path in target_dir.rglob("*")
+            if path.is_file() and path.suffix.lower() in allowed_extensions
         ]
         if not media_files:
             return None
@@ -755,6 +1276,8 @@ class CacheManager:
             self.store.update_item(
                 item.id,
                 local_media_url=self._build_media_url(item.local_relative_path),
+                audio_variants=item.audio_variants,
+                selected_audio_variant_id=item.selected_audio_variant_id,
                 cache_status="ready",
                 cache_progress=100.0,
                 cache_message="缓存已完成",
@@ -774,6 +1297,8 @@ class CacheManager:
             cache_message="等待缓存",
             local_relative_path="",
             local_media_url="",
+            audio_variants=[],
+            selected_audio_variant_id="",
             persist_backup=False,
         )
         self.enqueue(item.id)
@@ -787,6 +1312,8 @@ class CacheManager:
             cache_message=message,
             local_relative_path="",
             local_media_url="",
+            audio_variants=[],
+            selected_audio_variant_id="",
             persist_backup=False,
         )
 
