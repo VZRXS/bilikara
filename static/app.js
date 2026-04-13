@@ -22,6 +22,7 @@ const state = {
   dragTargetId: "",
   dragTargetAfter: false,
   confirmIntent: null,
+  retryActivityById: {},
 };
 
 const elements = {
@@ -804,20 +805,51 @@ function shouldShowRetryButton(item) {
   if (!item) {
     return false;
   }
+  const itemId = String(item.id || "");
+  if (!itemId) {
+    return false;
+  }
   if (item.local_media_url || item.cache_status === "ready") {
+    delete state.retryActivityById[itemId];
     return false;
   }
   if (item.cache_status === "failed") {
+    delete state.retryActivityById[itemId];
     return true;
   }
   if (item.cache_status !== "downloading") {
+    delete state.retryActivityById[itemId];
     return false;
   }
+  const now = Date.now() / 1000;
   const lastActivity = Number(item.cache_activity_at || 0);
-  if (lastActivity <= 0) {
+  const cacheSizeBytes = Number(item.cache_size_bytes || 0);
+  const cacheProgress = Number(item.cache_progress || 0);
+  const cacheMessage = String(item.cache_message || "");
+  const previous = state.retryActivityById[itemId];
+
+  const hasFreshActivity = !previous
+    || lastActivity > Number(previous.lastActivity || 0)
+    || cacheSizeBytes > Number(previous.cacheSizeBytes || 0)
+    || cacheProgress > Number(previous.cacheProgress || 0)
+    || cacheMessage !== String(previous.cacheMessage || "");
+
+  const observedAt = hasFreshActivity
+    ? now
+    : Number(previous?.observedAt || 0);
+
+  state.retryActivityById[itemId] = {
+    observedAt,
+    lastActivity,
+    cacheSizeBytes,
+    cacheProgress,
+    cacheMessage,
+  };
+
+  if (observedAt <= 0) {
     return false;
   }
-  return (Date.now() / 1000) - lastActivity >= stalledRetrySeconds;
+  return now - observedAt >= stalledRetrySeconds;
 }
 
 function syncRetryButton(button, item) {
