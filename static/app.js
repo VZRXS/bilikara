@@ -793,7 +793,7 @@ async function handleAdd(position) {
   try {
     state.data = await apiPost("/api/playlist/add", { url, position });
     elements.urlInput.value = "";
-    setFormMessage(position === "next" ? "已插队到下一首" : "已加入列表末尾");
+    setFormMessage(position === "next" ? "已顶歌到下一首" : "已加入列表末尾");
     render();
   } catch (error) {
     setFormMessage(error.message, true);
@@ -804,7 +804,7 @@ async function handleAddByUrl(url, position) {
   setFormMessage("正在从历史记录加入列表...");
   try {
     state.data = await apiPost("/api/playlist/add", { url, position });
-    setFormMessage(position === "next" ? "已从历史插队到下一首" : "已从历史加入列表");
+    setFormMessage(position === "next" ? "已从历史顶歌到下一首" : "已从历史加入列表");
     render();
   } catch (error) {
     setFormMessage(error.message, true);

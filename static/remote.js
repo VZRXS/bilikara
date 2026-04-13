@@ -189,11 +189,11 @@ async function submitRequest(position) {
   }
 
   state.submitting = true;
-  setFormMessage(position === "next" ? "正在插队点歌..." : "正在加入队列...");
+  setFormMessage(position === "next" ? "正在顶歌..." : "正在加入队列...");
   try {
     state.data = await apiPost("/api/playlist/add", { url, position });
     elements.urlInput.value = "";
-    setFormMessage(position === "next" ? "已经插队到下一首。" : "已经加入播放队列。");
+    setFormMessage(position === "next" ? "已经顶歌到下一首。" : "已经加入播放队列。");
     render();
   } catch (error) {
     setFormMessage(error.message, true);
@@ -208,10 +208,10 @@ async function handleAddByHistory(url, position) {
   }
 
   state.submitting = true;
-  setFormMessage(position === "next" ? "正在从历史记录插队..." : "正在从历史记录加入队列...");
+  setFormMessage(position === "next" ? "正在从历史记录顶歌..." : "正在从历史记录加入队列...");
   try {
     state.data = await apiPost("/api/playlist/add", { url, position });
-    setFormMessage(position === "next" ? "已从历史记录插队到下一首。" : "已从历史记录加入队列。");
+    setFormMessage(position === "next" ? "已从历史记录顶歌到下一首。" : "已从历史记录加入队列。");
     render();
   } catch (error) {
     setFormMessage(error.message, true);
