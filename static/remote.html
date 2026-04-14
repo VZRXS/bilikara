@@ -55,6 +55,43 @@
         </form>
       </section>
 
+      <section class="panel search-panel">
+        <div class="panel-head">
+          <p class="panel-tag">Local Search</p>
+        </div>
+        <form id="search-form" class="request-form">
+          <input
+            id="search-query"
+            type="text"
+            placeholder="Search cached titles"
+            autocomplete="off"
+          />
+          <div class="action-row action-row-single">
+            <button type="submit" id="search-button" class="primary-button">Search</button>
+          </div>
+        </form>
+        <div id="search-results" class="search-results hidden"></div>
+      </section>
+
+      <section class="panel gatcha-panel">
+        <div class="panel-head">
+          <p class="panel-tag">Gatcha Draw</p>
+        </div>
+        <div id="gatcha-init-view" class="gatcha-content">
+          <div class="gatcha-icon">🎲</div>
+          <p class="gatcha-desc">Pick a random song from local cached gatcha entries.</p>
+          <button type="button" id="gatcha-button" class="primary-button">Try Gatcha</button>
+        </div>
+        <div id="gatcha-result-view" class="gatcha-content hidden">
+          <p class="gatcha-label">Selected Result</p>
+          <h3 id="gatcha-candidate-title">Loading...</h3>
+          <div class="action-row">
+            <button type="button" id="gatcha-confirm-button" class="primary-button">Add</button>
+            <button type="button" id="gatcha-retry-button" class="secondary-button">Retry</button>
+          </div>
+        </div>
+      </section>
+
       <section class="panel queue-panel">
         <div class="panel-head panel-head-stack">
           <div>

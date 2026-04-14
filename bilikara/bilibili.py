@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import re
 import urllib.parse
 import urllib.request
@@ -29,6 +30,10 @@ _WBI_CACHE = {
     "keys": None,
     "last_update": 0
 }
+_GATCHA_CACHE_LOCK = threading.Lock()
+_GATCHA_REFRESH_LOCK = threading.Lock()
+_GATCHA_CACHE_FILE = cfg.DATA_DIR / "gatcha_cache.json"
+GATCHA_RETRY_DELAY_SECONDS = 3
 
 @dataclass
 class VideoReference:
@@ -49,6 +54,162 @@ class VideoPage:
 
 class BilibiliError(RuntimeError):
     pass
+
+
+def _load_gatcha_cache() -> dict:
+    if not _GATCHA_CACHE_FILE.exists():
+        return {"uids": {}, "updated_at": 0}
+    try:
+        with _GATCHA_CACHE_FILE.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {"uids": {}, "updated_at": 0}
+
+    if not isinstance(payload, dict):
+        return {"uids": {}, "updated_at": 0}
+    uids = payload.get("uids")
+    if not isinstance(uids, dict):
+        uids = {}
+    return {
+        "uids": uids,
+        "updated_at": float(payload.get("updated_at") or 0),
+    }
+
+
+def _save_gatcha_cache(cache_payload: dict) -> None:
+    cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = _GATCHA_CACHE_FILE.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(cache_payload, handle, ensure_ascii=False, indent=2)
+    temp_path.replace(_GATCHA_CACHE_FILE)
+
+
+def _matches_gatcha_keywords(title: str) -> bool:
+    normalized_title = str(title or "")
+    if not GATCHA_KEYWORDS:
+        return True
+    return any(keyword and keyword in normalized_title for keyword in GATCHA_KEYWORDS)
+
+
+def _extract_gatcha_entries(mid: str, payload: dict) -> list[dict]:
+    vlist = payload.get("data", {}).get("list", {}).get("vlist", [])
+    entries: list[dict] = []
+    for video in vlist:
+        if not isinstance(video, dict):
+            continue
+        bvid = str(video.get("bvid") or "").strip()
+        title = str(video.get("title") or "").strip()
+        if not bvid or not title or not _matches_gatcha_keywords(title):
+            continue
+        entries.append(
+            {
+                "mid": str(mid),
+                "bvid": bvid,
+                "title": title,
+                "url": f"https://www.bilibili.com/video/{bvid}",
+            }
+        )
+    return entries
+
+
+def _fetch_gatcha_videos_for_uid(mid: str) -> list[dict]:
+    try:
+        img_key, sub_key = get_cached_wbi_keys()
+    except Exception as exc:
+        raise BilibiliError(f"WBI keys failed: {exc}") from exc
+
+    params = {
+        "mid": str(mid),
+        "ps": 50,
+        "tid": 0,
+        "pn": 1,
+        "order": "pubdate",
+        "platform": "web",
+    }
+    signed_params = enc_wbi(params, img_key, sub_key)
+    query_string = urllib.parse.urlencode(signed_params)
+    url = f"https://api.bilibili.com/x/space/wbi/arc/search?{query_string}"
+
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            payload = request_json(url)
+            code = int(payload.get("code") or 0)
+            if code == 412:
+                raise BilibiliError(str(payload.get("message") or "412 Precondition Failed"))
+            if code != 0:
+                raise BilibiliError(str(payload.get("message") or "API request failed"))
+            return _extract_gatcha_entries(str(mid), payload)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if "412" not in str(exc) or attempt == 1:
+                break
+            time.sleep(GATCHA_RETRY_DELAY_SECONDS)
+
+    raise BilibiliError(f"failed to refresh gatcha uid {mid}: {last_error}")
+
+
+def refresh_gatcha_cache() -> dict:
+    cache_payload = {"uids": {}, "updated_at": time.time()}
+    for raw_mid in GATCHA_UIDS:
+        mid = str(raw_mid).strip()
+        if not mid:
+            continue
+        cache_payload["uids"][mid] = _fetch_gatcha_videos_for_uid(mid)
+
+    with _GATCHA_CACHE_LOCK:
+        _save_gatcha_cache(cache_payload)
+    return cache_payload
+
+
+def refresh_gatcha_cache_in_background() -> None:
+    def _worker() -> None:
+        if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+            return
+        try:
+            refresh_gatcha_cache()
+        except Exception:
+            return
+        finally:
+            _GATCHA_REFRESH_LOCK.release()
+
+    threading.Thread(target=_worker, daemon=True, name="gatcha-cache-refresh").start()
+
+
+def _local_gatcha_candidates() -> list[dict]:
+    with _GATCHA_CACHE_LOCK:
+        cache_payload = _load_gatcha_cache()
+
+    candidates: list[dict] = []
+    uid_payload = cache_payload.get("uids") or {}
+    for raw_mid in GATCHA_UIDS:
+        entries = uid_payload.get(str(raw_mid), [])
+        if not isinstance(entries, list):
+            continue
+        candidates.extend(entry for entry in entries if isinstance(entry, dict))
+    return candidates
+
+
+def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
+    normalized_query = str(query or "").strip().lower()
+    if not normalized_query:
+        return []
+
+    results: list[dict] = []
+    for entry in _local_gatcha_candidates():
+        title = str(entry.get("title") or "")
+        if normalized_query not in title.lower():
+            continue
+        results.append(
+            {
+                "bvid": str(entry.get("bvid") or ""),
+                "title": title,
+                "url": str(entry.get("url") or ""),
+            }
+        )
+        if len(results) >= max(1, int(limit)):
+            break
+    return results
 
 
 
@@ -363,36 +524,13 @@ def get_cached_wbi_keys():
     _WBI_CACHE["last_update"] = curr_time
     return keys
 def fetch_gatcha_candidate() -> dict | None:
-    if not GATCHA_UIDS:
-        return None
-    try:
-        img_key, sub_key = get_cached_wbi_keys()
-    except Exception as e:
-        raise BilibiliError(f"WBI 密钥初始化失败: {e}")
-    target_mid = random.choice(GATCHA_UIDS)
-    params = {
-        "mid": target_mid,
-        "ps": 30,
-        "tid": 0,
-        "pn": 1,
-        "order": "pubdate",
-        "platform": "web"
+    candidates = _local_gatcha_candidates()
+    if not candidates:
+        raise BilibiliError("请填写gatcha所需cookie")
+
+    chosen = random.choice(candidates)
+    return {
+        "bvid": str(chosen.get("bvid") or ""),
+        "title": str(chosen.get("title") or ""),
+        "url": str(chosen.get("url") or ""),
     }
-    signed_params = enc_wbi(params, img_key, sub_key)
-    query_string = urllib.parse.urlencode(signed_params)
-    url = f"https://api.bilibili.com/x/space/wbi/arc/search?{query_string}"
-    try:
-        payload = request_json(url)
-        if payload.get("code") != 0:
-            raise BilibiliError(payload.get("message", "API请求失败"))
-        vlist = payload.get("data", {}).get("list", {}).get("vlist", [])
-        filtered = [v for v in vlist if any(kw in v["title"] for kw in GATCHA_KEYWORDS)]
-        if not filtered: return None
-        chosen = random.choice(filtered)
-        return {
-            "bvid": chosen["bvid"],
-            "title": chosen["title"],
-            "url": f"https://www.bilibili.com/video/{chosen['bvid']}"
-        }
-    except Exception as e:
-        raise BilibiliError(f"试试运气失败: {e}")

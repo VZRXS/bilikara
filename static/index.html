@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -260,6 +260,25 @@
           </div>
         </aside>
       </main>
+
+      <section class="list-card sub-card search-sub-card">
+        <div class="search-card">
+          <div class="search-sub-card-head">
+            <div>
+              <p class="section-tag">Local Search</p>
+              <h2>搜索</h2>
+            </div>
+          </div>
+          <form id="search-form" class="search-inputs">
+            <div class="input-group">
+              <label>Title</label>
+              <input type="text" id="search-query" placeholder="Search in cached titles" autocomplete="off">
+            </div>
+            <button type="submit" id="search-button" class="next-button">搜索</button>
+          </form>
+          <div id="search-results" class="search-results hidden"></div>
+        </div>
+      </section>
 
       <section class="list-card sub-card cookie-sub-card">
         <div class="cookie-config-bar">

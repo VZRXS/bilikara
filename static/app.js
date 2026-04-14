@@ -85,6 +85,10 @@ const elements = {
   gatchaInitView: document.getElementById("gatcha-init-view"),
   gatchaResultView: document.getElementById("gatcha-result-view"),
   gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
+  searchForm: document.getElementById("search-form"),
+  searchQuery: document.getElementById("search-query"),
+  searchButton: document.getElementById("search-button"),
+  searchResults: document.getElementById("search-results"),
   cookieSessdata: document.getElementById("cookie-sessdata"),
   cookieJct: document.getElementById("cookie-jct"),
   saveCookieButton: document.getElementById("save-cookie-button"),
@@ -145,6 +149,62 @@ async function fetchState() {
   }
   state.data = payload.data;
   render();
+}
+
+async function searchGatchaCache(query) {
+  const normalizedQuery = String(query || "").trim();
+  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}`, {
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "Search failed");
+  }
+  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+function hideSearchResults() {
+  elements.searchResults.innerHTML = "";
+  elements.searchResults.classList.add("hidden");
+}
+
+function renderSearchResults(items) {
+  elements.searchResults.innerHTML = "";
+  elements.searchResults.classList.remove("hidden");
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = "No cached matches found.";
+    elements.searchResults.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "search-result-item";
+
+    const meta = document.createElement("div");
+    meta.className = "search-result-meta";
+
+    const title = document.createElement("div");
+    title.className = "search-result-title";
+    title.textContent = String(item.title || "");
+
+    const url = document.createElement("div");
+    url.className = "search-result-url";
+    url.textContent = String(item.bvid || "");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "next-button";
+    button.dataset.url = String(item.url || "");
+    button.textContent = "Add";
+
+    meta.append(title, url);
+    row.append(meta, button);
+    elements.searchResults.appendChild(row);
+  });
 }
 
 async function handleGatchaDraw() {
@@ -258,6 +318,8 @@ function renderRequesterSelect(sessionUsers) {
 
   if (previousValue && users.includes(previousValue)) {
     elements.requesterSelect.value = previousValue;
+  } else if (users.length) {
+    elements.requesterSelect.value = users[0];
   } else {
     elements.requesterSelect.value = "";
   }
@@ -1261,6 +1323,12 @@ async function submitAddRequest(url, position, options = {}) {
 async function handleAdd(position, anchorPoint) {
   const url = elements.urlInput.value.trim();
   const requesterName = selectedRequesterName();
+  console.log({
+    selectValue: elements.requesterSelect?.value,
+    selectOptions: [...(elements.requesterSelect?.options || [])].map((o) => o.value),
+    selectedRequesterName: selectedRequesterName(),
+    sessionUsers: state.data?.session_users,
+  });
   if (!url) {
     setFormMessage("请输入 B 站视频链接或 BV 号", true);
     return;
@@ -1511,6 +1579,50 @@ elements.addForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const point = anchorPointForEvent(event.submitter || event, elements.addForm);
   await handleAdd("tail", point);
+});
+
+elements.searchForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.searchQuery.value || "").trim();
+  if (!query) {
+    hideSearchResults();
+    setFormMessage("Please enter a search keyword.", true);
+    return;
+  }
+
+  elements.searchButton.disabled = true;
+  setFormMessage("Searching local cache...");
+  try {
+    const items = await searchGatchaCache(query);
+    renderSearchResults(items);
+    setFormMessage(items.length ? `Found ${items.length} cached result(s).` : "No cached matches found.");
+  } catch (error) {
+    hideSearchResults();
+    setFormMessage(error.message, true);
+  } finally {
+    elements.searchButton.disabled = false;
+  }
+});
+
+elements.searchResults.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-url]");
+  if (!button) {
+    return;
+  }
+
+  const url = String(button.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    hideSearchResults();
+    elements.searchQuery.value = "";
+  } finally {
+    button.disabled = false;
+  }
 });
 
 elements.sessionUserForm.addEventListener("submit", async (event) => {
@@ -1906,9 +2018,10 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
   if (!state.gatchaCandidate) return;
 
   const url = state.gatchaCandidate.url;
+  const requesterName = selectedRequesterName();
   setFormMessage("Nozomi power注入！");
   try {
-    state.data = await submitAddRequest(url, "tail");
+    state.data = await submitAddRequest(url, "tail", { requesterName });
     setFormMessage(`点歌成功：${state.gatchaCandidate.title}`);
     
 

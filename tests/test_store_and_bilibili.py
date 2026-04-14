@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import bilikara.bilibili as bilibili_module
 from bilikara.bilibili import VideoPage, fetch_video_item, resolve_video_reference, select_matching_pages
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
@@ -383,6 +384,58 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.owner_name, "example-up")
         self.assertEqual(item.owner_url, "https://space.bilibili.com/114514")
         self.assertEqual(item.selected_audio_variant_id, "part_2")
+
+    @patch("bilikara.bilibili.random.choice")
+    @patch("bilikara.bilibili._local_gatcha_candidates")
+    def test_fetch_gatcha_candidate_uses_local_cache(self, mock_local_candidates, mock_choice):
+        cached = [
+            {
+                "mid": "123",
+                "bvid": "BV1xx411c7mD",
+                "title": "karaoke sample",
+                "url": "https://www.bilibili.com/video/BV1xx411c7mD",
+            }
+        ]
+        mock_local_candidates.return_value = cached
+        mock_choice.return_value = cached[0]
+
+        candidate = bilibili_module.fetch_gatcha_candidate()
+
+        self.assertEqual(candidate["bvid"], "BV1xx411c7mD")
+        self.assertEqual(candidate["title"], "karaoke sample")
+        mock_local_candidates.assert_called_once()
+
+    @patch("bilikara.bilibili.time.sleep")
+    @patch("bilikara.bilibili.request_json")
+    @patch("bilikara.bilibili.get_cached_wbi_keys")
+    def test_fetch_gatcha_videos_for_uid_retries_once_on_412(
+        self,
+        mock_get_cached_wbi_keys,
+        mock_request_json,
+        mock_sleep,
+    ):
+        mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
+        mock_request_json.side_effect = [
+            {"code": 412, "message": "412 Precondition Failed"},
+            {
+                "code": 0,
+                "data": {
+                    "list": {
+                        "vlist": [
+                            {"bvid": "BV1xx411c7mD", "title": "karaoke sample"},
+                            {"bvid": "BV1yy411c7mD", "title": "other sample"},
+                        ]
+                    }
+                },
+            },
+        ]
+
+        with patch.object(bilibili_module, "GATCHA_KEYWORDS", ["karaoke"]):
+            entries = bilibili_module._fetch_gatcha_videos_for_uid("123")
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["bvid"], "BV1xx411c7mD")
+        mock_sleep.assert_called_once_with(bilibili_module.GATCHA_RETRY_DELAY_SECONDS)
 
 
 if __name__ == "__main__":

@@ -11,9 +11,16 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from .bilibili import BilibiliError, fetch_owner_info, fetch_video_item, fetch_gatcha_candidate
+from .bilibili import (
+    BilibiliError,
+    fetch_gatcha_candidate,
+    fetch_owner_info,
+    fetch_video_item,
+    refresh_gatcha_cache_in_background,
+    search_gatcha_cache,
+)
 from .cache import CacheManager
 from .config import (
     BACKUP_FILE,
@@ -369,6 +376,14 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/gatcha/search":
+            query = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            try:
+                results = search_gatcha_cache(query)
+                self._write_json({"ok": True, "data": {"items": results}})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
         if route.startswith("/media/"):
             self._serve_media(route)
             return
@@ -533,6 +548,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 cfg.COOKIE = new_cookie_string
                 from .bilibili import BILIBILI_HEADERS
                 BILIBILI_HEADERS["Cookie"] = new_cookie_string
+                refresh_gatcha_cache_in_background()
                 self._write_json({"ok": True, "message": "配置已实时生效"})
                 return
             self._write_json(

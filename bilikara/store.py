@@ -730,13 +730,15 @@ class PlaylistStore:
         }
 
     def _validate_requester_name_unlocked(self, requester_name: str) -> str:
+        # print(f"[DEBUG] raw={repr(requester_name)}, normalized={repr(self._normalize_session_user_name(requester_name))}")
         if not self.session_users:
             raise ValueError("请先在服务端添加本场 KTV 用户")
         normalized = self._normalize_session_user_name(requester_name)
         if not normalized:
+            return self.session_users[0]
             raise ValueError("点歌前请先选择用户名")
         if normalized not in self.session_users:
-            raise ValueError("所选用户名不存在，请重新选择")
+            raise ValueError("Selected requester is not in the current session user list")
         return normalized
 
     @staticmethod
