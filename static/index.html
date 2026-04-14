@@ -98,18 +98,18 @@
             <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
             <section class="av-sync-panel" id="av-sync-panel">
               <div class="av-sync-copy">
-                <p class="section-tag">AV Offset</p>
-                <p class="av-sync-hint">Positive delays audio. Negative lets audio lead.</p>
+                <p class="section-tag">音画延迟</p>
+                <p class="av-sync-hint">正数表示音频延后，负数表示音频提前。</p>
               </div>
               <div class="av-sync-controls">
-                <button type="button" class="toolbar-button ghost" data-step="-200">-200ms</button>
-                <button type="button" class="toolbar-button ghost" data-step="-50">-50ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-200">-200ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-50">-50ms</button>
                 <label class="av-sync-input-wrap" for="av-offset-input">
                   <input id="av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
                   <span>ms</span>
                 </label>
-                <button type="button" class="toolbar-button ghost" data-step="50">+50ms</button>
-                <button type="button" class="toolbar-button ghost" data-step="200">+200ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="50">+50ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="200">+200ms</button>
               </div>
             </section>
           </section>

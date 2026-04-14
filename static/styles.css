@@ -568,8 +568,10 @@ h2 {
   flex-wrap: wrap;
   padding: 14px 16px;
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.62);
-  border: 1px solid rgba(208, 90, 63, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 252, 247, 0.94), rgba(255, 246, 236, 0.82));
+  border: 1px solid rgba(208, 90, 63, 0.16);
+  box-shadow: 0 14px 30px rgba(88, 56, 30, 0.08);
 }
 
 .av-sync-copy {
@@ -598,8 +600,9 @@ h2 {
   min-height: 42px;
   padding: 0 14px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(87, 63, 43, 0.08);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(208, 90, 63, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
   color: var(--muted);
 }
 
@@ -617,6 +620,30 @@ h2 {
 .av-sync-input-wrap input[type="number"]:focus {
   border: none;
   box-shadow: none;
+}
+
+.av-sync-step-button {
+  min-width: 78px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 239, 230, 0.94));
+  border: 1px solid rgba(208, 90, 63, 0.2);
+  color: var(--accent-deep);
+  font-weight: 700;
+  box-shadow:
+    0 10px 20px rgba(88, 56, 30, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.av-sync-step-button:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 247, 241, 1), rgba(248, 229, 215, 0.98));
+  border-color: rgba(208, 90, 63, 0.32);
+  box-shadow:
+    0 12px 24px rgba(208, 90, 63, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96);
 }
 
 .audio-variant-button {
