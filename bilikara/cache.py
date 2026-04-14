@@ -302,180 +302,9 @@ class CacheManager:
         if not item:
             self._remove_cache_dir(item_id)
             return
+        # The current implementation always uses the multi-track pipeline.
+        # Keep the old single-pass BBDown flow in `_cache_item_legacy()` for reference.
         self._cache_item_multi(item_id, item, allow_refresh_retry=allow_refresh_retry)
-        return
-
-        self.store.update_item(
-            item_id,
-            cache_status="queued",
-            cache_progress=0.0,
-            cache_message="等待缓存队列",
-            persist_backup=False,
-        )
-
-        try:
-            binary_path = self._ensure_bbdown()
-        except Exception as exc:  # noqa: BLE001
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"BBDown 不可用: {exc}",
-                persist_backup=False,
-            )
-            return
-
-        try:
-            ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
-        except Exception as exc:  # noqa: BLE001
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"FFmpeg 不可用: {exc}",
-                persist_backup=False,
-            )
-            return
-
-        if not self._should_cache(item_id):
-            return
-
-        item_dir = CACHE_DIR / item_id
-        item_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self._item_log_path(item_id)
-        self.store.update_item(
-            item_id,
-            cache_status="downloading",
-            cache_message="开始缓存视频",
-            persist_backup=False,
-        )
-        self._append_log_line(log_path, "")
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
-
-        command = [
-            str(binary_path),
-            item.resolved_url,
-            "-p",
-            str(item.page),
-            "--work-dir",
-            str(item_dir),
-            "--ffmpeg-path",
-            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
-            "--file-pattern",
-            "video",
-            "--skip-subtitle",
-            "--skip-cover",
-            "--skip-ai",
-        ]
-        if COOKIE:
-            command.extend(["-c", COOKIE])
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
-
-        cancelled = False
-        cancel_message = "缓存已停止"
-        last_message = "缓存中"
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            bufsize=1,
-            cwd=str(BB_DOWN_DIR),
-            env=self._tool_process_env(ffmpeg_path),
-            **self._hidden_process_kwargs(),
-        )
-        with self.lock:
-            self.active_process = process
-            self.active_item_id = item_id
-        try:
-            assert process.stdout is not None
-            for raw_line in self._iter_output_messages(process.stdout):
-                line = self._normalize_output_line(raw_line)
-                if not line:
-                    continue
-                last_message = line
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
-                progress = self._extract_progress(line)
-                changes = {"cache_message": self._display_message(line, progress)}
-                if progress is not None:
-                    changes["cache_progress"] = progress
-                self.store.update_item(item_id, persist_backup=False, **changes)
-                if self.stop_event.is_set():
-                    cancelled = True
-                    cancel_message = "缓存已停止"
-                    self._terminate_process(process)
-                    break
-                if not self._should_cache(item_id):
-                    cancelled = True
-                    cancel_message = self._outside_window_message()
-                    self._terminate_process(process)
-                    break
-            return_code = process.wait()
-        finally:
-            with self.lock:
-                if self.active_process is process:
-                    self.active_process = None
-                    self.active_item_id = None
-
-        if cancelled or self.stop_event.is_set() or not self._should_cache(item_id):
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {cancel_message}")
-            self._drop_item_cache(item_id, cancel_message)
-            return
-
-        if return_code != 0:
-            if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
-                )
-                try:
-                    self._ensure_bbdown(force_refresh=True)
-                    shutil.rmtree(item_dir, ignore_errors=True)
-                    item_dir.mkdir(parents=True, exist_ok=True)
-                    self._cache_item(item_id, allow_refresh_retry=False)
-                    return
-                except Exception as exc:  # noqa: BLE001
-                    self._append_log_line(
-                        log_path,
-                        f"[{self._log_timestamp()}] forced BBDown refresh failed: {exc}",
-                    )
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] failed with exit code {return_code}: {last_message}",
-            )
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"缓存失败: {last_message}",
-                persist_backup=False,
-            )
-            return
-
-        media_file = self._find_media_file(item_dir)
-        if not media_file:
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] failed: media file not found after download",
-            )
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message="缓存完成，但没有找到可播放文件",
-                persist_backup=False,
-            )
-            return
-
-        relative_path = str(media_file.relative_to(CACHE_DIR))
-        self.store.update_item(
-            item_id,
-            cache_status="ready",
-            cache_progress=100.0,
-            cache_message="缓存已完成",
-            local_relative_path=relative_path,
-            local_media_url=self._build_media_url(relative_path),
-            persist_backup=False,
-        )
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
 
     def _cache_item_multi(self, item_id: str, item, *, allow_refresh_retry: bool) -> None:
         self.store.update_item(
@@ -583,6 +412,190 @@ class CacheManager:
         )
         self._record_item_activity(item_id)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
+        
+        
+    # def _cache_item_legacy(self, item_id: str, item, allow_refresh_retry: bool = True) -> None:
+    #     """Legacy single-pass BBDown caching path kept for reference.
+
+    #     This was the original implementation before `_cache_item_multi()`
+    #     became the default workflow. It is not invoked by the current host
+    #     flow, but we keep it as a documented fallback/reference instead of
+    #     leaving it as unreachable inline code.
+    #     """
+    #     log_path = self._item_log_path(item_id)
+
+    #     self.store.update_item(
+    #         item_id,
+    #         cache_status="queued",
+    #         cache_progress=0.0,
+    #         cache_message="等待缓存队列",
+    #         persist_backup=False,
+    #     )
+
+    #     try:
+    #         binary_path = self._ensure_bbdown()
+    #     except Exception as exc:  # noqa: BLE001
+    #         self.store.update_item(
+    #             item_id,
+    #             cache_status="failed",
+    #             cache_message=f"BBDown 不可用: {exc}",
+    #             persist_backup=False,
+    #         )
+    #         return
+
+    #     try:
+    #         ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
+    #     except Exception as exc:  # noqa: BLE001
+    #         self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
+    #         self.store.update_item(
+    #             item_id,
+    #             cache_status="failed",
+    #             cache_message=f"FFmpeg 不可用: {exc}",
+    #             persist_backup=False,
+    #         )
+    #         return
+
+    #     if not self._should_cache(item_id):
+    #         return
+
+    #     item_dir = CACHE_DIR / item_id
+    #     item_dir.mkdir(parents=True, exist_ok=True)
+    #     log_path = self._item_log_path(item_id)
+    #     self.store.update_item(
+    #         item_id,
+    #         cache_status="downloading",
+    #         cache_message="开始缓存视频",
+    #         persist_backup=False,
+    #     )
+    #     self._append_log_line(log_path, "")
+    #     self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
+
+    #     command = [
+    #         str(binary_path),
+    #         item.resolved_url,
+    #         "-p",
+    #         str(item.page),
+    #         "--work-dir",
+    #         str(item_dir),
+    #         "--ffmpeg-path",
+    #         self._bbdown_ffmpeg_path_arg(ffmpeg_path),
+    #         "--file-pattern",
+    #         "video",
+    #         "--skip-subtitle",
+    #         "--skip-cover",
+    #         "--skip-ai",
+    #     ]
+    #     if COOKIE:
+    #         command.extend(["-c", COOKIE])
+    #     self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+
+    #     cancelled = False
+    #     cancel_message = "缓存已停止"
+    #     last_message = "缓存中"
+    #     process = subprocess.Popen(
+    #         command,
+    #         stdout=subprocess.PIPE,
+    #         stderr=subprocess.STDOUT,
+    #         text=True,
+    #         errors="replace",
+    #         bufsize=1,
+    #         cwd=str(BB_DOWN_DIR),
+    #         env=self._tool_process_env(ffmpeg_path),
+    #         **self._hidden_process_kwargs(),
+    #     )
+    #     with self.lock:
+    #         self.active_process = process
+    #         self.active_item_id = item_id
+    #     try:
+    #         assert process.stdout is not None
+    #         for raw_line in self._iter_output_messages(process.stdout):
+    #             line = self._normalize_output_line(raw_line)
+    #             if not line:
+    #                 continue
+    #             last_message = line
+    #             self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+    #             progress = self._extract_progress(line)
+    #             changes = {"cache_message": self._display_message(line, progress)}
+    #             if progress is not None:
+    #                 changes["cache_progress"] = progress
+    #             self.store.update_item(item_id, persist_backup=False, **changes)
+    #             if self.stop_event.is_set():
+    #                 cancelled = True
+    #                 cancel_message = "缓存已停止"
+    #                 self._terminate_process(process)
+    #                 break
+    #             if not self._should_cache(item_id):
+    #                 cancelled = True
+    #                 cancel_message = self._outside_window_message()
+    #                 self._terminate_process(process)
+    #                 break
+    #         return_code = process.wait()
+    #     finally:
+    #         with self.lock:
+    #             if self.active_process is process:
+    #                 self.active_process = None
+    #                 self.active_item_id = None
+
+    #     if cancelled or self.stop_event.is_set() or not self._should_cache(item_id):
+    #         self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {cancel_message}")
+    #         self._drop_item_cache(item_id, cancel_message)
+    #         return
+
+    #     if return_code != 0:
+    #         if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
+    #             self._append_log_line(
+    #                 log_path,
+    #                 f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
+    #             )
+    #             try:
+    #                 self._ensure_bbdown(force_refresh=True)
+    #                 shutil.rmtree(item_dir, ignore_errors=True)
+    #                 item_dir.mkdir(parents=True, exist_ok=True)
+    #                 self._cache_item_legacy(item_id, item, allow_refresh_retry=False)
+    #                 return
+    #             except Exception as exc:  # noqa: BLE001
+    #                 self._append_log_line(
+    #                     log_path,
+    #                     f"[{self._log_timestamp()}] forced BBDown refresh failed: {exc}",
+    #                 )
+    #         self._append_log_line(
+    #             log_path,
+    #             f"[{self._log_timestamp()}] failed with exit code {return_code}: {last_message}",
+    #         )
+    #         self.store.update_item(
+    #             item_id,
+    #             cache_status="failed",
+    #             cache_message=f"缓存失败: {last_message}",
+    #             persist_backup=False,
+    #         )
+    #         return
+
+    #     media_file = self._find_media_file(item_dir)
+    #     if not media_file:
+    #         self._append_log_line(
+    #             log_path,
+    #             f"[{self._log_timestamp()}] failed: media file not found after download",
+    #         )
+    #         self.store.update_item(
+    #             item_id,
+    #             cache_status="failed",
+    #             cache_message="缓存完成，但没有找到可播放文件",
+    #             persist_backup=False,
+    #         )
+    #         return
+
+    #     relative_path = str(media_file.relative_to(CACHE_DIR))
+    #     self.store.update_item(
+    #         item_id,
+    #         cache_status="ready",
+    #         cache_progress=100.0,
+    #         cache_message="缓存已完成",
+    #         local_relative_path=relative_path,
+    #         local_media_url=self._build_media_url(relative_path),
+    #         persist_backup=False,
+    #     )
+    #     self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
+
 
     def _download_selected_streams(
         self,

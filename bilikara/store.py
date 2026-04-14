@@ -566,7 +566,7 @@ class PlaylistStore:
         payload.update(
             cache_status="pending",
             cache_progress=0.0,
-            cache_message="绛夊緟缂撳瓨",
+            cache_message="待缓存",
             local_relative_path="",
             local_media_url="",
             audio_variants=[],
@@ -579,7 +579,7 @@ class PlaylistStore:
         sanitized.update(
             cache_status="pending",
             cache_progress=0.0,
-            cache_message="绛夊緟缂撳瓨",
+            cache_message="待缓存",
             local_relative_path="",
             local_media_url="",
             audio_variants=[],
