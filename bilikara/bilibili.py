@@ -35,7 +35,7 @@ _GATCHA_REFRESH_LOCK = threading.Lock()
 _GATCHA_REQUEST_LOCK = threading.Lock()
 _GATCHA_LAST_REQUEST_AT = 0.0
 _GATCHA_CACHE_FILE = cfg.DATA_DIR / "gatcha_cache.json"
-GATCHA_RETRY_DELAY_SECONDS = 3
+GATCHA_RETRY_DELAY_SECONDS = 5
 
 @dataclass
 class VideoReference:

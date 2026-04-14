@@ -106,8 +106,8 @@ FFMPEG_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffmpeg.exe" if os.name == "nt" else "
 FFPROBE_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
 FFMPEG_BUNDLED_PATH = VENDOR_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 BB_DOWN_VERSION_FILE = BB_DOWN_DIR / "VERSION"
-GATCHA_UIDS = ["3145040","671767","33091201"]
-GATCHA_KEYWORDS = ["卡拉", "カラ", "投屏"]
+GATCHA_UIDS = ["3145040","671767","33091201","3494356589742209","44627483","8474818","10077309","74089392","1879151","87101327","99061404","602998","1159885664","215040","31624333","21129450","2625848","29955371","3014315","80148988"]
+GATCHA_KEYWORDS = ["卡拉", "カラ", "投屏","KTV","纯K"]
 USER_VIDEO_API = "https://api.bilibili.com/x/space/wbi/arc/search?mid={mid}&ps=50&tid=0&pn=1&order=pubdate"
 
 HOST = _default_host()
