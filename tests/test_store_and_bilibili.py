@@ -5,7 +5,13 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import bilikara.bilibili as bilibili_module
-from bilikara.bilibili import VideoPage, fetch_video_item, resolve_video_reference, select_matching_pages
+from bilikara.bilibili import (
+    ManualBindingRequiredError,
+    VideoPage,
+    fetch_video_item,
+    resolve_video_reference,
+    select_matching_pages,
+)
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 from bilikara.title_cleanup import clean_display_title
@@ -242,12 +248,14 @@ class PlaylistStoreTest(unittest.TestCase):
         item = self.make_item("a", song_key="song-a")
         item.selected_pages = [1, 2]
         item.selected_parts = ["on vocal", "off vocal"]
+        item.available_pages = [1, 2]
+        item.available_parts = ["on vocal", "off vocal"]
         self.store.add_item(item, requester_name="A")
 
-        changed = self.store.set_audio_variant("a", "off_vocal")
+        changed = self.store.set_audio_variant("a", "p2_off_vocal")
 
         self.assertTrue(changed)
-        self.assertEqual(self.store.current_item.selected_audio_variant_id, "off_vocal")
+        self.assertEqual(self.store.current_item.selected_audio_variant_id, "p2_off_vocal")
 
     def test_history_restores_from_state_file(self):
         self.add_item("a", requester_name="A", song_key="song-a")
@@ -455,8 +463,8 @@ class BilibiliParserTest(unittest.TestCase):
                     "name": "example-up",
                 },
                 "pages": [
-                    {"cid": 456, "page": 1, "part": "part-1"},
-                    {"cid": 789, "page": 2, "part": "part-2"},
+                    {"cid": 456, "page": 1, "part": "on_vocal"},
+                    {"cid": 789, "page": 2, "part": "off_vocal"},
                 ],
             },
         }
@@ -466,11 +474,69 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.video_page, 2)
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_cids, [456, 789])
-        self.assertEqual(item.display_title, "example video - part-2")
+        self.assertEqual(item.display_title, "example video - off_vocal")
         self.assertEqual(item.owner_mid, 114514)
         self.assertEqual(item.owner_name, "example-up")
         self.assertEqual(item.owner_url, "https://space.bilibili.com/114514")
-        self.assertEqual(item.selected_audio_variant_id, "part_2")
+        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
+        self.assertEqual(item.available_pages, [1, 2])
+        self.assertEqual(item.available_parts, ["on_vocal", "off_vocal"])
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_requires_manual_binding_for_ambiguous_multipart_video(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "example video",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "P1 main"},
+                    {"cid": 789, "page": 2, "part": "P2 alt"},
+                    {"cid": 999, "page": 3, "part": "P3 chorus"},
+                ],
+            },
+        }
+
+        with self.assertRaises(ManualBindingRequiredError) as raised:
+            fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+
+        self.assertEqual(raised.exception.preferred_page, 2)
+        self.assertEqual([page.page for page in raised.exception.pages], [1, 2, 3])
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_accepts_manual_binding_selection(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "example video",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "P1 main"},
+                    {"cid": 789, "page": 2, "part": "P2 alt"},
+                    {"cid": 999, "page": 3, "part": "P3 chorus"},
+                ],
+            },
+        }
+
+        item = fetch_video_item(
+            "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+            selected_video_page=2,
+            selected_audio_pages=[1, 3],
+        )
+
+        self.assertTrue(item.manual_selection)
+        self.assertEqual(item.page, 2)
+        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.selected_pages, [1, 3])
+        self.assertEqual(item.selected_parts, ["P1 main", "P3 chorus"])
+        self.assertEqual(item.available_pages, [1, 2, 3])
+        self.assertEqual(item.selected_audio_variant_id, "p1_p1_main")
 
     def test_fetch_gatcha_videos_for_uid_retries_once_on_412(self):
         if not hasattr(bilibili_module, "_fetch_gatcha_videos_for_uid"):

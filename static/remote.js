@@ -15,6 +15,14 @@ const state = {
   audioVariantSwitchInFlight: false,
   audioVariantSwitchUnlockAt: 0,
   audioVariantSwitchTimer: null,
+  audioVariantBarExpanded: false,
+  audioVariantBarItemId: "",
+  bindingSheetOpen: false,
+  bindingIntent: null,
+  bindingAccordion: {
+    video: false,
+    audio: false,
+  },
   gatchaCandidate: null,
   gatchaCooldownUntil: 0,
   gatchaCooldownTimer: null,
@@ -36,6 +44,18 @@ const elements = {
   remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
   remoteVolumeSlider: document.getElementById("remote-volume-slider"),
   remoteVolumeValue: document.getElementById("remote-volume-value"),
+  bindingSheet: document.getElementById("binding-sheet"),
+  bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
+  bindingSheetText: document.getElementById("binding-sheet-text"),
+  bindingVideoToggle: document.getElementById("binding-video-toggle"),
+  bindingAudioToggle: document.getElementById("binding-audio-toggle"),
+  bindingSheetVideoOptionsWrap: document.getElementById("binding-sheet-video-options-wrap"),
+  bindingSheetAudioOptionsWrap: document.getElementById("binding-sheet-audio-options-wrap"),
+  bindingSheetVideoOptions: document.getElementById("binding-sheet-video-options"),
+  bindingSheetAudioOptions: document.getElementById("binding-sheet-audio-options"),
+  bindingSheetClose: document.getElementById("binding-sheet-close"),
+  bindingSheetCancel: document.getElementById("binding-sheet-cancel"),
+  bindingSheetConfirm: document.getElementById("binding-sheet-confirm"),
   requestForm: document.getElementById("request-form"),
   requesterSelect: document.getElementById("requester-select"),
   urlInput: document.getElementById("url-input"),
@@ -175,14 +195,16 @@ async function submitAddRequest(url, position, options = {}) {
     position,
     requester_name: String(options.requesterName || ""),
     allow_repeat: Boolean(options.allowRepeat),
+    selected_video_page: Number.isInteger(options.selectedVideoPage) ? options.selectedVideoPage : undefined,
+    selected_audio_pages: Array.isArray(options.selectedAudioPages) ? options.selectedAudioPages : undefined,
   });
 }
 
-async function submitAddRequestWithDuplicateConfirm(url, position, requesterName) {
+async function submitAddRequestWithDuplicateConfirm(url, position, requesterName, options = {}) {
   try {
     return {
       cancelled: false,
-      data: await submitAddRequest(url, position, { requesterName }),
+      data: await submitAddRequest(url, position, { requesterName, ...options }),
     };
   } catch (error) {
     if (error.code !== "duplicate_session_request") {
@@ -203,6 +225,8 @@ async function submitAddRequestWithDuplicateConfirm(url, position, requesterName
       data: await submitAddRequest(url, position, {
         requesterName,
         allowRepeat: true,
+        selectedVideoPage: Number.isInteger(options.selectedVideoPage) ? options.selectedVideoPage : undefined,
+        selectedAudioPages: Array.isArray(options.selectedAudioPages) ? options.selectedAudioPages : undefined,
       }),
     };
   }
@@ -406,11 +430,76 @@ function audioVariantsForItem(item) {
   if (!item || !Array.isArray(item.audio_variants)) {
     return [];
   }
-  return item.audio_variants.filter((variant) => variant && variant.media_url);
+  return item.audio_variants.filter(
+    (variant) => variant && (variant.media_url || variant.audio_url),
+  );
+}
+
+function variantIdForLabel(page, label, index) {
+  const normalized = String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const suffix = normalized || `track_${index + 1}`;
+  return `p${Math.max(1, Number(page || index + 1))}_${suffix}`;
+}
+
+function availablePartEntriesForItem(item) {
+  if (!item) {
+    return [];
+  }
+  const pages = Array.isArray(item.available_pages) && item.available_pages.length
+    ? item.available_pages
+    : item.selected_pages;
+  const parts = Array.isArray(item.available_parts) && item.available_parts.length
+    ? item.available_parts
+    : item.selected_parts;
+  const durations = Array.isArray(item.available_durations) && item.available_durations.length
+    ? item.available_durations
+    : item.selected_durations;
+  if (!Array.isArray(pages) || !Array.isArray(parts) || pages.length <= 1) {
+    return null;
+  }
+  return pages
+    .map((page, index) => {
+      const numericPage = Number(page || 0);
+      if (!numericPage) {
+        return null;
+      }
+      const label = String(parts[index] || `P${numericPage}`).trim() || `P${numericPage}`;
+      return {
+        page: numericPage,
+        label,
+        duration: Number(durations[index] || 0),
+        id: variantIdForLabel(numericPage, label, index),
+        bound: Array.isArray(item.selected_pages)
+          ? item.selected_pages.some((selectedPage) => Number(selectedPage) === numericPage)
+          : false,
+      };
+    })
+    .filter(Boolean);
+}
+
+function partOptionsForItem(item) {
+  const availableParts = availablePartEntriesForItem(item);
+  if (!availableParts?.length) {
+    return [];
+  }
+  const cachedVariantsById = new Map(
+    audioVariantsForItem(item).map((variant) => [String(variant.id || "").trim(), variant]),
+  );
+  return availableParts.map((entry) => {
+    const cachedVariant = cachedVariantsById.get(entry.id);
+    return {
+      ...entry,
+      media_url: String(cachedVariant?.media_url || ""),
+      audio_url: String(cachedVariant?.audio_url || ""),
+    };
+  });
 }
 
 function selectedAudioVariantForItem(item) {
-  const variants = audioVariantsForItem(item);
+  const variants = partOptionsForItem(item).filter((variant) => variant.bound);
   if (!variants.length) {
     return null;
   }
@@ -445,19 +534,30 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
     elements.audioVariantBar.innerHTML = "";
     elements.audioVariantBar.classList.add("hidden");
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = "";
     return;
   }
 
-  const variants = audioVariantsForItem(currentItem);
+  const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
     elements.audioVariantBar.innerHTML = "";
     elements.audioVariantBar.classList.add("hidden");
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = currentItem.id;
     return;
+  }
+
+  if (state.audioVariantBarItemId !== currentItem.id) {
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = currentItem.id;
   }
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
   elements.audioVariantBar.innerHTML = "";
+  const list = document.createElement("div");
+  list.className = "audio-variant-list";
   variants.forEach((variant) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -465,10 +565,37 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     button.textContent = variant.label || variant.id;
     button.dataset.itemId = currentItem.id;
     button.dataset.variantId = variant.id;
-    button.disabled = buttonsDisabled;
-    button.classList.toggle("active", variant.id === selectedVariant?.id);
-    elements.audioVariantBar.appendChild(button);
+    button.dataset.page = String(variant.page || "");
+    button.dataset.bound = String(Boolean(variant.bound));
+    button.disabled = variant.bound ? buttonsDisabled : false;
+    button.classList.toggle("active", variant.bound && variant.id === selectedVariant?.id);
+    button.classList.toggle("pending-bind", !variant.bound);
+    list.appendChild(button);
   });
+
+  const toggleButton = document.createElement("button");
+  toggleButton.type = "button";
+  toggleButton.className = "audio-variant-toggle";
+  toggleButton.dataset.action = "toggle-audio-variants";
+  toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
+  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? "收起分P列表" : "展开分P列表");
+  toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
+
+  elements.audioVariantBar.append(list, toggleButton);
+
+  const firstButton = list.querySelector(".audio-variant-button");
+  const firstRowHeight = firstButton
+    ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
+    : 44;
+  const isWrapped = list.scrollHeight > firstRowHeight + 2;
+  elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
+  toggleButton.classList.toggle("hidden", !isWrapped);
+  if (isWrapped) {
+    list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
+    toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
+  } else {
+    state.audioVariantBarExpanded = false;
+  }
   elements.audioVariantBar.classList.remove("hidden");
 }
 
@@ -514,6 +641,170 @@ function renderRemoteVolumeControls(playbackMode, playerSettings) {
   elements.remoteVolumeValue.textContent = `${Math.round(volumePercent)}%`;
   elements.remoteVolumeMuteButton.textContent = isMuted ? "取消静音" : "静音";
   elements.remoteVolumeMuteButton.classList.toggle("is-muted", isMuted);
+}
+
+function openBindingSheet(intent, payload) {
+  const pages = Array.isArray(payload?.pages) ? payload.pages : [];
+  if (!pages.length) {
+    setFormMessage("无法读取分P列表", true);
+    return;
+  }
+  state.bindingIntent = {
+    ...intent,
+    binding: payload,
+  };
+  elements.bindingSheetText.textContent = `《${payload.title || "该视频"}》包含多个分P，请选择要下载的视频画面和音频轨道。`;
+  elements.bindingSheetVideoOptions.innerHTML = "";
+  elements.bindingSheetAudioOptions.innerHTML = "";
+  state.bindingAccordion.video = false;
+  state.bindingAccordion.audio = false;
+
+  const preferredPage = Number(payload.preferred_page || pages[0]?.page || 1);
+  pages.forEach((entry) => {
+    elements.bindingSheetVideoOptions.appendChild(renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage));
+    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage));
+  });
+  renderBindingAccordion();
+
+  state.bindingSheetOpen = true;
+  elements.bindingSheet.classList.remove("hidden");
+  elements.bindingSheet.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => {
+    elements.bindingSheet.classList.add("is-open");
+  });
+}
+
+function closeBindingSheet() {
+  state.bindingSheetOpen = false;
+  state.bindingIntent = null;
+  state.bindingAccordion.video = false;
+  state.bindingAccordion.audio = false;
+  elements.bindingSheet.classList.remove("is-open");
+  elements.bindingSheet.setAttribute("aria-hidden", "true");
+  window.setTimeout(() => {
+    if (state.bindingSheetOpen) {
+      return;
+    }
+    elements.bindingSheet.classList.add("hidden");
+    elements.bindingSheetVideoOptions.innerHTML = "";
+    elements.bindingSheetAudioOptions.innerHTML = "";
+    renderBindingAccordion();
+  }, 280);
+}
+
+function renderBindingAccordion() {
+  const sections = [
+    {
+      key: "video",
+      button: elements.bindingVideoToggle,
+      panel: elements.bindingSheetVideoOptionsWrap,
+    },
+    {
+      key: "audio",
+      button: elements.bindingAudioToggle,
+      panel: elements.bindingSheetAudioOptionsWrap,
+    },
+  ];
+  sections.forEach(({ key, button, panel }) => {
+    if (!button || !panel) {
+      return;
+    }
+    const expanded = Boolean(state.bindingAccordion[key]);
+    button.setAttribute("aria-expanded", String(expanded));
+    panel.classList.toggle("hidden", !expanded);
+  });
+}
+
+function renderBindingOption(inputType, name, entry, checked) {
+  const label = document.createElement("label");
+  label.className = "binding-option";
+
+  const input = document.createElement("input");
+  input.type = inputType;
+  input.name = name;
+  input.value = String(entry.page);
+  input.checked = checked;
+
+  const copy = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "binding-option-title";
+  title.textContent = `P${entry.page} · ${entry.part}`;
+  const meta = document.createElement("div");
+  meta.className = "binding-option-meta";
+  meta.textContent = entry.duration > 0 ? `${entry.duration}s` : "时长未知";
+  copy.append(title, meta);
+
+  label.append(input, copy);
+  return label;
+}
+
+function currentBindingSelection() {
+  const selectedVideo = elements.bindingSheetVideoOptions.querySelector('input[name="binding-video-page"]:checked');
+  const selectedAudioPages = [...elements.bindingSheetAudioOptions.querySelectorAll('input[name="binding-audio-page"]:checked')]
+    .map((input) => Number(input.value || 0))
+    .filter((page) => page > 0);
+  return {
+    selectedVideoPage: selectedVideo ? Number(selectedVideo.value || 0) : null,
+    selectedAudioPages,
+  };
+}
+
+async function confirmBindingSheet() {
+  const intent = state.bindingIntent;
+  if (!intent?.url || state.submitting) {
+    return;
+  }
+  const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
+  if (!selectedVideoPage) {
+    setFormMessage("请先选择一个视频分P", true);
+    return;
+  }
+  if (!selectedAudioPages.length) {
+    setFormMessage("请至少选择一个音频分P", true);
+    return;
+  }
+
+  state.submitting = true;
+  setFormMessage(intent.position === "next" ? "正在按绑定关系顶歌..." : "正在按绑定关系加入列表...");
+  try {
+    const result = await submitAddRequestWithDuplicateConfirm(
+      intent.url,
+      intent.position || "tail",
+      intent.requesterName || selectedRequesterName(),
+      {
+        selectedVideoPage,
+        selectedAudioPages,
+      },
+    );
+    if (result.cancelled) {
+      setFormMessage("已取消重复添加");
+      return;
+    }
+    state.data = result.data;
+    closeBindingSheet();
+    if (intent.clearInput) {
+      elements.urlInput.value = "";
+    }
+    if (intent.source === "search") {
+      hideSearchResults();
+      elements.searchQuery.value = "";
+    }
+    if (intent.source === "gatcha") {
+      state.gatchaCandidate = null;
+      elements.gatchaResultView.classList.add("hidden");
+      elements.gatchaInitView.classList.remove("hidden");
+    }
+    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入列表");
+    render();
+  } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(intent, error.payload?.binding);
+      return;
+    }
+    setFormMessage(error.message, true);
+  } finally {
+    state.submitting = false;
+  }
 }
 
 async function setRemoteAvOffset(offsetMs) {
@@ -753,6 +1044,19 @@ async function submitRequest(position) {
     setFormMessage(position === "next" ? "已经顶歌到下一首。" : "已经加入播放队列。");
     render();
   } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(
+        {
+          url,
+          position,
+          requesterName,
+          clearInput: true,
+          source: "request-form",
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
     setFormMessage(error.message, true);
   } finally {
     state.submitting = false;
@@ -781,6 +1085,19 @@ async function handleAddByHistory(url, position) {
     setFormMessage(position === "next" ? "已从历史记录顶歌到下一首。" : "已从历史记录加入队列。");
     render();
   } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(
+        {
+          url,
+          position,
+          requesterName,
+          clearInput: false,
+          source: "history",
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
     setFormMessage(error.message, true);
   } finally {
     state.submitting = false;
@@ -814,6 +1131,19 @@ async function addByUrl(url, position = "tail") {
     setFormMessage("点歌成功。");
     render();
   } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(
+        {
+          url,
+          position,
+          requesterName,
+          clearInput: false,
+          source: state.gatchaCandidate?.url === url ? "gatcha" : "search",
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
     setFormMessage(error.message, true);
   } finally {
     state.submitting = false;
@@ -1008,13 +1338,88 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
   await addByUrl(String(state.gatchaCandidate.url), "tail");
 });
 
+elements.bindingSheetClose?.addEventListener("click", () => {
+  closeBindingSheet();
+});
+
+elements.bindingSheetCancel?.addEventListener("click", () => {
+  closeBindingSheet();
+});
+
+elements.bindingSheetBackdrop?.addEventListener("click", () => {
+  closeBindingSheet();
+});
+
+elements.bindingSheetConfirm?.addEventListener("click", async () => {
+  await confirmBindingSheet();
+});
+
+elements.bindingVideoToggle?.addEventListener("click", () => {
+  state.bindingAccordion.video = !state.bindingAccordion.video;
+  renderBindingAccordion();
+});
+
+elements.bindingAudioToggle?.addEventListener("click", () => {
+  state.bindingAccordion.audio = !state.bindingAccordion.audio;
+  renderBindingAccordion();
+});
+
 elements.audioVariantBar.addEventListener("click", async (event) => {
+  const toggleButton = event.target.closest('button[data-action="toggle-audio-variants"]');
+  if (toggleButton) {
+    state.audioVariantBarExpanded = !state.audioVariantBarExpanded;
+    if (state.data?.current_item) {
+      renderAudioVariantBar(state.data.current_item, state.data.playback_mode);
+    }
+    return;
+  }
+
   const button = event.target.closest("button[data-variant-id]");
   const currentItem = state.data?.current_item;
-  if (!button || !currentItem || audioVariantSwitchLocked()) {
+  if (!button || !currentItem) {
     return;
   }
   if (button.dataset.itemId !== currentItem.id) {
+    return;
+  }
+
+  if (button.dataset.bound !== "true") {
+    const page = Number(button.dataset.page || 0);
+    const requesterName = selectedRequesterName();
+    if (!page || state.submitting) {
+      return;
+    }
+    if (!requesterName) {
+      setFormMessage("请先选择点歌人", true);
+      return;
+    }
+    try {
+      state.submitting = true;
+      const result = await submitAddRequestWithDuplicateConfirm(
+        currentItem.original_url || currentItem.resolved_url,
+        "tail",
+        requesterName,
+        {
+          selectedVideoPage: page,
+          selectedAudioPages: [page],
+        },
+      );
+      if (result.cancelled) {
+        setFormMessage("已取消重复添加");
+        return;
+      }
+      state.data = result.data;
+      setFormMessage("已将分P加入下载列表");
+      render();
+    } catch (error) {
+      setFormMessage(error.message, true);
+    } finally {
+      state.submitting = false;
+    }
+    return;
+  }
+
+  if (audioVariantSwitchLocked()) {
     return;
   }
 
@@ -1078,6 +1483,12 @@ elements.historyList.addEventListener("click", async (event) => {
     return;
   }
   await handleAddByHistory(url, button.dataset.action === "history-next" ? "next" : "tail");
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.bindingSheetOpen) {
+    closeBindingSheet();
+  }
 });
 
 window.addEventListener("pagehide", disconnectClient);

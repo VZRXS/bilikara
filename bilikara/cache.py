@@ -870,10 +870,11 @@ class CacheManager:
             stage_count=download_stage_count,
         )
 
-        audio_files: list[tuple[Path, str]] = []
+        audio_files: list[tuple[int, Path, str]] = []
         for stage_offset, page in enumerate(selected_pages, start=1):
             audio_files.append(
                 (
+                    page,
                     self._download_page_stream(
                         item,
                         binary_path,
@@ -1033,7 +1034,7 @@ class CacheManager:
         log_path: Path,
         *,
         video_file: Path,
-        audio_files: list[tuple[Path, str]],
+        audio_files: list[tuple[int, Path, str]],
     ) -> dict[str, object]:
         item_id = item.id
         output_dir = item_dir / "output"
@@ -1042,13 +1043,13 @@ class CacheManager:
         output_file.unlink(missing_ok=True)
 
         command = [str(ffmpeg_path), "-y", "-i", str(video_file)]
-        for audio_file, _label in audio_files:
+        for _page, audio_file, _label in audio_files:
             command.extend(["-i", str(audio_file)])
         command.extend(["-map", "0:v:0"])
         for index in range(len(audio_files)):
             command.extend(["-map", f"{index + 1}:a:0"])
         command.extend(["-c", "copy", "-movflags", "+faststart"])
-        for index, (_audio_file, label) in enumerate(audio_files):
+        for index, (_page, _audio_file, label) in enumerate(audio_files):
             command.extend([f"-metadata:s:a:{index}", f"title={label}"])
             command.extend([f"-disposition:a:{index}", "default" if index == 0 else "0"])
         command.append(str(output_file))
@@ -1130,7 +1131,7 @@ class CacheManager:
         )
         audio_variants = []
         for index, (variant_id, label, path) in enumerate(variant_files):
-            raw_audio_file = audio_files[index][0] if index < len(audio_files) else None
+            raw_audio_file = audio_files[index][1] if index < len(audio_files) else None
             raw_audio_url = (
                 self._build_media_url(str(raw_audio_file.relative_to(CACHE_DIR)))
                 if raw_audio_file is not None
@@ -1171,17 +1172,20 @@ class CacheManager:
         log_path: Path,
         *,
         video_file: Path,
-        audio_files: list[tuple[Path, str]],
+        audio_files: list[tuple[int, Path, str]],
     ) -> list[tuple[str, str, Path]]:
         if len(audio_files) <= 1:
-            return [("default", audio_files[0][1] if audio_files else "Default", item_dir / "output" / "video.mp4")]
+            if not audio_files:
+                return [("default", "Default", item_dir / "output" / "video.mp4")]
+            page, _audio_file, label = audio_files[0]
+            return [(self._variant_id(page, label, 0), label, item_dir / "output" / "video.mp4")]
 
         variant_files: list[tuple[str, str, Path]] = []
         variants_dir = item_dir / "variants"
         variants_dir.mkdir(parents=True, exist_ok=True)
 
-        for index, (audio_file, label) in enumerate(audio_files):
-            variant_id = self._variant_id(label, index)
+        for index, (page, audio_file, label) in enumerate(audio_files):
+            variant_id = self._variant_id(page, label, index)
             variant_path = variants_dir / f"{variant_id}.mp4"
             variant_path.unlink(missing_ok=True)
             command = [
@@ -1221,9 +1225,10 @@ class CacheManager:
         return variant_files
 
     @staticmethod
-    def _variant_id(label: str, index: int) -> str:
+    def _variant_id(page: int, label: str, index: int) -> str:
         normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-        return normalized or f"track_{index + 1}"
+        suffix = normalized or f"track_{index + 1}"
+        return f"p{max(int(page), 1)}_{suffix}"
 
     @staticmethod
     def _page_url(base_url: str, page: int) -> str:

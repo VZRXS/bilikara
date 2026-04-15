@@ -456,9 +456,10 @@ class PlaylistStore:
         return None
 
     @staticmethod
-    def _variant_id(label: str, index: int) -> str:
+    def _variant_id(page: int, label: str, index: int) -> str:
         normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-        return normalized or f"track_{index + 1}"
+        suffix = normalized or f"track_{index + 1}"
+        return f"p{max(int(page), 1)}_{suffix}"
 
     def _predicted_audio_variant_ids_unlocked(self, item: PlaylistItem) -> set[str]:
         predicted_ids: set[str] = set()
@@ -466,7 +467,8 @@ class PlaylistStore:
             normalized_label = str(label or "").strip()
             if not normalized_label:
                 continue
-            predicted_ids.add(self._variant_id(normalized_label, index))
+            page = item.selected_pages[index] if index < len(item.selected_pages or []) else index + 1
+            predicted_ids.add(self._variant_id(page, normalized_label, index))
         return predicted_ids
 
     def _insert_cycle_item_unlocked(self, item: PlaylistItem) -> None:
@@ -715,9 +717,17 @@ class PlaylistStore:
 
     @staticmethod
     def _history_key(item: PlaylistItem) -> str:
+        audio_pages = [
+            int(page)
+            for page in (item.selected_pages or [])
+            if int(page) > 0
+        ]
+        audio_suffix = ""
+        if audio_pages:
+            audio_suffix = ":a" + "-".join(str(page) for page in audio_pages)
         if item.bvid:
-            return f"{item.bvid}:p{item.page}"
-        return f"aid:{item.aid}:p{item.page}"
+            return f"{item.bvid}:p{item.page}{audio_suffix}"
+        return f"aid:{item.aid}:p{item.page}{audio_suffix}"
 
     def _record_history_unlocked(self, item: PlaylistItem) -> None:
         now = time.time()

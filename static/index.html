@@ -524,6 +524,34 @@
       </div>
     </div>
 
+    <div class="selection-modal hidden" id="binding-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="binding-modal-backdrop"></div>
+      <div class="selection-modal-card">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag">Part Binding</p>
+            <h2>选择分P绑定</h2>
+          </div>
+          <button type="button" id="binding-modal-close" class="banner-close" aria-label="关闭">x</button>
+        </div>
+        <p class="selection-modal-text" id="binding-modal-text">请选择要下载的视频分P和音频分P。</p>
+        <div class="selection-modal-grid">
+          <section class="selection-modal-column">
+            <h3>视频画面</h3>
+            <div id="binding-video-options" class="selection-option-list"></div>
+          </section>
+          <section class="selection-modal-column">
+            <h3>音频轨道</h3>
+            <div id="binding-audio-options" class="selection-option-list"></div>
+          </section>
+        </div>
+        <div class="selection-modal-actions">
+          <button type="button" id="binding-modal-cancel" class="toolbar-button">取消</button>
+          <button type="button" id="binding-modal-confirm" class="next-button">加入列表</button>
+        </div>
+      </div>
+    </div>
+
     <script src="/app.js" defer></script>
   </body>
 </html>

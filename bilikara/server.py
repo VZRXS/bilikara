@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .bilibili import (
     BilibiliError,
+    ManualBindingRequiredError,
     MISSING_BILIBILI_COOKIE_MESSAGE,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
@@ -673,6 +674,28 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 {"ok": False, "error": f"未知接口: {route}"},
                 status=HTTPStatus.NOT_FOUND,
             )
+        except ManualBindingRequiredError as exc:
+            self._write_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": "manual_binding_required",
+                    "binding": {
+                        "title": exc.title,
+                        "preferred_page": exc.preferred_page,
+                        "pages": [
+                            {
+                                "page": page.page,
+                                "cid": page.cid,
+                                "duration": page.duration,
+                                "part": page.part,
+                            }
+                            for page in exc.pages
+                        ],
+                    },
+                },
+                status=HTTPStatus.CONFLICT,
+            )
         except BilibiliError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except DuplicateSessionRequestError as exc:
@@ -703,7 +726,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         position = str(body.get("position") or "tail")
         requester_name = str(body.get("requester_name") or "").strip()
         allow_repeat = bool(body.get("allow_repeat"))
-        item = fetch_video_item(url)
+        raw_selected_video_page = body.get("selected_video_page")
+        selected_video_page = raw_selected_video_page if isinstance(raw_selected_video_page, int) else None
+        raw_selected_audio_pages = body.get("selected_audio_pages")
+        selected_audio_pages = raw_selected_audio_pages if isinstance(raw_selected_audio_pages, list) else None
+        item = fetch_video_item(
+            url,
+            selected_video_page=selected_video_page,
+            selected_audio_pages=selected_audio_pages,
+        )
         existing_session_entry = CONTEXT.store.session_request_for_item(item)
         active_duplicate = CONTEXT.store.active_duplicate_for_item(item)
         if (existing_session_entry or active_duplicate) and not allow_repeat:

@@ -100,6 +100,102 @@ p {
   display: none;
 }
 
+.selection-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 420;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.selection-modal.hidden {
+  display: none;
+}
+
+.selection-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(29, 26, 24, 0.3);
+  backdrop-filter: blur(6px);
+}
+
+.selection-modal-card {
+  position: relative;
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 22px;
+  border-radius: 24px;
+  border: 1px solid rgba(208, 90, 63, 0.18);
+  background: rgba(255, 250, 244, 0.98);
+  box-shadow: var(--shadow);
+}
+
+.selection-modal-head,
+.selection-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.selection-modal-text {
+  margin-top: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.selection-modal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.selection-modal-column {
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(87, 63, 43, 0.08);
+}
+
+.selection-modal-column h3 {
+  font-size: 15px;
+}
+
+.selection-option-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.selection-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(243, 232, 215, 0.46);
+  border: 1px solid rgba(87, 63, 43, 0.08);
+}
+
+.selection-option-title {
+  font-weight: 600;
+}
+
+.selection-option-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.selection-modal-actions {
+  margin-top: 18px;
+  justify-content: flex-end;
+}
+
 .confirm-text {
   font-size: 13px;
   line-height: 1.45;
@@ -987,7 +1083,53 @@ h2 {
   margin-top: 12px;
   display: flex;
   gap: 8px;
+  align-items: flex-start;
+}
+
+.audio-variant-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 8px;
   flex-wrap: wrap;
+  overflow: hidden;
+}
+
+.audio-variant-bar.is-collapsed .audio-variant-list {
+  max-height: var(--audio-variant-collapsed-height, 44px);
+}
+
+.audio-variant-toggle {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(208, 90, 63, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--accent-deep);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.audio-variant-toggle:hover {
+  transform: translateY(-1px);
+}
+
+.audio-variant-toggle span {
+  display: inline-block;
+  transition: transform 180ms ease;
+}
+
+.audio-variant-toggle.is-expanded span {
+  transform: rotate(180deg);
+}
+
+.audio-variant-toggle.hidden {
+  display: none;
 }
 
 .av-sync-panel {
@@ -1240,6 +1382,18 @@ h2 {
     background 180ms ease,
     color 180ms ease,
     box-shadow 180ms ease;
+}
+
+.audio-variant-button.pending-bind {
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--accent-deep);
+  border-style: dashed;
+}
+
+.audio-variant-button.pending-bind::after {
+  content: "+";
+  margin-left: 6px;
+  font-weight: 700;
 }
 
 .audio-variant-button.active {

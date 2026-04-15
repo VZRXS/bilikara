@@ -173,6 +173,55 @@
         <div id="queue-list" class="list"></div>
         <div id="history-list" class="list hidden"></div>
       </section>
+
+      <div id="binding-sheet" class="binding-sheet hidden" aria-hidden="true">
+        <div id="binding-sheet-backdrop" class="binding-sheet-backdrop"></div>
+        <div class="binding-sheet-panel">
+          <div class="binding-sheet-handle" aria-hidden="true"></div>
+          <div class="binding-sheet-head">
+            <div>
+              <p class="panel-tag">Part Binding</p>
+              <h2>选择分P绑定</h2>
+            </div>
+            <button type="button" id="binding-sheet-close" class="ghost-button binding-sheet-close">关闭</button>
+          </div>
+          <p id="binding-sheet-text" class="muted">请选择要下载的视频分P和音频分P。</p>
+          <section class="binding-sheet-section binding-accordion" id="binding-video-section">
+            <button
+              type="button"
+              id="binding-video-toggle"
+              class="binding-accordion-toggle"
+              aria-expanded="false"
+              aria-controls="binding-sheet-video-options-wrap"
+            >
+              <span>视频</span>
+              <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div id="binding-sheet-video-options-wrap" class="binding-accordion-panel hidden">
+              <div id="binding-sheet-video-options" class="binding-option-list"></div>
+            </div>
+          </section>
+          <section class="binding-sheet-section binding-accordion" id="binding-audio-section">
+            <button
+              type="button"
+              id="binding-audio-toggle"
+              class="binding-accordion-toggle"
+              aria-expanded="false"
+              aria-controls="binding-sheet-audio-options-wrap"
+            >
+              <span>音频</span>
+              <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div id="binding-sheet-audio-options-wrap" class="binding-accordion-panel hidden">
+              <div id="binding-sheet-audio-options" class="binding-option-list"></div>
+            </div>
+          </section>
+          <div class="binding-sheet-actions">
+            <button type="button" id="binding-sheet-cancel" class="ghost-button">取消</button>
+            <button type="button" id="binding-sheet-confirm" class="primary-button">加入列表</button>
+          </div>
+        </div>
+      </div>
     </main>
 
     <template id="queue-item-template">

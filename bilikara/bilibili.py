@@ -153,6 +153,14 @@ class BilibiliError(RuntimeError):
     pass
 
 
+class ManualBindingRequiredError(BilibiliError):
+    def __init__(self, *, title: str, pages: list[VideoPage], preferred_page: int) -> None:
+        self.title = title
+        self.pages = list(pages)
+        self.preferred_page = preferred_page
+        super().__init__("该视频包含多个分P，请先选择视频和音频绑定关系")
+
+
 def _load_gatcha_cache() -> dict:
     if not _GATCHA_CACHE_FILE.exists():
         return {"uids": {}, "updated_at": 0}
@@ -543,9 +551,39 @@ def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> Vid
     return pages[0]
 
 
-def _variant_id(label: str, index: int) -> str:
+def _variant_id(page: int, label: str, index: int) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-    return normalized or f"track_{index + 1}"
+    suffix = normalized or f"track_{index + 1}"
+    return f"p{max(int(page), 1)}_{suffix}"
+
+
+def _part_keyword_match(part: str) -> bool:
+    normalized = str(part or "").strip().lower()
+    return any(keyword in normalized for keyword in ("on", "off", "人声", "伴奏"))
+
+
+def _requires_manual_binding(pages: list[VideoPage]) -> bool:
+    if len(pages) > 2:
+        return True
+    if len(pages) == 2 and not all(_part_keyword_match(page.part) for page in pages):
+        return True
+    return False
+
+
+def _normalize_selected_pages(raw_pages: object) -> list[int]:
+    if not isinstance(raw_pages, list):
+        return []
+    normalized: list[int] = []
+    for value in raw_pages:
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            continue
+        if page > 0 and page not in normalized:
+            normalized.append(page)
+    return normalized
+
+
 def fetch_owner_info(raw_input: str) -> tuple[int, str, str]:
     reference = resolve_video_reference(raw_input)
     data = _fetch_view_data(reference)
@@ -556,7 +594,12 @@ def fetch_owner_info(raw_input: str) -> tuple[int, str, str]:
     return owner_mid, owner_name, owner_url
 
 
-def fetch_video_item(raw_input: str) -> PlaylistItem:
+def fetch_video_item(
+    raw_input: str,
+    *,
+    selected_video_page: int | None = None,
+    selected_audio_pages: list[int] | None = None,
+) -> PlaylistItem:
     reference = resolve_video_reference(raw_input)
     if reference.bvid:
         api_url = (
@@ -580,10 +623,40 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         raise BilibiliError("视频没有可播放的分 P 信息")
 
     preferred_page = min(reference.page, len(pages))
-    selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+    manual_selection = _requires_manual_binding(pages)
+    if manual_selection and selected_video_page is None and not selected_audio_pages:
+        raise ManualBindingRequiredError(
+            title=str(data.get("title") or "").strip(),
+            pages=pages,
+            preferred_page=preferred_page,
+        )
+
+    available_page_numbers = [page.page for page in pages]
+    available_pages_by_number = {page.page: page for page in pages}
+    normalized_audio_pages = _normalize_selected_pages(selected_audio_pages)
+    if manual_selection:
+        video_page = int(selected_video_page or preferred_page)
+        if video_page not in available_pages_by_number:
+            raise BilibiliError("选择的视频分P无效")
+        if not normalized_audio_pages:
+            normalized_audio_pages = [video_page]
+        invalid_audio_pages = [page for page in normalized_audio_pages if page not in available_pages_by_number]
+        if invalid_audio_pages:
+            raise BilibiliError("选择的音频分P无效")
+        selected_pages = [available_pages_by_number[page] for page in normalized_audio_pages]
+    else:
+        selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+        if selected_video_page is not None or normalized_audio_pages:
+            raise BilibiliError("当前视频不需要手动绑定分P")
+
     selected_page_numbers = [page.page for page in selected_pages]
-    video_page = preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0]
-    video_page_info = next(page for page in selected_pages if page.page == video_page)
+    if not selected_page_numbers:
+        raise BilibiliError("至少需要选择一个音频分P")
+    if manual_selection:
+        video_page = int(selected_video_page or selected_page_numbers[0])
+    else:
+        video_page = preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0]
+    video_page_info = available_pages_by_number[video_page]
     aid = int(data["aid"])
     bvid = str(data["bvid"])
     title = str(data.get("title") or "").strip()
@@ -622,6 +695,10 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         )
     )
 
+    default_audio_page = video_page if video_page in selected_page_numbers else selected_page_numbers[0]
+    default_audio_index = selected_page_numbers.index(default_audio_page)
+    default_audio_part = selected_pages[default_audio_index].part
+
     return PlaylistItem(
         id=uuid.uuid4().hex[:12],
         original_url=reference.original_url,
@@ -639,8 +716,13 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         selected_cids=[page.cid for page in selected_pages],
         selected_durations=[page.duration for page in selected_pages],
         selected_parts=[page.part for page in selected_pages],
-        selected_audio_variant_id=_variant_id(part_title, selected_page_numbers.index(video_page)),
+        available_pages=available_page_numbers,
+        available_cids=[page.cid for page in pages],
+        available_durations=[page.duration for page in pages],
+        available_parts=[page.part for page in pages],
+        selected_audio_variant_id=_variant_id(default_audio_page, default_audio_part, default_audio_index),
         video_page=video_page,
+        manual_selection=manual_selection,
         owner_mid=owner_mid,
         owner_name=owner_name,
         owner_url=owner_url,
