@@ -8,11 +8,20 @@
     <link rel="stylesheet" href="/remote-queue.css" />
   </head>
   <body>
-    <main class="remote-shell">
+    <main class="remote-shell layout-mode-full" id="remote-shell">
       <header class="hero-card">
         <p class="eyebrow">Mobile Request</p>
         <h1>bilikara 点歌台</h1>
         <p class="hero-copy">在同一个局域网里，用手机查看当前队列、继续点歌，也可以远程控制正在播放的视频。</p>
+        <div class="hero-controls">
+          <div class="mode-control layout-control">
+            <span class="panel-tag">切换布局</span>
+            <div class="mode-switch" id="layout-mode-switch">
+              <button type="button" class="mode-button" data-layout-mode="basic">基础</button>
+              <button type="button" class="mode-button active" data-layout-mode="full">完整</button>
+            </div>
+          </div>
+        </div>
       </header>
 
       <section class="panel now-playing-panel">
@@ -29,9 +38,45 @@
             <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="-15">后退 15 秒</button>
             <button type="button" class="primary-button" data-control-action="toggle-play">播放 / 暂停</button>
             <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="15">快进 15 秒</button>
+            <button type="button" class="secondary-button" data-control-action="next-track">切歌</button>
           </div>
           <p id="player-control-hint" class="player-control-hint"></p>
         </div>
+        <section id="remote-av-sync-panel" class="remote-setting-panel hidden">
+          <div class="remote-setting-copy">
+            <p class="panel-tag">音画延迟</p>
+            <p class="muted">正数表示音频延后，负数表示音频提前。</p>
+          </div>
+          <div class="remote-setting-controls">
+            <button type="button" class="ghost-button remote-step-button" data-av-step="-200">-200ms</button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="-50">-50ms</button>
+            <label class="remote-input-wrap" for="remote-av-offset-input">
+              <input id="remote-av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
+              <span>ms</span>
+            </label>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="50">+50ms</button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="200">+200ms</button>
+          </div>
+        </section>
+        <section id="remote-volume-panel" class="remote-setting-panel hidden">
+          <div class="remote-setting-copy">
+            <p class="panel-tag">播放音量</p>
+            <p class="muted">直接遥控服务端当前本地播放的音量。</p>
+          </div>
+          <div class="remote-setting-controls">
+            <button type="button" id="remote-volume-mute-button" class="ghost-button remote-mute-button">静音</button>
+            <input
+              id="remote-volume-slider"
+              class="remote-volume-slider"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value="100"
+            />
+            <strong id="remote-volume-value" class="remote-volume-value">100%</strong>
+          </div>
+        </section>
       </section>
 
       <section class="panel request-panel">
@@ -44,7 +89,7 @@
             id="url-input"
             name="url"
             rows="3"
-            placeholder="输入 bilibili 视频链接、BV 号或 av 号"
+            placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
             autocomplete="off"
           ></textarea>
           <div class="action-row">
@@ -53,6 +98,44 @@
           </div>
           <p id="form-message" class="message"></p>
         </form>
+      </section>
+
+      <section class="panel search-panel">
+        <div class="panel-head">
+          <p class="panel-tag">Local Search</p>
+        </div>
+        <form id="search-form" class="request-form">
+          <input
+            id="search-query"
+            type="text"
+            placeholder="搜索本地歌曲目录 (需要登录或者 cookie)"
+            autocomplete="off"
+          />
+          <div class="action-row action-row-single">
+            <button type="submit" id="search-button" class="primary-button">搜索</button>
+          </div>
+        </form>
+        <div id="search-results" class="search-results hidden"></div>
+      </section>
+
+      <section class="panel gatcha-panel">
+        <div class="panel-head">
+          <p class="panel-tag">Gatcha Draw</p>
+        </div>
+        <div id="gatcha-init-view" class="gatcha-content">
+          <div class="gatcha-icon">🎲</div>
+          <p class="gatcha-desc">从关注的投稿中随机抽取一首歌曲</p>
+          <button type="button" id="gatcha-button" class="primary-button">试试运气</button>
+          <p class="gatcha-message" id="gatcha-message" role="status"></p>
+        </div>
+        <div id="gatcha-result-view" class="gatcha-content hidden">
+          <p class="gatcha-label">运气不错，抽到了：</p>
+          <h3 id="gatcha-candidate-title">歌曲标题加载中...</h3>
+          <div class="action-row">
+            <button type="button" id="gatcha-confirm-button" class="primary-button">确定点歌</button>
+            <button type="button" id="gatcha-retry-button" class="secondary-button">重新再来</button>
+          </div>
+        </div>
       </section>
 
       <section class="panel queue-panel">
@@ -90,6 +173,55 @@
         <div id="queue-list" class="list"></div>
         <div id="history-list" class="list hidden"></div>
       </section>
+
+      <div id="binding-sheet" class="binding-sheet hidden" aria-hidden="true">
+        <div id="binding-sheet-backdrop" class="binding-sheet-backdrop"></div>
+        <div class="binding-sheet-panel">
+          <div class="binding-sheet-handle" aria-hidden="true"></div>
+          <div class="binding-sheet-head">
+            <div>
+              <p class="panel-tag">Part Binding</p>
+              <h2>选择分P绑定</h2>
+            </div>
+            <button type="button" id="binding-sheet-close" class="ghost-button binding-sheet-close">关闭</button>
+          </div>
+          <p id="binding-sheet-text" class="muted">请选择要下载的视频分P和音频分P。</p>
+          <section class="binding-sheet-section binding-accordion" id="binding-video-section">
+            <button
+              type="button"
+              id="binding-video-toggle"
+              class="binding-accordion-toggle"
+              aria-expanded="false"
+              aria-controls="binding-sheet-video-options-wrap"
+            >
+              <span>视频</span>
+              <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div id="binding-sheet-video-options-wrap" class="binding-accordion-panel hidden">
+              <div id="binding-sheet-video-options" class="binding-option-list"></div>
+            </div>
+          </section>
+          <section class="binding-sheet-section binding-accordion" id="binding-audio-section">
+            <button
+              type="button"
+              id="binding-audio-toggle"
+              class="binding-accordion-toggle"
+              aria-expanded="false"
+              aria-controls="binding-sheet-audio-options-wrap"
+            >
+              <span>音频</span>
+              <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div id="binding-sheet-audio-options-wrap" class="binding-accordion-panel hidden">
+              <div id="binding-sheet-audio-options" class="binding-option-list"></div>
+            </div>
+          </section>
+          <div class="binding-sheet-actions">
+            <button type="button" id="binding-sheet-cancel" class="ghost-button">取消</button>
+            <button type="button" id="binding-sheet-confirm" class="primary-button">加入列表</button>
+          </div>
+        </div>
+      </div>
     </main>
 
     <template id="queue-item-template">

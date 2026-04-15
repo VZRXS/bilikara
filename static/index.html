@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app-shell layout-mode-full" id="app-shell">
       <section class="backup-banner hidden" id="backup-banner">
         <div class="backup-copy">
           <p class="backup-title">Auto Restore</p>
@@ -15,7 +15,7 @@
         </div>
         <div class="backup-actions">
           <button type="button" id="discard-backup-button" class="banner-action">清空备份</button>
-          <button type="button" id="dismiss-backup-button" class="banner-close" aria-label="关闭">x</button>
+          <button type="button" id="dismiss-backup-button" class="banner-close" aria-label="关闭">×</button>
         </div>
       </section>
 
@@ -26,17 +26,64 @@
           <p class="designer">@VZRXS</p>
         </div>
         <div class="top-controls">
-          <div class="mode-control">
-            <span class="control-label">播放模式</span>
-            <div class="mode-switch" id="mode-switch">
-              <button class="mode-button active" data-mode="local">本地播放</button>
-              <button class="mode-button" data-mode="online">在线播放</button>
+          <div class="mode-control remote-mini-control" id="remote-mini-control">
+            <span class="control-label">手机点歌</span>
+            <div class="remote-mini-trigger">
+              <div class="remote-mini-qr-wrap">
+                <img
+                  id="remote-mini-qr-image"
+                  class="remote-mini-qr-image hidden"
+                  alt="手机访问二维码缩略图"
+                />
+                <div id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder">
+                  生成中
+                </div>
+              </div>
+            </div>
+            <div class="remote-mini-popover">
+              <div class="remote-card remote-mini-popover-card">
+                <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
+                  <img
+                    id="remote-popover-qr-image"
+                    class="remote-qr-image hidden"
+                    alt="手机访问二维码"
+                  />
+                  <div id="remote-popover-qr-placeholder" class="remote-qr-placeholder">
+                    正在生成二维码...
+                  </div>
+                </div>
+                <div class="remote-copy">
+                  <p class="remote-copy-label">手机浏览器打开</p>
+                  <a id="remote-popover-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
+                    /remote
+                  </a>
+                  <p id="remote-popover-url-hint" class="remote-url-hint">
+                    请确保手机和服务端在同一个局域网内。
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="mode-control layout-control">
+            <span class="control-label">切换布局</span>
+            <div class="mode-switch" id="layout-mode-switch">
+              <button class="mode-button" data-layout-mode="basic">基础</button>
+              <button class="mode-button active" data-layout-mode="full">完整</button>
             </div>
           </div>
           <div class="status-chip" id="cache-settings">
             <button type="button" class="status-chip-toggle" id="cache-settings-toggle" aria-expanded="false">
-              <span class="control-label">BBDown</span>
-              <strong id="bbdown-status">检查中</strong>
+              <span class="status-chip-label-row">
+                <span class="control-label">服务设置</span>
+                <span
+                  class="tool-status-indicator is-loading"
+                  id="service-status-indicator"
+                  aria-hidden="true"
+                ></span>
+              </span>
+              <div class="service-mode-summary">
+                <span id="playback-mode-summary">本地缓存</span>
+              </div>
               <p class="cache-chip-meta" id="cache-chip-meta">缓存占用 0 MB</p>
             </button>
             <div class="cache-panel hidden" id="cache-panel">
@@ -47,7 +94,32 @@
                 </div>
                 <div class="cache-panel-side">
                   <p class="cache-panel-hint">关闭服务后会自动清空</p>
-                  <p class="cache-panel-hint cache-panel-tool-hint" id="ffmpeg-status-hint">FFmpeg 检查中</p>
+                  <div class="cache-panel-tool-list">
+                    <p id="bbdown-status-row">
+                      <span>BBDown</span>
+                      <button
+                        type="button"
+                        class="bbdown-login-badge is-unknown"
+                        id="bbdown-login-button"
+                      >
+                        <span class="bbdown-login-label">未登录</span>
+                        <span class="bbdown-login-hover-label">退出</span>
+                      </button>
+                      <span
+                        class="tool-status-indicator is-loading cache-panel-tool-indicator"
+                        id="bbdown-panel-status-indicator"
+                        aria-hidden="true"
+                      ></span>
+                    </p>
+                    <p id="ffmpeg-status-row">
+                      <span>FFmpeg</span>
+                      <span
+                        class="tool-status-indicator is-loading cache-panel-tool-indicator"
+                        id="ffmpeg-panel-status-indicator"
+                        aria-hidden="true"
+                      ></span>
+                    </p>
+                  </div>
                 </div>
               </div>
               <div class="cache-panel-row cache-panel-row-stack">
@@ -75,6 +147,32 @@
                   </div>
                 </div>
               </div>
+              <div class="bbdown-login-panel hidden" id="bbdown-login-panel">
+                <div class="bbdown-login-copy">
+                  <p class="cache-panel-label">BBDown 登录</p>
+                  <!-- <p class="cache-panel-hint">使用哔哩哔哩 App 扫码后，BBDown 会生成本地 BBDown.data。</p> -->
+                </div>
+                <div class="bbdown-login-qr">
+                  <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="BBDown 登录二维码" />
+                  <pre id="bbdown-login-qr-text" class="bbdown-login-qr-text hidden"></pre>
+                  <p id="bbdown-login-message" class="bbdown-login-message">正在准备二维码...</p>
+                </div>
+                <button type="button" class="toolbar-button bbdown-login-refresh" id="bbdown-login-refresh">
+                  重新生成二维码
+                </button>
+              </div>
+              <div class="cache-panel-row cache-panel-mode-row">
+                <div>
+                  <p class="cache-panel-label">播放模式</p>
+                  <p class="cache-panel-hint">⚠️在线外挂仅作为备用</p>
+                </div>
+                <div class="cache-mode-control">
+                  <span id="playback-mode-current">本地缓存</span>
+                  <button type="button" class="toolbar-button cache-mode-toggle" id="mode-switch">
+                    切换
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -88,14 +186,58 @@
                 <p class="section-tag">Now Playing</p>
                 <h2 id="current-title">还没有歌曲</h2>
               </div>
+              <button
+                type="button"
+                id="player-fullscreen-button"
+                class="toolbar-button"
+                aria-pressed="false"
+                disabled
+              >
+                全屏显示
+              </button>
             </div>
 
             <div class="player-frame" id="player-frame">
               <div class="empty-state">
-                <p>把 bilibili 视频链接加入列表后，这里会开始播放。</p>
+                <p>把 Bilibili 视频链接加入列表后，这里会开始播放。</p>
               </div>
             </div>
             <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
+            <section class="av-sync-panel" id="av-sync-panel">
+              <div class="av-sync-copy">
+                <p class="section-tag">音画延迟</p>
+                <p class="av-sync-hint">正数表示音频延后，负数表示音频提前。</p>
+              </div>
+              <div class="av-sync-controls">
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-200">-200ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-50">-50ms</button>
+                <label class="av-sync-input-wrap" for="av-offset-input">
+                  <input id="av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
+                  <span>ms</span>
+                </label>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="50">+50ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="200">+200ms</button>
+              </div>
+            </section>
+            <section class="volume-panel" id="volume-panel">
+              <div class="volume-copy">
+                <p class="section-tag">播放音量</p>
+                <p class="volume-hint">直接控制服务端当前本地播放的音量。</p>
+              </div>
+              <div class="volume-controls">
+                <button type="button" class="toolbar-button ghost volume-mute-button" id="volume-mute-button">静音</button>
+                <input
+                  id="volume-slider"
+                  class="volume-slider"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value="100"
+                />
+                <strong class="volume-value" id="volume-value">100%</strong>
+              </div>
+            </section>
           </section>
 
           <section class="request-panel">
@@ -112,7 +254,7 @@
                 id="url-input"
                 name="url"
                 type="text"
-                placeholder="视频 URL / BV 号"
+                placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
                 autocomplete="off"
               />
               <button type="submit">点歌</button>
@@ -144,29 +286,111 @@
             <div id="session-user-list" class="session-user-list"></div>
           </section>
 
-          <section class="remote-panel">
-            <div class="request-head remote-head">
-              <div>
-                <p class="section-tag">Mobile Remote</p>
-                <h2>手机点歌入口</h2>
+          <div class="bottom-grid">
+            <section class="remote-panel">
+              <div class="request-head remote-head">
+                <div>
+                  <p class="section-tag">Mobile Remote</p>
+                  <h2>手机点歌入口</h2>
+                </div>
+                <button type="button" id="copy-remote-url-button" class="toolbar-button">
+                  复制链接
+                </button>
               </div>
-              <button type="button" id="copy-remote-url-button" class="toolbar-button">复制链接</button>
-            </div>
-            <div class="remote-card">
-              <div class="remote-qr-wrap">
-                <img id="remote-qr-image" class="remote-qr-image hidden" alt="手机访问二维码" />
-                <div id="remote-qr-placeholder" class="remote-qr-placeholder">正在生成二维码...</div>
+              <div class="remote-card">
+                <div class="remote-qr-wrap">
+                  <img
+                    id="remote-qr-image"
+                    class="remote-qr-image hidden"
+                    alt="手机访问二维码"
+                  />
+                  <div id="remote-qr-placeholder" class="remote-qr-placeholder">
+                    正在生成二维码...
+                  </div>
+                </div>
+                <div class="remote-copy">
+                  <p class="remote-copy-label">手机浏览器打开</p>
+                  <a id="remote-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
+                    /remote
+                  </a>
+                  <p id="remote-url-hint" class="remote-url-hint">
+                    请确保手机和服务端在同一个局域网内。
+                  </p>
+                </div>
               </div>
-              <div class="remote-copy">
-                <p class="remote-copy-label">手机浏览器打开</p>
-                <a id="remote-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
-                  /remote
-                </a>
-                <p id="remote-url-hint" class="remote-url-hint">请确保手机和服务端在同一个局域网内。</p>
+            </section>
+
+            <section class="list-card sub-card search-sub-card">
+              <div class="search-card">
+                <div class="search-sub-card-head">
+                  <div>
+                    <p class="section-tag">Local Search</p>
+                    <h2>搜索</h2>
+                  </div>
+                </div>
+                <form id="search-form" class="search-inputs">
+                  <div class="input-group">
+                    <input type="text" id="search-query" placeholder="搜索本地歌曲目录 (需要登录或者 cookie)" autocomplete="off">
+                  </div>
+                  <button type="submit" id="search-button" class="next-button">搜索</button>
+                </form>
+                <p class="search-message" id="search-message" role="status"></p>
+                <div id="search-results" class="search-results hidden"></div>
               </div>
-            </div>
-          </section>
-        </section>
+            </section>
+            
+            <section class="gatcha-panel" id="gatcha-panel">
+             <div class="request-head gatcha-head">
+                <div>
+                 <p class="section-tag" id="gatcha-tag">gatcha Draw</p>
+                 <h2 id="gatcha-title">试试运气</h2>
+                </div>
+                <button type="button" id="gatcha-cookie-toggle" class="toolbar-button ghost gatcha-cookie-toggle">
+                  输入 Cookie
+                </button>
+              </div>
+      
+              <div id="gatcha-stage" class="gatcha-stage">
+                <div class="gatcha-stage-inner">
+                  <div id="gatcha-main-view" class="gatcha-face gatcha-face-front">
+                    <div id="gatcha-init-view" class="gatcha-content">
+                      <div class="gatcha-icon">🎲</div>
+                      <p class="gatcha-desc">从关注的投稿中随机抽取一首歌曲</p>
+                      <button type="button" id="gatcha-button" class="next-button gatcha-main-btn">试试运气</button>
+                      <p class="gatcha-message" id="gatcha-message" role="status"></p>
+                    </div>
+
+                    <div id="gatcha-result-view" class="gatcha-content hidden">
+                      <p class="gatcha-label">运气不错，抽到了：</p>
+                      <h3 id="gatcha-candidate-title">歌曲标题加载中...</h3>
+                      <div class="gatcha-actions">
+                        <button type="button" id="gatcha-confirm-button" class="next-button">确定点歌</button>
+                        <button type="button" id="gatcha-retry-button" class="toolbar-button">重新再来</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div id="gatcha-cookie-view" class="gatcha-face gatcha-face-back gatcha-cookie-view">
+                    <div class="cookie-config-bar">
+                      <div class="cookie-inputs">
+                        <div class="input-group">
+                          <label>SESSDATA</label>
+                          <input type="text" id="cookie-sessdata" placeholder="从浏览器获取的 SESSDATA">
+                        </div>
+                        <div class="input-group">
+                          <label>bili_jct</label>
+                          <input type="text" id="cookie-jct" placeholder="从浏览器获取的 bili_jct">
+                        </div>
+                        <button type="button" id="save-cookie-button" class="next-button">更新配置</button>
+                      </div>
+                      <p class="gatcha-message" id="cookie-message" role="status"></p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section> 
 
         <aside class="queue-card list-card">
           <div class="queue-card-head">
@@ -224,8 +448,11 @@
           </div>
         </aside>
       </main>
-    </div>
 
+    </div>
+    <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
+
+    <!-- Templates -->
     <template id="playlist-item-template">
       <article class="song-item" draggable="true">
         <div class="song-badge-column">
@@ -288,7 +515,7 @@
           </div>
         </div>
         <div class="history-actions">
-          <button data-action="history-tail">加入列表</button>
+          <button data-action="history-tail">点歌</button>
           <button data-action="history-next" class="secondary">顶歌</button>
         </div>
       </article>
@@ -299,6 +526,34 @@
       <div class="confirm-actions">
         <button type="button" id="confirm-cancel" class="toolbar-button">取消</button>
         <button type="button" id="confirm-ok" class="next-button">确认</button>
+      </div>
+    </div>
+
+    <div class="selection-modal hidden" id="binding-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="binding-modal-backdrop"></div>
+      <div class="selection-modal-card">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag">Part Binding</p>
+            <h2>选择分P绑定</h2>
+          </div>
+          <button type="button" id="binding-modal-close" class="banner-close" aria-label="关闭">x</button>
+        </div>
+        <p class="selection-modal-text" id="binding-modal-text">请选择要下载的视频分P和音频分P。</p>
+        <div class="selection-modal-grid">
+          <section class="selection-modal-column">
+            <h3>视频画面</h3>
+            <div id="binding-video-options" class="selection-option-list"></div>
+          </section>
+          <section class="selection-modal-column">
+            <h3>音频轨道</h3>
+            <div id="binding-audio-options" class="selection-option-list"></div>
+          </section>
+        </div>
+        <div class="selection-modal-actions">
+          <button type="button" id="binding-modal-cancel" class="toolbar-button">取消</button>
+          <button type="button" id="binding-modal-confirm" class="next-button">加入列表</button>
+        </div>
       </div>
     </div>
 

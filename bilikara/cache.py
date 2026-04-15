@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime
 import json
 import os
@@ -45,6 +46,7 @@ CREATE_NO_WINDOW = 0x08000000
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
 RETRY_REQUESTED_MESSAGE = "__retry_requested__"
+SUBPROCESS_OUTPUT_ENCODING = "gb18030" if os.name == "nt" else "utf-8"
 
 
 class CacheCancelledError(RuntimeError):
@@ -77,11 +79,17 @@ class CacheManager:
         self.item_activity_at: dict[str, float] = {}
         self.retry_requested_ids: set[str] = set()
         self.log_dir = LOG_DIR / "bbdown"
+        self.bbdown_login_process: subprocess.Popen[str] | None = None
+        self.bbdown_login_state = "idle"
+        self.bbdown_login_message = "未登录"
+        # self.bbdown_login_qr_text = ""
+        self.bbdown_login_qr_image = ""
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
 
     def status(self, metrics: dict[str, Any] | None = None) -> dict:
         cache_metrics = metrics or self.cache_metrics()
+        login_status = self.bbdown_login_status()
         with self.lock:
             return {
                 "state": self.binary_state,
@@ -90,6 +98,8 @@ class CacheManager:
                 "max_cache_items": self.max_cache_items,
                 "cache_bytes": cache_metrics["total_bytes"],
                 "cached_items": cache_metrics["item_count"],
+                "logged_in": login_status["logged_in"],
+                "login": login_status,
             }
 
     def ffmpeg_status(self) -> dict[str, Any]:
@@ -100,6 +110,63 @@ class CacheManager:
                 "message": self.ffmpeg_message,
                 "path": str(FFMPEG_RUNTIME_PATH),
             }
+
+    def bbdown_login_status(self) -> dict[str, Any]:
+        logged_in = self._bbdown_data_path().exists()
+        with self.lock:
+            if logged_in:
+                state = "logged_in"
+                message = "BBDown 已登录"
+            else:
+                state = self.bbdown_login_state
+                message = self.bbdown_login_message
+            return {
+                "logged_in": logged_in,
+                "state": state,
+                "message": message,
+                "data_path": str(self._bbdown_data_path()),
+                # "qr_text": "" if logged_in else self.bbdown_login_qr_text,
+                "qr_image": "" if logged_in else self.bbdown_login_qr_image,
+            }
+
+    def start_bbdown_login(self, *, force_refresh_qr: bool = False) -> dict[str, Any]:
+        if self._bbdown_data_path().exists():
+            return self.bbdown_login_status()
+        process_to_stop: subprocess.Popen[str] | None = None
+        with self.lock:
+            if self.bbdown_login_process and self.bbdown_login_process.poll() is None and not force_refresh_qr:
+                return self.bbdown_login_status()
+            if self.bbdown_login_process and self.bbdown_login_process.poll() is None:
+                process_to_stop = self.bbdown_login_process
+                self.bbdown_login_process = None
+            self.bbdown_login_state = "starting"
+            self.bbdown_login_message = "正在启动 BBDown 登录"
+            # self.bbdown_login_qr_text = ""
+            self.bbdown_login_qr_image = ""
+        self._terminate_process(process_to_stop)
+        self._remove_bbdown_qr_image()
+        threading.Thread(target=self._bbdown_login_worker, daemon=True).start()
+        return self.bbdown_login_status()
+
+    def logout_bbdown(self) -> dict[str, Any]:
+        with self.lock:
+            process = self.bbdown_login_process
+            self.bbdown_login_process = None
+        self._terminate_process(process)
+        self._remove_bbdown_qr_image()
+        try:
+            self._bbdown_data_path().unlink(missing_ok=True)
+        except OSError as exc:
+            with self.lock:
+                self.bbdown_login_state = "failed"
+                self.bbdown_login_message = f"退出登录失败: {exc}"
+            return self.bbdown_login_status()
+        with self.lock:
+            self.bbdown_login_state = "idle"
+            self.bbdown_login_message = "未登录"
+            # self.bbdown_login_qr_text = ""
+            self.bbdown_login_qr_image = ""
+        return self.bbdown_login_status()
 
     def policy_snapshot(self, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
         cache_metrics = metrics or self.cache_metrics()
@@ -185,6 +252,8 @@ class CacheManager:
                 cache_message=self._waiting_message(),
                 local_relative_path="",
                 local_media_url="",
+                video_relative_path="",
+                video_media_url="",
                 audio_variants=[],
                 selected_audio_variant_id="",
                 persist_backup=False,
@@ -214,6 +283,8 @@ class CacheManager:
                 cache_message="缓存已在退出时清空",
                 local_relative_path="",
                 local_media_url="",
+                video_relative_path="",
+                video_media_url="",
                 audio_variants=[],
                 selected_audio_variant_id="",
                 persist_backup=False,
@@ -246,6 +317,8 @@ class CacheManager:
             cache_message="准备重新下载",
             local_relative_path="",
             local_media_url="",
+            video_relative_path="",
+            video_media_url="",
             audio_variants=[],
             selected_audio_variant_id="",
             persist_backup=False,
@@ -305,6 +378,180 @@ class CacheManager:
         # The current implementation always uses the multi-track pipeline.
         # Keep the old single-pass BBDown flow in `_cache_item_legacy()` for reference.
         self._cache_item_multi(item_id, item, allow_refresh_retry=allow_refresh_retry)
+        return
+
+        self.store.update_item(
+            item_id,
+            cache_status="queued",
+            cache_progress=0.0,
+            cache_message="等待缓存队列",
+            persist_backup=False,
+        )
+
+        try:
+            binary_path = self._ensure_bbdown()
+        except Exception as exc:  # noqa: BLE001
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message=f"BBDown 不可用: {exc}",
+                persist_backup=False,
+            )
+            return
+
+        try:
+            ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
+        except Exception as exc:  # noqa: BLE001
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message=f"FFmpeg 不可用: {exc}",
+                persist_backup=False,
+            )
+            return
+
+        if not self._should_cache(item_id):
+            return
+
+        item_dir = CACHE_DIR / item_id
+        item_dir.mkdir(parents=True, exist_ok=True)
+        log_path = self._item_log_path(item_id)
+        self.store.update_item(
+            item_id,
+            cache_status="downloading",
+            cache_message="开始缓存视频",
+            persist_backup=False,
+        )
+        self._append_log_line(log_path, "")
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
+
+        command = [
+            str(binary_path),
+            item.resolved_url,
+            "-p",
+            str(item.page),
+            "--work-dir",
+            str(item_dir),
+            "--ffmpeg-path",
+            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
+            "--file-pattern",
+            "video",
+            "--skip-subtitle",
+            "--skip-cover",
+            "--skip-ai",
+        ]
+        if COOKIE:
+            command.extend(["-c", COOKIE])
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+
+        cancelled = False
+        cancel_message = "缓存已停止"
+        last_message = "缓存中"
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding=SUBPROCESS_OUTPUT_ENCODING,
+            errors="replace",
+            bufsize=1,
+            cwd=str(BB_DOWN_DIR),
+            env=self._tool_process_env(ffmpeg_path),
+            **self._hidden_process_kwargs(),
+        )
+        with self.lock:
+            self.active_process = process
+            self.active_item_id = item_id
+        try:
+            assert process.stdout is not None
+            for raw_line in self._iter_output_messages(process.stdout):
+                line = self._normalize_output_line(raw_line)
+                if not line:
+                    continue
+                last_message = line
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+                progress = self._extract_progress(line)
+                changes = {"cache_message": self._display_message(line, progress)}
+                if progress is not None:
+                    changes["cache_progress"] = progress
+                self.store.update_item(item_id, persist_backup=False, **changes)
+                if self.stop_event.is_set():
+                    cancelled = True
+                    cancel_message = "缓存已停止"
+                    self._terminate_process(process)
+                    break
+                if not self._should_cache(item_id):
+                    cancelled = True
+                    cancel_message = self._outside_window_message()
+                    self._terminate_process(process)
+                    break
+            return_code = process.wait()
+        finally:
+            with self.lock:
+                if self.active_process is process:
+                    self.active_process = None
+                    self.active_item_id = None
+
+        if cancelled or self.stop_event.is_set() or not self._should_cache(item_id):
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {cancel_message}")
+            self._drop_item_cache(item_id, cancel_message)
+            return
+
+        if return_code != 0:
+            if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
+                )
+                try:
+                    self._ensure_bbdown(force_refresh=True)
+                    shutil.rmtree(item_dir, ignore_errors=True)
+                    item_dir.mkdir(parents=True, exist_ok=True)
+                    self._cache_item(item_id, allow_refresh_retry=False)
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    self._append_log_line(
+                        log_path,
+                        f"[{self._log_timestamp()}] forced BBDown refresh failed: {exc}",
+                    )
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] failed with exit code {return_code}: {last_message}",
+            )
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message=f"缓存失败: {last_message}",
+                persist_backup=False,
+            )
+            return
+
+        media_file = self._find_media_file(item_dir)
+        if not media_file:
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] failed: media file not found after download",
+            )
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message="缓存完成，但没有找到可播放文件",
+                persist_backup=False,
+            )
+            return
+
+        relative_path = str(media_file.relative_to(CACHE_DIR))
+        self.store.update_item(
+            item_id,
+            cache_status="ready",
+            cache_progress=100.0,
+            cache_message="缓存已完成",
+            local_relative_path=relative_path,
+            local_media_url=self._build_media_url(relative_path),
+            persist_backup=False,
+        )
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
 
     def _cache_item_multi(self, item_id: str, item, *, allow_refresh_retry: bool) -> None:
         self.store.update_item(
@@ -406,6 +653,8 @@ class CacheManager:
             cache_message=self._ready_message(item),
             local_relative_path=relative_path,
             local_media_url=self._build_media_url(relative_path),
+            video_relative_path=cache_result["video_relative_path"],
+            video_media_url=cache_result["video_media_url"],
             audio_variants=cache_result["audio_variants"],
             selected_audio_variant_id=cache_result["selected_audio_variant_id"],
             persist_backup=False,
@@ -621,10 +870,11 @@ class CacheManager:
             stage_count=download_stage_count,
         )
 
-        audio_files: list[tuple[Path, str]] = []
+        audio_files: list[tuple[int, Path, str]] = []
         for stage_offset, page in enumerate(selected_pages, start=1):
             audio_files.append(
                 (
+                    page,
                     self._download_page_stream(
                         item,
                         binary_path,
@@ -724,6 +974,7 @@ class CacheManager:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding=SUBPROCESS_OUTPUT_ENCODING,
             errors="replace",
             bufsize=1,
             cwd=str(BB_DOWN_DIR),
@@ -783,7 +1034,7 @@ class CacheManager:
         log_path: Path,
         *,
         video_file: Path,
-        audio_files: list[tuple[Path, str]],
+        audio_files: list[tuple[int, Path, str]],
     ) -> dict[str, object]:
         item_id = item.id
         output_dir = item_dir / "output"
@@ -792,13 +1043,13 @@ class CacheManager:
         output_file.unlink(missing_ok=True)
 
         command = [str(ffmpeg_path), "-y", "-i", str(video_file)]
-        for audio_file, _label in audio_files:
+        for _page, audio_file, _label in audio_files:
             command.extend(["-i", str(audio_file)])
         command.extend(["-map", "0:v:0"])
         for index in range(len(audio_files)):
             command.extend(["-map", f"{index + 1}:a:0"])
         command.extend(["-c", "copy", "-movflags", "+faststart"])
-        for index, (_audio_file, label) in enumerate(audio_files):
+        for index, (_page, _audio_file, label) in enumerate(audio_files):
             command.extend([f"-metadata:s:a:{index}", f"title={label}"])
             command.extend([f"-disposition:a:{index}", "default" if index == 0 else "0"])
         command.append(str(output_file))
@@ -817,6 +1068,7 @@ class CacheManager:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding=SUBPROCESS_OUTPUT_ENCODING,
             errors="replace",
             bufsize=1,
             cwd=str(BB_DOWN_DIR),
@@ -877,14 +1129,22 @@ class CacheManager:
             video_file=video_file,
             audio_files=audio_files,
         )
-        audio_variants = [
-            {
-                "id": variant_id,
-                "label": label,
-                "media_url": self._build_media_url(str(path.relative_to(CACHE_DIR))),
-            }
-            for variant_id, label, path in variant_files
-        ]
+        audio_variants = []
+        for index, (variant_id, label, path) in enumerate(variant_files):
+            raw_audio_file = audio_files[index][1] if index < len(audio_files) else None
+            raw_audio_url = (
+                self._build_media_url(str(raw_audio_file.relative_to(CACHE_DIR)))
+                if raw_audio_file is not None
+                else ""
+            )
+            audio_variants.append(
+                {
+                    "id": variant_id,
+                    "label": label,
+                    "media_url": self._build_media_url(str(path.relative_to(CACHE_DIR))),
+                    "audio_url": raw_audio_url,
+                }
+            )
         existing_variant_id = str(item.selected_audio_variant_id or "").strip()
         allowed_variant_ids = {
             str(variant.get("id") or "").strip()
@@ -898,6 +1158,8 @@ class CacheManager:
         )
         return {
             "media_file": output_file,
+            "video_relative_path": str(video_file.relative_to(CACHE_DIR)),
+            "video_media_url": self._build_media_url(str(video_file.relative_to(CACHE_DIR))),
             "audio_variants": audio_variants,
             "selected_audio_variant_id": selected_audio_variant_id,
         }
@@ -910,17 +1172,20 @@ class CacheManager:
         log_path: Path,
         *,
         video_file: Path,
-        audio_files: list[tuple[Path, str]],
+        audio_files: list[tuple[int, Path, str]],
     ) -> list[tuple[str, str, Path]]:
         if len(audio_files) <= 1:
-            return [("default", audio_files[0][1] if audio_files else "Default", item_dir / "output" / "video.mp4")]
+            if not audio_files:
+                return [("default", "Default", item_dir / "output" / "video.mp4")]
+            page, _audio_file, label = audio_files[0]
+            return [(self._variant_id(page, label, 0), label, item_dir / "output" / "video.mp4")]
 
         variant_files: list[tuple[str, str, Path]] = []
         variants_dir = item_dir / "variants"
         variants_dir.mkdir(parents=True, exist_ok=True)
 
-        for index, (audio_file, label) in enumerate(audio_files):
-            variant_id = self._variant_id(label, index)
+        for index, (page, audio_file, label) in enumerate(audio_files):
+            variant_id = self._variant_id(page, label, index)
             variant_path = variants_dir / f"{variant_id}.mp4"
             variant_path.unlink(missing_ok=True)
             command = [
@@ -960,9 +1225,10 @@ class CacheManager:
         return variant_files
 
     @staticmethod
-    def _variant_id(label: str, index: int) -> str:
+    def _variant_id(page: int, label: str, index: int) -> str:
         normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-        return normalized or f"track_{index + 1}"
+        suffix = normalized or f"track_{index + 1}"
+        return f"p{max(int(page), 1)}_{suffix}"
 
     @staticmethod
     def _page_url(base_url: str, page: int) -> str:
@@ -1025,8 +1291,32 @@ class CacheManager:
                 return override
 
             current_binary = self._local_binary_path()
-            release = self._fetch_latest_release()
-            latest_version = str(release["tag_name"])
+            local_version = ""
+            if BB_DOWN_VERSION_FILE.exists():
+                local_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
+
+            release: dict[str, Any] | None = None
+            latest_version = ""
+            release_error: Exception | None = None
+            try:
+                release = self._fetch_latest_release()
+                latest_version = str(release["tag_name"])
+            except Exception as exc:  # noqa: BLE001
+                release_error = exc
+
+            if release is None:
+                if current_binary.exists() and not force_refresh:
+                    current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
+                    with self.lock:
+                        self.binary_state = "ready"
+                        self.binary_version = local_version
+                        if local_version:
+                            self.binary_message = f"BBDown {local_version} 已就绪（未检查更新）"
+                        else:
+                            self.binary_message = "BBDown 已就绪（未检查更新）"
+                    return current_binary
+                raise RuntimeError(f"无法检查 BBDown 最新版本: {release_error}")
+
             version_matches = (
                 not force_refresh
                 and
@@ -1294,6 +1584,59 @@ class CacheManager:
         return str(target)
 
     @staticmethod
+    def _bbdown_data_path() -> Path:
+        return BB_DOWN_DIR / "BBDown.data"
+
+    @staticmethod
+    def _bbdown_qr_image_path() -> Path:
+        return BB_DOWN_DIR / "qrcode.png"
+
+    def _remove_bbdown_qr_image(self) -> None:
+        try:
+            self._bbdown_qr_image_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # @staticmethod
+    # def _extract_terminal_qr_text(output: str) -> str:
+    #     lines = [ANSI_ESCAPE_RE.sub("", line).rstrip() for line in str(output or "").splitlines()]
+    #     block_chars = ("█", "■", "▓", "▀", "▄")
+    #     qr_lines = [line for line in lines if any(char in line for char in block_chars)]
+    #     if len(qr_lines) < 8:
+    #         return ""
+    #     return "\n".join(qr_lines[-48:])
+
+    # @staticmethod
+    # def _terminal_qr_svg_data_url(qr_text: str) -> str:
+    #     lines = [line.rstrip() for line in str(qr_text or "").splitlines() if line.rstrip()]
+    #     if len(lines) < 8:
+    #         return ""
+
+    #     width = max(len(line) for line in lines)
+    #     cell = 4
+    #     cells_w = max(1, (width + 1) // 2)
+    #     cells_h = len(lines)
+    #     rects: list[str] = []
+    #     dark_chars = {"█", "■", "▓", "▀", "▄"}
+    #     for y, line in enumerate(lines):
+    #         padded = line.ljust(width)
+    #         for x in range(cells_w):
+    #             chunk = padded[x * 2 : x * 2 + 2]
+    #             if any(char in dark_chars for char in chunk):
+    #                 rects.append(f'<rect x="{x * cell}" y="{y * cell}" width="{cell}" height="{cell}"/>')
+
+    #     if not rects:
+    #         return ""
+
+    #     svg = (
+    #         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {cells_w * cell} {cells_h * cell}" '
+    #         f'shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/>'
+    #         f'<g fill="#111">{"".join(rects)}</g></svg>'
+    #     )
+    #     encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    #     return f"data:image/svg+xml;base64,{encoded}"
+
+    @staticmethod
     def _tool_process_env(binary_path: Path) -> dict[str, str]:
         env = os.environ.copy()
         path_entries = []
@@ -1378,6 +1721,7 @@ class CacheManager:
             self.store.update_item(
                 item.id,
                 local_media_url=self._build_media_url(item.local_relative_path),
+                video_media_url=self._build_media_url(item.video_relative_path) if item.video_relative_path else "",
                 audio_variants=item.audio_variants,
                 selected_audio_variant_id=item.selected_audio_variant_id,
                 cache_status="ready",
@@ -1399,6 +1743,8 @@ class CacheManager:
             cache_message="等待缓存",
             local_relative_path="",
             local_media_url="",
+            video_relative_path="",
+            video_media_url="",
             audio_variants=[],
             selected_audio_variant_id="",
             persist_backup=False,
@@ -1415,6 +1761,8 @@ class CacheManager:
             cache_message=message,
             local_relative_path="",
             local_media_url="",
+            video_relative_path="",
+            video_media_url="",
             audio_variants=[],
             selected_audio_variant_id="",
             persist_backup=False,
@@ -1468,6 +1816,91 @@ class CacheManager:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+
+    def _bbdown_login_worker(self) -> None:
+            try:
+                self._remove_bbdown_qr_image()
+                binary_path = self._ensure_bbdown()
+            except Exception as exc:  # noqa: BLE001
+                with self.lock:
+                    self.bbdown_login_state = "failed"
+                    self.bbdown_login_message = f"BBDown 不可用: {exc}"
+                return
+
+            command = [str(binary_path), "login"]
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    encoding=SUBPROCESS_OUTPUT_ENCODING,
+                    errors="replace",
+                    bufsize=1,
+                    cwd=str(BB_DOWN_DIR),
+                    env=self._tool_process_env(binary_path),
+                    **self._hidden_process_kwargs(),
+                )
+            except OSError as exc:
+                with self.lock:
+                    self.bbdown_login_state = "failed"
+                    self.bbdown_login_message = f"启动 BBDown 登录失败: {exc}"
+                return
+
+            with self.lock:
+                self.bbdown_login_process = process
+                self.bbdown_login_state = "waiting"
+                self.bbdown_login_message = "请使用哔哩哔哩 App 扫码登录"
+
+            output_lines: list[str] = []
+            try:
+                assert process.stdout is not None
+                for raw_line in self._iter_output_messages(process.stdout):
+                    line = self._normalize_output_line(raw_line)
+                    if not line:
+                        continue
+                    output_lines.append(line)
+                    del output_lines[:-80]
+                    
+                    qr_image_path = self._bbdown_qr_image_path()
+                    qr_image = "" 
+                    
+                    try:
+                        if qr_image_path.stat().st_size > 0:
+                            with qr_image_path.open("rb") as image_file:
+                                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                                qr_image = f"data:image/png;base64,{encoded_string}"
+                    except Exception:
+                        pass
+                    
+                    with self.lock:
+                        if self.bbdown_login_process is process:
+                            self.bbdown_login_qr_image = qr_image
+                    
+                    if self._bbdown_data_path().exists():
+                        break
+            finally:
+                if process.poll() is None and self._bbdown_data_path().exists():
+                    self._terminate_process(process)
+                return_code = process.poll()
+                if return_code is None:
+                    try:
+                        return_code = process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        return_code = None
+                with self.lock:
+                    is_current_process = self.bbdown_login_process is process
+                    if is_current_process:
+                        self.bbdown_login_process = None
+                    if self._bbdown_data_path().exists():
+                        self._remove_bbdown_qr_image()
+                        self.bbdown_login_state = "logged_in"
+                        self.bbdown_login_message = "BBDown 已登录"
+                        self.bbdown_login_qr_image = ""
+                    elif is_current_process and self.bbdown_login_state not in {"failed", "idle"} and return_code not in (None, 0):
+                        self.bbdown_login_state = "failed"
+                        self.bbdown_login_message = "BBDown 登录失败，请重试"
 
     def _outside_window_message(self) -> str:
         if self.max_cache_items <= 0:

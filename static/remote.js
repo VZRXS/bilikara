@@ -1,4 +1,9 @@
 const pollIntervalMs = 1500;
+const audioVariantSwitchDebounceMs = 350;
+const gatchaCooldownMs = 15000;
+const storageKeys = {
+  layoutMode: "bilikara.remote.layout.mode",
+};
 
 const state = {
   clientId: createClientId(),
@@ -7,21 +12,67 @@ const state = {
   submitting: false,
   listView: "queue",
   playerControlPendingAction: "",
+  audioVariantSwitchInFlight: false,
+  audioVariantSwitchUnlockAt: 0,
+  audioVariantSwitchTimer: null,
+  audioVariantBarExpanded: false,
+  audioVariantBarItemId: "",
+  bindingSheetOpen: false,
+  bindingIntent: null,
+  bindingAccordion: {
+    video: false,
+    audio: false,
+  },
+  gatchaCandidate: null,
+  gatchaCooldownUntil: 0,
+  gatchaCooldownTimer: null,
+  layoutMode: "full",
 };
 
 const elements = {
+  remoteShell: document.getElementById("remote-shell"),
+  layoutModeSwitch: document.getElementById("layout-mode-switch"),
   currentTitle: document.getElementById("current-title"),
   currentRequester: document.getElementById("current-requester"),
   currentMeta: document.getElementById("current-meta"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
   playerControlHint: document.getElementById("player-control-hint"),
+  remoteAvSyncPanel: document.getElementById("remote-av-sync-panel"),
+  remoteAvOffsetInput: document.getElementById("remote-av-offset-input"),
+  remoteVolumePanel: document.getElementById("remote-volume-panel"),
+  remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
+  remoteVolumeSlider: document.getElementById("remote-volume-slider"),
+  remoteVolumeValue: document.getElementById("remote-volume-value"),
+  bindingSheet: document.getElementById("binding-sheet"),
+  bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
+  bindingSheetText: document.getElementById("binding-sheet-text"),
+  bindingVideoToggle: document.getElementById("binding-video-toggle"),
+  bindingAudioToggle: document.getElementById("binding-audio-toggle"),
+  bindingSheetVideoOptionsWrap: document.getElementById("binding-sheet-video-options-wrap"),
+  bindingSheetAudioOptionsWrap: document.getElementById("binding-sheet-audio-options-wrap"),
+  bindingSheetVideoOptions: document.getElementById("binding-sheet-video-options"),
+  bindingSheetAudioOptions: document.getElementById("binding-sheet-audio-options"),
+  bindingSheetClose: document.getElementById("binding-sheet-close"),
+  bindingSheetCancel: document.getElementById("binding-sheet-cancel"),
+  bindingSheetConfirm: document.getElementById("binding-sheet-confirm"),
   requestForm: document.getElementById("request-form"),
   requesterSelect: document.getElementById("requester-select"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
+  searchForm: document.getElementById("search-form"),
+  searchQuery: document.getElementById("search-query"),
+  searchButton: document.getElementById("search-button"),
+  searchResults: document.getElementById("search-results"),
   addNextButton: document.getElementById("add-next-button"),
   refreshButton: document.getElementById("refresh-button"),
+  gatchaButton: document.getElementById("gatcha-button"),
+  gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
+  gatchaRetryButton: document.getElementById("gatcha-retry-button"),
+  gatchaMessage: document.getElementById("gatcha-message"),
+  gatchaInitView: document.getElementById("gatcha-init-view"),
+  gatchaResultView: document.getElementById("gatcha-result-view"),
+  gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
   listTag: document.getElementById("list-tag"),
   listTitle: document.getElementById("list-title"),
   listCount: document.getElementById("list-count"),
@@ -56,9 +107,69 @@ function selectedRequesterName() {
   return String(elements.requesterSelect?.value || "").trim();
 }
 
+function readLocalString(key, fallbackValue) {
+  try {
+    const rawValue = window.localStorage?.getItem(key);
+    return rawValue == null ? fallbackValue : String(rawValue);
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function writeLocalPreference(key, value) {
+  try {
+    window.localStorage?.setItem(key, String(value));
+  } catch {
+    // Ignore storage failures and keep runtime behavior working.
+  }
+}
+
+function normalizeLayoutMode(value) {
+  if (value === "basic" || value === "normal") {
+    return "basic";
+  }
+  return "full";
+}
+
+function hydrateLocalPreferences() {
+  state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
+}
+
+function renderLayoutMode() {
+  const layoutMode = normalizeLayoutMode(state.layoutMode);
+  elements.remoteShell?.classList.toggle("layout-mode-basic", layoutMode === "basic");
+  elements.remoteShell?.classList.toggle("layout-mode-full", layoutMode === "full");
+  elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
+  });
+}
+
+function setLayoutMode(mode) {
+  const nextMode = normalizeLayoutMode(mode);
+  if (state.layoutMode === nextMode) {
+    renderLayoutMode();
+    return;
+  }
+  state.layoutMode = nextMode;
+  writeLocalPreference(storageKeys.layoutMode, nextMode);
+  renderLayoutMode();
+}
+
 function setFormMessage(message, isError = false) {
   elements.formMessage.textContent = message;
   elements.formMessage.classList.toggle("error", isError);
+}
+
+function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
+  const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || "这首歌";
+  const count = Number(sessionEntry?.request_count || 0);
+  if (activeItem && count > 0) {
+    return `《${title}》当前列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
+  }
+  if (activeItem) {
+    return `《${title}》当前列表里已经有了，仍要继续点歌吗？`;
+  }
+  return `《${title}》本次已经点过 ${count || 1} 次，仍要继续点歌吗？`;
 }
 
 async function apiPost(url, payload = {}) {
@@ -78,6 +189,49 @@ async function apiPost(url, payload = {}) {
   return data.data;
 }
 
+async function submitAddRequest(url, position, options = {}) {
+  return apiPost("/api/playlist/add", {
+    url,
+    position,
+    requester_name: String(options.requesterName || ""),
+    allow_repeat: Boolean(options.allowRepeat),
+    selected_video_page: Number.isInteger(options.selectedVideoPage) ? options.selectedVideoPage : undefined,
+    selected_audio_pages: Array.isArray(options.selectedAudioPages) ? options.selectedAudioPages : undefined,
+  });
+}
+
+async function submitAddRequestWithDuplicateConfirm(url, position, requesterName, options = {}) {
+  try {
+    return {
+      cancelled: false,
+      data: await submitAddRequest(url, position, { requesterName, ...options }),
+    };
+  } catch (error) {
+    if (error.code !== "duplicate_session_request") {
+      throw error;
+    }
+    const confirmed = window.confirm(
+      duplicateConfirmMessage(
+        error.payload?.duplicate_item,
+        error.payload?.session_entry,
+        error.payload?.active_item,
+      ),
+    );
+    if (!confirmed) {
+      return { cancelled: true, data: null };
+    }
+    return {
+      cancelled: false,
+      data: await submitAddRequest(url, position, {
+        requesterName,
+        allowRepeat: true,
+        selectedVideoPage: Number.isInteger(options.selectedVideoPage) ? options.selectedVideoPage : undefined,
+        selectedAudioPages: Array.isArray(options.selectedAudioPages) ? options.selectedAudioPages : undefined,
+      }),
+    };
+  }
+}
+
 async function fetchState() {
   const response = await fetch("/api/state", { headers: clientHeaders() });
   const payload = await response.json();
@@ -86,6 +240,126 @@ async function fetchState() {
   }
   state.data = payload.data;
   render();
+}
+
+async function searchGatchaCache(query) {
+  const normalizedQuery = String(query || "").trim();
+  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}`, {
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "搜索失败");
+  }
+  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+function hideSearchResults() {
+  elements.searchResults.innerHTML = "";
+  elements.searchResults.classList.add("hidden");
+}
+
+function renderSearchResults(items) {
+  elements.searchResults.innerHTML = "";
+  elements.searchResults.classList.remove("hidden");
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = "未找到缓存结果。";
+    elements.searchResults.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "search-result-item";
+
+    const meta = document.createElement("div");
+
+    const title = document.createElement("div");
+    title.className = "search-result-title";
+    title.textContent = String(item.title || "");
+
+    const url = document.createElement("div");
+    url.className = "search-result-url";
+    url.textContent = String(item.bvid || "");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "primary-button";
+    button.dataset.url = String(item.url || "");
+    button.textContent = "点歌";
+
+    meta.append(title, url);
+    row.append(meta, button);
+    elements.searchResults.appendChild(row);
+  });
+}
+
+async function handleGatchaDraw() {
+  if (gatchaCooldownRemainingSeconds() > 0) {
+    syncGatchaCooldownButtons();
+    return;
+  }
+  setGatchaMessage("正在随机抽取一首歌曲...");
+  try {
+    const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || "试试运气失败");
+    }
+
+    state.gatchaCandidate = payload.data;
+    elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
+    startGatchaCooldown();
+    elements.gatchaInitView.classList.add("hidden");
+    elements.gatchaResultView.classList.remove("hidden");
+    setGatchaMessage("");
+  } catch (error) {
+    setGatchaMessage(error.message, true);
+  }
+}
+
+function setGatchaMessage(message, isError = false) {
+  if (!elements.gatchaMessage) {
+    return;
+  }
+  elements.gatchaMessage.textContent = message || "";
+  elements.gatchaMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function gatchaCooldownRemainingSeconds() {
+  return Math.max(0, Math.ceil((state.gatchaCooldownUntil - Date.now()) / 1000));
+}
+
+function startGatchaCooldown() {
+  state.gatchaCooldownUntil = Date.now() + gatchaCooldownMs;
+  syncGatchaCooldownButtons();
+  if (state.gatchaCooldownTimer) {
+    clearInterval(state.gatchaCooldownTimer);
+  }
+  state.gatchaCooldownTimer = setInterval(() => {
+    syncGatchaCooldownButtons();
+    if (gatchaCooldownRemainingSeconds() <= 0) {
+      clearInterval(state.gatchaCooldownTimer);
+      state.gatchaCooldownTimer = null;
+    }
+  }, 250);
+}
+
+function syncGatchaCooldownButtons() {
+  const remainingSeconds = gatchaCooldownRemainingSeconds();
+  const coolingDown = remainingSeconds > 0;
+  const cooldownText = `等待 ${remainingSeconds}s`;
+  if (elements.gatchaButton) {
+    elements.gatchaButton.disabled = coolingDown;
+    elements.gatchaButton.textContent = coolingDown ? cooldownText : "试试运气";
+  }
+  if (elements.gatchaRetryButton) {
+    elements.gatchaRetryButton.disabled = coolingDown;
+    elements.gatchaRetryButton.textContent = coolingDown ? cooldownText : "重新再来";
+  }
 }
 
 function render() {
@@ -98,10 +372,13 @@ function render() {
   renderCurrentItem(data.current_item, data.playback_mode);
   renderAudioVariantBar(data.current_item, data.playback_mode);
   renderPlayerControls(data.current_item, data.playback_mode);
+  renderRemoteAvSyncControls(data.playback_mode, data.player_settings);
+  renderRemoteVolumeControls(data.playback_mode, data.player_settings);
   renderListHeader(data.playlist || [], data.history || []);
   renderQueue(Array.isArray(data.playlist) ? data.playlist : []);
   renderHistory(Array.isArray(data.history) ? data.history : []);
   syncListView();
+  renderLayoutMode();
 }
 
 function renderRequesterSelect(sessionUsers) {
@@ -123,6 +400,8 @@ function renderRequesterSelect(sessionUsers) {
 
   if (previousValue && users.includes(previousValue)) {
     elements.requesterSelect.value = previousValue;
+  } else if (users.length) {
+    elements.requesterSelect.value = users[0];
   } else {
     elements.requesterSelect.value = "";
   }
@@ -135,7 +414,7 @@ function renderCurrentItem(current, playbackMode) {
     const requesterText = requesterBadgeText(current.requester_name);
     elements.currentRequester.textContent = requesterText;
     elements.currentRequester.classList.toggle("hidden", !requesterText);
-    const modeLabel = playbackMode === "online" ? "在线播放" : "本地播放";
+    const modeLabel = playbackMode === "online" ? "在线外挂" : "本地缓存";
     const cacheText = current.cache_message || "等待缓存";
     elements.currentMeta.textContent = `${modeLabel} · ${cacheText}`;
     return;
@@ -151,11 +430,76 @@ function audioVariantsForItem(item) {
   if (!item || !Array.isArray(item.audio_variants)) {
     return [];
   }
-  return item.audio_variants.filter((variant) => variant && variant.media_url);
+  return item.audio_variants.filter(
+    (variant) => variant && (variant.media_url || variant.audio_url),
+  );
+}
+
+function variantIdForLabel(page, label, index) {
+  const normalized = String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const suffix = normalized || `track_${index + 1}`;
+  return `p${Math.max(1, Number(page || index + 1))}_${suffix}`;
+}
+
+function availablePartEntriesForItem(item) {
+  if (!item) {
+    return [];
+  }
+  const pages = Array.isArray(item.available_pages) && item.available_pages.length
+    ? item.available_pages
+    : item.selected_pages;
+  const parts = Array.isArray(item.available_parts) && item.available_parts.length
+    ? item.available_parts
+    : item.selected_parts;
+  const durations = Array.isArray(item.available_durations) && item.available_durations.length
+    ? item.available_durations
+    : item.selected_durations;
+  if (!Array.isArray(pages) || !Array.isArray(parts) || pages.length <= 1) {
+    return null;
+  }
+  return pages
+    .map((page, index) => {
+      const numericPage = Number(page || 0);
+      if (!numericPage) {
+        return null;
+      }
+      const label = String(parts[index] || `P${numericPage}`).trim() || `P${numericPage}`;
+      return {
+        page: numericPage,
+        label,
+        duration: Number(durations[index] || 0),
+        id: variantIdForLabel(numericPage, label, index),
+        bound: Array.isArray(item.selected_pages)
+          ? item.selected_pages.some((selectedPage) => Number(selectedPage) === numericPage)
+          : false,
+      };
+    })
+    .filter(Boolean);
+}
+
+function partOptionsForItem(item) {
+  const availableParts = availablePartEntriesForItem(item);
+  if (!availableParts?.length) {
+    return [];
+  }
+  const cachedVariantsById = new Map(
+    audioVariantsForItem(item).map((variant) => [String(variant.id || "").trim(), variant]),
+  );
+  return availableParts.map((entry) => {
+    const cachedVariant = cachedVariantsById.get(entry.id);
+    return {
+      ...entry,
+      media_url: String(cachedVariant?.media_url || ""),
+      audio_url: String(cachedVariant?.audio_url || ""),
+    };
+  });
 }
 
 function selectedAudioVariantForItem(item) {
-  const variants = audioVariantsForItem(item);
+  const variants = partOptionsForItem(item).filter((variant) => variant.bound);
   if (!variants.length) {
     return null;
   }
@@ -163,22 +507,57 @@ function selectedAudioVariantForItem(item) {
   return variants.find((variant) => variant.id === selectedId) || variants[0];
 }
 
+function audioVariantSwitchLocked() {
+  if (state.audioVariantSwitchInFlight && Date.now() >= state.audioVariantSwitchUnlockAt) {
+    state.audioVariantSwitchInFlight = false;
+  }
+  return state.audioVariantSwitchInFlight || Date.now() < state.audioVariantSwitchUnlockAt;
+}
+
+function scheduleAudioVariantSwitchUnlock() {
+  if (state.audioVariantSwitchTimer) {
+    window.clearTimeout(state.audioVariantSwitchTimer);
+    state.audioVariantSwitchTimer = null;
+  }
+  const remainingMs = Math.max(0, state.audioVariantSwitchUnlockAt - Date.now());
+  state.audioVariantSwitchTimer = window.setTimeout(() => {
+    state.audioVariantSwitchInFlight = false;
+    state.audioVariantSwitchUnlockAt = 0;
+    state.audioVariantSwitchTimer = null;
+    if (state.data) {
+      renderAudioVariantBar(state.data.current_item, state.data.playback_mode);
+    }
+  }, remainingMs);
+}
+
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
     elements.audioVariantBar.innerHTML = "";
     elements.audioVariantBar.classList.add("hidden");
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = "";
     return;
   }
 
-  const variants = audioVariantsForItem(currentItem);
+  const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
     elements.audioVariantBar.innerHTML = "";
     elements.audioVariantBar.classList.add("hidden");
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = currentItem.id;
     return;
   }
 
+  if (state.audioVariantBarItemId !== currentItem.id) {
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = currentItem.id;
+  }
+
   const selectedVariant = selectedAudioVariantForItem(currentItem);
+  const buttonsDisabled = audioVariantSwitchLocked();
   elements.audioVariantBar.innerHTML = "";
+  const list = document.createElement("div");
+  list.className = "audio-variant-list";
   variants.forEach((variant) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -186,10 +565,282 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     button.textContent = variant.label || variant.id;
     button.dataset.itemId = currentItem.id;
     button.dataset.variantId = variant.id;
-    button.classList.toggle("active", variant.id === selectedVariant?.id);
-    elements.audioVariantBar.appendChild(button);
+    button.dataset.page = String(variant.page || "");
+    button.dataset.bound = String(Boolean(variant.bound));
+    button.disabled = variant.bound ? buttonsDisabled : false;
+    button.classList.toggle("active", variant.bound && variant.id === selectedVariant?.id);
+    button.classList.toggle("pending-bind", !variant.bound);
+    list.appendChild(button);
   });
+
+  const toggleButton = document.createElement("button");
+  toggleButton.type = "button";
+  toggleButton.className = "audio-variant-toggle";
+  toggleButton.dataset.action = "toggle-audio-variants";
+  toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
+  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? "收起分P列表" : "展开分P列表");
+  toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
+
+  elements.audioVariantBar.append(list, toggleButton);
+
+  const firstButton = list.querySelector(".audio-variant-button");
+  const firstRowHeight = firstButton
+    ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
+    : 44;
+  const isWrapped = list.scrollHeight > firstRowHeight + 2;
+  elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
+  toggleButton.classList.toggle("hidden", !isWrapped);
+  if (isWrapped) {
+    list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
+    toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
+  } else {
+    state.audioVariantBarExpanded = false;
+  }
   elements.audioVariantBar.classList.remove("hidden");
+}
+
+function currentRemoteAvOffsetMs(playerSettings) {
+  return Number(playerSettings?.av_offset_ms || 0);
+}
+
+function currentRemoteVolumePercent(playerSettings) {
+  return Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
+}
+
+function currentRemoteMuted(playerSettings) {
+  return Boolean(playerSettings?.is_muted);
+}
+
+function setRangeFillPercent(input, percent) {
+  if (!input) {
+    return;
+  }
+  const normalizedPercent = Math.max(0, Math.min(100, Number(percent || 0)));
+  input.style.setProperty("--range-fill-percent", `${normalizedPercent}%`);
+}
+
+function renderRemoteAvSyncControls(playbackMode, playerSettings) {
+  if (!elements.remoteAvSyncPanel || !elements.remoteAvOffsetInput) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local" && normalizeLayoutMode(state.layoutMode) === "full";
+  elements.remoteAvSyncPanel.classList.toggle("hidden", !isLocalMode);
+  elements.remoteAvOffsetInput.value = String(currentRemoteAvOffsetMs(playerSettings));
+}
+
+function renderRemoteVolumeControls(playbackMode, playerSettings) {
+  if (!elements.remoteVolumePanel || !elements.remoteVolumeSlider || !elements.remoteVolumeMuteButton || !elements.remoteVolumeValue) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local" && normalizeLayoutMode(state.layoutMode) === "full";
+  elements.remoteVolumePanel.classList.toggle("hidden", !isLocalMode);
+  const volumePercent = currentRemoteVolumePercent(playerSettings);
+  const isMuted = currentRemoteMuted(playerSettings);
+  elements.remoteVolumeSlider.value = String(volumePercent);
+  setRangeFillPercent(elements.remoteVolumeSlider, volumePercent);
+  elements.remoteVolumeValue.textContent = `${Math.round(volumePercent)}%`;
+  elements.remoteVolumeMuteButton.textContent = isMuted ? "取消静音" : "静音";
+  elements.remoteVolumeMuteButton.classList.toggle("is-muted", isMuted);
+}
+
+function openBindingSheet(intent, payload) {
+  const pages = Array.isArray(payload?.pages) ? payload.pages : [];
+  if (!pages.length) {
+    setFormMessage("无法读取分P列表", true);
+    return;
+  }
+  state.bindingIntent = {
+    ...intent,
+    binding: payload,
+  };
+  elements.bindingSheetText.textContent = `《${payload.title || "该视频"}》包含多个分P，请选择要下载的视频画面和音频轨道。`;
+  elements.bindingSheetVideoOptions.innerHTML = "";
+  elements.bindingSheetAudioOptions.innerHTML = "";
+  state.bindingAccordion.video = false;
+  state.bindingAccordion.audio = false;
+
+  const preferredPage = Number(payload.preferred_page || pages[0]?.page || 1);
+  pages.forEach((entry) => {
+    elements.bindingSheetVideoOptions.appendChild(renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage));
+    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage));
+  });
+  renderBindingAccordion();
+
+  state.bindingSheetOpen = true;
+  elements.bindingSheet.classList.remove("hidden");
+  elements.bindingSheet.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => {
+    elements.bindingSheet.classList.add("is-open");
+  });
+}
+
+function closeBindingSheet() {
+  state.bindingSheetOpen = false;
+  state.bindingIntent = null;
+  state.bindingAccordion.video = false;
+  state.bindingAccordion.audio = false;
+  elements.bindingSheet.classList.remove("is-open");
+  elements.bindingSheet.setAttribute("aria-hidden", "true");
+  window.setTimeout(() => {
+    if (state.bindingSheetOpen) {
+      return;
+    }
+    elements.bindingSheet.classList.add("hidden");
+    elements.bindingSheetVideoOptions.innerHTML = "";
+    elements.bindingSheetAudioOptions.innerHTML = "";
+    renderBindingAccordion();
+  }, 280);
+}
+
+function renderBindingAccordion() {
+  const sections = [
+    {
+      key: "video",
+      button: elements.bindingVideoToggle,
+      panel: elements.bindingSheetVideoOptionsWrap,
+    },
+    {
+      key: "audio",
+      button: elements.bindingAudioToggle,
+      panel: elements.bindingSheetAudioOptionsWrap,
+    },
+  ];
+  sections.forEach(({ key, button, panel }) => {
+    if (!button || !panel) {
+      return;
+    }
+    const expanded = Boolean(state.bindingAccordion[key]);
+    button.setAttribute("aria-expanded", String(expanded));
+    panel.classList.toggle("hidden", !expanded);
+  });
+}
+
+function renderBindingOption(inputType, name, entry, checked) {
+  const label = document.createElement("label");
+  label.className = "binding-option";
+
+  const input = document.createElement("input");
+  input.type = inputType;
+  input.name = name;
+  input.value = String(entry.page);
+  input.checked = checked;
+
+  const copy = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "binding-option-title";
+  title.textContent = `P${entry.page} · ${entry.part}`;
+  const meta = document.createElement("div");
+  meta.className = "binding-option-meta";
+  meta.textContent = entry.duration > 0 ? `${entry.duration}s` : "时长未知";
+  copy.append(title, meta);
+
+  label.append(input, copy);
+  return label;
+}
+
+function currentBindingSelection() {
+  const selectedVideo = elements.bindingSheetVideoOptions.querySelector('input[name="binding-video-page"]:checked');
+  const selectedAudioPages = [...elements.bindingSheetAudioOptions.querySelectorAll('input[name="binding-audio-page"]:checked')]
+    .map((input) => Number(input.value || 0))
+    .filter((page) => page > 0);
+  return {
+    selectedVideoPage: selectedVideo ? Number(selectedVideo.value || 0) : null,
+    selectedAudioPages,
+  };
+}
+
+async function confirmBindingSheet() {
+  const intent = state.bindingIntent;
+  if (!intent?.url || state.submitting) {
+    return;
+  }
+  const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
+  if (!selectedVideoPage) {
+    setFormMessage("请先选择一个视频分P", true);
+    return;
+  }
+  if (!selectedAudioPages.length) {
+    setFormMessage("请至少选择一个音频分P", true);
+    return;
+  }
+
+  state.submitting = true;
+  setFormMessage(intent.position === "next" ? "正在按绑定关系顶歌..." : "正在按绑定关系加入列表...");
+  try {
+    const result = await submitAddRequestWithDuplicateConfirm(
+      intent.url,
+      intent.position || "tail",
+      intent.requesterName || selectedRequesterName(),
+      {
+        selectedVideoPage,
+        selectedAudioPages,
+      },
+    );
+    if (result.cancelled) {
+      setFormMessage("已取消重复添加");
+      return;
+    }
+    state.data = result.data;
+    closeBindingSheet();
+    if (intent.clearInput) {
+      elements.urlInput.value = "";
+    }
+    if (intent.source === "search") {
+      hideSearchResults();
+      elements.searchQuery.value = "";
+    }
+    if (intent.source === "gatcha") {
+      state.gatchaCandidate = null;
+      elements.gatchaResultView.classList.add("hidden");
+      elements.gatchaInitView.classList.remove("hidden");
+    }
+    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入列表");
+    render();
+  } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(intent, error.payload?.binding);
+      return;
+    }
+    setFormMessage(error.message, true);
+  } finally {
+    state.submitting = false;
+  }
+}
+
+async function setRemoteAvOffset(offsetMs) {
+  const numeric = Number(offsetMs || 0);
+  if (!Number.isFinite(numeric)) {
+    return;
+  }
+  try {
+    state.data = await apiPost("/api/player/av-offset", { offset_ms: Math.max(-5000, Math.min(5000, Math.round(numeric))) });
+    render();
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
+}
+
+async function setRemoteVolumeSettings({ volumePercent, isMuted } = {}) {
+  const payload = {};
+  if (volumePercent !== undefined) {
+    const numeric = Number(volumePercent);
+    if (!Number.isFinite(numeric)) {
+      return;
+    }
+    payload.volume_percent = Math.max(0, Math.min(100, Math.round(numeric)));
+  }
+  if (isMuted !== undefined) {
+    payload.is_muted = Boolean(isMuted);
+  }
+  if (!Object.keys(payload).length) {
+    return;
+  }
+  try {
+    state.data = await apiPost("/api/player/volume", payload);
+    render();
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
 }
 
 function canRemoteControlPlayer(currentItem, playbackMode) {
@@ -221,8 +872,12 @@ function renderPlayerControls(currentItem, playbackMode) {
   elements.playerControlPanel.classList.remove("hidden");
 
   elements.playerControlPanel.querySelectorAll("button[data-control-action]").forEach((button) => {
-    const isPending = button.dataset.controlAction === state.playerControlPendingAction;
-    button.disabled = !canControl || Boolean(state.playerControlPendingAction);
+    const action = button.dataset.controlAction || "";
+    const isPending = action === state.playerControlPendingAction;
+    const disabled = action === "next-track"
+      ? Boolean(state.playerControlPendingAction)
+      : !canControl || Boolean(state.playerControlPendingAction);
+    button.disabled = disabled;
     button.classList.toggle("is-pending", isPending);
   });
 
@@ -233,7 +888,7 @@ function renderPlayerControls(currentItem, playbackMode) {
   }
 
   if (playbackMode !== "local") {
-    elements.playerControlHint.textContent = "当前是在线播放，暂不支持远程控制播放。";
+    elements.playerControlHint.textContent = "当前是在线外挂，暂不支持远程控制播放。";
     return;
   }
   if (!currentItem.local_media_url) {
@@ -241,8 +896,8 @@ function renderPlayerControls(currentItem, playbackMode) {
     return;
   }
   elements.playerControlHint.textContent = isPaused
-    ? "当前已暂停，可以恢复播放或前后跳转。"
-    : "当前正在播放，可以暂停或前后跳转。";
+    ? "当前已暂停，可以恢复播放、前后跳转，或直接切歌。"
+    : "当前正在播放，可以暂停、前后跳转，或直接切歌。";
 }
 
 function renderListHeader(playlist, history) {
@@ -379,11 +1034,29 @@ async function submitRequest(position) {
   state.submitting = true;
   setFormMessage(position === "next" ? "正在顶歌..." : "正在加入队列...");
   try {
-    state.data = await apiPost("/api/playlist/add", { url, position, requester_name: requesterName });
+    const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
+    if (result.cancelled) {
+      setFormMessage("已取消重复点歌。");
+      return;
+    }
+    state.data = result.data;
     elements.urlInput.value = "";
     setFormMessage(position === "next" ? "已经顶歌到下一首。" : "已经加入播放队列。");
     render();
   } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(
+        {
+          url,
+          position,
+          requesterName,
+          clearInput: true,
+          source: "request-form",
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
     setFormMessage(error.message, true);
   } finally {
     state.submitting = false;
@@ -403,10 +1076,74 @@ async function handleAddByHistory(url, position) {
   state.submitting = true;
   setFormMessage(position === "next" ? "正在从历史记录顶歌..." : "正在从历史记录加入队列...");
   try {
-    state.data = await apiPost("/api/playlist/add", { url, position, requester_name: requesterName });
+    const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
+    if (result.cancelled) {
+      setFormMessage("已取消重复点歌。");
+      return;
+    }
+    state.data = result.data;
     setFormMessage(position === "next" ? "已从历史记录顶歌到下一首。" : "已从历史记录加入队列。");
     render();
   } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(
+        {
+          url,
+          position,
+          requesterName,
+          clearInput: false,
+          source: "history",
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
+    setFormMessage(error.message, true);
+  } finally {
+    state.submitting = false;
+  }
+}
+
+async function addByUrl(url, position = "tail") {
+  const requesterName = selectedRequesterName();
+  if (!url || state.submitting) {
+    return;
+  }
+  if (!requesterName) {
+    setFormMessage("请先选择点歌人。", true);
+    return;
+  }
+
+  state.submitting = true;
+  setFormMessage("正在添加已选歌曲...");
+  try {
+    const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
+    if (result.cancelled) {
+      setFormMessage("已取消重复点歌。");
+      return;
+    }
+    state.data = result.data;
+    hideSearchResults();
+    elements.searchQuery.value = "";
+    state.gatchaCandidate = null;
+    elements.gatchaResultView.classList.add("hidden");
+    elements.gatchaInitView.classList.remove("hidden");
+    setFormMessage("点歌成功。");
+    render();
+  } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingSheet(
+        {
+          url,
+          position,
+          requesterName,
+          clearInput: false,
+          source: state.gatchaCandidate?.url === url ? "gatcha" : "search",
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
     setFormMessage(error.message, true);
   } finally {
     state.submitting = false;
@@ -454,6 +1191,24 @@ async function sendPlayerControl(action, deltaSeconds = 0) {
   renderPlayerControls(state.data?.current_item, state.data?.playback_mode);
 }
 
+async function sendPlayerNext() {
+  if (!state.data?.current_item) {
+    return;
+  }
+  try {
+    state.playerControlPendingAction = "next-track";
+    renderPlayerControls(state.data?.current_item, state.data?.playback_mode);
+    state.data = await apiPost("/api/player/next");
+    setFormMessage("已切到下一首。");
+    render();
+  } catch (error) {
+    setFormMessage(error.message, true);
+    await fetchState().catch(() => {});
+  }
+  state.playerControlPendingAction = "";
+  renderPlayerControls(state.data?.current_item, state.data?.playback_mode);
+}
+
 function queueNoteText() {
   return "";
 }
@@ -481,8 +1236,47 @@ elements.requestForm.addEventListener("submit", async (event) => {
   await submitRequest("tail");
 });
 
+elements.searchForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.searchQuery.value || "").trim();
+  if (!query) {
+    hideSearchResults();
+    setFormMessage("请输入搜索关键词。", true);
+    return;
+  }
+
+  elements.searchButton.disabled = true;
+  setFormMessage("正在搜索本地目录...");
+  try {
+    const items = await searchGatchaCache(query);
+    renderSearchResults(items);
+    setFormMessage(items.length ? `找到 ${items.length} 条缓存结果。` : "未找到缓存结果。");
+  } catch (error) {
+    hideSearchResults();
+    setFormMessage(error.message, true);
+  } finally {
+    elements.searchButton.disabled = false;
+  }
+});
+
+elements.searchResults.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-url]");
+  if (!button) {
+    return;
+  }
+  await addByUrl(String(button.dataset.url || ""), "tail");
+});
+
 elements.addNextButton.addEventListener("click", async () => {
   await submitRequest("next");
+});
+
+elements.layoutModeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-layout-mode]");
+  if (!button) {
+    return;
+  }
+  setLayoutMode(button.dataset.layoutMode);
 });
 
 elements.refreshButton.addEventListener("click", async () => {
@@ -491,16 +1285,141 @@ elements.refreshButton.addEventListener("click", async () => {
     setFormMessage("列表已刷新。");
   } catch (error) {
     setFormMessage(error.message, true);
+  } finally {
+    state.audioVariantSwitchInFlight = false;
+    scheduleAudioVariantSwitchUnlock();
   }
 });
 
+elements.remoteAvSyncPanel?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-av-step]");
+  if (!button) {
+    return;
+  }
+  await setRemoteAvOffset(
+    currentRemoteAvOffsetMs(state.data?.player_settings) + Number(button.dataset.avStep || "0"),
+  );
+});
+
+elements.remoteAvOffsetInput?.addEventListener("change", async (event) => {
+  await setRemoteAvOffset(event.target.value);
+});
+
+elements.remoteAvOffsetInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setRemoteAvOffset(event.target.value);
+});
+
+elements.remoteVolumeSlider?.addEventListener("input", async (event) => {
+  setRangeFillPercent(event.target, event.target.value);
+  await setRemoteVolumeSettings({
+    volumePercent: event.target.value,
+    isMuted: currentRemoteMuted(state.data?.player_settings),
+  });
+});
+
+elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
+  await setRemoteVolumeSettings({
+    volumePercent: currentRemoteVolumePercent(state.data?.player_settings),
+    isMuted: !currentRemoteMuted(state.data?.player_settings),
+  });
+});
+
+elements.gatchaButton.addEventListener("click", handleGatchaDraw);
+elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
+
+elements.gatchaConfirmButton.addEventListener("click", async () => {
+  if (!state.gatchaCandidate?.url) {
+    return;
+  }
+  await addByUrl(String(state.gatchaCandidate.url), "tail");
+});
+
+elements.bindingSheetClose?.addEventListener("click", () => {
+  closeBindingSheet();
+});
+
+elements.bindingSheetCancel?.addEventListener("click", () => {
+  closeBindingSheet();
+});
+
+elements.bindingSheetBackdrop?.addEventListener("click", () => {
+  closeBindingSheet();
+});
+
+elements.bindingSheetConfirm?.addEventListener("click", async () => {
+  await confirmBindingSheet();
+});
+
+elements.bindingVideoToggle?.addEventListener("click", () => {
+  state.bindingAccordion.video = !state.bindingAccordion.video;
+  renderBindingAccordion();
+});
+
+elements.bindingAudioToggle?.addEventListener("click", () => {
+  state.bindingAccordion.audio = !state.bindingAccordion.audio;
+  renderBindingAccordion();
+});
+
 elements.audioVariantBar.addEventListener("click", async (event) => {
+  const toggleButton = event.target.closest('button[data-action="toggle-audio-variants"]');
+  if (toggleButton) {
+    state.audioVariantBarExpanded = !state.audioVariantBarExpanded;
+    if (state.data?.current_item) {
+      renderAudioVariantBar(state.data.current_item, state.data.playback_mode);
+    }
+    return;
+  }
+
   const button = event.target.closest("button[data-variant-id]");
   const currentItem = state.data?.current_item;
   if (!button || !currentItem) {
     return;
   }
   if (button.dataset.itemId !== currentItem.id) {
+    return;
+  }
+
+  if (button.dataset.bound !== "true") {
+    const page = Number(button.dataset.page || 0);
+    const requesterName = selectedRequesterName();
+    if (!page || state.submitting) {
+      return;
+    }
+    if (!requesterName) {
+      setFormMessage("请先选择点歌人", true);
+      return;
+    }
+    try {
+      state.submitting = true;
+      const result = await submitAddRequestWithDuplicateConfirm(
+        currentItem.original_url || currentItem.resolved_url,
+        "tail",
+        requesterName,
+        {
+          selectedVideoPage: page,
+          selectedAudioPages: [page],
+        },
+      );
+      if (result.cancelled) {
+        setFormMessage("已取消重复添加");
+        return;
+      }
+      state.data = result.data;
+      setFormMessage("已将分P加入下载列表");
+      render();
+    } catch (error) {
+      setFormMessage(error.message, true);
+    } finally {
+      state.submitting = false;
+    }
+    return;
+  }
+
+  if (audioVariantSwitchLocked()) {
     return;
   }
 
@@ -511,6 +1430,9 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
   }
 
   try {
+    state.audioVariantSwitchInFlight = true;
+    state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
+    renderAudioVariantBar(currentItem, state.data?.playback_mode);
     state.data = await apiPost("/api/player/audio-variant", {
       item_id: currentItem.id,
       variant_id: nextVariantId,
@@ -521,6 +1443,9 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     setFormMessage(`已切换到 ${activeVariant?.label || nextVariantId}`);
   } catch (error) {
     setFormMessage(error.message, true);
+  } finally {
+    state.audioVariantSwitchInFlight = false;
+    scheduleAudioVariantSwitchUnlock();
   }
 });
 
@@ -530,6 +1455,10 @@ elements.playerControlPanel.addEventListener("click", async (event) => {
     return;
   }
   const action = button.dataset.controlAction || "";
+  if (action === "next-track") {
+    await sendPlayerNext();
+    return;
+  }
   const deltaSeconds = Number(button.dataset.delta || "0");
   await sendPlayerControl(action, deltaSeconds);
 });
@@ -556,10 +1485,18 @@ elements.historyList.addEventListener("click", async (event) => {
   await handleAddByHistory(url, button.dataset.action === "history-next" ? "next" : "tail");
 });
 
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.bindingSheetOpen) {
+    closeBindingSheet();
+  }
+});
+
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
 async function startPolling() {
+  hydrateLocalPreferences();
+  renderLayoutMode();
   try {
     await fetchState();
   } catch (error) {

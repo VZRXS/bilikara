@@ -11,9 +11,20 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from .bilibili import BilibiliError, fetch_owner_info, fetch_video_item
+from .bilibili import (
+    BilibiliError,
+    ManualBindingRequiredError,
+    MISSING_BILIBILI_COOKIE_MESSAGE,
+    effective_bilibili_cookie,
+    fetch_gatcha_candidate,
+    fetch_owner_info,
+    fetch_video_item,
+    refresh_gatcha_cache,
+    refresh_gatcha_cache_in_background,
+    search_gatcha_cache,
+)
 from .cache import CacheManager
 from .config import (
     BACKUP_FILE,
@@ -51,8 +62,11 @@ class AppContext:
         self._host = HOST
         self._port = PORT
         self._shutdown_on_last_client = False
+        self._host_client_id: str | None = None
         self._client_lock = threading.RLock()
         self._client_last_seen: dict[str, float] = {}
+        self._host_client_last_seen: dict[str, float] = {}
+        self._host_seen_once = False
         self._client_seen_once = False
         self._no_clients_since: float | None = None
         self._shutdown_requested = False
@@ -120,6 +134,15 @@ class AppContext:
 
     def set_mode(self, mode: str) -> None:
         self.store.set_mode(mode)
+
+    def set_av_offset_ms(self, offset_ms: int) -> int:
+        return self.store.set_av_offset_ms(offset_ms)
+
+    def set_volume_percent(self, volume_percent: int) -> int:
+        return self.store.set_volume_percent(volume_percent)
+
+    def set_muted(self, is_muted: bool) -> bool:
+        return self.store.set_muted(is_muted)
 
     def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
         return self.store.set_audio_variant(item_id, variant_id)
@@ -221,6 +244,8 @@ class AppContext:
             self._shutdown_on_last_client = shutdown_on_last_client
             self._client_last_seen.clear()
             self._client_seen_once = False
+            self._host_client_last_seen.clear()
+            self._host_seen_once = False
             self._no_clients_since = None
             self._shutdown_requested = False
         with self._remote_access_lock:
@@ -232,16 +257,67 @@ class AppContext:
         with self._remote_access_lock:
             return dict(self._remote_access)
 
-    def touch_client(self, client_id: str) -> None:
+    def touch_client(self, client_id: str, is_host: bool = True) -> None:
         client_key = str(client_id or "").strip()
         if not client_key:
             return
         now = time.monotonic()
         with self._client_lock:
             self._client_last_seen[client_key] = now
+            if is_host:
+                self._host_client_last_seen[client_key] = now
+                self._host_seen_once = True
             self._client_seen_once = True
             self._no_clients_since = None
             self._shutdown_requested = False
+
+    def disconnect_client(self, client_id: str) -> None:
+        client_key = str(client_id or "").strip()
+        if not client_key:
+            return
+        now = time.monotonic()
+        with self._client_lock:
+            self._client_last_seen.pop(client_key, None)
+            self._host_client_last_seen.pop(client_key, None)
+            self._prune_stale_clients(now)
+            if self._host_client_last_seen:
+                self._no_clients_since = None
+                return
+            self._no_clients_since = now
+
+    def _client_watchdog_loop(self) -> None:
+        while not self._closed:
+            time.sleep(1.0)
+            with self._client_lock:
+                # 注意：这里改成了依赖 self._host_seen_once
+                if not self._shutdown_on_last_client or not self._host_seen_once or self._shutdown_requested:
+                    continue
+                now = time.monotonic()
+                self._prune_stale_clients(now)
+                # 注意：这里改成了判断 host_client 字典
+                if self._host_client_last_seen:
+                    self._no_clients_since = None
+                    continue
+                if self._no_clients_since is None:
+                    self._no_clients_since = now
+                    continue
+                if now - self._no_clients_since < self._client_grace_seconds:
+                    continue
+                server = self._server
+                if server is None:
+                    continue
+                self._shutdown_requested = True
+            threading.Thread(target=server.shutdown, daemon=True).start()
+
+    def _prune_stale_clients(self, now: float) -> None:
+        expired = [
+            client_id
+            for client_id, last_seen in self._client_last_seen.items()
+            if now - last_seen > self._client_stale_seconds
+        ]
+        for client_id in expired:
+            self._client_last_seen.pop(client_id, None)
+            self._host_client_last_seen.pop(client_id, None)
 
     def disconnect_client(self, client_id: str) -> None:
         client_key = str(client_id or "").strip()
@@ -354,10 +430,38 @@ class BilikaraHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:  # noqa: N802
-        CONTEXT.touch_client(self.headers.get("X-Bilikara-Client", ""))
         route = urlparse(self.path).path
+        client_id = self.headers.get("X-Bilikara-Client", "")
+        referer = self.headers.get("Referer", "")
+        
+        # 默认认为是 Host 主屏幕，除非明确来自 Remote
+        is_host = True
+        if referer and referer.rstrip("/").endswith("/remote"):
+            is_host = False
+        elif route == "/remote" or route.startswith("/remote/"):
+            is_host = False
+            
+        CONTEXT.touch_client(client_id, is_host=is_host)
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+            return
+        if route == "/api/gatcha/candidate":
+            try:
+                candidate = fetch_gatcha_candidate()
+                if not candidate:
+                    self._write_json({"ok": False, "error": "没找到符合条件的歌曲，再试一次吧"})
+                else:
+                    self._write_json({"ok": True, "data": candidate})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/gatcha/search":
+            query = parse_qs(urlparse(self.path).query).get("q", [""])[0]
+            try:
+                results = search_gatcha_cache(query)
+                self._write_json({"ok": True, "data": {"items": results}})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
             return
         if route.startswith("/media/"):
             self._serve_media(route)
@@ -365,8 +469,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self._serve_static(route)
 
     def do_POST(self) -> None:  # noqa: N802
-        CONTEXT.touch_client(self.headers.get("X-Bilikara-Client", ""))
         route = urlparse(self.path).path
+        client_id = self.headers.get("X-Bilikara-Client", "")
+        referer = self.headers.get("Referer", "")
+        
+        is_host = True
+        if referer and referer.rstrip("/").endswith("/remote"):
+            is_host = False
+        elif route == "/remote" or route.startswith("/remote/"):
+            is_host = False
+            
+        CONTEXT.touch_client(client_id, is_host=is_host)
+        
         try:
             body = self._read_json_body()
             if route == "/api/playlist/add":
@@ -438,6 +552,28 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if mode not in {"online", "local"}:
                     raise ValueError("mode 必须是 online 或 local")
                 CONTEXT.set_mode(mode)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/player/av-offset":
+                offset_ms = body.get("offset_ms")
+                if not isinstance(offset_ms, int):
+                    raise ValueError("offset_ms must be an integer")
+                CONTEXT.set_av_offset_ms(offset_ms)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/player/volume":
+                volume_percent = body.get("volume_percent")
+                is_muted = body.get("is_muted")
+                if volume_percent is not None:
+                    if not isinstance(volume_percent, int):
+                        raise ValueError("volume_percent must be an integer")
+                    CONTEXT.set_volume_percent(volume_percent)
+                if is_muted is not None:
+                    if not isinstance(is_muted, bool):
+                        raise ValueError("is_muted must be a boolean")
+                    CONTEXT.set_muted(is_muted)
+                if volume_percent is None and is_muted is None:
+                    raise ValueError("missing volume settings")
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/cache/retry":
@@ -513,9 +649,52 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.disconnect_client(str(body.get("client_id") or ""))
                 self._write_json({"ok": True})
                 return
+            if route == "/api/bbdown/login/start":
+                CONTEXT.cache_manager.start_bbdown_login(force_refresh_qr=bool(body.get("force")))
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/bbdown/logout":
+                CONTEXT.cache_manager.logout_bbdown()
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/config/cookie":
+                sessdata = str(body.get("sessdata", "")).strip()
+                jct = str(body.get("bili_jct", "")).strip()
+                import bilikara.config as cfg
+                if sessdata or jct:
+                    if not sessdata or not jct:
+                        raise ValueError(MISSING_BILIBILI_COOKIE_MESSAGE)
+                    cfg.COOKIE = f"SESSDATA={sessdata}; bili_jct={jct}"
+                if not effective_bilibili_cookie():
+                    raise ValueError(MISSING_BILIBILI_COOKIE_MESSAGE)
+                refresh_gatcha_cache_in_background()
+                self._write_json({"ok": True, "message": "配置已实时生效"})
+                return
             self._write_json(
                 {"ok": False, "error": f"未知接口: {route}"},
                 status=HTTPStatus.NOT_FOUND,
+            )
+        except ManualBindingRequiredError as exc:
+            self._write_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": "manual_binding_required",
+                    "binding": {
+                        "title": exc.title,
+                        "preferred_page": exc.preferred_page,
+                        "pages": [
+                            {
+                                "page": page.page,
+                                "cid": page.cid,
+                                "duration": page.duration,
+                                "part": page.part,
+                            }
+                            for page in exc.pages
+                        ],
+                    },
+                },
+                status=HTTPStatus.CONFLICT,
             )
         except BilibiliError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -547,7 +726,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         position = str(body.get("position") or "tail")
         requester_name = str(body.get("requester_name") or "").strip()
         allow_repeat = bool(body.get("allow_repeat"))
-        item = fetch_video_item(url)
+        raw_selected_video_page = body.get("selected_video_page")
+        selected_video_page = raw_selected_video_page if isinstance(raw_selected_video_page, int) else None
+        raw_selected_audio_pages = body.get("selected_audio_pages")
+        selected_audio_pages = raw_selected_audio_pages if isinstance(raw_selected_audio_pages, list) else None
+        item = fetch_video_item(
+            url,
+            selected_video_page=selected_video_page,
+            selected_audio_pages=selected_audio_pages,
+        )
         existing_session_entry = CONTEXT.store.session_request_for_item(item)
         active_duplicate = CONTEXT.store.active_duplicate_for_item(item)
         if (existing_session_entry or active_duplicate) and not allow_repeat:

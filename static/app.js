@@ -1,6 +1,17 @@
 const pollIntervalMs = 1000;
 const bannerAutoHideMs = 5000;
 const stalledRetrySeconds = 5;
+const gatchaCooldownMs = 15000;
+const localPlayerSyncIntervalMs = 120;
+const audioVariantSwitchDebounceMs = 350;
+const maxAvOffsetMs = 5000;
+const playerClickDelayMs = 220;
+const storageKeys = {
+  playerVolume: "bilikara.player.volume",
+  playerMuted: "bilikara.player.muted",
+  avOffsetMs: "bilikara.player.av_offset_ms",
+  layoutMode: "bilikara.layout.mode",
+};
 
 const state = {
   clientId: createClientId(),
@@ -8,41 +19,89 @@ const state = {
   data: null,
   playerSignature: "",
   playerContext: null,
+  localPlayerSyncTimer: null,
   listView: "queue",
   cacheSettingsOpen: false,
   cacheLimitSaving: false,
+  avOffsetSaving: false,
+  localPreferencesHydrated: false,
+  localOffsetRestoreApplied: false,
+  audioVariantSwitchInFlight: false,
+  audioVariantSwitchUnlockAt: 0,
+  audioVariantSwitchTimer: null,
+  audioVariantBarExpanded: false,
+  audioVariantBarItemId: "",
   backupBannerShown: false,
   backupBannerDismissed: false,
   backupBannerTimer: null,
+  backupBannerCountdownTimer: null,
+  backupBannerDeadline: 0,
+  backupBannerRemainingMs: bannerAutoHideMs,
+  backupBannerPaused: false,
+  backupDismissHover: false,
   localAdvanceInFlight: false,
+  localShouldBePlaying: false,
+  localSeekResumePending: false,
+  localPlayerVolume: 1,
+  localPlayerMuted: false,
   pendingPlaybackRestore: null,
   lastAppliedPlayerControlSeq: 0,
   lastReportedPlayerStatusSignature: "",
+  playerFrameClickTimer: null,
   dragItemId: "",
   dragTargetId: "",
   dragTargetAfter: false,
   confirmIntent: null,
+  bindingIntent: null,
   retryActivityById: {},
+  gatchaCandidate: null,
+  gatchaCooldownUntil: 0,
+  gatchaCooldownTimer: null,
+  gatchaCookieVisible: false,
+  bbdownLoginRequesting: false,
+  appToastTimer: null,
+  layoutMode: "full",
 };
 
 const elements = {
-  bbdownStatus: document.getElementById("bbdown-status"),
+  appShell: document.getElementById("app-shell"),
+  serviceStatusIndicator: document.getElementById("service-status-indicator"),
+  playbackModeSummary: document.getElementById("playback-mode-summary"),
+  playbackModeCurrent: document.getElementById("playback-mode-current"),
   cacheChipMeta: document.getElementById("cache-chip-meta"),
   cacheSettings: document.getElementById("cache-settings"),
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
-  ffmpegStatusHint: document.getElementById("ffmpeg-status-hint"),
+  bbdownStatusRow: document.getElementById("bbdown-status-row"),
+  bbdownLoginButton: document.getElementById("bbdown-login-button"),
+  bbdownLoginPanel: document.getElementById("bbdown-login-panel"),
+  bbdownLoginQrImage: document.getElementById("bbdown-login-qr-image"),
+  bbdownLoginQrText: document.getElementById("bbdown-login-qr-text"),
+  bbdownLoginMessage: document.getElementById("bbdown-login-message"),
+  bbdownLoginRefresh: document.getElementById("bbdown-login-refresh"),
+  ffmpegStatusRow: document.getElementById("ffmpeg-status-row"),
+  bbdownPanelStatusIndicator: document.getElementById("bbdown-panel-status-indicator"),
+  ffmpegPanelStatusIndicator: document.getElementById("ffmpeg-panel-status-indicator"),
   cacheLimitValue: document.getElementById("cache-limit-value"),
   cacheLimitSlider: document.getElementById("cache-limit-slider"),
   cacheLimitScale: document.getElementById("cache-limit-scale"),
   currentTitle: document.getElementById("current-title"),
+  playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
+  playerFullscreenButton: document.getElementById("player-fullscreen-button"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
+  avSyncPanel: document.getElementById("av-sync-panel"),
+  avOffsetInput: document.getElementById("av-offset-input"),
+  volumePanel: document.getElementById("volume-panel"),
+  volumeMuteButton: document.getElementById("volume-mute-button"),
+  volumeSlider: document.getElementById("volume-slider"),
+  volumeValue: document.getElementById("volume-value"),
   addForm: document.getElementById("add-form"),
   requesterSelect: document.getElementById("requester-select"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
+  appToast: document.getElementById("app-toast"),
   sessionUserForm: document.getElementById("session-user-form"),
   sessionUserInput: document.getElementById("session-user-input"),
   sessionUserList: document.getElementById("session-user-list"),
@@ -63,6 +122,7 @@ const elements = {
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
+  layoutModeSwitch: document.getElementById("layout-mode-switch"),
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   historyToggleButton: document.getElementById("history-toggle-button"),
@@ -73,16 +133,80 @@ const elements = {
   confirmText: document.getElementById("confirm-text"),
   confirmCancel: document.getElementById("confirm-cancel"),
   confirmOk: document.getElementById("confirm-ok"),
+  bindingModal: document.getElementById("binding-modal"),
+  bindingModalBackdrop: document.getElementById("binding-modal-backdrop"),
+  bindingModalText: document.getElementById("binding-modal-text"),
+  bindingVideoOptions: document.getElementById("binding-video-options"),
+  bindingAudioOptions: document.getElementById("binding-audio-options"),
+  bindingModalClose: document.getElementById("binding-modal-close"),
+  bindingModalCancel: document.getElementById("binding-modal-cancel"),
+  bindingModalConfirm: document.getElementById("binding-modal-confirm"),
   copyRemoteUrlButton: document.getElementById("copy-remote-url-button"),
   remoteQrImage: document.getElementById("remote-qr-image"),
   remoteQrPlaceholder: document.getElementById("remote-qr-placeholder"),
   remoteUrlLink: document.getElementById("remote-url-link"),
   remoteUrlHint: document.getElementById("remote-url-hint"),
+  remoteMiniQrImage: document.getElementById("remote-mini-qr-image"),
+  remoteMiniQrPlaceholder: document.getElementById("remote-mini-qr-placeholder"),
+  remotePopoverQrImage: document.getElementById("remote-popover-qr-image"),
+  remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
+  remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
+  remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
+  gatchaPanel: document.getElementById("gatcha-panel"),
+  gatchaTag: document.getElementById("gatcha-tag"),
+  gatchaTitle: document.getElementById("gatcha-title"),
+  gatchaStage: document.getElementById("gatcha-stage"),
+  gatchaButton: document.getElementById("gatcha-button"),
+  gatchaCookieToggle: document.getElementById("gatcha-cookie-toggle"),
+  gatchaMainView: document.getElementById("gatcha-main-view"),
+  gatchaCookieView: document.getElementById("gatcha-cookie-view"),
+  gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
+  gatchaRetryButton: document.getElementById("gatcha-retry-button"),
+  gatchaMessage: document.getElementById("gatcha-message"),
+  gatchaInitView: document.getElementById("gatcha-init-view"),
+  gatchaResultView: document.getElementById("gatcha-result-view"),
+  gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
+  searchForm: document.getElementById("search-form"),
+  searchQuery: document.getElementById("search-query"),
+  searchButton: document.getElementById("search-button"),
+  searchMessage: document.getElementById("search-message"),
+  searchResults: document.getElementById("search-results"),
+  cookieSessdata: document.getElementById("cookie-sessdata"),
+  cookieJct: document.getElementById("cookie-jct"),
+  saveCookieButton: document.getElementById("save-cookie-button"),
+  cookieMessage: document.getElementById("cookie-message"),
 };
 
 function setFormMessage(message, isError = false) {
   elements.formMessage.textContent = message;
   elements.formMessage.style.color = isError ? "var(--red)" : "var(--muted)";
+}
+
+function setSearchMessage(message, isError = false) {
+  if (!elements.searchMessage) {
+    return;
+  }
+  elements.searchMessage.textContent = message || "";
+  elements.searchMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setAppMessage(message, isError = false) {
+  if (!elements.appToast) {
+    return;
+  }
+  if (state.appToastTimer) {
+    window.clearTimeout(state.appToastTimer);
+    state.appToastTimer = null;
+  }
+  elements.appToast.textContent = message || "";
+  elements.appToast.classList.toggle("is-error", Boolean(isError));
+  elements.appToast.classList.toggle("hidden", !message);
+  if (message) {
+    state.appToastTimer = window.setTimeout(() => {
+      elements.appToast.classList.add("hidden");
+      state.appToastTimer = null;
+    }, isError ? 5200 : 3200);
+  }
 }
 
 function requesterBadgeText(requesterName) {
@@ -99,6 +223,235 @@ function createClientId() {
     return window.crypto.randomUUID();
   }
   return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function isPlayerPanelFullscreen() {
+  return fullscreenElement() === elements.playerPanel;
+}
+
+function supportsPlayerFullscreen() {
+  return Boolean(
+    elements.playerPanel
+    && (
+      typeof elements.playerPanel.requestFullscreen === "function"
+      || typeof elements.playerPanel.webkitRequestFullscreen === "function"
+    )
+    && (
+      typeof document.exitFullscreen === "function"
+      || typeof document.webkitExitFullscreen === "function"
+    ),
+  );
+}
+
+function canTogglePlayerFullscreen() {
+  return supportsPlayerFullscreen() && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
+}
+
+function renderPlayerFullscreenButton() {
+  const button = elements.playerFullscreenButton;
+  if (!button) {
+    return;
+  }
+  const active = isPlayerPanelFullscreen();
+  const enabled = canTogglePlayerFullscreen();
+  button.disabled = !enabled;
+  button.textContent = active ? "退出全屏" : "全屏显示";
+  button.setAttribute("aria-pressed", String(active));
+  button.title = enabled
+    ? (active ? "退出播放器区域全屏" : "将播放器区域切换为全屏")
+    : supportsPlayerFullscreen()
+      ? "当前没有可全屏的播放内容"
+      : "当前环境不支持区域全屏";
+}
+
+function requestElementFullscreen(element) {
+  if (!element) {
+    return Promise.resolve(false);
+  }
+  if (typeof element.requestFullscreen === "function") {
+    return element.requestFullscreen().then(() => true).catch(() => false);
+  }
+  if (typeof element.webkitRequestFullscreen === "function") {
+    element.webkitRequestFullscreen();
+    return Promise.resolve(true);
+  }
+  return Promise.resolve(false);
+}
+
+function exitDocumentFullscreen() {
+  if (typeof document.exitFullscreen === "function") {
+    return document.exitFullscreen().then(() => true).catch(() => false);
+  }
+  if (typeof document.webkitExitFullscreen === "function") {
+    document.webkitExitFullscreen();
+    return Promise.resolve(true);
+  }
+  return Promise.resolve(false);
+}
+
+async function togglePlayerFullscreen() {
+  if (!supportsPlayerFullscreen()) {
+    return;
+  }
+  if (isPlayerPanelFullscreen()) {
+    await exitDocumentFullscreen();
+    return;
+  }
+  if (!state.data?.current_item) {
+    return;
+  }
+  const activeFullscreen = fullscreenElement();
+  if (activeFullscreen && activeFullscreen !== elements.playerPanel) {
+    await exitDocumentFullscreen();
+  }
+  await requestElementFullscreen(elements.playerPanel);
+}
+
+function clearPlayerFrameClickTimer() {
+  if (!state.playerFrameClickTimer) {
+    return;
+  }
+  window.clearTimeout(state.playerFrameClickTimer);
+  state.playerFrameClickTimer = null;
+}
+
+function toggleMountedLocalPlayback() {
+  if (state.data?.playback_mode !== "local" || !state.data?.current_item) {
+    return false;
+  }
+  const video = activePrimaryVideoElement();
+  if (!video) {
+    return false;
+  }
+  if (video.paused) {
+    state.localShouldBePlaying = true;
+    video.play().catch(() => {});
+  } else {
+    state.localShouldBePlaying = false;
+    video.pause();
+  }
+  return true;
+}
+
+function queuePlayerFrameSingleClick() {
+  clearPlayerFrameClickTimer();
+  state.playerFrameClickTimer = window.setTimeout(() => {
+    state.playerFrameClickTimer = null;
+    toggleMountedLocalPlayback();
+  }, playerClickDelayMs);
+}
+
+async function handlePlayerFrameDoubleClick() {
+  clearPlayerFrameClickTimer();
+  if (!supportsPlayerFullscreen()) {
+    return;
+  }
+  if (!state.data?.current_item && !isPlayerPanelFullscreen()) {
+    return;
+  }
+  await togglePlayerFullscreen();
+  renderPlayerFullscreenButton();
+}
+
+function readLocalNumber(key, fallbackValue) {
+  try {
+    const rawValue = window.localStorage?.getItem(key);
+    if (rawValue == null) {
+      return fallbackValue;
+    }
+    const numeric = Number(rawValue);
+    return Number.isFinite(numeric) ? numeric : fallbackValue;
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function readLocalBoolean(key, fallbackValue) {
+  try {
+    const rawValue = window.localStorage?.getItem(key);
+    if (rawValue == null) {
+      return fallbackValue;
+    }
+    return rawValue === "true";
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function readLocalString(key, fallbackValue) {
+  try {
+    const rawValue = window.localStorage?.getItem(key);
+    return rawValue == null ? fallbackValue : String(rawValue);
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function writeLocalPreference(key, value) {
+  try {
+    window.localStorage?.setItem(key, String(value));
+  } catch {
+    // Ignore storage failures and keep runtime behavior working.
+  }
+}
+
+function hydrateLocalPreferences() {
+  state.localPlayerVolume = Math.max(
+    0,
+    Math.min(1, readLocalNumber(storageKeys.playerVolume, state.localPlayerVolume)),
+  );
+  state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
+  state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
+}
+
+function normalizeLayoutMode(value) {
+  if (value === "basic" || value === "normal") {
+    return "basic";
+  }
+  return "full";
+}
+
+function renderLayoutMode() {
+  const layoutMode = normalizeLayoutMode(state.layoutMode);
+  elements.appShell?.classList.toggle("layout-mode-basic", layoutMode === "basic");
+  elements.appShell?.classList.toggle("layout-mode-full", layoutMode === "full");
+  elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
+  });
+}
+
+function setLayoutMode(mode) {
+  const nextMode = normalizeLayoutMode(mode);
+  if (state.layoutMode === nextMode) {
+    renderLayoutMode();
+    return;
+  }
+  state.layoutMode = nextMode;
+  writeLocalPreference(storageKeys.layoutMode, nextMode);
+  renderLayoutMode();
+}
+
+function rememberedAvOffsetMs() {
+  return boundedAvOffsetMs(readLocalNumber(storageKeys.avOffsetMs, 0));
+}
+
+function rememberedVolumePercent() {
+  return Math.max(0, Math.min(100, Math.round(readLocalNumber(storageKeys.playerVolume, 1) * 100)));
+}
+
+function rememberedMuted() {
+  return readLocalBoolean(storageKeys.playerMuted, false);
+}
+
+function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
+  const volumePercent = Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
+  state.localPlayerVolume = volumePercent / 100;
+  state.localPlayerMuted = Boolean(playerSettings?.is_muted);
+  persistLocalVolumePreferences();
 }
 
 function clientHeaders(extraHeaders = {}) {
@@ -134,7 +487,179 @@ async function fetchState() {
     throw new Error(payload.error || "获取状态失败");
   }
   state.data = payload.data;
+  syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+  if (!state.localOffsetRestoreApplied) {
+    const rememberedOffset = rememberedAvOffsetMs();
+    const serverOffset = Number(payload.data?.player_settings?.av_offset_ms || 0);
+    if (rememberedOffset !== serverOffset) {
+      state.localOffsetRestoreApplied = true;
+      state.data = await apiPost("/api/player/av-offset", { offset_ms: rememberedOffset });
+    } else {
+      state.localOffsetRestoreApplied = true;
+    }
+  }
+  if (!state.localPreferencesHydrated) {
+    const rememberedVolume = rememberedVolumePercent();
+    const rememberedMute = rememberedMuted();
+    const serverVolume = Number(state.data?.player_settings?.volume_percent ?? 100);
+    const serverMuted = Boolean(state.data?.player_settings?.is_muted);
+    state.localPreferencesHydrated = true;
+    if (rememberedVolume !== serverVolume || rememberedMute !== serverMuted) {
+      state.data = await apiPost("/api/player/volume", {
+        volume_percent: rememberedVolume,
+        is_muted: rememberedMute,
+      });
+      syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    }
+  }
   render();
+}
+
+async function searchGatchaCache(query) {
+  const normalizedQuery = String(query || "").trim();
+  const response = await fetch(`/api/gatcha/search?q=${encodeURIComponent(normalizedQuery)}`, {
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "Search failed");
+  }
+  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+function hideSearchResults() {
+  elements.searchResults.innerHTML = "";
+  elements.searchResults.classList.add("hidden");
+}
+
+function renderSearchResults(items) {
+  elements.searchResults.innerHTML = "";
+  elements.searchResults.classList.remove("hidden");
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = "No cached matches found.";
+    elements.searchResults.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "search-result-item";
+
+    const meta = document.createElement("div");
+    meta.className = "search-result-meta";
+
+    const title = document.createElement("div");
+    title.className = "search-result-title";
+    title.textContent = String(item.title || "");
+
+    const url = document.createElement("div");
+    url.className = "search-result-url";
+    url.textContent = String(item.bvid || "");
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "next-button";
+    button.dataset.url = String(item.url || "");
+    button.textContent = "点歌";
+
+    meta.append(title, url);
+    row.append(meta, button);
+    elements.searchResults.appendChild(row);
+  });
+}
+
+async function handleGatchaDraw() {
+  if (gatchaCooldownRemainingSeconds() > 0) {
+    syncGatchaCooldownButtons();
+    return;
+  }
+  setGatchaMessage("正在连接 B 站寻找幸运投稿...");
+  try {
+    const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || "获取幸运歌曲失败");
+    }
+
+    state.gatchaCandidate = payload.data;
+    elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
+    startGatchaCooldown();
+    
+    // 切换界面
+    elements.gatchaInitView.classList.add("hidden");
+    elements.gatchaResultView.classList.remove("hidden");
+    setGatchaMessage("");
+  } catch (error) {
+    setGatchaMessage(error.message, true);
+  }
+}
+
+function setGatchaMessage(message, isError = false) {
+  if (!elements.gatchaMessage) {
+    return;
+  }
+  elements.gatchaMessage.textContent = message || "";
+  elements.gatchaMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setCookieMessage(message, isError = false) {
+  if (!elements.cookieMessage) {
+    return;
+  }
+  elements.cookieMessage.textContent = message || "";
+  elements.cookieMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function renderGatchaCookieFace() {
+  const showCookie = Boolean(state.gatchaCookieVisible);
+  elements.gatchaPanel?.classList.toggle("is-cookie-view", showCookie);
+  elements.gatchaStage?.classList.toggle("is-cookie-view", showCookie);
+  if (elements.gatchaTag) {
+    elements.gatchaTag.textContent = showCookie ? "Cookie Config" : "gatcha Draw";
+  }
+  if (elements.gatchaTitle) {
+    elements.gatchaTitle.textContent = showCookie ? "Cookie" : "试试运气";
+  }
+  if (elements.gatchaCookieToggle) {
+    elements.gatchaCookieToggle.textContent = showCookie ? "返回抽卡" : "输入 Cookie";
+    elements.gatchaCookieToggle.setAttribute("aria-pressed", String(showCookie));
+  }
+}
+
+function gatchaCooldownRemainingSeconds() {
+  return Math.max(0, Math.ceil((state.gatchaCooldownUntil - Date.now()) / 1000));
+}
+
+function startGatchaCooldown() {
+  state.gatchaCooldownUntil = Date.now() + gatchaCooldownMs;
+  syncGatchaCooldownButtons();
+  if (state.gatchaCooldownTimer) {
+    clearInterval(state.gatchaCooldownTimer);
+  }
+  state.gatchaCooldownTimer = setInterval(() => {
+    syncGatchaCooldownButtons();
+    if (gatchaCooldownRemainingSeconds() <= 0) {
+      clearInterval(state.gatchaCooldownTimer);
+      state.gatchaCooldownTimer = null;
+    }
+  }, 250);
+}
+
+function syncGatchaCooldownButtons() {
+  const remainingSeconds = gatchaCooldownRemainingSeconds();
+  const coolingDown = remainingSeconds > 0;
+  const cooldownText = `等待 ${remainingSeconds}s`;
+  if (elements.gatchaButton) {
+    elements.gatchaButton.disabled = coolingDown;
+    elements.gatchaButton.textContent = coolingDown ? cooldownText : "试试运气";
+  }
+  if (elements.gatchaRetryButton) {
+    elements.gatchaRetryButton.disabled = coolingDown;
+    elements.gatchaRetryButton.textContent = coolingDown ? cooldownText : "重新再来";
+  }
 }
 
 function disconnectClient() {
@@ -171,13 +696,14 @@ function render() {
   renderSessionUsers(data.session_users || []);
   renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
   renderRemoteAccess(data.remote_access);
-
-  document.querySelectorAll(".mode-button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.mode === data.playback_mode);
-  });
+  renderLayoutMode();
 
   renderAudioVariantBar(currentItem, data.playback_mode);
+  renderAvSyncControls(data.playback_mode, data.player_settings);
+  renderVolumeControls(data.playback_mode);
+  applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, data.playback_mode);
+  renderPlayerFullscreenButton();
   applyRemotePlayerControl(data.player_control_command, currentItem, data.playback_mode);
   renderQueueCurrent(currentItem);
   if (!state.dragItemId) {
@@ -191,6 +717,7 @@ function render() {
     Boolean(data.session_flags?.auto_restored_backup),
   );
   elements.listStage.classList.toggle("is-history-view", state.listView === "history");
+  renderGatchaCookieFace();
   renderConfirmPopover();
 }
 
@@ -227,6 +754,8 @@ function renderRequesterSelect(sessionUsers) {
 
   if (previousValue && users.includes(previousValue)) {
     elements.requesterSelect.value = previousValue;
+  } else if (users.length) {
+    elements.requesterSelect.value = users[0];
   } else {
     elements.requesterSelect.value = "";
   }
@@ -311,10 +840,82 @@ function renderRemoteQr(url) {
   elements.remoteQrImage.src = qrUrl;
 }
 
+function renderRemoteAccess(remoteAccess) {
+  const preferredUrl = String(remoteAccess?.preferred_url || "");
+  const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
+  const localUrl = String(remoteAccess?.local_url || "");
+  const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
+  const displayHint = lanUrls.length > 1
+    ? `可用局域网地址: ${lanUrls.join(" · ")}`
+    : lanUrls.length === 1
+      ? "请确保手机和服务端在同一个局域网内。"
+      : "暂未检测到局域网地址，可稍后刷新或手动检查网络。";
+
+  [elements.remoteUrlLink, elements.remotePopoverUrlLink].forEach((link) => {
+    if (!link) {
+      return;
+    }
+    link.href = displayUrl;
+    link.textContent = displayUrl;
+  });
+
+  [elements.remoteUrlHint, elements.remotePopoverUrlHint].forEach((hint) => {
+    if (hint) {
+      hint.textContent = displayHint;
+    }
+  });
+
+  renderRemoteQr(displayUrl, [
+    { image: elements.remoteQrImage, placeholder: elements.remoteQrPlaceholder, size: 220 },
+    { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
+    { image: elements.remoteMiniQrImage, placeholder: elements.remoteMiniQrPlaceholder, size: 132 },
+  ]);
+}
+
+function renderRemoteQr(url, targets = []) {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) {
+    targets.forEach(({ image, placeholder }) => {
+      image?.classList.add("hidden");
+      if (placeholder) {
+        placeholder.textContent = "暂无可用访问地址";
+        placeholder.classList.remove("hidden");
+      }
+    });
+    return;
+  }
+
+  targets.forEach(({ image, placeholder, size = 220 }) => {
+    if (!image || !placeholder) {
+      return;
+    }
+
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
+    if (image.dataset.qrUrl === qrUrl) {
+      return;
+    }
+
+    image.dataset.qrUrl = qrUrl;
+    image.classList.add("hidden");
+    placeholder.textContent = "正在生成二维码...";
+    placeholder.classList.remove("hidden");
+    image.onload = () => {
+      placeholder.classList.add("hidden");
+      image.classList.remove("hidden");
+    };
+    image.onerror = () => {
+      image.classList.add("hidden");
+      placeholder.textContent = "二维码生成失败，请稍后重试";
+      placeholder.classList.remove("hidden");
+    };
+    image.src = qrUrl;
+  });
+}
+
 async function copyRemoteUrl() {
   const url = elements.remoteUrlLink.href;
   if (!url) {
-    setFormMessage("当前没有可复制的手机访问地址。", true);
+    setAppMessage("当前没有可复制的手机访问地址。", true);
     return;
   }
 
@@ -329,9 +930,9 @@ async function copyRemoteUrl() {
       document.execCommand("copy");
       input.remove();
     }
-    setFormMessage("手机访问链接已复制。");
+    setAppMessage("手机访问链接已复制。");
   } catch {
-    setFormMessage("复制失败，请手动复制页面中的链接。", true);
+    setAppMessage("复制失败，请手动复制页面中的链接。", true);
   }
 }
 
@@ -348,14 +949,131 @@ function renderListHeader(playlist, history) {
 }
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
-  elements.bbdownStatus.textContent = formatBBDownStatus(bbdown);
-  elements.bbdownStatus.title = bbdown?.message || "";
+  syncToolIndicator(elements.serviceStatusIndicator, aggregateToolStatusState(bbdown, ffmpeg));
+  if (elements.playbackModeSummary) {
+    elements.playbackModeSummary.textContent = formatPlaybackMode(state.data?.playback_mode);
+  }
+  if (elements.playbackModeCurrent) {
+    elements.playbackModeCurrent.textContent = formatPlaybackMode(state.data?.playback_mode);
+  }
   elements.cacheChipMeta.textContent = formatCacheChipMeta(cachePolicy);
   elements.cacheUsageDetail.textContent = formatCacheUsage(cachePolicy);
-  elements.ffmpegStatusHint.textContent = formatFFmpegHint(ffmpeg);
+  syncToolIndicator(elements.bbdownPanelStatusIndicator, bbdown?.state);
+  syncToolIndicator(elements.ffmpegPanelStatusIndicator, ffmpeg?.state);
+  renderBBDownLogin(bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) });
+  if (elements.bbdownStatusRow) {
+    elements.bbdownStatusRow.title = `BBDown ${formatBBDownHint(bbdown)}`;
+  }
+  if (elements.ffmpegStatusRow) {
+    elements.ffmpegStatusRow.title = `FFmpeg ${formatFFmpegHint(ffmpeg)}`;
+  }
 
   renderCacheSlider(cachePolicy);
   syncCachePanelVisibility();
+}
+
+function renderBBDownLogin(login) {
+  const loggedIn = Boolean(login?.logged_in);
+  if (elements.bbdownLoginButton) {
+    elements.bbdownLoginButton.classList.toggle("is-logged", loggedIn);
+    elements.bbdownLoginButton.classList.toggle("is-unlogged", !loggedIn);
+    elements.bbdownLoginButton.classList.remove("is-unknown");
+    const label = elements.bbdownLoginButton.querySelector(".bbdown-login-label");
+    if (label) {
+      label.textContent = loggedIn ? "已登录" : "未登录";
+    }
+    elements.bbdownLoginButton.title = loggedIn ? "点击退出 BBDown 登录" : "点击生成 BBDown 登录二维码";
+  }
+
+  elements.bbdownLoginPanel?.classList.toggle("hidden", loggedIn);
+  if (loggedIn) {
+    return;
+  }
+
+  const qrImage = String(login?.qr_image || "");
+  const qrText = String(login?.qr_text || "");
+  if (elements.bbdownLoginQrImage) {
+    elements.bbdownLoginQrImage.classList.toggle("hidden", !qrImage);
+    if (qrImage && elements.bbdownLoginQrImage.src !== qrImage) {
+      elements.bbdownLoginQrImage.src = qrImage;
+    } else if (!qrImage) {
+      elements.bbdownLoginQrImage.removeAttribute("src");
+    }
+  }
+  if (elements.bbdownLoginQrText) {
+    elements.bbdownLoginQrText.classList.toggle("hidden", Boolean(qrImage) || !qrText);
+    elements.bbdownLoginQrText.textContent = qrText;
+  }
+  if (elements.bbdownLoginMessage) {
+    elements.bbdownLoginMessage.textContent = login?.message || "正在准备二维码...";
+    elements.bbdownLoginMessage.classList.toggle("is-error", login?.state === "failed");
+  }
+  maybeStartBBDownLogin(login);
+}
+
+function maybeStartBBDownLogin(login, options = {}) {
+  if (!state.cacheSettingsOpen || state.bbdownLoginRequesting || login?.logged_in) {
+    return;
+  }
+  const force = Boolean(options.force);
+  const loginState = String(login?.state || "idle");
+  if (!force && (loginState === "starting" || loginState === "waiting")) {
+    return;
+  }
+  if (!force && loginState !== "idle") {
+    return;
+  }
+  startBBDownLogin({ force });
+}
+
+async function startBBDownLogin(options = {}) {
+  state.bbdownLoginRequesting = true;
+  try {
+    state.data = await apiPost("/api/bbdown/login/start", {
+      force: Boolean(options.force),
+    });
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+  } finally {
+    state.bbdownLoginRequesting = false;
+  }
+}
+
+function syncToolIndicator(indicator, state) {
+  if (!indicator) {
+    return;
+  }
+  const normalizedState = String(state || "idle");
+  indicator.classList.remove("is-ready", "is-failed", "is-loading", "is-pending");
+  indicator.textContent = "";
+  if (normalizedState === "ready") {
+    indicator.classList.add("is-ready");
+    indicator.textContent = "✓";
+  } else if (normalizedState === "failed") {
+    indicator.classList.add("is-failed");
+    indicator.textContent = "×";
+  } else if (normalizedState === "checking" || normalizedState === "installing" || normalizedState === "loading") {
+    indicator.classList.add("is-loading");
+  } else {
+    indicator.classList.add("is-pending");
+    indicator.textContent = "·";
+  }
+}
+
+function aggregateToolStatusState(bbdown, ffmpeg) {
+  const states = [bbdown?.state, ffmpeg?.state].map((value) => String(value || "idle"));
+  if (states.includes("failed")) {
+    return "failed";
+  }
+  if (states.every((stateValue) => stateValue === "ready")) {
+    return "ready";
+  }
+  return "loading";
+}
+
+function formatPlaybackMode(mode) {
+  return mode === "online" ? "在线外挂" : "本地缓存";
 }
 
 function renderCacheSlider(cachePolicy) {
@@ -383,9 +1101,12 @@ function renderCacheSlider(cachePolicy) {
   });
 }
 
-function syncCachePanelVisibility() {
+function syncCachePanelVisibility(options = {}) {
   elements.cacheSettingsToggle.setAttribute("aria-expanded", String(state.cacheSettingsOpen));
   elements.cachePanel.classList.toggle("hidden", !state.cacheSettingsOpen);
+  maybeStartBBDownLogin(state.data?.bbdown?.login, {
+    force: Boolean(options.forceLoginRefresh),
+  });
 }
 
 function renderQueueCurrent(currentItem) {
@@ -434,42 +1155,78 @@ function audioVariantsForItem(item) {
   if (!item || !Array.isArray(item.audio_variants)) {
     return [];
   }
-  return item.audio_variants.filter((variant) => variant && variant.media_url);
+  return item.audio_variants.filter(
+    (variant) => variant && (variant.audio_url || variant.media_url),
+  );
 }
 
-function variantIdForLabel(label, index) {
+function variantIdForLabel(page, label, index) {
   const normalized = String(label || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
-  return normalized || `track_${index + 1}`;
+  const suffix = normalized || `track_${index + 1}`;
+  return `p${Math.max(1, Number(page || index + 1))}_${suffix}`;
 }
 
-function partOptionsForItem(item) {
-  const cachedVariants = audioVariantsForItem(item);
-  if (cachedVariants.length) {
-    return cachedVariants;
-  }
-  if (!item || !Array.isArray(item.selected_parts) || item.selected_parts.length <= 1) {
+function availablePartEntriesForItem(item) {
+  if (!item) {
     return [];
   }
-  return item.selected_parts
-    .map((label, index) => {
-      const normalizedLabel = String(label || "").trim();
-      if (!normalizedLabel) {
+  const pages = Array.isArray(item.available_pages) && item.available_pages.length
+    ? item.available_pages
+    : item.selected_pages;
+  const parts = Array.isArray(item.available_parts) && item.available_parts.length
+    ? item.available_parts
+    : item.selected_parts;
+  const durations = Array.isArray(item.available_durations) && item.available_durations.length
+    ? item.available_durations
+    : item.selected_durations;
+  if (!Array.isArray(pages) || !Array.isArray(parts) || pages.length <= 1) {
+    return [];
+  }
+  return pages
+    .map((page, index) => {
+      const numericPage = Number(page || 0);
+      if (!numericPage) {
         return null;
       }
+      const label = String(parts[index] || `P${numericPage}`).trim() || `P${numericPage}`;
       return {
-        id: variantIdForLabel(normalizedLabel, index),
-        label: normalizedLabel,
-        media_url: "",
+        page: numericPage,
+        label,
+        duration: Number(durations[index] || 0),
+        id: variantIdForLabel(numericPage, label, index),
+        bound: Array.isArray(item.selected_pages)
+          ? item.selected_pages.some((selectedPage) => Number(selectedPage) === numericPage)
+          : false,
       };
     })
     .filter(Boolean);
 }
 
+function partOptionsForItem(item) {
+  const availableParts = availablePartEntriesForItem(item);
+  if (!availableParts.length) {
+    return [];
+  }
+
+  const cachedVariantsById = new Map(
+    audioVariantsForItem(item).map((variant) => [String(variant.id || "").trim(), variant]),
+  );
+
+  return availableParts.map((entry) => {
+    const cachedVariant = cachedVariantsById.get(entry.id);
+    return {
+      ...entry,
+      media_url: String(cachedVariant?.media_url || ""),
+      audio_url: String(cachedVariant?.audio_url || ""),
+    };
+  });
+}
+
 function selectedAudioVariantForItem(item) {
-  const variants = partOptionsForItem(item);
+  const variants = partOptionsForItem(item).filter((variant) => variant.bound);
   if (!variants.length) {
     return null;
   }
@@ -495,10 +1252,280 @@ function selectedMediaUrlForItem(item) {
   return selectedVariant?.media_url || item.local_media_url || "";
 }
 
+function selectedVideoUrlForItem(item) {
+  return String(item?.video_media_url || item?.local_media_url || "").trim();
+}
+
+function selectedAudioUrlForItem(item) {
+  const selectedVariant = selectedAudioVariantForItem(item);
+  return String(selectedVariant?.audio_url || selectedVariant?.media_url || "").trim();
+}
+
+function currentAvOffsetMs() {
+  return Number(state.data?.player_settings?.av_offset_ms || 0);
+}
+
+function currentAvOffsetSeconds() {
+  return currentAvOffsetMs() / 1000;
+}
+
+function boundedAvOffsetMs(rawValue) {
+  const numeric = Number(rawValue || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(-maxAvOffsetMs, Math.min(maxAvOffsetMs, Math.round(numeric)));
+}
+
+function clampMediaTime(media, nextTime) {
+  const target = Math.max(0, Number(nextTime || 0));
+  if (!Number.isFinite(media?.duration)) {
+    return target;
+  }
+  return Math.min(target, Number(media.duration));
+}
+
+function clearLocalPlayerSyncTimer() {
+  if (state.localPlayerSyncTimer) {
+    window.clearInterval(state.localPlayerSyncTimer);
+    state.localPlayerSyncTimer = null;
+  }
+}
+
+function teardownMountedPlayer() {
+  clearLocalPlayerSyncTimer();
+  elements.playerFrame.querySelectorAll("video, audio").forEach((media) => {
+    try {
+      media.pause();
+    } catch {
+      // Ignore pause failures during teardown.
+    }
+    try {
+      media.removeAttribute("src");
+      media.load();
+    } catch {
+      // Ignore cleanup failures and let DOM replacement finish the teardown.
+    }
+  });
+}
+
+function activeLocalPlayerElements() {
+  return {
+    video: elements.playerFrame.querySelector('video[data-player-role="video"]'),
+    audio: elements.playerFrame.querySelector('audio[data-player-role="audio"]'),
+  };
+}
+
+function activePrimaryVideoElement() {
+  return elements.playerFrame.querySelector("video");
+}
+
+function captureLocalPlayerPreferences() {
+  const { video, audio } = activeLocalPlayerElements();
+  const primaryVideo = video || activePrimaryVideoElement();
+  const mediaWithVolume = audio || primaryVideo;
+  if (mediaWithVolume) {
+    const volume = Number(mediaWithVolume.volume);
+    if (Number.isFinite(volume)) {
+      state.localPlayerVolume = Math.max(0, Math.min(1, volume));
+    }
+    state.localPlayerMuted = Boolean(mediaWithVolume.muted);
+    persistLocalVolumePreferences();
+  }
+  if (primaryVideo) {
+    state.localShouldBePlaying = !primaryVideo.paused;
+  }
+}
+
+function applyStoredVolumeToSplitPlayer(video, audio) {
+  if (!video || !audio) {
+    return;
+  }
+  video.volume = state.localPlayerVolume;
+  video.muted = state.localPlayerMuted;
+  audio.volume = state.localPlayerVolume;
+  audio.muted = state.localPlayerMuted;
+}
+
+function syncSplitPlayerVolumeFromVideo(video, audio) {
+  if (!video || !audio) {
+    return;
+  }
+  state.localPlayerVolume = Number.isFinite(video.volume)
+    ? Math.max(0, Math.min(1, Number(video.volume)))
+    : state.localPlayerVolume;
+  state.localPlayerMuted = Boolean(video.muted);
+  persistLocalVolumePreferences();
+  audio.volume = state.localPlayerVolume;
+  audio.muted = state.localPlayerMuted;
+  renderVolumeControls(state.data?.playback_mode || "local");
+}
+
+function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
+  if (!video || !audio) {
+    return;
+  }
+
+  syncSplitPlayerVolumeFromVideo(video, audio);
+  audio.playbackRate = Number(video.playbackRate || 1) || 1;
+  const targetAudioTime = clampMediaTime(audio, Number(video.currentTime || 0) - offsetSeconds);
+  const drift = Math.abs(Number(audio.currentTime || 0) - targetAudioTime);
+
+  if (forceSeek || drift > 0.08) {
+    audio.currentTime = targetAudioTime;
+  }
+
+  if (video.paused) {
+    if (!audio.paused) {
+      audio.pause();
+    }
+    return;
+  }
+
+  if (targetAudioTime <= 0) {
+    if (!audio.paused) {
+      audio.pause();
+    }
+    return;
+  }
+
+  if (audio.paused || forceSeek) {
+    audio.play().catch(() => {});
+  }
+}
+
+function syncMountedLocalPlayer(forceSeek = false) {
+  const { video, audio } = activeLocalPlayerElements();
+  if (!video || !audio) {
+    return;
+  }
+  syncSplitPlayer(video, audio, currentAvOffsetSeconds(), forceSeek);
+}
+
+function applyStoredVolumeToSinglePlayer(video) {
+  if (!video) {
+    return;
+  }
+  video.volume = state.localPlayerVolume;
+  video.muted = state.localPlayerMuted;
+}
+
+function applyStoredVolumeToMountedPlayer() {
+  const { video, audio } = activeLocalPlayerElements();
+  if (video && audio) {
+    applyStoredVolumeToSplitPlayer(video, audio);
+    return;
+  }
+  applyStoredVolumeToSinglePlayer(activePrimaryVideoElement());
+}
+
+function volumePercentText() {
+  return `${Math.round(state.localPlayerVolume * 100)}%`;
+}
+
+function setRangeFillPercent(input, percent) {
+  if (!input) {
+    return;
+  }
+  const normalizedPercent = Math.max(0, Math.min(100, Number(percent || 0)));
+  input.style.setProperty("--range-fill-percent", `${normalizedPercent}%`);
+}
+
+function renderVolumeControls(playbackMode) {
+  if (!elements.volumePanel || !elements.volumeSlider || !elements.volumeMuteButton || !elements.volumeValue) {
+    return;
+  }
+
+  const isLocalMode = playbackMode === "local";
+  const volumePercent = Math.round(state.localPlayerVolume * 100);
+  elements.volumePanel.classList.toggle("hidden", !isLocalMode);
+  elements.volumeSlider.value = String(volumePercent);
+  setRangeFillPercent(elements.volumeSlider, volumePercent);
+  elements.volumeValue.textContent = volumePercentText();
+  elements.volumeMuteButton.textContent = state.localPlayerMuted ? "取消静音" : "静音";
+  elements.volumeMuteButton.classList.toggle("is-muted", state.localPlayerMuted);
+}
+
+function persistLocalVolumePreferences() {
+  writeLocalPreference(storageKeys.playerVolume, state.localPlayerVolume);
+  writeLocalPreference(storageKeys.playerMuted, state.localPlayerMuted);
+}
+
+async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
+  const normalizedVolume = Math.max(0, Math.min(1, Number(nextVolume || 0)));
+  const previousVolume = state.localPlayerVolume;
+  const previousMuted = state.localPlayerMuted;
+  state.localPlayerVolume = normalizedVolume;
+  if (unmute && normalizedVolume > 0) {
+    state.localPlayerMuted = false;
+  }
+  persistLocalVolumePreferences();
+  applyStoredVolumeToMountedPlayer();
+  renderVolumeControls(state.data?.playback_mode || "local");
+  try {
+    state.data = await apiPost("/api/player/volume", {
+      volume_percent: Math.round(normalizedVolume * 100),
+      is_muted: state.localPlayerMuted,
+    });
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    render();
+  } catch (error) {
+    state.localPlayerVolume = previousVolume;
+    state.localPlayerMuted = previousMuted;
+    persistLocalVolumePreferences();
+    applyStoredVolumeToMountedPlayer();
+    renderVolumeControls(state.data?.playback_mode || "local");
+    setAppMessage(error.message, true);
+  }
+}
+
+async function toggleLocalPlayerMute() {
+  const previousMuted = state.localPlayerMuted;
+  state.localPlayerMuted = !state.localPlayerMuted;
+  persistLocalVolumePreferences();
+  applyStoredVolumeToMountedPlayer();
+  renderVolumeControls(state.data?.playback_mode || "local");
+  try {
+    state.data = await apiPost("/api/player/volume", {
+      volume_percent: Math.round(state.localPlayerVolume * 100),
+      is_muted: state.localPlayerMuted,
+    });
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    render();
+  } catch (error) {
+    state.localPlayerMuted = previousMuted;
+    persistLocalVolumePreferences();
+    applyStoredVolumeToMountedPlayer();
+    renderVolumeControls(state.data?.playback_mode || "local");
+    setAppMessage(error.message, true);
+  }
+}
+
+function audioVariantSwitchLocked() {
+  return state.audioVariantSwitchInFlight || Date.now() < state.audioVariantSwitchUnlockAt;
+}
+
+function scheduleAudioVariantSwitchUnlock() {
+  if (state.audioVariantSwitchTimer) {
+    window.clearTimeout(state.audioVariantSwitchTimer);
+    state.audioVariantSwitchTimer = null;
+  }
+  const remainingMs = Math.max(0, state.audioVariantSwitchUnlockAt - Date.now());
+  state.audioVariantSwitchTimer = window.setTimeout(() => {
+    state.audioVariantSwitchUnlockAt = 0;
+    state.audioVariantSwitchTimer = null;
+    if (state.data) {
+      renderAudioVariantBar(state.data.current_item, state.data.playback_mode);
+    }
+  }, remainingMs);
+}
+
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
     elements.audioVariantBar.innerHTML = "";
     elements.audioVariantBar.classList.add("hidden");
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = "";
     return;
   }
 
@@ -506,11 +1533,21 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   if (variants.length <= 1) {
     elements.audioVariantBar.innerHTML = "";
     elements.audioVariantBar.classList.add("hidden");
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = currentItem.id;
     return;
   }
 
+  if (state.audioVariantBarItemId !== currentItem.id) {
+    state.audioVariantBarExpanded = false;
+    state.audioVariantBarItemId = currentItem.id;
+  }
+
   const selectedVariant = selectedAudioVariantForItem(currentItem);
+  const buttonsDisabled = audioVariantSwitchLocked();
   elements.audioVariantBar.innerHTML = "";
+  const list = document.createElement("div");
+  list.className = "audio-variant-list";
   variants.forEach((variant) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -518,22 +1555,73 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     button.textContent = variant.label || variant.id;
     button.dataset.itemId = currentItem.id;
     button.dataset.variantId = variant.id;
-    button.classList.toggle("active", variant.id === selectedVariant?.id);
-    elements.audioVariantBar.appendChild(button);
+    button.dataset.page = String(variant.page || "");
+    button.dataset.bound = String(Boolean(variant.bound));
+    button.disabled = variant.bound ? buttonsDisabled : false;
+    button.classList.toggle("active", variant.bound && variant.id === selectedVariant?.id);
+    button.classList.toggle("pending-bind", !variant.bound);
+    list.appendChild(button);
   });
+
+  const toggleButton = document.createElement("button");
+  toggleButton.type = "button";
+  toggleButton.className = "audio-variant-toggle";
+  toggleButton.dataset.action = "toggle-audio-variants";
+  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? "收起分P列表" : "展开分P列表");
+  toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
+  toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
+
+  elements.audioVariantBar.append(list, toggleButton);
+
+  const firstButton = list.querySelector(".audio-variant-button");
+  const firstRowHeight = firstButton
+    ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
+    : 44;
+  const isWrapped = list.scrollHeight > firstRowHeight + 2;
+
+  elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
+  elements.audioVariantBar.classList.toggle("is-expanded", isWrapped && state.audioVariantBarExpanded);
+  toggleButton.classList.toggle("hidden", !isWrapped);
+  if (isWrapped) {
+    list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
+    toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
+  } else {
+    state.audioVariantBarExpanded = false;
+  }
   elements.audioVariantBar.classList.remove("hidden");
+}
+
+function renderAvSyncControls(playbackMode, playerSettings) {
+  if (!elements.avSyncPanel || !elements.avOffsetInput) {
+    return;
+  }
+
+  const isLocalMode = playbackMode === "local";
+  elements.avSyncPanel.classList.toggle("hidden", !isLocalMode);
+  const offsetMs = boundedAvOffsetMs(playerSettings?.av_offset_ms || 0);
+  elements.avOffsetInput.disabled = state.avOffsetSaving;
+  if (document.activeElement !== elements.avOffsetInput || state.avOffsetSaving) {
+    elements.avOffsetInput.value = String(offsetMs);
+  }
 }
 
 function renderPlayer(currentItem, playbackMode) {
   const selectedMediaUrl = currentItem ? selectedMediaUrlForItem(currentItem) : "";
+  const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
+  const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
+  const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
   const signature = [
     currentItem ? currentItem.id : "none",
     playbackMode,
-    selectedMediaUrl,
+    hasSplitPlayback ? selectedVideoUrl : selectedMediaUrl,
+    hasSplitPlayback ? selectedAudioUrl : "",
     currentItem ? currentItem.cache_status : "",
   ].join("|");
 
   if (signature === state.playerSignature) {
+    if (hasSplitPlayback) {
+      syncMountedLocalPlayer(false);
+    }
     return;
   }
 
@@ -542,14 +1630,18 @@ function renderPlayer(currentItem, playbackMode) {
     !state.pendingPlaybackRestore
     && playbackMode === "local"
     && currentItem
-    && selectedMediaUrl
+    && (hasSplitPlayback || selectedMediaUrl)
     && previousPlayerContext?.playbackMode === "local"
     && previousPlayerContext.itemId === currentItem.id
-    && previousPlayerContext.mediaUrl
-    && previousPlayerContext.mediaUrl !== selectedMediaUrl
+    && (
+      previousPlayerContext.mediaUrl !== selectedMediaUrl
+      || previousPlayerContext.videoUrl !== selectedVideoUrl
+      || previousPlayerContext.audioUrl !== selectedAudioUrl
+    )
   ) {
     const currentVideo = elements.playerFrame.querySelector("video");
     if (currentVideo) {
+      captureLocalPlayerPreferences();
       state.pendingPlaybackRestore = {
         itemId: currentItem.id,
         variantId: selectedAudioVariantForItem(currentItem)?.id || "",
@@ -563,8 +1655,12 @@ function renderPlayer(currentItem, playbackMode) {
   state.playerContext = {
     itemId: currentItem ? currentItem.id : "",
     mediaUrl: selectedMediaUrl,
+    videoUrl: selectedVideoUrl,
+    audioUrl: selectedAudioUrl,
     playbackMode,
   };
+  captureLocalPlayerPreferences();
+  teardownMountedPlayer();
 
   if (!currentItem) {
     elements.playerFrame.innerHTML =
@@ -586,17 +1682,143 @@ function renderPlayer(currentItem, playbackMode) {
     return;
   }
 
+  if (hasSplitPlayback) {
+    elements.playerFrame.innerHTML = `
+      <video
+        data-player-role="video"
+        controls
+        controlsList="nofullscreen"
+        autoplay
+        playsinline
+        preload="metadata"
+        src="${escapeHtml(selectedVideoUrl)}"
+      ></video>
+      <audio
+        data-player-role="audio"
+        preload="auto"
+        src="${escapeHtml(selectedAudioUrl)}"
+      ></audio>
+    `;
+    const video = elements.playerFrame.querySelector('video[data-player-role="video"]');
+    const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
+    if (video && audio) {
+      applyStoredVolumeToSplitPlayer(video, audio);
+      const reportCurrentVideoStatus = () => {
+        reportPlayerStatus(currentItem.id, video);
+      };
+      let restoreApplied = false;
+      const maybeRestorePlayback = () => {
+        const pendingRestore = state.pendingPlaybackRestore;
+        if (
+          restoreApplied
+          || !pendingRestore
+          || pendingRestore.itemId !== currentItem.id
+          || pendingRestore.variantId !== selectedAudioVariantForItem(currentItem)?.id
+          || video.readyState < 1
+          || audio.readyState < 1
+        ) {
+          return;
+        }
+
+        restoreApplied = true;
+        if (Number.isFinite(pendingRestore.currentTime)) {
+          video.currentTime = clampMediaTime(video, pendingRestore.currentTime);
+        }
+        state.localShouldBePlaying = Boolean(pendingRestore.wasPlaying);
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+        if (pendingRestore.wasPlaying) {
+          video.play().catch(() => {});
+        }
+        state.pendingPlaybackRestore = null;
+        reportCurrentVideoStatus();
+      };
+
+      video.addEventListener("loadedmetadata", () => {
+        maybeRestorePlayback();
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+        reportCurrentVideoStatus();
+      });
+      audio.addEventListener("loadedmetadata", () => {
+        maybeRestorePlayback();
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+      });
+      video.addEventListener("play", () => {
+        state.localShouldBePlaying = true;
+        state.localSeekResumePending = false;
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+        reportCurrentVideoStatus();
+      });
+      video.addEventListener("pause", () => {
+        if (state.localSeekResumePending) {
+          return;
+        }
+        if (document.hidden && state.localShouldBePlaying) {
+          window.setTimeout(() => {
+            video.play().catch(() => {});
+            syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+          }, 0);
+          return;
+        }
+        state.localShouldBePlaying = false;
+        if (!audio.paused) {
+          audio.pause();
+        }
+        reportCurrentVideoStatus();
+      });
+      video.addEventListener("seeking", () => {
+        state.localSeekResumePending = !video.paused || state.localShouldBePlaying;
+      });
+      video.addEventListener("seeked", () => {
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+        if (state.localSeekResumePending) {
+          video.play().catch(() => {});
+        }
+        state.localSeekResumePending = false;
+        reportCurrentVideoStatus();
+      });
+      video.addEventListener("ratechange", () => {
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+      });
+      video.addEventListener("volumechange", () => {
+        syncSplitPlayerVolumeFromVideo(video, audio);
+      });
+      video.addEventListener("ended", async () => {
+        state.localShouldBePlaying = false;
+        state.localSeekResumePending = false;
+        audio.pause();
+        reportCurrentVideoStatus();
+        await handleLocalPlaybackEnded();
+      });
+      audio.addEventListener("ended", () => {
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+      });
+      state.localPlayerSyncTimer = window.setInterval(() => {
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+      }, localPlayerSyncIntervalMs);
+      window.setTimeout(() => {
+        maybeRestorePlayback();
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+        reportCurrentVideoStatus();
+      }, 0);
+    }
+    return;
+  }
+
   if (selectedMediaUrl) {
     elements.playerFrame.innerHTML = `
       <video
         controls
+        controlsList="nofullscreen"
         autoplay
+        playsinline
         preload="metadata"
         src="${escapeHtml(selectedMediaUrl)}"
       ></video>
     `;
     const video = elements.playerFrame.querySelector("video");
     if (video) {
+      video.volume = state.localPlayerVolume;
+      video.muted = state.localPlayerMuted;
       const reportCurrentVideoStatus = () => {
         reportPlayerStatus(currentItem.id, video);
       };
@@ -608,10 +1830,7 @@ function renderPlayer(currentItem, playbackMode) {
       ) {
         video.addEventListener("loadedmetadata", () => {
           if (Number.isFinite(pendingRestore.currentTime)) {
-            video.currentTime = Math.min(
-              pendingRestore.currentTime,
-              Number.isFinite(video.duration) ? video.duration : pendingRestore.currentTime,
-            );
+            video.currentTime = clampMediaTime(video, pendingRestore.currentTime);
           }
           if (pendingRestore.wasPlaying) {
             video.play().catch(() => {});
@@ -621,10 +1840,45 @@ function renderPlayer(currentItem, playbackMode) {
         }, { once: true });
       }
       video.addEventListener("loadedmetadata", reportCurrentVideoStatus);
-      video.addEventListener("play", reportCurrentVideoStatus);
-      video.addEventListener("pause", reportCurrentVideoStatus);
-      video.addEventListener("seeked", reportCurrentVideoStatus);
+      video.addEventListener("play", () => {
+        state.localShouldBePlaying = true;
+        state.localSeekResumePending = false;
+        reportCurrentVideoStatus();
+      });
+      video.addEventListener("pause", () => {
+        if (state.localSeekResumePending) {
+          return;
+        }
+        if (document.hidden && state.localShouldBePlaying) {
+          window.setTimeout(() => {
+            video.play().catch(() => {});
+          }, 0);
+          return;
+        }
+        state.localShouldBePlaying = false;
+        reportCurrentVideoStatus();
+      });
+      video.addEventListener("seeking", () => {
+        state.localSeekResumePending = !video.paused || state.localShouldBePlaying;
+      });
+      video.addEventListener("seeked", () => {
+        if (state.localSeekResumePending) {
+          video.play().catch(() => {});
+        }
+        state.localSeekResumePending = false;
+        reportCurrentVideoStatus();
+      });
+      video.addEventListener("volumechange", () => {
+        state.localPlayerVolume = Number.isFinite(video.volume)
+          ? Math.max(0, Math.min(1, Number(video.volume)))
+          : state.localPlayerVolume;
+        state.localPlayerMuted = Boolean(video.muted);
+        persistLocalVolumePreferences();
+        renderVolumeControls(state.data?.playback_mode || "local");
+      });
       video.addEventListener("ended", async () => {
+        state.localShouldBePlaying = false;
+        state.localSeekResumePending = false;
         reportCurrentVideoStatus();
         await handleLocalPlaybackEnded();
       });
@@ -656,21 +1910,31 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     && (!commandItemId || commandItemId === currentItem.id)
   ) {
     const video = elements.playerFrame.querySelector("video");
+    const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
     if (video) {
       if (action === "toggle-play") {
         if (video.paused) {
+          state.localShouldBePlaying = true;
           video.play().catch(() => {});
         } else {
+          state.localShouldBePlaying = false;
           video.pause();
         }
       } else if (action === "seek-relative") {
         const deltaSeconds = Number(command?.delta_seconds || 0);
         if (Number.isFinite(deltaSeconds) && deltaSeconds !== 0) {
+          state.localSeekResumePending = !video.paused || state.localShouldBePlaying;
           const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
           const nextTime = Math.max(0, Number(video.currentTime || 0) + deltaSeconds);
           video.currentTime = Number.isFinite(duration)
             ? Math.min(nextTime, duration)
             : nextTime;
+          if (audio) {
+            syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+          }
+          if (state.localSeekResumePending) {
+            video.play().catch(() => {});
+          }
         }
       }
     }
@@ -936,52 +2200,31 @@ function ownerTooltipForEntry(entry) {
   return `UP主: ${ownerName}`;
 }
 
-function formatBBDownStatus(bbdown) {
+function formatBBDownHint(bbdown) {
   if (!bbdown) {
     return "未知";
   }
   const labelMap = {
-    idle: "空闲",
+    idle: "待准备",
     checking: "检查中",
+    installing: "更新中",
     ready: "已就绪",
     failed: "异常",
   };
-  const stateLabel = labelMap[bbdown.state] || bbdown.state || "未知";
-  if (bbdown.version) {
-    return `${stateLabel} · ${bbdown.version}`;
-  }
-  return stateLabel;
-}
-
-function formatFFmpegStatus(ffmpeg) {
-  if (!ffmpeg) {
-    return "未知";
-  }
-  const labelMap = {
-    idle: "空闲",
-    checking: "检查中",
-    ready: "已就绪",
-    failed: "异常",
-  };
-  const stateLabel = labelMap[ffmpeg.state] || ffmpeg.state || "未知";
-  if (ffmpeg.version) {
-    return `${stateLabel} · ${ffmpeg.version}`;
-  }
-  return stateLabel;
+  return labelMap[bbdown.state] || bbdown.state || "未知";
 }
 
 function formatFFmpegHint(ffmpeg) {
   if (!ffmpeg) {
-    return "FFmpeg 未知";
+    return "未知";
   }
   const labelMap = {
-    idle: "空闲",
+    idle: "待准备",
     checking: "检查中",
     ready: "已就绪",
     failed: "异常",
   };
-  const stateLabel = labelMap[ffmpeg.state] || ffmpeg.state || "未知";
-  return `FFmpeg ${stateLabel}`;
+  return labelMap[ffmpeg.state] || ffmpeg.state || "未知";
 }
 
 function formatCacheChipMeta(cachePolicy) {
@@ -1059,6 +2302,7 @@ function renderBackupBanner(backup, hasCurrentItem, queueLength, autoRestoredBac
   if (!backup?.available || !autoRestoredBackup) {
     clearBackupBannerTimer();
     elements.backupBanner.classList.add("hidden");
+    updateBackupDismissButton();
     return;
   }
 
@@ -1079,9 +2323,45 @@ function renderBackupBanner(backup, hasCurrentItem, queueLength, autoRestoredBac
 
 function startBackupBannerTimer() {
   clearBackupBannerTimer();
-  state.backupBannerTimer = window.setTimeout(() => {
-    dismissBackupBanner();
-  }, bannerAutoHideMs);
+  state.backupBannerPaused = false;
+  state.backupBannerRemainingMs = bannerAutoHideMs;
+  state.backupBannerDeadline = Date.now() + state.backupBannerRemainingMs;
+  updateBackupDismissButton();
+  startBackupBannerCountdown();
+}
+
+function startBackupBannerCountdown() {
+  clearBackupBannerCountdown();
+  state.backupBannerCountdownTimer = window.setInterval(() => {
+    if (state.backupBannerPaused) {
+      return;
+    }
+    state.backupBannerRemainingMs = Math.max(0, state.backupBannerDeadline - Date.now());
+    updateBackupDismissButton();
+    if (state.backupBannerRemainingMs <= 0) {
+      dismissBackupBanner();
+    }
+  }, 250);
+}
+
+function pauseBackupBannerTimer() {
+  if (state.backupBannerDismissed || state.backupBannerPaused) {
+    return;
+  }
+  state.backupBannerRemainingMs = Math.max(0, state.backupBannerDeadline - Date.now());
+  state.backupBannerPaused = true;
+  clearBackupBannerCountdown();
+  updateBackupDismissButton();
+}
+
+function resumeBackupBannerTimer() {
+  if (state.backupBannerDismissed || !state.backupBannerPaused) {
+    return;
+  }
+  state.backupBannerPaused = false;
+  state.backupBannerDeadline = Date.now() + state.backupBannerRemainingMs;
+  updateBackupDismissButton();
+  startBackupBannerCountdown();
 }
 
 function clearBackupBannerTimer() {
@@ -1089,12 +2369,36 @@ function clearBackupBannerTimer() {
     window.clearTimeout(state.backupBannerTimer);
     state.backupBannerTimer = null;
   }
+  clearBackupBannerCountdown();
+  state.backupBannerDeadline = 0;
+  state.backupBannerRemainingMs = bannerAutoHideMs;
+  state.backupBannerPaused = false;
+}
+
+function clearBackupBannerCountdown() {
+  if (state.backupBannerCountdownTimer) {
+    window.clearInterval(state.backupBannerCountdownTimer);
+    state.backupBannerCountdownTimer = null;
+  }
+}
+
+function updateBackupDismissButton() {
+  if (!elements.dismissBackupButton) {
+    return;
+  }
+  if (state.backupBannerDismissed || state.backupDismissHover) {
+    elements.dismissBackupButton.textContent = "×";
+    return;
+  }
+  const remainingSeconds = Math.max(1, Math.ceil(state.backupBannerRemainingMs / 1000));
+  elements.dismissBackupButton.textContent = `${remainingSeconds}`;
 }
 
 function dismissBackupBanner() {
   state.backupBannerDismissed = true;
   elements.backupBanner.classList.add("hidden");
   clearBackupBannerTimer();
+  updateBackupDismissButton();
 }
 
 function openConfirm(intent) {
@@ -1224,12 +2528,161 @@ async function submitAddRequest(url, position, options = {}) {
     position,
     requester_name: String(options.requesterName || ""),
     allow_repeat: Boolean(options.allowRepeat),
+    selected_video_page: Number.isInteger(options.selectedVideoPage) ? options.selectedVideoPage : undefined,
+    selected_audio_pages: Array.isArray(options.selectedAudioPages) ? options.selectedAudioPages : undefined,
   });
+}
+
+function currentBindingSelection() {
+  if (!state.bindingIntent) {
+    return { selectedVideoPage: null, selectedAudioPages: [] };
+  }
+  const selectedVideo = elements.bindingVideoOptions.querySelector('input[name="binding-video-page"]:checked');
+  const selectedAudioPages = [...elements.bindingAudioOptions.querySelectorAll('input[name="binding-audio-page"]:checked')]
+    .map((input) => Number(input.value || 0))
+    .filter((page) => page > 0);
+  return {
+    selectedVideoPage: selectedVideo ? Number(selectedVideo.value || 0) : null,
+    selectedAudioPages,
+  };
+}
+
+function closeBindingModal() {
+  state.bindingIntent = null;
+  elements.bindingModal?.classList.add("hidden");
+  if (elements.bindingVideoOptions) {
+    elements.bindingVideoOptions.innerHTML = "";
+  }
+  if (elements.bindingAudioOptions) {
+    elements.bindingAudioOptions.innerHTML = "";
+  }
+}
+
+function renderBindingOption(inputType, name, entry, checked) {
+  const label = document.createElement("label");
+  label.className = "selection-option";
+
+  const input = document.createElement("input");
+  input.type = inputType;
+  input.name = name;
+  input.value = String(entry.page);
+  input.checked = checked;
+
+  const copy = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "selection-option-title";
+  title.textContent = `P${entry.page} · ${entry.part}`;
+  const meta = document.createElement("div");
+  meta.className = "selection-option-meta";
+  meta.textContent = entry.duration > 0 ? `${entry.duration}s` : "时长未知";
+  copy.append(title, meta);
+
+  label.append(input, copy);
+  return label;
+}
+
+function openBindingModal(intent, payload) {
+  const pages = Array.isArray(payload?.pages) ? payload.pages : [];
+  if (!pages.length) {
+    setFormMessage("无法读取分P列表", true);
+    return;
+  }
+  state.bindingIntent = {
+    ...intent,
+    binding: payload,
+  };
+  elements.bindingModalText.textContent = `《${payload.title || "该视频"}》包含多个分P，请选择要下载的视频画面和音频轨道。`;
+  elements.bindingVideoOptions.innerHTML = "";
+  elements.bindingAudioOptions.innerHTML = "";
+
+  const preferredPage = Number(payload.preferred_page || pages[0]?.page || 1);
+  pages.forEach((entry) => {
+    elements.bindingVideoOptions.appendChild(
+      renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage),
+    );
+    elements.bindingAudioOptions.appendChild(
+      renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage),
+    );
+  });
+  elements.bindingModal.classList.remove("hidden");
+}
+
+async function confirmBindingModal() {
+  const intent = state.bindingIntent;
+  if (!intent?.url) {
+    return;
+  }
+  const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
+  if (!selectedVideoPage) {
+    setFormMessage("请先选择一个视频分P", true);
+    return;
+  }
+  if (!selectedAudioPages.length) {
+    setFormMessage("请至少选择一个音频分P", true);
+    return;
+  }
+
+  try {
+    state.data = await submitAddRequest(intent.url, intent.position || "tail", {
+      requesterName: intent.requesterName || selectedRequesterName(),
+      allowRepeat: Boolean(intent.allowRepeat),
+      selectedVideoPage,
+      selectedAudioPages,
+    });
+    closeBindingModal();
+    if (!intent.preserveInput) {
+      elements.urlInput.value = "";
+    }
+    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入列表");
+    render();
+  } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingModal(
+        {
+          url: intent.url,
+          position: intent.position || "tail",
+          requesterName: intent.requesterName || selectedRequesterName(),
+          preserveInput: intent.preserveInput,
+          allowRepeat: intent.allowRepeat,
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
+    if (error.code === "duplicate_session_request") {
+      const point = anchorPointForEvent({}, elements.addForm);
+      closeBindingModal();
+      openConfirm({
+        type: "duplicate-add",
+        url: intent.url,
+        position: intent.position || "tail",
+        requesterName: intent.requesterName || selectedRequesterName(),
+        preserveInput: intent.preserveInput,
+        selectedVideoPage,
+        selectedAudioPages,
+        message: duplicateConfirmMessage(
+          error.payload?.duplicate_item,
+          error.payload?.session_entry,
+          error.payload?.active_item,
+        ),
+        x: point.x,
+        y: point.y,
+      });
+      return;
+    }
+    setFormMessage(error.message, true);
+  }
 }
 
 async function handleAdd(position, anchorPoint) {
   const url = elements.urlInput.value.trim();
   const requesterName = selectedRequesterName();
+  console.log({
+    selectValue: elements.requesterSelect?.value,
+    selectOptions: [...(elements.requesterSelect?.options || [])].map((o) => o.value),
+    selectedRequesterName: selectedRequesterName(),
+    sessionUsers: state.data?.session_users,
+  });
   if (!url) {
     setFormMessage("请输入 B 站视频链接或 BV 号", true);
     return;
@@ -1242,6 +2695,18 @@ async function handleAdd(position, anchorPoint) {
     setFormMessage(position === "next" ? "已顶歌到下一首" : "已加入列表末尾");
     render();
   } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingModal(
+        {
+          url,
+          position,
+          requesterName,
+          preserveInput: true,
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
     if (error.code === "duplicate_session_request") {
       openConfirm({
         type: "duplicate-add",
@@ -1272,6 +2737,18 @@ async function handleAddByUrl(url, position, anchorPoint) {
     setFormMessage(position === "next" ? "已从历史顶歌到下一首" : "已从历史加入列表");
     render();
   } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingModal(
+        {
+          url,
+          position,
+          requesterName,
+          preserveInput: false,
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
     if (error.code === "duplicate_session_request") {
       openConfirm({
         type: "duplicate-add",
@@ -1299,10 +2776,10 @@ async function discardBackup() {
     state.data = await apiPost("/api/backup/discard");
     dismissBackupBanner();
     closeConfirm();
-    setFormMessage("已清空本地备份。");
+    setAppMessage("已清空本地备份。");
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 }
 
@@ -1310,10 +2787,10 @@ async function clearPlaylist() {
   try {
     state.data = await apiPost("/api/playlist/clear");
     closeConfirm();
-    setFormMessage("播放列表已清空。");
+    setAppMessage("播放列表已清空。");
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 }
 
@@ -1361,26 +2838,26 @@ async function removeSessionUser(name) {
 async function addSessionUser() {
   const name = String(elements.sessionUserInput.value || "").trim();
   if (!name) {
-    setFormMessage("请输入用户名。", true);
+    setAppMessage("请输入用户名。", true);
     return;
   }
   try {
     state.data = await apiPost("/api/session-users/add", { name });
     elements.sessionUserInput.value = "";
-    setFormMessage(`已将 ${name} 加入本场 KTV 用户列表。`);
+    setAppMessage(`已将 ${name} 加入本场 KTV 用户列表。`);
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 }
 
 async function moveSessionUser(name, index) {
   try {
     state.data = await apiPost("/api/session-users/reorder", { name, index });
-    setFormMessage("已更新用户顺序。");
+    setAppMessage("已更新用户顺序。");
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 }
 
@@ -1390,10 +2867,10 @@ async function removeSessionUser(name) {
     if (elements.requesterSelect.value === name) {
       elements.requesterSelect.value = "";
     }
-    setFormMessage(`已移除 ${name}。`);
+    setAppMessage(`已移除 ${name}。`);
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 }
 
@@ -1406,7 +2883,7 @@ async function handleLocalPlaybackEnded() {
     state.data = await apiPost("/api/player/next");
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   } finally {
     state.localAdvanceInFlight = false;
   }
@@ -1431,16 +2908,46 @@ async function setCacheLimit(maxCacheItems) {
   renderCacheSlider(state.data?.cache_policy);
   try {
     state.data = await apiPost("/api/cache-policy", { max_cache_items: maxCacheItems });
-    setFormMessage(`自动缓存窗口已调整为缓存 ${maxCacheItems} 首。`);
+    setAppMessage(`自动缓存窗口已调整为缓存 ${maxCacheItems} 首。`);
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
     render();
   } finally {
     state.cacheLimitSaving = false;
     if (state.data) {
       renderCacheSlider(state.data.cache_policy);
     }
+  }
+}
+
+async function setAvOffset(offsetMs) {
+  if (state.avOffsetSaving) {
+    return;
+  }
+
+  const boundedOffsetMs = boundedAvOffsetMs(offsetMs);
+  const currentValue = currentAvOffsetMs();
+  if (boundedOffsetMs === currentValue) {
+    writeLocalPreference(storageKeys.avOffsetMs, boundedOffsetMs);
+    if (elements.avOffsetInput) {
+      elements.avOffsetInput.value = String(boundedOffsetMs);
+    }
+    return;
+  }
+
+  state.avOffsetSaving = true;
+  renderAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
+  try {
+    state.data = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
+    writeLocalPreference(storageKeys.avOffsetMs, boundedOffsetMs);
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+    render();
+  } finally {
+    state.avOffsetSaving = false;
+    renderAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
   }
 }
 
@@ -1472,7 +2979,7 @@ async function handlePlaylistAction(button) {
     state.data = await apiPost(target[0], target[1]);
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 }
 
@@ -1480,6 +2987,51 @@ elements.addForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const point = anchorPointForEvent(event.submitter || event, elements.addForm);
   await handleAdd("tail", point);
+});
+
+elements.searchForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.searchQuery.value || "").trim();
+  if (!query) {
+    hideSearchResults();
+    setSearchMessage("请输入搜索关键词。", true);
+    return;
+  }
+
+  elements.searchButton.disabled = true;
+  setSearchMessage("Searching local cache...");
+  try {
+    const items = await searchGatchaCache(query);
+    renderSearchResults(items);
+    setSearchMessage(items.length ? `搜索到 ${items.length} 条缓存结果。` : "缓存中未找到结果。");
+  } catch (error) {
+    hideSearchResults();
+    setSearchMessage(error.message, true);
+  } finally {
+    elements.searchButton.disabled = false;
+  }
+});
+
+elements.searchResults.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-url]");
+  if (!button) {
+    return;
+  }
+
+  const url = String(button.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    hideSearchResults();
+    setSearchMessage("");
+    elements.searchQuery.value = "";
+  } finally {
+    button.disabled = false;
+  }
 });
 
 elements.sessionUserForm.addEventListener("submit", async (event) => {
@@ -1530,9 +3082,55 @@ elements.dismissBackupButton.addEventListener("click", () => {
   dismissBackupBanner();
 });
 
+elements.backupBanner.addEventListener("mouseenter", () => {
+  pauseBackupBannerTimer();
+});
+
+elements.backupBanner.addEventListener("mouseleave", () => {
+  resumeBackupBannerTimer();
+});
+
+elements.dismissBackupButton.addEventListener("mouseenter", () => {
+  state.backupDismissHover = true;
+  updateBackupDismissButton();
+});
+
+elements.dismissBackupButton.addEventListener("mouseleave", () => {
+  state.backupDismissHover = false;
+  updateBackupDismissButton();
+});
+
+elements.dismissBackupButton.addEventListener("focus", () => {
+  state.backupDismissHover = true;
+  updateBackupDismissButton();
+});
+
+elements.dismissBackupButton.addEventListener("blur", () => {
+  state.backupDismissHover = false;
+  updateBackupDismissButton();
+});
+
 elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
-  syncCachePanelVisibility();
+  syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
+});
+
+elements.bbdownLoginButton?.addEventListener("click", async () => {
+  const loggedIn = Boolean(state.data?.bbdown?.login?.logged_in || state.data?.bbdown?.logged_in);
+  if (!loggedIn) {
+    await startBBDownLogin({ force: true });
+    return;
+  }
+  try {
+    state.data = await apiPost("/api/bbdown/logout");
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+  }
+});
+
+elements.bbdownLoginRefresh?.addEventListener("click", async () => {
+  await startBBDownLogin({ force: true });
 });
 
 elements.cacheLimitSlider.addEventListener("input", (event) => {
@@ -1550,6 +3148,39 @@ elements.cacheLimitSlider.addEventListener("change", async (event) => {
   await setCacheLimit(Number(event.target.value || "1"));
 });
 
+elements.avSyncPanel?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-step]");
+  if (!button) {
+    return;
+  }
+  const step = Number(button.dataset.step || 0);
+  if (!Number.isFinite(step) || step === 0) {
+    return;
+  }
+  await setAvOffset(currentAvOffsetMs() + step);
+});
+
+elements.avOffsetInput?.addEventListener("change", async (event) => {
+  await setAvOffset(event.target.value);
+});
+
+elements.avOffsetInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setAvOffset(event.target.value);
+});
+
+elements.volumeSlider?.addEventListener("input", (event) => {
+  setRangeFillPercent(event.target, event.target.value);
+  setLocalPlayerVolume(Number(event.target.value || "0") / 100);
+});
+
+elements.volumeMuteButton?.addEventListener("click", () => {
+  toggleLocalPlayerMute();
+});
+
 elements.clearPlaylistButton.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearPlaylistButton);
   openConfirm({
@@ -1565,12 +3196,34 @@ elements.historyToggleButton.addEventListener("click", () => {
   render();
 });
 
+elements.playerFullscreenButton?.addEventListener("click", async () => {
+  await togglePlayerFullscreen();
+  renderPlayerFullscreenButton();
+});
+
+elements.playerFrame?.addEventListener("click", (event) => {
+  if (event.target.closest("button, input, select, textarea, a")) {
+    return;
+  }
+  if (!event.target.closest("video")) {
+    return;
+  }
+  queuePlayerFrameSingleClick();
+});
+
+elements.playerFrame?.addEventListener("dblclick", (event) => {
+  if (event.target.closest("button, input, select, textarea, a")) {
+    return;
+  }
+  handlePlayerFrameDoubleClick().catch(() => {});
+});
+
 elements.nextButton.addEventListener("click", async () => {
   try {
     state.data = await apiPost("/api/player/next");
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 });
 
@@ -1581,27 +3234,45 @@ elements.queueCurrentRetry.addEventListener("click", async () => {
   }
   try {
     state.data = await apiPost("/api/cache/retry", { item_id: itemId });
-    setFormMessage("已重新开始缓存。");
+    setAppMessage("已重新开始缓存。");
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 });
 
-elements.modeSwitch.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-mode]");
+elements.modeSwitch?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
   if (!button) {
     return;
   }
+  const nextMode = state.data?.playback_mode === "online" ? "local" : "online";
   try {
-    state.data = await apiPost("/api/mode", { mode: button.dataset.mode });
+    state.data = await apiPost("/api/mode", { mode: nextMode });
     render();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 });
 
+elements.layoutModeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-layout-mode]");
+  if (!button) {
+    return;
+  }
+  setLayoutMode(button.dataset.layoutMode);
+});
+
 elements.audioVariantBar.addEventListener("click", async (event) => {
+  const toggleButton = event.target.closest('button[data-action="toggle-audio-variants"]');
+  if (toggleButton) {
+    state.audioVariantBarExpanded = !state.audioVariantBarExpanded;
+    if (state.data?.current_item) {
+      renderAudioVariantBar(state.data.current_item, state.data.playback_mode);
+    }
+    return;
+  }
+
   const button = event.target.closest("button[data-variant-id]");
   if (!button || !state.data?.current_item) {
     return;
@@ -1612,6 +3283,49 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     return;
   }
 
+  if (button.dataset.bound !== "true") {
+    const page = Number(button.dataset.page || 0);
+    if (!page) {
+      return;
+    }
+    try {
+      state.data = await submitAddRequest(currentItem.original_url || currentItem.resolved_url, "tail", {
+        requesterName: selectedRequesterName(),
+        selectedVideoPage: page,
+        selectedAudioPages: [page],
+      });
+      setAppMessage("已将分P加入下载列表");
+      render();
+    } catch (error) {
+      if (error.code === "duplicate_session_request") {
+        const point = anchorPointForEvent(event, button);
+        openConfirm({
+          type: "duplicate-add",
+          url: currentItem.original_url || currentItem.resolved_url,
+          position: "tail",
+          requesterName: selectedRequesterName(),
+          preserveInput: false,
+          selectedVideoPage: page,
+          selectedAudioPages: [page],
+          message: duplicateConfirmMessage(
+            error.payload?.duplicate_item,
+            error.payload?.session_entry,
+            error.payload?.active_item,
+          ),
+          x: point.x,
+          y: point.y,
+        });
+        return;
+      }
+      setAppMessage(error.message, true);
+    }
+    return;
+  }
+
+  if (audioVariantSwitchLocked()) {
+    return;
+  }
+
   const nextVariantId = button.dataset.variantId || "";
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   if (!nextVariantId || nextVariantId === selectedVariant?.id) {
@@ -1619,6 +3333,9 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
   }
 
   const video = elements.playerFrame.querySelector("video");
+  state.audioVariantSwitchInFlight = true;
+  state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
+  renderAudioVariantBar(currentItem, state.data?.playback_mode);
   state.pendingPlaybackRestore = {
     itemId: currentItem.id,
     variantId: nextVariantId,
@@ -1634,7 +3351,10 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     render();
   } catch (error) {
     state.pendingPlaybackRestore = null;
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
+  } finally {
+    state.audioVariantSwitchInFlight = false;
+    scheduleAudioVariantSwitchUnlock();
   }
 });
 
@@ -1675,6 +3395,22 @@ elements.confirmCancel.addEventListener("click", () => {
   closeConfirm();
 });
 
+elements.bindingModalClose?.addEventListener("click", () => {
+  closeBindingModal();
+});
+
+elements.bindingModalCancel?.addEventListener("click", () => {
+  closeBindingModal();
+});
+
+elements.bindingModalBackdrop?.addEventListener("click", () => {
+  closeBindingModal();
+});
+
+elements.bindingModalConfirm?.addEventListener("click", async () => {
+  await confirmBindingModal();
+});
+
 elements.confirmOk.addEventListener("click", async () => {
   const intent = state.confirmIntent;
   if (!intent) {
@@ -1689,7 +3425,7 @@ elements.confirmOk.addEventListener("click", async () => {
     if (intent.type === "remove-item" && intent.itemId) {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
-      setFormMessage("已移除这首歌。");
+      setAppMessage("已移除这首歌。");
       render();
       return;
     }
@@ -1697,6 +3433,8 @@ elements.confirmOk.addEventListener("click", async () => {
       state.data = await submitAddRequest(intent.url, intent.position || "tail", {
         requesterName: intent.requesterName || selectedRequesterName(),
         allowRepeat: true,
+        selectedVideoPage: Number.isInteger(intent.selectedVideoPage) ? intent.selectedVideoPage : undefined,
+        selectedAudioPages: Array.isArray(intent.selectedAudioPages) ? intent.selectedAudioPages : undefined,
       });
       closeConfirm();
       if (!intent.preserveInput) {
@@ -1708,7 +3446,11 @@ elements.confirmOk.addEventListener("click", async () => {
       render();
     }
   } catch (error) {
-    setFormMessage(error.message, true);
+    if (intent?.type === "duplicate-add") {
+      setFormMessage(error.message, true);
+    } else {
+      setAppMessage(error.message, true);
+    }
   }
 });
 
@@ -1737,6 +3479,9 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
   }
+  if (state.bindingIntent) {
+    closeBindingModal();
+  }
   if (state.confirmIntent) {
     closeConfirm();
   }
@@ -1745,6 +3490,23 @@ document.addEventListener("keydown", (event) => {
     syncCachePanelVisibility();
   }
 });
+
+document.addEventListener("visibilitychange", () => {
+  if (!state.localShouldBePlaying) {
+    return;
+  }
+  const { video, audio } = activeLocalPlayerElements();
+  const primaryVideo = video || activePrimaryVideoElement();
+  if (primaryVideo) {
+    primaryVideo.play().catch(() => {});
+  }
+  if (video && audio) {
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  }
+});
+
+document.addEventListener("fullscreenchange", renderPlayerFullscreenButton);
+document.addEventListener("webkitfullscreenchange", renderPlayerFullscreenButton);
 
 elements.playlist.addEventListener("dragstart", (event) => {
   const item = event.target.closest(".song-item");
@@ -1841,7 +3603,7 @@ elements.playlist.addEventListener("drop", async (event) => {
   try {
     await reorderPlaylist(draggedId, targetIndex);
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
 });
 
@@ -1868,11 +3630,88 @@ elements.listStage.addEventListener("wheel", (event) => {
   list.scrollTop = clampedScrollTop;
 }, { passive: false });
 
+elements.gatchaButton.addEventListener("click", handleGatchaDraw);
+elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
+
+elements.gatchaCookieToggle?.addEventListener("click", () => {
+  state.gatchaCookieVisible = !state.gatchaCookieVisible;
+  renderGatchaCookieFace();
+});
+
+elements.gatchaConfirmButton.addEventListener("click", async () => {
+  if (!state.gatchaCandidate) return;
+
+  const url = state.gatchaCandidate.url;
+  const requesterName = selectedRequesterName();
+  setGatchaMessage("Nozomi power注入！");
+  try {
+    state.data = await submitAddRequest(url, "tail", { requesterName });
+    setFormMessage(`点歌成功：${state.gatchaCandidate.title}`);
+    
+
+    state.gatchaCandidate = null;
+    elements.gatchaResultView.classList.add("hidden");
+    elements.gatchaInitView.classList.remove("hidden");
+    render();
+  } catch (error) {
+    if (error.code === "manual_binding_required") {
+      openBindingModal(
+        {
+          url,
+          position: "tail",
+          requesterName,
+          preserveInput: false,
+        },
+        error.payload?.binding,
+      );
+      return;
+    }
+    if (error.code === "duplicate_session_request") {
+      const point = anchorPointForEvent({}, elements.gatchaConfirmButton);
+      openConfirm({
+        type: "duplicate-add",
+        url,
+        position: "tail",
+        preserveInput: false,
+        message: duplicateConfirmMessage(
+          error.payload?.duplicate_item,
+          error.payload?.session_entry,
+          error.payload?.active_item,
+        ),
+        x: point.x,
+        y: point.y,
+      });
+      return;
+    }
+    setGatchaMessage(error.message, true);
+  }
+});
+
+elements.saveCookieButton.addEventListener("click", async () => {
+  const sessdata = elements.cookieSessdata.value.trim();
+  const jct = elements.cookieJct.value.trim();
+
+  setCookieMessage("正在更新 Cookie 配置...");
+  try {
+    await apiPost("/api/config/cookie", {
+      sessdata: sessdata,
+      bili_jct: jct
+    });
+    setCookieMessage("Cookie 已更新，正在拉取稿件信息（第一次拉取稿件数量会影响拉取时间）");
+    elements.cookieSessdata.value = "";
+    elements.cookieJct.value = "";
+  } catch (error) {
+    setCookieMessage(error.message, true);
+  }
+});
+
 async function startPolling() {
+  hydrateLocalPreferences();
+  renderLayoutMode();
   try {
     await fetchState();
   } catch (error) {
-    setFormMessage(error.message, true);
+    setAppMessage(error.message, true);
   }
   window.setInterval(async () => {
     try {
@@ -1883,7 +3722,10 @@ async function startPolling() {
   }, pollIntervalMs);
 }
 
-window.addEventListener("pagehide", disconnectClient);
+window.addEventListener("pagehide", () => {
+  teardownMountedPlayer();
+  disconnectClient();
+});
 window.addEventListener("beforeunload", disconnectClient);
 
 startPolling();

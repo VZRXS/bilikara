@@ -50,12 +50,10 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-            artifact_name: bilikara-windows
-            archive_name: bilikara-windows.zip
+            slug: windows
           - os: macos-latest
             label: macOS
-            artifact_name: bilikara-macos
-            archive_name: bilikara-macos.zip
+            slug: macos
 
     steps:
       - name: Checkout
@@ -83,25 +81,40 @@ jobs:
       - name: Build app bundle
         run: python build_bundle.py
 
+      - name: Resolve bundle archive name
+        id: bundle-name
+        shell: bash
+        run: |
+          ref_name="${GITHUB_REF_NAME:-local}"
+          safe_ref="$(printf '%s' "$ref_name" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+          if [ -z "$safe_ref" ]; then
+            safe_ref="local"
+          fi
+          archive_name="bilikara-${safe_ref}-${{ matrix.slug }}.zip"
+          artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}"
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
+
       - name: Archive Windows bundle
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist/bilikara -DestinationPath ${{ matrix.archive_name }}
+        run: Compress-Archive -Path dist/bilikara -DestinationPath $env:BUNDLE_ARCHIVE
 
       - name: Archive macOS bundle
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent dist/bilikara.app ${{ matrix.archive_name }}
+        run: ditto -c -k --sequesterRsrc --keepParent dist/bilikara.app "$BUNDLE_ARCHIVE"
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.archive_name }}
+          name: ${{ steps.bundle-name.outputs.artifact_name }}
+          path: ${{ steps.bundle-name.outputs.archive_name }}
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.archive_name }}
+          files: ${{ steps.bundle-name.outputs.archive_name }}
           generate_release_notes: true

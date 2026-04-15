@@ -1,12 +1,127 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
 APP_NAME = "bilikara"
+WINDOWS_VIRTUAL_ADAPTER_KEYWORDS = (
+    "hyper-v",
+    "vethernet",
+    "vmware",
+    "virtualbox",
+    "wsl",
+    "docker",
+    "tailscale",
+    "zerotier",
+    "singbox",
+    "sing-box",
+    "singbox_tun",
+    "sing-tun",
+    "mihomo",
+    "meta",
+    "clash",
+    "v2rayn",
+    "nekoray",
+    "hiddify",
+    "tun2socks",
+    "wintun",
+    "loopback",
+    "bluetooth",
+    "vmess",
+    "vless",
+    "trojan",
+    "shadowsocks",
+)
+
+
+def _looks_like_windows_virtual_adapter(*labels: object) -> bool:
+    text = " ".join(str(label or "") for label in labels).lower()
+    return any(keyword in text for keyword in WINDOWS_VIRTUAL_ADAPTER_KEYWORDS)
+
+
+def _pick_windows_physical_host(adapter_configs: object) -> str | None:
+    configs = adapter_configs if isinstance(adapter_configs, list) else [adapter_configs]
+    preferred: list[str] = []
+    fallback: list[str] = []
+    seen: set[str] = set()
+
+    for config in configs:
+        if not isinstance(config, dict):
+            continue
+
+        alias = config.get("InterfaceAlias")
+        description = config.get("InterfaceDescription")
+        if _looks_like_windows_virtual_adapter(alias, description):
+            continue
+
+        gateway = config.get("IPv4DefaultGateway")
+        gateway_entries = gateway if isinstance(gateway, list) else [gateway] if gateway else []
+        has_default_gateway = any(isinstance(entry, dict) and entry.get("NextHop") for entry in gateway_entries)
+
+        addresses = config.get("IPv4Address")
+        address_entries = addresses if isinstance(addresses, list) else [addresses] if addresses else []
+        for entry in address_entries:
+            if not isinstance(entry, dict):
+                continue
+            ip = str(entry.get("IPAddress") or "").strip()
+            if not ip or ip in seen:
+                continue
+            seen.add(ip)
+            try:
+                address = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+            if address.version != 4 or address.is_loopback or address.is_unspecified:
+                continue
+            if address.is_private and not address.is_link_local:
+                if has_default_gateway:
+                    preferred.append(ip)
+                else:
+                    fallback.append(ip)
+
+    if preferred:
+        return preferred[0]
+    if fallback:
+        return fallback[0]
+    return None
+
+
+def _detect_windows_physical_host() -> str | None:
+    command = (
+        "Get-NetIPConfiguration | "
+        "Select-Object InterfaceAlias,InterfaceDescription,IPv4Address,IPv4DefaultGateway | "
+        "ConvertTo-Json -Depth 6 -Compress"
+    )
+    try:
+        process = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=8,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if process.returncode != 0:
+        return None
+
+    raw = (process.stdout or "").strip()
+    if not raw:
+        return None
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    return _pick_windows_physical_host(payload)
 
 
 def _detect_windows_bind_host() -> str:
@@ -55,10 +170,20 @@ def _default_host() -> str:
     if override:
         return override
 
-    # Windows packaged apps are more likely to hit firewall/loopback friction
-    # when binding to 0.0.0.0 on first launch. Prefer a concrete LAN IPv4 there
-    # when available, and fall back to localhost.
+    # Legacy Windows packaged strategy:
+    # keep the broader heuristic that scans IPv4 candidates.
+    #
+    # if getattr(sys, "frozen", False) and os.name == "nt":
+    #     return _detect_windows_bind_host()
+
+    # Current Windows packaged strategy:
+    # prefer a host from the default physical adapter, and only fall back to
+    # the legacy broad IPv4 scan when that selection cannot determine a good
+    # candidate.
     if getattr(sys, "frozen", False) and os.name == "nt":
+        physical_host = _detect_windows_physical_host()
+        if physical_host:
+            return physical_host
         return _detect_windows_bind_host()
 
     return "0.0.0.0"
@@ -106,6 +231,9 @@ FFMPEG_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffmpeg.exe" if os.name == "nt" else "
 FFPROBE_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
 FFMPEG_BUNDLED_PATH = VENDOR_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 BB_DOWN_VERSION_FILE = BB_DOWN_DIR / "VERSION"
+GATCHA_UIDS = ["3145040","671767","33091201","3494356589742209","44627483","8474818","10077309","74089392","1879151","87101327","99061404","602998","1159885664","215040","31624333","21129450","2625848","29955371","3014315","80148988"]
+GATCHA_KEYWORDS = ["卡拉", "カラ", "投屏","KTV","纯K"]
+USER_VIDEO_API = "https://api.bilibili.com/x/space/wbi/arc/search?mid={mid}&ps=50&tid=0&pn=1&order=pubdate"
 
 HOST = _default_host()
 PORT = int(os.getenv("BILIKARA_PORT", "8080"))

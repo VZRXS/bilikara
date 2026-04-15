@@ -175,6 +175,48 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_ensure_bbdown_uses_local_binary_when_release_check_fails(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        local_binary = Path(self.temp_dir.name) / "tools" / "bbdown" / f"BBDown{suffix}"
+        local_binary.parent.mkdir(parents=True, exist_ok=True)
+        local_binary.write_bytes(b"bbdown-bin")
+        version_file = Path(self.temp_dir.name) / "tools" / "bbdown" / "VERSION"
+        version_file.write_text("1.6.3", encoding="utf-8")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
+                    manager, "_fetch_latest_release", side_effect=RuntimeError("offline")
+                ):
+                    path = manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, local_binary)
+        self.assertEqual(manager.binary_version, "1.6.3")
+        self.assertIn("未检查更新", manager.binary_message)
+
+    def test_ensure_bbdown_raises_when_release_check_fails_and_no_local_binary(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        local_binary = Path(self.temp_dir.name) / "tools" / "bbdown" / f"BBDown{suffix}"
+        version_file = Path(self.temp_dir.name) / "tools" / "bbdown" / "VERSION"
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
+                    manager, "_fetch_latest_release", side_effect=RuntimeError("offline")
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "无法检查 BBDown 最新版本"):
+                        manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
     def test_ensure_ffmpeg_syncs_bundled_binary_into_runtime_tools(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"
         tools_dir = Path(self.temp_dir.name) / "tools" / "ffmpeg"
@@ -229,6 +271,22 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         first_path = env["PATH"].split(os.pathsep)[0]
         self.assertEqual(first_path, str(ffmpeg_path.parent))
+
+    def test_start_bbdown_login_removes_stale_qr_image(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        bbdown_dir.mkdir(parents=True, exist_ok=True)
+        qr_path = bbdown_dir / "qrcode.png"
+        qr_path.write_bytes(b"old-qr")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch("bilikara.cache.threading.Thread") as thread_mock:
+                    manager.start_bbdown_login(force_refresh_qr=True)
+                    self.assertFalse(qr_path.exists())
+                    thread_mock.assert_called_once()
+            finally:
+                manager.shutdown()
 
     def test_ensure_ffmpeg_rejects_non_executable_binary(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"

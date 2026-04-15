@@ -24,9 +24,14 @@ class PlaylistItem:
     selected_cids: list[int] = field(default_factory=list)
     selected_durations: list[int] = field(default_factory=list)
     selected_parts: list[str] = field(default_factory=list)
+    available_pages: list[int] = field(default_factory=list)
+    available_cids: list[int] = field(default_factory=list)
+    available_durations: list[int] = field(default_factory=list)
+    available_parts: list[str] = field(default_factory=list)
     audio_variants: list[dict[str, str]] = field(default_factory=list)
     selected_audio_variant_id: str = ""
     video_page: int = 1
+    manual_selection: bool = False
     owner_mid: int = 0
     owner_name: str = ""
     owner_url: str = ""
@@ -37,6 +42,8 @@ class PlaylistItem:
     cache_message: str = "等待缓存"
     local_relative_path: str = ""
     local_media_url: str = ""
+    video_relative_path: str = ""
+    video_media_url: str = ""
 
     def serialize(self) -> dict[str, Any]:
         return asdict(self)

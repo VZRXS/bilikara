@@ -4,7 +4,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from bilikara.bilibili import VideoPage, fetch_video_item, resolve_video_reference, select_matching_pages
+import bilikara.bilibili as bilibili_module
+from bilikara.bilibili import (
+    ManualBindingRequiredError,
+    VideoPage,
+    fetch_video_item,
+    resolve_video_reference,
+    select_matching_pages,
+)
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 from bilikara.title_cleanup import clean_display_title
@@ -30,6 +37,34 @@ class PlaylistStoreTest(unittest.TestCase):
 
     def test_default_mode_is_local(self):
         self.assertEqual(self.store.playback_mode, "local")
+
+    def test_av_offset_persists_in_state_file(self):
+        self.store.set_av_offset_ms(230)
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+
+        self.assertEqual(self.store.snapshot()["player_settings"]["av_offset_ms"], 230)
+        self.assertEqual(restored_store.av_offset_ms, 230)
+
+    def test_volume_settings_persist_in_state_file(self):
+        self.store.set_volume_percent(35)
+        self.store.set_muted(True)
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+
+        snapshot = self.store.snapshot()["player_settings"]
+        self.assertEqual(snapshot["volume_percent"], 35)
+        self.assertTrue(snapshot["is_muted"])
+        self.assertEqual(restored_store.volume_percent, 35)
+        self.assertTrue(restored_store.is_muted)
 
     def make_item(self, item_id: str, *, song_key: str | None = None) -> PlaylistItem:
         key = song_key or item_id
@@ -213,12 +248,14 @@ class PlaylistStoreTest(unittest.TestCase):
         item = self.make_item("a", song_key="song-a")
         item.selected_pages = [1, 2]
         item.selected_parts = ["on vocal", "off vocal"]
+        item.available_pages = [1, 2]
+        item.available_parts = ["on vocal", "off vocal"]
         self.store.add_item(item, requester_name="A")
 
-        changed = self.store.set_audio_variant("a", "off_vocal")
+        changed = self.store.set_audio_variant("a", "p2_off_vocal")
 
         self.assertTrue(changed)
-        self.assertEqual(self.store.current_item.selected_audio_variant_id, "off_vocal")
+        self.assertEqual(self.store.current_item.selected_audio_variant_id, "p2_off_vocal")
 
     def test_history_restores_from_state_file(self):
         self.add_item("a", requester_name="A", song_key="song-a")
@@ -239,9 +276,14 @@ class PlaylistStoreTest(unittest.TestCase):
         item.cache_message = "cached"
         item.local_relative_path = "a/video.mp4"
         item.local_media_url = "/media/a/video.mp4"
+        item.video_relative_path = "a/video-only.m4s"
+        item.video_media_url = "/media/a/video-only.m4s"
         self.store.move_session_user_to_index("D", 1)
         self.store.add_item(item, requester_name="A")
         self.store.set_mode("local")
+        self.store.set_av_offset_ms(180)
+        self.store.set_volume_percent(42)
+        self.store.set_muted(True)
 
         restored_store = PlaylistStore(
             state_file=self.state_file,
@@ -252,12 +294,17 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertTrue(restored_store.backup_summary()["available"])
         self.assertTrue(restored_store.restore_backup())
         self.assertEqual(restored_store.playback_mode, "local")
+        self.assertEqual(restored_store.av_offset_ms, 180)
+        self.assertEqual(restored_store.volume_percent, 42)
+        self.assertTrue(restored_store.is_muted)
         self.assertEqual(restored_store.current_item.id, "a")
         self.assertEqual([entry.id for entry in restored_store.playlist], [])
         restored_item = restored_store.current_item
         self.assertEqual(restored_item.cache_status, "pending")
         self.assertEqual(restored_item.local_relative_path, "")
         self.assertEqual(restored_item.local_media_url, "")
+        self.assertEqual(restored_item.video_relative_path, "")
+        self.assertEqual(restored_item.video_media_url, "")
         self.assertEqual(restored_item.requester_name, "A")
         self.assertEqual(restored_store.session_users[:4], ["A", "D", "B", "C"])
 
@@ -353,6 +400,55 @@ class BilibiliParserTest(unittest.TestCase):
         selected = select_matching_pages(pages, preferred_page=2)
         self.assertEqual([page.page for page in selected], [3])
 
+    def test_effective_cookie_prefers_bbdown_data(self):
+        with TemporaryDirectory() as temp_dir:
+            bbdown_dir = Path(temp_dir)
+            (bbdown_dir / "BBDown.data").write_text(
+                json.dumps(
+                    {
+                        "cookie_info": {
+                            "cookies": [
+                                {"name": "bili_jct", "value": "jct-from-bbdown"},
+                                {"name": "SESSDATA", "value": "sess-from-bbdown"},
+                                {"name": "DedeUserID", "value": "42"},
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(bilibili_module.cfg, "BB_DOWN_DIR", bbdown_dir),
+                patch.object(bilibili_module.cfg, "COOKIE", "SESSDATA=manual; bili_jct=manual"),
+            ):
+                self.assertEqual(
+                    bilibili_module.effective_bilibili_cookie(),
+                    "SESSDATA=sess-from-bbdown; bili_jct=jct-from-bbdown; DedeUserID=42",
+                )
+
+    def test_effective_cookie_falls_back_to_manual_cookie(self):
+        with TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(bilibili_module.cfg, "BB_DOWN_DIR", Path(temp_dir)),
+                patch.object(bilibili_module.cfg, "COOKIE", "SESSDATA=manual; bili_jct=manual"),
+            ):
+                self.assertEqual(
+                    bilibili_module.effective_bilibili_cookie(),
+                    "SESSDATA=manual; bili_jct=manual",
+                )
+
+    def test_gatcha_missing_cookie_message_when_cache_empty(self):
+        with (
+            patch.object(bilibili_module, "_local_gatcha_candidates_by_uid", return_value={}),
+            patch.object(bilibili_module, "effective_bilibili_cookie", return_value=""),
+        ):
+            with self.assertRaisesRegex(
+                bilibili_module.BilibiliError,
+                bilibili_module.MISSING_BILIBILI_COOKIE_MESSAGE,
+            ):
+                bilibili_module.fetch_gatcha_candidate()
+
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item(self, mock_request_json):
         mock_request_json.return_value = {
@@ -367,8 +463,8 @@ class BilibiliParserTest(unittest.TestCase):
                     "name": "example-up",
                 },
                 "pages": [
-                    {"cid": 456, "page": 1, "part": "part-1"},
-                    {"cid": 789, "page": 2, "part": "part-2"},
+                    {"cid": 456, "page": 1, "part": "on_vocal"},
+                    {"cid": 789, "page": 2, "part": "off_vocal"},
                 ],
             },
         }
@@ -378,11 +474,106 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.video_page, 2)
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_cids, [456, 789])
-        self.assertEqual(item.display_title, "example video - part-2")
+        self.assertEqual(item.display_title, "example video - off_vocal")
         self.assertEqual(item.owner_mid, 114514)
         self.assertEqual(item.owner_name, "example-up")
         self.assertEqual(item.owner_url, "https://space.bilibili.com/114514")
-        self.assertEqual(item.selected_audio_variant_id, "part_2")
+        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
+        self.assertEqual(item.available_pages, [1, 2])
+        self.assertEqual(item.available_parts, ["on_vocal", "off_vocal"])
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_requires_manual_binding_for_ambiguous_multipart_video(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "example video",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "P1 main"},
+                    {"cid": 789, "page": 2, "part": "P2 alt"},
+                    {"cid": 999, "page": 3, "part": "P3 chorus"},
+                ],
+            },
+        }
+
+        with self.assertRaises(ManualBindingRequiredError) as raised:
+            fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+
+        self.assertEqual(raised.exception.preferred_page, 2)
+        self.assertEqual([page.page for page in raised.exception.pages], [1, 2, 3])
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_accepts_manual_binding_selection(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "example video",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "P1 main"},
+                    {"cid": 789, "page": 2, "part": "P2 alt"},
+                    {"cid": 999, "page": 3, "part": "P3 chorus"},
+                ],
+            },
+        }
+
+        item = fetch_video_item(
+            "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+            selected_video_page=2,
+            selected_audio_pages=[1, 3],
+        )
+
+        self.assertTrue(item.manual_selection)
+        self.assertEqual(item.page, 2)
+        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.selected_pages, [1, 3])
+        self.assertEqual(item.selected_parts, ["P1 main", "P3 chorus"])
+        self.assertEqual(item.available_pages, [1, 2, 3])
+        self.assertEqual(item.selected_audio_variant_id, "p1_p1_main")
+
+    def test_fetch_gatcha_videos_for_uid_retries_once_on_412(self):
+        if not hasattr(bilibili_module, "_fetch_gatcha_videos_for_uid"):
+            self.skipTest("gatcha fetch is not available on this branch")
+
+        with (
+            patch("bilikara.bilibili.time.sleep") as mock_sleep,
+            patch("bilikara.bilibili.time.monotonic") as mock_monotonic,
+            patch("bilikara.bilibili.request_json") as mock_request_json,
+            patch("bilikara.bilibili.get_cached_wbi_keys") as mock_get_cached_wbi_keys,
+        ):
+            mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
+            mock_monotonic.side_effect = [100.0, 100.0, 103.5, 103.5]
+            mock_request_json.side_effect = [
+                {"code": 412, "message": "412 Precondition Failed"},
+                {
+                    "code": 0,
+                    "data": {
+                        "list": {
+                            "vlist": [
+                                {"bvid": "BV1xx411c7mD", "title": "karaoke sample"},
+                                {"bvid": "BV1yy411c7mD", "title": "other sample"},
+                            ]
+                        }
+                    },
+                },
+            ]
+
+            with (
+                patch.object(bilibili_module, "GATCHA_KEYWORDS", ["karaoke"], create=True),
+                patch.object(bilibili_module, "_GATCHA_LAST_REQUEST_AT", 0.0, create=True),
+            ):
+                entries = bilibili_module._fetch_gatcha_videos_for_uid("123")
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["bvid"], "BV1xx411c7mD")
+        mock_sleep.assert_any_call(bilibili_module.GATCHA_RETRY_DELAY_SECONDS)
 
 
 if __name__ == "__main__":

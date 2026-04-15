@@ -1,22 +1,136 @@
 from __future__ import annotations
 
 import json
+import threading
 import re
 import urllib.parse
 import urllib.request
 import uuid
 import re
+import random
+import hashlib
+import time
+from .config import BILIBILI_HEADERS, GATCHA_UIDS, GATCHA_KEYWORDS
 from dataclasses import dataclass
-
-from .config import BILIBILI_HEADERS
 from .models import PlaylistItem
+import bilikara.config as cfg  
 
 VIDEO_PATH_RE = re.compile(r"/video/(?P<vid>(BV[0-9A-Za-z]+|av\d+))", re.IGNORECASE)
 BV_RE = re.compile(r"^(BV[0-9A-Za-z]+)$", re.IGNORECASE)
 AV_RE = re.compile(r"^(av\d+)$", re.IGNORECASE)
 SHORT_HOSTS = {"b23.tv", "bili2233.cn"}
 DURATION_TOLERANCE_SECONDS = 3
+WBI_MIXIN_TABLE = [
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+    36, 20, 34, 44, 52
+]
+_WBI_CACHE = {
+    "keys": None,
+    "last_update": 0
+}
+_GATCHA_CACHE_LOCK = threading.Lock()
+_GATCHA_REFRESH_LOCK = threading.Lock()
+_GATCHA_REQUEST_LOCK = threading.Lock()
+_GATCHA_LAST_REQUEST_AT = 0.0
+_GATCHA_CACHE_FILE = cfg.DATA_DIR / "gatcha_cache.json"
+GATCHA_RETRY_DELAY_SECONDS = 5
+MISSING_BILIBILI_COOKIE_MESSAGE = "请登录 Bilibili 账号或填写 SESSDATA 和 bili_jct"
+_COOKIE_REQUIRED_KEYS = {"sessdata", "bili_jct"}
+_COOKIE_PREFERRED_ORDER = (
+    "SESSDATA",
+    "bili_jct",
+    "DedeUserID",
+    "DedeUserID__ckMd5",
+    "sid",
+    "buvid3",
+    "buvid4",
+    "b_nut",
+    "bili_ticket",
+    "bili_ticket_expires",
+    "CURRENT_FNVAL",
+    "CURRENT_QUALITY",
+)
 
+
+def _cookie_pair_name(name: object) -> str:
+    normalized = str(name or "").strip()
+    if normalized.lower() == "sessdata":
+        return "SESSDATA"
+    if normalized.lower() == "bili_jct":
+        return "bili_jct"
+    return normalized
+
+
+def _collect_cookie_pairs(payload: object, pairs: dict[str, str]) -> None:
+    if isinstance(payload, dict):
+        lower_keys = {str(key).lower(): key for key in payload}
+        if "name" in lower_keys and "value" in lower_keys:
+            name = _cookie_pair_name(payload.get(lower_keys["name"]))
+            value = str(payload.get(lower_keys["value"]) or "").strip()
+            if name and value:
+                pairs[name] = value
+        for key, value in payload.items():
+            name = _cookie_pair_name(key)
+            if name and isinstance(value, (str, int, float)) and name.lower() in {
+                preferred.lower() for preferred in _COOKIE_PREFERRED_ORDER
+            }:
+                normalized_value = str(value or "").strip()
+                if normalized_value:
+                    pairs[name] = normalized_value
+            _collect_cookie_pairs(value, pairs)
+        return
+
+    if isinstance(payload, list):
+        for item in payload:
+            _collect_cookie_pairs(item, pairs)
+        return
+
+    if isinstance(payload, str):
+        for match in re.finditer(r"([A-Za-z0-9_]+)=([^;\s]+)", payload):
+            name = _cookie_pair_name(match.group(1))
+            value = match.group(2).strip()
+            if name and value:
+                pairs[name] = value
+
+
+def _format_cookie_pairs(pairs: dict[str, str]) -> str:
+    normalized_keys = {key.lower() for key in pairs}
+    if not _COOKIE_REQUIRED_KEYS.issubset(normalized_keys):
+        return ""
+
+    ordered_names: list[str] = []
+    for preferred in _COOKIE_PREFERRED_ORDER:
+        for key in pairs:
+            if key.lower() == preferred.lower() and key not in ordered_names:
+                ordered_names.append(key)
+                break
+    ordered_names.extend(sorted(key for key in pairs if key not in ordered_names))
+    return "; ".join(f"{name}={pairs[name]}" for name in ordered_names)
+
+
+def cookie_from_bbdown_data() -> str:
+    data_path = cfg.BB_DOWN_DIR / "BBDown.data"
+    if not data_path.exists():
+        return ""
+
+    try:
+        raw_text = data_path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return ""
+
+    pairs: dict[str, str] = {}
+    try:
+        payload = json.loads(raw_text)
+    except json.JSONDecodeError:
+        payload = raw_text
+    _collect_cookie_pairs(payload, pairs)
+    return _format_cookie_pairs(pairs)
+
+
+def effective_bilibili_cookie() -> str:
+    return cookie_from_bbdown_data() or str(cfg.COOKIE or "").strip()
 
 @dataclass
 class VideoReference:
@@ -39,11 +153,278 @@ class BilibiliError(RuntimeError):
     pass
 
 
+class ManualBindingRequiredError(BilibiliError):
+    def __init__(self, *, title: str, pages: list[VideoPage], preferred_page: int) -> None:
+        self.title = title
+        self.pages = list(pages)
+        self.preferred_page = preferred_page
+        super().__init__("该视频包含多个分P，请先选择视频和音频绑定关系")
+
+
+def _load_gatcha_cache() -> dict:
+    if not _GATCHA_CACHE_FILE.exists():
+        return {"uids": {}, "updated_at": 0}
+    try:
+        with _GATCHA_CACHE_FILE.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {"uids": {}, "updated_at": 0}
+
+    if not isinstance(payload, dict):
+        return {"uids": {}, "updated_at": 0}
+    uids = payload.get("uids")
+    if not isinstance(uids, dict):
+        uids = {}
+    return {
+        "uids": uids,
+        "updated_at": float(payload.get("updated_at") or 0),
+    }
+
+
+def _save_gatcha_cache(cache_payload: dict) -> None:
+    cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = _GATCHA_CACHE_FILE.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(cache_payload, handle, ensure_ascii=False, indent=2)
+    temp_path.replace(_GATCHA_CACHE_FILE)
+
+
+def _wait_for_gatcha_request_slot() -> None:
+    global _GATCHA_LAST_REQUEST_AT
+
+    with _GATCHA_REQUEST_LOCK:
+        now = time.monotonic()
+        elapsed = now - _GATCHA_LAST_REQUEST_AT
+        if elapsed < GATCHA_RETRY_DELAY_SECONDS:
+            time.sleep(GATCHA_RETRY_DELAY_SECONDS - elapsed)
+        _GATCHA_LAST_REQUEST_AT = time.monotonic()
+
+
+def _matches_gatcha_keywords(title: str) -> bool:
+    normalized_title = str(title or "")
+    if not GATCHA_KEYWORDS:
+        return True
+    return any(keyword and keyword in normalized_title for keyword in GATCHA_KEYWORDS)
+
+
+def _extract_gatcha_entries(mid: str, payload: dict) -> list[dict]:
+    vlist = payload.get("data", {}).get("list", {}).get("vlist", [])
+    entries: list[dict] = []
+    for video in vlist:
+        if not isinstance(video, dict):
+            continue
+        bvid = str(video.get("bvid") or "").strip()
+        title = str(video.get("title") or "").strip()
+        if not bvid or not title or not _matches_gatcha_keywords(title):
+            continue
+        entries.append(
+            {
+                "mid": str(mid),
+                "bvid": bvid,
+                "title": title,
+                "url": f"https://www.bilibili.com/video/{bvid}",
+            }
+        )
+    return entries
+
+
+def _request_gatcha_page(mid: str, page_number: int, page_size: int = 50) -> dict:
+    try:
+        img_key, sub_key = get_cached_wbi_keys()
+    except Exception as exc:
+        raise BilibiliError(f"WBI keys failed: {exc}") from exc
+
+    params = {
+        "mid": str(mid),
+        "ps": max(1, int(page_size)),
+        "tid": 0,
+        "pn": max(1, int(page_number)),
+        "order": "pubdate",
+        "platform": "web",
+    }
+    signed_params = enc_wbi(params, img_key, sub_key)
+    query_string = urllib.parse.urlencode(signed_params)
+    url = f"https://api.bilibili.com/x/space/wbi/arc/search?{query_string}"
+    _wait_for_gatcha_request_slot()
+    # print(f"[debug] gatcha fetch cookie: {cfg.COOKIE}")
+
+    try:
+        payload = request_json(url)
+        code = int(payload.get("code") or 0)
+        if code == 412:
+            raise BilibiliError(str(payload.get("message") or "412 Precondition Failed"))
+        if code != 0:
+            raise BilibiliError(str(payload.get("message") or "API request failed"))
+        # print(f"[debug] gatcha fetch success: mid={mid}, page={page_number}")
+        return payload
+    except Exception as exc:  # noqa: BLE001
+        # print(f"[debug] gatcha fetch error: {exc}; cookie: {cfg.COOKIE}")
+        raise
+
+
+def _fetch_gatcha_videos_for_uid(
+    mid: str,
+    *,
+    on_progress: callable | None = None,
+) -> list[dict]:
+    page_size = 50
+    page_number = 1
+    all_entries: list[dict] = []
+    seen_bvids: set[str] = set()
+
+    while True:
+        while True:
+            try:
+                payload = _request_gatcha_page(mid, page_number, page_size)
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    # f"[debug] gatcha page retry scheduled: mid={mid}, page={page_number}, "
+                    # f"cached_entries={len(all_entries)}, error={exc}"
+                )
+                time.sleep(GATCHA_RETRY_DELAY_SECONDS)
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        page_entries = _extract_gatcha_entries(str(mid), payload)
+        for entry in page_entries:
+            bvid = str(entry.get("bvid") or "").strip()
+            if not bvid or bvid in seen_bvids:
+                continue
+            seen_bvids.add(bvid)
+            all_entries.append(entry)
+        if on_progress is not None:
+            on_progress(list(all_entries))
+
+        vlist = data.get("list", {}).get("vlist", [])
+        if not isinstance(vlist, list) or len(vlist) < page_size:
+            break
+        page_number += 1
+
+    return all_entries
+
+
+def refresh_gatcha_cache() -> dict:
+    if not effective_bilibili_cookie():
+        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
+
+    with _GATCHA_CACHE_LOCK:
+        cache_payload = _load_gatcha_cache()
+
+    if not isinstance(cache_payload, dict):
+        cache_payload = {"uids": {}, "updated_at": 0}
+    if not isinstance(cache_payload.get("uids"), dict):
+        cache_payload["uids"] = {}
+
+    cache_payload["updated_at"] = time.time()
+    for raw_mid in GATCHA_UIDS:
+        mid = str(raw_mid).strip()
+        if not mid:
+            continue
+        existing_entries = cache_payload["uids"].get(mid, [])
+        if isinstance(existing_entries, list) and any(isinstance(entry, dict) for entry in existing_entries):
+            continue
+        cache_payload["uids"][mid] = []
+        with _GATCHA_CACHE_LOCK:
+            _save_gatcha_cache(cache_payload)
+
+        def _save_mid_progress(entries: list[dict]) -> None:
+            cache_payload["uids"][mid] = entries
+            cache_payload["updated_at"] = time.time()
+            with _GATCHA_CACHE_LOCK:
+                _save_gatcha_cache(cache_payload)
+
+        cache_payload["uids"][mid] = _fetch_gatcha_videos_for_uid(mid, on_progress=_save_mid_progress)
+        cache_payload["updated_at"] = time.time()
+        with _GATCHA_CACHE_LOCK:
+            _save_gatcha_cache(cache_payload)
+    return cache_payload
+
+
+def refresh_gatcha_cache_in_background() -> None:
+    def _worker() -> None:
+        if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+            return
+        try:
+            refresh_gatcha_cache()
+        except Exception:
+            return
+        finally:
+            _GATCHA_REFRESH_LOCK.release()
+
+    threading.Thread(target=_worker, daemon=True, name="gatcha-cache-refresh").start()
+
+
+def _local_gatcha_candidates() -> list[dict]:
+    with _GATCHA_CACHE_LOCK:
+        cache_payload = _load_gatcha_cache()
+
+    candidates: list[dict] = []
+    uid_payload = cache_payload.get("uids") or {}
+    for raw_mid in GATCHA_UIDS:
+        entries = uid_payload.get(str(raw_mid), [])
+        if not isinstance(entries, list):
+            continue
+        candidates.extend(entry for entry in entries if isinstance(entry, dict))
+    return candidates
+
+
+def _local_gatcha_candidates_by_uid() -> dict[str, list[dict]]:
+    with _GATCHA_CACHE_LOCK:
+        cache_payload = _load_gatcha_cache()
+
+    grouped_candidates: dict[str, list[dict]] = {}
+    uid_payload = cache_payload.get("uids") or {}
+    for raw_mid in GATCHA_UIDS:
+        mid = str(raw_mid).strip()
+        if not mid:
+            continue
+        entries = uid_payload.get(mid, [])
+        if not isinstance(entries, list):
+            continue
+        valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+        if valid_entries:
+            grouped_candidates[mid] = valid_entries
+    return grouped_candidates
+
+
+def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
+    normalized_query = str(query or "").strip().lower()
+    if not normalized_query:
+        return []
+
+    local_candidates = _local_gatcha_candidates()
+    if not local_candidates and not effective_bilibili_cookie():
+        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
+
+    results: list[dict] = []
+    for entry in local_candidates:
+        title = str(entry.get("title") or "")
+        if normalized_query not in title.lower():
+            continue
+        results.append(
+            {
+                "bvid": str(entry.get("bvid") or ""),
+                "title": title,
+                "url": str(entry.get("url") or ""),
+            }
+        )
+        if len(results) >= max(1, int(limit)):
+            break
+    return results
+
+
+
+
 def request_json(url: str) -> dict:
-    request = urllib.request.Request(url, headers=BILIBILI_HEADERS)
+    headers = dict(BILIBILI_HEADERS)
+    headers.pop("Cookie", None)
+    cookie = effective_bilibili_cookie()
+    if cookie:
+        headers["Cookie"] = cookie
+    else:
+        print("Warning: [bilikara] COOKIE 变量为空，API 将以游客身份访问。")
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
-
 
 def resolve_video_reference(raw_input: str) -> VideoReference:
     cleaned = raw_input.strip()
@@ -170,9 +551,39 @@ def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> Vid
     return pages[0]
 
 
-def _variant_id(label: str, index: int) -> str:
+def _variant_id(page: int, label: str, index: int) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
-    return normalized or f"track_{index + 1}"
+    suffix = normalized or f"track_{index + 1}"
+    return f"p{max(int(page), 1)}_{suffix}"
+
+
+def _part_keyword_match(part: str) -> bool:
+    normalized = str(part or "").strip().lower()
+    return any(keyword in normalized for keyword in ("on", "off", "人声", "伴奏"))
+
+
+def _requires_manual_binding(pages: list[VideoPage]) -> bool:
+    if len(pages) > 2:
+        return True
+    if len(pages) == 2 and not all(_part_keyword_match(page.part) for page in pages):
+        return True
+    return False
+
+
+def _normalize_selected_pages(raw_pages: object) -> list[int]:
+    if not isinstance(raw_pages, list):
+        return []
+    normalized: list[int] = []
+    for value in raw_pages:
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            continue
+        if page > 0 and page not in normalized:
+            normalized.append(page)
+    return normalized
+
+
 def fetch_owner_info(raw_input: str) -> tuple[int, str, str]:
     reference = resolve_video_reference(raw_input)
     data = _fetch_view_data(reference)
@@ -183,7 +594,12 @@ def fetch_owner_info(raw_input: str) -> tuple[int, str, str]:
     return owner_mid, owner_name, owner_url
 
 
-def fetch_video_item(raw_input: str) -> PlaylistItem:
+def fetch_video_item(
+    raw_input: str,
+    *,
+    selected_video_page: int | None = None,
+    selected_audio_pages: list[int] | None = None,
+) -> PlaylistItem:
     reference = resolve_video_reference(raw_input)
     if reference.bvid:
         api_url = (
@@ -207,10 +623,40 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         raise BilibiliError("视频没有可播放的分 P 信息")
 
     preferred_page = min(reference.page, len(pages))
-    selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+    manual_selection = _requires_manual_binding(pages)
+    if manual_selection and selected_video_page is None and not selected_audio_pages:
+        raise ManualBindingRequiredError(
+            title=str(data.get("title") or "").strip(),
+            pages=pages,
+            preferred_page=preferred_page,
+        )
+
+    available_page_numbers = [page.page for page in pages]
+    available_pages_by_number = {page.page: page for page in pages}
+    normalized_audio_pages = _normalize_selected_pages(selected_audio_pages)
+    if manual_selection:
+        video_page = int(selected_video_page or preferred_page)
+        if video_page not in available_pages_by_number:
+            raise BilibiliError("选择的视频分P无效")
+        if not normalized_audio_pages:
+            normalized_audio_pages = [video_page]
+        invalid_audio_pages = [page for page in normalized_audio_pages if page not in available_pages_by_number]
+        if invalid_audio_pages:
+            raise BilibiliError("选择的音频分P无效")
+        selected_pages = [available_pages_by_number[page] for page in normalized_audio_pages]
+    else:
+        selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+        if selected_video_page is not None or normalized_audio_pages:
+            raise BilibiliError("当前视频不需要手动绑定分P")
+
     selected_page_numbers = [page.page for page in selected_pages]
-    video_page = preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0]
-    video_page_info = next(page for page in selected_pages if page.page == video_page)
+    if not selected_page_numbers:
+        raise BilibiliError("至少需要选择一个音频分P")
+    if manual_selection:
+        video_page = int(selected_video_page or selected_page_numbers[0])
+    else:
+        video_page = preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0]
+    video_page_info = available_pages_by_number[video_page]
     aid = int(data["aid"])
     bvid = str(data["bvid"])
     title = str(data.get("title") or "").strip()
@@ -249,6 +695,10 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         )
     )
 
+    default_audio_page = video_page if video_page in selected_page_numbers else selected_page_numbers[0]
+    default_audio_index = selected_page_numbers.index(default_audio_page)
+    default_audio_part = selected_pages[default_audio_index].part
+
     return PlaylistItem(
         id=uuid.uuid4().hex[:12],
         original_url=reference.original_url,
@@ -266,8 +716,13 @@ def fetch_video_item(raw_input: str) -> PlaylistItem:
         selected_cids=[page.cid for page in selected_pages],
         selected_durations=[page.duration for page in selected_pages],
         selected_parts=[page.part for page in selected_pages],
-        selected_audio_variant_id=_variant_id(part_title, selected_page_numbers.index(video_page)),
+        available_pages=available_page_numbers,
+        available_cids=[page.cid for page in pages],
+        available_durations=[page.duration for page in pages],
+        available_parts=[page.part for page in pages],
+        selected_audio_variant_id=_variant_id(default_audio_page, default_audio_part, default_audio_index),
         video_page=video_page,
+        manual_selection=manual_selection,
         owner_mid=owner_mid,
         owner_name=owner_name,
         owner_url=owner_url,
@@ -291,3 +746,72 @@ def _fetch_view_data(reference: VideoReference) -> dict:
         message = payload.get("message") or "获取视频信息失败"
         raise BilibiliError(message)
     return payload["data"]
+def get_mixin_key(orig: str) -> str:
+    return ''.join([orig[i] for i in WBI_MIXIN_TABLE])[:32]
+
+def enc_wbi(params: dict, img_key: str, sub_key: str) -> dict:
+    mixin_key = get_mixin_key(img_key + sub_key)
+    curr_time = int(time.time())
+    params['wts'] = curr_time  
+    params = dict(sorted(params.items()))
+    params = {
+        k: ''.join([c for c in str(v) if c not in "!'()*"])
+        for k, v in params.items()
+    }
+    query = urllib.parse.urlencode(params)
+    w_rid = hashlib.md5((query + mixin_key).encode()).hexdigest()
+    params['w_rid'] = w_rid
+    return params
+
+def get_wbi_keys() -> tuple[str, str]:
+    nav_url = "https://api.bilibili.com/x/web-interface/nav"
+    try:
+        resp = request_json(nav_url)
+    except Exception as e:
+        raise BilibiliError(f"请求 nav 接口网络异常: {e}")
+
+    if resp.get("code") != 0:
+        msg = resp.get("message", "未知错误")
+        code = resp.get("code", "unknown")
+        raise BilibiliError(f"B 站接口返回错误: [{code}] {msg}")
+    
+    data = resp.get("data", {})
+    wbi_img = data.get("wbi_img")
+    
+    if not wbi_img:
+        raise BilibiliError("接口未返回 WBI 密钥信息，请检查 COOKIE 是否有效或 IP 是否被风控")
+    
+    img_url = wbi_img.get("img_url")
+    sub_url = wbi_img.get("sub_url")
+    
+    if not img_url or not sub_url:
+        raise BilibiliError("WBI 密钥 URL 格式不正确")
+
+    img_key = img_url.split("/")[-1].split(".")[0]
+    sub_key = sub_url.split("/")[-1].split(".")[0]
+    return img_key, sub_key
+def get_cached_wbi_keys():
+    curr_time = time.time()
+    if _WBI_CACHE["keys"] and (curr_time - _WBI_CACHE["last_update"] < 600):
+        return _WBI_CACHE["keys"]
+    
+    keys = get_wbi_keys()
+    _WBI_CACHE["keys"] = keys
+    _WBI_CACHE["last_update"] = curr_time
+    return keys
+
+def fetch_gatcha_candidate() -> dict | None:
+    candidates_by_uid = _local_gatcha_candidates_by_uid()
+    if not candidates_by_uid:
+        if not effective_bilibili_cookie():
+            raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
+        raise BilibiliError("本地稿件缓存还没准备好，请稍后再试")
+
+    chosen_mid = random.choice(list(candidates_by_uid.keys()))
+    chosen = random.choice(candidates_by_uid[chosen_mid])
+    return {
+        "mid": chosen_mid,
+        "bvid": str(chosen.get("bvid") or ""),
+        "title": str(chosen.get("title") or ""),
+        "url": str(chosen.get("url") or ""),
+    }
