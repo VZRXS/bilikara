@@ -71,17 +71,19 @@
               <button class="mode-button active" data-layout-mode="hardcore">硬核模式</button>
             </div>
           </div>
-          <div class="mode-control playback-control">
-            <span class="control-label">播放模式</span>
-            <div class="mode-switch" id="mode-switch">
-              <button class="mode-button active" data-mode="local">本地播放</button>
-              <button class="mode-button" data-mode="online">在线播放</button>
-            </div>
-          </div>
           <div class="status-chip" id="cache-settings">
             <button type="button" class="status-chip-toggle" id="cache-settings-toggle" aria-expanded="false">
-              <span class="control-label">BBDown</span>
-              <strong id="bbdown-status">检查中</strong>
+              <span class="status-chip-label-row">
+                <span class="control-label">服务设置</span>
+                <span
+                  class="tool-status-indicator is-loading"
+                  id="service-status-indicator"
+                  aria-hidden="true"
+                ></span>
+              </span>
+              <div class="service-mode-summary">
+                <span id="playback-mode-summary">本地缓存</span>
+              </div>
               <p class="cache-chip-meta" id="cache-chip-meta">缓存占用 0 MB</p>
             </button>
             <div class="cache-panel hidden" id="cache-panel">
@@ -92,7 +94,24 @@
                 </div>
                 <div class="cache-panel-side">
                   <p class="cache-panel-hint">关闭服务后会自动清空</p>
-                  <p class="cache-panel-hint cache-panel-tool-hint" id="ffmpeg-status-hint">FFmpeg 检查中</p>
+                  <div class="cache-panel-tool-list">
+                    <p id="bbdown-status-row">
+                      <span>BBDown</span>
+                      <span
+                        class="tool-status-indicator is-loading cache-panel-tool-indicator"
+                        id="bbdown-panel-status-indicator"
+                        aria-hidden="true"
+                      ></span>
+                    </p>
+                    <p id="ffmpeg-status-row">
+                      <span>FFmpeg</span>
+                      <span
+                        class="tool-status-indicator is-loading cache-panel-tool-indicator"
+                        id="ffmpeg-panel-status-indicator"
+                        aria-hidden="true"
+                      ></span>
+                    </p>
+                  </div>
                 </div>
               </div>
               <div class="cache-panel-row cache-panel-row-stack">
@@ -118,6 +137,18 @@
                     <span>4</span>
                     <span>5</span>
                   </div>
+                </div>
+              </div>
+              <div class="cache-panel-row cache-panel-mode-row">
+                <div>
+                  <p class="cache-panel-label">播放模式</p>
+                  <p class="cache-panel-hint">⚠️在线外挂仅作为备用</p>
+                </div>
+                <div class="cache-mode-control">
+                  <span id="playback-mode-current">本地缓存</span>
+                  <button type="button" class="toolbar-button cache-mode-toggle" id="mode-switch">
+                    切换
+                  </button>
                 </div>
               </div>
             </div>

@@ -51,13 +51,18 @@ const state = {
 
 const elements = {
   appShell: document.getElementById("app-shell"),
-  bbdownStatus: document.getElementById("bbdown-status"),
+  serviceStatusIndicator: document.getElementById("service-status-indicator"),
+  playbackModeSummary: document.getElementById("playback-mode-summary"),
+  playbackModeCurrent: document.getElementById("playback-mode-current"),
   cacheChipMeta: document.getElementById("cache-chip-meta"),
   cacheSettings: document.getElementById("cache-settings"),
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
-  ffmpegStatusHint: document.getElementById("ffmpeg-status-hint"),
+  bbdownStatusRow: document.getElementById("bbdown-status-row"),
+  ffmpegStatusRow: document.getElementById("ffmpeg-status-row"),
+  bbdownPanelStatusIndicator: document.getElementById("bbdown-panel-status-indicator"),
+  ffmpegPanelStatusIndicator: document.getElementById("ffmpeg-panel-status-indicator"),
   cacheLimitValue: document.getElementById("cache-limit-value"),
   cacheLimitSlider: document.getElementById("cache-limit-slider"),
   cacheLimitScale: document.getElementById("cache-limit-scale"),
@@ -552,10 +557,6 @@ function render() {
   renderSessionUsers(data.session_users || []);
   renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
   renderRemoteAccess(data.remote_access);
-
-  elements.modeSwitch?.querySelectorAll(".mode-button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.mode === data.playback_mode);
-  });
   renderLayoutMode();
 
   renderAudioVariantBar(currentItem, data.playback_mode);
@@ -808,14 +809,62 @@ function renderListHeader(playlist, history) {
 }
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
-  elements.bbdownStatus.textContent = formatBBDownStatus(bbdown);
-  elements.bbdownStatus.title = bbdown?.message || "";
+  syncToolIndicator(elements.serviceStatusIndicator, aggregateToolStatusState(bbdown, ffmpeg));
+  if (elements.playbackModeSummary) {
+    elements.playbackModeSummary.textContent = formatPlaybackMode(state.data?.playback_mode);
+  }
+  if (elements.playbackModeCurrent) {
+    elements.playbackModeCurrent.textContent = formatPlaybackMode(state.data?.playback_mode);
+  }
   elements.cacheChipMeta.textContent = formatCacheChipMeta(cachePolicy);
   elements.cacheUsageDetail.textContent = formatCacheUsage(cachePolicy);
-  elements.ffmpegStatusHint.textContent = formatFFmpegHint(ffmpeg);
+  syncToolIndicator(elements.bbdownPanelStatusIndicator, bbdown?.state);
+  syncToolIndicator(elements.ffmpegPanelStatusIndicator, ffmpeg?.state);
+  if (elements.bbdownStatusRow) {
+    elements.bbdownStatusRow.title = `BBDown ${formatBBDownHint(bbdown)}`;
+  }
+  if (elements.ffmpegStatusRow) {
+    elements.ffmpegStatusRow.title = `FFmpeg ${formatFFmpegHint(ffmpeg)}`;
+  }
 
   renderCacheSlider(cachePolicy);
   syncCachePanelVisibility();
+}
+
+function syncToolIndicator(indicator, state) {
+  if (!indicator) {
+    return;
+  }
+  const normalizedState = String(state || "idle");
+  indicator.classList.remove("is-ready", "is-failed", "is-loading", "is-pending");
+  indicator.textContent = "";
+  if (normalizedState === "ready") {
+    indicator.classList.add("is-ready");
+    indicator.textContent = "✓";
+  } else if (normalizedState === "failed") {
+    indicator.classList.add("is-failed");
+    indicator.textContent = "×";
+  } else if (normalizedState === "checking" || normalizedState === "installing" || normalizedState === "loading") {
+    indicator.classList.add("is-loading");
+  } else {
+    indicator.classList.add("is-pending");
+    indicator.textContent = "·";
+  }
+}
+
+function aggregateToolStatusState(bbdown, ffmpeg) {
+  const states = [bbdown?.state, ffmpeg?.state].map((value) => String(value || "idle"));
+  if (states.includes("failed")) {
+    return "failed";
+  }
+  if (states.every((stateValue) => stateValue === "ready")) {
+    return "ready";
+  }
+  return "loading";
+}
+
+function formatPlaybackMode(mode) {
+  return mode === "online" ? "在线外挂" : "本地缓存";
 }
 
 function renderCacheSlider(cachePolicy) {
@@ -1865,52 +1914,31 @@ function ownerTooltipForEntry(entry) {
   return `UP主: ${ownerName}`;
 }
 
-function formatBBDownStatus(bbdown) {
+function formatBBDownHint(bbdown) {
   if (!bbdown) {
     return "未知";
   }
   const labelMap = {
-    idle: "空闲",
+    idle: "待准备",
     checking: "检查中",
+    installing: "更新中",
     ready: "已就绪",
     failed: "异常",
   };
-  const stateLabel = labelMap[bbdown.state] || bbdown.state || "未知";
-  if (bbdown.version) {
-    return `${stateLabel} · ${bbdown.version}`;
-  }
-  return stateLabel;
-}
-
-function formatFFmpegStatus(ffmpeg) {
-  if (!ffmpeg) {
-    return "未知";
-  }
-  const labelMap = {
-    idle: "空闲",
-    checking: "检查中",
-    ready: "已就绪",
-    failed: "异常",
-  };
-  const stateLabel = labelMap[ffmpeg.state] || ffmpeg.state || "未知";
-  if (ffmpeg.version) {
-    return `${stateLabel} · ${ffmpeg.version}`;
-  }
-  return stateLabel;
+  return labelMap[bbdown.state] || bbdown.state || "未知";
 }
 
 function formatFFmpegHint(ffmpeg) {
   if (!ffmpeg) {
-    return "FFmpeg 未知";
+    return "未知";
   }
   const labelMap = {
-    idle: "空闲",
+    idle: "待准备",
     checking: "检查中",
     ready: "已就绪",
     failed: "异常",
   };
-  const stateLabel = labelMap[ffmpeg.state] || ffmpeg.state || "未知";
-  return `FFmpeg ${stateLabel}`;
+  return labelMap[ffmpeg.state] || ffmpeg.state || "未知";
 }
 
 function formatCacheChipMeta(cachePolicy) {
@@ -2652,13 +2680,14 @@ elements.queueCurrentRetry.addEventListener("click", async () => {
   }
 });
 
-elements.modeSwitch.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-mode]");
+elements.modeSwitch?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
   if (!button) {
     return;
   }
+  const nextMode = state.data?.playback_mode === "online" ? "local" : "online";
   try {
-    state.data = await apiPost("/api/mode", { mode: button.dataset.mode });
+    state.data = await apiPost("/api/mode", { mode: nextMode });
     render();
   } catch (error) {
     setFormMessage(error.message, true);

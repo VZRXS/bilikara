@@ -337,7 +337,7 @@ function renderCurrentItem(current, playbackMode) {
     const requesterText = requesterBadgeText(current.requester_name);
     elements.currentRequester.textContent = requesterText;
     elements.currentRequester.classList.toggle("hidden", !requesterText);
-    const modeLabel = playbackMode === "online" ? "在线播放" : "本地播放";
+    const modeLabel = playbackMode === "online" ? "在线外挂" : "本地缓存";
     const cacheText = current.cache_message || "等待缓存";
     elements.currentMeta.textContent = `${modeLabel} · ${cacheText}`;
     return;
@@ -544,7 +544,7 @@ function renderPlayerControls(currentItem, playbackMode) {
   }
 
   if (playbackMode !== "local") {
-    elements.playerControlHint.textContent = "当前是在线播放，暂不支持远程控制播放。";
+    elements.playerControlHint.textContent = "当前是在线外挂，暂不支持远程控制播放。";
     return;
   }
   if (!currentItem.local_media_url) {

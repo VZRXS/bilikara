@@ -11,10 +11,10 @@
   --red: #b14545;
   --shadow: 0 24px 60px rgba(88, 56, 30, 0.14);
   --action-button-width: 96px;
-  --top-controls-width: 868px;
+  --top-controls-width: 628px;
   --status-chip-width: 164px;
-  --layout-control-width: 240px;
-  --remote-mini-control-width: 200px;
+  --layout-control-width: 226px;
+  --remote-mini-control-width: 100px;
   --playback-control-width: 228px;
   --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
     sans-serif;
@@ -250,10 +250,11 @@ h2 {
 
 .top-controls {
   display: flex;
-  width: min(100%, var(--top-controls-width));
+  width: auto;
+  margin-left: auto;
   gap: 12px;
   align-items: stretch;
-  justify-content: space-between;
+  justify-content: flex-end;
   flex-wrap: nowrap;
 }
 
@@ -281,6 +282,10 @@ h2 {
   width: var(--layout-control-width);
   min-width: var(--layout-control-width);
   flex: 0 0 var(--layout-control-width);
+}
+
+.layout-control .mode-switch {
+  align-self: center;
 }
 
 .playback-control {
@@ -397,17 +402,85 @@ h2 {
   text-transform: uppercase;
 }
 
-.status-chip-toggle strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 15px;
+.cache-chip-meta {
+  margin-top: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status-chip-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.service-mode-summary {
+  margin: 8px 0 5px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
   color: var(--accent-deep);
 }
 
-.cache-chip-meta {
-  margin-top: 6px;
+.tool-status-indicator {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
-  color: var(--muted);
+  line-height: 1;
+  font-weight: 800;
+}
+
+.tool-status-indicator.is-ready {
+  background: rgba(43, 123, 96, 0.14);
+  color: var(--green);
+}
+
+.tool-status-indicator.is-failed {
+  background: rgba(177, 69, 69, 0.14);
+  color: var(--red);
+}
+
+.tool-status-indicator.is-pending,
+.tool-status-indicator.is-loading {
+  position: relative;
+  background: rgba(109, 98, 88, 0.12);
+}
+
+.tool-status-indicator.is-loading {
+  background: rgba(109, 98, 88, 0.12);
+}
+
+.tool-status-indicator.is-pending::after,
+.tool-status-indicator.is-loading::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.tool-status-indicator.is-loading::after {
+  background: var(--muted);
+  animation: statusPulse 1.1s ease-in-out infinite;
+}
+
+@keyframes statusPulse {
+  0%,
+  100% {
+    transform: scale(0.72);
+    opacity: 0.48;
+  }
+
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .cache-panel {
@@ -433,8 +506,67 @@ h2 {
   gap: 14px;
 }
 
+.cache-panel-side {
+  min-width: 132px;
+  text-align: right;
+}
+
+.cache-panel-tool-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.cache-panel-tool-list p {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.cache-panel-tool-indicator {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
+}
+
 .cache-panel-row-stack {
   align-items: flex-end;
+}
+
+.cache-panel-mode-row {
+  align-items: center;
+}
+
+.cache-mode-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.cache-mode-control span {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.cache-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .cache-panel-value {
@@ -1165,7 +1297,7 @@ select:disabled {
 .remote-qr-wrap {
   width: 170px;
   height: 170px;
-  border-radius: 18px;
+  /* border-radius: 18px; */
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid rgba(87, 63, 43, 0.08);
   display: grid;
