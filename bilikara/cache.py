@@ -47,6 +47,7 @@ STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
 RETRY_REQUESTED_MESSAGE = "__retry_requested__"
 SUBPROCESS_OUTPUT_ENCODING = "gb18030" if os.name == "nt" else "utf-8"
+BB_DOWN_NON_4K_DFN_PRIORITY = "1080P 高码率,1080P 60帧,1080P 高清,720P 60帧,720P 高清,480P 清晰,360P 流畅"
 
 
 class CacheCancelledError(RuntimeError):
@@ -921,6 +922,8 @@ class CacheManager:
             page_url,
             "-p",
             str(page),
+            "-q",
+            BB_DOWN_NON_4K_DFN_PRIORITY,
             "--work-dir",
             str(target_dir),
             "--ffmpeg-path",
