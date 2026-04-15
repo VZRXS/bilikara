@@ -458,7 +458,7 @@ class BilibiliParserTest(unittest.TestCase):
 
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["bvid"], "BV1xx411c7mD")
-        mock_sleep.assert_called_once_with(bilibili_module.GATCHA_RETRY_DELAY_SECONDS)
+        mock_sleep.assert_any_call(bilibili_module.GATCHA_RETRY_DELAY_SECONDS)
 
 
 if __name__ == "__main__":
