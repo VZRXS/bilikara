@@ -2293,9 +2293,10 @@ select:disabled {
 
 .bottom-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr; 
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 16px;
-  align-items: 0;
+  align-items: stretch;
+  margin-top: 0;
 }
 
 .gatcha-panel {
@@ -2309,17 +2310,103 @@ select:disabled {
   flex-direction: column;
 }
 
+.gatcha-head {
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.gatcha-head > div {
+  min-height: 45px;
+}
+
+.gatcha-head h2 {
+  line-height: 1.2;
+  min-height: 29px;
+}
+
+.gatcha-cookie-toggle {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.gatcha-stage {
+  position: relative;
+  flex: 1;
+  min-height: 190px;
+  margin-top: 14px;
+  perspective: 1800px;
+}
+
+.gatcha-stage-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  transform-style: preserve-3d;
+  transition: transform 420ms ease;
+}
+
+.gatcha-stage.is-cookie-view .gatcha-stage-inner {
+  transform: rotateY(180deg);
+}
+
+.gatcha-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  min-height: 0;
+  backface-visibility: hidden;
+  pointer-events: none;
+}
+
+.gatcha-face-front {
+  pointer-events: auto;
+}
+
+.gatcha-face-back {
+  transform: rotateY(180deg);
+}
+
+.gatcha-stage.is-cookie-view .gatcha-face-front {
+  pointer-events: none;
+}
+
+.gatcha-stage.is-cookie-view .gatcha-face-back {
+  pointer-events: auto;
+}
+
+.gatcha-cookie-view {
+  display: grid;
+  align-content: start;
+  padding-top: 2px;
+}
+
+.gatcha-cookie-view .cookie-config-bar {
+  align-content: start;
+  height: auto;
+}
+
+.gatcha-cookie-view .cookie-inputs {
+  display: grid;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.gatcha-panel.is-cookie-view .request-head h2 {
+  color: var(--ink);
+}
+
 .gatcha-content {
   flex: 1;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 12px;
-  margin-top: 14px;
   background: rgba(255, 255, 255, 0.4);
   border-radius: 22px;
-  padding: 16px;
+  padding: 20px 16px 16px;
   text-align: center;
 }
 
@@ -2337,6 +2424,10 @@ select:disabled {
   font-size: 12px;
   line-height: 1.4;
   color: var(--muted);
+}
+
+.gatcha-cookie-view .gatcha-message:empty {
+  display: none;
 }
 
 .gatcha-message.is-error {
@@ -2381,22 +2472,36 @@ select:disabled {
   height: 100%;
 }
 
+.bottom-grid .search-sub-card,
 .bottom-grid .cookie-sub-card {
   margin-top: 0;
   min-height: 0;
 }
 
+.bottom-grid .search-card,
 .bottom-grid .cookie-config-bar {
   height: 100%;
 }
 
+.bottom-grid .search-inputs,
 .bottom-grid .cookie-inputs {
-  flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 12px;
 }
 
 .bottom-grid .cookie-sub-card .next-button {
+  width: 100%;
+}
+
+.bottom-grid .search-sub-card .next-button {
+  width: auto;
+  height: 48px;
+  min-width: 72px;
+  border-radius: 16px;
+  padding: 0 18px;
+}
+
+.gatcha-cookie-view .next-button {
   width: 100%;
 }
 
@@ -2412,6 +2517,7 @@ select:disabled {
 .search-card {
   display: grid;
   gap: 14px;
+  align-content: start;
 }
 
 .search-sub-card,
@@ -2434,6 +2540,24 @@ select:disabled {
   align-items: flex-end;
 }
 
+.search-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.search-inputs .input-group input {
+  height: 48px;
+  border-radius: 16px;
+  padding: 0 16px;
+  font-size: inherit;
+}
+
+.bottom-grid .gatcha-cookie-view .cookie-inputs {
+  display: grid;
+  align-items: stretch;
+}
+
 .search-results.hidden {
   display: none;
 }
@@ -2447,7 +2571,7 @@ select:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
-  align-items: center;
+  align-items: start;
   padding: 12px 14px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.58);
@@ -2459,9 +2583,14 @@ select:disabled {
 }
 
 .search-result-title {
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.35;
   color: var(--ink);
   word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
 }
 
 .search-result-url {
@@ -2511,6 +2640,10 @@ select:disabled {
     align-items: stretch;
   }
 
+  .search-inputs {
+    grid-template-columns: 1fr;
+  }
+
   .search-result-item {
     grid-template-columns: 1fr;
   }
@@ -2519,14 +2652,6 @@ select:disabled {
   .cookie-sub-card .next-button {
     width: 100%;
   }
-}
-
-
-.bottom-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-top: 0; 
 }
 
 @keyframes badge-orbit {

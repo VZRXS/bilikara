@@ -57,6 +57,7 @@ const state = {
   gatchaCandidate: null,
   gatchaCooldownUntil: 0,
   gatchaCooldownTimer: null,
+  gatchaCookieVisible: false,
   bbdownLoginRequesting: false,
   layoutMode: "full",
 };
@@ -149,7 +150,14 @@ const elements = {
   remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
+  gatchaPanel: document.getElementById("gatcha-panel"),
+  gatchaTag: document.getElementById("gatcha-tag"),
+  gatchaTitle: document.getElementById("gatcha-title"),
+  gatchaStage: document.getElementById("gatcha-stage"),
   gatchaButton: document.getElementById("gatcha-button"),
+  gatchaCookieToggle: document.getElementById("gatcha-cookie-toggle"),
+  gatchaMainView: document.getElementById("gatcha-main-view"),
+  gatchaCookieView: document.getElementById("gatcha-cookie-view"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
   gatchaMessage: document.getElementById("gatcha-message"),
@@ -163,6 +171,7 @@ const elements = {
   cookieSessdata: document.getElementById("cookie-sessdata"),
   cookieJct: document.getElementById("cookie-jct"),
   saveCookieButton: document.getElementById("save-cookie-button"),
+  cookieMessage: document.getElementById("cookie-message"),
 };
 
 function setFormMessage(message, isError = false) {
@@ -566,6 +575,30 @@ function setGatchaMessage(message, isError = false) {
   elements.gatchaMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function setCookieMessage(message, isError = false) {
+  if (!elements.cookieMessage) {
+    return;
+  }
+  elements.cookieMessage.textContent = message || "";
+  elements.cookieMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function renderGatchaCookieFace() {
+  const showCookie = Boolean(state.gatchaCookieVisible);
+  elements.gatchaPanel?.classList.toggle("is-cookie-view", showCookie);
+  elements.gatchaStage?.classList.toggle("is-cookie-view", showCookie);
+  if (elements.gatchaTag) {
+    elements.gatchaTag.textContent = showCookie ? "Cookie Config" : "gatcha Draw";
+  }
+  if (elements.gatchaTitle) {
+    elements.gatchaTitle.textContent = showCookie ? "Cookie" : "试试运气";
+  }
+  if (elements.gatchaCookieToggle) {
+    elements.gatchaCookieToggle.textContent = showCookie ? "返回抽卡" : "输入 Cookie";
+    elements.gatchaCookieToggle.setAttribute("aria-pressed", String(showCookie));
+  }
+}
+
 function gatchaCooldownRemainingSeconds() {
   return Math.max(0, Math.ceil((state.gatchaCooldownUntil - Date.now()) / 1000));
 }
@@ -654,6 +687,7 @@ function render() {
     Boolean(data.session_flags?.auto_restored_backup),
   );
   elements.listStage.classList.toggle("is-history-view", state.listView === "history");
+  renderGatchaCookieFace();
   renderConfirmPopover();
 }
 
@@ -3564,6 +3598,11 @@ elements.listStage.addEventListener("wheel", (event) => {
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
+elements.gatchaCookieToggle?.addEventListener("click", () => {
+  state.gatchaCookieVisible = !state.gatchaCookieVisible;
+  renderGatchaCookieFace();
+});
+
 elements.gatchaConfirmButton.addEventListener("click", async () => {
   if (!state.gatchaCandidate) return;
 
@@ -3617,17 +3656,17 @@ elements.saveCookieButton.addEventListener("click", async () => {
   const sessdata = elements.cookieSessdata.value.trim();
   const jct = elements.cookieJct.value.trim();
 
-  setGatchaMessage("正在更新 Cookie 配置...");
+  setCookieMessage("正在更新 Cookie 配置...");
   try {
     await apiPost("/api/config/cookie", {
       sessdata: sessdata,
       bili_jct: jct
     });
-    setGatchaMessage("Cookie 已更新，正在拉取稿件信息（第一次拉取稿件数量会影响拉取时间）");
+    setCookieMessage("Cookie 已更新，正在拉取稿件信息（第一次拉取稿件数量会影响拉取时间）");
     elements.cookieSessdata.value = "";
     elements.cookieJct.value = "";
   } catch (error) {
-    setGatchaMessage(error.message, true);
+    setCookieMessage(error.message, true);
   }
 });
 

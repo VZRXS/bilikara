@@ -320,50 +320,71 @@
               </div>
             </section>
 
-            <section class="list-card sub-card cookie-sub-card">
-              <div class="cookie-config-bar">
-                <div class="cookie-sub-card-head">
+            <section class="list-card sub-card search-sub-card">
+              <div class="search-card">
+                <div class="search-sub-card-head">
                   <div>
-                    <p class="section-tag">Cookie Config</p>
-                    <h2>Cookie</h2>
+                    <p class="section-tag">Local Search</p>
+                    <h2>搜索</h2>
                   </div>
                 </div>
-                <div class="cookie-inputs">
+                <form id="search-form" class="search-inputs">
                   <div class="input-group">
-                    <label>SESSDATA</label>
-                    <input type="text" id="cookie-sessdata" placeholder="从浏览器获取的 SESSDATA">
+                    <input type="text" id="search-query" placeholder="搜索本地歌曲目录 (需要登录或者 cookie)" autocomplete="off">
                   </div>
-                  <div class="input-group">
-                    <label>bili_jct</label>
-                    <input type="text" id="cookie-jct" placeholder="从浏览器获取的 bili_jct">
-                  </div>
-                  <button type="button" id="save-cookie-button" class="next-button">更新配置</button>
-                </div>
-                <!-- <p class="cookie-hint">配置将实时保存到后端，用于解决“试试运气”时的 412/101 错误。</p> -->
+                  <button type="submit" id="search-button" class="next-button">搜索</button>
+                </form>
+                <div id="search-results" class="search-results hidden"></div>
               </div>
             </section>
             
-            <section class="gatcha-panel">
-              <div class="request-head">
+            <section class="gatcha-panel" id="gatcha-panel">
+             <div class="request-head gatcha-head">
                 <div>
-                 <p class="section-tag">gatcha Draw</p>
-                 <h2>试试运气</h2>
+                 <p class="section-tag" id="gatcha-tag">gatcha Draw</p>
+                 <h2 id="gatcha-title">试试运气</h2>
                 </div>
+                <button type="button" id="gatcha-cookie-toggle" class="toolbar-button ghost gatcha-cookie-toggle">
+                  输入 Cookie
+                </button>
               </div>
       
-              <div id="gatcha-init-view" class="gatcha-content">
-                <div class="gatcha-icon">🎲</div>
-                <p class="gatcha-desc">从关注的投稿中随机抽取一首歌曲</p>
-                <button type="button" id="gatcha-button" class="next-button gatcha-main-btn">试试运气</button>
-                <p class="gatcha-message" id="gatcha-message" role="status"></p>
-              </div>
+              <div id="gatcha-stage" class="gatcha-stage">
+                <div class="gatcha-stage-inner">
+                  <div id="gatcha-main-view" class="gatcha-face gatcha-face-front">
+                    <div id="gatcha-init-view" class="gatcha-content">
+                      <div class="gatcha-icon">🎲</div>
+                      <p class="gatcha-desc">从关注的投稿中随机抽取一首歌曲</p>
+                      <button type="button" id="gatcha-button" class="next-button gatcha-main-btn">试试运气</button>
+                      <p class="gatcha-message" id="gatcha-message" role="status"></p>
+                    </div>
 
-              <div id="gatcha-result-view" class="gatcha-content hidden">
-                <p class="gatcha-label">运气不错，抽到了：</p>
-                <h3 id="gatcha-candidate-title">歌曲标题加载中...</h3>
-                <div class="gatcha-actions">
-                  <button type="button" id="gatcha-confirm-button" class="next-button">确定点歌</button>
-                  <button type="button" id="gatcha-retry-button" class="toolbar-button">重新再来</button>
+                    <div id="gatcha-result-view" class="gatcha-content hidden">
+                      <p class="gatcha-label">运气不错，抽到了：</p>
+                      <h3 id="gatcha-candidate-title">歌曲标题加载中...</h3>
+                      <div class="gatcha-actions">
+                        <button type="button" id="gatcha-confirm-button" class="next-button">确定点歌</button>
+                        <button type="button" id="gatcha-retry-button" class="toolbar-button">重新再来</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div id="gatcha-cookie-view" class="gatcha-face gatcha-face-back gatcha-cookie-view">
+                    <div class="cookie-config-bar">
+                      <div class="cookie-inputs">
+                        <div class="input-group">
+                          <label>SESSDATA</label>
+                          <input type="text" id="cookie-sessdata" placeholder="从浏览器获取的 SESSDATA">
+                        </div>
+                        <div class="input-group">
+                          <label>bili_jct</label>
+                          <input type="text" id="cookie-jct" placeholder="从浏览器获取的 bili_jct">
+                        </div>
+                        <button type="button" id="save-cookie-button" class="next-button">更新配置</button>
+                      </div>
+                      <p class="gatcha-message" id="cookie-message" role="status"></p>
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
@@ -426,24 +447,6 @@
           </div>
         </aside>
       </main>
-
-      <section class="list-card sub-card search-sub-card">
-        <div class="search-card">
-          <div class="search-sub-card-head">
-            <div>
-              <p class="section-tag">Local Search</p>
-              <h2>搜索</h2>
-            </div>
-          </div>
-          <form id="search-form" class="search-inputs">
-            <div class="input-group">
-              <input type="text" id="search-query" placeholder="搜索本地歌曲目录 (需要登录或者 cookie)" autocomplete="off">
-            </div>
-            <button type="submit" id="search-button" class="next-button">搜索</button>
-          </form>
-          <div id="search-results" class="search-results hidden"></div>
-        </div>
-      </section>
 
     </div>
 
