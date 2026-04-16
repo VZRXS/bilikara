@@ -479,6 +479,7 @@ async function apiPost(url, payload = {}) {
 }
 
 async function fetchState() {
+  const previousOffsetMs = currentAvOffsetMs();
   const response = await fetch("/api/state", {
     headers: clientHeaders(),
   });
@@ -513,6 +514,9 @@ async function fetchState() {
     }
   }
   render();
+  if (previousOffsetMs !== currentAvOffsetMs()) {
+    syncMountedLocalPlayer(true);
+  }
 }
 
 async function searchGatchaCache(query) {
@@ -2942,6 +2946,7 @@ async function setAvOffset(offsetMs) {
     state.data = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
     writeLocalPreference(storageKeys.avOffsetMs, boundedOffsetMs);
     render();
+    syncMountedLocalPlayer(true)
   } catch (error) {
     setAppMessage(error.message, true);
     render();
