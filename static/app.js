@@ -1262,7 +1262,7 @@ function selectedVideoUrlForItem(item) {
 
 function selectedAudioUrlForItem(item) {
   const selectedVariant = selectedAudioVariantForItem(item);
-  return String(selectedVariant?.audio_url || "").trim();
+  return String(selectedVariant?.audio_url || selectedVariant?.media_url || "").trim();
 }
 
 function currentAvOffsetMs() {
