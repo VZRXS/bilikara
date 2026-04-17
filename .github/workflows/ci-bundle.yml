@@ -105,11 +105,20 @@ jobs:
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent dist/bilikara.app "$BUNDLE_ARCHIVE"
 
-      - name: Upload bundle artifact
+      - name: Upload Windows bundle artifact
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
-          path: ${{ steps.bundle-name.outputs.archive_name }}
+          path: dist/bilikara
+          if-no-files-found: error
+
+      - name: Upload macOS bundle artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.bundle-name.outputs.artifact_name }}
+          path: dist/bilikara.app
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release
