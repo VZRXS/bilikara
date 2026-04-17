@@ -288,6 +288,48 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_bbdown_login_success_triggers_callback(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        bbdown_dir.mkdir(parents=True, exist_ok=True)
+        (bbdown_dir / "BBDown.data").write_text("{}", encoding="utf-8")
+        callback_calls: list[str] = []
+
+        class FakeLoginProcess:
+            def __init__(self) -> None:
+                self.stdout = io.StringIO("login qr ready\n")
+                self.returncode: int | None = None
+
+            def poll(self) -> int | None:
+                return self.returncode
+
+            def terminate(self) -> None:
+                self.returncode = 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.returncode = 0
+                return 0
+
+            def kill(self) -> None:
+                self.returncode = -9
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
+            manager = CacheManager(
+                self.store,
+                max_cache_items=3,
+                on_bbdown_login_success=lambda: callback_calls.append("refresh"),
+            )
+            try:
+                with patch.object(manager, "_ensure_bbdown", return_value=bbdown_dir / "BBDown"), patch(
+                    "bilikara.cache.subprocess.Popen",
+                    return_value=FakeLoginProcess(),
+                ):
+                    manager._bbdown_login_worker()
+
+                self.assertEqual(callback_calls, ["refresh"])
+                self.assertEqual(manager.bbdown_login_status()["state"], "logged_in")
+            finally:
+                manager.shutdown()
+
     def test_ensure_ffmpeg_rejects_non_executable_binary(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"
         tools_dir = Path(self.temp_dir.name) / "tools" / "bbdown"

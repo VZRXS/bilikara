@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Iterator, TextIO
+from typing import Any, Callable, Iterator, TextIO
 
 from .config import (
     BB_DOWN_DIR,
@@ -59,9 +59,16 @@ class DownloadCommandError(RuntimeError):
 
 
 class CacheManager:
-    def __init__(self, store: PlaylistStore, max_cache_items: int = MAX_CACHE_ITEMS) -> None:
+    def __init__(
+        self,
+        store: PlaylistStore,
+        max_cache_items: int = MAX_CACHE_ITEMS,
+        *,
+        on_bbdown_login_success: Callable[[], None] | None = None,
+    ) -> None:
         self.store = store
         self.max_cache_items = max(0, max_cache_items)
+        self.on_bbdown_login_success = on_bbdown_login_success
         self.tasks: "queue.Queue[str]" = queue.Queue()
         self.pending_ids: set[str] = set()
         self.desired_ids: set[str] = set()
@@ -1466,6 +1473,16 @@ class CacheManager:
         except OSError:
             pass
 
+    def _notify_bbdown_login_success(self) -> None:
+        if self.on_bbdown_login_success is None:
+            return
+        try:
+            self.on_bbdown_login_success()
+        except Exception:
+            # Login itself succeeded; background follow-up work should not flip
+            # the BBDown login state back to failed.
+            pass
+
     # @staticmethod
     # def _extract_terminal_qr_text(output: str) -> str:
     #     lines = [ANSI_ESCAPE_RE.sub("", line).rstrip() for line in str(output or "").splitlines()]
@@ -1757,11 +1774,12 @@ class CacheManager:
                         return_code = process.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         return_code = None
+                login_succeeded = self._bbdown_data_path().exists()
                 with self.lock:
                     is_current_process = self.bbdown_login_process is process
                     if is_current_process:
                         self.bbdown_login_process = None
-                    if self._bbdown_data_path().exists():
+                    if login_succeeded:
                         self._remove_bbdown_qr_image()
                         self.bbdown_login_state = "logged_in"
                         self.bbdown_login_message = "BBDown 已登录"
@@ -1769,6 +1787,8 @@ class CacheManager:
                     elif is_current_process and self.bbdown_login_state not in {"failed", "idle"} and return_code not in (None, 0):
                         self.bbdown_login_state = "failed"
                         self.bbdown_login_message = "BBDown 登录失败，请重试"
+                if login_succeeded:
+                    self._notify_bbdown_login_success()
 
     def _outside_window_message(self) -> str:
         if self.max_cache_items <= 0:

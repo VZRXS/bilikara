@@ -36,7 +36,7 @@ _GATCHA_REQUEST_LOCK = threading.Lock()
 _GATCHA_LAST_REQUEST_AT = 0.0
 _GATCHA_CACHE_FILE = cfg.DATA_DIR / "gatcha_cache.json"
 GATCHA_RETRY_DELAY_SECONDS = 5
-MISSING_BILIBILI_COOKIE_MESSAGE = "请登录 Bilibili 账号或填写 SESSDATA 和 bili_jct"
+MISSING_BILIBILI_COOKIE_MESSAGE = "请登录 Bilibili 账号或输入 Cookie"
 _COOKIE_REQUIRED_KEYS = {"sessdata", "bili_jct"}
 _COOKIE_PREFERRED_ORDER = (
     "SESSDATA",

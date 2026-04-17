@@ -55,7 +55,11 @@ class AppContext:
         ensure_directories()
         self.store = PlaylistStore(STATE_FILE, BACKUP_FILE, PLAYED_SESSION_DIR)
         self.auto_restored_backup = self.store.restore_backup()
-        self.cache_manager = CacheManager(self.store, max_cache_items=MAX_CACHE_ITEMS)
+        self.cache_manager = CacheManager(
+            self.store,
+            max_cache_items=MAX_CACHE_ITEMS,
+            on_bbdown_login_success=refresh_gatcha_cache_in_background,
+        )
         self.cache_manager.prepare_session()
         self._closed = False
         self._server: ThreadingHTTPServer | None = None
