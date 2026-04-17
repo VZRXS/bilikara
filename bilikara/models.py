@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from typing import Any
 
 from .title_cleanup import clean_display_title
@@ -40,8 +40,6 @@ class PlaylistItem:
     cache_status: str = "pending"
     cache_progress: float = 0.0
     cache_message: str = "等待缓存"
-    local_relative_path: str = ""
-    local_media_url: str = ""
     video_relative_path: str = ""
     video_media_url: str = ""
 
@@ -55,13 +53,26 @@ class PlaylistItem:
             display_title=self.display_title,
             part_title=self.part_title,
         )
-        data["is_cached"] = bool(self.local_media_url)
+        # LEGACY: old state files used local_media_url for one muxed file.
+        # Split playback requires both video and audio.
+        data["is_cached"] = bool(
+            self.video_media_url
+            and any(
+                isinstance(variant, dict)
+                and str(variant.get("audio_url") or variant.get("media_url") or "").strip()
+                for variant in self.audio_variants
+            )
+        )
         return data
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PlaylistItem":
-        filtered = dict(payload)
-        filtered.pop("is_cached", None)
+        allowed_fields = {item.name for item in dataclass_fields(cls)}
+        filtered = {
+            key: value
+            for key, value in dict(payload).items()
+            if key in allowed_fields
+        }
         return cls(**filtered)
 
 

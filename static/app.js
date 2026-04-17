@@ -1139,7 +1139,7 @@ function currentStatusForItem(item) {
   if (!item) {
     return { state: "idle", label: "播放中" };
   }
-  if (item.local_media_url || item.cache_status === "ready") {
+  if (item.cache_status === "ready") {
     return { state: "playing", label: "播放中" };
   }
   if (item.cache_status === "failed") {
@@ -1356,14 +1356,26 @@ function syncSplitPlayerVolumeFromVideo(video, audio) {
   if (!video || !audio) {
     return;
   }
-  state.localPlayerVolume = Number.isFinite(video.volume)
+  const nextVolume = Number.isFinite(video.volume)
     ? Math.max(0, Math.min(1, Number(video.volume)))
     : state.localPlayerVolume;
-  state.localPlayerMuted = Boolean(video.muted);
-  persistLocalVolumePreferences();
-  audio.volume = state.localPlayerVolume;
-  audio.muted = state.localPlayerMuted;
-  renderVolumeControls(state.data?.playback_mode || "local");
+  const nextMuted = Boolean(video.muted);
+  const changed = Math.abs(nextVolume - state.localPlayerVolume) > 0.001
+    || nextMuted !== state.localPlayerMuted;
+
+  if (changed) {
+    state.localPlayerVolume = nextVolume;
+    state.localPlayerMuted = nextMuted;
+    persistLocalVolumePreferences();
+    renderVolumeControls(state.data?.playback_mode || "local");
+  }
+
+  if (Math.abs(audio.volume - state.localPlayerVolume) > 0.001) {
+    audio.volume = state.localPlayerVolume;
+  }
+  if (audio.muted !== state.localPlayerMuted) {
+    audio.muted = state.localPlayerMuted;
+  }
 }
 
 function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
@@ -2013,7 +2025,7 @@ function shouldShowRetryButton(item) {
   if (!itemId) {
     return false;
   }
-  if (item.local_media_url || item.cache_status === "ready") {
+  if (item.cache_status === "ready") {
     delete state.retryActivityById[itemId];
     return false;
   }

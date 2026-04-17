@@ -274,8 +274,6 @@ class PlaylistStoreTest(unittest.TestCase):
         item.cache_status = "ready"
         item.cache_progress = 100.0
         item.cache_message = "cached"
-        item.local_relative_path = "a/video.mp4"
-        item.local_media_url = "/media/a/video.mp4"
         item.video_relative_path = "a/video-only.m4s"
         item.video_media_url = "/media/a/video-only.m4s"
         self.store.move_session_user_to_index("D", 1)
@@ -284,6 +282,14 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.set_av_offset_ms(180)
         self.store.set_volume_percent(42)
         self.store.set_muted(True)
+
+        backup_payload = json.loads(self.backup_file.read_text(encoding="utf-8"))
+        backup_payload["current_item"]["local_relative_path"] = "legacy/video.mp4"
+        backup_payload["current_item"]["local_media_url"] = "/media/legacy/video.mp4"
+        self.backup_file.write_text(
+            json.dumps(backup_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
         restored_store = PlaylistStore(
             state_file=self.state_file,
@@ -301,8 +307,8 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual([entry.id for entry in restored_store.playlist], [])
         restored_item = restored_store.current_item
         self.assertEqual(restored_item.cache_status, "pending")
-        self.assertEqual(restored_item.local_relative_path, "")
-        self.assertEqual(restored_item.local_media_url, "")
+        self.assertFalse(hasattr(restored_item, "local_relative_path"))
+        self.assertFalse(hasattr(restored_item, "local_media_url"))
         self.assertEqual(restored_item.video_relative_path, "")
         self.assertEqual(restored_item.video_media_url, "")
         self.assertEqual(restored_item.requester_name, "A")

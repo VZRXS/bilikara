@@ -843,8 +843,19 @@ async function setRemoteVolumeSettings({ volumePercent, isMuted } = {}) {
   }
 }
 
+function hasLocalSplitMedia(item) {
+  return Boolean(
+    item
+      && item.video_media_url
+      && Array.isArray(item.audio_variants)
+      && item.audio_variants.some((variant) => (
+        variant && String(variant.audio_url || variant.media_url || "").trim()
+      ))
+  );
+}
+
 function canRemoteControlPlayer(currentItem, playbackMode) {
-  return Boolean(currentItem && playbackMode === "local" && currentItem.local_media_url);
+  return Boolean(currentItem && playbackMode === "local" && hasLocalSplitMedia(currentItem));
 }
 
 function currentPlayerStatus(currentItem) {
@@ -891,7 +902,7 @@ function renderPlayerControls(currentItem, playbackMode) {
     elements.playerControlHint.textContent = "当前是在线外挂，暂不支持远程控制播放。";
     return;
   }
-  if (!currentItem.local_media_url) {
+  if (!hasLocalSplitMedia(currentItem)) {
     elements.playerControlHint.textContent = "当前歌曲还没有完成本地缓存，暂时无法远程控制。";
     return;
   }

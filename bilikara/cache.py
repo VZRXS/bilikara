@@ -251,8 +251,6 @@ class CacheManager:
                 cache_status="pending",
                 cache_progress=0.0,
                 cache_message=self._waiting_message(),
-                local_relative_path="",
-                local_media_url="",
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
@@ -282,8 +280,6 @@ class CacheManager:
                 cache_status="pending",
                 cache_progress=0.0,
                 cache_message="缓存已在退出时清空",
-                local_relative_path="",
-                local_media_url="",
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
@@ -296,7 +292,7 @@ class CacheManager:
         item = self.store.get_item(item_id)
         if not item:
             raise ValueError("没有找到要重新下载的歌曲")
-        if item.local_media_url or item.cache_status == "ready":
+        if item.cache_status == "ready":
             raise ValueError("这首歌已经缓存完成，无需重新下载")
         if item.cache_status not in {"downloading", "failed"}:
             raise ValueError("当前缓存状态不能重新下载")
@@ -316,8 +312,6 @@ class CacheManager:
             cache_status="pending",
             cache_progress=0.0,
             cache_message="准备重新下载",
-            local_relative_path="",
-            local_media_url="",
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
@@ -376,183 +370,9 @@ class CacheManager:
         if not item:
             self._remove_cache_dir(item_id)
             return
-        # The current implementation always uses the multi-track pipeline.
-        # Keep the old single-pass BBDown flow in `_cache_item_legacy()` for reference.
+        # Current cache flow keeps video and audio tracks separate so the host
+        # can switch audio variants without remuxing a single output file.
         self._cache_item_multi(item_id, item, allow_refresh_retry=allow_refresh_retry)
-        return
-
-        self.store.update_item(
-            item_id,
-            cache_status="queued",
-            cache_progress=0.0,
-            cache_message="等待缓存队列",
-            persist_backup=False,
-        )
-
-        try:
-            binary_path = self._ensure_bbdown()
-        except Exception as exc:  # noqa: BLE001
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"BBDown 不可用: {exc}",
-                persist_backup=False,
-            )
-            return
-
-        try:
-            ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
-        except Exception as exc:  # noqa: BLE001
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"FFmpeg 不可用: {exc}",
-                persist_backup=False,
-            )
-            return
-
-        if not self._should_cache(item_id):
-            return
-
-        item_dir = CACHE_DIR / item_id
-        item_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self._item_log_path(item_id)
-        self.store.update_item(
-            item_id,
-            cache_status="downloading",
-            cache_message="开始缓存视频",
-            persist_backup=False,
-        )
-        self._append_log_line(log_path, "")
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
-
-        command = [
-            str(binary_path),
-            item.resolved_url,
-            "-p",
-            str(item.page),
-            "--work-dir",
-            str(item_dir),
-            "--ffmpeg-path",
-            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
-            "--file-pattern",
-            "video",
-            "--skip-subtitle",
-            "--skip-cover",
-            "--skip-ai",
-        ]
-        if COOKIE:
-            command.extend(["-c", COOKIE])
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
-
-        cancelled = False
-        cancel_message = "缓存已停止"
-        last_message = "缓存中"
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding=SUBPROCESS_OUTPUT_ENCODING,
-            errors="replace",
-            bufsize=1,
-            cwd=str(BB_DOWN_DIR),
-            env=self._tool_process_env(ffmpeg_path),
-            **self._hidden_process_kwargs(),
-        )
-        with self.lock:
-            self.active_process = process
-            self.active_item_id = item_id
-        try:
-            assert process.stdout is not None
-            for raw_line in self._iter_output_messages(process.stdout):
-                line = self._normalize_output_line(raw_line)
-                if not line:
-                    continue
-                last_message = line
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
-                progress = self._extract_progress(line)
-                changes = {"cache_message": self._display_message(line, progress)}
-                if progress is not None:
-                    changes["cache_progress"] = progress
-                self.store.update_item(item_id, persist_backup=False, **changes)
-                if self.stop_event.is_set():
-                    cancelled = True
-                    cancel_message = "缓存已停止"
-                    self._terminate_process(process)
-                    break
-                if not self._should_cache(item_id):
-                    cancelled = True
-                    cancel_message = self._outside_window_message()
-                    self._terminate_process(process)
-                    break
-            return_code = process.wait()
-        finally:
-            with self.lock:
-                if self.active_process is process:
-                    self.active_process = None
-                    self.active_item_id = None
-
-        if cancelled or self.stop_event.is_set() or not self._should_cache(item_id):
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {cancel_message}")
-            self._drop_item_cache(item_id, cancel_message)
-            return
-
-        if return_code != 0:
-            if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
-                )
-                try:
-                    self._ensure_bbdown(force_refresh=True)
-                    shutil.rmtree(item_dir, ignore_errors=True)
-                    item_dir.mkdir(parents=True, exist_ok=True)
-                    self._cache_item(item_id, allow_refresh_retry=False)
-                    return
-                except Exception as exc:  # noqa: BLE001
-                    self._append_log_line(
-                        log_path,
-                        f"[{self._log_timestamp()}] forced BBDown refresh failed: {exc}",
-                    )
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] failed with exit code {return_code}: {last_message}",
-            )
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"缓存失败: {last_message}",
-                persist_backup=False,
-            )
-            return
-
-        media_file = self._find_media_file(item_dir)
-        if not media_file:
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] failed: media file not found after download",
-            )
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message="缓存完成，但没有找到可播放文件",
-                persist_backup=False,
-            )
-            return
-
-        relative_path = str(media_file.relative_to(CACHE_DIR))
-        self.store.update_item(
-            item_id,
-            cache_status="ready",
-            cache_progress=100.0,
-            cache_message="缓存已完成",
-            local_relative_path=relative_path,
-            local_media_url=self._build_media_url(relative_path),
-            persist_backup=False,
-        )
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
 
     def _cache_item_multi(self, item_id: str, item, *, allow_refresh_retry: bool) -> None:
         self.store.update_item(
@@ -645,15 +465,12 @@ class CacheManager:
             self._record_item_activity(item_id)
             return
 
-        media_file = cache_result["media_file"]
-        relative_path = str(media_file.relative_to(CACHE_DIR))
+        video_file = cache_result["video_file"]
         self.store.update_item(
             item_id,
             cache_status="ready",
             cache_progress=100.0,
             cache_message=self._ready_message(item),
-            local_relative_path=relative_path,
-            local_media_url=self._build_media_url(relative_path),
             video_relative_path=cache_result["video_relative_path"],
             video_media_url=cache_result["video_media_url"],
             audio_variants=cache_result["audio_variants"],
@@ -661,9 +478,12 @@ class CacheManager:
             persist_backup=False,
         )
         self._record_item_activity(item_id)
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {media_file.name}")
-        
-        
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {video_file.name}")
+
+    # LEGACY: old single-pass BBDown cache path. It produced one muxed media
+    # file and populated local_relative_path/local_media_url. The current host
+    # flow uses `_cache_item_multi()` instead so audio variants can switch
+    # without rebuilding a single output file.
     # def _cache_item_legacy(self, item_id: str, item, allow_refresh_retry: bool = True) -> None:
     #     """Legacy single-pass BBDown caching path kept for reference.
 
@@ -891,7 +711,14 @@ class CacheManager:
                 )
             )
 
-        return self._mux_downloaded_streams(
+        self.store.update_item(
+            item.id,
+            cache_progress=99.0,
+            cache_message=f"准备 {len(audio_files)} 条音轨",
+            persist_backup=False,
+        )
+        self._record_item_activity(item.id)
+        variant_files = self._build_audio_variant_outputs(
             item,
             ffmpeg_path,
             item_dir,
@@ -899,6 +726,40 @@ class CacheManager:
             video_file=video_file,
             audio_files=audio_files,
         )
+        audio_variants = []
+        for index, (variant_id, label, path) in enumerate(variant_files):
+            raw_audio_file = audio_files[index][1] if index < len(audio_files) else None
+            raw_audio_url = (
+                self._build_media_url(str(raw_audio_file.relative_to(CACHE_DIR)))
+                if raw_audio_file is not None
+                else ""
+            )
+            audio_variants.append(
+                {
+                    "id": variant_id,
+                    "label": label,
+                    "media_url": self._build_media_url(str(path.relative_to(CACHE_DIR))),
+                    "audio_url": raw_audio_url,
+                }
+            )
+        existing_variant_id = str(item.selected_audio_variant_id or "").strip()
+        allowed_variant_ids = {
+            str(variant.get("id") or "").strip()
+            for variant in audio_variants
+            if isinstance(variant, dict)
+        }
+        selected_audio_variant_id = (
+            existing_variant_id
+            if existing_variant_id and existing_variant_id in allowed_variant_ids
+            else (str(audio_variants[0].get("id") or "").strip() if audio_variants else "")
+        )
+        return {
+            "video_file": video_file,
+            "video_relative_path": str(video_file.relative_to(CACHE_DIR)),
+            "video_media_url": self._build_media_url(str(video_file.relative_to(CACHE_DIR))),
+            "audio_variants": audio_variants,
+            "selected_audio_variant_id": selected_audio_variant_id,
+        }
 
     def _download_page_stream(
         self,
@@ -1029,143 +890,145 @@ class CacheManager:
         )
         self._record_item_activity(item_id)
 
-    def _mux_downloaded_streams(
-        self,
-        item,
-        ffmpeg_path: Path,
-        item_dir: Path,
-        log_path: Path,
-        *,
-        video_file: Path,
-        audio_files: list[tuple[int, Path, str]],
-    ) -> dict[str, object]:
-        item_id = item.id
-        output_dir = item_dir / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / "video.mp4"
-        output_file.unlink(missing_ok=True)
+    # LEGACY: old mux step used by the single-output cache path. Split playback
+    # keeps video and audio files separate, so this remains only as a reference.
+    # def _mux_downloaded_streams(
+    #     self,
+    #     item,
+    #     ffmpeg_path: Path,
+    #     item_dir: Path,
+    #     log_path: Path,
+    #     *,
+    #     video_file: Path,
+    #     audio_files: list[tuple[int, Path, str]],
+    # ) -> dict[str, object]:
+    #     item_id = item.id
+    #     output_dir = item_dir / "output"
+    #     output_dir.mkdir(parents=True, exist_ok=True)
+    #     output_file = output_dir / "video.mp4"
+    #     output_file.unlink(missing_ok=True)
 
-        command = [str(ffmpeg_path), "-y", "-i", str(video_file)]
-        for _page, audio_file, _label in audio_files:
-            command.extend(["-i", str(audio_file)])
-        command.extend(["-map", "0:v:0"])
-        for index in range(len(audio_files)):
-            command.extend(["-map", f"{index + 1}:a:0"])
-        command.extend(["-c", "copy", "-movflags", "+faststart"])
-        for index, (_page, _audio_file, label) in enumerate(audio_files):
-            command.extend([f"-metadata:s:a:{index}", f"title={label}"])
-            command.extend([f"-disposition:a:{index}", "default" if index == 0 else "0"])
-        command.append(str(output_file))
+    #     command = [str(ffmpeg_path), "-y", "-i", str(video_file)]
+    #     for _page, audio_file, _label in audio_files:
+    #         command.extend(["-i", str(audio_file)])
+    #     command.extend(["-map", "0:v:0"])
+    #     for index in range(len(audio_files)):
+    #         command.extend(["-map", f"{index + 1}:a:0"])
+    #     command.extend(["-c", "copy", "-movflags", "+faststart"])
+    #     for index, (_page, _audio_file, label) in enumerate(audio_files):
+    #         command.extend([f"-metadata:s:a:{index}", f"title={label}"])
+    #         command.extend([f"-disposition:a:{index}", "default" if index == 0 else "0"])
+    #     command.append(str(output_file))
 
-        self.store.update_item(
-            item_id,
-            cache_progress=95.0,
-            cache_message=f"正在混流 {len(audio_files)} 条音轨",
-            persist_backup=False,
-        )
-        self._record_item_activity(item_id)
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+    #     self.store.update_item(
+    #         item_id,
+    #         cache_progress=95.0,
+    #         cache_message=f"正在混流 {len(audio_files)} 条音轨",
+    #         persist_backup=False,
+    #     )
+    #     self._record_item_activity(item_id)
+    #     self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
 
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding=SUBPROCESS_OUTPUT_ENCODING,
-            errors="replace",
-            bufsize=1,
-            cwd=str(BB_DOWN_DIR),
-            env=self._tool_process_env(ffmpeg_path),
-            **self._hidden_process_kwargs(),
-        )
-        last_message = "ffmpeg mux"
-        with self.lock:
-            self.active_process = process
-            self.active_item_id = item_id
-        try:
-            assert process.stdout is not None
-            for raw_line in self._iter_output_messages(process.stdout):
-                line = self._normalize_output_line(raw_line)
-                if not line:
-                    continue
-                last_message = line
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
-                self._record_item_activity(item_id)
-                self.store.update_item(
-                    item_id,
-                    cache_message=f"正在混流 {len(audio_files)} 条音轨",
-                    persist_backup=False,
-                )
-                if self.stop_event.is_set():
-                    self._terminate_process(process)
-                    raise CacheCancelledError("缓存已停止")
-                if not self._should_cache(item_id):
-                    self._terminate_process(process)
-                    raise CacheCancelledError(self._outside_window_message())
-            return_code = process.wait()
-        finally:
-            with self.lock:
-                if self.active_process is process:
-                    self.active_process = None
-                    self.active_item_id = None
+    #     process = subprocess.Popen(
+    #         command,
+    #         stdout=subprocess.PIPE,
+    #         stderr=subprocess.STDOUT,
+    #         text=True,
+    #         encoding=SUBPROCESS_OUTPUT_ENCODING,
+    #         errors="replace",
+    #         bufsize=1,
+    #         cwd=str(BB_DOWN_DIR),
+    #         env=self._tool_process_env(ffmpeg_path),
+    #         **self._hidden_process_kwargs(),
+    #     )
+    #     last_message = "ffmpeg mux"
+    #     with self.lock:
+    #         self.active_process = process
+    #         self.active_item_id = item_id
+    #     try:
+    #         assert process.stdout is not None
+    #         for raw_line in self._iter_output_messages(process.stdout):
+    #             line = self._normalize_output_line(raw_line)
+    #             if not line:
+    #                 continue
+    #             last_message = line
+    #             self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+    #             self._record_item_activity(item_id)
+    #             self.store.update_item(
+    #                 item_id,
+    #                 cache_message=f"正在混流 {len(audio_files)} 条音轨",
+    #                 persist_backup=False,
+    #             )
+    #             if self.stop_event.is_set():
+    #                 self._terminate_process(process)
+    #                 raise CacheCancelledError("缓存已停止")
+    #             if not self._should_cache(item_id):
+    #                 self._terminate_process(process)
+    #                 raise CacheCancelledError(self._outside_window_message())
+    #         return_code = process.wait()
+    #     finally:
+    #         with self.lock:
+    #             if self.active_process is process:
+    #                 self.active_process = None
+    #                 self.active_item_id = None
 
-        if self._take_retry_request(item_id):
-            raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
+    #     if self._take_retry_request(item_id):
+    #         raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
 
-        if return_code != 0:
-            raise DownloadCommandError(last_message)
-        if not output_file.exists():
-            raise DownloadCommandError("FFmpeg 混流完成，但未生成输出文件")
+    #     if return_code != 0:
+    #         raise DownloadCommandError(last_message)
+    #     if not output_file.exists():
+    #         raise DownloadCommandError("FFmpeg 混流完成，但未生成输出文件")
 
-        self.store.update_item(
-            item_id,
-            cache_progress=99.0,
-            cache_message="混流完成，正在收尾",
-            persist_backup=False,
-        )
-        self._record_item_activity(item_id)
-        variant_files = self._build_audio_variant_outputs(
-            item,
-            ffmpeg_path,
-            item_dir,
-            log_path,
-            video_file=video_file,
-            audio_files=audio_files,
-        )
-        audio_variants = []
-        for index, (variant_id, label, path) in enumerate(variant_files):
-            raw_audio_file = audio_files[index][1] if index < len(audio_files) else None
-            raw_audio_url = (
-                self._build_media_url(str(raw_audio_file.relative_to(CACHE_DIR)))
-                if raw_audio_file is not None
-                else ""
-            )
-            audio_variants.append(
-                {
-                    "id": variant_id,
-                    "label": label,
-                    "media_url": self._build_media_url(str(path.relative_to(CACHE_DIR))),
-                    "audio_url": raw_audio_url,
-                }
-            )
-        existing_variant_id = str(item.selected_audio_variant_id or "").strip()
-        allowed_variant_ids = {
-            str(variant.get("id") or "").strip()
-            for variant in audio_variants
-            if isinstance(variant, dict)
-        }
-        selected_audio_variant_id = (
-            existing_variant_id
-            if existing_variant_id and existing_variant_id in allowed_variant_ids
-            else (str(audio_variants[0].get("id") or "").strip() if audio_variants else "")
-        )
-        return {
-            "media_file": output_file,
-            "video_relative_path": str(video_file.relative_to(CACHE_DIR)),
-            "video_media_url": self._build_media_url(str(video_file.relative_to(CACHE_DIR))),
-            "audio_variants": audio_variants,
-            "selected_audio_variant_id": selected_audio_variant_id,
-        }
+    #     self.store.update_item(
+    #         item_id,
+    #         cache_progress=99.0,
+    #         cache_message="混流完成，正在收尾",
+    #         persist_backup=False,
+    #     )
+    #     self._record_item_activity(item_id)
+    #     variant_files = self._build_audio_variant_outputs(
+    #         item,
+    #         ffmpeg_path,
+    #         item_dir,
+    #         log_path,
+    #         video_file=video_file,
+    #         audio_files=audio_files,
+    #     )
+    #     audio_variants = []
+    #     for index, (variant_id, label, path) in enumerate(variant_files):
+    #         raw_audio_file = audio_files[index][1] if index < len(audio_files) else None
+    #         raw_audio_url = (
+    #             self._build_media_url(str(raw_audio_file.relative_to(CACHE_DIR)))
+    #             if raw_audio_file is not None
+    #             else ""
+    #         )
+    #         audio_variants.append(
+    #             {
+    #                 "id": variant_id,
+    #                 "label": label,
+    #                 "media_url": self._build_media_url(str(path.relative_to(CACHE_DIR))),
+    #                 "audio_url": raw_audio_url,
+    #             }
+    #         )
+    #     existing_variant_id = str(item.selected_audio_variant_id or "").strip()
+    #     allowed_variant_ids = {
+    #         str(variant.get("id") or "").strip()
+    #         for variant in audio_variants
+    #         if isinstance(variant, dict)
+    #     }
+    #     selected_audio_variant_id = (
+    #         existing_variant_id
+    #         if existing_variant_id and existing_variant_id in allowed_variant_ids
+    #         else (str(audio_variants[0].get("id") or "").strip() if audio_variants else "")
+    #     )
+    #     return {
+    #         "media_file": output_file,
+    #         "video_relative_path": str(video_file.relative_to(CACHE_DIR)),
+    #         "video_media_url": self._build_media_url(str(video_file.relative_to(CACHE_DIR))),
+    #         "audio_variants": audio_variants,
+    #         "selected_audio_variant_id": selected_audio_variant_id,
+    #     }
 
     def _build_audio_variant_outputs(
         self,
@@ -1722,11 +1585,14 @@ class CacheManager:
         return total
 
     def _ensure_item_cached(self, item) -> None:
-        media_path = CACHE_DIR / item.local_relative_path if item.local_relative_path else None
-        if media_path and media_path.exists():
+        video_path = CACHE_DIR / item.video_relative_path if item.video_relative_path else None
+        has_audio_variants = any(
+            isinstance(variant, dict) and str(variant.get("audio_url") or variant.get("media_url") or "").strip()
+            for variant in item.audio_variants
+        )
+        if video_path and video_path.exists() and has_audio_variants:
             self.store.update_item(
                 item.id,
-                local_media_url=self._build_media_url(item.local_relative_path),
                 video_media_url=self._build_media_url(item.video_relative_path) if item.video_relative_path else "",
                 audio_variants=item.audio_variants,
                 selected_audio_variant_id=item.selected_audio_variant_id,
@@ -1747,8 +1613,6 @@ class CacheManager:
             cache_status="pending",
             cache_progress=0.0,
             cache_message="等待缓存",
-            local_relative_path="",
-            local_media_url="",
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
@@ -1765,8 +1629,6 @@ class CacheManager:
             cache_status="pending",
             cache_progress=0.0,
             cache_message=message,
-            local_relative_path="",
-            local_media_url="",
             video_relative_path="",
             video_media_url="",
             audio_variants=[],

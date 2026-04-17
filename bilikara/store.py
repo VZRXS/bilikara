@@ -254,6 +254,8 @@ class PlaylistStore:
             if not item:
                 return False
             for key, value in changes.items():
+                if key not in PlaylistItem.__dataclass_fields__:
+                    continue
                 setattr(item, key, value)
             self._touch(persist_backup=persist_backup)
             return True
@@ -618,12 +620,12 @@ class PlaylistStore:
 
     def _backup_item_payload(self, item: PlaylistItem) -> dict[str, Any]:
         payload = item.serialize()
+        # Cache files are runtime-only. Clear split-cache fields before
+        # persisting playlist backups.
         payload.update(
             cache_status="pending",
             cache_progress=0.0,
             cache_message="待缓存",
-            local_relative_path="",
-            local_media_url="",
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
@@ -633,12 +635,11 @@ class PlaylistStore:
 
     def _sanitize_backup_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         sanitized = dict(payload)
+        # Keep restored backups portable across machines and app versions.
         sanitized.update(
             cache_status="pending",
             cache_progress=0.0,
             cache_message="待缓存",
-            local_relative_path="",
-            local_media_url="",
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
