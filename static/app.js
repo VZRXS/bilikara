@@ -4,6 +4,7 @@ const stalledRetrySeconds = 5;
 const gatchaCooldownMs = 15000;
 const localPlayerSyncIntervalMs = 120;
 const audioVariantSwitchDebounceMs = 350;
+const playerSettingsEchoSuppressMs = 1800;
 const maxAvOffsetMs = 5000;
 const playerClickDelayMs = 220;
 const storageKeys = {
@@ -24,6 +25,11 @@ const state = {
   cacheSettingsOpen: false,
   cacheLimitSaving: false,
   avOffsetSaving: false,
+  avOffsetSaveSeq: 0,
+  avOffsetEchoSuppressUntil: 0,
+  localAvOffsetMs: null,
+  volumeSaveSeq: 0,
+  playerSettingsEchoSuppressUntil: 0,
   localPreferencesHydrated: false,
   localOffsetRestoreApplied: false,
   audioVariantSwitchInFlight: false,
@@ -466,10 +472,26 @@ function rememberedMuted() {
 }
 
 function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
+  if (Date.now() < state.playerSettingsEchoSuppressUntil) {
+    return;
+  }
   const volumePercent = Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
   state.localPlayerVolume = volumePercent / 100;
   state.localPlayerMuted = Boolean(playerSettings?.is_muted);
   persistLocalVolumePreferences();
+}
+
+function markLocalVolumeWrite() {
+  state.playerSettingsEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.volumeSaveSeq += 1;
+  return state.volumeSaveSeq;
+}
+
+function markLocalAvOffsetWrite(offsetMs) {
+  state.localAvOffsetMs = boundedAvOffsetMs(offsetMs);
+  state.avOffsetEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.avOffsetSaveSeq += 1;
+  return state.avOffsetSaveSeq;
 }
 
 function clientHeaders(extraHeaders = {}) {
@@ -1284,8 +1306,16 @@ function selectedAudioUrlForItem(item) {
   const selectedVariant = selectedAudioVariantForItem(item);
   return String(selectedVariant?.audio_url || "").trim();
 }
+function serverAvOffsetMs(playerSettings = state.data?.player_settings) {
+  return boundedAvOffsetMs(playerSettings?.av_offset_ms || 0);
+}
+
 function currentAvOffsetMs() {
-  return Number(state.data?.player_settings?.av_offset_ms || 0);
+  if (state.localAvOffsetMs !== null && Date.now() < state.avOffsetEchoSuppressUntil) {
+    return state.localAvOffsetMs;
+  }
+  state.localAvOffsetMs = null;
+  return serverAvOffsetMs();
 }
 
 function currentAvOffsetSeconds() {
@@ -1490,6 +1520,7 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
   const normalizedVolume = Math.max(0, Math.min(1, Number(nextVolume || 0)));
   const previousVolume = state.localPlayerVolume;
   const previousMuted = state.localPlayerMuted;
+  const requestSeq = markLocalVolumeWrite();
   state.localPlayerVolume = normalizedVolume;
   if (unmute && normalizedVolume > 0) {
     state.localPlayerMuted = false;
@@ -1498,13 +1529,20 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
   applyStoredVolumeToMountedPlayer();
   renderVolumeControls(state.data?.playback_mode || "local");
   try {
-    state.data = await apiPost("/api/player/volume", {
+    const nextData = await apiPost("/api/player/volume", {
       volume_percent: Math.round(normalizedVolume * 100),
       is_muted: state.localPlayerMuted,
     });
-    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    if (requestSeq !== state.volumeSaveSeq) {
+      return;
+    }
+    state.data = nextData;
     render();
   } catch (error) {
+    if (requestSeq !== state.volumeSaveSeq) {
+      return;
+    }
+    state.playerSettingsEchoSuppressUntil = 0;
     state.localPlayerVolume = previousVolume;
     state.localPlayerMuted = previousMuted;
     persistLocalVolumePreferences();
@@ -1516,18 +1554,26 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
 
 async function toggleLocalPlayerMute() {
   const previousMuted = state.localPlayerMuted;
+  const requestSeq = markLocalVolumeWrite();
   state.localPlayerMuted = !state.localPlayerMuted;
   persistLocalVolumePreferences();
   applyStoredVolumeToMountedPlayer();
   renderVolumeControls(state.data?.playback_mode || "local");
   try {
-    state.data = await apiPost("/api/player/volume", {
+    const nextData = await apiPost("/api/player/volume", {
       volume_percent: Math.round(state.localPlayerVolume * 100),
       is_muted: state.localPlayerMuted,
     });
-    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    if (requestSeq !== state.volumeSaveSeq) {
+      return;
+    }
+    state.data = nextData;
     render();
   } catch (error) {
+    if (requestSeq !== state.volumeSaveSeq) {
+      return;
+    }
+    state.playerSettingsEchoSuppressUntil = 0;
     state.localPlayerMuted = previousMuted;
     persistLocalVolumePreferences();
     applyStoredVolumeToMountedPlayer();
@@ -1633,7 +1679,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
 
   const isLocalMode = playbackMode === "local";
   elements.avSyncPanel.classList.toggle("hidden", !isLocalMode);
-  const offsetMs = boundedAvOffsetMs(playerSettings?.av_offset_ms || 0);
+  const offsetMs = currentAvOffsetMs();
   elements.avOffsetInput.disabled = state.avOffsetSaving;
   if (document.activeElement !== elements.avOffsetInput || state.avOffsetSaving) {
     elements.avOffsetInput.value = String(offsetMs);
@@ -2916,25 +2962,45 @@ async function setAvOffset(offsetMs) {
   const currentValue = currentAvOffsetMs();
   if (boundedOffsetMs === currentValue) {
     writeLocalPreference(storageKeys.avOffsetMs, boundedOffsetMs);
+    markLocalAvOffsetWrite(boundedOffsetMs);
     if (elements.avOffsetInput) {
       elements.avOffsetInput.value = String(boundedOffsetMs);
     }
+    syncMountedLocalPlayer(true);
     return;
   }
 
+  const previousOffsetMs = currentValue;
+  const requestSeq = markLocalAvOffsetWrite(boundedOffsetMs);
+  writeLocalPreference(storageKeys.avOffsetMs, boundedOffsetMs);
+  if (elements.avOffsetInput) {
+    elements.avOffsetInput.value = String(boundedOffsetMs);
+  }
+  syncMountedLocalPlayer(true);
   state.avOffsetSaving = true;
   renderAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
   try {
-    state.data = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
-    writeLocalPreference(storageKeys.avOffsetMs, boundedOffsetMs);
+    const nextData = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
+    if (requestSeq !== state.avOffsetSaveSeq) {
+      return;
+    }
+    state.data = nextData;
     render();
-    syncMountedLocalPlayer(true)
+    syncMountedLocalPlayer(true);
   } catch (error) {
+    if (requestSeq !== state.avOffsetSaveSeq) {
+      return;
+    }
+    state.localAvOffsetMs = previousOffsetMs;
+    state.avOffsetEchoSuppressUntil = 0;
+    writeLocalPreference(storageKeys.avOffsetMs, previousOffsetMs);
     setAppMessage(error.message, true);
     render();
   } finally {
-    state.avOffsetSaving = false;
-    renderAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
+    if (requestSeq === state.avOffsetSaveSeq) {
+      state.avOffsetSaving = false;
+      renderAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
+    }
   }
 }
 

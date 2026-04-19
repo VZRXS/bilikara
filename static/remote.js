@@ -1,6 +1,8 @@
 const pollIntervalMs = 1500;
 const audioVariantSwitchDebounceMs = 350;
 const gatchaCooldownMs = 15000;
+const playerSettingsEchoSuppressMs = 1800;
+const remoteVolumeCommitDebounceMs = 160;
 const storageKeys = {
   layoutMode: "bilikara.remote.layout.mode",
 };
@@ -15,6 +17,14 @@ const state = {
   audioVariantSwitchInFlight: false,
   audioVariantSwitchUnlockAt: 0,
   audioVariantSwitchTimer: null,
+  remoteAvOffsetSaveSeq: 0,
+  remoteAvOffsetEchoSuppressUntil: 0,
+  remoteLocalAvOffsetMs: null,
+  remoteVolumeSaveSeq: 0,
+  remoteSettingsEchoSuppressUntil: 0,
+  remoteLocalVolumePercent: null,
+  remoteLocalMuted: null,
+  remoteVolumeCommitTimer: null,
   audioVariantBarExpanded: false,
   audioVariantBarItemId: "",
   bindingSheetOpen: false,
@@ -599,16 +609,75 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   elements.audioVariantBar.classList.remove("hidden");
 }
 
-function currentRemoteAvOffsetMs(playerSettings) {
-  return Number(playerSettings?.av_offset_ms || 0);
+function boundedRemoteAvOffsetMs(offsetMs) {
+  const numeric = Number(offsetMs || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(-5000, Math.min(5000, Math.round(numeric)));
 }
 
-function currentRemoteVolumePercent(playerSettings) {
+function boundedRemoteVolumePercent(volumePercent) {
+  const numeric = Number(volumePercent);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function serverRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
+  return boundedRemoteAvOffsetMs(playerSettings?.av_offset_ms || 0);
+}
+
+function currentRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
+  if (state.remoteLocalAvOffsetMs !== null && Date.now() < state.remoteAvOffsetEchoSuppressUntil) {
+    return state.remoteLocalAvOffsetMs;
+  }
+  state.remoteLocalAvOffsetMs = null;
+  return serverRemoteAvOffsetMs(playerSettings);
+}
+
+function serverRemoteVolumePercent(playerSettings = state.data?.player_settings) {
   return Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
 }
 
-function currentRemoteMuted(playerSettings) {
+function currentRemoteVolumePercent(playerSettings = state.data?.player_settings) {
+  if (state.remoteLocalVolumePercent !== null && Date.now() < state.remoteSettingsEchoSuppressUntil) {
+    return state.remoteLocalVolumePercent;
+  }
+  state.remoteLocalVolumePercent = null;
+  return serverRemoteVolumePercent(playerSettings);
+}
+
+function serverRemoteMuted(playerSettings = state.data?.player_settings) {
   return Boolean(playerSettings?.is_muted);
+}
+
+function currentRemoteMuted(playerSettings = state.data?.player_settings) {
+  if (state.remoteLocalMuted !== null && Date.now() < state.remoteSettingsEchoSuppressUntil) {
+    return state.remoteLocalMuted;
+  }
+  state.remoteLocalMuted = null;
+  return serverRemoteMuted(playerSettings);
+}
+
+function markRemoteAvOffsetWrite(offsetMs) {
+  state.remoteLocalAvOffsetMs = boundedRemoteAvOffsetMs(offsetMs);
+  state.remoteAvOffsetEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.remoteAvOffsetSaveSeq += 1;
+  return state.remoteAvOffsetSaveSeq;
+}
+
+function markRemoteVolumeWrite(payload) {
+  if (payload.volume_percent !== undefined) {
+    state.remoteLocalVolumePercent = payload.volume_percent;
+  }
+  if (payload.is_muted !== undefined) {
+    state.remoteLocalMuted = payload.is_muted;
+  }
+  state.remoteSettingsEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.remoteVolumeSaveSeq += 1;
+  return state.remoteVolumeSaveSeq;
 }
 
 function setRangeFillPercent(input, percent) {
@@ -625,7 +694,9 @@ function renderRemoteAvSyncControls(playbackMode, playerSettings) {
   }
   const isLocalMode = playbackMode === "local" && normalizeLayoutMode(state.layoutMode) === "full";
   elements.remoteAvSyncPanel.classList.toggle("hidden", !isLocalMode);
-  elements.remoteAvOffsetInput.value = String(currentRemoteAvOffsetMs(playerSettings));
+  if (document.activeElement !== elements.remoteAvOffsetInput) {
+    elements.remoteAvOffsetInput.value = String(currentRemoteAvOffsetMs(playerSettings));
+  }
 }
 
 function renderRemoteVolumeControls(playbackMode, playerSettings) {
@@ -808,26 +879,75 @@ async function confirmBindingSheet() {
 }
 
 async function setRemoteAvOffset(offsetMs) {
-  const numeric = Number(offsetMs || 0);
-  if (!Number.isFinite(numeric)) {
+  const boundedOffsetMs = boundedRemoteAvOffsetMs(offsetMs);
+  const currentValue = currentRemoteAvOffsetMs();
+  if (boundedOffsetMs === currentValue) {
+    markRemoteAvOffsetWrite(boundedOffsetMs);
+    if (elements.remoteAvOffsetInput) {
+      elements.remoteAvOffsetInput.value = String(boundedOffsetMs);
+    }
     return;
   }
+
+  const requestSeq = markRemoteAvOffsetWrite(boundedOffsetMs);
+  if (elements.remoteAvOffsetInput) {
+    elements.remoteAvOffsetInput.value = String(boundedOffsetMs);
+  }
+  renderRemoteAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
   try {
-    state.data = await apiPost("/api/player/av-offset", { offset_ms: Math.max(-5000, Math.min(5000, Math.round(numeric))) });
+    const nextData = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
+    if (requestSeq !== state.remoteAvOffsetSaveSeq) {
+      return;
+    }
+    state.data = nextData;
     render();
   } catch (error) {
+    if (requestSeq !== state.remoteAvOffsetSaveSeq) {
+      return;
+    }
+    state.remoteLocalAvOffsetMs = null;
+    state.remoteAvOffsetEchoSuppressUntil = 0;
     setFormMessage(error.message, true);
+    renderRemoteAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
   }
 }
 
-async function setRemoteVolumeSettings({ volumePercent, isMuted } = {}) {
-  const payload = {};
-  if (volumePercent !== undefined) {
-    const numeric = Number(volumePercent);
-    if (!Number.isFinite(numeric)) {
+function clearRemoteVolumeCommitTimer() {
+  if (!state.remoteVolumeCommitTimer) {
+    return;
+  }
+  window.clearTimeout(state.remoteVolumeCommitTimer);
+  state.remoteVolumeCommitTimer = null;
+}
+
+async function commitRemoteVolumeSettings(payload, requestSeq) {
+  try {
+    const nextData = await apiPost("/api/player/volume", payload);
+    if (requestSeq !== state.remoteVolumeSaveSeq) {
       return;
     }
-    payload.volume_percent = Math.max(0, Math.min(100, Math.round(numeric)));
+    state.data = nextData;
+    render();
+  } catch (error) {
+    if (requestSeq !== state.remoteVolumeSaveSeq) {
+      return;
+    }
+    state.remoteLocalVolumePercent = null;
+    state.remoteLocalMuted = null;
+    state.remoteSettingsEchoSuppressUntil = 0;
+    setFormMessage(error.message, true);
+    renderRemoteVolumeControls(state.data?.playback_mode, state.data?.player_settings);
+  }
+}
+
+async function setRemoteVolumeSettings({ volumePercent, isMuted } = {}, options = {}) {
+  const payload = {};
+  if (volumePercent !== undefined) {
+    const boundedVolumePercent = boundedRemoteVolumePercent(volumePercent);
+    if (boundedVolumePercent === null) {
+      return;
+    }
+    payload.volume_percent = boundedVolumePercent;
   }
   if (isMuted !== undefined) {
     payload.is_muted = Boolean(isMuted);
@@ -835,12 +955,20 @@ async function setRemoteVolumeSettings({ volumePercent, isMuted } = {}) {
   if (!Object.keys(payload).length) {
     return;
   }
-  try {
-    state.data = await apiPost("/api/player/volume", payload);
-    render();
-  } catch (error) {
-    setFormMessage(error.message, true);
+
+  const requestSeq = markRemoteVolumeWrite(payload);
+  renderRemoteVolumeControls(state.data?.playback_mode, state.data?.player_settings);
+  if (options.debounce) {
+    clearRemoteVolumeCommitTimer();
+    state.remoteVolumeCommitTimer = window.setTimeout(() => {
+      state.remoteVolumeCommitTimer = null;
+      commitRemoteVolumeSettings(payload, requestSeq);
+    }, remoteVolumeCommitDebounceMs);
+    return;
   }
+
+  clearRemoteVolumeCommitTimer();
+  await commitRemoteVolumeSettings(payload, requestSeq);
 }
 
 function hasLocalSplitMedia(item) {
@@ -1329,6 +1457,8 @@ elements.remoteVolumeSlider?.addEventListener("input", async (event) => {
   await setRemoteVolumeSettings({
     volumePercent: event.target.value,
     isMuted: currentRemoteMuted(state.data?.player_settings),
+  }, {
+    debounce: true,
   });
 });
 
