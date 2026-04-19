@@ -18,10 +18,28 @@ const state = {
   clientId: createClientId(),
   disconnectSent: false,
   data: null,
+  lastPollRenderSignature: "",
+  currentTitleRenderSignature: "",
+  listHeaderRenderSignature: "",
+  requesterSelectRenderSignature: "",
+  sessionUsersRenderSignature: "",
+  remoteAccessRenderSignature: "",
+  cacheSettingsRenderSignature: "",
+  bbdownLoginRenderSignature: "",
+  gatchaCookieFaceRenderSignature: "",
+  historyRenderSignature: "",
+  playlistEmptyRenderSignature: "",
+  cacheSliderRenderSignature: "",
+  playerFullscreenButtonRenderSignature: "",
+  volumeControlsRenderSignature: "",
+  queueCurrentRenderSignature: "",
+  audioVariantBarRenderSignature: "",
   playerSignature: "",
   playerContext: null,
   localPlayerSyncTimer: null,
   listView: "queue",
+  listStageView: "",
+  listFlipTimer: null,
   cacheSettingsOpen: false,
   cacheLimitSaving: false,
   avOffsetSaving: false,
@@ -221,6 +239,46 @@ function requesterBadgeText(requesterName) {
   return normalized ? `点歌人 ${normalized}` : "";
 }
 
+function setTextContent(element, value) {
+  if (!element) {
+    return;
+  }
+  const nextValue = String(value ?? "");
+  if (element.textContent !== nextValue) {
+    element.textContent = nextValue;
+  }
+}
+
+function setClassToggle(element, className, force) {
+  if (!element) {
+    return;
+  }
+  const shouldHaveClass = Boolean(force);
+  if (element.classList.contains(className) !== shouldHaveClass) {
+    element.classList.toggle(className, shouldHaveClass);
+  }
+}
+
+function setElementAttribute(element, name, value) {
+  if (!element) {
+    return;
+  }
+  const nextValue = String(value ?? "");
+  if (element.getAttribute(name) !== nextValue) {
+    element.setAttribute(name, nextValue);
+  }
+}
+
+function setElementTitle(element, value) {
+  if (!element) {
+    return;
+  }
+  const nextValue = String(value ?? "");
+  if (element.title !== nextValue) {
+    element.title = nextValue;
+  }
+}
+
 function selectedRequesterName() {
   return String(elements.requesterSelect?.value || "").trim();
 }
@@ -282,14 +340,25 @@ function renderPlayerFullscreenButton() {
   }
   const active = isPlayerPanelFullscreen();
   const enabled = canTogglePlayerFullscreen();
-  button.disabled = !enabled;
-  button.textContent = active ? "退出全屏" : "全屏显示";
-  button.setAttribute("aria-pressed", String(active));
-  button.title = enabled
+  const label = active ? "退出全屏" : "全屏显示";
+  const title = enabled
     ? (active ? "退出播放器区域全屏" : "将播放器区域切换为全屏")
     : supportsPlayerFullscreen()
       ? "当前没有可全屏的播放内容"
       : "当前环境不支持区域全屏";
+  const signature = JSON.stringify({ active, enabled, label, title });
+
+  if (signature === state.playerFullscreenButtonRenderSignature) {
+    return;
+  }
+  state.playerFullscreenButtonRenderSignature = signature;
+
+  if (button.disabled !== !enabled) {
+    button.disabled = !enabled;
+  }
+  setTextContent(button, label);
+  setElementAttribute(button, "aria-pressed", String(active));
+  setElementTitle(button, title);
 }
 
 function requestElementFullscreen(element) {
@@ -553,10 +622,35 @@ async function fetchState() {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
   }
-  render();
+  const renderSignature = renderSignatureForData(state.data);
+  if (renderSignature !== state.lastPollRenderSignature) {
+    state.lastPollRenderSignature = renderSignature;
+    render();
+  } else if (hasDownloadingItems(state.data)) {
+    refreshRetryButtons();
+  }
   if (previousOffsetMs !== currentAvOffsetMs()) {
     syncMountedLocalPlayer(true);
   }
+}
+
+function renderSignatureForData(data) {
+  if (!data) {
+    return "";
+  }
+  const { player_status: _playerStatus, ...renderedData } = data;
+  return JSON.stringify(renderedData);
+}
+
+function hasDownloadingItems(data) {
+  if (!data) {
+    return false;
+  }
+  const items = [
+    data.current_item,
+    ...(Array.isArray(data.playlist) ? data.playlist : []),
+  ];
+  return items.some((item) => item?.cache_status === "downloading");
 }
 
 async function searchGatchaCache(query) {
@@ -659,16 +753,18 @@ function setCookieMessage(message, isError = false) {
 
 function renderGatchaCookieFace() {
   const showCookie = Boolean(state.gatchaCookieVisible);
-  elements.gatchaPanel?.classList.toggle("is-cookie-view", showCookie);
-  elements.gatchaStage?.classList.toggle("is-cookie-view", showCookie);
-  if (elements.gatchaTag) {
-    elements.gatchaTag.textContent = showCookie ? "Cookie Config" : "gatcha Draw";
+  const signature = showCookie ? "cookie" : "gatcha";
+  if (signature === state.gatchaCookieFaceRenderSignature) {
+    return;
   }
-  if (elements.gatchaTitle) {
-    elements.gatchaTitle.textContent = showCookie ? "Cookie" : "试试运气";
-  }
-  if (elements.gatchaCookieToggle) {
-    elements.gatchaCookieToggle.textContent = showCookie ? "返回抽卡" : "输入 Cookie";
+  state.gatchaCookieFaceRenderSignature = signature;
+
+  setClassToggle(elements.gatchaPanel, "is-cookie-view", showCookie);
+  setClassToggle(elements.gatchaStage, "is-cookie-view", showCookie);
+  setTextContent(elements.gatchaTag, showCookie ? "Cookie Config" : "gatcha Draw");
+  setTextContent(elements.gatchaTitle, showCookie ? "Cookie" : "试试运气");
+  setTextContent(elements.gatchaCookieToggle, showCookie ? "返回抽卡" : "输入 Cookie");
+  if (elements.gatchaCookieToggle?.getAttribute("aria-pressed") !== String(showCookie)) {
     elements.gatchaCookieToggle.setAttribute("aria-pressed", String(showCookie));
   }
 }
@@ -732,9 +828,11 @@ function render() {
   }
 
   const currentItem = data.current_item;
-  elements.currentTitle.textContent = currentItem
-    ? currentItem.display_title
-    : "还没有歌曲";
+  const currentTitle = currentItem ? currentItem.display_title : "还没有歌曲";
+  if (currentTitle !== state.currentTitleRenderSignature) {
+    state.currentTitleRenderSignature = currentTitle;
+    setTextContent(elements.currentTitle, currentTitle);
+  }
   renderListHeader(data.playlist, data.history || []);
   renderRequesterSelect(data.session_users || []);
   renderSessionUsers(data.session_users || []);
@@ -760,9 +858,36 @@ function render() {
     data.playlist.length,
     Boolean(data.session_flags?.auto_restored_backup),
   );
-  elements.listStage.classList.toggle("is-history-view", state.listView === "history");
+  syncListStageView();
   renderGatchaCookieFace();
   renderConfirmPopover();
+  state.lastPollRenderSignature = renderSignatureForData(data);
+}
+
+function syncListStageView() {
+  const nextView = state.listView === "history" ? "history" : "queue";
+  const isInitialRender = !state.listStageView;
+  if (state.listStageView === nextView) {
+    return;
+  }
+  state.listStageView = nextView;
+
+  if (state.listFlipTimer) {
+    window.clearTimeout(state.listFlipTimer);
+    state.listFlipTimer = null;
+  }
+
+  setClassToggle(elements.listStage, "is-history-view", nextView === "history");
+  if (isInitialRender) {
+    elements.listStage?.classList.remove("is-flipping");
+    return;
+  }
+
+  elements.listStage?.classList.add("is-flipping");
+  state.listFlipTimer = window.setTimeout(() => {
+    elements.listStage?.classList.remove("is-flipping");
+    state.listFlipTimer = null;
+  }, 460);
 }
 
 function activeScrollableList() {
@@ -781,6 +906,12 @@ function normalizeWheelDelta(event, container) {
 
 function renderRequesterSelect(sessionUsers) {
   const users = Array.isArray(sessionUsers) ? sessionUsers : [];
+  const signature = JSON.stringify(users);
+  if (signature === state.requesterSelectRenderSignature) {
+    return;
+  }
+  state.requesterSelectRenderSignature = signature;
+
   const previousValue = selectedRequesterName();
   elements.requesterSelect.innerHTML = "";
 
@@ -808,6 +939,12 @@ function renderRequesterSelect(sessionUsers) {
 
 function renderSessionUsers(sessionUsers) {
   const users = Array.isArray(sessionUsers) ? sessionUsers : [];
+  const signature = JSON.stringify(users);
+  if (signature === state.sessionUsersRenderSignature) {
+    return;
+  }
+  state.sessionUsersRenderSignature = signature;
+
   elements.sessionUserList.innerHTML = "";
 
   if (!users.length) {
@@ -894,19 +1031,24 @@ function renderRemoteAccess(remoteAccess) {
     : lanUrls.length === 1
       ? "请确保手机和服务端在同一个局域网内。"
       : "暂未检测到局域网地址，可稍后刷新或手动检查网络。";
+  const signature = JSON.stringify({ displayUrl, displayHint });
+  if (signature === state.remoteAccessRenderSignature) {
+    return;
+  }
+  state.remoteAccessRenderSignature = signature;
 
   [elements.remoteUrlLink, elements.remotePopoverUrlLink].forEach((link) => {
     if (!link) {
       return;
     }
-    link.href = displayUrl;
-    link.textContent = displayUrl;
+    if (link.getAttribute("href") !== displayUrl) {
+      link.href = displayUrl;
+    }
+    setTextContent(link, displayUrl);
   });
 
   [elements.remoteUrlHint, elements.remotePopoverUrlHint].forEach((hint) => {
-    if (hint) {
-      hint.textContent = displayHint;
-    }
+    setTextContent(hint, displayHint);
   });
 
   renderRemoteQr(displayUrl, [
@@ -982,75 +1124,107 @@ async function copyRemoteUrl() {
 
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
-  elements.listTag.textContent = isHistoryView ? "History" : "Queue";
-  elements.listTitle.textContent = isHistoryView ? "历史记录" : "播放列表";
-  elements.queueCount.textContent = isHistoryView
-    ? `(${history.length}首)`
-    : `(${playlist.length}首)`;
-  elements.historyToggleButton.textContent = isHistoryView ? "返回队列" : "历史记录";
-  elements.clearPlaylistButton.classList.toggle("hidden", isHistoryView);
-  elements.nextButton.classList.toggle("hidden", isHistoryView);
+  const listTag = isHistoryView ? "History" : "Queue";
+  const listTitle = isHistoryView ? "历史记录" : "播放列表";
+  const queueCount = isHistoryView ? `(${history.length}首)` : `(${playlist.length}首)`;
+  const historyButtonText = isHistoryView ? "返回队列" : "历史记录";
+  const signature = JSON.stringify({
+    isHistoryView,
+    queueCount,
+  });
+
+  if (signature === state.listHeaderRenderSignature) {
+    return;
+  }
+  state.listHeaderRenderSignature = signature;
+
+  setTextContent(elements.listTag, listTag);
+  setTextContent(elements.listTitle, listTitle);
+  setTextContent(elements.queueCount, queueCount);
+  setTextContent(elements.historyToggleButton, historyButtonText);
+  setClassToggle(elements.clearPlaylistButton, "hidden", isHistoryView);
+  setClassToggle(elements.nextButton, "hidden", isHistoryView);
 }
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
-  syncToolIndicator(elements.serviceStatusIndicator, aggregateToolStatusState(bbdown, ffmpeg));
-  if (elements.playbackModeSummary) {
-    elements.playbackModeSummary.textContent = formatPlaybackMode(state.data?.playback_mode);
-  }
-  if (elements.playbackModeCurrent) {
-    elements.playbackModeCurrent.textContent = formatPlaybackMode(state.data?.playback_mode);
-  }
-  elements.cacheChipMeta.textContent = formatCacheChipMeta(cachePolicy);
-  elements.cacheUsageDetail.textContent = formatCacheUsage(cachePolicy);
-  syncToolIndicator(elements.bbdownPanelStatusIndicator, bbdown?.state);
-  syncToolIndicator(elements.ffmpegPanelStatusIndicator, ffmpeg?.state);
-  renderBBDownLogin(bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) });
-  if (elements.bbdownStatusRow) {
-    elements.bbdownStatusRow.title = `BBDown ${formatBBDownHint(bbdown)}`;
-  }
-  if (elements.ffmpegStatusRow) {
-    elements.ffmpegStatusRow.title = `FFmpeg ${formatFFmpegHint(ffmpeg)}`;
+  const serviceState = aggregateToolStatusState(bbdown, ffmpeg);
+  const playbackModeText = formatPlaybackMode(state.data?.playback_mode);
+  const cacheChipMeta = formatCacheChipMeta(cachePolicy);
+  const cacheUsageDetail = formatCacheUsage(cachePolicy);
+  const bbdownTitle = `BBDown ${formatBBDownHint(bbdown)}`;
+  const ffmpegTitle = `FFmpeg ${formatFFmpegHint(ffmpeg)}`;
+  const signature = JSON.stringify({
+    serviceState,
+    playbackModeText,
+    bbdownState: bbdown?.state,
+    ffmpegState: ffmpeg?.state,
+    bbdownTitle,
+    ffmpegTitle,
+    login: bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) },
+  });
+
+  if (signature !== state.cacheSettingsRenderSignature) {
+    state.cacheSettingsRenderSignature = signature;
+
+    syncToolIndicator(elements.serviceStatusIndicator, serviceState);
+    setTextContent(elements.playbackModeSummary, playbackModeText);
+    setTextContent(elements.playbackModeCurrent, playbackModeText);
+    syncToolIndicator(elements.bbdownPanelStatusIndicator, bbdown?.state);
+    syncToolIndicator(elements.ffmpegPanelStatusIndicator, ffmpeg?.state);
+    renderBBDownLogin(bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) });
+    if (elements.bbdownStatusRow && elements.bbdownStatusRow.title !== bbdownTitle) {
+      elements.bbdownStatusRow.title = bbdownTitle;
+    }
+    if (elements.ffmpegStatusRow && elements.ffmpegStatusRow.title !== ffmpegTitle) {
+      elements.ffmpegStatusRow.title = ffmpegTitle;
+    }
   }
 
+  setTextContent(elements.cacheChipMeta, cacheChipMeta);
+  setTextContent(elements.cacheUsageDetail, cacheUsageDetail);
   renderCacheSlider(cachePolicy);
   syncCachePanelVisibility();
 }
 
 function renderBBDownLogin(login) {
   const loggedIn = Boolean(login?.logged_in);
-  if (elements.bbdownLoginButton) {
-    elements.bbdownLoginButton.classList.toggle("is-logged", loggedIn);
-    elements.bbdownLoginButton.classList.toggle("is-unlogged", !loggedIn);
-    elements.bbdownLoginButton.classList.remove("is-unknown");
-    const label = elements.bbdownLoginButton.querySelector(".bbdown-login-label");
-    if (label) {
-      label.textContent = loggedIn ? "已登录" : "未登录";
+  const signature = JSON.stringify(login || {});
+  if (signature !== state.bbdownLoginRenderSignature) {
+    state.bbdownLoginRenderSignature = signature;
+    if (elements.bbdownLoginButton) {
+      setClassToggle(elements.bbdownLoginButton, "is-logged", loggedIn);
+      setClassToggle(elements.bbdownLoginButton, "is-unlogged", !loggedIn);
+      elements.bbdownLoginButton.classList.remove("is-unknown");
+      const label = elements.bbdownLoginButton.querySelector(".bbdown-login-label");
+      setTextContent(label, loggedIn ? "已登录" : "未登录");
+      elements.bbdownLoginButton.title = loggedIn ? "点击退出 BBDown 登录" : "点击生成 BBDown 登录二维码";
     }
-    elements.bbdownLoginButton.title = loggedIn ? "点击退出 BBDown 登录" : "点击生成 BBDown 登录二维码";
+
+    setClassToggle(elements.bbdownLoginPanel, "hidden", loggedIn);
+    if (!loggedIn) {
+      const qrImage = String(login?.qr_image || "");
+      const qrText = String(login?.qr_text || "");
+      if (elements.bbdownLoginQrImage) {
+        setClassToggle(elements.bbdownLoginQrImage, "hidden", !qrImage);
+        if (qrImage && elements.bbdownLoginQrImage.src !== qrImage) {
+          elements.bbdownLoginQrImage.src = qrImage;
+        } else if (!qrImage && elements.bbdownLoginQrImage.hasAttribute("src")) {
+          elements.bbdownLoginQrImage.removeAttribute("src");
+        }
+      }
+      if (elements.bbdownLoginQrText) {
+        setClassToggle(elements.bbdownLoginQrText, "hidden", Boolean(qrImage) || !qrText);
+        setTextContent(elements.bbdownLoginQrText, qrText);
+      }
+      if (elements.bbdownLoginMessage) {
+        setTextContent(elements.bbdownLoginMessage, login?.message || "正在准备二维码...");
+        setClassToggle(elements.bbdownLoginMessage, "is-error", login?.state === "failed");
+      }
+    }
   }
 
-  elements.bbdownLoginPanel?.classList.toggle("hidden", loggedIn);
   if (loggedIn) {
     return;
-  }
-
-  const qrImage = String(login?.qr_image || "");
-  const qrText = String(login?.qr_text || "");
-  if (elements.bbdownLoginQrImage) {
-    elements.bbdownLoginQrImage.classList.toggle("hidden", !qrImage);
-    if (qrImage && elements.bbdownLoginQrImage.src !== qrImage) {
-      elements.bbdownLoginQrImage.src = qrImage;
-    } else if (!qrImage) {
-      elements.bbdownLoginQrImage.removeAttribute("src");
-    }
-  }
-  if (elements.bbdownLoginQrText) {
-    elements.bbdownLoginQrText.classList.toggle("hidden", Boolean(qrImage) || !qrText);
-    elements.bbdownLoginQrText.textContent = qrText;
-  }
-  if (elements.bbdownLoginMessage) {
-    elements.bbdownLoginMessage.textContent = login?.message || "正在准备二维码...";
-    elements.bbdownLoginMessage.classList.toggle("is-error", login?.state === "failed");
   }
   maybeStartBBDownLogin(login);
 }
@@ -1089,19 +1263,23 @@ function syncToolIndicator(indicator, state) {
     return;
   }
   const normalizedState = String(state || "idle");
+  if (indicator.dataset.toolState === normalizedState) {
+    return;
+  }
+  indicator.dataset.toolState = normalizedState;
   indicator.classList.remove("is-ready", "is-failed", "is-loading", "is-pending");
-  indicator.textContent = "";
+  setTextContent(indicator, "");
   if (normalizedState === "ready") {
     indicator.classList.add("is-ready");
-    indicator.textContent = "✓";
+    setTextContent(indicator, "✓");
   } else if (normalizedState === "failed") {
     indicator.classList.add("is-failed");
-    indicator.textContent = "×";
+    setTextContent(indicator, "×");
   } else if (normalizedState === "checking" || normalizedState === "installing" || normalizedState === "loading") {
     indicator.classList.add("is-loading");
   } else {
     indicator.classList.add("is-pending");
-    indicator.textContent = "·";
+    setTextContent(indicator, "·");
   }
 }
 
@@ -1127,6 +1305,16 @@ function renderCacheSlider(cachePolicy) {
   const minValue = Number(choices[0] || 1);
   const maxValue = Number(choices[choices.length - 1] || 5);
   const currentValue = Number(cachePolicy?.max_cache_items || minValue);
+  const signature = JSON.stringify({
+    choices,
+    currentValue,
+    saving: state.cacheLimitSaving,
+  });
+
+  if (signature === state.cacheSliderRenderSignature) {
+    return;
+  }
+  state.cacheSliderRenderSignature = signature;
 
   elements.cacheLimitSlider.min = String(minValue);
   elements.cacheLimitSlider.max = String(maxValue);
@@ -1146,8 +1334,11 @@ function renderCacheSlider(cachePolicy) {
 }
 
 function syncCachePanelVisibility(options = {}) {
-  elements.cacheSettingsToggle.setAttribute("aria-expanded", String(state.cacheSettingsOpen));
-  elements.cachePanel.classList.toggle("hidden", !state.cacheSettingsOpen);
+  const expanded = String(state.cacheSettingsOpen);
+  if (elements.cacheSettingsToggle.getAttribute("aria-expanded") !== expanded) {
+    elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);
+  }
+  setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen);
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
   });
@@ -1155,23 +1346,43 @@ function syncCachePanelVisibility(options = {}) {
 
 function renderQueueCurrent(currentItem) {
   if (!currentItem) {
-    elements.queueCurrent.classList.add("hidden");
-    elements.queueCurrent.dataset.state = "idle";
-    elements.queueCurrentTag.textContent = "播放中";
-    elements.queueCurrentTitle.textContent = "还没有歌曲";
-    elements.queueCurrentRetry.classList.add("hidden");
+    const signature = "empty";
+    if (signature === state.queueCurrentRenderSignature) {
+      return;
+    }
+    state.queueCurrentRenderSignature = signature;
+    setClassToggle(elements.queueCurrent, "hidden", true);
+    if (elements.queueCurrent.dataset.state !== "idle") {
+      elements.queueCurrent.dataset.state = "idle";
+    }
+    setTextContent(elements.queueCurrentTag, "播放中");
+    setTextContent(elements.queueCurrentTitle, "还没有歌曲");
+    setClassToggle(elements.queueCurrentRetry, "hidden", true);
     elements.queueCurrentRetry.removeAttribute("data-id");
     return;
   }
 
-  elements.queueCurrent.classList.remove("hidden");
   const currentState = currentStatusForItem(currentItem);
-  elements.queueCurrent.dataset.state = currentState.state;
-  elements.queueCurrentTag.textContent = currentState.label;
-  elements.queueCurrentTitle.textContent = currentItem.display_title;
   const requesterText = requesterBadgeText(currentItem.requester_name);
-  elements.queueCurrentRequester.textContent = requesterText;
-  elements.queueCurrentRequester.classList.toggle("hidden", !requesterText);
+  const signature = JSON.stringify({
+    id: currentItem.id,
+    state: currentState.state,
+    label: currentState.label,
+    title: currentItem.display_title,
+    requesterText,
+  });
+
+  if (signature !== state.queueCurrentRenderSignature) {
+    state.queueCurrentRenderSignature = signature;
+    setClassToggle(elements.queueCurrent, "hidden", false);
+    if (elements.queueCurrent.dataset.state !== currentState.state) {
+      elements.queueCurrent.dataset.state = currentState.state;
+    }
+    setTextContent(elements.queueCurrentTag, currentState.label);
+    setTextContent(elements.queueCurrentTitle, currentItem.display_title);
+    setTextContent(elements.queueCurrentRequester, requesterText);
+    setClassToggle(elements.queueCurrentRequester, "hidden", !requesterText);
+  }
   syncRetryButton(elements.queueCurrentRetry, currentItem);
 }
 
@@ -1493,7 +1704,10 @@ function setRangeFillPercent(input, percent) {
     return;
   }
   const normalizedPercent = Math.max(0, Math.min(100, Number(percent || 0)));
-  input.style.setProperty("--range-fill-percent", `${normalizedPercent}%`);
+  const nextValue = `${normalizedPercent}%`;
+  if (input.style.getPropertyValue("--range-fill-percent") !== nextValue) {
+    input.style.setProperty("--range-fill-percent", nextValue);
+  }
 }
 
 function renderVolumeControls(playbackMode) {
@@ -1503,12 +1717,29 @@ function renderVolumeControls(playbackMode) {
 
   const isLocalMode = playbackMode === "local";
   const volumePercent = Math.round(state.localPlayerVolume * 100);
-  elements.volumePanel.classList.toggle("hidden", !isLocalMode);
-  elements.volumeSlider.value = String(volumePercent);
+  const label = volumePercentText();
+  const muteLabel = state.localPlayerMuted ? "取消静音" : "静音";
+  const signature = JSON.stringify({
+    isLocalMode,
+    volumePercent,
+    label,
+    muteLabel,
+    muted: state.localPlayerMuted,
+  });
+
+  if (signature === state.volumeControlsRenderSignature) {
+    return;
+  }
+  state.volumeControlsRenderSignature = signature;
+
+  setClassToggle(elements.volumePanel, "hidden", !isLocalMode);
+  if (elements.volumeSlider.value !== String(volumePercent)) {
+    elements.volumeSlider.value = String(volumePercent);
+  }
   setRangeFillPercent(elements.volumeSlider, volumePercent);
-  elements.volumeValue.textContent = volumePercentText();
-  elements.volumeMuteButton.textContent = state.localPlayerMuted ? "取消静音" : "静音";
-  elements.volumeMuteButton.classList.toggle("is-muted", state.localPlayerMuted);
+  setTextContent(elements.volumeValue, label);
+  setTextContent(elements.volumeMuteButton, muteLabel);
+  setClassToggle(elements.volumeMuteButton, "is-muted", state.localPlayerMuted);
 }
 
 function persistLocalVolumePreferences() {
@@ -1603,8 +1834,15 @@ function scheduleAudioVariantSwitchUnlock() {
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
-    elements.audioVariantBar.innerHTML = "";
-    elements.audioVariantBar.classList.add("hidden");
+    const signature = JSON.stringify({ hidden: true, playbackMode, itemId: currentItem?.id || "" });
+    if (signature === state.audioVariantBarRenderSignature) {
+      return;
+    }
+    state.audioVariantBarRenderSignature = signature;
+    if (elements.audioVariantBar.childElementCount) {
+      elements.audioVariantBar.innerHTML = "";
+    }
+    setClassToggle(elements.audioVariantBar, "hidden", true);
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = "";
     return;
@@ -1612,8 +1850,20 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
-    elements.audioVariantBar.innerHTML = "";
-    elements.audioVariantBar.classList.add("hidden");
+    const signature = JSON.stringify({
+      hidden: true,
+      playbackMode,
+      itemId: currentItem.id,
+      variantCount: variants.length,
+    });
+    if (signature === state.audioVariantBarRenderSignature) {
+      return;
+    }
+    state.audioVariantBarRenderSignature = signature;
+    if (elements.audioVariantBar.childElementCount) {
+      elements.audioVariantBar.innerHTML = "";
+    }
+    setClassToggle(elements.audioVariantBar, "hidden", true);
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = currentItem.id;
     return;
@@ -1626,6 +1876,24 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
+  const signature = JSON.stringify({
+    hidden: false,
+    itemId: currentItem.id,
+    selectedVariantId: selectedVariant?.id || "",
+    buttonsDisabled,
+    expanded: state.audioVariantBarExpanded,
+    variants: variants.map((variant) => ({
+      id: variant.id,
+      label: variant.label || variant.id,
+      page: variant.page || "",
+      bound: Boolean(variant.bound),
+    })),
+  });
+  if (signature === state.audioVariantBarRenderSignature) {
+    return;
+  }
+  state.audioVariantBarRenderSignature = signature;
+
   elements.audioVariantBar.innerHTML = "";
   const list = document.createElement("div");
   list.className = "audio-variant-list";
@@ -1669,7 +1937,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   } else {
     state.audioVariantBarExpanded = false;
   }
-  elements.audioVariantBar.classList.remove("hidden");
+  setClassToggle(elements.audioVariantBar, "hidden", false);
 }
 
 function renderAvSyncControls(playbackMode, playerSettings) {
@@ -1997,18 +2265,23 @@ function reportPlayerStatus(itemId, video) {
 }
 
 function renderPlaylist(playlist, currentItem, cachePolicy) {
-  const existingNodes = new Map(
-    [...elements.playlist.querySelectorAll(".song-item")].map((node) => [node.dataset.id, node]),
-  );
-
   if (!playlist.length) {
-    elements.playlist.innerHTML = "";
     const emptyMessage = state.data?.current_item
       ? '<div class="queue-empty"><p>待播队列已经空了。</p><p>可以继续从左侧加入下一首。</p></div>'
       : '<div class="queue-empty"><p>播放列表还是空的。</p><p>把链接加到左侧输入框里就行。</p></div>';
+    const signature = state.data?.current_item ? "empty-with-current" : "empty";
+    if (signature === state.playlistEmptyRenderSignature) {
+      return;
+    }
+    state.playlistEmptyRenderSignature = signature;
     elements.playlist.innerHTML = emptyMessage;
     return;
   }
+
+  state.playlistEmptyRenderSignature = "";
+  const existingNodes = new Map(
+    [...elements.playlist.querySelectorAll(".song-item")].map((node) => [node.dataset.id, node]),
+  );
 
   elements.playlist.querySelectorAll(".queue-empty").forEach((node) => {
     node.remove();
@@ -2017,8 +2290,9 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
   playlist.forEach((item, index) => {
     const node = existingNodes.get(item.id)
       || elements.playlistTemplate.content.firstElementChild.cloneNode(true);
-    node.dataset.id = item.id;
-    node.title = item.display_title;
+    if (node.dataset.id !== item.id) {
+      node.dataset.id = item.id;
+    }
 
     const badge = node.querySelector(".song-progress-badge");
     const indexLabel = node.querySelector(".song-index-label");
@@ -2029,39 +2303,63 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
     const titleNode = node.querySelector(".song-title");
     const requesterNode = node.querySelector(".song-requester");
 
-    indexLabel.textContent = String(index + 1);
-
     const badgeState = badgeStateForItem(item, index, currentItem, cachePolicy);
-    badge.classList.toggle("active", badgeState === "active");
-    badge.classList.toggle("idle", badgeState === "idle");
-    badge.classList.toggle("ready", item.cache_status === "ready");
-    badge.classList.toggle("failed", item.cache_status === "failed");
-    badge.style.setProperty("--badge-delay", badgeAnimationDelay(item.id));
-    readyIndicator.classList.toggle("hidden", item.cache_status !== "ready");
-    badge.setAttribute("title", badgeTitleForItem(item));
-
     const sizeText = cacheSizeLabelForItem(item);
-    sizeLabel.textContent = sizeText;
-    sizeLabel.classList.toggle("hidden", !sizeText);
+    const ownerTooltip = ownerTooltipForEntry(item);
+    const requesterText = requesterBadgeText(item.requester_name);
+    const noteText = noteForItem(item);
+    const staticSignature = JSON.stringify({
+      title: item.display_title,
+      ownerTooltip,
+      requesterText,
+    });
+    if (node.dataset.staticSignature !== staticSignature) {
+      node.dataset.staticSignature = staticSignature;
+      setTextContent(titleNode, item.display_title);
+      setElementTitle(node, ownerTooltip);
+      setElementTitle(titleNode, ownerTooltip);
+      setTextContent(requesterNode, requesterText);
+      setClassToggle(requesterNode, "hidden", !requesterText);
+      node.querySelectorAll("button").forEach((button) => {
+        if (button.dataset.id !== item.id) {
+          button.dataset.id = item.id;
+        }
+      });
+    }
+
+    const badgeDelay = badgeAnimationDelay(item.id);
+    const dynamicSignature = JSON.stringify({
+      index,
+      badgeState,
+      cacheStatus: item.cache_status,
+      badgeDelay,
+      badgeTitle: badgeTitleForItem(item),
+      sizeText,
+      noteText,
+    });
+    if (node.dataset.dynamicSignature !== dynamicSignature) {
+      node.dataset.dynamicSignature = dynamicSignature;
+      setTextContent(indexLabel, String(index + 1));
+      setClassToggle(badge, "active", badgeState === "active");
+      setClassToggle(badge, "idle", badgeState === "idle");
+      setClassToggle(badge, "ready", item.cache_status === "ready");
+      setClassToggle(badge, "failed", item.cache_status === "failed");
+      if (badge.style.getPropertyValue("--badge-delay") !== badgeDelay) {
+        badge.style.setProperty("--badge-delay", badgeDelay);
+      }
+      setClassToggle(readyIndicator, "hidden", item.cache_status !== "ready");
+      setElementTitle(badge, badgeTitleForItem(item));
+      setTextContent(sizeLabel, sizeText);
+      setClassToggle(sizeLabel, "hidden", !sizeText);
+      setTextContent(note, noteText);
+      setClassToggle(note, "hidden", !noteText);
+    }
     syncRetryButton(retryButton, item);
 
-    titleNode.textContent = item.display_title;
-    const ownerTooltip = ownerTooltipForEntry(item);
-    node.title = ownerTooltip;
-    titleNode.title = ownerTooltip;
-    const requesterText = requesterBadgeText(item.requester_name);
-    requesterNode.textContent = requesterText;
-    requesterNode.classList.toggle("hidden", !requesterText);
-
-    const noteText = noteForItem(item);
-    note.textContent = noteText;
-    note.classList.toggle("hidden", !noteText);
-
-    node.querySelectorAll("button").forEach((button) => {
-      button.dataset.id = item.id;
-    });
-
-    elements.playlist.appendChild(node);
+    const referenceNode = elements.playlist.children[index] || null;
+    if (node !== referenceNode) {
+      elements.playlist.insertBefore(node, referenceNode);
+    }
     existingNodes.delete(item.id);
   });
 
@@ -2137,20 +2435,52 @@ function syncRetryButton(button, item) {
     return;
   }
   const visible = shouldShowRetryButton(item);
-  button.classList.toggle("hidden", !visible);
+  setClassToggle(button, "hidden", !visible);
   if (!visible) {
-    button.removeAttribute("data-id");
-    button.removeAttribute("title");
-    button.removeAttribute("aria-label");
+    if (button.hasAttribute("data-id")) {
+      button.removeAttribute("data-id");
+    }
+    if (button.hasAttribute("title")) {
+      button.removeAttribute("title");
+    }
+    if (button.hasAttribute("aria-label")) {
+      button.removeAttribute("aria-label");
+    }
     return;
   }
   const tooltip = "点击重新下载";
-  button.dataset.id = item.id;
-  button.title = tooltip;
-  button.setAttribute("aria-label", tooltip);
+  if (button.dataset.id !== item.id) {
+    button.dataset.id = item.id;
+  }
+  setElementTitle(button, tooltip);
+  setElementAttribute(button, "aria-label", tooltip);
+}
+
+function refreshRetryButtons() {
+  const data = state.data;
+  if (!data) {
+    return;
+  }
+
+  syncRetryButton(elements.queueCurrentRetry, data.current_item);
+  const itemsById = new Map(
+    (Array.isArray(data.playlist) ? data.playlist : []).map((item) => [String(item.id || ""), item]),
+  );
+  elements.playlist.querySelectorAll(".song-item").forEach((node) => {
+    const item = itemsById.get(String(node.dataset.id || ""));
+    if (!item) {
+      return;
+    }
+    syncRetryButton(node.querySelector(".song-retry-button"), item);
+  });
 }
 
 function renderHistory(history) {
+  const signature = JSON.stringify(history || []);
+  if (signature === state.historyRenderSignature) {
+    return;
+  }
+  state.historyRenderSignature = signature;
   elements.historyList.innerHTML = "";
 
   if (!history.length) {
@@ -2305,12 +2635,11 @@ function formatCompactBytes(value) {
 
 function badgeAnimationDelay(itemId) {
   const duration = 1.45;
-  const nowSeconds = Date.now() / 1000;
   let hash = 0;
   for (const char of String(itemId || "")) {
     hash = (hash * 31 + char.charCodeAt(0)) % 997;
   }
-  const phase = (nowSeconds + hash * 0.013) % duration;
+  const phase = (hash * 0.013) % duration;
   return `${-phase}s`;
 }
 

@@ -602,19 +602,25 @@ h2 {
 
 .tool-status-indicator.is-loading::after {
   background: var(--muted);
-  animation: statusPulse 1.1s ease-in-out infinite;
+  animation: low-cost-indicator-blink 3.2s steps(8, end) infinite;
+  /* animation: natural-indicator-blink 3.2s infinite; */
+  will-change: opacity;
 }
 
-@keyframes statusPulse {
-  0%,
-  100% {
-    transform: scale(0.72);
-    opacity: 0.48;
+@keyframes low-cost-indicator-blink {
+  0%, 8%, 92%, 100% {
+    opacity: 0.42;
+    /* animation-timing-function: ease-in; */
   }
 
-  50% {
-    transform: scale(1);
+  25%, 75% {
+    opacity: 0.62;
+    /* animation-timing-function: ease-out; */
+  }
+
+  45%, 55% {
     opacity: 1;
+    /* animation-timing-function: ease-in; */
   }
 }
 
@@ -1129,6 +1135,8 @@ h2 {
   display: flex;
   gap: 8px;
   align-items: flex-start;
+  contain: paint;
+  isolation: isolate;
 }
 
 .audio-variant-list {
@@ -1205,6 +1213,8 @@ h2 {
     linear-gradient(180deg, rgba(255, 252, 247, 0.94), rgba(255, 246, 236, 0.82));
   border: 1px solid rgba(208, 90, 63, 0.16);
   box-shadow: 0 14px 30px rgba(88, 56, 30, 0.08);
+  contain: paint;
+  isolation: isolate;
 }
 
 .player-panel:fullscreen .av-sync-panel,
@@ -1214,6 +1224,14 @@ h2 {
 .player-panel:-webkit-full-screen .volume-panel,
 .player-panel:-webkit-full-screen .audio-variant-bar {
   display: none;
+}
+
+html:has(.player-panel:fullscreen) .tool-status-indicator.is-loading::after,
+html:has(.player-panel:fullscreen) .queue-current-indicator,
+html:has(.player-panel:-webkit-full-screen) .tool-status-indicator.is-loading::after,
+html:has(.player-panel:-webkit-full-screen) .queue-current-indicator {
+  animation: none;
+  opacity: 1;
 }
 
 .av-sync-copy {
@@ -1427,6 +1445,8 @@ h2 {
     background 180ms ease,
     color 180ms ease,
     box-shadow 180ms ease;
+  contain: paint;
+  backface-visibility: hidden;
 }
 
 .audio-variant-button.pending-bind {
@@ -1722,6 +1742,17 @@ select:disabled {
   pointer-events: auto;
 }
 
+.list-stage:not(.is-history-view):not(.is-flipping) .list-face-back,
+.list-stage.is-history-view:not(.is-flipping) .list-face-front {
+  visibility: hidden;
+  content-visibility: hidden;
+}
+
+.list-stage.is-history-view:not(.is-flipping) .queue-current-indicator {
+  animation: none;
+  opacity: 1;
+}
+
 .queue-card-head h2 {
   display: inline-flex;
   gap: 8px;
@@ -1742,6 +1773,15 @@ select:disabled {
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
+  contain: paint;
+  isolation: isolate;
+}
+
+.queue-toolbar .toolbar-button {
+  contain: paint;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .queue-current {
@@ -1769,6 +1809,8 @@ select:disabled {
   gap: 12px;
   align-content: space-between;
   width: 92px;
+  contain: paint;
+  isolation: isolate;
 }
 
 .queue-current-indicator {
@@ -1777,12 +1819,13 @@ select:disabled {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 6px rgba(208, 90, 63, 0.12);
+  will-change: opacity;
 }
 
 .queue-current[data-state="playing"] .queue-current-indicator,
 .queue-current[data-state="caching"] .queue-current-indicator,
 .queue-current[data-state="pending"] .queue-current-indicator {
-  animation: current-indicator-breathe 1.9s ease-in-out infinite;
+  animation: low-cost-indicator-blink 2.6s steps(5, end) infinite;
 }
 
 .queue-current[data-state="caching"] .queue-current-indicator {
@@ -1904,19 +1947,6 @@ select:disabled {
   justify-self: start;
 }
 
-@keyframes current-indicator-breathe {
-  0%,
-  100% {
-    transform: scale(0.92);
-    opacity: 0.82;
-  }
-
-  50% {
-    transform: scale(1.14);
-    opacity: 1;
-  }
-}
-
 .playlist,
 .history-list {
   flex: 1;
@@ -2024,6 +2054,8 @@ select:disabled {
   align-self: center;
   gap: 6px;
   min-height: 100%;
+  contain: paint;
+  isolation: isolate;
 }
 
 .song-progress-badge {
@@ -2075,6 +2107,7 @@ select:disabled {
   opacity: 1;
   animation: badge-orbit 1.45s linear infinite;
   animation-delay: var(--badge-delay, 0s);
+  will-change: transform;
 }
 
 .song-progress-badge.idle::before {
