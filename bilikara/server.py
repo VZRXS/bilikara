@@ -352,55 +352,11 @@ class AppContext:
             self._client_last_seen.pop(client_id, None)
             self._host_client_last_seen.pop(client_id, None)
 
-    def disconnect_client(self, client_id: str) -> None:
-        client_key = str(client_id or "").strip()
-        if not client_key:
-            return
-        now = time.monotonic()
-        with self._client_lock:
-            self._client_last_seen.pop(client_key, None)
-            self._prune_stale_clients(now)
-            if self._client_last_seen:
-                self._no_clients_since = None
-                return
-            self._no_clients_since = now
-
     def shutdown(self) -> None:
         if self._closed:
             return
         self._closed = True
         self.cache_manager.shutdown()
-
-    def _client_watchdog_loop(self) -> None:
-        while not self._closed:
-            time.sleep(1.0)
-            with self._client_lock:
-                if not self._shutdown_on_last_client or not self._client_seen_once or self._shutdown_requested:
-                    continue
-                now = time.monotonic()
-                self._prune_stale_clients(now)
-                if self._client_last_seen:
-                    self._no_clients_since = None
-                    continue
-                if self._no_clients_since is None:
-                    self._no_clients_since = now
-                    continue
-                if now - self._no_clients_since < self._client_grace_seconds:
-                    continue
-                server = self._server
-                if server is None:
-                    continue
-                self._shutdown_requested = True
-            threading.Thread(target=server.shutdown, daemon=True).start()
-
-    def _prune_stale_clients(self, now: float) -> None:
-        expired = [
-            client_id
-            for client_id, last_seen in self._client_last_seen.items()
-            if now - last_seen > self._client_stale_seconds
-        ]
-        for client_id in expired:
-            self._client_last_seen.pop(client_id, None)
 
     def _owner_enrichment_loop(self) -> None:
         for source_url in self.store.missing_owner_urls():

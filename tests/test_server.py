@@ -41,6 +41,32 @@ class AppContextRemoteAccessTest(unittest.TestCase):
         self.assertEqual(snapshot["preferred_url"], "http://192.168.0.8:8080/remote")
 
 
+class AppContextClientTrackingTest(unittest.TestCase):
+    def make_context(self) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._client_lock = threading.RLock()
+        context._client_last_seen = {}
+        context._host_client_last_seen = {}
+        context._host_seen_once = False
+        context._client_seen_once = False
+        context._no_clients_since = None
+        context._shutdown_requested = False
+        context._client_stale_seconds = 120.0
+        return context
+
+    def test_disconnecting_last_host_client_starts_shutdown_grace_even_if_remote_client_remains(self):
+        context = self.make_context()
+
+        context.touch_client("host-client", is_host=True)
+        context.touch_client("remote-client", is_host=False)
+        context.disconnect_client("host-client")
+
+        self.assertNotIn("host-client", context._client_last_seen)
+        self.assertIn("remote-client", context._client_last_seen)
+        self.assertEqual(context._host_client_last_seen, {})
+        self.assertIsNotNone(context._no_clients_since)
+
+
 class RunDefaultsTest(unittest.TestCase):
     def test_run_defaults_enable_shutdown_on_last_client(self):
         with patch("bilikara.server._serve") as serve:
