@@ -40,6 +40,7 @@ class PlaylistStore:
         self.volume_percent = 100
         self.is_muted = False
         self.current_item: PlaylistItem | None = None
+        self.current_item_started = False
         self.playlist: list[PlaylistItem] = []
         self.history: list[HistoryEntry] = []
         self.session_history: list[HistoryEntry] = []
@@ -97,10 +98,9 @@ class PlaylistStore:
             normalized_requester = self._validate_requester_name_unlocked(requester_name)
             item.requester_name = normalized_requester
             item.queue_slot_type = "priority" if position == "next" else "cycle"
-            self._record_session_request_unlocked(item)
-            self._record_history_unlocked(item)
             if self.current_item is None:
                 self.current_item = item
+                self.current_item_started = False
                 self._record_session_played_unlocked(item)
                 self._touch(persist_backup=True)
                 return
@@ -117,7 +117,9 @@ class PlaylistStore:
     def remove_item(self, item_id: str) -> bool:
         with self.lock:
             if self.current_item and self.current_item.id == item_id:
+                self._archive_current_item_unlocked()
                 self.current_item = None
+                self.current_item_started = False
                 self._touch(persist_backup=True)
                 return True
             for index, item in enumerate(self.playlist):
@@ -133,11 +135,18 @@ class PlaylistStore:
             self.backup_file.unlink(missing_ok=True)
             self._touch(persist_backup=False)
 
+    def clear_history(self) -> None:
+        with self.lock:
+            self.history = []
+            self._touch(persist_backup=False)
+
     def advance_to_next(self) -> bool:
         with self.lock:
             if not self.current_item and not self.playlist:
                 return False
+            self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(0) if self.playlist else None
+            self.current_item_started = False
             if self.current_item:
                 self._record_session_played_unlocked(self.current_item)
             self._touch(persist_backup=True)
@@ -196,7 +205,9 @@ class PlaylistStore:
             index = self._find_index(item_id)
             if index is None:
                 return False
+            self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(index)
+            self.current_item_started = False
             self._record_session_played_unlocked(self.current_item)
             self._touch(persist_backup=True)
             return True
@@ -352,6 +363,7 @@ class PlaylistStore:
             self.volume_percent = 100
             self.is_muted = False
             self.current_item = None
+            self.current_item_started = False
             self.playlist = []
             self.history = []
             self.session_history = []
@@ -450,6 +462,13 @@ class PlaylistStore:
             if changed:
                 self._touch(persist_backup=True)
             return changed
+
+    def mark_item_playback_started(self, item_id: str) -> bool:
+        with self.lock:
+            if not self.current_item or self.current_item.id != str(item_id or "").strip():
+                return False
+            self.current_item_started = True
+            return True
 
     def _find_index(self, item_id: str) -> int | None:
         for index, item in enumerate(self.playlist):
@@ -790,6 +809,12 @@ class PlaylistStore:
             self.history.pop(index)
             break
         self.history.insert(0, entry)
+
+    def _archive_current_item_unlocked(self) -> None:
+        if not self.current_item or not self.current_item_started:
+            return
+        self._record_session_request_unlocked(self.current_item)
+        self._record_history_unlocked(self.current_item)
 
     def _record_session_request_unlocked(self, item: PlaylistItem) -> None:
         now = time.time()

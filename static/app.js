@@ -7,6 +7,7 @@ const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
 const maxAvOffsetMs = 5000;
 const playerClickDelayMs = 220;
+const playerControlsAutoHideMs = 5000;
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
@@ -38,6 +39,7 @@ const state = {
   playerSignature: "",
   playerContext: null,
   localPlayerSyncTimer: null,
+  localPlayerControlsHideTimer: null,
   listView: "queue",
   listStageView: "",
   listFlipTimer: null,
@@ -156,6 +158,7 @@ const elements = {
   queueNextButton: document.getElementById("queue-next-button"),
   historyToggleButton: document.getElementById("history-toggle-button"),
   clearPlaylistButton: document.getElementById("clear-playlist-button"),
+  clearHistoryButton: document.getElementById("clear-history-button"),
   playlistTemplate: document.getElementById("playlist-item-template"),
   historyTemplate: document.getElementById("history-item-template"),
   confirmPopover: document.getElementById("confirm-popover"),
@@ -414,6 +417,51 @@ function clearPlayerFrameClickTimer() {
   }
   window.clearTimeout(state.playerFrameClickTimer);
   state.playerFrameClickTimer = null;
+}
+
+function clearLocalPlayerControlsHideTimer() {
+  if (!state.localPlayerControlsHideTimer) {
+    return;
+  }
+  window.clearTimeout(state.localPlayerControlsHideTimer);
+  state.localPlayerControlsHideTimer = null;
+}
+
+function mountedLocalVideoElement() {
+  return elements.playerFrame.querySelector('video[data-player-role="video"]')
+    || elements.playerFrame.querySelector("video");
+}
+
+function hideMountedPlayerControls() {
+  clearLocalPlayerControlsHideTimer();
+  const video = mountedLocalVideoElement();
+  if (!video) {
+    return;
+  }
+  video.controls = false;
+  video.removeAttribute("controls");
+}
+
+function scheduleMountedPlayerControlsHide() {
+  clearLocalPlayerControlsHideTimer();
+  const video = mountedLocalVideoElement();
+  if (!video || !video.controls) {
+    return;
+  }
+  state.localPlayerControlsHideTimer = window.setTimeout(() => {
+    state.localPlayerControlsHideTimer = null;
+    hideMountedPlayerControls();
+  }, playerControlsAutoHideMs);
+}
+
+function showMountedPlayerControls() {
+  const video = mountedLocalVideoElement();
+  if (!video) {
+    return;
+  }
+  video.controls = true;
+  video.setAttribute("controls", "");
+  scheduleMountedPlayerControlsHide();
 }
 
 function toggleMountedLocalPlayback() {
@@ -1147,6 +1195,7 @@ function renderListHeader(playlist, history) {
   setTextContent(elements.queueCount, queueCount);
   setTextContent(elements.historyToggleButton, historyButtonText);
   setClassToggle(elements.clearPlaylistButton, "hidden", isHistoryView);
+  setClassToggle(elements.clearHistoryButton, "hidden", !isHistoryView || !history.length);
   setClassToggle(elements.nextButton, "hidden", isHistoryView);
 }
 
@@ -1622,6 +1671,7 @@ function clearLocalPlayerSyncTimer() {
 
 function teardownMountedPlayer() {
   clearLocalPlayerSyncTimer();
+  clearLocalPlayerControlsHideTimer();
   elements.playerFrame.querySelectorAll("video, audio").forEach((media) => {
     try {
       media.pause();
@@ -1645,7 +1695,7 @@ function activeLocalPlayerElements() {
 }
 
 function activePrimaryVideoElement() {
-  return elements.playerFrame.querySelector("video");
+  return mountedLocalVideoElement();
 }
 
 function captureLocalPlayerPreferences() {
@@ -2131,6 +2181,7 @@ function renderPlayer(currentItem, playbackMode) {
   }
 
   applyStoredVolumeToSplitPlayer(video, audio);
+  showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
     reportPlayerStatus(currentItem.id, video);
@@ -2164,6 +2215,7 @@ function renderPlayer(currentItem, playbackMode) {
   };
 
   video.addEventListener("loadedmetadata", () => {
+    showMountedPlayerControls();
     maybeRestorePlayback();
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
     reportCurrentVideoStatus();
@@ -2177,6 +2229,7 @@ function renderPlayer(currentItem, playbackMode) {
   video.addEventListener("play", () => {
     state.localShouldBePlaying = true;
     state.localSeekResumePending = false;
+    showMountedPlayerControls();
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
     reportCurrentVideoStatus();
   });
@@ -2196,6 +2249,7 @@ function renderPlayer(currentItem, playbackMode) {
     if (!audio.paused) {
       audio.pause();
     }
+    showMountedPlayerControls();
     reportCurrentVideoStatus();
   });
 
@@ -2204,6 +2258,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("seeked", () => {
+    showMountedPlayerControls();
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
     if (state.localSeekResumePending) {
       video.play().catch(() => {});
@@ -2213,17 +2268,26 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("ratechange", () => {
+    showMountedPlayerControls();
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
   });
 
   video.addEventListener("volumechange", () => {
+    showMountedPlayerControls();
     syncSplitPlayerVolumeFromVideo(video, audio);
+  });
+
+  ["pointermove", "pointerdown", "touchstart"].forEach((eventName) => {
+    video.addEventListener(eventName, () => {
+      showMountedPlayerControls();
+    }, { passive: true });
   });
 
   video.addEventListener("ended", async () => {
     state.localShouldBePlaying = false;
     state.localSeekResumePending = false;
     audio.pause();
+    showMountedPlayerControls();
     reportCurrentVideoStatus();
     await handleLocalPlaybackEnded();
   });
@@ -2237,6 +2301,7 @@ function renderPlayer(currentItem, playbackMode) {
   }, localPlayerSyncIntervalMs);
 
   window.setTimeout(() => {
+    showMountedPlayerControls();
     maybeRestorePlayback();
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
     reportCurrentVideoStatus();
@@ -3203,6 +3268,17 @@ async function clearPlaylist() {
   }
 }
 
+async function clearHistory() {
+  try {
+    state.data = await apiPost("/api/history/clear");
+    closeConfirm();
+    setAppMessage("\u5386\u53f2\u8bb0\u5f55\u5df2\u6e05\u7a7a\u3002");
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+  }
+}
+
 async function resetRuntimeData() {
   try {
     teardownMountedPlayer();
@@ -3681,6 +3757,16 @@ elements.clearPlaylistButton.addEventListener("click", (event) => {
   });
 });
 
+elements.clearHistoryButton?.addEventListener("click", (event) => {
+  const point = anchorPointForEvent(event, elements.clearHistoryButton);
+  openConfirm({
+    type: "clear-history",
+    message: "\u786e\u5b9a\u6e05\u7a7a\u5386\u53f2\u8bb0\u5f55\u5417\uff1f\u8fd9\u4e0d\u4f1a\u5f71\u54cd\u5f53\u524d\u64ad\u653e\u6216\u6392\u961f\u4e2d\u7684\u6b4c\u66f2\u3002",
+    x: point.x,
+    y: point.y,
+  });
+});
+
 elements.historyToggleButton.addEventListener("click", () => {
   state.listView = state.listView === "history" ? "queue" : "history";
   render();
@@ -3926,6 +4012,10 @@ elements.confirmOk.addEventListener("click", async () => {
       await clearPlaylist();
       return;
     }
+    if (intent.type === "clear-history") {
+      await clearHistory();
+      return;
+    }
     if (intent.type === "reset-data") {
       await resetRuntimeData();
       return;
@@ -3967,6 +4057,7 @@ document.addEventListener("click", (event) => {
     if (
       event.target.closest("#confirm-popover") ||
       event.target.closest("#clear-playlist-button") ||
+      event.target.closest("#clear-history-button") ||
       event.target.closest('button[data-action="remove"]') ||
       event.target.closest("#queue-next-button") ||
       event.target.closest("#data-reset-button") ||
@@ -4001,6 +4092,9 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    showMountedPlayerControls();
+  }
   if (!state.localShouldBePlaying) {
     return;
   }
@@ -4239,5 +4333,8 @@ window.addEventListener("pagehide", () => {
   disconnectClient();
 });
 window.addEventListener("beforeunload", disconnectClient);
+window.addEventListener("pageshow", () => {
+  showMountedPlayerControls();
+});
 
 startPolling();

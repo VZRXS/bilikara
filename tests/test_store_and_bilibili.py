@@ -141,6 +141,9 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.add_item(item, position=position, requester_name=requester_name)
         return item
 
+    def mark_started(self, item_id: str) -> None:
+        self.assertTrue(self.store.mark_item_playback_started(item_id))
+
     def test_add_tail_and_next(self):
         self.add_item("a", requester_name="A")
         self.add_item("b", requester_name="B")
@@ -198,13 +201,50 @@ class PlaylistStoreTest(unittest.TestCase):
 
         snapshot = self.store.snapshot()
         self.assertEqual(snapshot["current_item"]["display_title"], "Song Name")
-        self.assertEqual(snapshot["history"][0]["display_title"], "Song Name")
         self.assertEqual(snapshot["current_item"]["requester_name"], "A")
+
+        self.mark_started("a")
+        self.store.advance_to_next()
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot["history"][0]["display_title"], "Song Name")
+
+    def test_history_stays_empty_until_current_item_has_started_playing(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        self.add_item("b", requester_name="B", song_key="song-b")
+
+        self.assertEqual(self.store.history, [])
+
+        self.store.advance_to_next()
+
+        self.assertEqual(self.store.history, [])
+
+        self.mark_started("b")
+        self.store.remove_item("b")
+
+        self.assertEqual(len(self.store.history), 1)
+        self.assertEqual(self.store.history[0].display_title, "title-b - P1")
+        self.assertEqual(self.store.history[0].requester_name, "B")
+
+    def test_history_records_started_song_when_advanced_to_next(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        self.add_item("b", requester_name="B", song_key="song-b")
+        self.mark_started("a")
+        self.store.advance_to_next()
+
+        self.assertEqual(len(self.store.history), 1)
+        self.assertEqual(self.store.history[0].display_title, "title-a - P1")
+        self.assertEqual(self.store.history[0].requester_name, "A")
 
     def test_history_updates_and_moves_latest_duplicate_to_top(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
         self.add_item("c", requester_name="C", song_key="song-a")
+        self.mark_started("a")
+        self.store.advance_to_next()
+        self.mark_started("b")
+        self.store.move_to_front("c")
+        self.mark_started("c")
+        self.store.advance_to_next()
         self.assertEqual(len(self.store.history), 2)
         self.assertEqual(self.store.history[0].display_title, "title-c - P1")
         self.assertEqual(self.store.history[0].request_count, 2)
@@ -215,10 +255,23 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_session_history_updates_for_duplicate_request_in_current_run(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-a")
+        self.mark_started("a")
+        self.store.move_to_front("b")
+        self.mark_started("b")
+        self.store.remove_item("b")
         self.assertEqual(len(self.store.session_history), 1)
         self.assertEqual(self.store.session_history[0].display_title, "title-b - P1")
         self.assertEqual(self.store.session_history[0].request_count, 2)
         self.assertEqual(self.store.session_history[0].requester_name, "B")
+
+    def test_unstarted_removed_song_does_not_count_as_session_duplicate(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        self.add_item("b", requester_name="B", song_key="song-b")
+
+        self.store.advance_to_next()
+
+        self.assertEqual(self.store.session_history, [])
+        self.assertIsNone(self.store.session_request_for_item(self.make_item("retry", song_key="song-b")))
 
     def test_session_history_does_not_restore_from_state_file(self):
         self.add_item("a", requester_name="A", song_key="song-a")
@@ -280,6 +333,9 @@ class PlaylistStoreTest(unittest.TestCase):
         item.owner_mid = 0
         item.owner_url = ""
         self.store.add_item(item, requester_name="A")
+        self.store.add_item(self.make_item("b", song_key="song-b"), requester_name="B")
+        self.mark_started("a")
+        self.store.advance_to_next()
 
         changed = self.store.update_owner_info_for_url(
             item.resolved_url,
@@ -307,6 +363,8 @@ class PlaylistStoreTest(unittest.TestCase):
 
     def test_history_restores_from_history_state_file(self):
         self.add_item("a", requester_name="A", song_key="song-a")
+        self.mark_started("a")
+        self.store.advance_to_next()
         restored_store = PlaylistStore(
             state_file=self.state_file,
             backup_file=self.backup_file,
@@ -316,6 +374,22 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(restored_store.history[0].display_title, "title-a - P1")
         self.assertEqual(restored_store.history[0].request_count, 1)
         self.assertEqual(restored_store.history[0].requester_name, "A")
+
+    def test_clear_history_removes_persisted_entries(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        self.mark_started("a")
+        self.store.advance_to_next()
+        self.assertEqual(len(self.store.history), 1)
+
+        self.store.clear_history()
+
+        self.assertEqual(self.store.history, [])
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+        self.assertEqual(restored_store.history, [])
 
     def test_restore_from_backup(self):
         item = self.make_item("a")

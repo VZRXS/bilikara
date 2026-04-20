@@ -22,6 +22,8 @@ body {
   margin: 0;
   min-height: 100%;
   font-family: var(--font-sans);
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
   color: var(--ink);
   background:
     radial-gradient(circle at top, rgba(255, 255, 255, 0.9), transparent 30%),
@@ -37,6 +39,12 @@ input,
 textarea,
 select {
   font: inherit;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px;
 }
 
 .hidden {

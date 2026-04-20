@@ -3,6 +3,7 @@ const audioVariantSwitchDebounceMs = 350;
 const gatchaCooldownMs = 15000;
 const playerSettingsEchoSuppressMs = 1800;
 const remoteVolumeCommitDebounceMs = 160;
+const viewportScaleResetDelaysMs = [0, 120, 360];
 const storageKeys = {
   layoutMode: "bilikara.remote.layout.mode",
 };
@@ -37,9 +38,11 @@ const state = {
   gatchaCooldownUntil: 0,
   gatchaCooldownTimer: null,
   layoutMode: "full",
+  viewportScaleResetTimers: [],
 };
 
 const elements = {
+  viewportMeta: document.getElementById("viewport-meta"),
   remoteShell: document.getElementById("remote-shell"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   currentTitle: document.getElementById("current-title"),
@@ -132,6 +135,84 @@ function writeLocalPreference(key, value) {
   } catch {
     // Ignore storage failures and keep runtime behavior working.
   }
+}
+
+function isEditableElement(element) {
+  return element instanceof HTMLElement
+    && (
+      element.tagName === "INPUT"
+      || element.tagName === "TEXTAREA"
+      || element.tagName === "SELECT"
+      || element.isContentEditable
+    );
+}
+
+function blurActiveEditableElement() {
+  const activeElement = document.activeElement;
+  if (!isEditableElement(activeElement) || typeof activeElement.blur !== "function") {
+    return;
+  }
+  activeElement.blur();
+}
+
+function isAppleTabletClient() {
+  const userAgent = String(window.navigator?.userAgent || "");
+  if (/iPad/i.test(userAgent)) {
+    return true;
+  }
+  return window.navigator?.platform === "MacIntel" && Number(window.navigator?.maxTouchPoints || 0) > 1;
+}
+
+function currentViewportScale() {
+  const scale = Number(window.visualViewport?.scale || 1);
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+function clearViewportScaleResetTimers() {
+  state.viewportScaleResetTimers.forEach((timerId) => {
+    window.clearTimeout(timerId);
+  });
+  state.viewportScaleResetTimers = [];
+}
+
+function forceViewportScaleReset(force = false) {
+  if (!isAppleTabletClient() || isEditableElement(document.activeElement) || document.hidden) {
+    return;
+  }
+  const viewportMeta = elements.viewportMeta;
+  if (!viewportMeta) {
+    return;
+  }
+  const currentScale = currentViewportScale();
+  if (!force && currentScale <= 1.01) {
+    return;
+  }
+
+  const baseContent = viewportMeta.dataset.baseContent || viewportMeta.getAttribute("content") || "";
+  if (!baseContent) {
+    return;
+  }
+
+  viewportMeta.dataset.baseContent = baseContent;
+  viewportMeta.setAttribute("content", `${baseContent}, maximum-scale=1, user-scalable=no`);
+
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      viewportMeta.setAttribute("content", baseContent);
+    });
+  });
+}
+
+function scheduleViewportScaleReset(force = false) {
+  if (!isAppleTabletClient()) {
+    return;
+  }
+  clearViewportScaleResetTimers();
+  state.viewportScaleResetTimers = viewportScaleResetDelaysMs.map((delayMs) => (
+    window.setTimeout(() => {
+      forceViewportScaleReset(force);
+    }, delayMs)
+  ));
 }
 
 function normalizeLayoutMode(value) {
@@ -1632,6 +1713,37 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearViewportScaleResetTimers();
+    blurActiveEditableElement();
+    return;
+  }
+  scheduleViewportScaleReset();
+});
+
+window.addEventListener("pageshow", () => {
+  window.requestAnimationFrame(() => {
+    blurActiveEditableElement();
+  });
+  scheduleViewportScaleReset();
+});
+
+window.addEventListener("focus", () => {
+  scheduleViewportScaleReset();
+});
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", () => {
+    if (document.hidden || isEditableElement(document.activeElement) || currentViewportScale() <= 1.01) {
+      return;
+    }
+    scheduleViewportScaleReset();
+  });
+}
+
+window.addEventListener("pagehide", blurActiveEditableElement);
+window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
