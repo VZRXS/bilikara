@@ -562,10 +562,14 @@ def _part_keyword_match(part: str) -> bool:
     return any(keyword in normalized for keyword in ("on", "off", "人声", "伴奏"))
 
 
+def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
+    return len(pages) == 2 and all(_part_keyword_match(page.part) for page in pages)
+
+
 def _requires_manual_binding(pages: list[VideoPage]) -> bool:
     if len(pages) > 2:
         return True
-    if len(pages) == 2 and not all(_part_keyword_match(page.part) for page in pages):
+    if len(pages) == 2 and not _is_auto_dual_audio_pair(pages):
         return True
     return False
 
@@ -645,7 +649,10 @@ def fetch_video_item(
             raise BilibiliError("选择的音频分P无效")
         selected_pages = [available_pages_by_number[page] for page in normalized_audio_pages]
     else:
-        selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+        if _is_auto_dual_audio_pair(pages):
+            selected_pages = list(pages)
+        else:
+            selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
         if selected_video_page is not None or normalized_audio_pages:
             raise BilibiliError("当前视频不需要手动绑定分P")
 
