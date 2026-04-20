@@ -156,6 +156,7 @@ const elements = {
   queueNextButton: document.getElementById("queue-next-button"),
   historyToggleButton: document.getElementById("history-toggle-button"),
   clearPlaylistButton: document.getElementById("clear-playlist-button"),
+  clearHistoryButton: document.getElementById("clear-history-button"),
   playlistTemplate: document.getElementById("playlist-item-template"),
   historyTemplate: document.getElementById("history-item-template"),
   confirmPopover: document.getElementById("confirm-popover"),
@@ -1147,6 +1148,7 @@ function renderListHeader(playlist, history) {
   setTextContent(elements.queueCount, queueCount);
   setTextContent(elements.historyToggleButton, historyButtonText);
   setClassToggle(elements.clearPlaylistButton, "hidden", isHistoryView);
+  setClassToggle(elements.clearHistoryButton, "hidden", !isHistoryView || !history.length);
   setClassToggle(elements.nextButton, "hidden", isHistoryView);
 }
 
@@ -3203,6 +3205,17 @@ async function clearPlaylist() {
   }
 }
 
+async function clearHistory() {
+  try {
+    state.data = await apiPost("/api/history/clear");
+    closeConfirm();
+    setAppMessage("\u5386\u53f2\u8bb0\u5f55\u5df2\u6e05\u7a7a\u3002");
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+  }
+}
+
 async function resetRuntimeData() {
   try {
     teardownMountedPlayer();
@@ -3681,6 +3694,16 @@ elements.clearPlaylistButton.addEventListener("click", (event) => {
   });
 });
 
+elements.clearHistoryButton?.addEventListener("click", (event) => {
+  const point = anchorPointForEvent(event, elements.clearHistoryButton);
+  openConfirm({
+    type: "clear-history",
+    message: "\u786e\u5b9a\u6e05\u7a7a\u5386\u53f2\u8bb0\u5f55\u5417\uff1f\u8fd9\u4e0d\u4f1a\u5f71\u54cd\u5f53\u524d\u64ad\u653e\u6216\u6392\u961f\u4e2d\u7684\u6b4c\u66f2\u3002",
+    x: point.x,
+    y: point.y,
+  });
+});
+
 elements.historyToggleButton.addEventListener("click", () => {
   state.listView = state.listView === "history" ? "queue" : "history";
   render();
@@ -3926,6 +3949,10 @@ elements.confirmOk.addEventListener("click", async () => {
       await clearPlaylist();
       return;
     }
+    if (intent.type === "clear-history") {
+      await clearHistory();
+      return;
+    }
     if (intent.type === "reset-data") {
       await resetRuntimeData();
       return;
@@ -3967,6 +3994,7 @@ document.addEventListener("click", (event) => {
     if (
       event.target.closest("#confirm-popover") ||
       event.target.closest("#clear-playlist-button") ||
+      event.target.closest("#clear-history-button") ||
       event.target.closest('button[data-action="remove"]') ||
       event.target.closest("#queue-next-button") ||
       event.target.closest("#data-reset-button") ||

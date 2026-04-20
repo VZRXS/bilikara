@@ -71,5 +71,27 @@ class PlaylistAddRequestTest(unittest.TestCase):
         fetch_video.assert_not_called()
 
 
+class HistoryRouteTest(unittest.TestCase):
+    def test_history_clear_route_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            clear_history=lambda: writes.append({"cleared": True}),
+            snapshot=lambda: {"history": []},
+        )
+
+        handler.path = "/api/history/clear"
+        handler.headers = {}
+        handler._read_json_body = lambda: {}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes[0], {"cleared": True})
+        self.assertEqual(writes[1], {"ok": True, "data": {"history": []}})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -123,6 +123,9 @@ class AppContext:
         self.store.clear_playlist()
         self.cache_manager.sync_with_playlist()
 
+    def clear_history(self) -> None:
+        self.store.clear_history()
+
     def move_item(self, item_id: str, direction: str) -> None:
         self.store.move_item(item_id, direction)
         self.cache_manager.sync_with_playlist()
@@ -226,6 +229,8 @@ class AppContext:
                 "current_time": max(0.0, float(current_time or 0.0)),
                 "updated_at": time.time(),
             }
+        if (not is_paused) or float(current_time or 0.0) > 0:
+            self.store.mark_item_playback_started(normalized_item_id)
 
     def player_status_snapshot(self, current_item_payload: object) -> dict[str, object] | None:
         current_item_id = ""
@@ -525,6 +530,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/playlist/clear":
                 CONTEXT.clear_playlist()
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/history/clear":
+                CONTEXT.clear_history()
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/session-users/add":
