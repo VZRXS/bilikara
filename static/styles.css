@@ -1162,6 +1162,7 @@ h2 {
 }
 
 .player-frame {
+  position: relative;
   margin-top: 16px;
   aspect-ratio: 16 / 9;
   border-radius: 22px;
@@ -1229,6 +1230,62 @@ h2 {
 
 .player-frame audio {
   display: none;
+}
+
+.player-delay-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  color: #fff;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.68);
+  pointer-events: none;
+}
+
+.player-delay-overlay.hidden {
+  display: none;
+}
+
+.player-delay-copy {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  text-shadow: 0 3px 18px rgba(0, 0, 0, 0.5);
+}
+
+.player-delay-label {
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.player-delay-count {
+  font-size: 72px;
+  line-height: 1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.player-delay-next {
+  max-width: min(720px, calc(100vw - 48px));
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 18px;
+  line-height: 1.45;
+}
+
+.player-panel:fullscreen .player-delay-count,
+.player-panel:-webkit-full-screen .player-delay-count {
+  font-size: 96px;
+}
+
+.player-panel:fullscreen .player-delay-next,
+.player-panel:-webkit-full-screen .player-delay-next {
+  font-size: 20px;
 }
 
 .audio-variant-bar {

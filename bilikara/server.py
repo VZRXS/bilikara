@@ -154,6 +154,9 @@ class AppContext:
     def set_muted(self, is_muted: bool) -> bool:
         return self.store.set_muted(is_muted)
 
+    def set_song_advance_delay_seconds(self, delay_seconds: int) -> int:
+        return self.store.set_song_advance_delay_seconds(delay_seconds)
+
     def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
         return self.store.set_audio_variant(item_id, variant_id)
 
@@ -552,6 +555,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not isinstance(offset_ms, int):
                     raise ValueError("offset_ms must be an integer")
                 CONTEXT.set_av_offset_ms(offset_ms)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/player/advance-delay":
+                delay_seconds = body.get("delay_seconds")
+                if not isinstance(delay_seconds, int):
+                    raise ValueError("delay_seconds must be an integer")
+                CONTEXT.set_song_advance_delay_seconds(delay_seconds)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/player/volume":

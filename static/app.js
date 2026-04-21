@@ -3,7 +3,7 @@ const bannerAutoHideMs = 5000;
 const stalledRetrySeconds = 5;
 const gatchaCooldownMs = 15000;
 const localPlayerSyncIntervalMs = 120;
-const localPlayerHardSyncThresholdSeconds = 0.25;
+const localPlayerHardSyncThresholdSeconds = 0.08;
 const localPlayerForceSyncEpsilonSeconds = 0.015;
 const localPlayerSeekSettlePollMs = 50;
 const localPlayerSeekSettleMaxMs = 1400;
@@ -12,6 +12,8 @@ const playerSettingsEchoSuppressMs = 1800;
 const maxAvOffsetMs = 5000;
 const playerClickDelayMs = 220;
 const playerControlsAutoHideMs = 5000;
+const defaultSongAdvanceDelaySeconds = 3;
+const maxSongAdvanceDelaySeconds = 30;
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
@@ -72,6 +74,11 @@ const state = {
   backupBannerPaused: false,
   backupDismissHover: false,
   localAdvanceInFlight: false,
+  localAdvanceDelayTimer: null,
+  localAdvanceCountdownTimer: null,
+  localAdvanceDelayDeadline: 0,
+  localAdvanceDelayToken: 0,
+  localAdvanceDelayItemId: "",
   localShouldBePlaying: false,
   localSeekResumePending: false,
   localSeekSettling: false,
@@ -1655,6 +1662,19 @@ function currentAvOffsetSeconds() {
   return currentAvOffsetMs() / 1000;
 }
 
+function currentSongAdvanceDelaySeconds(playerSettings = state.data?.player_settings) {
+  const rawValue = Number(playerSettings?.song_advance_delay_seconds ?? defaultSongAdvanceDelaySeconds);
+  if (!Number.isFinite(rawValue)) {
+    return defaultSongAdvanceDelaySeconds;
+  }
+  return Math.max(0, Math.min(maxSongAdvanceDelaySeconds, Math.round(rawValue)));
+}
+
+function queuedNextItem() {
+  const playlist = state.data?.playlist;
+  return Array.isArray(playlist) && playlist.length ? playlist[0] : null;
+}
+
 function boundedAvOffsetMs(rawValue) {
   const numeric = Number(rawValue || 0);
   if (!Number.isFinite(numeric)) {
@@ -1707,10 +1727,97 @@ function clearLocalPlayerSeekState() {
   state.localSeekResumePending = false;
 }
 
+function playerDelayOverlay() {
+  return elements.playerFrame?.querySelector(".player-delay-overlay") || null;
+}
+
+function ensurePlayerDelayOverlay() {
+  let overlay = playerDelayOverlay();
+  if (overlay) {
+    return overlay;
+  }
+
+  overlay = document.createElement("div");
+  overlay.className = "player-delay-overlay hidden";
+  overlay.setAttribute("aria-live", "polite");
+  overlay.innerHTML = `
+    <div class="player-delay-copy">
+      <p class="player-delay-label">\u4e0b\u4e00\u9996\u5012\u8ba1\u65f6</p>
+      <p class="player-delay-count" data-delay-count>0</p>
+      <p class="player-delay-next" data-delay-next>\u51c6\u5907\u4e0b\u4e00\u9996</p>
+    </div>
+  `;
+  elements.playerFrame.appendChild(overlay);
+  return overlay;
+}
+
+function updateLocalAdvanceDelayOverlay() {
+  const overlay = ensurePlayerDelayOverlay();
+  const remainingSeconds = Math.max(
+    0,
+    Math.ceil((state.localAdvanceDelayDeadline - Date.now()) / 1000),
+  );
+  const countNode = overlay.querySelector("[data-delay-count]");
+  const nextNode = overlay.querySelector("[data-delay-next]");
+  const nextItem = queuedNextItem();
+  setTextContent(countNode, String(remainingSeconds));
+  setTextContent(nextNode, nextItem?.display_title ? `\u63a5\u4e0b\u6765\uff1a${nextItem.display_title}` : "\u51c6\u5907\u4e0b\u4e00\u9996");
+  overlay.classList.toggle("hidden", state.localAdvanceDelayDeadline <= 0);
+}
+
+function clearLocalAdvanceDelay({ resetInFlight = false } = {}) {
+  if (state.localAdvanceDelayTimer) {
+    window.clearTimeout(state.localAdvanceDelayTimer);
+    state.localAdvanceDelayTimer = null;
+  }
+  if (state.localAdvanceCountdownTimer) {
+    window.clearInterval(state.localAdvanceCountdownTimer);
+    state.localAdvanceCountdownTimer = null;
+  }
+  state.localAdvanceDelayDeadline = 0;
+  state.localAdvanceDelayItemId = "";
+  state.localAdvanceDelayToken += 1;
+  const overlay = playerDelayOverlay();
+  if (overlay) {
+    overlay.classList.add("hidden");
+  }
+  if (resetInFlight) {
+    state.localAdvanceInFlight = false;
+  }
+}
+
+function startLocalAdvanceDelay(delaySeconds) {
+  const currentItemId = String(state.data?.current_item?.id || "");
+  if (!currentItemId) {
+    return;
+  }
+  clearLocalAdvanceDelay();
+  state.localAdvanceInFlight = true;
+  state.localAdvanceDelayItemId = currentItemId;
+  state.localAdvanceDelayToken += 1;
+  const token = state.localAdvanceDelayToken;
+  state.localAdvanceDelayDeadline = Date.now() + delaySeconds * 1000;
+  updateLocalAdvanceDelayOverlay();
+  showMountedPlayerControls();
+  state.localAdvanceCountdownTimer = window.setInterval(updateLocalAdvanceDelayOverlay, 250);
+  state.localAdvanceDelayTimer = window.setTimeout(() => {
+    finishLocalAdvanceDelay(token, currentItemId).catch(() => {});
+  }, delaySeconds * 1000);
+}
+
+async function finishLocalAdvanceDelay(token, itemId) {
+  if (token !== state.localAdvanceDelayToken || itemId !== state.localAdvanceDelayItemId) {
+    return;
+  }
+  clearLocalAdvanceDelay({ resetInFlight: true });
+  await advanceLocalPlayerNow();
+}
+
 function teardownMountedPlayer() {
   clearLocalPlayerSyncTimer();
   clearLocalPlayerControlsHideTimer();
   clearLocalPlayerSeekState();
+  clearLocalAdvanceDelay({ resetInFlight: true });
   elements.playerFrame.querySelectorAll("video, audio").forEach((media) => {
     try {
       media.pause();
@@ -3599,10 +3706,11 @@ async function removeSessionUser(name) {
   }
 }
 
-async function handleLocalPlaybackEnded() {
+async function advanceLocalPlayerNow() {
   if (state.localAdvanceInFlight) {
     return;
   }
+  clearLocalAdvanceDelay();
   state.localAdvanceInFlight = true;
   try {
     state.data = await apiPost("/api/player/next");
@@ -3612,6 +3720,18 @@ async function handleLocalPlaybackEnded() {
   } finally {
     state.localAdvanceInFlight = false;
   }
+}
+
+async function handleLocalPlaybackEnded() {
+  if (state.localAdvanceInFlight) {
+    return;
+  }
+  const delaySeconds = currentSongAdvanceDelaySeconds();
+  if (delaySeconds <= 0 || !queuedNextItem()) {
+    await advanceLocalPlayerNow();
+    return;
+  }
+  startLocalAdvanceDelay(delaySeconds);
 }
 
 async function reorderPlaylist(itemId, index) {
@@ -4020,6 +4140,7 @@ elements.playerFrame?.addEventListener("dblclick", (event) => {
 
 elements.nextButton.addEventListener("click", async () => {
   try {
+    clearLocalAdvanceDelay({ resetInFlight: true });
     state.data = await apiPost("/api/player/next");
     render();
   } catch (error) {

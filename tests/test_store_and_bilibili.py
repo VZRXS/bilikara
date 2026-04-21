@@ -68,6 +68,19 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(restored_store.volume_percent, 35)
         self.assertTrue(restored_store.is_muted)
 
+    def test_song_advance_delay_persists_in_player_state_file(self):
+        self.store.set_song_advance_delay_seconds(8)
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+
+        snapshot = self.store.snapshot()["player_settings"]
+        self.assertEqual(snapshot["song_advance_delay_seconds"], 8)
+        self.assertEqual(restored_store.song_advance_delay_seconds, 8)
+
     def test_legacy_state_file_is_ignored_and_removed(self):
         for name in ["player_state.json", "history.json", "session_users.json"]:
             (self.state_file.parent / name).unlink(missing_ok=True)
