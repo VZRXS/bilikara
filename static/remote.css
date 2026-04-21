@@ -806,6 +806,37 @@ select:disabled {
   gap: 10px;
 }
 
+.queue-panel {
+  display: grid;
+  min-height: 0;
+}
+
+.queue-panel .list {
+  max-height: clamp(300px, 56vh, 680px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.queue-panel .list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.queue-panel .list::-webkit-scrollbar-track {
+  background: rgba(67, 53, 41, 0.05);
+  border-radius: 999px;
+}
+
+.queue-panel .list::-webkit-scrollbar-thumb {
+  background: rgba(143, 49, 29, 0.24);
+  border-radius: 999px;
+}
+
+.queue-panel .list::-webkit-scrollbar-thumb:hover {
+  background: rgba(143, 49, 29, 0.36);
+}
+
 .search-results {
   display: grid;
   gap: 10px;
@@ -956,6 +987,10 @@ select:disabled {
 
   .queue-state {
     justify-self: start;
+  }
+
+  .queue-panel .list {
+    max-height: clamp(280px, 52vh, 560px);
   }
 
   .remote-setting-panel {

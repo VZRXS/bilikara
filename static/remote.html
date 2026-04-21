@@ -104,6 +104,42 @@
         </form>
       </section>
 
+      <section class="panel queue-panel">
+        <div class="panel-head panel-head-stack">
+          <div>
+            <p class="panel-tag" id="list-tag">Queue</p>
+            <h2 class="list-heading" id="list-title">播放队列</h2>
+          </div>
+          <span id="list-count" class="count-chip">0 首</span>
+        </div>
+
+        <div class="view-toggle" role="tablist" aria-label="切换列表视图">
+          <button
+            type="button"
+            id="queue-view-button"
+            class="toggle-button active"
+            data-view="queue"
+            role="tab"
+            aria-selected="true"
+          >
+            队列
+          </button>
+          <button
+            type="button"
+            id="history-view-button"
+            class="toggle-button"
+            data-view="history"
+            role="tab"
+            aria-selected="false"
+          >
+            历史
+          </button>
+        </div>
+
+        <div id="queue-list" class="list"></div>
+        <div id="history-list" class="list hidden"></div>
+      </section>
+
       <section class="panel search-panel">
         <div class="panel-head">
           <p class="panel-tag">Local Search</p>
@@ -140,42 +176,6 @@
             <button type="button" id="gatcha-retry-button" class="secondary-button">重新再来</button>
           </div>
         </div>
-      </section>
-
-      <section class="panel queue-panel">
-        <div class="panel-head panel-head-stack">
-          <div>
-            <p class="panel-tag" id="list-tag">Queue</p>
-            <h2 class="list-heading" id="list-title">播放队列</h2>
-          </div>
-          <span id="list-count" class="count-chip">0 首</span>
-        </div>
-
-        <div class="view-toggle" role="tablist" aria-label="切换列表视图">
-          <button
-            type="button"
-            id="queue-view-button"
-            class="toggle-button active"
-            data-view="queue"
-            role="tab"
-            aria-selected="true"
-          >
-            队列
-          </button>
-          <button
-            type="button"
-            id="history-view-button"
-            class="toggle-button"
-            data-view="history"
-            role="tab"
-            aria-selected="false"
-          >
-            历史
-          </button>
-        </div>
-
-        <div id="queue-list" class="list"></div>
-        <div id="history-list" class="list hidden"></div>
       </section>
 
       <div id="binding-sheet" class="binding-sheet hidden" aria-hidden="true">
