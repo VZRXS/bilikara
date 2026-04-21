@@ -7,7 +7,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .models import HistoryEntry, PlaylistItem, SessionPlayedEntry
 
@@ -25,6 +25,8 @@ class PlaylistStore:
         state_file: Path,
         backup_file: Path,
         session_archive_dir: Path | None = None,
+        *,
+        on_change: Callable[[], None] | None = None,
     ) -> None:
         self.state_file = state_file
         self.backup_file = backup_file
@@ -36,6 +38,7 @@ class PlaylistStore:
             "session-users",
         )
         self.session_archive_dir = session_archive_dir or state_file.parent / "played_sessions"
+        self.on_change = on_change
         self.lock = threading.RLock()
         self.playback_mode = "local"
         self.av_offset_ms = 0
@@ -392,6 +395,7 @@ class PlaylistStore:
             self.session_users = []
             self.updated_at = time.time()
             self._delete_runtime_json_files_unlocked()
+        self._notify_change()
 
     def backup_summary(self) -> dict[str, Any]:
         with self.lock:
@@ -671,6 +675,16 @@ class PlaylistStore:
         self._save_session_played()
         if persist_backup:
             self._save_backup()
+        self._notify_change()
+
+    def _notify_change(self) -> None:
+        callback = self.on_change
+        if not callback:
+            return
+        try:
+            callback()
+        except Exception:
+            return
 
     def _backup_item_payload(self, item: PlaylistItem) -> dict[str, Any]:
         payload = item.serialize()
