@@ -744,6 +744,13 @@ select:disabled {
   color: var(--ink);
 }
 
+.player-control-row button[data-control-action="next-track"] {
+  border: 1.5px solid rgba(202, 91, 60, 0.58);
+  background: rgba(202, 91, 60, 0.1);
+  color: var(--accent-deep);
+  box-shadow: 0 8px 18px rgba(202, 91, 60, 0.08);
+}
+
 .primary-button:disabled,
 .secondary-button:disabled,
 .ghost-button:disabled,
