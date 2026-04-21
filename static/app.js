@@ -3,6 +3,10 @@ const bannerAutoHideMs = 5000;
 const stalledRetrySeconds = 5;
 const gatchaCooldownMs = 15000;
 const localPlayerSyncIntervalMs = 120;
+const localPlayerHardSyncThresholdSeconds = 0.25;
+const localPlayerForceSyncEpsilonSeconds = 0.015;
+const localPlayerSeekSettlePollMs = 50;
+const localPlayerSeekSettleMaxMs = 1400;
 const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
 const maxAvOffsetMs = 5000;
@@ -70,6 +74,11 @@ const state = {
   localAdvanceInFlight: false,
   localShouldBePlaying: false,
   localSeekResumePending: false,
+  localSeekSettling: false,
+  localSeekResumeAfterSettle: false,
+  localSeekSettleStartedAt: 0,
+  localSeekSettleTimer: null,
+  localSeekSettleCallback: null,
   localPlayerVolume: 1,
   localPlayerMuted: false,
   pendingPlaybackRestore: null,
@@ -1662,6 +1671,23 @@ function clampMediaTime(media, nextTime) {
   return Math.min(target, Number(media.duration));
 }
 
+function setMediaCurrentTime(media, nextTime, toleranceSeconds = localPlayerForceSyncEpsilonSeconds) {
+  if (!media) {
+    return false;
+  }
+  const target = clampMediaTime(media, nextTime);
+  const currentTime = Number(media.currentTime || 0);
+  if (Number.isFinite(currentTime) && Math.abs(currentTime - target) <= toleranceSeconds) {
+    return false;
+  }
+  try {
+    media.currentTime = target;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function clearLocalPlayerSyncTimer() {
   if (state.localPlayerSyncTimer) {
     window.clearInterval(state.localPlayerSyncTimer);
@@ -1669,9 +1695,22 @@ function clearLocalPlayerSyncTimer() {
   }
 }
 
+function clearLocalPlayerSeekState() {
+  if (state.localSeekSettleTimer) {
+    window.clearTimeout(state.localSeekSettleTimer);
+    state.localSeekSettleTimer = null;
+  }
+  state.localSeekSettling = false;
+  state.localSeekResumeAfterSettle = false;
+  state.localSeekSettleStartedAt = 0;
+  state.localSeekSettleCallback = null;
+  state.localSeekResumePending = false;
+}
+
 function teardownMountedPlayer() {
   clearLocalPlayerSyncTimer();
   clearLocalPlayerControlsHideTimer();
+  clearLocalPlayerSeekState();
   elements.playerFrame.querySelectorAll("video, audio").forEach((media) => {
     try {
       media.pause();
@@ -1698,6 +1737,15 @@ function activePrimaryVideoElement() {
   return mountedLocalVideoElement();
 }
 
+function isActiveSplitPlayer(video, audio) {
+  const active = activeLocalPlayerElements();
+  return active.video === video && active.audio === audio;
+}
+
+function isSplitPlayerSeekSettling(video, audio) {
+  return state.localSeekSettling && isActiveSplitPlayer(video, audio);
+}
+
 function captureLocalPlayerPreferences() {
   const { video, audio } = activeLocalPlayerElements();
   const primaryVideo = video || activePrimaryVideoElement();
@@ -1710,7 +1758,7 @@ function captureLocalPlayerPreferences() {
     state.localPlayerMuted = Boolean(mediaWithVolume.muted);
     persistLocalVolumePreferences();
   }
-  if (primaryVideo) {
+  if (primaryVideo && !state.localSeekSettling) {
     state.localShouldBePlaying = !primaryVideo.paused;
   }
 }
@@ -1751,6 +1799,95 @@ function syncSplitPlayerVolumeFromVideo(video, audio) {
   }
 }
 
+function syncSplitSeekAudioTarget(video, audio) {
+  if (!video || !audio || audio.readyState < 1) {
+    return 0;
+  }
+  const targetAudioTime = clampMediaTime(audio, Number(video.currentTime || 0) - currentAvOffsetSeconds());
+  setMediaCurrentTime(audio, targetAudioTime);
+  return targetAudioTime;
+}
+
+function scheduleSplitPlayerSeekSettle(video, audio) {
+  if (!isSplitPlayerSeekSettling(video, audio)) {
+    return;
+  }
+  if (state.localSeekSettleTimer) {
+    window.clearTimeout(state.localSeekSettleTimer);
+    state.localSeekSettleTimer = null;
+  }
+  state.localSeekSettleTimer = window.setTimeout(() => {
+    state.localSeekSettleTimer = null;
+    settleSplitPlayerSeek(video, audio);
+  }, localPlayerSeekSettlePollMs);
+}
+
+function beginSplitPlayerSeek(video, audio, options = {}) {
+  if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
+    return;
+  }
+
+  const resumeAfterSeek = Boolean(options.resumeAfterSeek);
+  state.localSeekSettling = true;
+  state.localSeekResumeAfterSettle = resumeAfterSeek;
+  state.localSeekSettleStartedAt = Date.now();
+  state.localSeekResumePending = resumeAfterSeek;
+  state.localShouldBePlaying = resumeAfterSeek;
+  if (typeof options.onSettled === "function") {
+    state.localSeekSettleCallback = options.onSettled;
+  }
+
+  if (!audio.paused) {
+    audio.pause();
+  }
+  if (!video.paused) {
+    video.pause();
+  }
+  if (Number.isFinite(options.targetTime)) {
+    setMediaCurrentTime(video, options.targetTime);
+  }
+
+  syncSplitSeekAudioTarget(video, audio);
+  scheduleSplitPlayerSeekSettle(video, audio);
+}
+
+function settleSplitPlayerSeek(video, audio, force = false) {
+  if (!isSplitPlayerSeekSettling(video, audio)) {
+    return false;
+  }
+
+  const targetAudioTime = syncSplitSeekAudioTarget(video, audio);
+  const elapsedMs = Date.now() - state.localSeekSettleStartedAt;
+  const audioNeedsData = targetAudioTime > 0 && audio.readyState < 2;
+  const waitingForMedia = video.seeking || audio.seeking || video.readyState < 2 || audio.readyState < 1 || audioNeedsData;
+  if (!force && waitingForMedia && elapsedMs < localPlayerSeekSettleMaxMs) {
+    scheduleSplitPlayerSeekSettle(video, audio);
+    return false;
+  }
+
+  const resumeAfterSettle = state.localSeekResumeAfterSettle && !video.ended;
+  const onSettled = state.localSeekSettleCallback;
+  clearLocalPlayerSeekState();
+
+  syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  if (resumeAfterSettle) {
+    state.localShouldBePlaying = true;
+    video.play()
+      .then(() => syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true))
+      .catch(() => {});
+  } else {
+    state.localShouldBePlaying = false;
+    if (!audio.paused) {
+      audio.pause();
+    }
+  }
+
+  if (typeof onSettled === "function") {
+    onSettled();
+  }
+  return true;
+}
+
 function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
   if (!video || !audio) {
     return;
@@ -1758,11 +1895,38 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
 
   syncSplitPlayerVolumeFromVideo(video, audio);
   audio.playbackRate = Number(video.playbackRate || 1) || 1;
+
+  if (isSplitPlayerSeekSettling(video, audio)) {
+    if (!audio.paused) {
+      audio.pause();
+    }
+    return;
+  }
+
+  if (video.seeking) {
+    if (!audio.paused) {
+      audio.pause();
+    }
+    return;
+  }
+  if (!video.paused && video.readyState < 2) {
+    if (!audio.paused) {
+      audio.pause();
+    }
+    return;
+  }
+  if (audio.seeking && !forceSeek) {
+    return;
+  }
+
   const targetAudioTime = clampMediaTime(audio, Number(video.currentTime || 0) - offsetSeconds);
   const drift = Math.abs(Number(audio.currentTime || 0) - targetAudioTime);
 
-  if (forceSeek || drift > 0.08) {
-    audio.currentTime = targetAudioTime;
+  if (
+    (forceSeek && drift > localPlayerForceSyncEpsilonSeconds)
+    || (!forceSeek && drift > localPlayerHardSyncThresholdSeconds)
+  ) {
+    setMediaCurrentTime(audio, targetAudioTime);
   }
 
   if (video.paused) {
@@ -2202,31 +2366,42 @@ function renderPlayer(currentItem, playbackMode) {
     }
 
     restoreApplied = true;
-    if (Number.isFinite(pendingRestore.currentTime)) {
-      video.currentTime = clampMediaTime(video, pendingRestore.currentTime);
-    }
-    state.localShouldBePlaying = Boolean(pendingRestore.wasPlaying);
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
-    if (pendingRestore.wasPlaying) {
-      video.play().catch(() => {});
-    }
     state.pendingPlaybackRestore = null;
-    reportCurrentVideoStatus();
+    beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: Boolean(pendingRestore.wasPlaying),
+      targetTime: pendingRestore.currentTime,
+      onSettled: reportCurrentVideoStatus,
+    });
   };
 
   video.addEventListener("loadedmetadata", () => {
     showMountedPlayerControls();
     maybeRestorePlayback();
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
     reportCurrentVideoStatus();
   });
 
   audio.addEventListener("loadedmetadata", () => {
     maybeRestorePlayback();
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
   });
 
   video.addEventListener("play", () => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      state.localSeekResumeAfterSettle = true;
+      state.localShouldBePlaying = true;
+      state.localSeekResumePending = true;
+      video.pause();
+      return;
+    }
     state.localShouldBePlaying = true;
     state.localSeekResumePending = false;
     showMountedPlayerControls();
@@ -2254,17 +2429,39 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("seeking", () => {
-    state.localSeekResumePending = !video.paused || state.localShouldBePlaying;
+    beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: !video.paused || state.localShouldBePlaying,
+      onSettled: reportCurrentVideoStatus,
+    });
   });
 
   video.addEventListener("seeked", () => {
     showMountedPlayerControls();
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
-    if (state.localSeekResumePending) {
-      video.play().catch(() => {});
+    if (!settleSplitPlayerSeek(video, audio)) {
+      reportCurrentVideoStatus();
     }
-    state.localSeekResumePending = false;
-    reportCurrentVideoStatus();
+  });
+
+  video.addEventListener("canplay", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  audio.addEventListener("seeked", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  audio.addEventListener("canplay", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  video.addEventListener("waiting", () => {
+    if (!audio.paused) {
+      audio.pause();
+    }
+  });
+
+  video.addEventListener("playing", () => {
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
   });
 
   video.addEventListener("ratechange", () => {
@@ -2293,17 +2490,28 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   audio.addEventListener("ended", () => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      return;
+    }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
   });
 
   state.localPlayerSyncTimer = window.setInterval(() => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+      return;
+    }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
   }, localPlayerSyncIntervalMs);
 
   window.setTimeout(() => {
     showMountedPlayerControls();
     maybeRestorePlayback();
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
     reportCurrentVideoStatus();
   }, 0);
 }
@@ -2326,7 +2534,16 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
     if (video) {
       if (action === "toggle-play") {
-        if (video.paused) {
+        if (audio && isSplitPlayerSeekSettling(video, audio)) {
+          const shouldResume = !state.localSeekResumeAfterSettle;
+          state.localSeekResumeAfterSettle = shouldResume;
+          state.localShouldBePlaying = shouldResume;
+          state.localSeekResumePending = shouldResume;
+          if (!shouldResume) {
+            video.pause();
+            audio.pause();
+          }
+        } else if (video.paused) {
           state.localShouldBePlaying = true;
           video.play().catch(() => {});
         } else {
@@ -2336,16 +2553,23 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
       } else if (action === "seek-relative") {
         const deltaSeconds = Number(command?.delta_seconds || 0);
         if (Number.isFinite(deltaSeconds) && deltaSeconds !== 0) {
-          state.localSeekResumePending = !video.paused || state.localShouldBePlaying;
+          const resumeAfterSeek = !video.paused || state.localShouldBePlaying;
           const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
           const nextTime = Math.max(0, Number(video.currentTime || 0) + deltaSeconds);
-          video.currentTime = Number.isFinite(duration)
+          const clampedNextTime = Number.isFinite(duration)
             ? Math.min(nextTime, duration)
             : nextTime;
           if (audio) {
-            syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+            beginSplitPlayerSeek(video, audio, {
+              resumeAfterSeek,
+              targetTime: clampedNextTime,
+              onSettled: () => reportPlayerStatus(currentItem.id, video),
+            });
+          } else {
+            state.localSeekResumePending = resumeAfterSeek;
+            setMediaCurrentTime(video, clampedNextTime);
           }
-          if (state.localSeekResumePending) {
+          if (!audio && state.localSeekResumePending) {
             video.play().catch(() => {});
           }
         }
