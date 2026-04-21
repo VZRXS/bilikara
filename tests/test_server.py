@@ -9,10 +9,13 @@ from bilikara.server import AppContext, BilikaraHandler, run
 class AppContextRemoteAccessTest(unittest.TestCase):
     def make_context(self, *, host: str = "0.0.0.0", port: int = 8080) -> AppContext:
         context = AppContext.__new__(AppContext)
+        context._closed = False
         context._host = host
         context._port = port
         context._remote_access_lock = threading.RLock()
         context._remote_access = AppContext._build_remote_access_payload(host, port, [])
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
         return context
 
     def test_remote_access_snapshot_uses_cached_payload(self):
@@ -39,6 +42,28 @@ class AppContextRemoteAccessTest(unittest.TestCase):
         self.assertEqual(snapshot["local_url"], "http://127.0.0.1:8080/remote")
         self.assertEqual(snapshot["lan_urls"], ["http://192.168.0.8:8080/remote"])
         self.assertEqual(snapshot["preferred_url"], "http://192.168.0.8:8080/remote")
+        self.assertEqual(context._state_revision, 1)
+
+
+class AppContextStateRevisionTest(unittest.TestCase):
+    def test_wait_for_state_change_unblocks_after_notify(self):
+        context = AppContext.__new__(AppContext)
+        context._closed = False
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+
+        results: list[bool] = []
+
+        def wait_for_change() -> None:
+            results.append(context.wait_for_state_change(0, timeout=1.0))
+
+        worker = threading.Thread(target=wait_for_change)
+        worker.start()
+        context._notify_state_changed()
+        worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(results, [True])
 
 
 class AppContextClientTrackingTest(unittest.TestCase):

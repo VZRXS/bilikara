@@ -1,9 +1,10 @@
-const pollIntervalMs = 1500;
 const audioVariantSwitchDebounceMs = 350;
 const gatchaCooldownMs = 15000;
 const playerSettingsEchoSuppressMs = 1800;
 const remoteVolumeCommitDebounceMs = 160;
 const viewportScaleResetDelaysMs = [0, 120, 360];
+const eventStreamInitialRetryMs = 1000;
+const eventStreamMaxRetryMs = 15000;
 const storageKeys = {
   layoutMode: "bilikara.remote.layout.mode",
 };
@@ -34,6 +35,9 @@ const state = {
     video: false,
     audio: false,
   },
+  eventSource: null,
+  eventStreamReconnectTimer: null,
+  eventStreamRetryMs: eventStreamInitialRetryMs,
   gatchaCandidate: null,
   gatchaCooldownUntil: 0,
   gatchaCooldownTimer: null,
@@ -329,8 +333,93 @@ async function fetchState() {
   if (!response.ok || !payload.ok) {
     throw new Error(payload.error || "获取状态失败");
   }
-  state.data = payload.data;
+  applyStateSnapshot(payload.data, { forceRender: !state.data });
+}
+function currentStateRevision(snapshot = state.data) {
+  const revision = Number(snapshot?.state_revision || 0);
+  return Number.isFinite(revision) && revision >= 0 ? revision : 0;
+}
+
+function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return false;
+  }
+  const nextRevision = currentStateRevision(snapshot);
+  const currentRevision = currentStateRevision(state.data);
+  if (!forceRender && state.data) {
+    if (nextRevision > 0 && nextRevision <= currentRevision) {
+      return false;
+    }
+    if (nextRevision === 0 && currentRevision > 0) {
+      return false;
+    }
+  }
+  state.data = snapshot;
   render();
+  return true;
+}
+
+function clearEventStreamReconnectTimer() {
+  if (!state.eventStreamReconnectTimer) {
+    return;
+  }
+  window.clearTimeout(state.eventStreamReconnectTimer);
+  state.eventStreamReconnectTimer = null;
+}
+
+function closeEventStream() {
+  clearEventStreamReconnectTimer();
+  if (!state.eventSource) {
+    return;
+  }
+  state.eventSource.close();
+  state.eventSource = null;
+}
+
+function scheduleEventStreamReconnect() {
+  clearEventStreamReconnectTimer();
+  const delayMs = state.eventStreamRetryMs;
+  state.eventStreamReconnectTimer = window.setTimeout(() => {
+    state.eventStreamReconnectTimer = null;
+    connectStateStream();
+  }, delayMs);
+  state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, delayMs * 2);
+}
+
+function connectStateStream() {
+  if (typeof window.EventSource !== "function") {
+    return;
+  }
+  closeEventStream();
+  const source = new window.EventSource(`/api/events?client_id=${encodeURIComponent(state.clientId)}`);
+  state.eventSource = source;
+
+  source.addEventListener("open", () => {
+    state.eventStreamRetryMs = eventStreamInitialRetryMs;
+  });
+
+  source.addEventListener("state", (event) => {
+    try {
+      const snapshot = JSON.parse(event.data);
+      applyStateSnapshot(snapshot);
+      state.eventStreamRetryMs = eventStreamInitialRetryMs;
+    } catch {
+      // Ignore malformed events and wait for the next valid snapshot.
+    }
+  });
+
+  source.addEventListener("error", async () => {
+    if (state.eventSource !== source) {
+      return;
+    }
+    closeEventStream();
+    try {
+      await fetchState();
+    } catch {
+      // Keep the last successful state on screen while reconnecting.
+    }
+    scheduleEventStreamReconnect();
+  });
 }
 
 async function searchGatchaCache(query) {
@@ -932,7 +1021,7 @@ async function confirmBindingSheet() {
       setFormMessage("已取消重复添加");
       return;
     }
-    state.data = result.data;
+    applyStateSnapshot(result.data, { forceRender: true });
     closeBindingSheet();
     if (intent.clearInput) {
       elements.urlInput.value = "";
@@ -947,7 +1036,6 @@ async function confirmBindingSheet() {
       elements.gatchaInitView.classList.remove("hidden");
     }
     setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入列表");
-    render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(intent, error.payload?.binding);
@@ -980,8 +1068,7 @@ async function setRemoteAvOffset(offsetMs) {
     if (requestSeq !== state.remoteAvOffsetSaveSeq) {
       return;
     }
-    state.data = nextData;
-    render();
+    applyStateSnapshot(nextData);
   } catch (error) {
     if (requestSeq !== state.remoteAvOffsetSaveSeq) {
       return;
@@ -1007,8 +1094,7 @@ async function commitRemoteVolumeSettings(payload, requestSeq) {
     if (requestSeq !== state.remoteVolumeSaveSeq) {
       return;
     }
-    state.data = nextData;
-    render();
+    applyStateSnapshot(nextData);
   } catch (error) {
     if (requestSeq !== state.remoteVolumeSaveSeq) {
       return;
@@ -1259,10 +1345,9 @@ async function submitRequest(position) {
       setFormMessage("已取消重复点歌。");
       return;
     }
-    state.data = result.data;
+    applyStateSnapshot(result.data, { forceRender: true });
     elements.urlInput.value = "";
     setFormMessage(position === "next" ? "已经顶歌到下一首。" : "已经加入播放队列。");
-    render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(
@@ -1301,9 +1386,8 @@ async function handleAddByHistory(url, position) {
       setFormMessage("已取消重复点歌。");
       return;
     }
-    state.data = result.data;
+    applyStateSnapshot(result.data, { forceRender: true });
     setFormMessage(position === "next" ? "已从历史记录顶歌到下一首。" : "已从历史记录加入队列。");
-    render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(
@@ -1342,14 +1426,13 @@ async function addByUrl(url, position = "tail") {
       setFormMessage("已取消重复点歌。");
       return;
     }
-    state.data = result.data;
+    applyStateSnapshot(result.data, { forceRender: true });
     hideSearchResults();
     elements.searchQuery.value = "";
     state.gatchaCandidate = null;
     elements.gatchaResultView.classList.add("hidden");
     elements.gatchaInitView.classList.remove("hidden");
     setFormMessage("点歌成功。");
-    render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(
@@ -1396,13 +1479,12 @@ async function sendPlayerControl(action, deltaSeconds = 0) {
     } else {
       renderPlayerControls(currentItem, playbackMode);
     }
-    state.data = await apiPost("/api/player/control", {
+    applyStateSnapshot(await apiPost("/api/player/control", {
       action,
       item_id: currentItem.id,
       delta_seconds: deltaSeconds,
-    });
+    }));
     setFormMessage(message);
-    render();
   } catch (error) {
     setFormMessage(error.message, true);
     await fetchState().catch(() => {});
@@ -1418,9 +1500,8 @@ async function sendPlayerNext() {
   try {
     state.playerControlPendingAction = "next-track";
     renderPlayerControls(state.data?.current_item, state.data?.playback_mode);
-    state.data = await apiPost("/api/player/next");
+    applyStateSnapshot(await apiPost("/api/player/next"));
     setFormMessage("已切到下一首。");
-    render();
   } catch (error) {
     setFormMessage(error.message, true);
     await fetchState().catch(() => {});
@@ -1434,6 +1515,7 @@ function queueNoteText() {
 }
 
 function disconnectClient() {
+  closeEventStream();
   if (state.disconnectSent) {
     return;
   }
@@ -1630,9 +1712,8 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
         setFormMessage("已取消重复添加");
         return;
       }
-      state.data = result.data;
+      applyStateSnapshot(result.data, { forceRender: true });
       setFormMessage("已将分P加入下载列表");
-      render();
     } catch (error) {
       setFormMessage(error.message, true);
     } finally {
@@ -1655,11 +1736,10 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     state.audioVariantSwitchInFlight = true;
     state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
     renderAudioVariantBar(currentItem, state.data?.playback_mode);
-    state.data = await apiPost("/api/player/audio-variant", {
+    applyStateSnapshot(await apiPost("/api/player/audio-variant", {
       item_id: currentItem.id,
       variant_id: nextVariantId,
-    });
-    render();
+    }));
     const activeItem = state.data?.current_item;
     const activeVariant = activeItem ? selectedAudioVariantForItem(activeItem) : null;
     setFormMessage(`已切换到 ${activeVariant?.label || nextVariantId}`);
@@ -1747,7 +1827,7 @@ window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
-async function startPolling() {
+async function startRemoteSession() {
   hydrateLocalPreferences();
   renderLayoutMode();
   try {
@@ -1755,13 +1835,7 @@ async function startPolling() {
   } catch (error) {
     setFormMessage(error.message, true);
   }
-  window.setInterval(async () => {
-    try {
-      await fetchState();
-    } catch {
-      // Keep the last successful state on screen.
-    }
-  }, pollIntervalMs);
+  connectStateStream();
 }
 
-startPolling();
+startRemoteSession();
