@@ -846,28 +846,27 @@ class CacheManager:
             persist_backup=False,
         )
         self._record_item_activity(item.id)
-        variant_files = self._build_audio_variant_outputs(
-            item,
-            ffmpeg_path,
-            item_dir,
-            log_path,
-            video_file=video_file,
-            audio_files=audio_files,
-        )
+
+        # LEGACY: older split-cache builds generated one muxed MP4 per audio
+        # variant and exposed it as audio_variants[*].media_url. The current
+        # host player uses the independent video track plus audio_url directly,
+        # so keep the old mux path commented below as a reference only.
+        # variant_files = self._build_audio_variant_outputs(
+        #     item,
+        #     ffmpeg_path,
+        #     item_dir,
+        #     log_path,
+        #     video_file=video_file,
+        #     audio_files=audio_files,
+        # )
+
         audio_variants = []
-        for index, (variant_id, label, path) in enumerate(variant_files):
-            raw_audio_file = audio_files[index][1] if index < len(audio_files) else None
-            raw_audio_url = (
-                self._build_media_url(str(raw_audio_file.relative_to(CACHE_DIR)))
-                if raw_audio_file is not None
-                else ""
-            )
+        for index, (page, audio_file, label) in enumerate(audio_files):
             audio_variants.append(
                 {
-                    "id": variant_id,
+                    "id": self._variant_id(page, label, index),
                     "label": label,
-                    "media_url": self._build_media_url(str(path.relative_to(CACHE_DIR))),
-                    "audio_url": raw_audio_url,
+                    "audio_url": self._build_media_url(str(audio_file.relative_to(CACHE_DIR))),
                 }
             )
         existing_variant_id = str(item.selected_audio_variant_id or "").strip()
@@ -895,14 +894,16 @@ class CacheManager:
                 }
                 for page, audio_file, _label in audio_files
             ],
-            *[
-                {
-                    "label": f"播放文件 {label}",
-                    "path": path,
-                    "required_streams": {"video", "audio"},
-                }
-                for _variant_id, label, path in variant_files
-            ],
+            # LEGACY: muxed variant files are no longer generated, so ffprobe
+            # no longer validates "播放文件 {label}" video+audio MP4 outputs.
+            # *[
+            #     {
+            #         "label": f"播放文件 {label}",
+            #         "path": path,
+            #         "required_streams": {"video", "audio"},
+            #     }
+            #     for _variant_id, label, path in variant_files
+            # ],
         ]
         return {
             "video_file": video_file,
@@ -1202,74 +1203,79 @@ class CacheManager:
     #         "selected_audio_variant_id": selected_audio_variant_id,
     #     }
 
-    def _build_audio_variant_outputs(
-        self,
-        item,
-        ffmpeg_path: Path,
-        item_dir: Path,
-        log_path: Path,
-        *,
-        video_file: Path,
-        audio_files: list[tuple[int, Path, str]],
-    ) -> list[tuple[str, str, Path]]:
-        if not audio_files:
-            raise DownloadCommandError("没有可用的音轨文件，无法生成音轨变体")
-
-        variant_files: list[tuple[str, str, Path]] = []
-        variants_dir = item_dir / "variants"
-        variants_dir.mkdir(parents=True, exist_ok=True)
-
-        for index, (page, audio_file, label) in enumerate(audio_files):
-            variant_id = self._variant_id(page, label, index)
-            variant_path = variants_dir / f"{variant_id}.mp4"
-            variant_path.unlink(missing_ok=True)
-
-            command = [
-                str(ffmpeg_path),
-                "-y",
-                "-i",
-                str(video_file),
-                "-i",
-                str(audio_file),
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                "-strict",
-                "-2",
-                "-metadata:s:a:0",
-                f"title={label}",
-                str(variant_path),
-            ]
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
-            )
-
-            process = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                errors="replace",
-                check=False,
-                cwd=str(BB_DOWN_DIR),
-                env=self._tool_process_env(ffmpeg_path),
-                **self._hidden_process_kwargs(),
-            )
-            if process.returncode != 0 or not variant_path.exists():
-                raise DownloadCommandError(
-                    process.stderr.strip()
-                    or process.stdout.strip()
-                    or f"生成音轨变体失败: {label}"
-                )
-
-            self._record_item_activity(item.id)
-            variant_files.append((variant_id, label, variant_path))
-        return variant_files
+    # LEGACY: old split-cache builds generated muxed MP4 files under
+    # cache/<item>/variants and exposed them as audio_variants[*].media_url.
+    # The current player uses split media (video_media_url + audio_url), so this
+    # mux path is intentionally disabled to avoid extra ffmpeg work and storage.
+    #
+    # def _build_audio_variant_outputs(
+    #     self,
+    #     item,
+    #     ffmpeg_path: Path,
+    #     item_dir: Path,
+    #     log_path: Path,
+    #     *,
+    #     video_file: Path,
+    #     audio_files: list[tuple[int, Path, str]],
+    # ) -> list[tuple[str, str, Path]]:
+    #     if not audio_files:
+    #         raise DownloadCommandError("没有可用的音轨文件，无法生成音轨变体")
+    #
+    #     variant_files: list[tuple[str, str, Path]] = []
+    #     variants_dir = item_dir / "variants"
+    #     variants_dir.mkdir(parents=True, exist_ok=True)
+    #
+    #     for index, (page, audio_file, label) in enumerate(audio_files):
+    #         variant_id = self._variant_id(page, label, index)
+    #         variant_path = variants_dir / f"{variant_id}.mp4"
+    #         variant_path.unlink(missing_ok=True)
+    #
+    #         command = [
+    #             str(ffmpeg_path),
+    #             "-y",
+    #             "-i",
+    #             str(video_file),
+    #             "-i",
+    #             str(audio_file),
+    #             "-map",
+    #             "0:v:0",
+    #             "-map",
+    #             "1:a:0",
+    #             "-c",
+    #             "copy",
+    #             "-movflags",
+    #             "+faststart",
+    #             "-strict",
+    #             "-2",
+    #             "-metadata:s:a:0",
+    #             f"title={label}",
+    #             str(variant_path),
+    #         ]
+    #         self._append_log_line(
+    #             log_path,
+    #             f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
+    #         )
+    #
+    #         process = subprocess.run(
+    #             command,
+    #             capture_output=True,
+    #             text=True,
+    #             errors="replace",
+    #             check=False,
+    #             cwd=str(BB_DOWN_DIR),
+    #             env=self._tool_process_env(ffmpeg_path),
+    #             **self._hidden_process_kwargs(),
+    #         )
+    #         if process.returncode != 0 or not variant_path.exists():
+    #             raise DownloadCommandError(
+    #                 process.stderr.strip()
+    #                 or process.stdout.strip()
+    #                 or f"生成音轨变体失败: {label}"
+    #             )
+    #
+    #         self._record_item_activity(item.id)
+    #         variant_files.append((variant_id, label, variant_path))
+    #     return variant_files
 
     def _validate_cache_result(
         self,
@@ -1942,7 +1948,7 @@ class CacheManager:
     def _ensure_item_cached(self, item) -> None:
         video_path = CACHE_DIR / item.video_relative_path if item.video_relative_path else None
         has_audio_variants = any(
-            isinstance(variant, dict) and str(variant.get("audio_url") or variant.get("media_url") or "").strip()
+            isinstance(variant, dict) and str(variant.get("audio_url") or "").strip()
             for variant in item.audio_variants
         )
         if video_path and video_path.exists() and has_audio_variants:

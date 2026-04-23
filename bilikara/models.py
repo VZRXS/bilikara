@@ -59,7 +59,10 @@ class PlaylistItem:
             self.video_media_url
             and any(
                 isinstance(variant, dict)
-                and str(variant.get("audio_url") or variant.get("media_url") or "").strip()
+                and str(variant.get("audio_url") or "").strip()
+                # LEGACY: audio_variants[*].media_url used to point to a
+                # muxed MP4 variant. Split playback no longer reads it.
+                # and str(variant.get("media_url") or "").strip()
                 for variant in self.audio_variants
             )
         )

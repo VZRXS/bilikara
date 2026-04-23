@@ -1555,7 +1555,7 @@ function audioVariantsForItem(item) {
     return [];
   }
   return item.audio_variants.filter(
-    (variant) => variant && (variant.audio_url || variant.media_url),
+    (variant) => variant && variant.audio_url,
   );
 }
 
@@ -1620,8 +1620,10 @@ function partOptionsForItem(item) {
     const cachedVariant = cachedVariantsById.get(entry.id);
     return {
       ...entry,
-      media_url: String(cachedVariant?.media_url || ""),
       audio_url: String(cachedVariant?.audio_url || ""),
+      // LEGACY: cachedVariant.media_url used to point to a muxed MP4 variant.
+      // The host player now uses video_media_url + audio_url split playback.
+      // media_url: String(cachedVariant?.media_url || ""),
     };
   });
 }
@@ -1648,10 +1650,12 @@ function selectedAudioVariantForItem(item) {
   return variants[0];
 }
 
-function selectedMediaUrlForItem(item) {
-  const selectedVariant = selectedAudioVariantForItem(item);
-  return String(selectedVariant?.media_url || "").trim();
-}
+// LEGACY: single-file/muxed playback helper. Current local playback reads
+// selectedVideoUrlForItem() and selectedAudioUrlForItem() separately.
+// function selectedMediaUrlForItem(item) {
+//   const selectedVariant = selectedAudioVariantForItem(item);
+//   return String(selectedVariant?.media_url || "").trim();
+// }
 
 function selectedVideoUrlForItem(item) {
   return String(item?.video_media_url || "").trim();

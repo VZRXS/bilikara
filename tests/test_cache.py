@@ -410,42 +410,38 @@ class CacheManagerPolicyTest(unittest.TestCase):
         first_path = env["PATH"].split(os.pathsep)[0]
         self.assertEqual(first_path, str(ffmpeg_path.parent))
 
-    def test_audio_variant_ffmpeg_allows_flac_in_mp4_copy(self):
+    def test_download_selected_streams_skips_legacy_muxed_variant_outputs(self):
         item_dir = self.cache_dir / "song-a"
         item_dir.mkdir(parents=True, exist_ok=True)
-        video_file = item_dir / "video.mp4"
-        audio_file = item_dir / "audio.m4a"
+        video_file = item_dir / "video-p1" / "video.mp4"
+        audio_file = item_dir / "audio-p1" / "audio.m4a"
         log_path = Path(self.temp_dir.name) / "logs" / "song-a.log"
-        ffmpeg_path = Path(self.temp_dir.name) / "tools" / "ffmpeg"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
         video_file.write_bytes(b"video")
         audio_file.write_bytes(b"audio")
-        captured_commands: list[list[str]] = []
 
-        class FakeCompletedProcess:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        def fake_run(command, **_kwargs):
-            captured_commands.append(command)
-            Path(command[-1]).write_bytes(b"variant")
-            return FakeCompletedProcess()
-
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.subprocess.run", fake_run):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
-                manager._build_audio_variant_outputs(
-                    self.make_item("song-a"),
-                    ffmpeg_path,
-                    item_dir,
-                    log_path,
-                    video_file=video_file,
-                    audio_files=[(1, audio_file, "On vocal")],
-                )
+                item = self.make_item("song-a")
+                item.selected_pages = [1]
+                item.video_page = 1
+                with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_file]):
+                    result = manager._download_selected_streams(
+                        item,
+                        Path("/tools/BBDown"),
+                        Path("/tools/ffmpeg"),
+                        item_dir,
+                        log_path,
+                    )
             finally:
                 manager.shutdown()
 
-        self.assertEqual(captured_commands[0][captured_commands[0].index("-strict") + 1], "-2")
+        self.assertEqual(result["audio_variants"][0]["audio_url"], "/media/song-a/audio-p1/audio.m4a")
+        self.assertNotIn("media_url", result["audio_variants"][0])
+        validation_labels = [entry["label"] for entry in result["validation_files"]]
+        self.assertEqual(validation_labels, ["视频轨 P1", "音轨 P1"])
 
     def test_start_bbdown_login_removes_stale_qr_image(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"

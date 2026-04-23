@@ -611,7 +611,7 @@ function audioVariantsForItem(item) {
     return [];
   }
   return item.audio_variants.filter(
-    (variant) => variant && (variant.media_url || variant.audio_url),
+    (variant) => variant && variant.audio_url,
   );
 }
 
@@ -672,8 +672,10 @@ function partOptionsForItem(item) {
     const cachedVariant = cachedVariantsById.get(entry.id);
     return {
       ...entry,
-      media_url: String(cachedVariant?.media_url || ""),
       audio_url: String(cachedVariant?.audio_url || ""),
+      // LEGACY: cachedVariant.media_url used to point to a muxed MP4 variant.
+      // Remote controls only need to know whether split audio_url exists.
+      // media_url: String(cachedVariant?.media_url || ""),
     };
   });
 }
@@ -1144,7 +1146,7 @@ function hasLocalSplitMedia(item) {
       && item.video_media_url
       && Array.isArray(item.audio_variants)
       && item.audio_variants.some((variant) => (
-        variant && String(variant.audio_url || variant.media_url || "").trim()
+        variant && String(variant.audio_url || "").trim()
       ))
   );
 }
