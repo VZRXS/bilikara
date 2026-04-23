@@ -3316,14 +3316,6 @@ function syncDropIndicators() {
     }
     return;
   }
-
-  const candidates = [...elements.playlist.querySelectorAll(".song-item")].filter(
-    (node) => node.dataset.id !== state.dragItemId,
-  );
-  const lastNode = candidates[candidates.length - 1];
-  if (lastNode) {
-    lastNode.classList.add("drop-after");
-  }
 }
 
 function escapeHtml(value) {
@@ -4541,7 +4533,8 @@ elements.playlist.addEventListener("dragstart", (event) => {
   if (!item) {
     return;
   }
-  if (event.target.closest("button")) {
+  const dragHandle = event.target.closest("[data-drag-handle]");
+  if (!dragHandle || event.target.closest("button")) {
     event.preventDefault();
     return;
   }
@@ -4553,6 +4546,14 @@ elements.playlist.addEventListener("dragstart", (event) => {
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", state.dragItemId);
+    if (typeof event.dataTransfer.setDragImage === "function") {
+      const rect = item.getBoundingClientRect();
+      event.dataTransfer.setDragImage(
+        item,
+        Math.max(0, event.clientX - rect.left),
+        Math.max(0, event.clientY - rect.top),
+      );
+    }
   }
 
   syncDropIndicators();
@@ -4603,20 +4604,18 @@ elements.playlist.addEventListener("drop", async (event) => {
   const draggedId = state.dragItemId;
   const playlist = state.data.playlist;
   const sourceIndex = playlist.findIndex((item) => item.id === draggedId);
-  if (sourceIndex === -1) {
+  if (sourceIndex === -1 || !state.dragTargetId) {
     clearDragState();
     render();
     return;
   }
 
-  let targetIndex = playlist.length - 1;
-  if (state.dragTargetId) {
-    const hoverIndex = playlist.findIndex((item) => item.id === state.dragTargetId);
-    if (hoverIndex !== -1) {
-      targetIndex = hoverIndex + (state.dragTargetAfter ? 1 : 0);
-      if (sourceIndex < targetIndex) {
-        targetIndex -= 1;
-      }
+  let targetIndex = sourceIndex;
+  const hoverIndex = playlist.findIndex((item) => item.id === state.dragTargetId);
+  if (hoverIndex !== -1) {
+    targetIndex = hoverIndex + (state.dragTargetAfter ? 1 : 0);
+    if (sourceIndex < targetIndex) {
+      targetIndex -= 1;
     }
   }
 

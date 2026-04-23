@@ -507,8 +507,8 @@
 
     <!-- Templates -->
     <template id="playlist-item-template">
-      <article class="song-item" draggable="true">
-        <div class="song-badge-column">
+      <article class="song-item">
+        <div class="song-badge-column" draggable="true" data-drag-handle title="拖动调整顺序">
           <div class="song-progress-badge">
             <span class="song-index-label"></span>
             <span class="song-badge-check hidden">✓</span>
@@ -516,6 +516,7 @@
               type="button"
               class="cache-retry-button song-retry-button hidden"
               data-action="retry-cache"
+              draggable="false"
               title="重新下载缓存"
               aria-label="重新下载缓存"
             >

@@ -2193,12 +2193,8 @@ select:disabled {
   border: 1px solid rgba(91, 66, 47, 0.1);
   background: rgba(255, 255, 255, 0.74);
   flex: 0 0 auto;
-  cursor: grab;
+  cursor: default;
   overflow: visible;
-}
-
-.song-item:active {
-  cursor: grabbing;
 }
 
 .song-item.dragging {
@@ -2267,6 +2263,16 @@ select:disabled {
   contain: layout style;
   isolation: isolate;
   overflow: visible;
+  cursor: grab;
+  user-select: none;
+}
+
+.song-badge-column:active {
+  cursor: grabbing;
+}
+
+.song-main {
+  user-select: text;
 }
 
 .song-progress-badge {
