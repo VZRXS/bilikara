@@ -25,6 +25,31 @@
               <button type="button" class="mode-button active" data-layout-mode="full">完整</button>
             </div>
           </div>
+          <div class="mode-control remote-qr-control" id="remote-qr-control">
+            <span class="panel-tag">手机点歌</span>
+            <button
+              type="button"
+              id="remote-qr-toggle"
+              class="remote-mini-qr-button"
+              aria-expanded="false"
+              aria-controls="remote-qr-popover"
+            >
+              <img id="remote-mini-qr-image" class="remote-mini-qr-image hidden" alt="手机点歌二维码缩略图" />
+              <span id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder">生成中</span>
+            </button>
+            <div id="remote-qr-popover" class="remote-qr-popover hidden">
+              <div class="remote-qr-popover-card">
+                <button type="button" id="remote-qr-popover-close" class="remote-qr-popover-close" aria-label="关闭">×</button>
+                <div class="remote-qr-popover-image-wrap">
+                  <img id="remote-popover-qr-image" class="remote-popover-qr-image hidden" alt="手机点歌二维码" />
+                  <div id="remote-popover-qr-placeholder" class="remote-popover-qr-placeholder">正在生成二维码...</div>
+                </div>
+                <p class="remote-popover-copy-label">手机浏览器打开</p>
+                <a id="remote-popover-url-link" class="remote-popover-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
+                <p id="remote-popover-url-hint" class="remote-popover-url-hint">请确保手机和服务端在同一个局域网内。</p>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 

@@ -42,6 +42,8 @@ const state = {
   gatchaCooldownUntil: 0,
   gatchaCooldownTimer: null,
   layoutMode: "full",
+  remoteAccessRenderSignature: "",
+  remoteQrPopoverOpen: false,
   viewportScaleResetTimers: [],
 };
 
@@ -49,6 +51,16 @@ const elements = {
   viewportMeta: document.getElementById("viewport-meta"),
   remoteShell: document.getElementById("remote-shell"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
+  remoteQrControl: document.getElementById("remote-qr-control"),
+  remoteQrToggle: document.getElementById("remote-qr-toggle"),
+  remoteMiniQrImage: document.getElementById("remote-mini-qr-image"),
+  remoteMiniQrPlaceholder: document.getElementById("remote-mini-qr-placeholder"),
+  remoteQrPopover: document.getElementById("remote-qr-popover"),
+  remoteQrPopoverClose: document.getElementById("remote-qr-popover-close"),
+  remotePopoverQrImage: document.getElementById("remote-popover-qr-image"),
+  remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
+  remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
+  remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
   currentTitle: document.getElementById("current-title"),
   currentRequester: document.getElementById("current-requester"),
   currentMeta: document.getElementById("current-meta"),
@@ -249,6 +261,80 @@ function setLayoutMode(mode) {
   state.layoutMode = nextMode;
   writeLocalPreference(storageKeys.layoutMode, nextMode);
   renderLayoutMode();
+}
+
+function setRemoteQrPopoverOpen(open) {
+  state.remoteQrPopoverOpen = Boolean(open);
+  elements.remoteQrPopover?.classList.toggle("hidden", !state.remoteQrPopoverOpen);
+  elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrPopoverOpen));
+}
+
+function renderRemoteAccess(remoteAccess) {
+  const preferredUrl = String(remoteAccess?.preferred_url || "");
+  const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
+  const localUrl = String(remoteAccess?.local_url || "");
+  const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
+  const displayHint = lanUrls.length > 1
+    ? `可用局域网地址: ${lanUrls.join(" · ")}`
+    : lanUrls.length === 1
+      ? "请确保手机和服务端在同一个局域网内。"
+      : "暂未检测到局域网地址，可稍后刷新或手动检查网络。";
+  const signature = JSON.stringify({ displayUrl, displayHint });
+  if (signature === state.remoteAccessRenderSignature) {
+    return;
+  }
+  state.remoteAccessRenderSignature = signature;
+
+  if (elements.remotePopoverUrlLink) {
+    elements.remotePopoverUrlLink.href = displayUrl;
+    elements.remotePopoverUrlLink.textContent = displayUrl;
+  }
+  if (elements.remotePopoverUrlHint) {
+    elements.remotePopoverUrlHint.textContent = displayHint;
+  }
+  renderRemoteQr(displayUrl, [
+    { image: elements.remoteMiniQrImage, placeholder: elements.remoteMiniQrPlaceholder, size: 132 },
+    { image: elements.remotePopoverQrImage, placeholder: elements.remotePopoverQrPlaceholder, size: 220 },
+  ]);
+}
+
+function renderRemoteQr(url, targets = []) {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl) {
+    targets.forEach(({ image, placeholder }) => {
+      image?.classList.add("hidden");
+      if (placeholder) {
+        placeholder.textContent = "暂无可用访问地址";
+        placeholder.classList.remove("hidden");
+      }
+    });
+    return;
+  }
+
+  targets.forEach(({ image, placeholder, size = 220 }) => {
+    if (!image || !placeholder) {
+      return;
+    }
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=0&data=${encodeURIComponent(normalizedUrl)}`;
+    if (image.dataset.qrUrl === qrUrl) {
+      return;
+    }
+
+    image.dataset.qrUrl = qrUrl;
+    image.classList.add("hidden");
+    placeholder.textContent = "正在生成二维码...";
+    placeholder.classList.remove("hidden");
+    image.onload = () => {
+      placeholder.classList.add("hidden");
+      image.classList.remove("hidden");
+    };
+    image.onerror = () => {
+      image.classList.add("hidden");
+      placeholder.textContent = "二维码生成失败";
+      placeholder.classList.remove("hidden");
+    };
+    image.src = qrUrl;
+  });
 }
 
 function setFormMessage(message, isError = false) {
@@ -555,6 +641,7 @@ function render() {
   renderPlayerControls(data.current_item, data.playback_mode);
   renderRemoteAvSyncControls(data.playback_mode, data.player_settings);
   renderRemoteVolumeControls(data.playback_mode, data.player_settings);
+  renderRemoteAccess(data.remote_access);
   renderListHeader(data.playlist || [], data.history || []);
   renderQueue(Array.isArray(data.playlist) ? data.playlist : []);
   renderHistory(Array.isArray(data.history) ? data.history : []);
@@ -1596,6 +1683,30 @@ elements.layoutModeSwitch?.addEventListener("click", (event) => {
     return;
   }
   setLayoutMode(button.dataset.layoutMode);
+});
+
+elements.remoteQrToggle?.addEventListener("click", () => {
+  setRemoteQrPopoverOpen(!state.remoteQrPopoverOpen);
+});
+
+elements.remoteQrPopoverClose?.addEventListener("click", () => {
+  setRemoteQrPopoverOpen(false);
+});
+
+document.addEventListener("click", (event) => {
+  if (!state.remoteQrPopoverOpen) {
+    return;
+  }
+  if (event.target.closest("#remote-qr-control")) {
+    return;
+  }
+  setRemoteQrPopoverOpen(false);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setRemoteQrPopoverOpen(false);
+  }
 });
 
 elements.refreshButton.addEventListener("click", async () => {
