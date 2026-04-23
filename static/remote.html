@@ -88,7 +88,10 @@
           <p class="panel-tag">Song Request</p>
         </div>
         <form id="request-form" class="request-form">
-          <select id="requester-select" name="requester_name"></select>
+          <div class="requester-row">
+            <select id="requester-select" name="requester_name"></select>
+            <button type="button" id="resort-playlist-button" class="secondary-button requester-row-button">重新排序</button>
+          </div>
           <textarea
             id="url-input"
             name="url"

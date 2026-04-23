@@ -174,6 +174,7 @@ const elements = {
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
+  resortPlaylistButton: document.getElementById("resort-playlist-button"),
   historyToggleButton: document.getElementById("history-toggle-button"),
   clearPlaylistButton: document.getElementById("clear-playlist-button"),
   clearHistoryButton: document.getElementById("clear-history-button"),
@@ -3774,6 +3775,12 @@ async function reorderPlaylist(itemId, index) {
   render();
 }
 
+async function resortPlaylistByCycle() {
+  state.data = await apiPost("/api/playlist/resort");
+  setAppMessage("已按本场用户座次重新排序点歌列表。");
+  render();
+}
+
 async function setCacheLimit(maxCacheItems) {
   if (state.cacheLimitSaving) {
     return;
@@ -3990,6 +3997,14 @@ elements.sessionUserList.addEventListener("click", async (event) => {
 elements.queueNextButton.addEventListener("click", async (event) => {
   const point = anchorPointForEvent(event, elements.queueNextButton);
   await handleAdd("next", point);
+});
+
+elements.resortPlaylistButton?.addEventListener("click", async () => {
+  try {
+    await resortPlaylistByCycle();
+  } catch (error) {
+    setAppMessage(error.message, true);
+  }
 });
 
 elements.copyRemoteUrlButton.addEventListener("click", async () => {

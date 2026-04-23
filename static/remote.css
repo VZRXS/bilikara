@@ -680,6 +680,20 @@ h1 {
   gap: 12px;
 }
 
+.requester-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.requester-row-button {
+  width: auto;
+  min-height: 48px;
+  border-radius: 18px;
+  white-space: nowrap;
+}
+
 textarea {
   width: 100%;
   resize: vertical;

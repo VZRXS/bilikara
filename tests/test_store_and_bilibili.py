@@ -221,6 +221,21 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertTrue(self.store.move_item_to_index("d", 0))
         self.assertEqual([item.id for item in self.store.playlist], ["d", "b", "c"])
 
+    def test_resort_playlist_resets_priority_and_manual_items_to_cycle_order(self):
+        self.add_item("a1", requester_name="A")
+        self.add_item("b1", requester_name="B")
+        self.add_item("c1", requester_name="C")
+        self.add_item("a2", requester_name="A")
+
+        self.store.move_to_next("c1")
+        self.store.move_item_to_index("a2", 0)
+        self.assertEqual([item.queue_slot_type for item in self.store.playlist], ["manual", "priority", "cycle"])
+
+        self.assertTrue(self.store.resort_playlist_by_cycle())
+
+        self.assertEqual([item.id for item in self.store.playlist], ["b1", "c1", "a2"])
+        self.assertEqual([item.queue_slot_type for item in self.store.playlist], ["cycle", "cycle", "cycle"])
+
     def test_clear_playlist_keeps_current(self):
         self.add_item("a", requester_name="A")
         self.add_item("b", requester_name="B")

@@ -26,7 +26,7 @@
     elements.queueList.innerHTML = "";
     if (!playlist.length) {
       elements.queueList.innerHTML =
-        '<div class="queue-empty">队列暂时是空的，可以继续点下一首歌。</div>';
+        '<div class="queue-empty">点歌列表暂时是空的，可以继续点下一首歌。</div>';
       return;
     }
 
@@ -157,7 +157,7 @@
 
   async function reorderQueue(itemId, index) {
     state.data = await apiPost("/api/playlist/reorder", { item_id: itemId, index });
-    setFormMessage("已更新队列顺序。");
+    setFormMessage("已更新点歌列表顺序。");
     render();
   }
 

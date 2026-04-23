@@ -214,6 +214,16 @@ class PlaylistStore:
             self._touch(persist_backup=True)
             return True
 
+    def resort_playlist_by_cycle(self) -> bool:
+        with self.lock:
+            if len(self.playlist) < 2:
+                return False
+            for item in self.playlist:
+                item.queue_slot_type = "cycle"
+            self._rebuild_cycle_items_unlocked()
+            self._touch(persist_backup=True)
+            return True
+
     def move_to_front(self, item_id: str) -> bool:
         with self.lock:
             index = self._find_index(item_id)

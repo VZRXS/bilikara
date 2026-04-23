@@ -144,6 +144,10 @@ class AppContext:
         self.store.move_item_to_index(item_id, index)
         self.cache_manager.sync_with_playlist()
 
+    def resort_playlist_by_cycle(self) -> None:
+        self.store.resort_playlist_by_cycle()
+        self.cache_manager.sync_with_playlist()
+
     def move_to_next(self, item_id: str) -> None:
         self.store.move_to_next(item_id)
         self.cache_manager.sync_with_playlist()
@@ -580,6 +584,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not isinstance(index, int):
                     raise ValueError("index 必须是整数")
                 CONTEXT.move_item_to_index(body["item_id"], index)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/playlist/resort":
+                CONTEXT.resort_playlist_by_cycle()
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/move-next":

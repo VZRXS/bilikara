@@ -82,6 +82,7 @@ const elements = {
   searchButton: document.getElementById("search-button"),
   searchResults: document.getElementById("search-results"),
   addNextButton: document.getElementById("add-next-button"),
+  resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
@@ -1410,6 +1411,12 @@ async function handleAddByHistory(url, position) {
   }
 }
 
+async function resortPlaylistByCycle() {
+  state.data = await apiPost("/api/playlist/resort");
+  applyStateSnapshot(state.data, { forceRender: true });
+  setFormMessage("已按本场用户座次重新排序点歌列表。");
+}
+
 async function addByUrl(url, position = "tail") {
   const requesterName = selectedRequesterName();
   if (!url || state.submitting) {
@@ -1573,6 +1580,14 @@ elements.searchResults.addEventListener("click", async (event) => {
 
 elements.addNextButton.addEventListener("click", async () => {
   await submitRequest("next");
+});
+
+elements.resortPlaylistButton?.addEventListener("click", async () => {
+  try {
+    await resortPlaylistByCycle();
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
 });
 
 elements.layoutModeSwitch?.addEventListener("click", (event) => {

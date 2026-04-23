@@ -166,5 +166,27 @@ class PlayerResetRouteTest(unittest.TestCase):
         self.assertEqual(writes[1], {"ok": True, "data": {"playback_mode": "local"}})
 
 
+class PlaylistResortRouteTest(unittest.TestCase):
+    def test_playlist_resort_route_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            resort_playlist_by_cycle=lambda: writes.append({"resorted": True}),
+            snapshot=lambda: {"playlist": ["b", "c", "a"]},
+        )
+
+        handler.path = "/api/playlist/resort"
+        handler.headers = {}
+        handler._read_json_body = lambda: {}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes[0], {"resorted": True})
+        self.assertEqual(writes[1], {"ok": True, "data": {"playlist": ["b", "c", "a"]}})
+
+
 if __name__ == "__main__":
     unittest.main()
