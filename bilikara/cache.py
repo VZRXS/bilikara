@@ -50,12 +50,12 @@ SW_HIDE = 0
 RETRY_REQUESTED_MESSAGE = "__retry_requested__"
 SUBPROCESS_OUTPUT_ENCODING = "gb18030" if os.name == "nt" else "utf-8"
 VIDEO_QUALITY_CHOICES = (
-    "8K 超高清",
-    "杜比视界",
-    "HDR 真彩",
-    "4K 超清",
-    "1080P 高码率",
+    # "8K 超高清",
+    # "杜比视界",
+    # "HDR 真彩",
+    # "4K 超清",
     "1080P 60帧",
+    "1080P 高码率",
     "1080P 高清",
     "720P 60帧",
     "720P 高清",
