@@ -415,13 +415,13 @@ class CacheManager:
         self._terminate_process(process)
         self._clear_cache_root()
 
-    def retry_item(self, item_id: str) -> None:
+    def retry_item(self, item_id: str, *, force: bool = False) -> None:
         item = self.store.get_item(item_id)
         if not item:
             raise ValueError("没有找到要重新下载的歌曲")
-        if item.cache_status == "ready":
+        if item.cache_status == "ready" and not force:
             raise ValueError("这首歌已经缓存完成，无需重新下载")
-        if item.cache_status not in {"downloading", "failed"}:
+        if item.cache_status not in {"downloading", "failed", "ready", "pending", "queued"}:
             raise ValueError("当前缓存状态不能重新下载")
         if not self._should_cache(item_id):
             raise ValueError("当前不在自动缓存窗口中")
@@ -553,6 +553,7 @@ class CacheManager:
 
         try:
             cache_result = self._download_selected_streams(item, binary_path, ffmpeg_path, item_dir, log_path)
+            self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
@@ -880,12 +881,36 @@ class CacheManager:
             if existing_variant_id and existing_variant_id in allowed_variant_ids
             else (str(audio_variants[0].get("id") or "").strip() if audio_variants else "")
         )
+        validation_files = [
+            {
+                "label": f"视频轨 P{video_page}",
+                "path": video_file,
+                "required_streams": {"video"},
+            },
+            *[
+                {
+                    "label": f"音轨 P{page}",
+                    "path": audio_file,
+                    "required_streams": {"audio"},
+                }
+                for page, audio_file, _label in audio_files
+            ],
+            *[
+                {
+                    "label": f"播放文件 {label}",
+                    "path": path,
+                    "required_streams": {"video", "audio"},
+                }
+                for _variant_id, label, path in variant_files
+            ],
+        ]
         return {
             "video_file": video_file,
             "video_relative_path": str(video_file.relative_to(CACHE_DIR)),
             "video_media_url": self._build_media_url(str(video_file.relative_to(CACHE_DIR))),
             "audio_variants": audio_variants,
             "selected_audio_variant_id": selected_audio_variant_id,
+            "validation_files": validation_files,
         }
 
     def _download_page_stream(
@@ -1245,6 +1270,177 @@ class CacheManager:
             self._record_item_activity(item.id)
             variant_files.append((variant_id, label, variant_path))
         return variant_files
+
+    def _validate_cache_result(
+        self,
+        item_id: str,
+        cache_result: dict[str, object],
+        ffmpeg_path: Path,
+        log_path: Path,
+    ) -> None:
+        validation_files = cache_result.get("validation_files")
+        if not isinstance(validation_files, list):
+            return
+
+        ffprobe_path = self._ffprobe_path_for_ffmpeg(ffmpeg_path)
+        if not ffprobe_path:
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] ffprobe validate: skipped, ffprobe unavailable",
+            )
+            return
+
+        self.store.update_item(
+            item_id,
+            cache_progress=99.5,
+            cache_message="正在校验缓存",
+            persist_backup=False,
+        )
+        self._record_item_activity(item_id)
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] ffprobe validate: start ({len(validation_files)} files)",
+        )
+
+        for entry in validation_files:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            label = str(entry.get("label") or "媒体文件")
+            required_streams = entry.get("required_streams")
+            if not isinstance(path, Path):
+                raise DownloadCommandError(f"缓存校验失败: {label} 路径无效")
+            if not isinstance(required_streams, set):
+                required_streams = set(required_streams or [])
+            self._validate_media_file(
+                ffprobe_path,
+                ffmpeg_path,
+                path,
+                label=label,
+                required_streams={str(stream) for stream in required_streams},
+                log_path=log_path,
+            )
+
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] ffprobe validate: ok")
+
+    def _validate_media_file(
+        self,
+        ffprobe_path: Path,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        required_streams: set[str],
+        log_path: Path,
+    ) -> None:
+        if not media_path.exists():
+            raise DownloadCommandError(f"缓存校验失败: {label} 文件不存在")
+        size = media_path.stat().st_size
+        if size <= 0:
+            raise DownloadCommandError(f"缓存校验失败: {label} 文件为空")
+
+        command = [
+            str(ffprobe_path),
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-show_format",
+            str(media_path),
+        ]
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
+        )
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=20,
+            cwd=str(BB_DOWN_DIR),
+            env=self._tool_process_env(ffmpeg_path),
+            **self._hidden_process_kwargs(),
+        )
+        if process.returncode != 0:
+            message = (process.stderr or process.stdout or "").strip() or f"ffprobe 退出码 {process.returncode}"
+            raise DownloadCommandError(f"缓存校验失败: {label}: {self._compact_probe_error(message)}")
+
+        try:
+            payload = json.loads(process.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise DownloadCommandError(f"缓存校验失败: {label}: ffprobe 输出无法解析") from exc
+
+        streams = payload.get("streams")
+        if not isinstance(streams, list) or not streams:
+            raise DownloadCommandError(f"缓存校验失败: {label}: 未识别到媒体流")
+
+        detected_streams = {
+            str(stream.get("codec_type") or "").strip()
+            for stream in streams
+            if isinstance(stream, dict)
+        }
+        missing_streams = required_streams - detected_streams
+        if missing_streams:
+            missing_label = "/".join(sorted(missing_streams))
+            detected_label = "/".join(sorted(stream for stream in detected_streams if stream)) or "none"
+            raise DownloadCommandError(
+                f"缓存校验失败: {label}: 缺少 {missing_label} 流，实际为 {detected_label}"
+            )
+
+        duration = self._probe_duration(payload)
+        duration_label = f"{duration:.2f}s" if duration is not None else "unknown"
+        stream_label = "/".join(sorted(stream for stream in detected_streams if stream)) or "unknown"
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] ffprobe validate {label}: ok "
+            f"(streams={stream_label}, duration={duration_label}, size={size})",
+        )
+
+    @staticmethod
+    def _probe_duration(payload: dict[str, object]) -> float | None:
+        candidates: list[object] = []
+        file_format = payload.get("format")
+        if isinstance(file_format, dict):
+            candidates.append(file_format.get("duration"))
+        streams = payload.get("streams")
+        if isinstance(streams, list):
+            candidates.extend(
+                stream.get("duration")
+                for stream in streams
+                if isinstance(stream, dict)
+            )
+        for candidate in candidates:
+            try:
+                duration = float(candidate)
+            except (TypeError, ValueError):
+                continue
+            if duration > 0:
+                return duration
+        return None
+
+    @staticmethod
+    def _compact_probe_error(message: str) -> str:
+        normalized = " ".join(str(message or "").split())
+        return normalized[:240] if normalized else "未知错误"
+
+    @staticmethod
+    def _ffprobe_path_for_ffmpeg(ffmpeg_path: Path) -> Path | None:
+        candidates = []
+        if FFPROBE_RUNTIME_PATH.exists():
+            candidates.append(FFPROBE_RUNTIME_PATH)
+        ffmpeg_dir = ffmpeg_path if ffmpeg_path.is_dir() else ffmpeg_path.parent
+        candidates.append(ffmpeg_dir / ("ffprobe.exe" if os.name == "nt" else "ffprobe"))
+        system_ffprobe = shutil.which("ffprobe")
+        if system_ffprobe:
+            candidates.append(Path(system_ffprobe))
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
 
     @staticmethod
     def _variant_id(page: int, label: str, index: int) -> str:

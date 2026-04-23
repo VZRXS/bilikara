@@ -822,6 +822,7 @@ h2 {
 }
 
 .cache-mode-toggle,
+.cache-retry-current-button,
 .cache-data-reset-button {
   display: inline-flex;
   align-items: center;
@@ -833,9 +834,28 @@ h2 {
   border-radius: 999px;
 }
 
+.cache-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .cache-mode-toggle {
   background: var(--accent);
   color: white;
+}
+
+.cache-retry-current-button {
+  background: rgba(208, 90, 63, 0.12);
+  color: var(--accent-deep);
+}
+
+.cache-retry-current-button:hover,
+.cache-retry-current-button:focus-visible {
+  background: rgba(208, 90, 63, 0.18);
+  color: var(--accent-deep);
 }
 
 .cache-data-reset-button {

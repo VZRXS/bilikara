@@ -133,6 +133,7 @@ const elements = {
   cacheQualitySelect: document.getElementById("cache-quality-select"),
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
+  currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
   playerResetButton: document.getElementById("player-reset-button"),
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
@@ -906,6 +907,7 @@ function render() {
   renderRequesterSelect(data.session_users || []);
   renderSessionUsers(data.session_users || []);
   renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
+  renderPlaybackRepairControls(currentItem);
   renderRemoteAccess(data.remote_access);
   renderLayoutMode();
 
@@ -1255,6 +1257,18 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   renderCacheSlider(cachePolicy);
   renderCachePolicyControls(cachePolicy);
   syncCachePanelVisibility();
+}
+
+function renderPlaybackRepairControls(currentItem) {
+  const button = elements.currentCacheRetryButton;
+  if (!button) {
+    return;
+  }
+  const hasCurrentItem = Boolean(currentItem?.id);
+  button.disabled = !hasCurrentItem;
+  button.title = hasCurrentItem
+    ? "重新缓存当前歌曲"
+    : "当前没有正在播放的歌曲";
 }
 
 function renderBBDownLogin(login) {
@@ -4219,6 +4233,27 @@ elements.dataResetButton?.addEventListener("click", (event) => {
   });
 });
 
+elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
+  event.stopPropagation();
+  const currentItem = state.data?.current_item;
+  if (!currentItem?.id) {
+    setAppMessage("当前没有正在播放的歌曲。", true);
+    return;
+  }
+  try {
+    elements.currentCacheRetryButton.disabled = true;
+    state.data = await apiPost("/api/cache/retry", {
+      item_id: currentItem.id,
+      force: true,
+    });
+    setAppMessage("已重新开始缓存当前歌曲。");
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+    renderPlaybackRepairControls(state.data?.current_item);
+  }
+});
+
 elements.playerResetButton?.addEventListener("click", (event) => {
   event.stopPropagation();
   const point = anchorPointForEvent(event, elements.playerResetButton);
@@ -4445,6 +4480,7 @@ document.addEventListener("click", (event) => {
       event.target.closest('button[data-action="remove"]') ||
       event.target.closest("#queue-next-button") ||
       event.target.closest("#data-reset-button") ||
+      event.target.closest("#current-cache-retry-button") ||
       event.target.closest("#player-reset-button") ||
       event.target.closest("#add-form") ||
       event.target.closest("#history-list")

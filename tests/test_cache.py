@@ -1,11 +1,13 @@
 import io
+import json
 import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from bilikara.cache import CacheManager
+from bilikara.cache import CacheManager, DownloadCommandError
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 
@@ -81,7 +83,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
         (first / "video.mp4").write_bytes(b"1234")
         (second / "video.mp4").write_bytes(b"123456")
 
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+        log_dir = Path(self.temp_dir.name) / "logs"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 metrics = manager.cache_metrics()
@@ -210,6 +213,103 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     self.assertEqual(retried.cache_status, "pending")
                     self.assertEqual(retried.cache_message, "准备重新下载")
                     enqueue_mock.assert_called_once_with("song-a")
+            finally:
+                manager.shutdown()
+
+    def test_retry_item_can_force_requeue_ready_cache_item(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                self.store.add_item(item, requester_name="cache-test-user")
+                self.store.update_item(
+                    "song-a",
+                    cache_status="ready",
+                    cache_message="缓存完成",
+                    video_media_url="/media/song-a/video.mp4",
+                    persist_backup=False,
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-a"}
+                with patch.object(manager, "enqueue") as enqueue_mock:
+                    manager.retry_item("song-a", force=True)
+                    retried = self.store.get_item("song-a")
+                    self.assertIsNotNone(retried)
+                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_message, "准备重新下载")
+                    self.assertEqual(retried.video_media_url, "")
+                    enqueue_mock.assert_called_once_with("song-a")
+            finally:
+                manager.shutdown()
+
+    def test_validate_media_file_logs_ffprobe_success(self):
+        log_dir = Path(self.temp_dir.name) / "logs"
+        media_file = self.cache_dir / "song-a" / "video.mp4"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(b"media")
+        probe_payload = {
+            "streams": [{"codec_type": "video", "duration": "12.34"}],
+            "format": {"duration": "12.34"},
+        }
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                log_path = manager._item_log_path("song-a")
+                with patch(
+                    "bilikara.cache.subprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps(probe_payload),
+                        stderr="",
+                    ),
+                ) as run_mock:
+                    manager._validate_media_file(
+                        Path("/tools/ffprobe"),
+                        Path("/tools/ffmpeg"),
+                        media_file,
+                        label="视频轨 P1",
+                        required_streams={"video"},
+                        log_path=log_path,
+                    )
+                log_text = log_path.read_text(encoding="utf-8")
+            finally:
+                manager.shutdown()
+
+        self.assertTrue(run_mock.called)
+        self.assertIn("ffprobe validate 视频轨 P1: ok", log_text)
+        self.assertIn("duration=12.34s", log_text)
+
+    def test_validate_media_file_rejects_missing_required_stream(self):
+        media_file = self.cache_dir / "song-a" / "audio.m4a"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(b"media")
+        probe_payload = {
+            "streams": [{"codec_type": "video", "duration": "12.34"}],
+            "format": {"duration": "12.34"},
+        }
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                log_path = manager._item_log_path("song-a")
+                with patch(
+                    "bilikara.cache.subprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps(probe_payload),
+                        stderr="",
+                    ),
+                ):
+                    with self.assertRaisesRegex(DownloadCommandError, "缺少 audio 流"):
+                        manager._validate_media_file(
+                            Path("/tools/ffprobe"),
+                            Path("/tools/ffmpeg"),
+                            media_file,
+                            label="音轨 P1",
+                            required_streams={"audio"},
+                            log_path=log_path,
+                        )
             finally:
                 manager.shutdown()
 

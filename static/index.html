@@ -202,17 +202,28 @@
               </div>
               <div class="cache-panel-row cache-panel-danger-row">
                 <div>
-                  <p class="cache-panel-label">重置播放器状态</p>
-                  <p class="cache-panel-hint">在遇到播放问题时重置播放器</p>
+                  <p class="cache-panel-label">播放异常处理</p>
+                  <p class="cache-panel-hint">本地播放出错时重新缓存或重置播放器</p>
                 </div>
-                <button
-                  type="button"
-                  class="toolbar-button cache-data-reset-button"
-                  id="player-reset-button"
-                  title="重置播放器状态"
-                >
-                  重置
-                </button>
+                <div class="cache-panel-actions">
+                  <button
+                    type="button"
+                    class="toolbar-button cache-retry-current-button"
+                    id="current-cache-retry-button"
+                    title="重新缓存当前歌曲"
+                    disabled
+                  >
+                    重新缓存
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbar-button cache-data-reset-button"
+                    id="player-reset-button"
+                    title="重置播放器状态"
+                  >
+                    重置
+                  </button>
+                </div>
               </div>
             </div>
           </div>
