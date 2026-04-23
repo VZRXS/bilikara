@@ -1195,10 +1195,10 @@ async function copyRemoteUrl() {
 
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
-  const listTag = isHistoryView ? "History" : "Queue";
-  const listTitle = isHistoryView ? "历史记录" : "播放列表";
+  const listTag = isHistoryView ? "History" : "Requests";
+  const listTitle = isHistoryView ? "历史记录" : "点歌列表";
   const queueCount = isHistoryView ? `(${history.length}首)` : `(${playlist.length}首)`;
-  const historyButtonText = isHistoryView ? "返回队列" : "历史记录";
+  const historyButtonText = isHistoryView ? "返回点歌列表" : "历史记录";
   const signature = JSON.stringify({
     isHistoryView,
     queueCount,
@@ -2418,7 +2418,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   if (!currentItem) {
     elements.playerFrame.innerHTML =
-      '<div class="empty-state"><p>把 B 站视频链接加入列表后，这里会开始播放。</p></div>';
+      '<div class="empty-state"><p>把 B 站视频链接加入点歌列表后，这里会开始播放。</p></div>';
     return;
   }
 
@@ -2746,8 +2746,8 @@ function reportPlayerStatus(itemId, video) {
 function renderPlaylist(playlist, currentItem, cachePolicy) {
   if (!playlist.length) {
     const emptyMessage = state.data?.current_item
-      ? '<div class="queue-empty"><p>待播队列已经空了。</p><p>可以继续从左侧加入下一首。</p></div>'
-      : '<div class="queue-empty"><p>播放列表还是空的。</p><p>把链接加到左侧输入框里就行。</p></div>';
+      ? '<div class="queue-empty"><p>点歌列表已经空了。</p><p>可以继续从左侧点下一首。</p></div>'
+      : '<div class="queue-empty"><p>点歌列表还是空的。</p><p>把链接加到左侧输入框里就行。</p></div>';
     const signature = state.data?.current_item ? "empty-with-current" : "empty";
     if (signature === state.playlistEmptyRenderSignature) {
       return;
@@ -3338,10 +3338,10 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
   const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || "这首歌";
   const count = Number(sessionEntry?.request_count || 0);
   if (activeItem && count > 0) {
-    return `《${title}》当前列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
+    return `《${title}》当前点歌列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
   }
   if (activeItem) {
-    return `《${title}》当前列表里已经有了，仍要继续点歌吗？`;
+    return `《${title}》当前点歌列表里已经有了，仍要继续点歌吗？`;
   }
   return `《${title}》本次已经点过 ${count || 1} 次，仍要继续点歌吗？`;
 }
@@ -3457,7 +3457,7 @@ async function confirmBindingModal() {
     if (!intent.preserveInput) {
       elements.urlInput.value = "";
     }
-    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入列表");
+    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入点歌列表");
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -3509,11 +3509,11 @@ async function handleAdd(position, anchorPoint) {
     return;
   }
 
-  setFormMessage("正在解析视频信息并加入列表...");
+  setFormMessage("正在解析视频信息并加入点歌列表...");
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
     elements.urlInput.value = "";
-    setFormMessage(position === "next" ? "已顶歌到下一首" : "已加入列表末尾");
+    setFormMessage(position === "next" ? "已顶歌到下一首" : "已加入点歌列表末尾");
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -3543,7 +3543,7 @@ async function handleAdd(position, anchorPoint) {
         x: anchorPoint?.x ?? anchorPointForEvent({}, elements.addForm).x,
         y: anchorPoint?.y ?? anchorPointForEvent({}, elements.addForm).y,
       });
-      setFormMessage("这首歌已经在当前列表中，或本次已经点过，确认后可继续加入。");
+      setFormMessage("这首歌已经在当前点歌列表中，或本次已经点过，确认后可继续加入。");
       return;
     }
     setFormMessage(error.message, true);
@@ -3555,10 +3555,10 @@ async function handleAddByUrl(url, position, anchorPoint) {
   if (!requesterName) {
     return;
   }
-  setFormMessage("正在从历史记录加入列表...");
+  setFormMessage("正在从历史记录加入点歌列表...");
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
-    setFormMessage(position === "next" ? "已从历史顶歌到下一首" : "已从历史加入列表");
+    setFormMessage(position === "next" ? "已从历史顶歌到下一首" : "已从历史加入点歌列表");
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -3588,7 +3588,7 @@ async function handleAddByUrl(url, position, anchorPoint) {
         x: anchorPoint?.x ?? anchorPointForEvent({}, elements.historyList).x,
         y: anchorPoint?.y ?? anchorPointForEvent({}, elements.historyList).y,
       });
-      setFormMessage("这首歌已经在当前列表中，或本次已经点过，确认后可继续加入。");
+      setFormMessage("这首歌已经在当前点歌列表中，或本次已经点过，确认后可继续加入。");
       return;
     }
     setFormMessage(error.message, true);
@@ -3611,7 +3611,7 @@ async function clearPlaylist() {
   try {
     state.data = await apiPost("/api/playlist/clear");
     closeConfirm();
-    setAppMessage("播放列表已清空。");
+    setAppMessage("点歌列表已清空。");
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -4138,7 +4138,7 @@ elements.clearPlaylistButton.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearPlaylistButton);
   openConfirm({
     type: "clear-playlist",
-    message: "确定清空播放列表吗？当前正在播放的歌曲不会受影响。",
+    message: "确定清空点歌列表吗？当前正在播放的歌曲不会受影响。",
     x: point.x,
     y: point.y,
   });
@@ -4232,7 +4232,7 @@ elements.dataResetButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.dataResetButton);
   openConfirm({
     type: "reset-data",
-    message: "确认清空 data？会清空当前队列、用户、历史记录和缓存，但保留已唱归档与抽卡缓存。",
+    message: "确认清空 data？会清空当前点歌列表、用户、历史记录和缓存，但保留已唱归档与抽卡缓存。",
     ...point,
   });
 });
@@ -4303,7 +4303,7 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
         selectedVideoPage: page,
         selectedAudioPages: [page],
       });
-      setAppMessage("已将分P加入下载列表");
+      setAppMessage("已将分P加入缓存任务");
       render();
     } catch (error) {
       if (error.code === "duplicate_session_request") {
@@ -4378,7 +4378,7 @@ elements.playlist.addEventListener("click", async (event) => {
     openConfirm({
       type: "remove-item",
       itemId: button.dataset.id,
-      message: "确定从播放列表移除这首歌吗？",
+      message: "确定从点歌列表移除这首歌吗？",
       x: point.x,
       y: point.y,
     });
@@ -4463,7 +4463,7 @@ elements.confirmOk.addEventListener("click", async () => {
       } else {
         elements.urlInput.value = "";
       }
-      setFormMessage(intent.position === "next" ? "已确认插队到下一首" : "已确认加入列表");
+      setFormMessage(intent.position === "next" ? "已确认插队到下一首" : "已确认加入点歌列表");
       render();
     }
   } catch (error) {

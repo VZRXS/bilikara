@@ -259,10 +259,10 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
   const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || "这首歌";
   const count = Number(sessionEntry?.request_count || 0);
   if (activeItem && count > 0) {
-    return `《${title}》当前列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
+    return `《${title}》当前点歌列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
   }
   if (activeItem) {
-    return `《${title}》当前列表里已经有了，仍要继续点歌吗？`;
+    return `《${title}》当前点歌列表里已经有了，仍要继续点歌吗？`;
   }
   return `《${title}》本次已经点过 ${count || 1} 次，仍要继续点歌吗？`;
 }
@@ -603,7 +603,7 @@ function renderCurrentItem(current, playbackMode) {
   elements.currentTitle.textContent = "当前还没有正在播放的歌曲";
   elements.currentRequester.textContent = "";
   elements.currentRequester.classList.add("hidden");
-  elements.currentMeta.textContent = "点歌后会进入主队列，轮到时由服务端页面播放。";
+  elements.currentMeta.textContent = "点歌后会进入点歌列表，轮到时由服务端页面播放。";
 }
 
 function audioVariantsForItem(item) {
@@ -1008,7 +1008,7 @@ async function confirmBindingSheet() {
   }
 
   state.submitting = true;
-  setFormMessage(intent.position === "next" ? "正在按绑定关系顶歌..." : "正在按绑定关系加入列表...");
+  setFormMessage(intent.position === "next" ? "正在按绑定关系顶歌..." : "正在按绑定关系加入点歌列表...");
   try {
     const result = await submitAddRequestWithDuplicateConfirm(
       intent.url,
@@ -1037,7 +1037,7 @@ async function confirmBindingSheet() {
       elements.gatchaResultView.classList.add("hidden");
       elements.gatchaInitView.classList.remove("hidden");
     }
-    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入列表");
+    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入点歌列表");
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(intent, error.payload?.binding);
@@ -1210,8 +1210,8 @@ function renderPlayerControls(currentItem, playbackMode) {
 
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
-  elements.listTag.textContent = isHistoryView ? "History" : "Queue";
-  elements.listTitle.textContent = isHistoryView ? "点歌历史" : "播放队列";
+  elements.listTag.textContent = isHistoryView ? "History" : "Requests";
+  elements.listTitle.textContent = isHistoryView ? "历史记录" : "点歌列表";
   elements.listCount.textContent = `${isHistoryView ? history.length : playlist.length} 首`;
 
   elements.queueViewButton.classList.toggle("active", !isHistoryView);
@@ -1229,7 +1229,7 @@ function syncListView() {
 function renderQueue(playlist) {
   elements.queueList.innerHTML = "";
   if (!playlist.length) {
-    elements.queueList.innerHTML = '<div class="queue-empty">队列暂时是空的，可以继续点下一首歌。</div>';
+    elements.queueList.innerHTML = '<div class="queue-empty">点歌列表暂时是空的，可以继续点下一首歌。</div>';
     return;
   }
 
@@ -1340,7 +1340,7 @@ async function submitRequest(position) {
   }
 
   state.submitting = true;
-  setFormMessage(position === "next" ? "正在顶歌..." : "正在加入队列...");
+  setFormMessage(position === "next" ? "正在顶歌..." : "正在加入点歌列表...");
   try {
     const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
     if (result.cancelled) {
@@ -1349,7 +1349,7 @@ async function submitRequest(position) {
     }
     applyStateSnapshot(result.data, { forceRender: true });
     elements.urlInput.value = "";
-    setFormMessage(position === "next" ? "已经顶歌到下一首。" : "已经加入播放队列。");
+    setFormMessage(position === "next" ? "已经顶歌到下一首。" : "已经加入点歌列表。");
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(
@@ -1381,7 +1381,7 @@ async function handleAddByHistory(url, position) {
   }
 
   state.submitting = true;
-  setFormMessage(position === "next" ? "正在从历史记录顶歌..." : "正在从历史记录加入队列...");
+  setFormMessage(position === "next" ? "正在从历史记录顶歌..." : "正在从历史记录加入点歌列表...");
   try {
     const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
     if (result.cancelled) {
@@ -1389,7 +1389,7 @@ async function handleAddByHistory(url, position) {
       return;
     }
     applyStateSnapshot(result.data, { forceRender: true });
-    setFormMessage(position === "next" ? "已从历史记录顶歌到下一首。" : "已从历史记录加入队列。");
+    setFormMessage(position === "next" ? "已从历史记录顶歌到下一首。" : "已从历史记录加入点歌列表。");
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(
@@ -1586,7 +1586,7 @@ elements.layoutModeSwitch?.addEventListener("click", (event) => {
 elements.refreshButton.addEventListener("click", async () => {
   try {
     await fetchState();
-    setFormMessage("列表已刷新。");
+    setFormMessage("点歌列表已刷新。");
   } catch (error) {
     setFormMessage(error.message, true);
   } finally {
@@ -1715,7 +1715,7 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
         return;
       }
       applyStateSnapshot(result.data, { forceRender: true });
-      setFormMessage("已将分P加入下载列表");
+      setFormMessage("已将分P加入缓存任务");
     } catch (error) {
       setFormMessage(error.message, true);
     } finally {

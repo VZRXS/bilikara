@@ -170,7 +170,7 @@
       remove: {
         url: "/api/playlist/remove",
         payload: { item_id: itemId },
-        message: "已从播放队列移除。",
+        message: "已从点歌列表移除。",
       },
       "move-next": {
         url: "/api/playlist/move-next",
@@ -189,7 +189,7 @@
       return;
     }
 
-    if (action === "remove" && !window.confirm("确定从播放队列移除这首歌吗？")) {
+    if (action === "remove" && !window.confirm("确定从点歌列表移除这首歌吗？")) {
       return;
     }
 

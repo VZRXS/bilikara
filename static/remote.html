@@ -16,7 +16,7 @@
       <header class="hero-card">
         <p class="eyebrow">Mobile Request</p>
         <h1>bilikara 点歌台</h1>
-        <p class="hero-copy">在同一个局域网里，用手机查看当前队列、继续点歌，也可以远程控制正在播放的视频。</p>
+        <p class="hero-copy">在同一个局域网里，用手机查看当前点歌列表、继续点歌，也可以远程控制正在播放的视频。</p>
         <div class="hero-controls">
           <div class="mode-control layout-control">
             <span class="panel-tag">切换布局</span>
@@ -97,7 +97,7 @@
             autocomplete="off"
           ></textarea>
           <div class="action-row">
-            <button type="submit" class="primary-button">加入队列</button>
+            <button type="submit" class="primary-button">点歌</button>
             <button type="button" id="add-next-button" class="secondary-button">顶歌到下一首</button>
           </div>
           <p id="form-message" class="message"></p>
@@ -107,13 +107,13 @@
       <section class="panel queue-panel">
         <div class="panel-head panel-head-stack">
           <div>
-            <p class="panel-tag" id="list-tag">Queue</p>
-            <h2 class="list-heading" id="list-title">播放队列</h2>
+            <p class="panel-tag" id="list-tag">Requests</p>
+            <h2 class="list-heading" id="list-title">点歌列表</h2>
           </div>
           <span id="list-count" class="count-chip">0 首</span>
         </div>
 
-        <div class="view-toggle" role="tablist" aria-label="切换列表视图">
+        <div class="view-toggle" role="tablist" aria-label="切换点歌列表和历史记录">
           <button
             type="button"
             id="queue-view-button"
@@ -122,7 +122,7 @@
             role="tab"
             aria-selected="true"
           >
-            队列
+            点歌列表
           </button>
           <button
             type="button"
@@ -132,7 +132,7 @@
             role="tab"
             aria-selected="false"
           >
-            历史
+            历史记录
           </button>
         </div>
 
@@ -222,7 +222,7 @@
           </section>
           <div class="binding-sheet-actions">
             <button type="button" id="binding-sheet-cancel" class="ghost-button">取消</button>
-            <button type="button" id="binding-sheet-confirm" class="primary-button">加入列表</button>
+            <button type="button" id="binding-sheet-confirm" class="primary-button">加入点歌列表</button>
           </div>
         </div>
       </div>
