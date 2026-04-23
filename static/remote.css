@@ -161,6 +161,26 @@ h1 {
   align-items: flex-start;
 }
 
+.now-playing-panel {
+  position: relative;
+}
+
+.now-playing-panel > .panel-head {
+  display: block;
+  margin-bottom: 6px;
+  padding-right: 72px;
+}
+
+.now-playing-panel > .panel-head #refresh-button {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+}
+
+.now-playing-panel #current-title {
+  padding-right: 72px;
+}
+
 .list-heading {
   margin-top: 6px;
   font-size: 22px;
