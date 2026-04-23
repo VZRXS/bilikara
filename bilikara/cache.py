@@ -431,7 +431,8 @@ class CacheManager:
 
         with self.lock:
             active_process = self.active_process if self.active_item_id == item_id else None
-            if active_process is not None:
+            in_flight = item_id in self.pending_ids or self.active_item_id == item_id
+            if in_flight:
                 self.retry_requested_ids.add(item_id)
 
         self.store.update_item(
@@ -447,8 +448,9 @@ class CacheManager:
         )
         self._record_item_activity(item_id)
 
-        if active_process is not None:
-            self._terminate_process(active_process)
+        if in_flight:
+            if active_process is not None:
+                self._terminate_process(active_process)
             return
 
         self._remove_cache_dir(item_id)
@@ -493,6 +495,8 @@ class CacheManager:
     def _cache_item(self, item_id: str, allow_refresh_retry: bool = True) -> None:
         if self.stop_event.is_set() or not self._should_cache(item_id):
             return
+        if self._take_retry_request(item_id):
+            self._remove_cache_dir(item_id)
         item = self.store.get_item(item_id)
         if not item:
             self._remove_cache_dir(item_id)
@@ -553,7 +557,9 @@ class CacheManager:
 
         try:
             cache_result = self._download_selected_streams(item, binary_path, ffmpeg_path, item_dir, log_path)
+            self._raise_if_retry_requested(item_id)
             self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
+            self._raise_if_retry_requested(item_id)
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
@@ -566,6 +572,13 @@ class CacheManager:
             self._drop_item_cache(item_id, str(exc))
             return
         except DownloadCommandError as exc:
+            if self._take_retry_request(item_id):
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                self._remove_cache_dir(item_id)
+                fresh_item = self.store.get_item(item_id)
+                if fresh_item and self._should_cache(item_id):
+                    self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                return
             last_message = str(exc)
             if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
                 self._append_log_line(
@@ -967,6 +980,7 @@ class CacheManager:
         )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
+        self._raise_if_retry_requested(item.id)
         stream_file = self._find_stream_file(target_dir, allowed_extensions)
         if not stream_file:
             raise DownloadCommandError(f"{stage_label} 完成后未找到输出文件")
@@ -1062,6 +1076,7 @@ class CacheManager:
             persist_backup=False,
         )
         self._record_item_activity(item_id)
+        self._raise_if_retry_requested(item_id)
 
     # LEGACY: old mux step used by the single-output cache path. Split playback
     # keeps video and audio files separate, so this remains only as a reference.
@@ -1309,6 +1324,7 @@ class CacheManager:
         )
 
         for entry in validation_files:
+            self._raise_if_retry_requested(item_id)
             if not isinstance(entry, dict):
                 continue
             path = entry.get("path")
@@ -1626,25 +1642,33 @@ class CacheManager:
         return BB_DOWN_DIR / ("BBDown.exe" if os.name == "nt" else "BBDown")
 
     def _find_media_file(self, item_dir: Path) -> Path | None:
-        media_files = [
-            path
-            for path in item_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS
-        ]
-        if not media_files:
-            return None
-        return max(media_files, key=lambda path: path.stat().st_size)
+        return self._largest_media_file(item_dir, MEDIA_EXTENSIONS)
+
+    @classmethod
+    def _find_stream_file(cls, target_dir: Path, allowed_extensions: set[str]) -> Path | None:
+        return cls._largest_media_file(target_dir, allowed_extensions)
 
     @staticmethod
-    def _find_stream_file(target_dir: Path, allowed_extensions: set[str]) -> Path | None:
-        media_files = [
-            path
-            for path in target_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() in allowed_extensions
-        ]
+    def _largest_media_file(root_dir: Path, allowed_extensions: set[str]) -> Path | None:
+        try:
+            candidate_paths = list(root_dir.rglob("*"))
+        except OSError:
+            return None
+
+        media_files: list[tuple[int, Path]] = []
+        for path in candidate_paths:
+            try:
+                if not path.is_file() or path.suffix.lower() not in allowed_extensions:
+                    continue
+                size = path.stat().st_size
+            except OSError:
+                continue
+            media_files.append((size, path))
+
         if not media_files:
             return None
-        return max(media_files, key=lambda path: path.stat().st_size)
+        media_files.sort(key=lambda entry: entry[0], reverse=True)
+        return media_files[0][1]
 
     @staticmethod
     def _iter_output_messages(stream: TextIO) -> Iterator[str]:
@@ -2024,6 +2048,10 @@ class CacheManager:
                 return False
             self.retry_requested_ids.discard(item_id)
             return True
+
+    def _raise_if_retry_requested(self, item_id: str) -> None:
+        if self._take_retry_request(item_id):
+            raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
 
     def _should_cache(self, item_id: str) -> bool:
         with self.lock:

@@ -5,6 +5,7 @@ import argparse
 import base64
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -391,9 +392,13 @@ class SmokeRunner:
             else:
                 print_ok(f"Queued song #{index}: {item.get('display_title')} ({item.get('id')})")
 
+        self.exercise_playlist_resort(regular_urls)
         restore_cache_max = self.expand_cache_window_for_items(len(added_items))
         try:
             self.focus_created_items_for_cache_window(added_items)
+            current_item_id = str(((self.get_state().get("current_item") or {}).get("id")) or "")
+            if current_item_id:
+                self.exercise_current_item_recache(current_item_id)
             self.visual_checkpoint("Host and Remote pages should now show this test's current song plus queued songs. Inspect both before caching completes.", seconds=5)
 
             created_ids = [str((item or {}).get("id") or "") for item in added_items if str((item or {}).get("id") or "")]
@@ -631,6 +636,109 @@ class SmokeRunner:
         for item_id in unique_ids:
             self.wait_for_cache(item_id)
 
+    def exercise_playlist_resort(self, song_urls: list[str]) -> None:
+        if not song_urls:
+            print_skip("Playlist resort API", "No song URLs were available for resort testing")
+            return
+        state = self.get_state()
+        current = state.get("current_item") or {}
+        current_requester = str(current.get("requester_name") or "").strip()
+        if not current_requester:
+            print_skip("Playlist resort API", "Need a current song with a requester before testing resort")
+            return
+
+        print_header("Playlist resort API")
+        suffix = str(int(time.time()))[-6:]
+        temp_users = [f"Cycle{suffix}A", f"Cycle{suffix}B"]
+        temp_items: list[dict[str, Any]] = []
+        added_users: list[str] = []
+        urls = self.urls_for_count(song_urls, len(temp_users))
+
+        try:
+            for user_name in temp_users:
+                self.add_user(user_name)
+                added_users.append(user_name)
+
+            for user_name, url in zip(temp_users, urls):
+                before_ids = self.item_ids(self.get_state())
+                state = self.add_song(url, user_name, position="tail")
+                item = self.find_item_not_in_ids(state, before_ids) or self.find_newest_item(state, prefer_playlist=True)
+                if not item:
+                    continue
+                temp_items.append(item)
+                print_ok(f"Resort probe item added: {item.get('display_title')} ({item.get('id')}) requester={user_name}")
+
+            if len(temp_items) < 2:
+                print_skip("Playlist resort API", "Could not create enough probe queue items")
+                return
+
+            state = self.get_state()
+            playlist = state.get("playlist") or []
+            first_id = str(temp_items[0].get("id") or "")
+            second_id = str(temp_items[1].get("id") or "")
+            first_index = next((index for index, item in enumerate(playlist) if str(item.get("id") or "") == first_id), None)
+            second_index = next((index for index, item in enumerate(playlist) if str(item.get("id") or "") == second_id), None)
+            if first_index is None or second_index is None:
+                print_skip("Playlist resort API", "Probe items were not found in the queue")
+                return
+            if first_index < second_index:
+                self.api_post("/api/playlist/reorder", {"item_id": second_id, "index": first_index})
+                print_ok(f"Scrambled queue order for resort test: {second_id} moved before {first_id}")
+            else:
+                print_ok("Probe queue order was already scrambled for resort testing")
+
+            state = self.api_post("/api/playlist/resort", {}, remote=True)
+            playlist = state.get("playlist") or []
+            expected_users = self.rotated_users_after_current(state, current_requester, temp_users)
+            actual_users = [
+                str(item.get("requester_name") or "").strip()
+                for item in playlist
+                if str(item.get("id") or "") in {first_id, second_id}
+            ]
+            if actual_users == expected_users:
+                print_ok(f"Playlist resort API works: requester order {actual_users}")
+            else:
+                print_warn(f"Playlist resort returned requester order {actual_users}; expected {expected_users}")
+        finally:
+            for item in temp_items:
+                item_id = str(item.get("id") or "")
+                if not item_id:
+                    continue
+                try:
+                    self.api_post("/api/playlist/remove", {"item_id": item_id})
+                except ApiError as exc:
+                    print_warn(f"Could not remove resort probe item {item_id}: {exc}")
+            for user_name in added_users:
+                try:
+                    self.api_post("/api/session-users/remove", {"name": user_name})
+                except ApiError as exc:
+                    print_warn(f"Could not remove resort probe user {user_name}: {exc}")
+
+    def exercise_current_item_recache(self, item_id: str) -> None:
+        print_header("Current song re-cache")
+        deadline = time.time() + 20
+        last_status = ""
+        while time.time() < deadline:
+            state = self.get_state(timeout=10)
+            current = state.get("current_item") or {}
+            current_id = str(current.get("id") or "")
+            if current_id != item_id:
+                print_skip("Current song re-cache", f"Current song changed before retry test: {item_id} -> {current_id or 'none'}")
+                return
+            cache_status = str(current.get("cache_status") or "").strip() or "unknown"
+            if cache_status != last_status:
+                print_info(f"Current item cache status before re-cache: {cache_status}")
+                last_status = cache_status
+            if cache_status in {"downloading", "failed"}:
+                self.api_post("/api/cache/retry", {"item_id": item_id, "force": True})
+                print_ok(f"Current song re-cache API works: {item_id} (from {cache_status}, force=true)")
+                return
+            if cache_status == "ready":
+                print_skip("Current song re-cache", f"Current song became ready before a retryable state was observed: {item_id}")
+                return
+            time.sleep(1)
+        print_skip("Current song re-cache", "Current song did not reach a retryable cache state in time")
+
     def exercise_cache_retry(self, item_id: str) -> None:
         state = self.get_state()
         item = self.find_item_by_id(state, item_id)
@@ -736,21 +844,24 @@ class SmokeRunner:
         if state.get("playlist") and current_id:
             original_delay = int((state.get("player_settings") or {}).get("song_advance_delay_seconds") or 0)
             self.api_post("/api/player/advance-delay", {"delay_seconds": 5})
-            self.api_post("/api/player/control", {"action": "toggle-play", "item_id": current_id}, remote=True)
-            self.api_post("/api/player/control", {"action": "seek-relative", "item_id": current_id, "delta_seconds": 300}, remote=True)
-            print_ok("Requested Remote play plus large seek to exercise end-of-song transition UI")
-            self.visual_checkpoint(
-                "Watch the Host player now. If playback reaches the end, the in-player countdown should stay visible without leaving fullscreen.",
-                seconds=self.args.transition_visual_pause,
-            )
-            state_after_seek = self.get_state()
-            current_after_seek = (state_after_seek.get("current_item") or {}).get("id")
-            if current_after_seek == current_id and state_after_seek.get("playlist"):
-                self.api_post("/api/player/next", {})
-                print_ok("Forced next-song API after transition visual window")
-            else:
-                print_ok("Current song changed during transition visual window")
-            self.api_post("/api/player/advance-delay", {"delay_seconds": original_delay})
+            try:
+                if self.seek_current_item_near_end(current_id, tail_seconds=2.0):
+                    print_ok("Requested Remote seek near the end of the current song for transition UI testing")
+                else:
+                    print_warn("Could not confirm a near-end seek; transition UI may require fallback next-song")
+                self.visual_checkpoint(
+                    "Watch the Host player now. Playback should already be near the end so the in-player countdown can stay visible without leaving fullscreen.",
+                    seconds=self.args.transition_visual_pause,
+                )
+                state_after_seek = self.get_state()
+                current_after_seek = (state_after_seek.get("current_item") or {}).get("id")
+                if current_after_seek == current_id and state_after_seek.get("playlist"):
+                    self.api_post("/api/player/next", {})
+                    print_ok("Forced next-song API after transition visual window")
+                else:
+                    print_ok("Current song changed during transition visual window")
+            finally:
+                self.api_post("/api/player/advance-delay", {"delay_seconds": original_delay})
             new_current = self.get_state().get("current_item") or {}
             new_current_id = str(new_current.get("id") or "")
             if new_current_id:
@@ -767,6 +878,155 @@ class SmokeRunner:
             f"muted={settings.get('is_muted')} offset={settings.get('av_offset_ms')}"
         )
         self.visual_checkpoint("Confirm the player reloaded while queue/history stayed intact.", seconds=8)
+
+    def seek_current_item_near_end(self, item_id: str, *, tail_seconds: float) -> bool:
+        state = self.get_state()
+        item = self.find_item_by_id(state, item_id)
+        if not item:
+            print_skip("Transition seek", f"Current item was not found: {item_id}")
+            return False
+        duration_seconds = self.item_duration_seconds(item)
+        if duration_seconds <= 0:
+            print_skip("Transition seek", f"Current item duration is unavailable: {item_id}")
+            return False
+        current_time = self.player_current_time_seconds(state, item_id)
+        target_time = max(0.0, duration_seconds - max(0.5, tail_seconds))
+        remaining = target_time - current_time
+        if remaining <= 0.5:
+            print_ok(f"Playback is already near the end: current={current_time:.1f}s duration={duration_seconds:.1f}s")
+            return True
+        print_info(
+            f"Seeking near end for transition test: current={current_time:.1f}s "
+            f"target={target_time:.1f}s duration={duration_seconds:.1f}s"
+        )
+
+        estimated_time = current_time
+        while target_time - estimated_time > 0.5:
+            remaining = target_time - estimated_time
+            delta_seconds = int(min(300, max(1, math.ceil(remaining))))
+            seek_state = self.api_post(
+                "/api/player/control",
+                {"action": "seek-relative", "item_id": item_id, "delta_seconds": delta_seconds},
+                remote=True,
+            )
+            command = seek_state.get("player_control_command") or {}
+            seq = int(command.get("seq") or 0)
+            if seq and not self.wait_for_player_control_ack(seq):
+                print_warn(f"Timed out waiting for seek command ack: seq={seq} delta={delta_seconds}")
+                return False
+            estimated_time += delta_seconds
+            time.sleep(0.4)
+
+        observed_time = self.wait_for_player_time_at_least(
+            item_id,
+            min_seconds=max(0.0, target_time - 3.0),
+            timeout=8.0,
+        )
+        if observed_time is not None:
+            print_ok(f"Player reported near-end playback: current={observed_time:.1f}s duration={duration_seconds:.1f}s")
+        else:
+            print_info(
+                f"Seek commands were acknowledged; last estimated playback was about "
+                f"{min(estimated_time, duration_seconds):.1f}s / {duration_seconds:.1f}s"
+            )
+        return True
+
+    def wait_for_player_control_ack(self, seq: int, *, timeout: float = 8.0) -> bool:
+        if seq <= 0:
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            state = self.get_state(timeout=10)
+            command = state.get("player_control_command") or {}
+            if not command:
+                return True
+            if int(command.get("seq") or 0) != seq:
+                return True
+            time.sleep(0.2)
+        return False
+
+    def wait_for_player_time_at_least(self, item_id: str, *, min_seconds: float, timeout: float) -> float | None:
+        deadline = time.time() + timeout
+        last_seen: float | None = None
+        while time.time() < deadline:
+            state = self.get_state(timeout=10)
+            status = self.player_status_for_item(state, item_id)
+            if status is None:
+                time.sleep(0.5)
+                continue
+            last_seen = max(0.0, float(status.get("current_time") or 0.0))
+            if last_seen >= min_seconds:
+                return last_seen
+            time.sleep(0.5)
+        return last_seen if last_seen is not None and last_seen >= min_seconds else None
+
+    @staticmethod
+    def player_status_for_item(state: dict[str, Any], item_id: str) -> dict[str, Any] | None:
+        status = state.get("player_status") or {}
+        if not isinstance(status, dict):
+            return None
+        if str(status.get("item_id") or "") != str(item_id or ""):
+            return None
+        return status
+
+    @classmethod
+    def player_current_time_seconds(cls, state: dict[str, Any], item_id: str) -> float:
+        status = cls.player_status_for_item(state, item_id)
+        if status is None:
+            return 0.0
+        try:
+            return max(0.0, float(status.get("current_time") or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def item_duration_seconds(item: dict[str, Any]) -> float:
+        def positive_durations(payload: object) -> list[float]:
+            if not isinstance(payload, list):
+                return []
+            values: list[float] = []
+            for value in payload:
+                try:
+                    duration = float(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                if duration > 0:
+                    values.append(duration)
+            return values
+
+        page = 0
+        try:
+            page = int(item.get("page") or item.get("video_page") or 0)
+        except (TypeError, ValueError):
+            page = 0
+
+        for pages_key, durations_key in (
+            ("available_pages", "available_durations"),
+            ("selected_pages", "selected_durations"),
+        ):
+            pages = item.get(pages_key)
+            durations = item.get(durations_key)
+            if not isinstance(pages, list) or not isinstance(durations, list):
+                continue
+            for index, page_value in enumerate(pages):
+                try:
+                    page_number = int(page_value or 0)
+                except (TypeError, ValueError):
+                    continue
+                if page_number != page or index >= len(durations):
+                    continue
+                try:
+                    duration = float(durations[index] or 0)
+                except (TypeError, ValueError):
+                    continue
+                if duration > 0:
+                    return duration
+
+        for durations_key in ("selected_durations", "available_durations"):
+            durations = positive_durations(item.get(durations_key))
+            if durations:
+                return max(durations)
+        return 0.0
 
     def check_gatcha(self) -> None:
         print_header("Gatcha")
@@ -938,6 +1198,22 @@ class SmokeRunner:
             if isinstance(item, dict) and str(item.get("id") or "") == item_id:
                 return item
         return None
+
+    @staticmethod
+    def rotated_users_after_current(state: dict[str, Any], current_requester: str, filter_users: list[str] | None = None) -> list[str]:
+        users = [str(user).strip() for user in (state.get("session_users") or []) if str(user).strip()]
+        if not users:
+            return []
+        normalized_current = str(current_requester or "").strip()
+        if normalized_current in users:
+            current_index = users.index(normalized_current)
+            rotated = users[current_index + 1 :] + users[: current_index + 1]
+        else:
+            rotated = list(users)
+        if not filter_users:
+            return rotated
+        allowed = {str(user).strip() for user in filter_users if str(user).strip()}
+        return [user for user in rotated if user in allowed]
 
     @staticmethod
     def print_state_summary(state: dict[str, Any], *, label: str) -> None:

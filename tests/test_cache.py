@@ -40,6 +40,10 @@ class CacheManagerOutputTest(unittest.TestCase):
         self.assertTrue(CacheManager._should_force_refresh_bbdown("请尝试升级到最新版本后重试!"))
         self.assertFalse(CacheManager._should_force_refresh_bbdown("缓存失败"))
 
+    def test_find_stream_file_returns_none_when_directory_disappears_mid_scan(self):
+        with patch.object(Path, "rglob", side_effect=FileNotFoundError("gone")):
+            self.assertIsNone(CacheManager._find_stream_file(Path("C:/missing"), {".mp4"}))
+
 class CacheManagerPolicyTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()
@@ -239,6 +243,57 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     self.assertEqual(retried.cache_message, "准备重新下载")
                     self.assertEqual(retried.video_media_url, "")
                     enqueue_mock.assert_called_once_with("song-a")
+            finally:
+                manager.shutdown()
+
+    def test_retry_item_keeps_cache_dir_while_item_is_in_flight(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                self.store.add_item(item, requester_name="cache-test-user")
+                item_dir = self.cache_dir / "song-a" / "video-p1"
+                item_dir.mkdir(parents=True, exist_ok=True)
+                (item_dir / "video.mp4").write_bytes(b"media")
+                self.store.update_item(
+                    "song-a",
+                    cache_status="downloading",
+                    cache_message="downloading",
+                    persist_backup=False,
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-a"}
+                    manager.pending_ids = {"song-a"}
+                with patch.object(manager, "enqueue") as enqueue_mock, patch.object(
+                    manager, "_terminate_process"
+                ) as terminate_mock:
+                    manager.retry_item("song-a")
+                    retried = self.store.get_item("song-a")
+                    self.assertIsNotNone(retried)
+                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertTrue((self.cache_dir / "song-a").exists())
+                    self.assertIn("song-a", manager.retry_requested_ids)
+                    enqueue_mock.assert_not_called()
+                    terminate_mock.assert_not_called()
+            finally:
+                manager.shutdown()
+
+    def test_cache_item_clears_old_cache_dir_before_processing_pending_retry(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                self.store.add_item(item, requester_name="cache-test-user")
+                item_dir = self.cache_dir / "song-a" / "video-p1"
+                item_dir.mkdir(parents=True, exist_ok=True)
+                (item_dir / "video.mp4").write_bytes(b"media")
+                with manager.lock:
+                    manager.desired_ids = {"song-a"}
+                    manager.retry_requested_ids.add("song-a")
+                with patch.object(manager, "_cache_item_multi") as cache_item_multi_mock:
+                    manager._cache_item("song-a")
+                    self.assertFalse((self.cache_dir / "song-a").exists())
+                    cache_item_multi_mock.assert_called_once()
             finally:
                 manager.shutdown()
 
