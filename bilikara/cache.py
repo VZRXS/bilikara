@@ -1449,8 +1449,8 @@ class CacheManager:
         normalized = " ".join(str(message or "").split())
         return normalized[:240] if normalized else "未知错误"
 
-    @staticmethod
-    def _ffprobe_path_for_ffmpeg(ffmpeg_path: Path) -> Path | None:
+    @classmethod
+    def _ffprobe_path_for_ffmpeg(cls, ffmpeg_path: Path) -> Path | None:
         candidates = []
         if FFPROBE_RUNTIME_PATH.exists():
             candidates.append(FFPROBE_RUNTIME_PATH)
@@ -1459,10 +1459,36 @@ class CacheManager:
         system_ffprobe = shutil.which("ffprobe")
         if system_ffprobe:
             candidates.append(Path(system_ffprobe))
+        seen: set[str] = set()
         for candidate in candidates:
-            if candidate.exists():
+            try:
+                candidate_key = os.path.normcase(str(candidate.resolve()))
+            except OSError:
+                candidate_key = os.path.normcase(str(candidate))
+            if candidate_key in seen:
+                continue
+            seen.add(candidate_key)
+            if cls._is_usable_ffprobe(candidate):
                 return candidate
         return None
+
+    @staticmethod
+    def _is_usable_ffprobe(binary_path: Path) -> bool:
+        if not binary_path.exists():
+            return False
+        try:
+            process = subprocess.run(
+                [str(binary_path), "-version"],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=10,
+                **CacheManager._hidden_process_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return process.returncode == 0
 
     @staticmethod
     def _variant_id(page: int, label: str, index: int) -> str:

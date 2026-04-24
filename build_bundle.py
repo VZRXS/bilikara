@@ -72,9 +72,7 @@ def _resolve_bundle_binary_path(binary_name: str) -> Path | None:
 
     candidate = Path(direct)
     if platform.system() == "Windows":
-        resolved = _resolve_windows_binary(binary_name, candidate)
-        if resolved:
-            return resolved
+        return _resolve_windows_binary(binary_name, candidate)
     return candidate
 
 
@@ -83,20 +81,32 @@ def _resolve_windows_binary(binary_name: str, candidate: Path) -> Path | None:
     if "\\chocolatey\\bin\\" in candidate_str:
         root = candidate.parent.parent
         guesses = [
-            root / "lib" / binary_name / "tools" / binary_name / "bin" / f"{binary_name}.exe",
-            root / "lib" / binary_name / "tools" / "bin" / f"{binary_name}.exe",
+            root / "lib" / package_name / "tools" / package_name / "bin" / f"{binary_name}.exe"
+            for package_name in _windows_package_names(binary_name)
         ]
+        guesses.extend(
+            root / "lib" / package_name / "tools" / "bin" / f"{binary_name}.exe"
+            for package_name in _windows_package_names(binary_name)
+        )
         for guess in guesses:
             if guess.exists():
                 return guess
+        return None
 
     if "\\scoop\\shims\\" in candidate_str:
         root = candidate.parent.parent
-        guess = root / "apps" / binary_name / "current" / "bin" / f"{binary_name}.exe"
-        if guess.exists():
-            return guess
+        for package_name in _windows_package_names(binary_name):
+            guess = root / "apps" / package_name / "current" / "bin" / f"{binary_name}.exe"
+            if guess.exists():
+                return guess
+        return None
 
     return candidate
+
+
+def _windows_package_names(binary_name: str) -> list[str]:
+    names = ["ffmpeg", binary_name]
+    return list(dict.fromkeys(names))
 
 
 if __name__ == "__main__":
