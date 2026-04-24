@@ -368,6 +368,59 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_ffprobe_path_for_ffmpeg_skips_broken_runtime_probe(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        tools_dir = Path(self.temp_dir.name) / "runtime" / "tools" / "bbdown"
+        ffmpeg_path = tools_dir / f"ffmpeg{suffix}"
+        ffprobe_path = tools_dir / f"ffprobe{suffix}"
+        tools_dir.mkdir(parents=True, exist_ok=True)
+        ffmpeg_path.write_bytes(b"ffmpeg-bin")
+        ffprobe_path.write_bytes(b"broken-shim")
+
+        with patch("bilikara.cache.FFPROBE_RUNTIME_PATH", ffprobe_path), patch(
+            "bilikara.cache.shutil.which",
+            return_value=None,
+        ), patch(
+            "bilikara.cache.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="Cannot find file at '..\\lib\\ffmpeg\\tools\\ffmpeg\\bin\\ffprobe.exe'",
+            ),
+        ) as run_mock:
+            resolved = CacheManager._ffprobe_path_for_ffmpeg(ffmpeg_path)
+
+        self.assertIsNone(resolved)
+        run_mock.assert_called_once()
+
+    def test_ffprobe_path_for_ffmpeg_falls_back_to_sibling_probe(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        runtime_dir = Path(self.temp_dir.name) / "runtime" / "tools" / "bbdown"
+        sibling_dir = Path(self.temp_dir.name) / "external" / "ffmpeg"
+        runtime_probe = runtime_dir / f"ffprobe{suffix}"
+        ffmpeg_path = sibling_dir / f"ffmpeg{suffix}"
+        sibling_probe = sibling_dir / f"ffprobe{suffix}"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        sibling_dir.mkdir(parents=True, exist_ok=True)
+        runtime_probe.write_bytes(b"broken-shim")
+        ffmpeg_path.write_bytes(b"ffmpeg-bin")
+        sibling_probe.write_bytes(b"ffprobe-bin")
+
+        with patch("bilikara.cache.FFPROBE_RUNTIME_PATH", runtime_probe), patch(
+            "bilikara.cache.shutil.which",
+            return_value=None,
+        ), patch(
+            "bilikara.cache.subprocess.run",
+            side_effect=[
+                SimpleNamespace(returncode=1, stdout="", stderr="Cannot find file"),
+                SimpleNamespace(returncode=0, stdout="ffprobe version 7.1", stderr=""),
+            ],
+        ) as run_mock:
+            resolved = CacheManager._ffprobe_path_for_ffmpeg(ffmpeg_path)
+
+        self.assertEqual(resolved, sibling_probe)
+        self.assertEqual(run_mock.call_count, 2)
+
     def test_ensure_bbdown_uses_local_binary_when_release_check_fails(self):
         suffix = ".exe" if os.name == "nt" else ""
         local_binary = Path(self.temp_dir.name) / "tools" / "bbdown" / f"BBDown{suffix}"
