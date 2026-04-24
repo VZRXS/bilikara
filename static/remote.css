@@ -302,17 +302,22 @@ h1 {
 .now-playing-panel > .panel-head {
   display: block;
   margin-bottom: 6px;
-  padding-right: 72px;
 }
 
 .now-playing-panel > .panel-head #refresh-button {
   position: absolute;
   top: 18px;
   right: 18px;
+  white-space: nowrap;
+  padding: 10px 12px;
+  border-radius: 14px;
 }
 
-.now-playing-panel #current-title {
-  padding-right: 72px;
+.now-playing-panel #current-title::before {
+  content: "";
+  float: right;
+  width: min(32%, 74px);
+  height: 52px;
 }
 
 .list-heading {
