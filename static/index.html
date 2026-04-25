@@ -373,22 +373,49 @@
               </div>
             </section>
 
-            <section class="list-card sub-card search-sub-card">
+            <section class="list-card sub-card search-sub-card" id="search-panel">
               <div class="search-card">
                 <div class="search-sub-card-head">
                   <div>
-                    <p class="section-tag">Local Search</p>
-                    <h2>搜索</h2>
+                    <p class="section-tag" id="search-tag">Local Search</p>
+                    <h2 id="search-title">搜索</h2>
+                  </div>
+                  <button type="button" id="search-cookie-toggle" class="toolbar-button ghost search-cookie-toggle">
+                    输入 Cookie
+                  </button>
+                </div>
+
+                <div id="search-stage" class="search-stage">
+                  <div class="search-stage-inner">
+                    <div id="search-main-view" class="search-face search-face-front">
+                      <form id="search-form" class="search-inputs">
+                        <div class="input-group">
+                          <input type="text" id="search-query" placeholder="搜索本地歌曲目录 (需要登录或者 cookie)" autocomplete="off">
+                        </div>
+                        <button type="submit" id="search-button" class="next-button">搜索</button>
+                      </form>
+                      <p class="search-message" id="search-message" role="status"></p>
+                      <div id="search-results" class="search-results hidden"></div>
+                    </div>
+
+                    <div id="search-cookie-view" class="search-face search-face-back search-cookie-view">
+                      <div class="cookie-config-bar">
+                        <div class="cookie-inputs">
+                          <div class="input-group">
+                            <label>SESSDATA</label>
+                            <input type="text" id="cookie-sessdata" placeholder="从浏览器获取的 SESSDATA">
+                          </div>
+                          <div class="input-group">
+                            <label>bili_jct</label>
+                            <input type="text" id="cookie-jct" placeholder="从浏览器获取的 bili_jct">
+                          </div>
+                          <button type="button" id="save-cookie-button" class="next-button">更新配置</button>
+                        </div>
+                        <p class="gatcha-message" id="cookie-message" role="status"></p>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <form id="search-form" class="search-inputs">
-                  <div class="input-group">
-                    <input type="text" id="search-query" placeholder="搜索本地歌曲目录 (需要登录或者 cookie)" autocomplete="off">
-                  </div>
-                  <button type="submit" id="search-button" class="next-button">搜索</button>
-                </form>
-                <p class="search-message" id="search-message" role="status"></p>
-                <div id="search-results" class="search-results hidden"></div>
               </div>
             </section>
             
@@ -398,8 +425,8 @@
                  <p class="section-tag" id="gatcha-tag">gatcha Draw</p>
                  <h2 id="gatcha-title">试试运气</h2>
                 </div>
-                <button type="button" id="gatcha-cookie-toggle" class="toolbar-button ghost gatcha-cookie-toggle">
-                  输入 Cookie
+                <button type="button" id="gatcha-uid-toggle" class="toolbar-button ghost gatcha-uid-toggle">
+                  添加 UID
                 </button>
               </div>
       
@@ -423,20 +450,19 @@
                     </div>
                   </div>
 
-                  <div id="gatcha-cookie-view" class="gatcha-face gatcha-face-back gatcha-cookie-view">
-                    <div class="cookie-config-bar">
-                      <div class="cookie-inputs">
+                  <div id="gatcha-uid-view" class="gatcha-face gatcha-face-back gatcha-uid-view">
+                    <div class="gatcha-uid-bar">
+                      <form id="gatcha-uid-form" class="gatcha-uid-form">
                         <div class="input-group">
-                          <label>SESSDATA</label>
-                          <input type="text" id="cookie-sessdata" placeholder="从浏览器获取的 SESSDATA">
+                          <label>UID</label>
+                          <input type="text" id="gatcha-uid-input" placeholder="UID 或 UP 主空间链接">
                         </div>
-                        <div class="input-group">
-                          <label>bili_jct</label>
-                          <input type="text" id="cookie-jct" placeholder="从浏览器获取的 bili_jct">
-                        </div>
-                        <button type="button" id="save-cookie-button" class="next-button">更新配置</button>
-                      </div>
-                      <p class="gatcha-message" id="cookie-message" role="status"></p>
+                        <button type="submit" id="add-gatcha-uid-button" class="next-button">添加</button>
+                      </form>
+                      <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button gatcha-refresh-button">
+                        手动更新
+                      </button>
+                      <p class="gatcha-message" id="gatcha-uid-message" role="status"></p>
                     </div>
                   </div>
                 </div>

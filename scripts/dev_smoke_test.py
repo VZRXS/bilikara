@@ -35,6 +35,7 @@ DEFAULT_BBDOWN_TIMEOUT_SECONDS = 300
 DEFAULT_CACHE_TIMEOUT_SECONDS = 420
 DEFAULT_VISUAL_PAUSE_SECONDS = 5
 DEFAULT_TRANSITION_VISUAL_SECONDS = 18
+DEFAULT_TRANSITION_TAIL_SECONDS = 3.0
 
 
 class ApiError(RuntimeError):
@@ -345,7 +346,7 @@ class SmokeRunner:
         if song_urls:
             print_info(f"Using song URLs from command line: {len(song_urls)}")
         else:
-            song_urls = self.pick_gatcha_song_urls(3)
+            song_urls = self.pick_gatcha_song_urls(8)
         if not song_urls and not self.args.non_interactive:
             raw = input("Gatcha did not return a usable URL. Enter a Bilibili URL for song testing, or leave blank to skip: ").strip()
             if raw:
@@ -371,13 +372,20 @@ class SmokeRunner:
             print_ok(f"Multi-page search item added: {multi_item.get('display_title')} ({multi_item.get('id')})")
 
         regular_count = 2 if multi_item else 3
-        regular_urls = self.urls_for_count(song_urls, regular_count)
+        regular_urls = list(song_urls) if len(song_urls) >= regular_count else self.urls_for_count(song_urls, regular_count)
         top_song_added = False
-        for index, url in enumerate(regular_urls, start=1):
+        regular_added_count = 0
+        for url in regular_urls:
+            if regular_added_count >= regular_count:
+                break
             has_current = bool((self.get_state().get("current_item") or {}).get("id"))
             position = "next" if has_current and not top_song_added else "tail"
             before_ids = self.item_ids(self.get_state())
-            state = self.add_song(url, requester, position=position)
+            try:
+                state = self.add_song(url, requester, position=position)
+            except ApiError as exc:
+                print_warn(f"Skipping unusable song candidate: {url}: {exc}")
+                continue
             if position == "next":
                 top_song_added = True
             item = self.find_item_not_in_ids(state, before_ids) or self.find_newest_item(state, prefer_playlist=True)
@@ -385,14 +393,18 @@ class SmokeRunner:
                 continue
             added_items.append(item)
             self.created_item_ids.append(str(item.get("id") or ""))
+            regular_added_count += 1
             if position == "next":
                 print_ok(f"Top-song request succeeded: {item.get('display_title')} ({item.get('id')})")
-            elif index == 1 and not multi_item:
+            elif regular_added_count == 1 and not multi_item:
                 print_ok(f"Current song request succeeded: {item.get('display_title')} ({item.get('id')})")
             else:
-                print_ok(f"Queued song #{index}: {item.get('display_title')} ({item.get('id')})")
+                print_ok(f"Queued song #{regular_added_count}: {item.get('display_title')} ({item.get('id')})")
 
-        self.exercise_playlist_resort(regular_urls)
+        if regular_added_count < regular_count:
+            print_warn(f"Only added {regular_added_count}/{regular_count} regular song candidates; continuing with available items")
+
+        self.exercise_playlist_resort(song_urls)
         restore_cache_max = self.expand_cache_window_for_items(len(added_items))
         try:
             self.focus_created_items_for_cache_window(added_items)
@@ -652,16 +664,23 @@ class SmokeRunner:
         temp_users = [f"Cycle{suffix}A", f"Cycle{suffix}B"]
         temp_items: list[dict[str, Any]] = []
         added_users: list[str] = []
-        urls = self.urls_for_count(song_urls, len(temp_users))
+        urls = self.urls_for_count(song_urls, max(len(temp_users), min(len(song_urls), len(temp_users) * 4)))
 
         try:
             for user_name in temp_users:
                 self.add_user(user_name)
                 added_users.append(user_name)
 
-            for user_name, url in zip(temp_users, urls):
+            for url in urls:
+                if len(temp_items) >= len(temp_users):
+                    break
+                user_name = temp_users[len(temp_items)]
                 before_ids = self.item_ids(self.get_state())
-                state = self.add_song(url, user_name, position="tail")
+                try:
+                    state = self.add_song(url, user_name, position="tail")
+                except ApiError as exc:
+                    print_warn(f"Skipping unusable resort probe candidate for {user_name}: {url}: {exc}")
+                    continue
                 item = self.find_item_not_in_ids(state, before_ids) or self.find_newest_item(state, prefer_playlist=True)
                 if not item:
                     continue
@@ -845,12 +864,12 @@ class SmokeRunner:
             original_delay = int((state.get("player_settings") or {}).get("song_advance_delay_seconds") or 0)
             self.api_post("/api/player/advance-delay", {"delay_seconds": 5})
             try:
-                if self.seek_current_item_near_end(current_id, tail_seconds=2.0):
-                    print_ok("Requested Remote seek near the end of the current song for transition UI testing")
+                if self.seek_current_item_near_end(current_id, tail_seconds=DEFAULT_TRANSITION_TAIL_SECONDS):
+                    print_ok("Requested Remote seek to 3s before the end of the current song for transition UI testing")
                 else:
                     print_warn("Could not confirm a near-end seek; transition UI may require fallback next-song")
                 self.visual_checkpoint(
-                    "Watch the Host player now. Playback should already be near the end so the in-player countdown can stay visible without leaving fullscreen.",
+                    "Watch the Host player now. Playback should be about 3s before the end so the in-player countdown can stay visible without leaving fullscreen.",
                     seconds=self.args.transition_visual_pause,
                 )
                 state_after_seek = self.get_state()
@@ -893,17 +912,20 @@ class SmokeRunner:
         target_time = max(0.0, duration_seconds - max(0.5, tail_seconds))
         remaining = target_time - current_time
         if remaining <= 0.5:
-            print_ok(f"Playback is already near the end: current={current_time:.1f}s duration={duration_seconds:.1f}s")
+            print_ok(
+                f"Playback is already near the transition target: "
+                f"current={current_time:.1f}s target={target_time:.1f}s duration={duration_seconds:.1f}s"
+            )
             return True
         print_info(
-            f"Seeking near end for transition test: current={current_time:.1f}s "
+            f"Seeking to {tail_seconds:.1f}s before the end for transition test: current={current_time:.1f}s "
             f"target={target_time:.1f}s duration={duration_seconds:.1f}s"
         )
 
         estimated_time = current_time
-        while target_time - estimated_time > 0.5:
+        while target_time - estimated_time > 1.0:
             remaining = target_time - estimated_time
-            delta_seconds = int(min(300, max(1, math.ceil(remaining))))
+            delta_seconds = int(min(300, max(1, math.floor(remaining))))
             seek_state = self.api_post(
                 "/api/player/control",
                 {"action": "seek-relative", "item_id": item_id, "delta_seconds": delta_seconds},
@@ -914,16 +936,23 @@ class SmokeRunner:
             if seq and not self.wait_for_player_control_ack(seq):
                 print_warn(f"Timed out waiting for seek command ack: seq={seq} delta={delta_seconds}")
                 return False
-            estimated_time += delta_seconds
             time.sleep(0.4)
+            estimated_time += delta_seconds
+            observed_state = self.get_state()
+            observed_status_time = self.player_current_time_seconds(observed_state, item_id)
+            if observed_status_time > 0:
+                estimated_time = max(estimated_time, observed_status_time)
 
         observed_time = self.wait_for_player_time_at_least(
             item_id,
-            min_seconds=max(0.0, target_time - 3.0),
+            min_seconds=max(0.0, target_time - 1.0),
             timeout=8.0,
         )
         if observed_time is not None:
-            print_ok(f"Player reported near-end playback: current={observed_time:.1f}s duration={duration_seconds:.1f}s")
+            print_ok(
+                f"Player reported near-end playback: "
+                f"current={observed_time:.1f}s target={target_time:.1f}s duration={duration_seconds:.1f}s"
+            )
         else:
             print_info(
                 f"Seek commands were acknowledged; last estimated playback was about "

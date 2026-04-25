@@ -180,6 +180,23 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertFalse(item_dir.exists())
         self.assertFalse(log_path.exists())
 
+    def test_remove_cache_dir_ignores_windows_missing_path_race(self):
+        log_dir = Path(self.temp_dir.name) / "logs"
+        missing_error = OSError(3, "系统找不到指定的路径。")
+        missing_error.winerror = 3
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir), patch(
+            "bilikara.cache.shutil.rmtree",
+            side_effect=missing_error,
+        ) as rmtree_mock:
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager._remove_cache_dir("song-a")
+            finally:
+                manager.shutdown()
+
+        rmtree_mock.assert_called_once_with(self.cache_dir / "song-a", ignore_errors=True)
+
     def test_enrich_snapshot_includes_cache_activity_timestamp(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)

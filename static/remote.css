@@ -1060,6 +1060,12 @@ select:disabled {
   text-align: center;
 }
 
+.gatcha-uid-toggle {
+  min-height: 40px;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
 .gatcha-icon {
   font-size: 32px;
 }
@@ -1083,6 +1089,23 @@ select:disabled {
 #gatcha-candidate-title {
   font-size: 16px;
   line-height: 1.4;
+}
+
+.gatcha-uid-view {
+  text-align: left;
+}
+
+.gatcha-uid-form {
+  display: grid;
+  gap: 10px;
+}
+
+.gatcha-uid-form .primary-button {
+  min-height: 48px;
+}
+
+.gatcha-uid-view .gatcha-message {
+  text-align: center;
 }
 
 .queue-item,

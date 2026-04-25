@@ -1,5 +1,4 @@
 const audioVariantSwitchDebounceMs = 350;
-const gatchaCooldownMs = 15000;
 const playerSettingsEchoSuppressMs = 1800;
 const remoteVolumeCommitDebounceMs = 160;
 const viewportScaleResetDelaysMs = [0, 120, 360];
@@ -39,8 +38,8 @@ const state = {
   eventStreamReconnectTimer: null,
   eventStreamRetryMs: eventStreamInitialRetryMs,
   gatchaCandidate: null,
-  gatchaCooldownUntil: 0,
-  gatchaCooldownTimer: null,
+  gatchaUidVisible: false,
+  gatchaUidSaving: false,
   layoutMode: "full",
   remoteAccessRenderSignature: "",
   remoteQrPopoverOpen: false,
@@ -96,6 +95,7 @@ const elements = {
   addNextButton: document.getElementById("add-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
+  gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
@@ -103,6 +103,11 @@ const elements = {
   gatchaInitView: document.getElementById("gatcha-init-view"),
   gatchaResultView: document.getElementById("gatcha-result-view"),
   gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
+  gatchaUidView: document.getElementById("gatcha-uid-view"),
+  gatchaUidForm: document.getElementById("gatcha-uid-form"),
+  gatchaUidInput: document.getElementById("gatcha-uid-input"),
+  addGatchaUidButton: document.getElementById("add-gatcha-uid-button"),
+  gatchaUidMessage: document.getElementById("gatcha-uid-message"),
   listTag: document.getElementById("list-tag"),
   listTitle: document.getElementById("list-title"),
   listCount: document.getElementById("list-count"),
@@ -521,6 +526,24 @@ async function searchGatchaCache(query) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
+async function previewGatchaUid(uid) {
+  return apiPost("/api/gatcha/uids/preview", { uid: String(uid || "").trim() });
+}
+
+async function addGatchaUid(uid) {
+  return apiPost("/api/gatcha/uids/add", { uid: String(uid || "").trim() });
+}
+
+function gatchaUidResultMessage(result, fallbackUid = "") {
+  const cache = result?.cache || {};
+  const addedCount = Number(cache.added_count || 0);
+  const totalCount = Number(cache.total_count || 0);
+  const modeLabel = cache.mode === "incremental" ? "最新" : "所有";
+  const ownerLabel = result?.name ? `UP 主 ${result.name}` : `UID ${result?.uid || fallbackUid}`;
+  const listAction = result?.added ? "已添加" : "已在关注列表中";
+  return `${ownerLabel} ${listAction}，已拉取${modeLabel}稿件，新增 ${addedCount} 条，缓存共 ${totalCount} 条。`;
+}
+
 function hideSearchResults() {
   elements.searchResults.innerHTML = "";
   elements.searchResults.classList.add("hidden");
@@ -565,10 +588,8 @@ function renderSearchResults(items) {
 }
 
 async function handleGatchaDraw() {
-  if (gatchaCooldownRemainingSeconds() > 0) {
-    syncGatchaCooldownButtons();
-    return;
-  }
+  state.gatchaUidVisible = false;
+  renderGatchaUidView();
   setGatchaMessage("正在随机抽取一首歌曲...");
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
@@ -579,9 +600,7 @@ async function handleGatchaDraw() {
 
     state.gatchaCandidate = payload.data;
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
-    startGatchaCooldown();
-    elements.gatchaInitView.classList.add("hidden");
-    elements.gatchaResultView.classList.remove("hidden");
+    renderGatchaUidView();
     setGatchaMessage("");
   } catch (error) {
     setGatchaMessage(error.message, true);
@@ -596,36 +615,82 @@ function setGatchaMessage(message, isError = false) {
   elements.gatchaMessage.classList.toggle("is-error", Boolean(isError));
 }
 
-function gatchaCooldownRemainingSeconds() {
-  return Math.max(0, Math.ceil((state.gatchaCooldownUntil - Date.now()) / 1000));
-}
-
-function startGatchaCooldown() {
-  state.gatchaCooldownUntil = Date.now() + gatchaCooldownMs;
-  syncGatchaCooldownButtons();
-  if (state.gatchaCooldownTimer) {
-    clearInterval(state.gatchaCooldownTimer);
+function setGatchaUidMessage(message, isError = false) {
+  if (!elements.gatchaUidMessage) {
+    return;
   }
-  state.gatchaCooldownTimer = setInterval(() => {
-    syncGatchaCooldownButtons();
-    if (gatchaCooldownRemainingSeconds() <= 0) {
-      clearInterval(state.gatchaCooldownTimer);
-      state.gatchaCooldownTimer = null;
-    }
-  }, 250);
+  elements.gatchaUidMessage.textContent = message || "";
+  elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
 }
 
-function syncGatchaCooldownButtons() {
-  const remainingSeconds = gatchaCooldownRemainingSeconds();
-  const coolingDown = remainingSeconds > 0;
-  const cooldownText = `等待 ${remainingSeconds}s`;
+function renderGatchaUidView() {
+  const showUid = Boolean(state.gatchaUidVisible);
+  const hasCandidate = Boolean(state.gatchaCandidate);
+  if (elements.gatchaCandidateTitle && state.gatchaCandidate?.title) {
+    elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
+  }
+  elements.gatchaUidView?.classList.toggle("hidden", !showUid);
+  elements.gatchaInitView?.classList.toggle("hidden", showUid || hasCandidate);
+  elements.gatchaResultView?.classList.toggle("hidden", showUid || !hasCandidate);
+  if (elements.gatchaUidToggle) {
+    elements.gatchaUidToggle.textContent = showUid ? "返回抽卡" : "添加 UID";
+    elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
+  }
   if (elements.gatchaButton) {
-    elements.gatchaButton.disabled = coolingDown;
-    elements.gatchaButton.textContent = coolingDown ? cooldownText : "试试运气";
+    elements.gatchaButton.disabled = false;
+    elements.gatchaButton.textContent = "试试运气";
   }
   if (elements.gatchaRetryButton) {
-    elements.gatchaRetryButton.disabled = coolingDown;
-    elements.gatchaRetryButton.textContent = coolingDown ? cooldownText : "重新再来";
+    elements.gatchaRetryButton.disabled = false;
+    elements.gatchaRetryButton.textContent = "重新再来";
+  }
+  if (elements.gatchaUidInput) {
+    elements.gatchaUidInput.disabled = state.gatchaUidSaving;
+  }
+  if (elements.addGatchaUidButton) {
+    elements.addGatchaUidButton.disabled = state.gatchaUidSaving;
+    elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? "处理中" : "添加";
+  }
+}
+
+async function handleGatchaUidSubmit(event) {
+  event.preventDefault();
+  const uid = String(elements.gatchaUidInput?.value || "").trim();
+  if (!uid) {
+    setGatchaUidMessage("请输入 UID", true);
+    return;
+  }
+  if (state.gatchaUidSaving) {
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidView();
+  setGatchaUidMessage("正在检测 UID...");
+  try {
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? "最新" : "所有");
+    const followedPrefix = preview?.already_followed ? "已在关注列表中，" : "";
+    setGatchaUidMessage(`${followedPrefix}检测到 UP 主：${ownerName}`);
+
+    if (!window.confirm(`确认拉取 UP 主：${ownerName} 的${modeLabel}稿件？`)) {
+      setGatchaUidMessage("已取消添加 UID。");
+      return;
+    }
+
+    const normalizedUid = preview?.uid || uid;
+    setGatchaUidMessage(`正在拉取 UP 主：${ownerName} 的稿件...`);
+    const result = await addGatchaUid(normalizedUid);
+    setGatchaUidMessage(gatchaUidResultMessage(result, normalizedUid));
+    if (elements.gatchaUidInput) {
+      elements.gatchaUidInput.value = "";
+    }
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidView();
   }
 }
 
@@ -647,6 +712,7 @@ function render() {
   renderHistory(Array.isArray(data.history) ? data.history : []);
   syncListView();
   renderLayoutMode();
+  renderGatchaUidView();
 }
 
 function renderRequesterSelect(sessionUsers) {
@@ -1122,8 +1188,7 @@ async function confirmBindingSheet() {
     }
     if (intent.source === "gatcha") {
       state.gatchaCandidate = null;
-      elements.gatchaResultView.classList.add("hidden");
-      elements.gatchaInitView.classList.remove("hidden");
+      renderGatchaUidView();
     }
     setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入点歌列表");
   } catch (error) {
@@ -1526,8 +1591,7 @@ async function addByUrl(url, position = "tail") {
     hideSearchResults();
     elements.searchQuery.value = "";
     state.gatchaCandidate = null;
-    elements.gatchaResultView.classList.add("hidden");
-    elements.gatchaInitView.classList.remove("hidden");
+    renderGatchaUidView();
     setFormMessage("点歌成功。");
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -1762,6 +1826,13 @@ elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
+
+elements.gatchaUidToggle?.addEventListener("click", () => {
+  state.gatchaUidVisible = !state.gatchaUidVisible;
+  renderGatchaUidView();
+});
+
+elements.gatchaUidForm?.addEventListener("submit", handleGatchaUidSubmit);
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
   if (!state.gatchaCandidate?.url) {

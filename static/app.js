@@ -1,7 +1,6 @@
 const pollIntervalMs = 1000;
 const bannerAutoHideMs = 5000;
 const stalledRetrySeconds = 5;
-const gatchaCooldownMs = 15000;
 const localPlayerSyncIntervalMs = 120;
 const localPlayerHardSyncThresholdSeconds = 0.08;
 const localPlayerForceSyncEpsilonSeconds = 0.015;
@@ -33,7 +32,8 @@ const state = {
   remoteAccessRenderSignature: "",
   cacheSettingsRenderSignature: "",
   bbdownLoginRenderSignature: "",
-  gatchaCookieFaceRenderSignature: "",
+  searchCookieFaceRenderSignature: "",
+  gatchaUidFaceRenderSignature: "",
   historyRenderSignature: "",
   playlistEmptyRenderSignature: "",
   cacheSliderRenderSignature: "",
@@ -99,9 +99,10 @@ const state = {
   bindingIntent: null,
   retryActivityById: {},
   gatchaCandidate: null,
-  gatchaCooldownUntil: 0,
-  gatchaCooldownTimer: null,
-  gatchaCookieVisible: false,
+  searchCookieVisible: false,
+  gatchaUidVisible: false,
+  gatchaUidSaving: false,
+  gatchaRefreshSaving: false,
   bbdownLoginRequesting: false,
   appToastTimer: null,
   layoutMode: "full",
@@ -203,14 +204,21 @@ const elements = {
   remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
+  searchPanel: document.getElementById("search-panel"),
+  searchTag: document.getElementById("search-tag"),
+  searchTitle: document.getElementById("search-title"),
+  searchCookieToggle: document.getElementById("search-cookie-toggle"),
+  searchStage: document.getElementById("search-stage"),
+  searchMainView: document.getElementById("search-main-view"),
+  searchCookieView: document.getElementById("search-cookie-view"),
   gatchaPanel: document.getElementById("gatcha-panel"),
   gatchaTag: document.getElementById("gatcha-tag"),
   gatchaTitle: document.getElementById("gatcha-title"),
   gatchaStage: document.getElementById("gatcha-stage"),
   gatchaButton: document.getElementById("gatcha-button"),
-  gatchaCookieToggle: document.getElementById("gatcha-cookie-toggle"),
+  gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaMainView: document.getElementById("gatcha-main-view"),
-  gatchaCookieView: document.getElementById("gatcha-cookie-view"),
+  gatchaUidView: document.getElementById("gatcha-uid-view"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
   gatchaMessage: document.getElementById("gatcha-message"),
@@ -226,6 +234,11 @@ const elements = {
   cookieJct: document.getElementById("cookie-jct"),
   saveCookieButton: document.getElementById("save-cookie-button"),
   cookieMessage: document.getElementById("cookie-message"),
+  gatchaUidForm: document.getElementById("gatcha-uid-form"),
+  gatchaUidInput: document.getElementById("gatcha-uid-input"),
+  addGatchaUidButton: document.getElementById("add-gatcha-uid-button"),
+  refreshGatchaCacheButton: document.getElementById("refresh-gatcha-cache-button"),
+  gatchaUidMessage: document.getElementById("gatcha-uid-message"),
 };
 
 function setFormMessage(message, isError = false) {
@@ -736,6 +749,47 @@ async function searchGatchaCache(query) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
+async function previewGatchaUid(uid) {
+  return apiPost("/api/gatcha/uids/preview", { uid: String(uid || "").trim() });
+}
+
+async function addGatchaUid(uid) {
+  return apiPost("/api/gatcha/uids/add", { uid: String(uid || "").trim() });
+}
+
+async function refreshGatchaCache() {
+  return apiPost("/api/gatcha/refresh");
+}
+
+function gatchaUidResultMessage(result, fallbackUid = "") {
+  const cache = result?.cache || {};
+  const addedCount = Number(cache.added_count || 0);
+  const totalCount = Number(cache.total_count || 0);
+  const modeLabel = cache.mode === "incremental" ? "最新" : "所有";
+  const ownerLabel = result?.name ? `UP 主 ${result.name}` : `UID ${result?.uid || fallbackUid}`;
+  const listAction = result?.added ? "已添加" : "已在关注列表中";
+  return `${ownerLabel} ${listAction}，已拉取${modeLabel}稿件，新增 ${addedCount} 条，缓存共 ${totalCount} 条。`;
+}
+
+async function confirmGatchaUidAdd(intent) {
+  closeConfirm();
+  state.gatchaUidSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage(`正在拉取 UP 主：${intent.name || intent.uid} 的稿件...`);
+  try {
+    const result = await addGatchaUid(intent.uid);
+    setGatchaUidMessage(gatchaUidResultMessage(result, intent.uid));
+    if (elements.gatchaUidInput) {
+      elements.gatchaUidInput.value = "";
+    }
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
 function hideSearchResults() {
   elements.searchResults.innerHTML = "";
   elements.searchResults.classList.add("hidden");
@@ -781,10 +835,6 @@ function renderSearchResults(items) {
 }
 
 async function handleGatchaDraw() {
-  if (gatchaCooldownRemainingSeconds() > 0) {
-    syncGatchaCooldownButtons();
-    return;
-  }
   setGatchaMessage("正在连接 B 站寻找幸运投稿...");
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
@@ -795,7 +845,6 @@ async function handleGatchaDraw() {
 
     state.gatchaCandidate = payload.data;
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
-    startGatchaCooldown();
     
     // 切换界面
     elements.gatchaInitView.classList.add("hidden");
@@ -822,54 +871,59 @@ function setCookieMessage(message, isError = false) {
   elements.cookieMessage.classList.toggle("is-error", Boolean(isError));
 }
 
-function renderGatchaCookieFace() {
-  const showCookie = Boolean(state.gatchaCookieVisible);
-  const signature = showCookie ? "cookie" : "gatcha";
-  if (signature === state.gatchaCookieFaceRenderSignature) {
+function setGatchaUidMessage(message, isError = false) {
+  if (!elements.gatchaUidMessage) {
     return;
   }
-  state.gatchaCookieFaceRenderSignature = signature;
+  elements.gatchaUidMessage.textContent = message || "";
+  elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
+}
 
-  setClassToggle(elements.gatchaPanel, "is-cookie-view", showCookie);
-  setClassToggle(elements.gatchaStage, "is-cookie-view", showCookie);
-  setTextContent(elements.gatchaTag, showCookie ? "Cookie Config" : "gatcha Draw");
-  setTextContent(elements.gatchaTitle, showCookie ? "Cookie" : "试试运气");
-  setTextContent(elements.gatchaCookieToggle, showCookie ? "返回抽卡" : "输入 Cookie");
-  if (elements.gatchaCookieToggle?.getAttribute("aria-pressed") !== String(showCookie)) {
-    elements.gatchaCookieToggle.setAttribute("aria-pressed", String(showCookie));
+function renderSearchCookieFace() {
+  const showCookie = Boolean(state.searchCookieVisible);
+  const signature = showCookie ? "cookie" : "search";
+  if (signature === state.searchCookieFaceRenderSignature) {
+    return;
+  }
+  state.searchCookieFaceRenderSignature = signature;
+
+  setClassToggle(elements.searchPanel, "is-cookie-view", showCookie);
+  setClassToggle(elements.searchStage, "is-cookie-view", showCookie);
+  setTextContent(elements.searchTag, showCookie ? "Cookie Config" : "Local Search");
+  setTextContent(elements.searchTitle, showCookie ? "Cookie" : "搜索");
+  setTextContent(elements.searchCookieToggle, showCookie ? "返回搜索" : "输入 Cookie");
+  if (elements.searchCookieToggle?.getAttribute("aria-pressed") !== String(showCookie)) {
+    elements.searchCookieToggle.setAttribute("aria-pressed", String(showCookie));
   }
 }
 
-function gatchaCooldownRemainingSeconds() {
-  return Math.max(0, Math.ceil((state.gatchaCooldownUntil - Date.now()) / 1000));
-}
-
-function startGatchaCooldown() {
-  state.gatchaCooldownUntil = Date.now() + gatchaCooldownMs;
-  syncGatchaCooldownButtons();
-  if (state.gatchaCooldownTimer) {
-    clearInterval(state.gatchaCooldownTimer);
+function renderGatchaUidFace() {
+  const showUid = Boolean(state.gatchaUidVisible);
+  const signature = JSON.stringify({
+    showUid,
+    saving: state.gatchaUidSaving,
+    refreshing: state.gatchaRefreshSaving,
+  });
+  if (signature === state.gatchaUidFaceRenderSignature) {
+    return;
   }
-  state.gatchaCooldownTimer = setInterval(() => {
-    syncGatchaCooldownButtons();
-    if (gatchaCooldownRemainingSeconds() <= 0) {
-      clearInterval(state.gatchaCooldownTimer);
-      state.gatchaCooldownTimer = null;
-    }
-  }, 250);
-}
+  state.gatchaUidFaceRenderSignature = signature;
 
-function syncGatchaCooldownButtons() {
-  const remainingSeconds = gatchaCooldownRemainingSeconds();
-  const coolingDown = remainingSeconds > 0;
-  const cooldownText = `等待 ${remainingSeconds}s`;
-  if (elements.gatchaButton) {
-    elements.gatchaButton.disabled = coolingDown;
-    elements.gatchaButton.textContent = coolingDown ? cooldownText : "试试运气";
+  setClassToggle(elements.gatchaPanel, "is-uid-view", showUid);
+  setClassToggle(elements.gatchaStage, "is-uid-view", showUid);
+  setTextContent(elements.gatchaTag, showUid ? "Follow UID" : "gatcha Draw");
+  setTextContent(elements.gatchaTitle, showUid ? "关注 UID" : "试试运气");
+  setTextContent(elements.gatchaUidToggle, showUid ? "返回抽卡" : "添加 UID");
+  if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
+    elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
-  if (elements.gatchaRetryButton) {
-    elements.gatchaRetryButton.disabled = coolingDown;
-    elements.gatchaRetryButton.textContent = coolingDown ? cooldownText : "重新再来";
+  if (elements.addGatchaUidButton) {
+    elements.addGatchaUidButton.disabled = state.gatchaUidSaving;
+    elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? "处理中" : "添加";
+  }
+  if (elements.refreshGatchaCacheButton) {
+    elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving;
+    elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? "更新中" : "手动更新";
   }
 }
 
@@ -931,7 +985,8 @@ function render() {
     Boolean(data.session_flags?.auto_restored_backup),
   );
   syncListStageView();
-  renderGatchaCookieFace();
+  renderSearchCookieFace();
+  renderGatchaUidFace();
   renderConfirmPopover();
   state.lastPollRenderSignature = renderSignatureForData(data);
 }
@@ -4457,6 +4512,10 @@ elements.confirmOk.addEventListener("click", async () => {
       render();
       return;
     }
+    if (intent.type === "gatcha-uid-add" && intent.uid) {
+      await confirmGatchaUidAdd(intent);
+      return;
+    }
     if (intent.type === "duplicate-add" && intent.url) {
       state.data = await submitAddRequest(intent.url, intent.position || "tail", {
         requesterName: intent.requesterName || selectedRequesterName(),
@@ -4494,6 +4553,8 @@ document.addEventListener("click", (event) => {
       event.target.closest("#current-cache-retry-button") ||
       event.target.closest("#player-reset-button") ||
       event.target.closest("#add-form") ||
+      event.target.closest("#gatcha-uid-form") ||
+      event.target.closest("#refresh-gatcha-cache-button") ||
       event.target.closest("#history-list")
     ) {
       return;
@@ -4675,9 +4736,14 @@ elements.listStage.addEventListener("wheel", (event) => {
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
-elements.gatchaCookieToggle?.addEventListener("click", () => {
-  state.gatchaCookieVisible = !state.gatchaCookieVisible;
-  renderGatchaCookieFace();
+elements.searchCookieToggle?.addEventListener("click", () => {
+  state.searchCookieVisible = !state.searchCookieVisible;
+  renderSearchCookieFace();
+});
+
+elements.gatchaUidToggle?.addEventListener("click", () => {
+  state.gatchaUidVisible = !state.gatchaUidVisible;
+  renderGatchaUidFace();
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
@@ -4729,6 +4795,54 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
       return;
     }
     setGatchaMessage(error.message, true);
+  }
+});
+
+elements.gatchaUidForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const uid = String(elements.gatchaUidInput?.value || "").trim();
+  if (!uid) {
+    setGatchaUidMessage("请输入 UID", true);
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage("正在检测 UID...");
+  try {
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? "最新" : "所有");
+    const followedPrefix = preview?.already_followed ? "已在关注列表中，" : "";
+    const point = anchorPointForEvent(event, elements.addGatchaUidButton);
+    openConfirm({
+      type: "gatcha-uid-add",
+      uid: preview?.uid || uid,
+      name: ownerName,
+      message: `确认拉取 UP 主：${ownerName} 的${modeLabel}稿件？`,
+      ...point,
+    });
+    setGatchaUidMessage(`${followedPrefix}检测到 UP 主：${ownerName}`);
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidFace();
+  }
+});
+
+elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  state.gatchaRefreshSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage("正在后台更新抽卡缓存...");
+  try {
+    const result = await refreshGatchaCache();
+    setGatchaUidMessage(result?.started === false ? "抽卡缓存已经在更新中。" : "已开始更新抽卡缓存。");
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaRefreshSaving = false;
+    renderGatchaUidFace();
   }
 });
 

@@ -189,6 +189,9 @@
       <section class="panel gatcha-panel">
         <div class="panel-head">
           <p class="panel-tag">Gatcha Draw</p>
+          <button type="button" id="gatcha-uid-toggle" class="secondary-button gatcha-uid-toggle" aria-pressed="false">
+            添加 UID
+          </button>
         </div>
         <div id="gatcha-init-view" class="gatcha-content">
           <div class="gatcha-icon">🎲</div>
@@ -203,6 +206,19 @@
             <button type="button" id="gatcha-confirm-button" class="primary-button">确定点歌</button>
             <button type="button" id="gatcha-retry-button" class="secondary-button">重新再来</button>
           </div>
+        </div>
+        <div id="gatcha-uid-view" class="gatcha-content gatcha-uid-view hidden">
+          <form id="gatcha-uid-form" class="request-form gatcha-uid-form">
+            <input
+              type="text"
+              id="gatcha-uid-input"
+              placeholder="UID 或 UP 主空间链接"
+              aria-label="UID 或 UP 主空间链接"
+              autocomplete="off"
+            />
+            <button type="submit" id="add-gatcha-uid-button" class="primary-button">添加</button>
+          </form>
+          <p class="gatcha-message" id="gatcha-uid-message" role="status"></p>
         </div>
       </section>
 

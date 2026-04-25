@@ -10,7 +10,7 @@ import re
 import random
 import hashlib
 import time
-from .config import BILIBILI_HEADERS, GATCHA_UIDS, GATCHA_KEYWORDS
+from .config import BILIBILI_HEADERS, GATCHA_KEYWORDS
 from dataclasses import dataclass
 from .models import PlaylistItem
 import bilikara.config as cfg  
@@ -18,6 +18,10 @@ import bilikara.config as cfg
 VIDEO_PATH_RE = re.compile(r"/video/(?P<vid>(BV[0-9A-Za-z]+|av\d+))", re.IGNORECASE)
 BV_RE = re.compile(r"^(BV[0-9A-Za-z]+)$", re.IGNORECASE)
 AV_RE = re.compile(r"^(av\d+)$", re.IGNORECASE)
+SPACE_UID_RE = re.compile(
+    r"^(?:https?://)?space\.bilibili\.com/(?P<uid>\d+)(?:[/?#].*)?$",
+    re.IGNORECASE,
+)
 SHORT_HOSTS = {"b23.tv", "bili2233.cn"}
 DURATION_TOLERANCE_SECONDS = 3
 WBI_MIXIN_TABLE = [
@@ -30,12 +34,17 @@ _WBI_CACHE = {
     "keys": None,
     "last_update": 0
 }
+_GATCHA_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
+_GATCHA_PROFILE_CACHE_LOCK = threading.Lock()
 _GATCHA_CACHE_LOCK = threading.Lock()
+_GATCHA_UIDS_LOCK = threading.Lock()
 _GATCHA_REFRESH_LOCK = threading.Lock()
 _GATCHA_REQUEST_LOCK = threading.Lock()
 _GATCHA_LAST_REQUEST_AT = 0.0
 _GATCHA_CACHE_FILE = cfg.DATA_DIR / "gatcha_cache.json"
+_GATCHA_UIDS_FILE = cfg.DATA_DIR / "gatcha_uids.json"
 GATCHA_RETRY_DELAY_SECONDS = 5
+GATCHA_PROFILE_CACHE_TTL_SECONDS = 300
 MISSING_BILIBILI_COOKIE_MESSAGE = "请登录 Bilibili 账号或输入 Cookie"
 _COOKIE_REQUIRED_KEYS = {"sessdata", "bili_jct"}
 _COOKIE_PREFERRED_ORDER = (
@@ -131,6 +140,107 @@ def cookie_from_bbdown_data() -> str:
 
 def effective_bilibili_cookie() -> str:
     return cookie_from_bbdown_data() or str(cfg.COOKIE or "").strip()
+
+
+def _normalize_gatcha_uid(raw_mid: object) -> str:
+    text = str(raw_mid or "").strip()
+    if not text:
+        raise BilibiliError("UID 不能为空")
+
+    if text.isdigit():
+        uid = text
+    else:
+        match = SPACE_UID_RE.match(text)
+        if not match:
+            lower_text = text.lower()
+            if BV_RE.match(text) or AV_RE.match(text) or "/video/" in lower_text:
+                raise BilibiliError("请输入 Bilibili UID 或 UP 主空间链接，不要输入 BV/av 视频号")
+            raise BilibiliError("请输入纯数字 UID 或 UP 主空间链接")
+        uid = match.group("uid")
+
+    uid = uid.lstrip("0") or "0"
+    if not uid.isdigit() or int(uid) <= 0:
+        raise BilibiliError("Bilibili UID 必须是正整数")
+    return uid
+
+
+def _normalize_gatcha_uid_list(raw_uids: object) -> list[str]:
+    if not isinstance(raw_uids, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_mid in raw_uids:
+        try:
+            mid = _normalize_gatcha_uid(raw_mid)
+        except BilibiliError:
+            continue
+        if mid in seen:
+            continue
+        seen.add(mid)
+        normalized.append(mid)
+    return normalized
+
+
+def _default_gatcha_uids() -> list[str]:
+    return _normalize_gatcha_uid_list(getattr(cfg, "GATCHA_UIDS", []))
+
+
+def _save_gatcha_uid_payload(uid_payload: dict) -> None:
+    cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = _GATCHA_UIDS_FILE.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(uid_payload, handle, ensure_ascii=False, indent=2)
+    temp_path.replace(_GATCHA_UIDS_FILE)
+
+
+def _load_gatcha_uid_payload() -> dict:
+    if not _GATCHA_UIDS_FILE.exists():
+        payload = {"uids": _default_gatcha_uids(), "updated_at": time.time()}
+        _save_gatcha_uid_payload(payload)
+        return payload
+
+    try:
+        with _GATCHA_UIDS_FILE.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        payload = {"uids": _default_gatcha_uids(), "updated_at": time.time()}
+        _save_gatcha_uid_payload(payload)
+        return payload
+
+    if isinstance(payload, list):
+        normalized_payload = {
+            "uids": _normalize_gatcha_uid_list(payload),
+            "updated_at": time.time(),
+        }
+        _save_gatcha_uid_payload(normalized_payload)
+        return normalized_payload
+
+    if not isinstance(payload, dict):
+        payload = {"uids": _default_gatcha_uids(), "updated_at": time.time()}
+        _save_gatcha_uid_payload(payload)
+        return payload
+
+    return {
+        "uids": _normalize_gatcha_uid_list(payload.get("uids")),
+        "updated_at": float(payload.get("updated_at") or 0),
+    }
+
+
+def gatcha_uid_snapshot() -> dict:
+    with _GATCHA_UIDS_LOCK:
+        payload = _load_gatcha_uid_payload()
+    uids = payload.get("uids") if isinstance(payload, dict) else []
+    if not isinstance(uids, list):
+        uids = []
+    return {
+        "uids": list(uids),
+        "count": len(uids),
+        "updated_at": float(payload.get("updated_at") or 0),
+    }
+
+
+def _configured_gatcha_uids() -> list[str]:
+    return gatcha_uid_snapshot()["uids"]
 
 @dataclass
 class VideoReference:
@@ -262,15 +372,61 @@ def _request_gatcha_page(mid: str, page_number: int, page_size: int = 50) -> dic
         raise
 
 
+def _request_gatcha_uid_profile(mid: str) -> dict:
+    normalized_mid = str(mid).strip()
+    now = time.time()
+    with _GATCHA_PROFILE_CACHE_LOCK:
+        cached_at, cached_profile = _GATCHA_PROFILE_CACHE.get(normalized_mid, (0.0, {}))
+        if cached_profile and now - cached_at < GATCHA_PROFILE_CACHE_TTL_SECONDS:
+            return dict(cached_profile)
+
+    try:
+        img_key, sub_key = get_cached_wbi_keys()
+    except Exception as exc:
+        raise BilibiliError(f"WBI keys failed: {exc}") from exc
+
+    signed_params = enc_wbi({"mid": normalized_mid}, img_key, sub_key)
+    query_string = urllib.parse.urlencode(signed_params)
+    url = f"https://api.bilibili.com/x/space/wbi/acc/info?{query_string}"
+    _wait_for_gatcha_request_slot()
+    payload = request_json(url)
+    try:
+        code = int(payload.get("code") or 0)
+    except (TypeError, ValueError):
+        code = 0
+    if code != 0:
+        message = str(payload.get("message") or "UP 主信息获取失败")
+        raise BilibiliError(message)
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise BilibiliError("UP 主信息获取失败")
+    owner_mid = str(data.get("mid") or normalized_mid).strip()
+    owner_name = str(data.get("name") or "").strip()
+    if not owner_mid.isdigit() or int(owner_mid) <= 0 or not owner_name:
+        raise BilibiliError("没有找到这个 UID 对应的 UP 主")
+    profile = {
+        "uid": owner_mid.lstrip("0") or "0",
+        "name": owner_name,
+        "space_url": f"https://space.bilibili.com/{owner_mid}",
+    }
+    with _GATCHA_PROFILE_CACHE_LOCK:
+        _GATCHA_PROFILE_CACHE[normalized_mid] = (time.time(), dict(profile))
+        _GATCHA_PROFILE_CACHE[profile["uid"]] = (time.time(), dict(profile))
+    return profile
+
+
 def _fetch_gatcha_videos_for_uid(
     mid: str,
     *,
     on_progress: callable | None = None,
+    max_pages: int | None = None,
 ) -> list[dict]:
     page_size = 50
     page_number = 1
     all_entries: list[dict] = []
     seen_bvids: set[str] = set()
+    page_limit = max(1, int(max_pages)) if max_pages is not None else None
 
     while True:
         while True:
@@ -294,12 +450,120 @@ def _fetch_gatcha_videos_for_uid(
         if on_progress is not None:
             on_progress(list(all_entries))
 
+        if page_limit is not None and page_number >= page_limit:
+            break
+
         vlist = data.get("list", {}).get("vlist", [])
         if not isinstance(vlist, list) or len(vlist) < page_size:
             break
         page_number += 1
 
     return all_entries
+
+
+def _dedupe_gatcha_entries(raw_entries: object) -> list[dict]:
+    if not isinstance(raw_entries, list):
+        return []
+    entries: list[dict] = []
+    seen_bvids: set[str] = set()
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        bvid = str(raw_entry.get("bvid") or "").strip()
+        if not bvid or bvid in seen_bvids:
+            continue
+        seen_bvids.add(bvid)
+        entries.append(dict(raw_entry))
+    return entries
+
+
+def preview_gatcha_uid(raw_mid: object) -> dict:
+    if not effective_bilibili_cookie():
+        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
+
+    mid = _normalize_gatcha_uid(raw_mid)
+    profile = _request_gatcha_uid_profile(mid)
+    mid = str(profile["uid"])
+
+    with _GATCHA_UIDS_LOCK:
+        uid_payload = _load_gatcha_uid_payload()
+    followed_uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
+    if not isinstance(followed_uids, list):
+        followed_uids = []
+
+    with _GATCHA_CACHE_LOCK:
+        cache_payload = _load_gatcha_cache()
+    uid_cache = cache_payload.get("uids") if isinstance(cache_payload, dict) else {}
+    if not isinstance(uid_cache, dict):
+        uid_cache = {}
+    existing_entries = _dedupe_gatcha_entries(uid_cache.get(mid, []))
+    cache_mode = "incremental" if existing_entries else "full"
+
+    return {
+        "uid": mid,
+        "name": str(profile.get("name") or ""),
+        "space_url": str(profile.get("space_url") or f"https://space.bilibili.com/{mid}"),
+        "already_followed": mid in followed_uids,
+        "cache_mode": cache_mode,
+        "cache_mode_label": "最新" if cache_mode == "incremental" else "所有",
+        "cached_count": len(existing_entries),
+    }
+
+
+def _merge_incremental_gatcha_entries(existing_entries: object, fresh_entries: object) -> tuple[list[dict], int]:
+    existing = _dedupe_gatcha_entries(existing_entries)
+    seen_bvids = {str(entry.get("bvid") or "").strip() for entry in existing}
+    new_entries: list[dict] = []
+    for fresh_entry in _dedupe_gatcha_entries(fresh_entries):
+        bvid = str(fresh_entry.get("bvid") or "").strip()
+        if not bvid or bvid in seen_bvids:
+            continue
+        seen_bvids.add(bvid)
+        new_entries.append(fresh_entry)
+    return new_entries + existing, len(new_entries)
+
+
+def _refresh_gatcha_uid_cache(cache_payload: dict, mid: str, *, force_full: bool = False) -> dict:
+    if not isinstance(cache_payload.get("uids"), dict):
+        cache_payload["uids"] = {}
+
+    existing_entries = _dedupe_gatcha_entries(cache_payload["uids"].get(mid, []))
+    if existing_entries and not force_full:
+        fresh_entries = _fetch_gatcha_videos_for_uid(mid, max_pages=1)
+        merged_entries, added_count = _merge_incremental_gatcha_entries(existing_entries, fresh_entries)
+        cache_payload["uids"][mid] = merged_entries
+        cache_payload["updated_at"] = time.time()
+        with _GATCHA_CACHE_LOCK:
+            _save_gatcha_cache(cache_payload)
+        return {
+            "uid": mid,
+            "mode": "incremental",
+            "added_count": added_count,
+            "total_count": len(merged_entries),
+        }
+
+    cache_payload["uids"][mid] = []
+    cache_payload["updated_at"] = time.time()
+    with _GATCHA_CACHE_LOCK:
+        _save_gatcha_cache(cache_payload)
+
+    def _save_mid_progress(entries: list[dict]) -> None:
+        cache_payload["uids"][mid] = _dedupe_gatcha_entries(entries)
+        cache_payload["updated_at"] = time.time()
+        with _GATCHA_CACHE_LOCK:
+            _save_gatcha_cache(cache_payload)
+
+    fetched_entries = _fetch_gatcha_videos_for_uid(mid, on_progress=_save_mid_progress)
+    cache_payload["uids"][mid] = _dedupe_gatcha_entries(fetched_entries)
+    cache_payload["updated_at"] = time.time()
+    with _GATCHA_CACHE_LOCK:
+        _save_gatcha_cache(cache_payload)
+    return {
+        "uid": mid,
+        "mode": "full",
+        "added_count": len(cache_payload["uids"][mid]),
+        "total_count": len(cache_payload["uids"][mid]),
+    }
 
 
 def refresh_gatcha_cache() -> dict:
@@ -315,34 +579,19 @@ def refresh_gatcha_cache() -> dict:
         cache_payload["uids"] = {}
 
     cache_payload["updated_at"] = time.time()
-    for raw_mid in GATCHA_UIDS:
+    for raw_mid in _configured_gatcha_uids():
         mid = str(raw_mid).strip()
         if not mid:
             continue
-        existing_entries = cache_payload["uids"].get(mid, [])
-        if isinstance(existing_entries, list) and any(isinstance(entry, dict) for entry in existing_entries):
-            continue
-        cache_payload["uids"][mid] = []
-        with _GATCHA_CACHE_LOCK:
-            _save_gatcha_cache(cache_payload)
-
-        def _save_mid_progress(entries: list[dict]) -> None:
-            cache_payload["uids"][mid] = entries
-            cache_payload["updated_at"] = time.time()
-            with _GATCHA_CACHE_LOCK:
-                _save_gatcha_cache(cache_payload)
-
-        cache_payload["uids"][mid] = _fetch_gatcha_videos_for_uid(mid, on_progress=_save_mid_progress)
-        cache_payload["updated_at"] = time.time()
-        with _GATCHA_CACHE_LOCK:
-            _save_gatcha_cache(cache_payload)
+        _refresh_gatcha_uid_cache(cache_payload, mid)
     return cache_payload
 
 
-def refresh_gatcha_cache_in_background() -> None:
+def refresh_gatcha_cache_in_background() -> bool:
+    if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+        return False
+
     def _worker() -> None:
-        if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
-            return
         try:
             refresh_gatcha_cache()
         except Exception:
@@ -351,6 +600,43 @@ def refresh_gatcha_cache_in_background() -> None:
             _GATCHA_REFRESH_LOCK.release()
 
     threading.Thread(target=_worker, daemon=True, name="gatcha-cache-refresh").start()
+    return True
+
+
+def add_gatcha_uid(raw_mid: object) -> dict:
+    preview = preview_gatcha_uid(raw_mid)
+    mid = preview["uid"]
+    with _GATCHA_UIDS_LOCK:
+        uid_payload = _load_gatcha_uid_payload()
+        uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
+        if not isinstance(uids, list):
+            uids = []
+        added = False
+        if mid in uids:
+            uids = list(uids)
+        else:
+            uids.append(mid)
+            uid_payload["uids"] = uids
+            uid_payload["updated_at"] = time.time()
+            _save_gatcha_uid_payload(uid_payload)
+            added = True
+
+    _GATCHA_REFRESH_LOCK.acquire()
+    try:
+        with _GATCHA_CACHE_LOCK:
+            cache_payload = _load_gatcha_cache()
+        cache_result = _refresh_gatcha_uid_cache(cache_payload, mid)
+    finally:
+        _GATCHA_REFRESH_LOCK.release()
+
+    return {
+        "uid": mid,
+        "name": preview["name"],
+        "space_url": preview["space_url"],
+        "added": added,
+        "uids": list(uids),
+        "cache": cache_result,
+    }
 
 
 def _local_gatcha_candidates() -> list[dict]:
@@ -359,7 +645,7 @@ def _local_gatcha_candidates() -> list[dict]:
 
     candidates: list[dict] = []
     uid_payload = cache_payload.get("uids") or {}
-    for raw_mid in GATCHA_UIDS:
+    for raw_mid in _configured_gatcha_uids():
         entries = uid_payload.get(str(raw_mid), [])
         if not isinstance(entries, list):
             continue
@@ -373,7 +659,7 @@ def _local_gatcha_candidates_by_uid() -> dict[str, list[dict]]:
 
     grouped_candidates: dict[str, list[dict]] = {}
     uid_payload = cache_payload.get("uids") or {}
-    for raw_mid in GATCHA_UIDS:
+    for raw_mid in _configured_gatcha_uids():
         mid = str(raw_mid).strip()
         if not mid:
             continue

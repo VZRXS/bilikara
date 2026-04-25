@@ -17,11 +17,13 @@ from .bilibili import (
     BilibiliError,
     ManualBindingRequiredError,
     MISSING_BILIBILI_COOKIE_MESSAGE,
+    add_gatcha_uid,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
     fetch_owner_info,
     fetch_video_item,
-    refresh_gatcha_cache,
+    gatcha_uid_snapshot,
+    preview_gatcha_uid,
     refresh_gatcha_cache_in_background,
     search_gatcha_cache,
 )
@@ -506,6 +508,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/gatcha/uids":
+            try:
+                self._write_json({"ok": True, "data": gatcha_uid_snapshot()})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
         if route.startswith("/media/"):
             self._serve_media(route)
             return
@@ -640,6 +648,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._require_id(body)
                 CONTEXT.retry_cache_item(body["item_id"], force=bool(body.get("force")))
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/gatcha/uids/add":
+                result = add_gatcha_uid(body.get("uid"))
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/gatcha/uids/preview":
+                result = preview_gatcha_uid(body.get("uid"))
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/gatcha/refresh":
+                if not effective_bilibili_cookie():
+                    raise ValueError(MISSING_BILIBILI_COOKIE_MESSAGE)
+                started = refresh_gatcha_cache_in_background()
+                self._write_json({"ok": True, "data": {"started": started}})
                 return
             if route == "/api/player/audio-variant":
                 self._require_id(body)
@@ -973,6 +995,8 @@ def _serve(
     actual_port = _find_available_port(host, port) if auto_select_port else port
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
+    if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
+        refresh_gatcha_cache_in_background()
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
     print(f"{status_label} running on {url}")

@@ -586,7 +586,7 @@ class CacheManager:
                 )
                 try:
                     self._ensure_bbdown(force_refresh=True)
-                    shutil.rmtree(item_dir, ignore_errors=True)
+                    self._safe_rmtree(item_dir)
                     item_dir.mkdir(parents=True, exist_ok=True)
                     self._cache_item_multi(item_id, item, allow_refresh_retry=False)
                     return
@@ -1986,7 +1986,7 @@ class CacheManager:
         for child in CACHE_DIR.iterdir():
             if child.name not in valid_ids:
                 if child.is_dir():
-                    shutil.rmtree(child, ignore_errors=True)
+                    self._safe_rmtree(child)
                 else:
                     child.unlink(missing_ok=True)
                 self._remove_item_log(child.name)
@@ -1994,7 +1994,7 @@ class CacheManager:
     def _clear_cache_root(self) -> None:
         for child in CACHE_DIR.iterdir():
             if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
+                self._safe_rmtree(child)
             else:
                 child.unlink(missing_ok=True)
         self._clear_log_root()
@@ -2072,7 +2072,7 @@ class CacheManager:
         self._record_item_activity(item_id)
 
     def _remove_cache_dir(self, item_id: str) -> None:
-        shutil.rmtree(CACHE_DIR / item_id, ignore_errors=True)
+        self._safe_rmtree(CACHE_DIR / item_id)
         self._remove_item_log(item_id)
 
     def _remove_item_log(self, item_id: str) -> None:
@@ -2083,9 +2083,16 @@ class CacheManager:
             return
         for child in self.log_dir.iterdir():
             if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
+                self._safe_rmtree(child)
             else:
                 child.unlink(missing_ok=True)
+
+    @staticmethod
+    def _safe_rmtree(path: Path) -> None:
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            return
 
     def _record_item_activity(self, item_id: str) -> None:
         with self.lock:
