@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ from pathlib import Path
 
 APP_NAME = "bilikara"
 ROOT_DIR = Path(__file__).resolve().parent
+VERSION_FILE = ROOT_DIR / "APP_VERSION"
 REQUIRED_TOOL_BINARIES = ("ffmpeg",)
 OPTIONAL_TOOL_BINARIES = ("ffprobe",)
 
@@ -15,6 +17,8 @@ OPTIONAL_TOOL_BINARIES = ("ffprobe",)
 def main() -> None:
     data_separator = ";" if platform.system() == "Windows" else ":"
     static_arg = f"{ROOT_DIR / 'static'}{data_separator}static"
+    version_arg = f"{VERSION_FILE}{data_separator}."
+    VERSION_FILE.write_text(_bundle_version(), encoding="utf-8")
 
     command = [
         sys.executable,
@@ -27,6 +31,8 @@ def main() -> None:
         APP_NAME,
         "--add-data",
         static_arg,
+        "--add-data",
+        version_arg,
         str(ROOT_DIR / "start_bilikara.py"),
     ]
     command.extend(_bundled_binary_args(data_separator, verbose=True))
@@ -37,6 +43,16 @@ def main() -> None:
     subprocess.run(command, check=True, cwd=ROOT_DIR)
     print()
     print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")
+
+
+def _bundle_version() -> str:
+    version = os.getenv("BILIKARA_VERSION", "").strip()
+    if version:
+        return version
+    ref_name = os.getenv("GITHUB_REF_NAME", "").strip()
+    if ref_name:
+        return ref_name
+    return "dev"
 
 
 def _bundled_binary_args(data_separator: str, *, verbose: bool = False) -> list[str]:

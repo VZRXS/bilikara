@@ -30,6 +30,8 @@ from .bilibili import (
 )
 from .cache import CacheManager
 from .config import (
+    APP_RELEASES_URL,
+    APP_VERSION,
     BACKUP_FILE,
     CACHE_DIR,
     HOST,
@@ -41,6 +43,7 @@ from .config import (
     ensure_directories,
 )
 from .store import PlaylistStore
+from .updater import check_for_update
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
@@ -114,6 +117,10 @@ class AppContext:
         payload["remote_access"] = self.remote_access_snapshot()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
+        payload["app"] = {
+            "version": APP_VERSION,
+            "releases_url": APP_RELEASES_URL,
+        }
         payload["state_revision"] = state_revision
         return payload
 
@@ -509,6 +516,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+            return
+        if route == "/api/app/update":
+            try:
+                self._write_json({"ok": True, "data": check_for_update()})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)}, status=HTTPStatus.BAD_GATEWAY)
             return
         if route == "/api/gatcha/candidate":
             try:

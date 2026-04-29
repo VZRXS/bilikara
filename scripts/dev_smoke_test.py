@@ -176,6 +176,7 @@ class SmokeRunner:
                 "follow-up-grid",
                 "follow-song-results",
                 "binding-modal-confirm",
+                "update-check-button",
             ],
             "/remote": [
                 "follow-browse-toggle",
@@ -187,6 +188,7 @@ class SmokeRunner:
                 "fetchGatchaBrowse",
                 "followSongResults",
                 "handleAddByUrl",
+                "/api/app/update",
             ],
             "/remote.js": [
                 "fetchGatchaBrowse",
@@ -306,6 +308,18 @@ class SmokeRunner:
         print_ok(f"Playback mode switched to {state.get('playback_mode')}")
         state = self.api_post("/api/mode", {"mode": original_mode})
         print_ok(f"Playback mode restored to {state.get('playback_mode')}")
+
+        update_response = self.http_get("/api/app/update", timeout=15)
+        update_payload = update_response.get("data") if isinstance(update_response, dict) else {}
+        if not update_response.get("ok") or not isinstance(update_payload, dict):
+            raise RuntimeError("Update check API did not return a valid payload")
+        for key in ["current_version", "latest_version", "release_url", "update_available"]:
+            if key not in update_payload:
+                raise RuntimeError(f"Update check API payload missing {key}")
+        print_ok(
+            "Update check API works: "
+            f"current={update_payload.get('current_version')} latest={update_payload.get('latest_version')}"
+        )
 
         state = self.api_post("/api/player/volume", {"volume_percent": 80, "is_muted": False})
         settings = state.get("player_settings") or {}
