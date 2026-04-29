@@ -139,8 +139,8 @@ def _render_history_page(
     header_h = 58
     columns = [
         ("#", 64),
-        ("标题", 612),
-        ("BV号", 180),
+        ("标题", 564),
+        ("BV号", 228),
         ("点歌人", 170),
         ("UP主", 230),
         ("时间", 280),
@@ -180,7 +180,7 @@ def _render_history_page(
 
     qr_matrix = _qr_matrix(RELEASES_URL)
     _draw_qr(draw, qr_matrix, x=width - 230, y=height - 255, size=154)
-    draw.text((width - 252, height - 81), "Releases", fill="#FFF7E6", font=small_font)
+    draw.text((width - 198, height - 81), "Releases", fill="#FFF7E6", font=small_font)
     return image
 
 
