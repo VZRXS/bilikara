@@ -377,6 +377,7 @@ class PlaylistStore:
                 PlaylistItem.from_dict(self._sanitize_backup_payload(item))
                 for item in playlist_payload
             ]
+            self.current_item_started = False
             self._rebuild_cycle_items_unlocked()
             self._touch(persist_backup=False)
             return True

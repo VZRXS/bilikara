@@ -264,12 +264,6 @@ def _detect_app_version() -> str:
     override = os.getenv("BILIKARA_VERSION", "").strip()
     if override:
         return override
-    try:
-        version = APP_VERSION_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        version = ""
-    if version:
-        return version
     if not getattr(sys, "frozen", False):
         try:
             process = subprocess.run(
@@ -287,6 +281,12 @@ def _detect_app_version() -> str:
             detected = (process.stdout or "").strip()
             if detected:
                 return detected
+    try:
+        version = APP_VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        version = ""
+    if version:
+        return version
     return "dev"
 
 
