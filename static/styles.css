@@ -247,6 +247,7 @@ p {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .backup-title,
@@ -2012,6 +2013,13 @@ select:disabled {
   backface-visibility: hidden;
   transform: translateZ(0);
   will-change: transform;
+}
+
+.history-export-button,
+#history-export-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .queue-toolbar .toolbar-button:hover,

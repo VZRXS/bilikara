@@ -504,6 +504,10 @@
             </div>
             <div class="queue-toolbar">
               <button type="button" id="clear-playlist-button" class="toolbar-button ghost">清空点歌列表</button>
+              <button type="button" id="history-export-button" class="toolbar-button ghost hidden" title="导出历史记录">
+                <span aria-hidden="true">⇩</span>
+                <span>导出</span>
+              </button>
               <button type="button" id="clear-history-button" class="toolbar-button ghost hidden">清空历史</button>
               <button type="button" id="history-toggle-button" class="toolbar-button ghost">历史记录</button>
             </div>
@@ -631,6 +635,7 @@
       <p class="confirm-text" id="confirm-text">确定执行这个操作吗？</p>
       <div class="confirm-actions">
         <button type="button" id="confirm-cancel" class="toolbar-button">取消</button>
+        <button type="button" id="confirm-secondary" class="toolbar-button hidden">导出 CSV</button>
         <button type="button" id="confirm-ok" class="next-button">确认</button>
       </div>
     </div>

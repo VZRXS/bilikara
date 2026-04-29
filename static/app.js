@@ -188,12 +188,14 @@ const elements = {
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   historyToggleButton: document.getElementById("history-toggle-button"),
   clearPlaylistButton: document.getElementById("clear-playlist-button"),
+  historyExportButton: document.getElementById("history-export-button"),
   clearHistoryButton: document.getElementById("clear-history-button"),
   playlistTemplate: document.getElementById("playlist-item-template"),
   historyTemplate: document.getElementById("history-item-template"),
   confirmPopover: document.getElementById("confirm-popover"),
   confirmText: document.getElementById("confirm-text"),
   confirmCancel: document.getElementById("confirm-cancel"),
+  confirmSecondary: document.getElementById("confirm-secondary"),
   confirmOk: document.getElementById("confirm-ok"),
   bindingModal: document.getElementById("binding-modal"),
   bindingModalBackdrop: document.getElementById("binding-modal-backdrop"),
@@ -1506,6 +1508,7 @@ function renderListHeader(playlist, history) {
   setTextContent(elements.queueCount, queueCount);
   setTextContent(elements.historyToggleButton, historyButtonText);
   setClassToggle(elements.clearPlaylistButton, "hidden", isHistoryView);
+  setClassToggle(elements.historyExportButton, "hidden", !isHistoryView || !history.length);
   setClassToggle(elements.clearHistoryButton, "hidden", !isHistoryView || !history.length);
   setClassToggle(elements.nextButton, "hidden", isHistoryView);
 }
@@ -3546,7 +3549,8 @@ function renderConfirmPopover() {
   }
 
   const width = 260;
-  const popoverHeight = 112;
+  const hasSecondaryAction = Boolean(intent.secondaryLabel);
+  const popoverHeight = hasSecondaryAction ? 126 : 112;
   const margin = 12;
   const left = Math.min(
     Math.max(intent.x, margin),
@@ -3558,6 +3562,11 @@ function renderConfirmPopover() {
   );
 
   elements.confirmText.textContent = intent.message;
+  elements.confirmOk.textContent = intent.primaryLabel || "确认";
+  if (elements.confirmSecondary) {
+    elements.confirmSecondary.textContent = intent.secondaryLabel || "";
+    elements.confirmSecondary.classList.toggle("hidden", !hasSecondaryAction);
+  }
   elements.confirmPopover.style.left = `${left}px`;
   elements.confirmPopover.style.top = `${top}px`;
   elements.confirmPopover.classList.remove("hidden");
@@ -3919,6 +3928,67 @@ async function clearHistory() {
     closeConfirm();
     setAppMessage("\u5386\u53f2\u8bb0\u5f55\u5df2\u6e05\u7a7a\u3002");
     render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+  }
+}
+
+function filenameFromContentDisposition(header, fallback) {
+  const value = String(header || "");
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return fallback;
+    }
+  }
+  const quotedMatch = value.match(/filename="([^"]+)"/i);
+  if (quotedMatch) {
+    return quotedMatch[1];
+  }
+  const plainMatch = value.match(/filename=([^;]+)/i);
+  return plainMatch ? plainMatch[1].trim() : fallback;
+}
+
+async function downloadHistoryExport(format) {
+  const normalizedFormat = String(format || "").trim().toLowerCase();
+  if (!["csv", "image"].includes(normalizedFormat)) {
+    return;
+  }
+  const response = await fetch(`/api/history/export?format=${encodeURIComponent(normalizedFormat)}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  if (!response.ok) {
+    let message = "导出失败";
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      // Keep the generic message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const fallback = normalizedFormat === "csv" ? "bilikara-history.csv" : "bilikara-history.png";
+  const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+}
+
+async function exportHistory(format) {
+  try {
+    await downloadHistoryExport(format);
+    closeConfirm();
+    setAppMessage(format === "csv" ? "历史记录 CSV 已开始下载。" : "历史记录图片已开始下载。");
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -4503,6 +4573,18 @@ elements.clearHistoryButton?.addEventListener("click", (event) => {
   });
 });
 
+elements.historyExportButton?.addEventListener("click", (event) => {
+  const point = anchorPointForEvent(event, elements.historyExportButton);
+  openConfirm({
+    type: "export-history",
+    message: "选择历史记录导出格式。图片每 25 首自动分页，超过一页会打包为 zip。",
+    primaryLabel: "导出图片",
+    secondaryLabel: "导出 CSV",
+    x: point.x,
+    y: point.y,
+  });
+});
+
 elements.historyToggleButton.addEventListener("click", () => {
   state.listView = state.listView === "history" ? "queue" : "history";
   render();
@@ -4758,6 +4840,16 @@ elements.confirmCancel.addEventListener("click", () => {
   closeConfirm();
 });
 
+elements.confirmSecondary?.addEventListener("click", async () => {
+  const intent = state.confirmIntent;
+  if (!intent) {
+    return;
+  }
+  if (intent.type === "export-history") {
+    await exportHistory("csv");
+  }
+});
+
 elements.bindingModalClose?.addEventListener("click", () => {
   closeBindingModal();
 });
@@ -4787,6 +4879,10 @@ elements.confirmOk.addEventListener("click", async () => {
     }
     if (intent.type === "clear-history") {
       await clearHistory();
+      return;
+    }
+    if (intent.type === "export-history") {
+      await exportHistory("image");
       return;
     }
     if (intent.type === "reset-data") {
@@ -4844,6 +4940,7 @@ document.addEventListener("click", (event) => {
     if (
       event.target.closest("#confirm-popover") ||
       event.target.closest("#clear-playlist-button") ||
+      event.target.closest("#history-export-button") ||
       event.target.closest("#clear-history-button") ||
       event.target.closest('button[data-action="remove"]') ||
       event.target.closest("#queue-next-button") ||

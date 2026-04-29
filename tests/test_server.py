@@ -1,9 +1,11 @@
-import bilikara.server as server_module
+import csv
+import io
 import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import bilikara.server as server_module
 from bilikara.server import AppContext, BilikaraHandler, run
 
 
@@ -189,6 +191,108 @@ class PlaylistAddRequestTest(unittest.TestCase):
 
 
 class HistoryRouteTest(unittest.TestCase):
+    def test_history_export_csv_route_downloads_friendly_csv(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        history = [
+            {
+                "display_title": "Second song",
+                "resolved_url": "https://www.bilibili.com/video/BV2xx411c7mD",
+                "original_url": "BV2xx411c7mD",
+                "requester_name": "Later",
+                "owner_name": "Later UP",
+                "owner_mid": "67890",
+                "request_count": 1,
+                "requested_at": 200,
+                "part_title": "P2",
+            },
+            {
+                "display_title": "First song",
+                "resolved_url": "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+                "original_url": "BV1xx411c7mD",
+                "requester_name": "Kevin",
+                "owner_name": "μ's",
+                "owner_mid": "12345",
+                "request_count": 2,
+                "requested_at": 100,
+                "part_title": "P1",
+            },
+            {
+                "display_title": "Undated song",
+                "resolved_url": "https://www.bilibili.com/video/BV3xx411c7mD",
+                "requester_name": "No Time",
+                "requested_at": 0,
+            },
+        ]
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            history_snapshot=lambda: history,
+        )
+
+        handler.path = "/api/history/export?format=csv"
+        handler.headers = {}
+        handler._write_download = lambda payload, content_type, filename: writes.append(
+            {
+                "payload": payload,
+                "content_type": content_type,
+                "filename": filename,
+            }
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.time.strftime",
+            return_value="20260430-123456",
+        ):
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["content_type"], "text/csv; charset=utf-8")
+        self.assertEqual(writes[0]["filename"], "bilikara-history-20260430-123456.csv")
+        decoded = writes[0]["payload"].decode("utf-8-sig")
+        rows = list(csv.DictReader(io.StringIO(decoded)))
+        self.assertEqual([row["标题"] for row in rows], ["First song", "Second song", "Undated song"])
+        self.assertEqual(rows[0]["序号"], "1")
+        self.assertEqual(rows[0]["BV号"], "BV1xx411c7mD")
+        self.assertEqual(rows[0]["点歌人"], "Kevin")
+        self.assertEqual(rows[0]["UP主"], "μ's")
+        self.assertEqual(rows[0]["UP主UID"], "12345")
+        self.assertEqual(rows[0]["点歌次数"], "2")
+        self.assertTrue(rows[0]["点歌时间"])
+        self.assertEqual(rows[0]["视频链接"], "https://www.bilibili.com/video/BV1xx411c7mD?p=1")
+        self.assertEqual(rows[0]["原始链接"], "BV1xx411c7mD")
+        self.assertEqual(rows[0]["分P/版本"], "P1")
+        self.assertEqual(rows[2]["点歌时间"], "")
+
+    def test_history_export_image_route_uses_generated_suffix(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            history_snapshot=lambda: [{"display_title": "song"}],
+        )
+
+        handler.path = "/api/history/export?format=image"
+        handler.headers = {}
+        handler._write_download = lambda payload, content_type, filename: writes.append(
+            {
+                "payload": payload,
+                "content_type": content_type,
+                "filename": filename,
+            }
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.time.strftime",
+            return_value="20260430-123456",
+        ), patch(
+            "bilikara.server.history_image_export",
+            return_value=(b"zip-bytes", "application/zip", "bilikara-history-images.zip"),
+        ):
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["payload"], b"zip-bytes")
+        self.assertEqual(writes[0]["content_type"], "application/zip")
+        self.assertEqual(writes[0]["filename"], "bilikara-history-20260430-123456.zip")
+
     def test_history_clear_route_returns_fresh_snapshot(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
