@@ -66,6 +66,25 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(results, [True])
 
+    def test_reset_player_state_notifies_after_clearing_player_state(self):
+        context = AppContext.__new__(AppContext)
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+        context._player_control_lock = threading.RLock()
+        context._player_control_seq = 7
+        context._player_control_ack_seq = 0
+        context._player_control_command = {"type": "play"}
+        context._player_status_lock = threading.RLock()
+        context._player_status = {"item_id": "song-a", "current_time": 12.0}
+        context.store = SimpleNamespace(reset_player_state=lambda: None)
+
+        context.reset_player_state()
+
+        self.assertEqual(context._state_revision, 1)
+        self.assertEqual(context._player_control_ack_seq, 7)
+        self.assertIsNone(context._player_control_command)
+        self.assertIsNone(context._player_status)
+
 
 class AppContextPlayerStatusTest(unittest.TestCase):
     def make_context(self) -> AppContext:

@@ -2,6 +2,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from bilikara import config
@@ -47,6 +48,29 @@ class ConfigPathTest(unittest.TestCase):
                 with patch.object(config.os, "name", "nt"):
                     with patch("bilikara.config._detect_windows_physical_host", return_value="192.168.31.8"):
                         self.assertEqual(config._default_host(), "0.0.0.0")
+
+    def test_source_version_prefers_git_describe_over_cached_file(self):
+        with TemporaryDirectory() as temp_dir:
+            version_file = Path(temp_dir) / "APP_VERSION"
+            version_file.write_text("v0.4.0", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                with patch.object(config.sys, "frozen", False, create=True):
+                    with patch.object(config, "APP_VERSION_FILE", version_file):
+                        with patch(
+                            "bilikara.config.subprocess.run",
+                            return_value=SimpleNamespace(returncode=0, stdout="v0.5.0-2-gabcdef\n"),
+                        ):
+                            self.assertEqual(config._detect_app_version(), "v0.5.0-2-gabcdef")
+
+    def test_frozen_version_uses_cached_file_without_git(self):
+        with TemporaryDirectory() as temp_dir:
+            version_file = Path(temp_dir) / "APP_VERSION"
+            version_file.write_text("v0.4.0", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                with patch.object(config.sys, "frozen", True, create=True):
+                    with patch.object(config, "APP_VERSION_FILE", version_file):
+                        with patch("bilikara.config.subprocess.run", side_effect=AssertionError("git should not run")):
+                            self.assertEqual(config._detect_app_version(), "v0.4.0")
 
     def test_pick_windows_physical_host_prefers_non_virtual_adapter_with_gateway(self):
         payload = [

@@ -327,6 +327,7 @@ class AppContext:
             self._player_control_command = None
         with self._player_status_lock:
             self._player_status = None
+        self._notify_state_changed()
 
     def bind_server(self, server: ThreadingHTTPServer, *, shutdown_on_last_client: bool) -> None:
         with self._client_lock:

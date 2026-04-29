@@ -475,7 +475,9 @@ class PlaylistStoreTest(unittest.TestCase):
         )
         self.assertEqual(restored_store.playlist, [])
         self.assertTrue(restored_store.backup_summary()["available"])
+        restored_store.current_item_started = True
         self.assertTrue(restored_store.restore_backup())
+        self.assertFalse(restored_store.current_item_started)
         self.assertEqual(restored_store.playback_mode, "local")
         self.assertEqual(restored_store.av_offset_ms, 180)
         self.assertEqual(restored_store.volume_percent, 42)
