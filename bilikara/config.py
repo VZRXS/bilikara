@@ -216,6 +216,7 @@ def _default_app_home() -> Path:
 ROOT_DIR = _resource_root()
 APP_HOME = _default_app_home()
 STATIC_DIR = ROOT_DIR / "static"
+APP_VERSION_FILE = ROOT_DIR / "APP_VERSION"
 DATA_DIR = APP_HOME / "data"
 CACHE_DIR = DATA_DIR / "cache"
 LOG_DIR = DATA_DIR / "logs"
@@ -255,6 +256,41 @@ BILIBILI_HEADERS = {
 }
 
 BB_DOWN_RELEASE_API = "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
+APP_RELEASE_API = "https://api.github.com/repos/VZRXS/bilikara/releases/latest"
+APP_RELEASES_URL = "https://github.com/VZRXS/bilikara/releases"
+
+
+def _detect_app_version() -> str:
+    override = os.getenv("BILIKARA_VERSION", "").strip()
+    if override:
+        return override
+    try:
+        version = APP_VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        version = ""
+    if version:
+        return version
+    if not getattr(sys, "frozen", False):
+        try:
+            process = subprocess.run(
+                ["git", "describe", "--tags", "--always", "--dirty"],
+                cwd=ROOT_DIR,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            process = None
+        if process and process.returncode == 0:
+            detected = (process.stdout or "").strip()
+            if detected:
+                return detected
+    return "dev"
+
+
+APP_VERSION = _detect_app_version()
 
 
 def ensure_directories() -> None:

@@ -5,3 +5,4 @@ tools/
 build/
 dist/
 .vscode/
+APP_VERSION

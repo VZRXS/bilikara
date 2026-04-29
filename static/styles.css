@@ -817,6 +817,10 @@ h2 {
   align-items: center;
 }
 
+.cache-panel-update-row {
+  align-items: center;
+}
+
 .cache-panel-danger-row {
   align-items: center;
   padding-top: 2px;
@@ -839,6 +843,7 @@ h2 {
 
 .cache-mode-toggle,
 .cache-retry-current-button,
+.cache-update-button,
 .cache-data-reset-button {
   display: inline-flex;
   align-items: center;
@@ -859,6 +864,11 @@ h2 {
 }
 
 .cache-mode-toggle {
+  background: var(--accent);
+  color: white;
+}
+
+.cache-update-button {
   background: var(--accent);
   color: white;
 }
@@ -2815,6 +2825,7 @@ select:disabled {
 .bottom-grid .cookie-sub-card {
   margin-top: 0;
   min-height: 0;
+  min-width: 0;
 }
 
 .bottom-grid .search-card,
@@ -2855,6 +2866,8 @@ select:disabled {
   display: grid;
   gap: 12px;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .follow-up-list-view,
@@ -2862,6 +2875,8 @@ select:disabled {
   display: grid;
   gap: 12px;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .follow-up-grid {
@@ -2987,14 +3002,20 @@ select:disabled {
   display: grid;
   gap: 14px;
   align-content: start;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .search-stage {
+  min-width: 0;
+  max-width: 100%;
   perspective: 1800px;
 }
 
 .search-stage-inner {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   transform-style: preserve-3d;
   transition: transform 420ms ease;
 }
@@ -3009,6 +3030,8 @@ select:disabled {
   gap: 14px;
   align-content: start;
   min-height: 148px;
+  min-width: 0;
+  max-width: 100%;
   backface-visibility: hidden;
   pointer-events: none;
 }
@@ -3027,6 +3050,12 @@ select:disabled {
 
 .search-stage.is-cookie-view .search-face-back {
   pointer-events: auto;
+}
+
+.search-stage:not(.is-cookie-view):not(.is-flipping) .search-face-back,
+.search-stage.is-cookie-view:not(.is-flipping) .search-face-front {
+  display: none;
+  content-visibility: hidden;
 }
 
 .search-sub-card,

@@ -49,6 +49,7 @@ const state = {
   listView: "queue",
   listStageView: "",
   listFlipTimer: null,
+  listFlipFrame: null,
   cacheSettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
@@ -100,6 +101,9 @@ const state = {
   retryActivityById: {},
   gatchaCandidate: null,
   searchCookieVisible: false,
+  searchStageView: "",
+  searchFlipTimer: null,
+  searchFlipFrame: null,
   followBrowseData: null,
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
@@ -108,6 +112,7 @@ const state = {
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
   bbdownLoginRequesting: false,
+  updateChecking: false,
   appToastTimer: null,
   layoutMode: "full",
 };
@@ -140,6 +145,7 @@ const elements = {
   dataResetButton: document.getElementById("data-reset-button"),
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
   playerResetButton: document.getElementById("player-reset-button"),
+  updateCheckButton: document.getElementById("update-check-button"),
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
@@ -682,6 +688,22 @@ async function apiPost(url, payload = {}) {
   return data.data;
 }
 
+async function apiGet(url) {
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    const error = new Error(data.error || "请求失败");
+    error.status = response.status;
+    error.code = data.code || "";
+    error.payload = data;
+    throw error;
+  }
+  return data.data;
+}
+
 async function fetchState() {
   const previousOffsetMs = currentAvOffsetMs();
   const response = await fetch("/api/state", {
@@ -1044,6 +1066,40 @@ function setGatchaUidMessage(message, isError = false) {
   elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function syncSearchStageView(showCookie) {
+  const nextView = showCookie ? "browse" : "search";
+  const isInitialRender = !state.searchStageView;
+  if (state.searchStageView === nextView) {
+    return;
+  }
+  state.searchStageView = nextView;
+
+  if (state.searchFlipTimer) {
+    window.clearTimeout(state.searchFlipTimer);
+    state.searchFlipTimer = null;
+  }
+  if (state.searchFlipFrame) {
+    window.cancelAnimationFrame(state.searchFlipFrame);
+    state.searchFlipFrame = null;
+  }
+
+  if (isInitialRender) {
+    setClassToggle(elements.searchStage, "is-cookie-view", showCookie);
+    elements.searchStage?.classList.remove("is-flipping");
+    return;
+  }
+
+  elements.searchStage?.classList.add("is-flipping");
+  state.searchFlipFrame = window.requestAnimationFrame(() => {
+    state.searchFlipFrame = null;
+    setClassToggle(elements.searchStage, "is-cookie-view", showCookie);
+  });
+  state.searchFlipTimer = window.setTimeout(() => {
+    elements.searchStage?.classList.remove("is-flipping");
+    state.searchFlipTimer = null;
+  }, 440);
+}
+
 function renderSearchCookieFace() {
   const showCookie = Boolean(state.searchCookieVisible);
   const signature = JSON.stringify({
@@ -1057,7 +1113,7 @@ function renderSearchCookieFace() {
   state.searchCookieFaceRenderSignature = signature;
 
   setClassToggle(elements.searchPanel, "is-cookie-view", showCookie);
-  setClassToggle(elements.searchStage, "is-cookie-view", showCookie);
+  syncSearchStageView(showCookie);
   setTextContent(elements.searchTag, showCookie ? "Follow Browse" : "Local Search");
   setTextContent(elements.searchTitle, showCookie ? "关注列表" : "搜索");
   setTextContent(elements.searchCookieToggle, showCookie ? "返回搜索" : "关注浏览");
@@ -1175,18 +1231,26 @@ function syncListStageView() {
     window.clearTimeout(state.listFlipTimer);
     state.listFlipTimer = null;
   }
+  if (state.listFlipFrame) {
+    window.cancelAnimationFrame(state.listFlipFrame);
+    state.listFlipFrame = null;
+  }
 
-  setClassToggle(elements.listStage, "is-history-view", nextView === "history");
   if (isInitialRender) {
+    setClassToggle(elements.listStage, "is-history-view", nextView === "history");
     elements.listStage?.classList.remove("is-flipping");
     return;
   }
 
   elements.listStage?.classList.add("is-flipping");
+  state.listFlipFrame = window.requestAnimationFrame(() => {
+    state.listFlipFrame = null;
+    setClassToggle(elements.listStage, "is-history-view", nextView === "history");
+  });
   state.listFlipTimer = window.setTimeout(() => {
     elements.listStage?.classList.remove("is-flipping");
     state.listFlipTimer = null;
-  }, 460);
+  }, 440);
 }
 
 function activeScrollableList() {
@@ -3900,6 +3964,46 @@ async function resetPlayerState() {
   }
 }
 
+async function checkAppUpdate(event) {
+  if (state.updateChecking) {
+    return;
+  }
+  const button = elements.updateCheckButton;
+  const point = anchorPointForEvent(event, button || elements.cacheSettings);
+  state.updateChecking = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "检查中";
+  }
+  try {
+    const result = await apiGet("/api/app/update");
+    if (result?.update_available || result?.switch_to_release_available) {
+      const fallbackMessage = result?.switch_to_release_available
+        ? "当前为开发版或非正式版。是否打开 GitHub Releases 下载最新正式版？"
+        : "发现新版本。是否打开 GitHub Releases 下载更新？";
+      const message = result?.message
+        ? `${result.message} 是否打开 GitHub Releases？`
+        : fallbackMessage;
+      openConfirm({
+        type: "open-release",
+        releaseUrl: result.release_url,
+        message,
+        ...point,
+      });
+      return;
+    }
+    setAppMessage(result?.message || "当前已是最新版本。");
+  } catch (error) {
+    setAppMessage(error.message, true);
+  } finally {
+    state.updateChecking = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "检查更新";
+    }
+  }
+}
+
 /*
   const name = String(elements.sessionUserInput.value || "").trim();
   if (!name) {
@@ -4513,6 +4617,11 @@ elements.playerResetButton?.addEventListener("click", (event) => {
   });
 });
 
+elements.updateCheckButton?.addEventListener("click", async (event) => {
+  event.stopPropagation();
+  await checkAppUpdate(event);
+});
+
 elements.audioVariantBar.addEventListener("click", async (event) => {
   const toggleButton = event.target.closest('button[data-action="toggle-audio-variants"]');
   if (toggleButton) {
@@ -4688,6 +4797,12 @@ elements.confirmOk.addEventListener("click", async () => {
       await resetPlayerState();
       return;
     }
+    if (intent.type === "open-release" && intent.releaseUrl) {
+      window.open(intent.releaseUrl, "_blank", "noopener");
+      closeConfirm();
+      setAppMessage("已打开 GitHub Releases。");
+      return;
+    }
     if (intent.type === "remove-item" && intent.itemId) {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
@@ -4735,6 +4850,7 @@ document.addEventListener("click", (event) => {
       event.target.closest("#data-reset-button") ||
       event.target.closest("#current-cache-retry-button") ||
       event.target.closest("#player-reset-button") ||
+      event.target.closest("#update-check-button") ||
       event.target.closest("#add-form") ||
       event.target.closest("#gatcha-uid-form") ||
       event.target.closest("#refresh-gatcha-cache-button") ||
