@@ -1,3 +1,4 @@
+import bilikara.server as server_module
 import threading
 import unittest
 from types import SimpleNamespace
@@ -99,6 +100,21 @@ class RunDefaultsTest(unittest.TestCase):
 
         serve.assert_called_once()
         self.assertTrue(serve.call_args.kwargs["shutdown_on_last_client"])
+
+
+class PortSelectionTest(unittest.TestCase):
+    def test_find_available_port_skips_loopback_conflict_for_wildcard_host(self):
+        def can_bind(host: str, port: int) -> bool:
+            if (host, port) == ("0.0.0.0", 8080):
+                return True
+            if (host, port) == ("127.0.0.1", 8080):
+                return False
+            return True
+
+        with patch("bilikara.server._can_bind_port", side_effect=can_bind):
+            port = server_module._find_available_port("0.0.0.0", 8080)
+
+        self.assertEqual(port, 8081)
 
 
 class PlaylistAddRequestTest(unittest.TestCase):

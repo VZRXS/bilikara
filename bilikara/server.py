@@ -1048,14 +1048,25 @@ def run_webui(
     )
 
 
+def _port_probe_hosts(host: str) -> tuple[str, ...]:
+    if host == "0.0.0.0":
+        return (host, "127.0.0.1")
+    return (host,)
+
+
+def _can_bind_port(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
 def _find_available_port(host: str, preferred_port: int) -> int:
     for candidate in range(preferred_port, preferred_port + 30):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind((host, candidate))
-            except OSError:
-                continue
+        if all(_can_bind_port(probe_host, candidate) for probe_host in _port_probe_hosts(host)):
             return candidate
     raise OSError(f"无法为 bilikara 找到可用端口，起始端口: {preferred_port}")
 
