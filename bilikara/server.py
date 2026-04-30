@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+from email.utils import formatdate
 import json
 import mimetypes
 import re
@@ -42,6 +43,7 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
+from .history_export import history_csv_bytes, history_image_export
 from .store import PlaylistStore
 from .updater import check_for_update
 
@@ -145,6 +147,10 @@ class AppContext:
 
     def clear_history(self) -> None:
         self.store.clear_history()
+
+    def history_snapshot(self) -> list[dict]:
+        history = self.store.snapshot().get("history") or []
+        return list(history) if isinstance(history, list) else []
 
     def move_item(self, item_id: str, direction: str) -> None:
         self.store.move_item(item_id, direction)
@@ -557,6 +563,32 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/history/export":
+            query = parse_qs(urlparse(self.path).query)
+            export_format = str(query.get("format", ["csv"])[0] or "csv").strip().lower()
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            try:
+                history = CONTEXT.history_snapshot()
+                if export_format == "csv":
+                    self._write_download(
+                        history_csv_bytes(history),
+                        content_type="text/csv; charset=utf-8",
+                        filename=f"bilikara-history-{timestamp}.csv",
+                    )
+                    return
+                if export_format == "image":
+                    payload, content_type, default_filename = history_image_export(
+                        history,
+                        logo_path=_history_export_logo_path(),
+                    )
+                    suffix = Path(default_filename).suffix or ".png"
+                    filename = f"bilikara-history-{timestamp}{suffix}"
+                    self._write_download(payload, content_type=content_type, filename=filename)
+                    return
+                raise ValueError("format must be csv or image")
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if route.startswith("/media/"):
             self._serve_media(route)
             return
@@ -947,6 +979,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
         self.wfile.flush()
 
+    def _write_download(self, payload: bytes, *, content_type: str, filename: str) -> None:
+        safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip("-") or "download.bin"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Last-Modified", formatdate(timeval=None, localtime=False, usegmt=True))
+        self.end_headers()
+        self.wfile.write(payload)
+        self.wfile.flush()
+
     def _serve_events(self, client_id: str) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -1099,6 +1143,14 @@ def run_webui(
         open_browser=auto_open_browser,
         auto_select_port=auto_select_port,
     )
+
+
+def _history_export_logo_path() -> Path | None:
+    for filename in ("bili.png", "bili.jpg", "bili.jpeg"):
+        candidate = STATIC_DIR / "pic" / filename
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _port_probe_hosts(host: str) -> tuple[str, ...]:
