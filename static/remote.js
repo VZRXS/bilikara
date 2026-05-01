@@ -131,6 +131,10 @@ const elements = {
   listCount: document.getElementById("list-count"),
   queueViewButton: document.getElementById("queue-view-button"),
   historyViewButton: document.getElementById("history-view-button"),
+  historyExportRow: document.getElementById("history-export-row"),
+  historyExportSource: document.getElementById("history-export-source"),
+  historyExportImageButton: document.getElementById("history-export-image-button"),
+  historyExportCsvButton: document.getElementById("history-export-csv-button"),
   queueList: document.getElementById("queue-list"),
   historyList: document.getElementById("history-list"),
   queueItemTemplate: document.getElementById("queue-item-template"),
@@ -392,6 +396,72 @@ async function apiPost(url, payload = {}) {
     throw error;
   }
   return data.data;
+}
+
+function filenameFromContentDisposition(headerValue, fallback) {
+  const value = String(headerValue || "");
+  const quotedMatch = value.match(/filename="([^"]+)"/i);
+  if (quotedMatch) {
+    return quotedMatch[1];
+  }
+  const plainMatch = value.match(/filename=([^;]+)/i);
+  return plainMatch ? plainMatch[1].trim() : fallback;
+}
+
+function selectedHistoryExportSource() {
+  const source = String(elements.historyExportSource?.value || "played").trim().toLowerCase();
+  return source === "history" ? "history" : "played";
+}
+
+async function downloadHistoryExport(format, source = selectedHistoryExportSource()) {
+  const normalizedFormat = String(format || "").trim().toLowerCase();
+  const normalizedSource = source === "history" ? "history" : "played";
+  if (!["csv", "image"].includes(normalizedFormat)) {
+    return;
+  }
+  const params = new URLSearchParams({
+    format: normalizedFormat,
+    source: normalizedSource,
+  });
+  const response = await fetch(`/api/history/export?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  if (!response.ok) {
+    let message = "导出失败";
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      // Keep the generic message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const sourceName = normalizedSource === "played" ? "played" : "history";
+  const fallback = normalizedFormat === "csv" ? `bilikara-${sourceName}.csv` : `bilikara-${sourceName}.png`;
+  const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+}
+
+async function exportHistory(format) {
+  const source = selectedHistoryExportSource();
+  const sourceLabel = source === "played" ? "本场记录" : "全部历史";
+  setFormMessage(format === "csv" ? `正在导出${sourceLabel} CSV...` : `正在导出${sourceLabel}图片...`);
+  try {
+    await downloadHistoryExport(format, source);
+    setFormMessage(format === "csv" ? `${sourceLabel} CSV 已开始下载。` : `${sourceLabel}图片已开始下载。`);
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
 }
 
 async function submitAddRequest(url, position, options = {}) {
@@ -1601,6 +1671,7 @@ function renderListHeader(playlist, history) {
   elements.queueViewButton.setAttribute("aria-selected", String(!isHistoryView));
   elements.historyViewButton.classList.toggle("active", isHistoryView);
   elements.historyViewButton.setAttribute("aria-selected", String(isHistoryView));
+  elements.historyExportRow?.classList.toggle("hidden", !isHistoryView);
 }
 
 function syncListView() {
@@ -2265,6 +2336,14 @@ elements.queueViewButton.addEventListener("click", () => {
 elements.historyViewButton.addEventListener("click", () => {
   state.listView = "history";
   render();
+});
+
+elements.historyExportImageButton?.addEventListener("click", async () => {
+  await exportHistory("image");
+});
+
+elements.historyExportCsvButton?.addEventListener("click", async () => {
+  await exportHistory("csv");
 });
 
 elements.historyList.addEventListener("click", async (event) => {

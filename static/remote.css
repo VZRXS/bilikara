@@ -991,6 +991,17 @@ select:disabled {
   box-shadow: 0 8px 18px rgba(79, 56, 39, 0.08);
 }
 
+.history-export-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr;
+  gap: 8px;
+  margin: -4px 0 14px;
+}
+
+.history-export-source {
+  min-width: 0;
+}
+
 .list {
   display: grid;
   gap: 10px;
@@ -1273,6 +1284,7 @@ select:disabled {
 
   .action-row,
   .history-actions,
+  .history-export-row,
   .view-toggle,
   .player-control-row {
     grid-template-columns: 1fr;

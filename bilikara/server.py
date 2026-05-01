@@ -152,6 +152,9 @@ class AppContext:
         history = self.store.snapshot().get("history") or []
         return list(history) if isinstance(history, list) else []
 
+    def session_played_snapshot(self) -> list[dict]:
+        return self.store.session_played_snapshot()
+
     def move_item(self, item_id: str, direction: str) -> None:
         self.store.move_item(item_id, direction)
         self.cache_manager.sync_with_playlist()
@@ -572,23 +575,43 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if route == "/api/history/export":
             query = parse_qs(urlparse(self.path).query)
             export_format = str(query.get("format", ["csv"])[0] or "csv").strip().lower()
+            export_source = str(query.get("source", ["history"])[0] or "history").strip().lower()
+            source_settings = {
+                "history": {
+                    "items": lambda: CONTEXT.history_snapshot(),
+                    "filename": "history",
+                    "title": "Bilikara 点歌历史",
+                    "time_header": "点歌时间",
+                },
+                "played": {
+                    "items": lambda: CONTEXT.session_played_snapshot(),
+                    "filename": "played",
+                    "title": "Bilikara 本场已唱",
+                    "time_header": "播放时间",
+                },
+            }
+            if export_source not in source_settings:
+                self._write_json({"ok": False, "error": "source must be history or played"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            settings = source_settings[export_source]
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             try:
-                history = CONTEXT.history_snapshot()
+                history = settings["items"]()
                 if export_format == "csv":
                     self._write_download(
-                        history_csv_bytes(history),
+                        history_csv_bytes(history, time_header=str(settings["time_header"])),
                         content_type="text/csv; charset=utf-8",
-                        filename=f"bilikara-history-{timestamp}.csv",
+                        filename=f"bilikara-{settings['filename']}-{timestamp}.csv",
                     )
                     return
                 if export_format == "image":
                     payload, content_type, default_filename = history_image_export(
                         history,
                         logo_path=_history_export_logo_path(),
+                        title=str(settings["title"]),
                     )
                     suffix = Path(default_filename).suffix or ".png"
-                    filename = f"bilikara-history-{timestamp}{suffix}"
+                    filename = f"bilikara-{settings['filename']}-{timestamp}{suffix}"
                     self._write_download(payload, content_type=content_type, filename=filename)
                     return
                 raise ValueError("format must be csv or image")

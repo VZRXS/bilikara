@@ -163,6 +163,14 @@
             历史记录
           </button>
         </div>
+        <div id="history-export-row" class="history-export-row hidden">
+          <select id="history-export-source" class="history-export-source" aria-label="导出范围">
+            <option value="played">导出本场</option>
+            <option value="history">全部历史</option>
+          </select>
+          <button type="button" id="history-export-csv-button" class="ghost-button">导出 CSV</button>
+          <button type="button" id="history-export-image-button" class="primary-button">导出图片</button>
+        </div>
 
         <div id="queue-list" class="list"></div>
         <div id="history-list" class="list hidden"></div>

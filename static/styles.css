@@ -120,6 +120,10 @@ p {
   z-index: 180;
 }
 
+.confirm-popover.confirm-popover-wide {
+  width: min(340px, calc(100vw - 24px));
+}
+
 .confirm-popover.hidden {
   display: none;
 }
@@ -242,12 +246,26 @@ p {
   color: var(--ink);
 }
 
+.confirm-source {
+  width: 100%;
+  min-height: 42px;
+  margin-top: 2px;
+}
+
 .confirm-actions {
   margin-top: 12px;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.confirm-popover-wide .confirm-actions {
+  flex-wrap: nowrap;
+}
+
+.confirm-popover-wide .confirm-actions button {
+  white-space: nowrap;
 }
 
 .backup-title,

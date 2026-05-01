@@ -198,6 +198,7 @@ const elements = {
   historyTemplate: document.getElementById("history-item-template"),
   confirmPopover: document.getElementById("confirm-popover"),
   confirmText: document.getElementById("confirm-text"),
+  confirmSource: document.getElementById("confirm-source"),
   confirmCancel: document.getElementById("confirm-cancel"),
   confirmSecondary: document.getElementById("confirm-secondary"),
   confirmOk: document.getElementById("confirm-ok"),
@@ -1515,7 +1516,7 @@ function renderListHeader(playlist, history) {
   setTextContent(elements.queueCount, queueCount);
   setTextContent(elements.historyToggleButton, historyButtonText);
   setClassToggle(elements.clearPlaylistButton, "hidden", isHistoryView);
-  setClassToggle(elements.historyExportButton, "hidden", !isHistoryView || !history.length);
+  setClassToggle(elements.historyExportButton, "hidden", !isHistoryView);
   setClassToggle(elements.clearHistoryButton, "hidden", !isHistoryView || !history.length);
   setClassToggle(elements.nextButton, "hidden", isHistoryView);
 }
@@ -3570,9 +3571,13 @@ function renderConfirmPopover() {
     return;
   }
 
-  const width = 260;
   const hasSecondaryAction = Boolean(intent.secondaryLabel);
-  const popoverHeight = hasSecondaryAction ? 126 : 112;
+  const hasSourceSelect = Boolean(intent.sourceSelect);
+  const hideMessage = Boolean(intent.hideMessage);
+  const width = hasSourceSelect ? 340 : 260;
+  const popoverHeight = (hasSecondaryAction ? 126 : 112)
+    + (hasSourceSelect ? 48 : 0)
+    - (hideMessage ? 34 : 0);
   const margin = 12;
   const left = Math.min(
     Math.max(intent.x, margin),
@@ -3583,7 +3588,14 @@ function renderConfirmPopover() {
     window.innerHeight - popoverHeight - margin,
   );
 
-  elements.confirmText.textContent = intent.message;
+  elements.confirmText.textContent = intent.message || "";
+  elements.confirmText.classList.toggle("hidden", hideMessage);
+  if (elements.confirmSource) {
+    elements.confirmSource.classList.toggle("hidden", !hasSourceSelect);
+    if (hasSourceSelect) {
+      elements.confirmSource.value = normalizedHistoryExportSource(intent.source);
+    }
+  }
   elements.confirmOk.textContent = intent.primaryLabel || "确认";
   if (elements.confirmSecondary) {
     elements.confirmSecondary.textContent = intent.secondaryLabel || "";
@@ -3591,6 +3603,7 @@ function renderConfirmPopover() {
   }
   elements.confirmPopover.style.left = `${left}px`;
   elements.confirmPopover.style.top = `${top}px`;
+  elements.confirmPopover.classList.toggle("confirm-popover-wide", hasSourceSelect);
   elements.confirmPopover.classList.remove("hidden");
 }
 
@@ -3973,12 +3986,29 @@ function filenameFromContentDisposition(header, fallback) {
   return plainMatch ? plainMatch[1].trim() : fallback;
 }
 
-async function downloadHistoryExport(format) {
+function normalizedHistoryExportSource(source) {
+  return String(source || "").trim().toLowerCase() === "history" ? "history" : "played";
+}
+
+function historyExportSourceLabel(source) {
+  return normalizedHistoryExportSource(source) === "history" ? "全部历史" : "本场记录";
+}
+
+function selectedConfirmHistoryExportSource(intent) {
+  return normalizedHistoryExportSource(elements.confirmSource?.value || intent?.source);
+}
+
+async function downloadHistoryExport(format, source = "played") {
   const normalizedFormat = String(format || "").trim().toLowerCase();
+  const normalizedSource = normalizedHistoryExportSource(source);
   if (!["csv", "image"].includes(normalizedFormat)) {
     return;
   }
-  const response = await fetch(`/api/history/export?format=${encodeURIComponent(normalizedFormat)}`, {
+  const params = new URLSearchParams({
+    format: normalizedFormat,
+    source: normalizedSource,
+  });
+  const response = await fetch(`/api/history/export?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -3993,7 +4023,9 @@ async function downloadHistoryExport(format) {
     throw new Error(message);
   }
   const blob = await response.blob();
-  const fallback = normalizedFormat === "csv" ? "bilikara-history.csv" : "bilikara-history.png";
+  const fallback = normalizedFormat === "csv"
+    ? `bilikara-${normalizedSource}.csv`
+    : `bilikara-${normalizedSource}.png`;
   const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
   const downloadUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -4006,11 +4038,13 @@ async function downloadHistoryExport(format) {
   window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
 
-async function exportHistory(format) {
+async function exportHistory(format, source = "played") {
+  const normalizedSource = normalizedHistoryExportSource(source);
+  const sourceLabel = historyExportSourceLabel(normalizedSource);
   try {
-    await downloadHistoryExport(format);
+    await downloadHistoryExport(format, normalizedSource);
     closeConfirm();
-    setAppMessage(format === "csv" ? "历史记录 CSV 已开始下载。" : "历史记录图片已开始下载。");
+    setAppMessage(format === "csv" ? `${sourceLabel} CSV 已开始下载。` : `${sourceLabel}图片已开始下载。`);
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -4618,7 +4652,9 @@ elements.historyExportButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.historyExportButton);
   openConfirm({
     type: "export-history",
-    message: "选择历史记录导出格式。图片每 25 首自动分页，超过一页会打包为 zip。",
+    source: "played",
+    sourceSelect: true,
+    message: "选择导出范围和格式。本场记录是本次启动后已播放的歌曲，全部历史是累计点歌历史。",
     primaryLabel: "导出图片",
     secondaryLabel: "导出 CSV",
     x: point.x,
@@ -4888,7 +4924,8 @@ elements.confirmSecondary?.addEventListener("click", async () => {
     return;
   }
   if (intent.type === "export-history") {
-    await exportHistory("csv");
+    await exportHistory("csv", selectedConfirmHistoryExportSource(intent));
+    return;
   }
 });
 
@@ -4924,7 +4961,7 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "export-history") {
-      await exportHistory("image");
+      await exportHistory("image", selectedConfirmHistoryExportSource(intent));
       return;
     }
     if (intent.type === "reset-data") {

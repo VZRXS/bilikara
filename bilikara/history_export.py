@@ -16,7 +16,7 @@ _BV_RE = re.compile(r"(BV[0-9A-Za-z]+)", re.IGNORECASE)
 _AV_RE = re.compile(r"(av\d+)", re.IGNORECASE)
 
 
-def history_csv_bytes(history: list[dict[str, Any]]) -> bytes:
+def history_csv_bytes(history: list[dict[str, Any]], *, time_header: str = "点歌时间") -> bytes:
     ordered_history = _history_in_export_order(history)
     buffer = io.StringIO()
     writer = csv.DictWriter(
@@ -29,7 +29,7 @@ def history_csv_bytes(history: list[dict[str, Any]]) -> bytes:
             "UP主",
             "UP主UID",
             "点歌次数",
-            "点歌时间",
+            time_header,
             "视频链接",
             "原始链接",
             "分P/版本",
@@ -47,7 +47,7 @@ def history_csv_bytes(history: list[dict[str, Any]]) -> bytes:
                 "UP主": _text(entry.get("owner_name")),
                 "UP主UID": _text(entry.get("owner_mid")),
                 "点歌次数": _request_count(entry),
-                "点歌时间": _format_time(entry.get("requested_at")),
+                time_header: _format_time(entry.get("requested_at")),
                 "视频链接": _text(entry.get("resolved_url")),
                 "原始链接": _text(entry.get("original_url")),
                 "分P/版本": _text(entry.get("part_title")),
@@ -60,6 +60,7 @@ def history_image_export(
     history: list[dict[str, Any]],
     *,
     logo_path: Path | None = None,
+    title: str = "Bilikara 点歌历史",
 ) -> tuple[bytes, str, str]:
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -78,6 +79,7 @@ def history_image_export(
             page_count=len(pages),
             total_count=len(ordered_history),
             logo_path=logo_path,
+            title=title,
             image_module=Image,
             draw_module=ImageDraw,
             font_module=ImageFont,
@@ -106,6 +108,7 @@ def _render_history_page(
     page_count: int,
     total_count: int,
     logo_path: Path | None,
+    title: str,
     image_module: Any,
     draw_module: Any,
     font_module: Any,
@@ -125,8 +128,8 @@ def _render_history_page(
     small_font = _load_font(font_module, 21)
     footer_font = _load_font(font_module, 23, bold=True)
 
-    draw.text((90, 78), "Bilikara 点歌历史", fill="#2A213B", font=title_font)
-    draw.text((84, 72), "Bilikara 点歌历史", fill="#FFF7E6", font=title_font)
+    draw.text((90, 78), title, fill="#2A213B", font=title_font)
+    draw.text((84, 72), title, fill="#FFF7E6", font=title_font)
     subtitle = f"共 {total_count} 首 · 第 {page_number}/{page_count} 页 · {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     draw.text((88, 154), subtitle, fill="#F7B98A", font=subtitle_font)
 
@@ -245,9 +248,23 @@ def _draw_qr(draw: Any, matrix: list[list[bool]], *, x: int, y: int, size: int) 
 def _load_font(font_module: Any, size: int, *, bold: bool = False) -> Any:
     candidates = [
         "C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/Dengb.ttf" if bold else "C:/Windows/Fonts/Deng.ttf",
         "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
         "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Bold.otf" if bold else "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "/usr/share/fonts/truetype/arphic/ukai.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
     for candidate in candidates:

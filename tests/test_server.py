@@ -293,6 +293,47 @@ class HistoryRouteTest(unittest.TestCase):
         self.assertEqual(writes[0]["content_type"], "application/zip")
         self.assertEqual(writes[0]["filename"], "bilikara-history-20260430-123456.zip")
 
+    def test_history_export_played_source_downloads_session_csv(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        played = [
+            {
+                "display_title": "中文歌曲",
+                "resolved_url": "https://www.bilibili.com/video/BV9xx411c7mD",
+                "requester_name": "小明",
+                "requested_at": 300,
+            }
+        ]
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            history_snapshot=lambda: (_ for _ in ()).throw(AssertionError("should export played")),
+            session_played_snapshot=lambda: played,
+        )
+
+        handler.path = "/api/history/export?format=csv&source=played"
+        handler.headers = {}
+        handler._write_download = lambda payload, content_type, filename: writes.append(
+            {
+                "payload": payload,
+                "content_type": content_type,
+                "filename": filename,
+            }
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.time.strftime",
+            return_value="20260430-123456",
+        ):
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["filename"], "bilikara-played-20260430-123456.csv")
+        self.assertTrue(writes[0]["payload"].startswith(b"\xef\xbb\xbf"))
+        decoded = writes[0]["payload"].decode("utf-8-sig")
+        rows = list(csv.DictReader(io.StringIO(decoded)))
+        self.assertIn("播放时间", rows[0])
+        self.assertEqual(rows[0]["标题"], "中文歌曲")
+        self.assertEqual(rows[0]["点歌人"], "小明")
+
     def test_history_clear_route_returns_fresh_snapshot(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []

@@ -442,6 +442,13 @@ class PlaylistStore:
                     return PlaylistItem.from_dict(existing.serialize())
             return None
 
+    def session_played_snapshot(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return [
+                self._session_played_export_payload_unlocked(entry)
+                for entry in self.session_played
+            ]
+
     def missing_owner_urls(self) -> list[str]:
         with self.lock:
             urls: list[str] = []
@@ -1010,6 +1017,13 @@ class PlaylistStore:
                 requester_name=item.requester_name,
             )
         )
+
+    @staticmethod
+    def _session_played_export_payload_unlocked(entry: SessionPlayedEntry) -> dict[str, Any]:
+        payload = entry.to_dict()
+        payload["requested_at"] = entry.played_at
+        payload["request_count"] = 1
+        return payload
 
     @staticmethod
     def _session_file_label(timestamp: float) -> str:

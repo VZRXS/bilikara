@@ -643,6 +643,10 @@
 
     <div class="confirm-popover hidden" id="confirm-popover" role="dialog" aria-modal="false">
       <p class="confirm-text" id="confirm-text">确定执行这个操作吗？</p>
+      <select id="confirm-source" class="confirm-source hidden" aria-label="导出范围">
+        <option value="played">本场记录</option>
+        <option value="history">全部历史</option>
+      </select>
       <div class="confirm-actions">
         <button type="button" id="confirm-cancel" class="toolbar-button">取消</button>
         <button type="button" id="confirm-secondary" class="toolbar-button hidden">导出 CSV</button>
