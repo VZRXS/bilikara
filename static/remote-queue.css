@@ -376,7 +376,6 @@
   justify-content: center;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  padding-bottom: 6px; /* 修正省略号符号的基线位置 */
 }
 
 .menu-content {
@@ -395,6 +394,10 @@
   width: max-content;
   gap: 8px;
   animation: menuIn 0.2s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+.menu-content.no-animate {
+  animation: none !important;
 }
 
 .menu-content button {

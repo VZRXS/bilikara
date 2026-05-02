@@ -583,13 +583,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 "history": {
                     "items": lambda: CONTEXT.history_snapshot(),
                     "filename": "history",
-                    "title": "Bilikara 全部历史",
-                    "time_header": "点歌时间",
+                    "title": "bilikara 歌单导出",
+                    "time_header": "播放时间",
                 },
                 "played": {
                     "items": lambda: CONTEXT.session_played_snapshot(),
                     "filename": "played",
-                    "title": "Bilikara 本场已唱",
+                    "title": "bilikara 歌单导出",
                     "time_header": "播放时间",
                 },
             }

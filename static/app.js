@@ -1308,7 +1308,6 @@ function render() {
   renderAvSyncControls(playbackMode, data.player_settings);
   renderVolumeControls(playbackMode);
   applyStoredVolumeToMountedPlayer();
-  flushPendingSongTransitionOverlay();
   renderPlayer(currentItem, playbackMode);
   renderPlayerFullscreenButton();
   applyRemotePlayerControl(data.player_control_command, currentItem, playbackMode);
@@ -1327,6 +1326,7 @@ function render() {
   renderSearchCookieFace();
   renderGatchaUidFace();
   renderConfirmPopover();
+  flushPendingSongTransitionOverlay();
   state.lastPollRenderSignature = renderSignatureForData(data);
 }
 
@@ -3178,7 +3178,9 @@ function renderPlayer(currentItem, playbackMode) {
     return;
   }
 
-  const shouldAutoplay = !(state.localAdvanceDelayDeadline > 0 && Date.now() < state.localAdvanceDelayDeadline);
+  const willShowOverlay = Boolean(state.pendingSongTransitionOverlayData);
+  const isDelaying = state.localAdvanceDelayDeadline > 0 && Date.now() < state.localAdvanceDelayDeadline;
+  const shouldAutoplay = !(willShowOverlay || isDelaying);
   const autoplayAttr = shouldAutoplay ? "autoplay" : "";
 
   elements.playerFrame.innerHTML = `
@@ -3773,7 +3775,7 @@ function ownerTooltipForEntry(entry) {
   if (!ownerName) {
     return "";
   }
-  return `UP主: ${ownerName}`;
+  return `UP 主: ${ownerName}`;
 }
 
 function formatBBDownHint(bbdown) {

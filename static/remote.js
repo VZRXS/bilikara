@@ -1096,9 +1096,9 @@ function renderCurrentItem(current, playbackMode) {
     const requesterText = requesterBadgeText(current.requester_name);
     elements.currentRequester.textContent = requesterText;
     elements.currentRequester.classList.toggle("hidden", !requesterText);
-    const showCacheState = current.cache_status !== "ready";
-    elements.currentCacheState.textContent = showCacheState ? currentCacheStateLabel(current) : "";
-    elements.currentCacheState.classList.toggle("hidden", !showCacheState);
+    const showCacheState = false; // 始终隐藏，避免页面高度频繁变化
+    elements.currentCacheState.textContent = "";
+    elements.currentCacheState.classList.add("hidden");
     elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
     elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
     const modeLabel = "本地缓存";
@@ -1858,9 +1858,16 @@ function renderHistory(history) {
     requesterNode.classList.toggle("hidden", !requesterText);
     node.querySelector(".history-time").textContent = formatHistoryTime(entry.requested_at);
     node.querySelector(".history-count").textContent = `点歌 ${entry.request_count} 次`;
-    node.querySelectorAll("button[data-action]").forEach((button) => {
-      button.dataset.url = entry.resolved_url || entry.original_url;
+    node.querySelectorAll("button").forEach((button) => {
+      button.dataset.url = entry.original_url || entry.resolved_url || "";
     });
+    if (state.openHistoryMenuId === (entry.original_url || entry.resolved_url || "")) {
+      const menu = node.querySelector(".menu-content");
+      if (menu) {
+        menu.classList.remove("hidden");
+        menu.classList.add("no-animate");
+      }
+    }
     elements.historyList.appendChild(node);
   });
 }
@@ -2469,6 +2476,10 @@ elements.historyList.addEventListener("click", async (event) => {
       document.querySelectorAll(".menu-content").forEach(el => el.classList.add("hidden"));
       if (isHidden) {
         content.classList.remove("hidden");
+        content.classList.remove("no-animate");
+        state.openHistoryMenuId = button.dataset.url;
+      } else {
+        state.openHistoryMenuId = null;
       }
     }
     return;
@@ -2485,6 +2496,7 @@ document.addEventListener("click", (event) => {
   if (!event.target.closest(".queue-actions-wrap") && !event.target.closest(".history-actions-wrap")) {
     document.querySelectorAll(".menu-content").forEach(el => el.classList.add("hidden"));
     state.openQueueMenuId = null;
+    state.openHistoryMenuId = null;
   }
 });
 

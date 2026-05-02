@@ -59,7 +59,11 @@
         button.dataset.id = item.id;
       });
       if (state.openQueueMenuId === item.id) {
-        node.querySelector(".menu-content")?.classList.remove("hidden");
+        const menu = node.querySelector(".menu-content");
+        if (menu) {
+          menu.classList.remove("hidden");
+          menu.classList.add("no-animate");
+        }
       }
       elements.queueList.appendChild(node);
     });
