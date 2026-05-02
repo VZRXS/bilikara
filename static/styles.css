@@ -1365,12 +1365,22 @@ h2 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition:
+    opacity 500ms ease,
+    transform 500ms ease;
   pointer-events: none;
 }
 
 .player-panel:fullscreen .fullscreen-request-toast:not(.hidden),
 .player-panel:-webkit-full-screen .fullscreen-request-toast:not(.hidden) {
   display: grid;
+}
+
+.fullscreen-request-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .fullscreen-request-toast-label {

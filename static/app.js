@@ -15,6 +15,7 @@ const defaultSongAdvanceDelaySeconds = 3;
 const maxSongAdvanceDelaySeconds = 30;
 const appUpdateCheckTimeoutMs = 10000;
 const fullscreenRequestToastMs = 4200;
+const fullscreenRequestToastFadeMs = 500;
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
@@ -119,6 +120,7 @@ const state = {
   updatePreviewEnabled: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
+  fullscreenRequestToastHideTimer: null,
   layoutMode: "full",
 };
 
@@ -306,7 +308,18 @@ function hideFullscreenRequestToast() {
     window.clearTimeout(state.fullscreenRequestToastTimer);
     state.fullscreenRequestToastTimer = null;
   }
-  elements.fullscreenRequestToast?.classList.add("hidden");
+  const toast = elements.fullscreenRequestToast;
+  if (!toast || toast.classList.contains("hidden")) {
+    return;
+  }
+  toast.classList.remove("is-visible");
+  if (state.fullscreenRequestToastHideTimer) {
+    window.clearTimeout(state.fullscreenRequestToastHideTimer);
+  }
+  state.fullscreenRequestToastHideTimer = window.setTimeout(() => {
+    toast.classList.add("hidden");
+    state.fullscreenRequestToastHideTimer = null;
+  }, fullscreenRequestToastFadeMs);
 }
 
 function showFullscreenRequestToast(title) {
@@ -319,6 +332,10 @@ function showFullscreenRequestToast(title) {
     window.clearTimeout(state.fullscreenRequestToastTimer);
     state.fullscreenRequestToastTimer = null;
   }
+  if (state.fullscreenRequestToastHideTimer) {
+    window.clearTimeout(state.fullscreenRequestToastHideTimer);
+    state.fullscreenRequestToastHideTimer = null;
+  }
   toast.replaceChildren();
   const label = document.createElement("span");
   label.className = "fullscreen-request-toast-label";
@@ -328,6 +345,9 @@ function showFullscreenRequestToast(title) {
   titleNode.textContent = normalizedTitle;
   toast.append(label, titleNode);
   toast.classList.remove("hidden");
+  window.requestAnimationFrame(() => {
+    toast.classList.add("is-visible");
+  });
   state.fullscreenRequestToastTimer = window.setTimeout(() => {
     hideFullscreenRequestToast();
   }, fullscreenRequestToastMs);
