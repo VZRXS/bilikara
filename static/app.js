@@ -100,6 +100,7 @@ const state = {
   dragTargetAfter: false,
   confirmIntent: null,
   bindingIntent: null,
+  gatchaFavlistIntent: null,
   retryActivityById: {},
   gatchaCandidate: null,
   searchCookieVisible: false,
@@ -212,6 +213,13 @@ const elements = {
   bindingModalClose: document.getElementById("binding-modal-close"),
   bindingModalCancel: document.getElementById("binding-modal-cancel"),
   bindingModalConfirm: document.getElementById("binding-modal-confirm"),
+  gatchaFavlistModal: document.getElementById("gatcha-favlist-modal"),
+  gatchaFavlistModalBackdrop: document.getElementById("gatcha-favlist-modal-backdrop"),
+  gatchaFavlistModalText: document.getElementById("gatcha-favlist-modal-text"),
+  gatchaFavlistOptions: document.getElementById("gatcha-favlist-options"),
+  gatchaFavlistModalClose: document.getElementById("gatcha-favlist-modal-close"),
+  gatchaFavlistModalCancel: document.getElementById("gatcha-favlist-modal-cancel"),
+  gatchaFavlistModalConfirm: document.getElementById("gatcha-favlist-modal-confirm"),
   copyRemoteUrlButton: document.getElementById("copy-remote-url-button"),
   remoteQrImage: document.getElementById("remote-qr-image"),
   remoteQrPlaceholder: document.getElementById("remote-qr-placeholder"),
@@ -828,8 +836,15 @@ async function refreshGatchaCache() {
   return apiPost("/api/gatcha/refresh");
 }
 
-async function pullGatchaFavlist(uid) {
-  return apiPost("/api/gatcha/favlist", { uid: String(uid || "").trim() });
+async function previewGatchaFavlist(uid) {
+  return apiPost("/api/gatcha/favlist/preview", { uid: String(uid || "").trim() });
+}
+
+async function pullGatchaFavlist(uid, folderIds = []) {
+  return apiPost("/api/gatcha/favlist", {
+    uid: String(uid || "").trim(),
+    folder_ids: Array.isArray(folderIds) ? folderIds : [],
+  });
 }
 
 function gatchaUidResultMessage(result, fallbackUid = "") {
@@ -844,6 +859,11 @@ function gatchaUidResultMessage(result, fallbackUid = "") {
 
 async function confirmGatchaUidAdd(intent) {
   closeConfirm();
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
   setGatchaUidMessage(`正在拉取 UP 主：${intent.name || intent.uid} 的稿件...`);
@@ -1082,6 +1102,14 @@ function setGatchaUidMessage(message, isError = false) {
   elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function gatchaTaskBusy() {
+  return Boolean(state.data?.gatcha?.busy);
+}
+
+function gatchaTaskBusyMessage() {
+  return state.data?.gatcha?.message || "拉取任务执行中，请等待任务结束";
+}
+
 function syncSearchStageView(showCookie) {
   const nextView = showCookie ? "browse" : "search";
   const isInitialRender = !state.searchStageView;
@@ -1143,11 +1171,14 @@ function renderSearchCookieFace() {
 
 function renderGatchaUidFace() {
   const showUid = Boolean(state.gatchaUidVisible);
+  const taskBusy = gatchaTaskBusy();
   const signature = JSON.stringify({
     showUid,
     saving: state.gatchaUidSaving,
     refreshing: state.gatchaRefreshSaving,
     favlistSaving: state.gatchaFavlistSaving,
+    taskBusy,
+    taskMessage: gatchaTaskBusyMessage(),
   });
   if (signature === state.gatchaUidFaceRenderSignature) {
     return;
@@ -1163,16 +1194,24 @@ function renderGatchaUidFace() {
     elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
   if (elements.addGatchaUidButton) {
-    elements.addGatchaUidButton.disabled = state.gatchaUidSaving;
+    elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
     elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? "处理中" : "添加";
   }
   if (elements.refreshGatchaCacheButton) {
-    elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving;
+    elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
     elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? "更新中" : "手动更新";
   }
   if (elements.pullGatchaFavlistButton) {
-    elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving;
+    elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
     elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? "拉取中" : "拉取收藏";
+  }
+  if (taskBusy) {
+    if (elements.refreshGatchaCacheButton) {
+      elements.refreshGatchaCacheButton.textContent = "全局冷却中";
+    }
+    if (elements.pullGatchaFavlistButton) {
+      elements.pullGatchaFavlistButton.textContent = "全局冷却中";
+    }
   }
 }
 
@@ -3793,6 +3832,92 @@ function openBindingModal(intent, payload) {
   elements.bindingModal.classList.remove("hidden");
 }
 
+function closeGatchaFavlistModal() {
+  state.gatchaFavlistIntent = null;
+  elements.gatchaFavlistModal?.classList.add("hidden");
+  if (elements.gatchaFavlistOptions) {
+    elements.gatchaFavlistOptions.innerHTML = "";
+  }
+}
+
+function selectedGatchaFavlistFolderIds() {
+  return [...(elements.gatchaFavlistOptions?.querySelectorAll('input[name="gatcha-favlist-folder"]:checked') || [])]
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+function renderGatchaFavlistOption(folder) {
+  const label = document.createElement("label");
+  label.className = "selection-option";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = "gatcha-favlist-folder";
+  input.value = String(folder.id || "");
+  input.checked = Boolean(folder.selected);
+
+  const copy = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "selection-option-title";
+  title.textContent = folder.title || `收藏夹 ${folder.id || ""}`;
+  const meta = document.createElement("div");
+  meta.className = "selection-option-meta";
+  const count = Number(folder.media_count || 0);
+  meta.textContent = `${count || 0} 个稿件${folder.selected ? " · 命中默认筛选" : ""}`;
+  copy.append(title, meta);
+
+  label.append(input, copy);
+  return label;
+}
+
+function openGatchaFavlistModal(uid, payload) {
+  const folders = Array.isArray(payload?.folders) ? payload.folders : [];
+  if (!folders.length) {
+    setGatchaUidMessage("没有读取到公开收藏夹。", true);
+    return;
+  }
+  state.gatchaFavlistIntent = { uid, folders };
+  elements.gatchaFavlistModalText.textContent = `UID ${payload?.uid || uid} 共有 ${payload?.public_folder_count || folders.length} 个公开收藏夹，请选择要加入抽卡收藏池的收藏夹。`;
+  elements.gatchaFavlistOptions.innerHTML = "";
+  folders.forEach((folder) => {
+    elements.gatchaFavlistOptions.appendChild(renderGatchaFavlistOption(folder));
+  });
+  elements.gatchaFavlistModal.classList.remove("hidden");
+}
+
+async function confirmGatchaFavlistModal() {
+  const intent = state.gatchaFavlistIntent;
+  if (!intent?.uid) {
+    return;
+  }
+  const folderIds = selectedGatchaFavlistFolderIds();
+  if (!folderIds.length) {
+    setGatchaUidMessage("请选择至少一个收藏夹", true);
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage("正在拉取选中的公开收藏夹...");
+  try {
+    const result = await pullGatchaFavlist(intent.uid, folderIds);
+    closeGatchaFavlistModal();
+    setGatchaUidMessage(
+      `已拉取 ${result?.matched_folder_count || 0} 个收藏夹，加入 ${result?.item_count || 0} 个稿件。`,
+    );
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
 async function confirmBindingModal() {
   const intent = state.bindingIntent;
   if (!intent?.url) {
@@ -4975,6 +5100,22 @@ elements.bindingModalConfirm?.addEventListener("click", async () => {
   await confirmBindingModal();
 });
 
+elements.gatchaFavlistModalClose?.addEventListener("click", () => {
+  closeGatchaFavlistModal();
+});
+
+elements.gatchaFavlistModalCancel?.addEventListener("click", () => {
+  closeGatchaFavlistModal();
+});
+
+elements.gatchaFavlistModalBackdrop?.addEventListener("click", () => {
+  closeGatchaFavlistModal();
+});
+
+elements.gatchaFavlistModalConfirm?.addEventListener("click", async () => {
+  await confirmGatchaFavlistModal();
+});
+
 elements.confirmOk.addEventListener("click", async () => {
   const intent = state.confirmIntent;
   if (!intent) {
@@ -5079,6 +5220,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (state.bindingIntent) {
     closeBindingModal();
+  }
+  if (state.gatchaFavlistIntent) {
+    closeGatchaFavlistModal();
   }
   if (state.confirmIntent) {
     closeConfirm();
@@ -5372,6 +5516,12 @@ elements.gatchaUidForm?.addEventListener("submit", async (event) => {
     return;
   }
 
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
   setGatchaUidMessage("正在检测 UID...");
@@ -5398,11 +5548,19 @@ elements.gatchaUidForm?.addEventListener("submit", async (event) => {
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
   state.gatchaRefreshSaving = true;
   renderGatchaUidFace();
   setGatchaUidMessage("正在后台更新抽卡缓存...");
   try {
     const result = await refreshGatchaCache();
+    if (result?.started !== false && state.data) {
+      state.data.gatcha = { busy: true, message: gatchaTaskBusyMessage() };
+    }
     setGatchaUidMessage(result?.started === false ? "抽卡缓存已经在更新中。" : "已开始更新抽卡缓存。");
   } catch (error) {
     setGatchaUidMessage(error.message, true);
@@ -5419,14 +5577,19 @@ elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
     return;
   }
 
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage("正在拉取公开收藏夹...(标题含🎤/卡拉/k)");
+  setGatchaUidMessage("正在读取公开收藏夹...");
   try {
-    const result = await pullGatchaFavlist(uid);
-    setGatchaUidMessage(
-      `已拉取 ${result?.matched_folder_count || 0} 个收藏夹，加入 ${result?.item_count || 0} 个稿件。`
-    );
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistModal(result?.uid || uid, result);
+    setGatchaUidMessage("请选择要拉取的收藏夹。");
   } catch (error) {
     setGatchaUidMessage(error.message, true);
   } finally {

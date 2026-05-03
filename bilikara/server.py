@@ -22,9 +22,11 @@ from .bilibili import (
     browse_gatcha_cache,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
+    gatcha_task_snapshot,
     fetch_owner_info,
     fetch_video_item,
     gatcha_uid_snapshot,
+    preview_gatcha_favlist,
     preview_gatcha_uid,
     refresh_gatcha_cache_in_background,
     refresh_gatcha_favlist,
@@ -74,7 +76,7 @@ class AppContext:
         self.cache_manager = CacheManager(
             self.store,
             max_cache_items=MAX_CACHE_ITEMS,
-            on_bbdown_login_success=refresh_gatcha_cache_in_background,
+            on_bbdown_login_success=self.refresh_startup_gatcha_cache_in_background,
         )
         self.cache_manager.prepare_session()
         self._closed = False
@@ -104,6 +106,7 @@ class AppContext:
         self._remote_access = self._build_remote_access_payload(self._host, self._port, [])
         self._startup_lock = threading.RLock()
         self._startup_started = False
+        self._startup_gatcha_refresh_bypass_available = True
 
     def snapshot(self) -> dict:
         with self._state_change_condition:
@@ -118,6 +121,7 @@ class AppContext:
             "auto_restored_backup": self.auto_restored_backup,
         }
         payload["remote_access"] = self.remote_access_snapshot()
+        payload["gatcha"] = gatcha_task_snapshot()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
         payload["app"] = {
@@ -126,6 +130,19 @@ class AppContext:
         }
         payload["state_revision"] = state_revision
         return payload
+
+    def refresh_gatcha_cache_in_background(self) -> bool:
+        return refresh_gatcha_cache_in_background(
+            on_start=self._notify_state_changed,
+            on_done=self._notify_state_changed,
+        )
+
+    def refresh_startup_gatcha_cache_in_background(self) -> bool:
+        with self._startup_lock:
+            if not self._startup_gatcha_refresh_bypass_available:
+                return self.refresh_gatcha_cache_in_background()
+            self._startup_gatcha_refresh_bypass_available = False
+        return refresh_gatcha_cache_in_background(use_global_lock=False)
 
     def add_item(self, item, *, position: str, requester_name: str) -> None:
         self.store.add_item(item, position=position, requester_name=requester_name)
@@ -755,21 +772,42 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/gatcha/uids/add":
-                result = add_gatcha_uid(body.get("uid"))
+                result = add_gatcha_uid(
+                    body.get("uid"),
+                    on_start=CONTEXT._notify_state_changed,
+                    on_done=CONTEXT._notify_state_changed,
+                )
                 self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/gatcha/uids/preview":
+                gatcha_task = gatcha_task_snapshot()
+                if gatcha_task.get("busy"):
+                    raise ValueError(gatcha_task.get("message") or "拉取任务执行中，请等待任务结束")
                 result = preview_gatcha_uid(body.get("uid"))
                 self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/gatcha/refresh":
                 if not effective_bilibili_cookie():
                     raise ValueError(MISSING_BILIBILI_COOKIE_MESSAGE)
-                started = refresh_gatcha_cache_in_background()
+                started = CONTEXT.refresh_gatcha_cache_in_background()
+                if not started:
+                    raise ValueError("拉取任务执行中，请等待任务结束")
                 self._write_json({"ok": True, "data": {"started": started}})
                 return
+            if route == "/api/gatcha/favlist/preview":
+                gatcha_task = gatcha_task_snapshot()
+                if gatcha_task.get("busy"):
+                    raise ValueError(gatcha_task.get("message") or "拉取任务执行中，请等待任务结束")
+                result = preview_gatcha_favlist(body.get("uid"))
+                self._write_json({"ok": True, "data": result})
+                return
             if route == "/api/gatcha/favlist":
-                result = refresh_gatcha_favlist(body.get("uid"))
+                result = refresh_gatcha_favlist(
+                    body.get("uid"),
+                    body.get("folder_ids"),
+                    on_start=CONTEXT._notify_state_changed,
+                    on_done=CONTEXT._notify_state_changed,
+                )
                 self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/player/audio-variant":
@@ -888,7 +926,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     cfg.COOKIE = f"SESSDATA={sessdata}; bili_jct={jct}"
                 if not effective_bilibili_cookie():
                     raise ValueError(MISSING_BILIBILI_COOKIE_MESSAGE)
-                refresh_gatcha_cache_in_background()
+                CONTEXT.refresh_gatcha_cache_in_background()
                 self._write_json({"ok": True, "message": "配置已实时生效"})
                 return
             self._write_json(
@@ -1127,7 +1165,7 @@ def _serve(
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
-        refresh_gatcha_cache_in_background()
+        CONTEXT.refresh_startup_gatcha_cache_in_background()
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
     print(f"{status_label} running on {url}")

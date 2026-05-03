@@ -1071,6 +1071,31 @@ class BilibiliParserTest(unittest.TestCase):
             cache_payload = json.loads(cache_file.read_text(encoding="utf-8"))
             self.assertEqual(cache_payload["uids"]["42"][0]["bvid"], "BVADDED42")
 
+    def test_add_gatcha_uid_rejects_while_global_gatcha_task_is_running(self):
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            uid_file = data_dir / "gatcha_uids.json"
+            cache_file = data_dir / "gatcha_cache.json"
+            uid_file.write_text(json.dumps({"uids": ["1"]}), encoding="utf-8")
+            cache_file.write_text(json.dumps({"schema_version": 2, "uids": {}, "profiles": {}}), encoding="utf-8")
+            refresh_lock = threading.Lock()
+            self.assertTrue(refresh_lock.acquire(blocking=False))
+            try:
+                with (
+                    patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
+                    patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
+                    patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
+                    patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", refresh_lock),
+                    patch.object(bilibili_module, "preview_gatcha_uid") as preview,
+                ):
+                    with self.assertRaisesRegex(bilibili_module.BilibiliError, "拉取任务执行中，请等待任务结束"):
+                        bilibili_module.add_gatcha_uid("42")
+                    preview.assert_not_called()
+            finally:
+                refresh_lock.release()
+
+            self.assertEqual(json.loads(uid_file.read_text(encoding="utf-8"))["uids"], ["1"])
+
     def test_refresh_gatcha_favlist_filters_folder_titles_and_persists_items(self):
         with TemporaryDirectory() as temp_dir:
             data_dir = Path(temp_dir)
@@ -1117,6 +1142,60 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual(payload["uid"], "42")
             self.assertEqual(payload["folders"][0]["title"], "🎤 卡拉收藏")
             self.assertEqual(payload["items"][0]["bvid"], "BVFAV1")
+
+    def test_preview_gatcha_favlist_marks_keyword_matches_as_selected(self):
+        folders = [
+            {"id": 100, "fid": 10, "title": "K songs", "attr": 0, "media_count": 2},
+            {"id": 200, "fid": 20, "title": "normal fav", "attr": 0, "media_count": 1},
+            {"id": 300, "fid": 30, "title": "private k", "attr": 1, "media_count": 1},
+        ]
+        with patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders):
+            result = bilibili_module.preview_gatcha_favlist("https://space.bilibili.com/42")
+
+        self.assertEqual(result["uid"], "42")
+        self.assertEqual(result["folder_count"], 3)
+        self.assertEqual(result["public_folder_count"], 2)
+        self.assertEqual([folder["id"] for folder in result["folders"]], ["100", "200"])
+        self.assertEqual(result["selected_folder_ids"], ["100"])
+        self.assertTrue(result["folders"][0]["selected"])
+        self.assertFalse(result["folders"][1]["selected"])
+
+    def test_refresh_gatcha_favlist_uses_explicit_folder_selection(self):
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            favlist_file = data_dir / "gatcha_favlist.json"
+            folders = [
+                {"id": 100, "fid": 10, "title": "K songs", "attr": 0, "media_count": 1},
+                {"id": 200, "fid": 20, "title": "normal fav", "attr": 0, "media_count": 1},
+            ]
+            fetched_folder_ids: list[int] = []
+
+            def fake_fetch(uid, folder):
+                fetched_folder_ids.append(int(folder["id"]))
+                return [
+                    {
+                        "mid": "9",
+                        "bvid": f"BVFAV{folder['id']}",
+                        "title": "selected fav item",
+                        "url": f"https://www.bilibili.com/video/BVFAV{folder['id']}",
+                    }
+                ]
+
+            with (
+                patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
+                patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
+                patch.object(bilibili_module, "_GATCHA_FAVLIST_LOCK", threading.Lock()),
+                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
+                patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders),
+                patch.object(bilibili_module, "_fetch_gatcha_favlist_entries_for_folder", side_effect=fake_fetch),
+            ):
+                result = bilibili_module.refresh_gatcha_favlist("42", ["200"])
+
+            self.assertEqual(result["matched_folder_count"], 1)
+            self.assertEqual(fetched_folder_ids, [200])
+            payload = json.loads(favlist_file.read_text(encoding="utf-8"))
+            self.assertEqual([folder["id"] for folder in payload["folders"]], ["200"])
+            self.assertEqual(payload["items"][0]["bvid"], "BVFAV200")
 
     def test_gatcha_favlist_joins_search_and_draw_but_not_follow_browse(self):
         with TemporaryDirectory() as temp_dir:
@@ -1299,6 +1378,30 @@ class BilibiliParserTest(unittest.TestCase):
 
             payload = json.loads(favlist_file.read_text(encoding="utf-8"))
             self.assertEqual([entry["bvid"] for entry in payload["items"]], ["BVNEW", "BVOLD"])
+
+    def test_startup_gatcha_refresh_can_bypass_global_refresh_lock(self):
+        class FakeThread:
+            def __init__(self, *, target, daemon=None, name=None):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        refresh_lock = threading.Lock()
+        self.assertTrue(refresh_lock.acquire(blocking=False))
+        try:
+            with (
+                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", refresh_lock),
+                patch.object(bilibili_module, "refresh_gatcha_cache", return_value={}) as refresh,
+                patch.object(bilibili_module.threading, "Thread", FakeThread),
+            ):
+                self.assertFalse(bilibili_module.refresh_gatcha_cache_in_background())
+                self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(use_global_lock=False))
+
+            self.assertEqual(refresh.call_count, 1)
+            self.assertTrue(refresh_lock.locked())
+        finally:
+            refresh_lock.release()
 
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item(self, mock_request_json):

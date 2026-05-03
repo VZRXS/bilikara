@@ -162,6 +162,10 @@ p {
   box-shadow: var(--shadow);
 }
 
+.selection-modal-card-single {
+  width: min(560px, calc(100vw - 32px));
+}
+
 .selection-modal-head,
 .selection-modal-actions {
   display: flex;
@@ -183,6 +187,10 @@ p {
   min-height: 0;
   margin-top: 18px;
   overflow: hidden;
+}
+
+.selection-modal-grid-single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .selection-modal-column {

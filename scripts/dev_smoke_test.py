@@ -189,6 +189,7 @@ class SmokeRunner:
                 "gatcha-uid-form",
                 "refresh-gatcha-cache-button",
                 "pull-gatcha-favlist-button",
+                "gatcha-favlist-modal",
             ],
             "/remote": [
                 "follow-browse-toggle",
@@ -197,6 +198,9 @@ class SmokeRunner:
                 "binding-sheet-actions",
                 "history-export-row",
                 "gatcha-uid-form",
+                "refresh-gatcha-cache-button",
+                "pull-gatcha-favlist-button",
+                "gatcha-favlist-sheet",
             ],
             "/app.js": [
                 "fetchGatchaBrowse",
@@ -204,6 +208,7 @@ class SmokeRunner:
                 "handleAddByUrl",
                 "downloadHistoryExport",
                 "previewGatchaUid",
+                "/api/gatcha/favlist/preview",
                 "/api/gatcha/refresh",
                 "/api/gatcha/favlist",
                 "/api/app/update",
@@ -214,6 +219,9 @@ class SmokeRunner:
                 "addByUrl",
                 "downloadHistoryExport",
                 "previewGatchaUid",
+                "/api/gatcha/favlist/preview",
+                "/api/gatcha/refresh",
+                "/api/gatcha/favlist",
             ],
             "/styles.css": [
                 "grid-template-rows: auto auto minmax(0, 1fr) auto",

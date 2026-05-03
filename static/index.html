@@ -686,6 +686,30 @@
       </div>
     </div>
 
+    <div class="selection-modal hidden" id="gatcha-favlist-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="gatcha-favlist-modal-backdrop"></div>
+      <div class="selection-modal-card selection-modal-card-single">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag">Favlist Pull</p>
+            <h2>选择收藏夹</h2>
+          </div>
+          <button type="button" id="gatcha-favlist-modal-close" class="banner-close" aria-label="关闭">×</button>
+        </div>
+        <p class="selection-modal-text" id="gatcha-favlist-modal-text">请选择要拉取的公开收藏夹。</p>
+        <div class="selection-modal-grid selection-modal-grid-single">
+          <section class="selection-modal-column">
+            <h3>收藏夹</h3>
+            <div id="gatcha-favlist-options" class="selection-option-list"></div>
+          </section>
+        </div>
+        <div class="selection-modal-actions">
+          <button type="button" id="gatcha-favlist-modal-cancel" class="toolbar-button">取消</button>
+          <button type="button" id="gatcha-favlist-modal-confirm" class="next-button">拉取选中收藏夹</button>
+        </div>
+      </div>
+    </div>
+
     <script src="/app.js" defer></script>
   </body>
 </html>
