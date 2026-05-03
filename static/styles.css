@@ -2543,7 +2543,7 @@ select:disabled {
 
 .queue-current-retry {
   position: absolute;
-  top: calc(50% - var(--queue-badge-size) / 2 - 4px);
+  top: calc(50% - var(--queue-badge-size) / 2 - 12px);
   right: calc((var(--queue-badge-column-width) - var(--queue-badge-size)) / 2 - 6px);
   z-index: 2;
 }

@@ -47,9 +47,8 @@ const state = {
   followBrowseRenderSignature: "",
   layoutMode: "full",
   remoteAccessRenderSignature: "",
-  remoteQrPopoverOpen: false,
-  appToastTimer: null,
   viewportScaleResetTimers: [],
+  renderDebounceTimer: null,
 };
 
 const elements = {
@@ -555,13 +554,35 @@ async function submitAddRequestWithDuplicateConfirm(url, position, requesterName
   }
 }
 
-async function fetchState() {
+async function fetchState(options = {}) {
+  const { force = true } = options;
   const response = await fetch("/api/state", { headers: clientHeaders() });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
     throw new Error(payload.error || "获取状态失败");
   }
-  applyStateSnapshot(payload.data, { forceRender: !state.data });
+  applyStateSnapshot(payload.data, { forceRender: force || !state.data });
+}
+
+async function refreshCacheStatusOnly() {
+  try {
+    const response = await fetch("/api/state", { headers: clientHeaders() });
+    const payload = await response.json();
+    if (response.ok && payload.ok && payload.data) {
+      state.data = payload.data;
+      const current = state.data.current_item;
+      if (current) {
+        elements.currentCacheState.textContent = currentCacheStateLabel(current);
+        if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
+          state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    // 静默失败
+  }
+  state.autoRefreshTimer = null;
 }
 function currentStateRevision(snapshot = state.data) {
   const revision = Number(snapshot?.state_revision || 0);
@@ -583,7 +604,14 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     }
   }
   state.data = snapshot;
-  render();
+  
+  // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
+  if (state.renderDebounceTimer) clearTimeout(state.renderDebounceTimer);
+  state.renderDebounceTimer = setTimeout(() => {
+    state.renderDebounceTimer = null;
+    render();
+  }, 50);
+  
   return true;
 }
 
@@ -1096,9 +1124,19 @@ function renderCurrentItem(current, playbackMode) {
     const requesterText = requesterBadgeText(current.requester_name);
     elements.currentRequester.textContent = requesterText;
     elements.currentRequester.classList.toggle("hidden", !requesterText);
-    const showCacheState = current.cache_status !== "ready";
-    elements.currentCacheState.textContent = showCacheState ? currentCacheStateLabel(current) : "";
-    elements.currentCacheState.classList.toggle("hidden", !showCacheState);
+    
+    elements.currentCacheState.textContent = currentCacheStateLabel(current);
+    elements.currentCacheState.classList.remove("hidden");
+    
+    if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
+      if (!state.autoRefreshTimer) {
+        state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
+      }
+    } else if (state.autoRefreshTimer) {
+      clearTimeout(state.autoRefreshTimer);
+      state.autoRefreshTimer = null;
+    }
+    
     elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
     elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
     elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
@@ -2246,7 +2284,7 @@ document.addEventListener("keydown", (event) => {
 
 elements.refreshButton.addEventListener("click", async () => {
   try {
-    await fetchState();
+    await fetchState({ force: true });
     setFormMessage("点歌列表已刷新。");
   } catch (error) {
     setFormMessage(error.message, true);
