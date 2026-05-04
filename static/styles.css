@@ -3024,7 +3024,7 @@ select:disabled {
 }
 
 .gatcha-panel {
-  padding: 16px 24px 24px;
+  padding: 20px 24px 24px;
   border-radius: 28px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -3036,8 +3036,8 @@ select:disabled {
 
 .gatcha-head {
   align-items: flex-start;
-  gap: 12px;
-  flex-wrap: nowrap;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .gatcha-head > div {
@@ -3047,7 +3047,7 @@ select:disabled {
 }
 
 .gatcha-head h2 {
-  line-height: 1.15;
+  line-height: normal;
   min-height: 0;
 }
 
@@ -3313,6 +3313,11 @@ select:disabled {
   max-width: 100%;
 }
 
+.follow-up-items-view {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: 240px;
+}
+
 .follow-up-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
@@ -3398,21 +3403,23 @@ select:disabled {
 }
 
 .follow-search-form input {
-  height: 44px;
-  border-radius: 14px;
-  padding: 0 14px;
+  height: 48px;
+  border-radius: 16px;
+  padding: 0 16px;
   font-size: inherit;
 }
 
 .follow-search-form .next-button {
-  height: 44px;
+  width: auto;
+  height: 48px;
   min-width: 72px;
-  border-radius: 14px;
-  padding: 0 16px;
+  border-radius: 16px;
+  padding: 0 18px;
 }
 
 #follow-song-results {
-  max-height: 300px;
+  min-height: 0;
+  max-height: none;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 4px;
@@ -3473,6 +3480,8 @@ select:disabled {
 
 .search-face-front {
   pointer-events: auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: 240px;
 }
 
 .search-face-back {
@@ -3495,7 +3504,7 @@ select:disabled {
 
 .search-sub-card/* ,
 .cookie-sub-card */ {
-  padding: 16px 24px 24px;
+  padding: 20px 24px 24px;
 }
 
 .search-sub-card-head/* ,
@@ -3503,7 +3512,12 @@ select:disabled {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.search-sub-card-head > div {
+  min-width: 0;
 }
 
 .song-requester,
@@ -3738,8 +3752,8 @@ select:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
-  align-items: start;
-  padding: 12px 14px;
+  align-items: center;
+  padding: 8px 14px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.58);
   border: 1px solid rgba(208, 90, 63, 0.1);
