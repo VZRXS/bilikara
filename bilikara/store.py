@@ -93,6 +93,10 @@ class PlaylistStore:
         with self.lock:
             return self._find_item_unlocked(item_id)
 
+    def is_current_item(self, item_id: str) -> bool:
+        with self.lock:
+            return bool(self.current_item and self.current_item.id == item_id)
+
     def add_item(
         self,
         item: PlaylistItem,

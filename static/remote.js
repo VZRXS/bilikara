@@ -51,9 +51,8 @@ const state = {
   followBrowseRenderSignature: "",
   layoutMode: "full",
   remoteAccessRenderSignature: "",
-  remoteQrPopoverOpen: false,
-  appToastTimer: null,
   viewportScaleResetTimers: [],
+  renderDebounceTimer: null,
 };
 
 const elements = {
@@ -72,6 +71,7 @@ const elements = {
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
   currentTitle: document.getElementById("current-title"),
   currentRequester: document.getElementById("current-requester"),
+  currentCacheState: document.getElementById("current-cache-state"),
   currentMeta: document.getElementById("current-meta"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
@@ -483,7 +483,7 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     format: normalizedFormat,
     source: normalizedSource,
   });
-  const response = await fetch(`/api/history/export?${params.toString()}`, {
+  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
     cache: "no-store",
     headers: clientHeaders(),
   });
@@ -567,13 +567,35 @@ async function submitAddRequestWithDuplicateConfirm(url, position, requesterName
   }
 }
 
-async function fetchState() {
+async function fetchState(options = {}) {
+  const { force = true } = options;
   const response = await fetch("/api/state", { headers: clientHeaders() });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
     throw new Error(payload.error || "获取状态失败");
   }
-  applyStateSnapshot(payload.data, { forceRender: !state.data });
+  applyStateSnapshot(payload.data, { forceRender: force || !state.data });
+}
+
+async function refreshCacheStatusOnly() {
+  try {
+    const response = await fetch("/api/state", { headers: clientHeaders() });
+    const payload = await response.json();
+    if (response.ok && payload.ok && payload.data) {
+      state.data = payload.data;
+      const current = state.data.current_item;
+      if (current) {
+        elements.currentCacheState.textContent = currentCacheStateLabel(current);
+        if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
+          state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    // 静默失败
+  }
+  state.autoRefreshTimer = null;
 }
 function currentStateRevision(snapshot = state.data) {
   const revision = Number(snapshot?.state_revision || 0);
@@ -595,7 +617,14 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     }
   }
   state.data = snapshot;
-  render();
+  
+  // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
+  if (state.renderDebounceTimer) clearTimeout(state.renderDebounceTimer);
+  state.renderDebounceTimer = setTimeout(() => {
+    state.renderDebounceTimer = null;
+    render();
+  }, 50);
+  
   return true;
 }
 
@@ -1158,15 +1187,31 @@ function renderCurrentItem(current, playbackMode) {
     const requesterText = requesterBadgeText(current.requester_name);
     elements.currentRequester.textContent = requesterText;
     elements.currentRequester.classList.toggle("hidden", !requesterText);
-    const modeLabel = "本地缓存";
-    const cacheText = current.cache_message || "等待缓存";
-    elements.currentMeta.textContent = `${modeLabel} · ${cacheText}`;
+    
+    elements.currentCacheState.textContent = currentCacheStateLabel(current);
+    elements.currentCacheState.classList.remove("hidden");
+    
+    if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
+      if (!state.autoRefreshTimer) {
+        state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
+      }
+    } else if (state.autoRefreshTimer) {
+      clearTimeout(state.autoRefreshTimer);
+      state.autoRefreshTimer = null;
+    }
+    
+    elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
+    elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
+    elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     return;
   }
 
   elements.currentTitle.textContent = "当前还没有正在播放的歌曲";
   elements.currentRequester.textContent = "";
   elements.currentRequester.classList.add("hidden");
+  elements.currentCacheState.textContent = "";
+  elements.currentCacheState.classList.add("hidden");
+  elements.currentCacheState.classList.remove("ready", "failed");
   elements.currentMeta.textContent = "点歌后会进入点歌列表，轮到时由服务端页面播放。";
 }
 
@@ -1951,7 +1996,7 @@ function queueStateLabel(item) {
     return "已缓存";
   }
   if (item.cache_status === "downloading") {
-    return `${Math.round(Number(item.cache_progress || 0))}%`;
+    return "缓存中";
   }
   if (item.cache_status === "failed") {
     return "失败";
@@ -1960,6 +2005,33 @@ function queueStateLabel(item) {
     return "排队中";
   }
   return "等待中";
+}
+
+function currentCacheStateLabel(item) {
+  if (!item) {
+    return "";
+  }
+  if (item.cache_status === "downloading") {
+    const size = Number(item.cache_size_bytes || 0);
+    return size > 0 ? `缓存中 · ${formatBytes(size)}` : "缓存中";
+  }
+  return queueStateLabel(item);
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (bytes <= 0) {
+    return "0 MB";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const fractionDigits = size >= 100 || unitIndex === 0 ? 0 : 1;
+  return `${size.toFixed(fractionDigits)} ${units[unitIndex]}`;
 }
 
 function renderHistory(history) {
@@ -1981,8 +2053,15 @@ function renderHistory(history) {
     node.querySelector(".history-time").textContent = formatHistoryTime(entry.requested_at);
     node.querySelector(".history-count").textContent = `点歌 ${entry.request_count} 次`;
     node.querySelectorAll("button").forEach((button) => {
-      button.dataset.url = entry.resolved_url || entry.original_url;
+      button.dataset.url = entry.original_url || entry.resolved_url || "";
     });
+    if (state.openHistoryMenuId === (entry.original_url || entry.resolved_url || "")) {
+      const menu = node.querySelector(".menu-content");
+      if (menu) {
+        menu.classList.remove("hidden");
+        menu.classList.add("no-animate");
+      }
+    }
     elements.historyList.appendChild(node);
   });
 }
@@ -2363,7 +2442,7 @@ document.addEventListener("keydown", (event) => {
 
 elements.refreshButton.addEventListener("click", async () => {
   try {
-    await fetchState();
+    await fetchState({ force: true });
     setFormMessage("点歌列表已刷新。");
   } catch (error) {
     setFormMessage(error.message, true);
@@ -2647,11 +2726,37 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!button) {
     return;
   }
+
+  if (button.dataset.action === "toggle-menu") {
+    const wrap = button.closest(".history-actions-wrap");
+    const content = wrap?.querySelector(".menu-content");
+    if (content) {
+      const isHidden = content.classList.contains("hidden");
+      document.querySelectorAll(".menu-content").forEach(el => el.classList.add("hidden"));
+      if (isHidden) {
+        content.classList.remove("hidden");
+        content.classList.remove("no-animate");
+        state.openHistoryMenuId = button.dataset.url;
+      } else {
+        state.openHistoryMenuId = null;
+      }
+    }
+    return;
+  }
+
   const url = button.dataset.url;
   if (!url) {
     return;
   }
   await handleAddByHistory(url, button.dataset.action === "history-next" ? "next" : "tail");
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".queue-actions-wrap") && !event.target.closest(".history-actions-wrap")) {
+    document.querySelectorAll(".menu-content").forEach(el => el.classList.add("hidden"));
+    state.openQueueMenuId = null;
+    state.openHistoryMenuId = null;
+  }
 });
 
 document.addEventListener("keydown", (event) => {

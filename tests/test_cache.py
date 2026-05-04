@@ -302,6 +302,39 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_force_retry_preempts_other_active_cache(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                target = self.make_item("song-a")
+                active = self.make_item("song-b")
+                self.store.add_item(target, requester_name="cache-test-user")
+                self.store.add_item(active, requester_name="cache-test-user")
+                self.store.update_item(
+                    "song-a",
+                    cache_status="failed",
+                    cache_message="缓存失败",
+                    persist_backup=False,
+                )
+                fake_process = SimpleNamespace(poll=lambda: 0)
+                with manager.lock:
+                    manager.desired_ids = {"song-a", "song-b"}
+                    manager.active_item_id = "song-b"
+                    manager.active_process = fake_process
+                with patch.object(manager, "_enqueue_retry_front") as enqueue_front_mock, patch.object(
+                    manager, "_terminate_process"
+                ) as terminate_mock:
+                    manager.retry_item("song-a", force=True)
+                    retried = self.store.get_item("song-a")
+                    self.assertIsNotNone(retried)
+                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_message, "准备重新下载")
+                    self.assertEqual(manager.cache_interrupted_messages["song-b"], "等待当前歌曲重新下载")
+                    enqueue_front_mock.assert_called_once_with("song-a", requeue_after="song-b")
+                    terminate_mock.assert_called_once_with(fake_process)
+            finally:
+                manager.shutdown()
+
     def test_cache_item_clears_old_cache_dir_before_processing_pending_retry(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)

@@ -58,6 +58,13 @@
       node.querySelectorAll("button[data-action]").forEach((button) => {
         button.dataset.id = item.id;
       });
+      if (state.openQueueMenuId === item.id) {
+        const menu = node.querySelector(".menu-content");
+        if (menu) {
+          menu.classList.remove("hidden");
+          menu.classList.add("no-animate");
+        }
+      }
       elements.queueList.appendChild(node);
     });
   };
@@ -257,6 +264,24 @@
     if (!button) {
       return;
     }
+
+    if (button.dataset.action === "toggle-menu") {
+      const wrap = button.closest(".queue-actions-wrap");
+      const content = wrap?.querySelector(".menu-content");
+      if (content) {
+        const isHidden = content.classList.contains("hidden");
+        // Close all other menus first
+        document.querySelectorAll(".menu-content").forEach(el => el.classList.add("hidden"));
+        if (isHidden) {
+          content.classList.remove("hidden");
+          state.openQueueMenuId = button.dataset.id;
+        } else {
+          state.openQueueMenuId = null;
+        }
+      }
+      return;
+    }
+
     await handleQueueAction(button.dataset.action, button.dataset.id);
   });
 

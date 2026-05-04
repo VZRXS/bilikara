@@ -60,6 +60,7 @@
         </div>
         <h2 id="current-title">正在读取状态...</h2>
         <p id="current-requester" class="requester-line hidden"></p>
+        <p id="current-cache-state" class="queue-state current-cache-state hidden"></p>
         <p id="current-meta" class="muted"></p>
         <div id="audio-variant-bar" class="audio-variant-bar hidden"></div>
         <div id="player-control-panel" class="player-control-panel hidden">
@@ -77,10 +78,10 @@
             <p class="muted">正数表示画面提前，负数表示画面延后。</p>
           </div>
           <div class="remote-setting-controls">
-            <button type="button" class="ghost-button remote-step-button" data-av-step="-200">« -200</button>
-            <button type="button" class="ghost-button remote-step-button" data-av-step="-50">‹ -50</button>
-            <button type="button" class="ghost-button remote-step-button" data-av-step="50">+50 ›</button>
-            <button type="button" class="ghost-button remote-step-button" data-av-step="200">+200 »</button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="-200"><span class="step-symbol">«</span><span>-200</span></button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="-50"><span class="step-symbol">‹</span><span>-50</span></button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="50"><span>+50</span><span class="step-symbol">›</span></button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="200"><span>+200</span><span class="step-symbol">»</span></button>
             <button type="button" id="remote-av-offset-reset-button" class="ghost-button remote-reset-button" data-reset-av-offset disabled>复位</button>
             <label class="remote-input-wrap" for="remote-av-offset-input">
               <input id="remote-av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
@@ -358,23 +359,30 @@
             <h3 class="queue-title"></h3>
             <div class="queue-meta-row">
               <span class="queue-requester hidden"></span>
-              <div class="queue-actions">
-                <button type="button" data-action="play-now" class="primary-button">立即播放</button>
-                <button type="button" data-action="move-next" class="secondary-button">顶歌</button>
-                <button
-                  type="button"
-                  data-action="remove"
-                  class="ghost-button danger-button icon-button"
-                  title="删除"
-                  aria-label="删除"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
-                      fill="currentColor"
-                    />
+              <div class="queue-actions-wrap">
+                <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+                    <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/>
                   </svg>
                 </button>
+                <div class="queue-actions menu-content hidden">
+                  <button type="button" data-action="play-now" class="primary-button">立即播放</button>
+                  <button type="button" data-action="move-next" class="secondary-button">顶歌</button>
+                  <button
+                    type="button"
+                    data-action="remove"
+                    class="ghost-button danger-button icon-button"
+                    title="删除"
+                    aria-label="删除"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
             <p class="queue-note"></p>
@@ -387,15 +395,22 @@
       <article class="history-item">
         <div class="history-main">
           <h3 class="history-title"></h3>
-          <p class="history-requester hidden"></p>
           <div class="history-meta">
             <span class="history-time"></span>
             <span class="history-count"></span>
+            <span class="history-requester hidden"></span>
+            <div class="history-actions-wrap">
+              <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作">
+                <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+                  <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/>
+                </svg>
+              </button>
+              <div class="history-actions menu-content hidden">
+                <button type="button" data-action="history-tail" class="primary-button">点歌</button>
+                <button type="button" data-action="history-next" class="secondary-button">顶歌</button>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="history-actions">
-          <button type="button" data-action="history-tail" class="primary-button">点歌</button>
-          <button type="button" data-action="history-next" class="secondary-button">顶歌</button>
         </div>
       </article>
     </template>

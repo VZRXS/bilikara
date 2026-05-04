@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -128,7 +128,6 @@
                   <p class="cache-panel-hint">调整后立即生效</p>
                 </div>
                 <div class="cache-slider-block">
-                  <strong class="cache-panel-value cache-limit-value" id="cache-limit-value">缓存 3 首</strong>
                   <input
                     id="cache-limit-slider"
                     class="cache-limit-slider"
@@ -185,6 +184,30 @@
                   <button type="button" class="toolbar-button cache-mode-toggle" id="mode-switch">
                     切换
                   </button>
+                </div>
+              </div>
+              <div class="cache-panel-row cache-panel-row-stack">
+                <div>
+                  <p class="cache-panel-label">切歌延迟</p>
+                  <p class="cache-panel-hint">切歌过渡界面的显示时长</p>
+                </div>
+                <div class="cache-slider-block">
+                  <input
+                    id="advance-delay-slider"
+                    class="cache-limit-slider"
+                    type="range"
+                    min="1"
+                    max="5"
+                    step="1"
+                    value="3"
+                  />
+                  <div class="cache-limit-scale advance-delay-scale" id="advance-delay-scale">
+                    <span>1</span>
+                    <span>2</span>
+                    <span>3</span>
+                    <span>4</span>
+                    <span>5</span>
+                  </div>
                 </div>
               </div>
               <div class="cache-panel-row cache-panel-danger-row">
@@ -278,6 +301,11 @@
                 <p>把 Bilibili 视频链接加入点歌列表后，这里会开始播放。</p>
               </div>
             </div>
+            <div
+              class="fullscreen-request-toast hidden"
+              id="fullscreen-request-toast"
+              aria-live="polite"
+            ></div>
             <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
             <section class="av-sync-panel" id="av-sync-panel">
               <div class="av-sync-copy">
@@ -518,7 +546,7 @@
             </div>
             <div class="queue-toolbar">
               <button type="button" id="clear-playlist-button" class="toolbar-button ghost">清空点歌列表</button>
-              <button type="button" id="history-export-button" class="toolbar-button ghost hidden" title="导出历史记录">
+              <button type="button" id="history-export-button" class="toolbar-button ghost hidden" title="导出歌单">
                 <!-- <span aria-hidden="true">⇩</span> -->
                 <span>导出</span>
               </button>
@@ -531,36 +559,47 @@
               <section class="list-face list-face-front">
                 <section class="queue-current hidden" id="queue-current">
                   <div class="queue-current-side">
-                    <div class="queue-current-status">
-                      <div class="queue-current-label">
-                        <span class="queue-current-indicator" id="queue-current-indicator" aria-hidden="true"></span>
-                        <p class="queue-current-tag" id="queue-current-tag">播放中</p>
-                        <button
-                          type="button"
-                          class="cache-retry-button queue-current-retry hidden"
-                          id="queue-current-retry"
-                          title="重新下载缓存"
-                          aria-label="重新下载缓存"
-                        >
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path
-                              d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                            />
-                          </svg>
-                        </button>
+                    <div class="queue-current-progress-badge" id="queue-current-progress-badge">
+                      <div class="queue-current-icon-wrap" id="queue-current-icon-wrap">
+                        <!-- 播放中图标 -->
+                        <svg class="playing-icon icon-play" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                        <!-- 缓存中图标 -->
+                        <svg class="playing-icon icon-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 17V3m0 14l-4-4m4 4l4-4M4 21h16" />
+                        </svg>
+                        <!-- 出错图标 -->
+                        <svg class="playing-icon icon-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M18 6L6 18M6 6l12 12" />
+                        </svg>
                       </div>
                     </div>
-                    <button class="next-button queue-current-next" id="next-button">切歌</button>
+                    <button
+                      type="button"
+                      class="cache-retry-button queue-current-retry hidden"
+                      id="queue-current-retry"
+                      title="重新下载缓存"
+                      aria-label="重新下载缓存"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                        />
+                      </svg>
+                    </button>
+                    <p class="queue-current-tag" id="queue-current-tag">播放中</p>
                   </div>
                   <div class="queue-current-main">
                     <h3 class="queue-current-title" id="queue-current-title">还没有歌曲</h3>
                     <p class="queue-current-requester hidden" id="queue-current-requester"></p>
                   </div>
+                  <button class="next-button queue-current-next" id="next-button">切歌</button>
                 </section>
                 <div id="playlist" class="playlist"></div>
               </section>
@@ -578,52 +617,55 @@
     <!-- Templates -->
     <template id="playlist-item-template">
       <article class="song-item">
-        <div class="song-badge-column" draggable="true" data-drag-handle title="拖动调整顺序">
+        <div class="song-badge-column" draggable="true" data-drag-handle>
           <div class="song-progress-badge">
             <span class="song-index-label"></span>
             <span class="song-badge-check hidden">✓</span>
-            <button
-              type="button"
-              class="cache-retry-button song-retry-button hidden"
-              data-action="retry-cache"
-              draggable="false"
-              title="重新下载缓存"
-              aria-label="重新下载缓存"
-            >
+          </div>
+          <button
+            type="button"
+            class="cache-retry-button song-retry-button hidden"
+            data-action="retry-cache"
+            draggable="false"
+            title="重新下载缓存"
+            aria-label="重新下载缓存"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+              />
+            </svg>
+          </button>
+          <span class="song-size-label"></span>
+        </div>
+        <div class="song-main">
+          <h3 class="song-title"></h3>
+          <span class="song-requester hidden"></span>
+          <p class="song-note hidden"></p>
+        </div>
+        <div class="song-actions-wrap">
+          <div class="song-actions menu-content hidden">
+            <button type="button" data-action="play-now" class="primary-button">立即播放</button>
+            <button type="button" data-action="move-next" class="secondary-button">顶歌</button>
+            <button type="button" data-action="remove" class="icon-button danger-button" title="移除" aria-label="移除">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
-                  d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
+                  d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
+                  fill="currentColor"
                 />
               </svg>
             </button>
           </div>
-          <span class="song-size-label"></span>
-        </div>
-        <div class="song-main">
-          <div class="song-top-row">
-            <h3 class="song-title"></h3>
-            <p class="song-note hidden"></p>
-            <span class="song-requester hidden"></span>
-          </div>
-          <div class="song-bottom-row">
-            <div class="song-actions">
-              <button data-action="play-now">立即播放</button>
-              <button data-action="move-next" class="secondary">顶歌</button>
-              <button data-action="remove" class="icon-button action-danger" title="移除" aria-label="移除">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
-                    fill="currentColor"
-                  />
-                </svg>
-              </button>
-            </div>
-          </div>
+          <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+            </svg>
+          </button>
         </div>
       </article>
     </template>
@@ -632,15 +674,22 @@
       <article class="history-item">
         <div class="history-main">
           <h3 class="history-title"></h3>
-          <p class="history-requester hidden"></p>
-          <div class="history-meta">
+          <div class="history-meta-row">
             <span class="history-time"></span>
             <span class="history-count"></span>
+            <span class="history-requester hidden"></span>
           </div>
         </div>
-        <div class="history-actions">
-          <button data-action="history-tail">点歌</button>
-          <button data-action="history-next" class="secondary">顶歌</button>
+        <div class="history-actions-wrap">
+          <div class="history-actions menu-content hidden">
+            <button type="button" data-action="history-tail" class="primary-button">点歌</button>
+            <button type="button" data-action="history-next" class="secondary-button">顶歌</button>
+          </div>
+          <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+            </svg>
+          </button>
         </div>
       </article>
     </template>

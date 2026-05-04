@@ -46,7 +46,7 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
-from .history_export import history_csv_bytes, history_image_export
+from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .store import PlaylistStore
 from .updater import check_for_update
 
@@ -236,6 +236,9 @@ class AppContext:
 
     def retry_cache_item(self, item_id: str, *, force: bool = False) -> None:
         self.cache_manager.retry_item(item_id, force=force)
+
+    def is_current_item(self, item_id: str) -> bool:
+        return self.store.is_current_item(item_id)
 
     def issue_player_control(
         self,
@@ -590,7 +593,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
-        if route == "/api/history/export":
+        if route in ("/api/playlist/export", "/api/history/export"):
             query = parse_qs(urlparse(self.path).query)
             export_format = str(query.get("format", ["csv"])[0] or "csv").strip().lower()
             export_source = str(query.get("source", ["history"])[0] or "history").strip().lower()
@@ -598,13 +601,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 "history": {
                     "items": lambda: CONTEXT.history_snapshot(),
                     "filename": "history",
-                    "title": "Bilikara 点歌历史",
-                    "time_header": "点歌时间",
+                    "title": "bilikara 歌单导出",
+                    "time_header": "播放时间",
                 },
                 "played": {
                     "items": lambda: CONTEXT.session_played_snapshot(),
                     "filename": "played",
-                    "title": "Bilikara 本场已唱",
+                    "title": "bilikara 歌单导出",
                     "time_header": "播放时间",
                 },
             }
@@ -617,15 +620,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 history = settings["items"]()
                 if export_format == "csv":
                     self._write_download(
-                        history_csv_bytes(history, time_header=str(settings["time_header"])),
+                        playlist_csv_bytes(history, time_header=str(settings["time_header"])),
                         content_type="text/csv; charset=utf-8",
                         filename=f"bilikara-{settings['filename']}-{timestamp}.csv",
                     )
                     return
                 if export_format == "image":
-                    payload, content_type, default_filename = history_image_export(
+                    payload, content_type, default_filename = playlist_image_export(
                         history,
-                        logo_path=_history_export_logo_path(),
+                        logo_path=_playlist_export_logo_path(),
                         title=str(settings["title"]),
                     )
                     suffix = Path(default_filename).suffix or ".png"
@@ -768,7 +771,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/cache/retry":
                 self._require_id(body)
-                CONTEXT.retry_cache_item(body["item_id"], force=bool(body.get("force")))
+                force = bool(body.get("force"))
+                if CONTEXT.is_current_item(body["item_id"]):
+                    force = True
+                CONTEXT.retry_cache_item(body["item_id"], force=force)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/gatcha/uids/add":
@@ -822,7 +828,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/player/control":
                 action = str(body.get("action") or "").strip()
                 item_id = str(body.get("item_id") or "").strip()
-                if action not in {"toggle-play", "seek-relative", "seek-absolute"}:
+                if action not in {"toggle-play", "seek-relative", "seek-absolute", "next-track"}:
                     raise ValueError("invalid player control action")
                 delta_seconds = int(body.get("delta_seconds") or 0)
                 target_seconds = None
@@ -1127,12 +1133,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     with file_path.open("rb") as handle:
                         handle.seek(start)
                         remaining = end - start + 1
-                        while remaining > 0:
-                            chunk = handle.read(min(64 * 1024, remaining))
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
+                        try:
+                            while remaining > 0:
+                                chunk = handle.read(min(64 * 1024, remaining))
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                                remaining -= len(chunk)
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            pass
                     return
 
         self.send_response(HTTPStatus.OK)
@@ -1142,11 +1151,14 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
         with file_path.open("rb") as handle:
-            while True:
-                chunk = handle.read(64 * 1024)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+            try:
+                while True:
+                    chunk = handle.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
     def _guess_type(self, file_path: Path) -> str:
         return mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
@@ -1217,7 +1229,7 @@ def run_webui(
     )
 
 
-def _history_export_logo_path() -> Path | None:
+def _playlist_export_logo_path() -> Path | None:
     for filename in ("bili.png", "bili.jpg", "bili.jpeg"):
         candidate = STATIC_DIR / "pic" / filename
         if candidate.exists():

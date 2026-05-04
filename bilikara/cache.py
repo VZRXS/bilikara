@@ -103,6 +103,7 @@ class CacheManager:
         self.active_item_id: str | None = None
         self.item_activity_at: dict[str, float] = {}
         self.retry_requested_ids: set[str] = set()
+        self.cache_interrupted_messages: dict[str, str] = {}
         self.log_dir = LOG_DIR / "bbdown"
         self.bbdown_login_process: subprocess.Popen[str] | None = None
         self.bbdown_login_state = "idle"
@@ -354,6 +355,7 @@ class CacheManager:
         with self.lock:
             self.item_activity_at.clear()
             self.retry_requested_ids.clear()
+            self.cache_interrupted_messages.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -383,6 +385,7 @@ class CacheManager:
         with self.lock:
             self.item_activity_at.clear()
             self.retry_requested_ids.clear()
+            self.cache_interrupted_messages.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -403,6 +406,7 @@ class CacheManager:
             self.pending_ids.clear()
             self.desired_ids.clear()
             self.retry_requested_ids.clear()
+            self.cache_interrupted_messages.clear()
             self.item_activity_at.clear()
             self.active_process = None
             self.active_item_id = None
@@ -430,9 +434,13 @@ class CacheManager:
 
         with self.lock:
             active_process = self.active_process if self.active_item_id == item_id else None
+            preempted_item_id = self.active_item_id if force and self.active_item_id != item_id else None
+            preempted_process = self.active_process if preempted_item_id else None
             in_flight = item_id in self.pending_ids or self.active_item_id == item_id
             if in_flight:
                 self.retry_requested_ids.add(item_id)
+            if preempted_item_id:
+                self.cache_interrupted_messages[preempted_item_id] = "等待当前歌曲重新下载"
 
         self.store.update_item(
             item_id,
@@ -453,6 +461,14 @@ class CacheManager:
             return
 
         self._remove_cache_dir(item_id)
+        if preempted_item_id:
+            self._append_log_line(
+                self._item_log_path(preempted_item_id),
+                f"[{self._log_timestamp()}] interrupted by manual retry: {item.display_title}",
+            )
+            self._enqueue_retry_front(item_id, requeue_after=preempted_item_id)
+            self._terminate_process(preempted_process)
+            return
         self.enqueue(item_id)
 
     def sync_with_playlist(self) -> None:
@@ -477,6 +493,31 @@ class CacheManager:
                 return
             self.pending_ids.add(item_id)
         self.tasks.put(item_id)
+
+    def _enqueue_retry_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
+        with self.lock:
+            if self.stop_event.is_set():
+                return
+            drained: list[str] = []
+            skip_ids = {item_id}
+            if requeue_after:
+                skip_ids.add(requeue_after)
+            while True:
+                try:
+                    queued_id = self.tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if queued_id not in skip_ids:
+                    drained.append(queued_id)
+                self.tasks.task_done()
+
+            ordered = [item_id]
+            self.pending_ids.add(item_id)
+            if requeue_after and requeue_after != item_id and requeue_after in self.desired_ids:
+                ordered.append(requeue_after)
+                self.pending_ids.add(requeue_after)
+            for queued_id in ordered + drained:
+                self.tasks.put(queued_id)
 
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -1061,6 +1102,10 @@ class CacheManager:
                 if self.active_process is process:
                     self.active_process = None
                     self.active_item_id = None
+
+        interrupt_message = self._take_cache_interrupt_message(item_id)
+        if interrupt_message:
+            raise CacheCancelledError(interrupt_message)
 
         if self._take_retry_request(item_id):
             raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
@@ -2115,6 +2160,10 @@ class CacheManager:
                 return False
             self.retry_requested_ids.discard(item_id)
             return True
+
+    def _take_cache_interrupt_message(self, item_id: str) -> str:
+        with self.lock:
+            return self.cache_interrupted_messages.pop(item_id, "")
 
     def _raise_if_retry_requested(self, item_id: str) -> None:
         if self._take_retry_request(item_id):

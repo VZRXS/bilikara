@@ -207,8 +207,8 @@ class PlaylistAddRequestTest(unittest.TestCase):
         fetch_video.assert_not_called()
 
 
-class HistoryRouteTest(unittest.TestCase):
-    def test_history_export_csv_route_downloads_friendly_csv(self):
+class PlaylistExportRouteTest(unittest.TestCase):
+    def test_playlist_export_csv_route_downloads_friendly_csv(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
         history = [
@@ -246,7 +246,7 @@ class HistoryRouteTest(unittest.TestCase):
             history_snapshot=lambda: history,
         )
 
-        handler.path = "/api/history/export?format=csv"
+        handler.path = "/api/playlist/export?format=csv"
         handler.headers = {}
         handler._write_download = lambda payload, content_type, filename: writes.append(
             {
@@ -268,18 +268,18 @@ class HistoryRouteTest(unittest.TestCase):
         rows = list(csv.DictReader(io.StringIO(decoded)))
         self.assertEqual([row["标题"] for row in rows], ["First song", "Second song", "Undated song"])
         self.assertEqual(rows[0]["序号"], "1")
-        self.assertEqual(rows[0]["BV号"], "BV1xx411c7mD")
+        self.assertEqual(rows[0]["BV 号"], "BV1xx411c7mD")
         self.assertEqual(rows[0]["点歌人"], "Kevin")
-        self.assertEqual(rows[0]["UP主"], "μ's")
-        self.assertEqual(rows[0]["UP主UID"], "12345")
+        self.assertEqual(rows[0]["UP 主"], "μ's")
+        self.assertEqual(rows[0]["UP 主UID"], "12345")
         self.assertEqual(rows[0]["点歌次数"], "2")
-        self.assertTrue(rows[0]["点歌时间"])
+        self.assertTrue(rows[0]["播放时间"])
         self.assertEqual(rows[0]["视频链接"], "https://www.bilibili.com/video/BV1xx411c7mD?p=1")
         self.assertEqual(rows[0]["原始链接"], "BV1xx411c7mD")
         self.assertEqual(rows[0]["分P/版本"], "P1")
-        self.assertEqual(rows[2]["点歌时间"], "")
+        self.assertEqual(rows[2]["播放时间"], "")
 
-    def test_history_export_image_route_uses_generated_suffix(self):
+    def test_playlist_export_image_route_uses_generated_suffix(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
         context = SimpleNamespace(
@@ -287,7 +287,7 @@ class HistoryRouteTest(unittest.TestCase):
             history_snapshot=lambda: [{"display_title": "song"}],
         )
 
-        handler.path = "/api/history/export?format=image"
+        handler.path = "/api/playlist/export?format=image"
         handler.headers = {}
         handler._write_download = lambda payload, content_type, filename: writes.append(
             {
@@ -301,8 +301,8 @@ class HistoryRouteTest(unittest.TestCase):
             "bilikara.server.time.strftime",
             return_value="20260430-123456",
         ), patch(
-            "bilikara.server.history_image_export",
-            return_value=(b"zip-bytes", "application/zip", "bilikara-history-images.zip"),
+            "bilikara.server.playlist_image_export",
+            return_value=(b"zip-bytes", "application/zip", "bilikara-playlist-images.zip"),
         ):
             handler.do_GET()
 
@@ -310,7 +310,7 @@ class HistoryRouteTest(unittest.TestCase):
         self.assertEqual(writes[0]["content_type"], "application/zip")
         self.assertEqual(writes[0]["filename"], "bilikara-history-20260430-123456.zip")
 
-    def test_history_export_played_source_downloads_session_csv(self):
+    def test_playlist_export_played_source_downloads_session_csv(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
         played = [
@@ -327,7 +327,7 @@ class HistoryRouteTest(unittest.TestCase):
             session_played_snapshot=lambda: played,
         )
 
-        handler.path = "/api/history/export?format=csv&source=played"
+        handler.path = "/api/playlist/export?format=csv&source=played"
         handler.headers = {}
         handler._write_download = lambda payload, content_type, filename: writes.append(
             {
@@ -445,7 +445,80 @@ class PlayerResetRouteTest(unittest.TestCase):
         self.assertEqual(writes[1], {"ok": True, "data": {"playback_mode": "local"}})
 
 
+class CacheRetryRouteTest(unittest.TestCase):
+    def test_retry_current_item_forces_recache(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        retries: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            is_current_item=lambda item_id: item_id == "current-song",
+            retry_cache_item=lambda item_id, force=False: retries.append(
+                {"item_id": item_id, "force": force}
+            ),
+            snapshot=lambda: {"current_item": {"id": "current-song"}},
+        )
+
+        handler.path = "/api/cache/retry"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"item_id": "current-song"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(retries, [{"item_id": "current-song", "force": True}])
+        self.assertEqual(writes[0], {"ok": True, "data": {"current_item": {"id": "current-song"}}})
+
+    def test_retry_playlist_item_keeps_requested_force_flag(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        retries: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            is_current_item=lambda item_id: False,
+            retry_cache_item=lambda item_id, force=False: retries.append(
+                {"item_id": item_id, "force": force}
+            ),
+            snapshot=lambda: {"playlist": [{"id": "queued-song"}]},
+        )
+
+        handler.path = "/api/cache/retry"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"item_id": "queued-song"}
+        handler._write_json = lambda payload, status=None: None
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(retries, [{"item_id": "queued-song", "force": False}])
+
+
 class PlayerControlRouteTest(unittest.TestCase):
+    def test_next_track_route_issues_player_control_command(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        issued: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            issue_player_control=lambda **kwargs: issued.append(kwargs),
+            snapshot=lambda: {"player_control_command": issued[-1]},
+        )
+
+        handler.path = "/api/player/control"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "action": "next-track",
+            "item_id": "song-1",
+        }
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(issued[0]["action"], "next-track")
+        self.assertEqual(issued[0]["item_id"], "song-1")
+        self.assertEqual(writes[0]["data"]["player_control_command"]["action"], "next-track")
+
     def test_absolute_seek_route_forwards_target_seconds(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
