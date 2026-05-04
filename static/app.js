@@ -2327,7 +2327,7 @@ function clearLocalPlayerSeekState() {
 }
 
 function playerDelayOverlay() {
-  return elements.playerPanel?.querySelector(".player-delay-overlay") || null;
+  return elements.playerFrame?.querySelector(".player-delay-overlay") || null;
 }
 
 function ensurePlayerDelayOverlay() {
@@ -2362,7 +2362,7 @@ function ensurePlayerDelayOverlay() {
       <p class="player-delay-total" data-delay-total>\u5171 0 \u9996</p>
     </div>
   `;
-  elements.playerPanel.appendChild(overlay);
+  elements.playerFrame.appendChild(overlay);
   return overlay;
 }
 
@@ -2533,7 +2533,9 @@ function updateLocalAdvanceDelayOverlay() {
   const progress = Math.max(0, Math.min(1, remainingMs / totalDurationMs));
   overlay.style.setProperty("--delay-ring-offset", String(119.38 * (1 - progress)));
   renderLocalAdvanceDelayQueue(overlay);
-  if (state.localAdvanceDelayDeadline > 0 && isPlayerPanelFullscreen()) {
+  const isFullscreen = isPlayerPanelFullscreen();
+  overlay.classList.toggle("is-compact", !isFullscreen);
+  if (state.localAdvanceDelayDeadline > 0) {
     setPlayerDelayOverlayVisible(overlay);
   } else {
     hidePlayerDelayOverlay();
@@ -4804,15 +4806,16 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
 }
 
 async function requestNextTrack() {
-  await advanceLocalPlayerNow();
+  await handleLocalPlaybackEnded({ manual: true });
 }
 
-async function handleLocalPlaybackEnded() {
+async function handleLocalPlaybackEnded(options = {}) {
   if (state.localAdvanceInFlight) {
     return;
   }
   const delaySeconds = currentSongAdvanceDelaySeconds();
-  if (!isPlayerPanelFullscreen() || delaySeconds <= 0 || !queuedNextItem()) {
+  // Remove !isPlayerPanelFullscreen() check to allow countdown in normal view
+  if (delaySeconds <= 0 || !queuedNextItem()) {
     await advanceLocalPlayerNow();
     return;
   }

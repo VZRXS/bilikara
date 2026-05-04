@@ -1199,10 +1199,7 @@ h2 {
 }
 
 .app-shell.layout-mode-basic .bottom-grid,
-.app-shell.layout-mode-basic .search-sub-card,
-/* .app-shell.layout-mode-basic .cookie-sub-card, */
-.app-shell.layout-mode-basic .av-sync-panel,
-.app-shell.layout-mode-basic .volume-panel {
+.app-shell.layout-mode-basic .search-sub-card {
   display: none;
 }
 
@@ -1316,6 +1313,7 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: center;
+  transform: translateZ(0); /* 强制开启硬件加速以修复圆角剪裁 bug */
 }
 
 .player-panel:fullscreen .player-frame,
@@ -1452,6 +1450,7 @@ h2 {
   opacity: 0;
   transition: opacity 500ms ease;
   pointer-events: none;
+  border-radius: inherit; /* 确保继承父级的 22px 圆角 */
 }
 
 .player-delay-overlay.hidden {
@@ -1460,6 +1459,41 @@ h2 {
 
 .player-delay-overlay.is-visible {
   opacity: 1;
+}
+
+.player-delay-overlay.is-compact {
+  background: rgba(248, 239, 226, 0.88);
+  backdrop-filter: blur(12px);
+}
+
+.player-delay-overlay.is-compact .player-delay-card {
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
+  transform: scale(0.92);
+}
+
+.player-delay-overlay.is-compact.is-visible .player-delay-card {
+  transform: scale(1);
+}
+
+.player-delay-overlay.is-compact .player-delay-head {
+  justify-content: center;
+  margin-bottom: 0;
+}
+
+.player-delay-overlay.is-compact .player-delay-heading,
+.player-delay-overlay.is-compact .player-delay-now-row,
+.player-delay-overlay.is-compact .player-delay-section-title,
+.player-delay-overlay.is-compact .player-delay-list,
+.player-delay-overlay.is-compact .player-delay-total {
+  display: none;
+}
+
+.player-delay-overlay.is-compact .player-delay-countdown {
+  width: 96px;
+  height: 96px;
+  font-size: 32px;
 }
 
 .player-delay-card {
