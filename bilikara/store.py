@@ -862,7 +862,7 @@ class PlaylistStore:
 
     def _delete_runtime_json_files_unlocked(self) -> None:
         data_dir = self.state_file.parent
-        keep_names = {"gatcha_cache.json", "gatcha_uids.json"}
+        keep_names = {"gatcha_cache.json", "gatcha_uids.json", "gatcha_favlist.json"}
         for path in data_dir.glob("*.json"):
             if path.name in keep_names:
                 continue

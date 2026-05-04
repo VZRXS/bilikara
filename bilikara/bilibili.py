@@ -43,9 +43,17 @@ _GATCHA_REQUEST_LOCK = threading.Lock()
 _GATCHA_LAST_REQUEST_AT = 0.0
 _GATCHA_CACHE_FILE = cfg.DATA_DIR / "gatcha_cache.json"
 _GATCHA_UIDS_FILE = cfg.DATA_DIR / "gatcha_uids.json"
+_GATCHA_FAVLIST_FILE = cfg.DATA_DIR / "gatcha_favlist.json"
 _GATCHA_CACHE_SCHEMA_VERSION = 2
+_GATCHA_FAVLIST_SCHEMA_VERSION = 1
+_GATCHA_FAVLIST_LOCK = threading.Lock()
+_GATCHA_FAVLIST_REQUEST_LOCK = threading.Lock()
+_GATCHA_FAVLIST_LAST_REQUEST_AT = 0.0
+_GATCHA_FAVLIST_TITLE_KEYWORDS = ("🎤", "卡拉", "k")
 GATCHA_RETRY_DELAY_SECONDS = 5
+GATCHA_FAVLIST_RETRY_DELAY_SECONDS = 3
 GATCHA_PROFILE_CACHE_TTL_SECONDS = 300
+GATCHA_TASK_BUSY_MESSAGE = "拉取任务执行中，请等待任务结束"
 MISSING_BILIBILI_COOKIE_MESSAGE = "请登录 Bilibili 账号或输入 Cookie"
 _COOKIE_REQUIRED_KEYS = {"sessdata", "bili_jct"}
 _COOKIE_PREFERRED_ORDER = (
@@ -192,6 +200,13 @@ def _save_gatcha_uid_payload(uid_payload: dict) -> None:
     with temp_path.open("w", encoding="utf-8") as handle:
         json.dump(uid_payload, handle, ensure_ascii=False, indent=2)
     temp_path.replace(_GATCHA_UIDS_FILE)
+
+
+def gatcha_task_snapshot() -> dict:
+    return {
+        "busy": _GATCHA_REFRESH_LOCK.locked(),
+        "message": GATCHA_TASK_BUSY_MESSAGE if _GATCHA_REFRESH_LOCK.locked() else "",
+    }
 
 
 def _normalize_gatcha_profile(raw_uid: object, raw_profile: object) -> dict | None:
@@ -364,6 +379,42 @@ def _save_gatcha_cache(cache_payload: dict) -> None:
     temp_path.replace(_GATCHA_CACHE_FILE)
 
 
+def _empty_gatcha_favlist_payload() -> dict:
+    return {"schema_version": _GATCHA_FAVLIST_SCHEMA_VERSION, "uid": "", "folders": [], "items": [], "updated_at": 0}
+
+
+def _load_gatcha_favlist() -> dict:
+    if not _GATCHA_FAVLIST_FILE.exists():
+        return _empty_gatcha_favlist_payload()
+    try:
+        with _GATCHA_FAVLIST_FILE.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return _empty_gatcha_favlist_payload()
+    if not isinstance(payload, dict):
+        return _empty_gatcha_favlist_payload()
+    folders = payload.get("folders")
+    if not isinstance(folders, list):
+        folders = []
+    items = _dedupe_gatcha_entries(payload.get("items"))
+    return {
+        "schema_version": _GATCHA_FAVLIST_SCHEMA_VERSION,
+        "uid": str(payload.get("uid") or ""),
+        "folders": [dict(folder) for folder in folders if isinstance(folder, dict)],
+        "items": items,
+        "updated_at": float(payload.get("updated_at") or 0),
+    }
+
+
+def _save_gatcha_favlist(payload: dict) -> None:
+    cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload["schema_version"] = _GATCHA_FAVLIST_SCHEMA_VERSION
+    temp_path = _GATCHA_FAVLIST_FILE.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    temp_path.replace(_GATCHA_FAVLIST_FILE)
+
+
 def _wait_for_gatcha_request_slot() -> None:
     global _GATCHA_LAST_REQUEST_AT
 
@@ -373,6 +424,34 @@ def _wait_for_gatcha_request_slot() -> None:
         if elapsed < GATCHA_RETRY_DELAY_SECONDS:
             time.sleep(GATCHA_RETRY_DELAY_SECONDS - elapsed)
         _GATCHA_LAST_REQUEST_AT = time.monotonic()
+
+
+def _wait_for_gatcha_favlist_request_slot() -> None:
+    global _GATCHA_FAVLIST_LAST_REQUEST_AT
+
+    with _GATCHA_FAVLIST_REQUEST_LOCK:
+        now = time.monotonic()
+        elapsed = now - _GATCHA_FAVLIST_LAST_REQUEST_AT
+        if elapsed < GATCHA_FAVLIST_RETRY_DELAY_SECONDS:
+            time.sleep(GATCHA_FAVLIST_RETRY_DELAY_SECONDS - elapsed)
+        _GATCHA_FAVLIST_LAST_REQUEST_AT = time.monotonic()
+
+
+def _request_gatcha_favlist_json(url: str, error_label: str) -> dict:
+    while True:
+        _wait_for_gatcha_favlist_request_slot()
+        payload = request_json(url)
+        try:
+            code = int(payload.get("code") or 0)
+        except (TypeError, ValueError):
+            code = 0
+        if code == 0:
+            return payload
+        message = str(payload.get("message") or error_label)
+        if code in {412, -412} or "412" in message:
+            time.sleep(GATCHA_FAVLIST_RETRY_DELAY_SECONDS)
+            continue
+        raise BilibiliError(message)
 
 
 def _matches_gatcha_keywords(title: str) -> bool:
@@ -583,6 +662,273 @@ def _dedupe_gatcha_entries(raw_entries: object) -> list[dict]:
     return entries
 
 
+def _is_expired_gatcha_entry(entry: dict) -> bool:
+    return str(entry.get("title") or "").strip() == "已失效视频"
+
+
+def _matches_gatcha_favlist_title(title: str) -> bool:
+    normalized = str(title or "").strip().lower().replace("ｋ", "k").replace("Ｋ", "k")
+    return any(keyword.lower() in normalized for keyword in _GATCHA_FAVLIST_TITLE_KEYWORDS)
+
+
+def _selected_gatcha_favlist_folder_ids(raw_folder_ids: object) -> set[str] | None:
+    if raw_folder_ids is None:
+        return None
+    if not isinstance(raw_folder_ids, list):
+        raise BilibiliError("收藏夹选择格式不正确")
+    folder_ids: set[str] = set()
+    for value in raw_folder_ids:
+        folder_id = str(value or "").strip()
+        if folder_id and folder_id.isdigit():
+            folder_ids.add(folder_id)
+    if not folder_ids:
+        raise BilibiliError("请选择至少一个收藏夹")
+    return folder_ids
+
+
+def _is_public_gatcha_favlist_folder(folder: dict) -> bool:
+    try:
+        attr = int(folder.get("attr") or 0)
+    except (TypeError, ValueError):
+        attr = 0
+    return (attr & 1) == 0
+
+
+def _request_gatcha_favlist_folders(mid: str) -> list[dict]:
+    query = urllib.parse.urlencode({"up_mid": str(mid), "platform": "web"})
+    url = f"https://api.bilibili.com/x/v3/fav/folder/created/list-all?{query}"
+    payload = _request_gatcha_favlist_json(url, "收藏夹列表拉取失败")
+    data = payload.get("data")
+    folders = data.get("list") if isinstance(data, dict) else []
+    return [dict(folder) for folder in folders if isinstance(folder, dict)]
+
+
+def _gatcha_favlist_folder_summary(folder: dict) -> dict:
+    folder_id = _gatcha_favlist_media_id(folder)
+    try:
+        media_count = int(folder.get("media_count") or 0)
+    except (TypeError, ValueError):
+        media_count = 0
+    title = str(folder.get("title") or "").strip()
+    return {
+        "id": folder_id,
+        "fid": str(folder.get("fid") or ""),
+        "title": title,
+        "media_count": media_count,
+        "selected": _matches_gatcha_favlist_title(title),
+    }
+
+
+def preview_gatcha_favlist(raw_mid: object) -> dict:
+    mid = _normalize_gatcha_uid(raw_mid)
+    folders = _request_gatcha_favlist_folders(mid)
+    public_folders: list[dict] = []
+    for folder in folders:
+        title = str(folder.get("title") or "").strip()
+        if not title or not _is_public_gatcha_favlist_folder(folder):
+            continue
+        summary = _gatcha_favlist_folder_summary(folder)
+        if summary["id"]:
+            public_folders.append(summary)
+    return {
+        "uid": mid,
+        "folder_count": len(folders),
+        "public_folder_count": len(public_folders),
+        "selected_folder_ids": [folder["id"] for folder in public_folders if folder.get("selected")],
+        "folders": public_folders,
+    }
+
+
+def _request_gatcha_favlist_page(media_id: str, page_number: int, page_size: int = 20) -> dict:
+    params = {
+        "media_id": str(media_id),
+        "platform": "web",
+        "pn": max(1, int(page_number)),
+        "ps": max(1, min(20, int(page_size))),
+        "order": "mtime",
+        "type": 0,
+    }
+    url = f"https://api.bilibili.com/x/v3/fav/resource/list?{urllib.parse.urlencode(params)}"
+    return _request_gatcha_favlist_json(url, "收藏夹内容拉取失败")
+
+
+def _gatcha_favlist_media_id(folder: dict) -> str:
+    for key in ("id", "media_id", "fid"):
+        value = str(folder.get(key) or "").strip()
+        if value and value.isdigit():
+            return value
+    return ""
+
+
+def _extract_gatcha_favlist_entries(uid: str, folder: dict, medias: object) -> list[dict]:
+    if not isinstance(medias, list):
+        return []
+    folder_id = _gatcha_favlist_media_id(folder)
+    folder_title = str(folder.get("title") or "").strip()
+    entries: list[dict] = []
+    for media in medias:
+        if not isinstance(media, dict):
+            continue
+        bvid = str(media.get("bvid") or "").strip()
+        title = str(media.get("title") or "").strip()
+        if not bvid or not title:
+            continue
+        upper = media.get("upper") if isinstance(media.get("upper"), dict) else {}
+        owner_mid = str(upper.get("mid") or media.get("upper_mid") or "").strip()
+        owner_name = str(upper.get("name") or media.get("upper_name") or "").strip()
+        entry = {
+            "mid": owner_mid,
+            "bvid": bvid,
+            "title": title,
+            "url": f"https://www.bilibili.com/video/{bvid}",
+            "fav_uid": str(uid),
+            "fav_folder_id": folder_id,
+            "fav_folder_title": folder_title,
+            "source": "favlist",
+        }
+        if owner_name:
+            entry["owner_name"] = owner_name
+        if owner_mid:
+            entry["owner_url"] = f"https://space.bilibili.com/{owner_mid}"
+        entries.append(entry)
+    return entries
+
+
+def _fetch_gatcha_favlist_entries_for_folder(uid: str, folder: dict, *, max_pages: int | None = None) -> list[dict]:
+    media_id = _gatcha_favlist_media_id(folder)
+    if not media_id:
+        return []
+    page_size = 20
+    page_number = 1
+    entries: list[dict] = []
+    page_limit = max(1, int(max_pages)) if max_pages is not None else None
+    while True:
+        payload = _request_gatcha_favlist_page(media_id, page_number, page_size)
+        data = payload.get("data") if isinstance(payload, dict) else {}
+        medias = data.get("medias") if isinstance(data, dict) else []
+        page_entries = _extract_gatcha_favlist_entries(uid, folder, medias)
+        entries.extend(page_entries)
+        info = data.get("info") if isinstance(data, dict) and isinstance(data.get("info"), dict) else {}
+        try:
+            media_count = int(info.get("media_count") or 0)
+        except (TypeError, ValueError):
+            media_count = 0
+        has_more = data.get("has_more") if isinstance(data, dict) else None
+        if not isinstance(medias, list) or not medias:
+            break
+        if page_limit is not None and page_number >= page_limit:
+            break
+        if media_count:
+            if page_number * page_size >= media_count:
+                break
+        else:
+            if len(medias) < page_size:
+                break
+            if isinstance(has_more, bool) and not has_more:
+                break
+        page_number += 1
+    return entries
+
+
+def _refresh_gatcha_favlist_unlocked(raw_mid: object, raw_folder_ids: object = None) -> dict:
+    mid = _normalize_gatcha_uid(raw_mid)
+    selected_folder_ids = _selected_gatcha_favlist_folder_ids(raw_folder_ids)
+    folders = _request_gatcha_favlist_folders(mid)
+    matched_folders: list[dict] = []
+    entries: list[dict] = []
+
+    for folder in folders:
+        title = str(folder.get("title") or "").strip()
+        if not title or not _is_public_gatcha_favlist_folder(folder):
+            continue
+        folder_id = _gatcha_favlist_media_id(folder)
+        if selected_folder_ids is None:
+            if not _matches_gatcha_favlist_title(title):
+                continue
+        elif folder_id not in selected_folder_ids:
+            continue
+        matched_folder = _gatcha_favlist_folder_summary(folder)
+        matched_folder.pop("selected", None)
+        matched_folders.append(matched_folder)
+        entries.extend(_fetch_gatcha_favlist_entries_for_folder(mid, folder))
+
+    deduped_entries = _dedupe_gatcha_entries(entries)
+    payload = {
+        "schema_version": _GATCHA_FAVLIST_SCHEMA_VERSION,
+        "uid": mid,
+        "folders": matched_folders,
+        "items": deduped_entries,
+        "updated_at": time.time(),
+    }
+    with _GATCHA_FAVLIST_LOCK:
+        _save_gatcha_favlist(payload)
+    return {
+        "uid": mid,
+        "folder_count": len(folders),
+        "matched_folder_count": len(matched_folders),
+        "item_count": len(deduped_entries),
+        "updated_at": payload["updated_at"],
+    }
+
+
+def refresh_gatcha_favlist(
+    raw_mid: object,
+    raw_folder_ids: object = None,
+    *,
+    on_start: callable | None = None,
+    on_done: callable | None = None,
+) -> dict:
+    if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+    try:
+        if on_start is not None:
+            on_start()
+        return _refresh_gatcha_favlist_unlocked(raw_mid, raw_folder_ids)
+    finally:
+        _GATCHA_REFRESH_LOCK.release()
+        if on_done is not None:
+            on_done()
+
+
+def _refresh_existing_gatcha_favlist_cache() -> dict | None:
+    if not _GATCHA_FAVLIST_FILE.exists():
+        return None
+    with _GATCHA_FAVLIST_LOCK:
+        payload = _load_gatcha_favlist()
+
+    uid = str(payload.get("uid") or "").strip()
+    folders = payload.get("folders") if isinstance(payload, dict) else []
+    if not uid or not isinstance(folders, list) or not folders:
+        return None
+
+    fresh_entries: list[dict] = []
+    refreshed_folders = 0
+    for folder in folders:
+        if not isinstance(folder, dict):
+            continue
+        if not _gatcha_favlist_media_id(folder):
+            continue
+        entries = _fetch_gatcha_favlist_entries_for_folder(uid, folder, max_pages=1)
+        refreshed_folders += 1
+        fresh_entries.extend(entries)
+
+    if not refreshed_folders:
+        return None
+
+    merged_entries, added_count = _merge_incremental_gatcha_entries(payload.get("items"), fresh_entries)
+    payload["items"] = merged_entries
+    payload["updated_at"] = time.time()
+    with _GATCHA_FAVLIST_LOCK:
+        _save_gatcha_favlist(payload)
+    return {
+        "uid": uid,
+        "mode": "incremental",
+        "folder_count": refreshed_folders,
+        "added_count": added_count,
+        "total_count": len(merged_entries),
+    }
+
+
 def preview_gatcha_uid(raw_mid: object) -> dict:
     if not effective_bilibili_cookie():
         raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
@@ -707,12 +1053,24 @@ def refresh_gatcha_cache() -> dict:
             cache_profiles[str(profile["uid"])] = profile
             known_profiles[str(profile["uid"])] = profile
         _refresh_gatcha_uid_cache(cache_payload, mid)
+    try:
+        _refresh_existing_gatcha_favlist_cache()
+    except Exception:
+        pass
     return cache_payload
 
 
-def refresh_gatcha_cache_in_background() -> bool:
-    if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
-        return False
+def refresh_gatcha_cache_in_background(
+    *,
+    on_start: callable | None = None,
+    on_done: callable | None = None,
+    use_global_lock: bool = True,
+) -> bool:
+    if use_global_lock:
+        if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+            return False
+        if on_start is not None:
+            on_start()
 
     def _worker() -> None:
         try:
@@ -720,41 +1078,47 @@ def refresh_gatcha_cache_in_background() -> bool:
         except Exception:
             return
         finally:
-            _GATCHA_REFRESH_LOCK.release()
+            if use_global_lock:
+                _GATCHA_REFRESH_LOCK.release()
+                if on_done is not None:
+                    on_done()
 
     threading.Thread(target=_worker, daemon=True, name="gatcha-cache-refresh").start()
     return True
 
 
-def add_gatcha_uid(raw_mid: object) -> dict:
-    preview = preview_gatcha_uid(raw_mid)
-    mid = preview["uid"]
-    with _GATCHA_UIDS_LOCK:
-        uid_payload = _load_gatcha_uid_payload()
-        uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
-        if not isinstance(uids, list):
-            uids = []
-        added = False
-        if mid in uids:
-            uids = list(uids)
-        else:
-            uids.append(mid)
-            uid_payload["uids"] = uids
-            added = True
-        profiles = uid_payload.get("profiles")
-        if not isinstance(profiles, dict):
-            profiles = {}
-        profiles[mid] = {
-            "uid": mid,
-            "name": preview["name"],
-            "space_url": preview["space_url"],
-        }
-        uid_payload["profiles"] = profiles
-        uid_payload["updated_at"] = time.time()
-        _save_gatcha_uid_payload(uid_payload)
-
-    _GATCHA_REFRESH_LOCK.acquire()
+def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done: callable | None = None) -> dict:
+    if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
     try:
+        if on_start is not None:
+            on_start()
+        preview = preview_gatcha_uid(raw_mid)
+        mid = preview["uid"]
+        with _GATCHA_UIDS_LOCK:
+            uid_payload = _load_gatcha_uid_payload()
+            uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
+            if not isinstance(uids, list):
+                uids = []
+            added = False
+            if mid in uids:
+                uids = list(uids)
+            else:
+                uids.append(mid)
+                uid_payload["uids"] = uids
+                added = True
+            profiles = uid_payload.get("profiles")
+            if not isinstance(profiles, dict):
+                profiles = {}
+            profiles[mid] = {
+                "uid": mid,
+                "name": preview["name"],
+                "space_url": preview["space_url"],
+            }
+            uid_payload["profiles"] = profiles
+            uid_payload["updated_at"] = time.time()
+            _save_gatcha_uid_payload(uid_payload)
+
         with _GATCHA_CACHE_LOCK:
             cache_payload = _load_gatcha_cache()
         cache_profiles = cache_payload.get("profiles") if isinstance(cache_payload, dict) else {}
@@ -769,6 +1133,8 @@ def add_gatcha_uid(raw_mid: object) -> dict:
         cache_result = _refresh_gatcha_uid_cache(cache_payload, mid)
     finally:
         _GATCHA_REFRESH_LOCK.release()
+        if on_done is not None:
+            on_done()
 
     return {
         "uid": mid,
@@ -792,6 +1158,13 @@ def _local_gatcha_candidates() -> list[dict]:
             continue
         candidates.extend(entry for entry in entries if isinstance(entry, dict))
     return candidates
+
+
+def _local_gatcha_favlist_candidates() -> list[dict]:
+    with _GATCHA_FAVLIST_LOCK:
+        payload = _load_gatcha_favlist()
+    items = payload.get("items") if isinstance(payload, dict) else []
+    return [entry for entry in _dedupe_gatcha_entries(items) if isinstance(entry, dict)]
 
 
 def _local_gatcha_candidates_by_uid() -> dict[str, list[dict]]:
@@ -818,7 +1191,7 @@ def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
     if not normalized_query:
         return []
 
-    local_candidates = _local_gatcha_candidates()
+    local_candidates = _local_gatcha_candidates() + _local_gatcha_favlist_candidates()
     if not local_candidates and not effective_bilibili_cookie():
         raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
 
@@ -1324,11 +1697,27 @@ def get_cached_wbi_keys():
     return keys
 
 def fetch_gatcha_candidate() -> dict | None:
-    candidates_by_uid = _local_gatcha_candidates_by_uid()
-    if not candidates_by_uid:
+    raw_candidates_by_uid = _local_gatcha_candidates_by_uid()
+    candidates_by_uid: dict[str, list[dict]] = {}
+    for mid, entries in raw_candidates_by_uid.items():
+        valid_entries = [entry for entry in entries if isinstance(entry, dict) and not _is_expired_gatcha_entry(entry)]
+        if valid_entries:
+            candidates_by_uid[mid] = valid_entries
+    favlist_candidates = [entry for entry in _local_gatcha_favlist_candidates() if not _is_expired_gatcha_entry(entry)]
+    if not candidates_by_uid and not favlist_candidates:
         if not effective_bilibili_cookie():
             raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
         raise BilibiliError("本地稿件缓存还没准备好，请稍后再试")
+
+    if favlist_candidates and (not candidates_by_uid or random.random() < 0.5):
+        chosen = random.choice(favlist_candidates)
+        return {
+            "mid": str(chosen.get("mid") or ""),
+            "bvid": str(chosen.get("bvid") or ""),
+            "title": str(chosen.get("title") or ""),
+            "url": str(chosen.get("url") or ""),
+            "source": "favlist",
+        }
 
     chosen_mid = random.choice(list(candidates_by_uid.keys()))
     chosen = random.choice(candidates_by_uid[chosen_mid])
@@ -1337,4 +1726,5 @@ def fetch_gatcha_candidate() -> dict | None:
         "bvid": str(chosen.get("bvid") or ""),
         "title": str(chosen.get("title") or ""),
         "url": str(chosen.get("url") or ""),
+        "source": "cache",
     }

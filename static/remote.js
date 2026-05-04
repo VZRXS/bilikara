@@ -30,6 +30,8 @@ const state = {
   audioVariantBarItemId: "",
   bindingSheetOpen: false,
   bindingIntent: null,
+  gatchaFavlistSheetOpen: false,
+  gatchaFavlistIntent: null,
   bindingAccordion: {
     video: false,
     audio: false,
@@ -40,6 +42,8 @@ const state = {
   gatchaCandidate: null,
   gatchaUidVisible: false,
   gatchaUidSaving: false,
+  gatchaRefreshSaving: false,
+  gatchaFavlistSaving: false,
   followBrowseVisible: false,
   followBrowseData: null,
   followBrowseSelectedUid: "",
@@ -91,6 +95,13 @@ const elements = {
   bindingSheetClose: document.getElementById("binding-sheet-close"),
   bindingSheetCancel: document.getElementById("binding-sheet-cancel"),
   bindingSheetConfirm: document.getElementById("binding-sheet-confirm"),
+  gatchaFavlistSheet: document.getElementById("gatcha-favlist-sheet"),
+  gatchaFavlistSheetBackdrop: document.getElementById("gatcha-favlist-sheet-backdrop"),
+  gatchaFavlistSheetText: document.getElementById("gatcha-favlist-sheet-text"),
+  gatchaFavlistSheetOptions: document.getElementById("gatcha-favlist-sheet-options"),
+  gatchaFavlistSheetClose: document.getElementById("gatcha-favlist-sheet-close"),
+  gatchaFavlistSheetCancel: document.getElementById("gatcha-favlist-sheet-cancel"),
+  gatchaFavlistSheetConfirm: document.getElementById("gatcha-favlist-sheet-confirm"),
   requestForm: document.getElementById("request-form"),
   requesterSelect: document.getElementById("requester-select"),
   urlInput: document.getElementById("url-input"),
@@ -128,6 +139,8 @@ const elements = {
   gatchaUidForm: document.getElementById("gatcha-uid-form"),
   gatchaUidInput: document.getElementById("gatcha-uid-input"),
   addGatchaUidButton: document.getElementById("add-gatcha-uid-button"),
+  refreshGatchaCacheButton: document.getElementById("refresh-gatcha-cache-button"),
+  pullGatchaFavlistButton: document.getElementById("pull-gatcha-favlist-button"),
   gatchaUidMessage: document.getElementById("gatcha-uid-message"),
   listTag: document.getElementById("list-tag"),
   listTitle: document.getElementById("list-title"),
@@ -691,6 +704,29 @@ async function addGatchaUid(uid) {
   return apiPost("/api/gatcha/uids/add", { uid: String(uid || "").trim() });
 }
 
+async function refreshGatchaCache() {
+  return apiPost("/api/gatcha/refresh");
+}
+
+async function previewGatchaFavlist(uid) {
+  return apiPost("/api/gatcha/favlist/preview", { uid: String(uid || "").trim() });
+}
+
+async function pullGatchaFavlist(uid, folderIds = []) {
+  return apiPost("/api/gatcha/favlist", {
+    uid: String(uid || "").trim(),
+    folder_ids: Array.isArray(folderIds) ? folderIds : [],
+  });
+}
+
+function gatchaTaskBusy() {
+  return Boolean(state.data?.gatcha?.busy);
+}
+
+function gatchaTaskBusyMessage() {
+  return state.data?.gatcha?.message || "拉取任务执行中，请等待任务结束";
+}
+
 function gatchaUidResultMessage(result, fallbackUid = "") {
   const cache = result?.cache || {};
   const addedCount = Number(cache.added_count || 0);
@@ -967,6 +1003,7 @@ function setGatchaUidMessage(message, isError = false) {
 function renderGatchaUidView() {
   const showUid = Boolean(state.gatchaUidVisible);
   const hasCandidate = Boolean(state.gatchaCandidate);
+  const taskBusy = gatchaTaskBusy();
   if (elements.gatchaCandidateTitle && state.gatchaCandidate?.title) {
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
   }
@@ -989,8 +1026,24 @@ function renderGatchaUidView() {
     elements.gatchaUidInput.disabled = state.gatchaUidSaving;
   }
   if (elements.addGatchaUidButton) {
-    elements.addGatchaUidButton.disabled = state.gatchaUidSaving;
+    elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
     elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? "处理中" : "添加";
+  }
+  if (elements.refreshGatchaCacheButton) {
+    elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
+    elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? "更新中" : "手动更新";
+  }
+  if (elements.pullGatchaFavlistButton) {
+    elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? "拉取中" : "拉取收藏";
+  }
+  if (taskBusy) {
+    if (elements.refreshGatchaCacheButton) {
+      elements.refreshGatchaCacheButton.textContent = "全局冷却中";
+    }
+    if (elements.pullGatchaFavlistButton) {
+      elements.pullGatchaFavlistButton.textContent = "全局冷却中";
+    }
   }
 }
 
@@ -1002,6 +1055,11 @@ async function handleGatchaUidSubmit(event) {
     return;
   }
   if (state.gatchaUidSaving) {
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
     return;
   }
 
@@ -1021,6 +1079,11 @@ async function handleGatchaUidSubmit(event) {
     }
 
     const normalizedUid = preview?.uid || uid;
+    if (gatchaTaskBusy()) {
+      setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+      renderGatchaUidView();
+      return;
+    }
     setGatchaUidMessage(`正在拉取 UP 主：${ownerName} 的稿件...`);
     const result = await addGatchaUid(normalizedUid);
     setGatchaUidMessage(gatchaUidResultMessage(result, normalizedUid));
@@ -1445,6 +1508,101 @@ function closeBindingSheet() {
     elements.bindingSheetAudioOptions.innerHTML = "";
     renderBindingAccordion();
   }, 280);
+}
+
+function selectedGatchaFavlistFolderIds() {
+  return [...(elements.gatchaFavlistSheetOptions?.querySelectorAll('input[name="gatcha-favlist-folder"]:checked') || [])]
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+function renderGatchaFavlistOption(folder) {
+  const label = document.createElement("label");
+  label.className = "binding-option";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = "gatcha-favlist-folder";
+  input.value = String(folder.id || "");
+  input.checked = Boolean(folder.selected);
+
+  const copy = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "binding-option-title";
+  title.textContent = folder.title || `收藏夹 ${folder.id || ""}`;
+  const meta = document.createElement("div");
+  meta.className = "binding-option-meta";
+  const count = Number(folder.media_count || 0);
+  meta.textContent = `${count || 0} 个稿件${folder.selected ? " · 命中默认筛选" : ""}`;
+  copy.append(title, meta);
+
+  label.append(input, copy);
+  return label;
+}
+
+function openGatchaFavlistSheet(uid, payload) {
+  const folders = Array.isArray(payload?.folders) ? payload.folders : [];
+  if (!folders.length) {
+    setGatchaUidMessage("没有读取到公开收藏夹。", true);
+    return;
+  }
+  state.gatchaFavlistIntent = { uid, folders };
+  elements.gatchaFavlistSheetText.textContent = `UID ${payload?.uid || uid} 共有 ${payload?.public_folder_count || folders.length} 个公开收藏夹，请选择要加入抽卡收藏池的收藏夹。`;
+  elements.gatchaFavlistSheetOptions.innerHTML = "";
+  folders.forEach((folder) => {
+    elements.gatchaFavlistSheetOptions.appendChild(renderGatchaFavlistOption(folder));
+  });
+  state.gatchaFavlistSheetOpen = true;
+  elements.gatchaFavlistSheet.classList.remove("hidden");
+  elements.gatchaFavlistSheet.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => {
+    elements.gatchaFavlistSheet.classList.add("is-open");
+  });
+}
+
+function closeGatchaFavlistSheet() {
+  state.gatchaFavlistSheetOpen = false;
+  state.gatchaFavlistIntent = null;
+  elements.gatchaFavlistSheet.classList.remove("is-open");
+  elements.gatchaFavlistSheet.setAttribute("aria-hidden", "true");
+  window.setTimeout(() => {
+    if (state.gatchaFavlistSheetOpen) {
+      return;
+    }
+    elements.gatchaFavlistSheet.classList.add("hidden");
+    elements.gatchaFavlistSheetOptions.innerHTML = "";
+  }, 280);
+}
+
+async function confirmGatchaFavlistSheet() {
+  const intent = state.gatchaFavlistIntent;
+  if (!intent?.uid) {
+    return;
+  }
+  const folderIds = selectedGatchaFavlistFolderIds();
+  if (!folderIds.length) {
+    setGatchaUidMessage("请选择至少一个收藏夹", true);
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
+    return;
+  }
+
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidView();
+  setGatchaUidMessage("正在拉取选中的公开收藏夹...");
+  try {
+    const result = await pullGatchaFavlist(intent.uid, folderIds);
+    closeGatchaFavlistSheet();
+    setGatchaUidMessage(`已拉取 ${result?.matched_folder_count || 0} 个收藏夹，加入 ${result?.item_count || 0} 个稿件。`);
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidView();
+  }
 }
 
 function renderBindingAccordion() {
@@ -2271,6 +2429,55 @@ elements.gatchaUidToggle?.addEventListener("click", () => {
 
 elements.gatchaUidForm?.addEventListener("submit", handleGatchaUidSubmit);
 
+elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
+    return;
+  }
+  state.gatchaRefreshSaving = true;
+  renderGatchaUidView();
+  setGatchaUidMessage("正在后台更新抽卡缓存...");
+  try {
+    const result = await refreshGatchaCache();
+    if (result?.started !== false && state.data) {
+      state.data.gatcha = { busy: true, message: gatchaTaskBusyMessage() };
+    }
+    setGatchaUidMessage(result?.started === false ? "拉取任务执行中，请等待任务结束" : "已开始后台更新抽卡缓存。");
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaRefreshSaving = false;
+    renderGatchaUidView();
+  }
+});
+
+elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
+  const uid = String(elements.gatchaUidInput?.value || "").trim();
+  if (!uid) {
+    setGatchaUidMessage("请输入 UID", true);
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
+    return;
+  }
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidView();
+  setGatchaUidMessage("正在读取公开收藏夹...");
+  try {
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistSheet(result?.uid || uid, result);
+    setGatchaUidMessage("请选择要拉取的收藏夹。");
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidView();
+  }
+});
+
 elements.gatchaConfirmButton.addEventListener("click", async () => {
   if (!state.gatchaCandidate?.url) {
     return;
@@ -2292,6 +2499,22 @@ elements.bindingSheetBackdrop?.addEventListener("click", () => {
 
 elements.bindingSheetConfirm?.addEventListener("click", async () => {
   await confirmBindingSheet();
+});
+
+elements.gatchaFavlistSheetClose?.addEventListener("click", () => {
+  closeGatchaFavlistSheet();
+});
+
+elements.gatchaFavlistSheetCancel?.addEventListener("click", () => {
+  closeGatchaFavlistSheet();
+});
+
+elements.gatchaFavlistSheetBackdrop?.addEventListener("click", () => {
+  closeGatchaFavlistSheet();
+});
+
+elements.gatchaFavlistSheetConfirm?.addEventListener("click", async () => {
+  await confirmGatchaFavlistSheet();
 });
 
 elements.bindingVideoToggle?.addEventListener("click", () => {
@@ -2432,8 +2655,14 @@ elements.historyList.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && state.bindingSheetOpen) {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (state.bindingSheetOpen) {
     closeBindingSheet();
+  }
+  if (state.gatchaFavlistSheetOpen) {
+    closeGatchaFavlistSheet();
   }
 });
 

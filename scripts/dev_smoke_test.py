@@ -75,6 +75,13 @@ class PlayerTimeWindowResult:
     current_time: float | None = None
 
 
+@dataclass
+class DownloadResponse:
+    body: bytes
+    content_type: str
+    content_disposition: str
+
+
 class SmokeRunner:
     def __init__(self, args: argparse.Namespace, handle: ServerHandle) -> None:
         self.args = args
@@ -113,6 +120,7 @@ class SmokeRunner:
         self.check_users()
         self.check_song_flow()
         self.check_player_controls()
+        self.check_history_exports()
         self.check_gatcha()
 
         if self.args.destructive:
@@ -176,34 +184,56 @@ class SmokeRunner:
                 "follow-up-grid",
                 "follow-song-results",
                 "binding-modal-confirm",
+                "history-export-button",
                 "update-check-button",
+                "gatcha-uid-form",
+                "refresh-gatcha-cache-button",
+                "pull-gatcha-favlist-button",
+                "gatcha-favlist-modal",
             ],
             "/remote": [
                 "follow-browse-toggle",
                 "follow-up-grid",
                 "follow-song-results",
                 "binding-sheet-actions",
+                "history-export-row",
+                "gatcha-uid-form",
+                "refresh-gatcha-cache-button",
+                "pull-gatcha-favlist-button",
+                "gatcha-favlist-sheet",
             ],
             "/app.js": [
                 "fetchGatchaBrowse",
                 "followSongResults",
                 "handleAddByUrl",
+                "downloadHistoryExport",
+                "previewGatchaUid",
+                "/api/gatcha/favlist/preview",
+                "/api/gatcha/refresh",
+                "/api/gatcha/favlist",
                 "/api/app/update",
             ],
             "/remote.js": [
                 "fetchGatchaBrowse",
                 "followSongResults",
                 "addByUrl",
+                "downloadHistoryExport",
+                "previewGatchaUid",
+                "/api/gatcha/favlist/preview",
+                "/api/gatcha/refresh",
+                "/api/gatcha/favlist",
             ],
             "/styles.css": [
                 "grid-template-rows: auto auto minmax(0, 1fr) auto",
                 ".selection-modal-actions",
                 ".follow-up-grid",
+                ".gatcha-uid-view .gatcha-uid-form",
             ],
             "/remote.css": [
                 "flex-direction: column",
                 ".binding-sheet-actions",
                 ".follow-up-grid",
+                ".gatcha-uid-form",
             ],
         }
         for path, tokens in expected_tokens.items():
@@ -405,10 +435,13 @@ class SmokeRunner:
             print_skip("Smoke download quality", "No 480P video quality choice was available")
             return {}
 
-        policy_payload: dict[str, Any] = {"video_quality": target_quality}
+        policy_payload: dict[str, Any] = {"video_quality": target_quality, "audio_hires": False}
         state = self.api_post("/api/cache-policy", policy_payload)
         policy = state.get("cache_policy") or {}
-        print_ok(f"Smoke download video quality set to {policy.get('video_quality')} before song downloads")
+        print_ok(
+            "Smoke download policy set before song downloads: "
+            f"quality={policy.get('video_quality')} hires={policy.get('audio_hires')}"
+        )
 
         restore_payload: dict[str, Any] = {}
         if "video_quality" in original_policy:
@@ -1016,6 +1049,45 @@ class SmokeRunner:
         )
         self.visual_checkpoint("Confirm the player reloaded while queue/history stayed intact.", seconds=8)
 
+    def check_history_exports(self) -> None:
+        print_header("History export downloads")
+        csv_cases = [
+            ("played", False),
+            ("history", True),
+        ]
+        for source, remote in csv_cases:
+            response = self.http_download_get(
+                f"/api/history/export?format=csv&source={source}",
+                timeout=20,
+                remote=remote,
+            )
+            self.assert_download_filename(response, expected_fragment=f"bilikara-{source}", expected_suffix=".csv")
+            if not response.content_type.lower().startswith("text/csv"):
+                raise RuntimeError(f"CSV export returned unexpected content type: {response.content_type}")
+            if not response.body.startswith(b"\xef\xbb\xbf"):
+                raise RuntimeError(f"CSV export for {source} did not include a UTF-8 BOM")
+            response.body.decode("utf-8-sig")
+            client_label = "Remote" if remote else "Host"
+            print_ok(f"{client_label} {source} CSV export downloads ({len(response.body)} bytes)")
+
+        image_response = self.http_download_get(
+            "/api/history/export?format=image&source=played",
+            timeout=30,
+        )
+        image_type = image_response.content_type.lower()
+        if image_type == "image/png":
+            self.assert_download_filename(image_response, expected_fragment="bilikara-played", expected_suffix=".png")
+            if not image_response.body.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise RuntimeError("Played image export did not return PNG bytes")
+            print_ok(f"Played image export downloads as PNG ({len(image_response.body)} bytes)")
+        elif image_type == "application/zip":
+            self.assert_download_filename(image_response, expected_fragment="bilikara-played", expected_suffix=".zip")
+            if not image_response.body.startswith(b"PK"):
+                raise RuntimeError("Played image export did not return ZIP bytes")
+            print_ok(f"Played image export downloads as ZIP ({len(image_response.body)} bytes)")
+        else:
+            raise RuntimeError(f"Image export returned unexpected content type: {image_response.content_type}")
+
     def seek_current_item_near_end(self, item_id: str, *, tail_seconds: float) -> bool:
         state = self.get_state()
         item = self.find_item_by_id(state, item_id)
@@ -1245,6 +1317,7 @@ class SmokeRunner:
 
     def check_gatcha(self) -> None:
         print_header("Gatcha")
+        self.check_gatcha_uid_management_api()
         try:
             result = self.http_get(f"/api/gatcha/search?q={urllib.parse.quote(GATCHA_MULTI_PAGE_QUERY)}")
             items = ((result.get("data") or {}).get("items") or []) if isinstance(result, dict) else []
@@ -1262,6 +1335,38 @@ class SmokeRunner:
                 print_warn(f"Gatcha candidate returned no song: {result.get('error')}")
         except Exception as exc:  # noqa: BLE001
             print_warn(f"Gatcha candidate skipped/failed: {exc}")
+
+    def check_gatcha_uid_management_api(self) -> None:
+        try:
+            result = self.http_get("/api/gatcha/uids", timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Gatcha UID snapshot API failed: {exc}") from exc
+        data = result.get("data") if isinstance(result, dict) else {}
+        uids = data.get("uids") if isinstance(data, dict) else None
+        count = data.get("count") if isinstance(data, dict) else None
+        if not isinstance(uids, list) or not isinstance(count, int):
+            raise RuntimeError("Gatcha UID snapshot returned an invalid payload")
+        if count != len(uids):
+            raise RuntimeError(f"Gatcha UID snapshot count mismatch: count={count} len={len(uids)}")
+        print_ok(f"Gatcha UID snapshot API works: {count} UID(s)")
+
+        try:
+            self.api_post("/api/gatcha/uids/preview", {"uid": "BV1xx411c7mD"}, timeout=10)
+        except ApiError as exc:
+            if exc.status != 400:
+                raise RuntimeError(f"Gatcha UID preview invalid-input check returned HTTP {exc.status}") from exc
+            print_ok("Gatcha UID preview rejects BV/video IDs before adding anything")
+        else:
+            raise RuntimeError("Gatcha UID preview accepted a BV/video ID")
+
+        try:
+            self.api_post("/api/gatcha/favlist", {"uid": "BV1xx411c7mD"}, timeout=10)
+        except ApiError as exc:
+            if exc.status != 400:
+                raise RuntimeError(f"Gatcha favlist invalid-input check returned HTTP {exc.status}") from exc
+            print_ok("Gatcha favlist pull rejects BV/video IDs before writing cache")
+            return
+        raise RuntimeError("Gatcha favlist pull accepted a BV/video ID")
 
     def check_follow_browse_api(self, label: str, *, remote: bool) -> None:
         try:
@@ -1381,6 +1486,33 @@ class SmokeRunner:
         )
         return self.open_request(path, request, timeout=timeout, expect_json=expect_json)
 
+    def http_download_get(
+        self,
+        path: str,
+        *,
+        timeout: int | float = 20,
+        remote: bool = False,
+    ) -> DownloadResponse:
+        request = urllib.request.Request(
+            self.base_url + path,
+            headers=self.request_headers(remote=remote),
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return DownloadResponse(
+                    body=response.read(),
+                    content_type=response.headers.get("Content-Type", ""),
+                    content_disposition=response.headers.get("Content-Disposition", ""),
+                )
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = {"ok": False, "error": raw or str(exc)}
+            raise ApiError(path, exc.code, payload) from exc
+
     def http_post(
         self,
         path: str,
@@ -1422,6 +1554,24 @@ class SmokeRunner:
             except json.JSONDecodeError:
                 payload = {"ok": False, "error": raw or str(exc)}
             raise ApiError(path, exc.code, payload) from exc
+
+    @staticmethod
+    def assert_download_filename(
+        response: DownloadResponse,
+        *,
+        expected_fragment: str,
+        expected_suffix: str,
+    ) -> None:
+        disposition = response.content_disposition
+        if "attachment" not in disposition.lower():
+            raise RuntimeError(f"Download response missing attachment disposition: {disposition}")
+        filename = disposition
+        if "filename*=" in disposition:
+            filename = urllib.parse.unquote(disposition.split("filename*=", 1)[1].split("''", 1)[-1])
+        elif "filename=" in disposition:
+            filename = disposition.split("filename=", 1)[1].strip().strip('"')
+        if expected_fragment not in filename or not filename.lower().endswith(expected_suffix):
+            raise RuntimeError(f"Unexpected download filename: {filename}")
 
     @staticmethod
     def item_ids(state: dict[str, Any]) -> set[str]:

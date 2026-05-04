@@ -49,6 +49,23 @@ class AppContextRemoteAccessTest(unittest.TestCase):
 
 
 class AppContextStateRevisionTest(unittest.TestCase):
+    def test_startup_gatcha_refresh_bypasses_global_lock_only_once(self):
+        context = AppContext.__new__(AppContext)
+        context._startup_lock = threading.RLock()
+        context._startup_gatcha_refresh_bypass_available = True
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+
+        with patch("bilikara.server.refresh_gatcha_cache_in_background", return_value=True) as refresh:
+            self.assertTrue(context.refresh_startup_gatcha_cache_in_background())
+            self.assertTrue(context.refresh_startup_gatcha_cache_in_background())
+
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(refresh.call_args_list[0].kwargs, {"use_global_lock": False})
+        self.assertIn("on_start", refresh.call_args_list[1].kwargs)
+        self.assertIn("on_done", refresh.call_args_list[1].kwargs)
+        self.assertNotIn("use_global_lock", refresh.call_args_list[1].kwargs)
+
     def test_wait_for_state_change_unblocks_after_notify(self):
         context = AppContext.__new__(AppContext)
         context._closed = False

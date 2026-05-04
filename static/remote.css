@@ -805,6 +805,14 @@ h1 {
   gap: 10px;
 }
 
+#gatcha-favlist-sheet .binding-sheet-section {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 4px;
+}
+
 .binding-accordion {
   min-height: 0;
   gap: 12px;
@@ -1357,6 +1365,11 @@ select:disabled {
 }
 
 .gatcha-uid-form .primary-button {
+  min-height: 48px;
+}
+
+.gatcha-refresh-button {
+  width: 100%;
   min-height: 48px;
 }
 

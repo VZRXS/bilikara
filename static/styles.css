@@ -162,6 +162,10 @@ p {
   box-shadow: var(--shadow);
 }
 
+.selection-modal-card-single {
+  width: min(560px, calc(100vw - 32px));
+}
+
 .selection-modal-head,
 .selection-modal-actions {
   display: flex;
@@ -183,6 +187,10 @@ p {
   min-height: 0;
   margin-top: 18px;
   overflow: hidden;
+}
+
+.selection-modal-grid-single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .selection-modal-column {
@@ -2711,7 +2719,7 @@ select:disabled {
 }
 
 .gatcha-panel {
-  padding: 20px;
+  padding: 16px 20px;
   border-radius: 28px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -2724,15 +2732,18 @@ select:disabled {
 .gatcha-head {
   align-items: flex-start;
   gap: 12px;
+  flex-wrap: nowrap;
 }
 
 .gatcha-head > div {
-  min-height: 45px;
+  display: grid;
+  gap: 4px;
+  min-height: 0;
 }
 
 .gatcha-head h2 {
-  line-height: 1.2;
-  min-height: 29px;
+  line-height: 1.15;
+  min-height: 0;
 }
 
 .gatcha-uid-toggle,
@@ -2817,6 +2828,11 @@ select:disabled {
   display: grid;
   gap: 12px;
   align-items: stretch;
+}
+
+.gatcha-uid-view .gatcha-uid-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
 }
 
 .gatcha-panel.is-cookie-view .request-head h2,
@@ -2942,9 +2958,16 @@ select:disabled {
 }
 
 .gatcha-cookie-view .next-button,
-.gatcha-uid-view .next-button,
 .search-cookie-view .next-button {
   width: 100%;
+}
+
+.gatcha-uid-view .next-button {
+  width: auto;
+  height: 38px;
+  min-width: 72px;
+  border-radius: 10px;
+  padding: 0 16px;
 }
 
 .cookie-config-bar {
@@ -3188,6 +3211,10 @@ select:disabled {
   align-items: stretch;
 }
 
+.bottom-grid .gatcha-uid-view .gatcha-uid-form {
+  align-items: end;
+}
+
 .search-results.hidden {
   display: none;
 }
@@ -3306,6 +3333,10 @@ select:disabled {
   }
 
   .search-inputs {
+    grid-template-columns: 1fr;
+  }
+
+  .gatcha-uid-form {
     grid-template-columns: 1fr;
   }
 

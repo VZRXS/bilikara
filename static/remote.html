@@ -263,6 +263,12 @@
             />
             <button type="submit" id="add-gatcha-uid-button" class="primary-button">添加</button>
           </form>
+          <button type="button" id="refresh-gatcha-cache-button" class="secondary-button gatcha-refresh-button">
+            手动更新
+          </button>
+          <button type="button" id="pull-gatcha-favlist-button" class="secondary-button gatcha-refresh-button">
+            拉取收藏
+          </button>
           <p class="gatcha-message" id="gatcha-uid-message" role="status"></p>
         </div>
       </section>
@@ -312,6 +318,27 @@
           <div class="binding-sheet-actions">
             <button type="button" id="binding-sheet-cancel" class="ghost-button">取消</button>
             <button type="button" id="binding-sheet-confirm" class="primary-button">加入点歌列表</button>
+          </div>
+        </div>
+      </div>
+      <div id="gatcha-favlist-sheet" class="binding-sheet hidden" aria-hidden="true">
+        <div id="gatcha-favlist-sheet-backdrop" class="binding-sheet-backdrop"></div>
+        <div class="binding-sheet-panel">
+          <div class="binding-sheet-handle" aria-hidden="true"></div>
+          <div class="binding-sheet-head">
+            <div>
+              <p class="panel-tag">Favlist Pull</p>
+              <h2>选择收藏夹</h2>
+            </div>
+            <button type="button" id="gatcha-favlist-sheet-close" class="ghost-button binding-sheet-close">关闭</button>
+          </div>
+          <p id="gatcha-favlist-sheet-text" class="muted">请选择要拉取的公开收藏夹。</p>
+          <section class="binding-sheet-section">
+            <div id="gatcha-favlist-sheet-options" class="binding-option-list"></div>
+          </section>
+          <div class="binding-sheet-actions">
+            <button type="button" id="gatcha-favlist-sheet-cancel" class="ghost-button">取消</button>
+            <button type="button" id="gatcha-favlist-sheet-confirm" class="primary-button">拉取选中收藏夹</button>
           </div>
         </div>
       </div>
