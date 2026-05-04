@@ -3024,7 +3024,7 @@ select:disabled {
 }
 
 .gatcha-panel {
-  padding: 16px 24px 24px;
+  padding: 20px 24px 24px;
   border-radius: 28px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -3036,8 +3036,8 @@ select:disabled {
 
 .gatcha-head {
   align-items: flex-start;
-  gap: 12px;
-  flex-wrap: nowrap;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .gatcha-head > div {
@@ -3047,7 +3047,7 @@ select:disabled {
 }
 
 .gatcha-head h2 {
-  line-height: 1.15;
+  line-height: normal;
   min-height: 0;
 }
 
@@ -3398,17 +3398,18 @@ select:disabled {
 }
 
 .follow-search-form input {
-  height: 44px;
-  border-radius: 14px;
-  padding: 0 14px;
+  height: 48px;
+  border-radius: 16px;
+  padding: 0 16px;
   font-size: inherit;
 }
 
 .follow-search-form .next-button {
-  height: 44px;
+  width: auto;
+  height: 48px;
   min-width: 72px;
-  border-radius: 14px;
-  padding: 0 16px;
+  border-radius: 16px;
+  padding: 0 18px;
 }
 
 #follow-song-results {
@@ -3495,7 +3496,7 @@ select:disabled {
 
 .search-sub-card/* ,
 .cookie-sub-card */ {
-  padding: 16px 24px 24px;
+  padding: 20px 24px 24px;
 }
 
 .search-sub-card-head/* ,
@@ -3503,7 +3504,12 @@ select:disabled {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.search-sub-card-head > div {
+  min-width: 0;
 }
 
 .song-requester,
@@ -3747,6 +3753,7 @@ select:disabled {
 
 .search-result-meta {
   min-width: 0;
+  padding-top: 5px;
 }
 
 .search-result-title {
