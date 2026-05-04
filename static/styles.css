@@ -1375,7 +1375,7 @@ h2 {
   color: var(--ink);
   font-size: clamp(15px, 1.5vw, 22px);
   font-weight: 800;
-  line-height: 1.25;
+  line-height: 1.55;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1630,7 +1630,7 @@ h2 {
   overflow: hidden;
   font-size: clamp(22px, 2.8vw, 36px);
   font-weight: 800;
-  line-height: 1.25;
+  line-height: 1.55;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   line-clamp: 2;
@@ -2400,6 +2400,8 @@ select:disabled {
   box-shadow: 0 4px 20px rgba(88, 56, 30, 0.04);
   align-items: center;
   min-height: 96px;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .queue-current.hidden,
@@ -2420,6 +2422,7 @@ select:disabled {
   justify-content: center;
   isolation: isolate;
   overflow: visible;
+  contain: layout style;
 }
 
 .song-progress-badge::before,
@@ -2440,7 +2443,7 @@ select:disabled {
 .song-progress-badge.active::before,
 .queue-current-progress-badge.idle::before,
 .queue-current-progress-badge.active::before {
-  border-color: rgba(109, 98, 88, 0.4);
+  border-color: rgba(109, 98, 88, 0.18);
 }
 
 /* 状态：缓存完成 (绿色) */
@@ -2475,17 +2478,32 @@ select:disabled {
   box-shadow: none;
 }
 
-.song-progress-badge.active::after,
-.queue-current-progress-badge.active::after {
-  content: "";
+.badge-loader {
   position: absolute;
-  inset: var(--queue-badge-ring-inset);
-  border-radius: 50%;
-  border: var(--queue-badge-ring-width) solid transparent;
-  border-top-color: rgba(109, 98, 88, 0.6); /* 缓存中改为灰色单节 */
-  animation: cache-crescent-spin 1.2s linear infinite;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* animation: rotate 1.5s steps(60) infinite; */
+  animation: rotate 2s steps(60) infinite;
+  display: none;
   pointer-events: none;
+  z-index: 1;
   will-change: transform;
+  contain: strict;
+}
+
+.song-progress-badge.active .badge-loader,
+.queue-current-progress-badge.active .badge-loader {
+  display: block;
+}
+
+.path-fancy {
+  stroke: #6d6258;
+  stroke-opacity: 0.6;
+  stroke-dasharray: 40, 200;
+  stroke-dashoffset: 0;
+  stroke-linecap: round;
+  animation: dash 1.5s steps(30) infinite;
 }
 
 .song-progress-badge.ready::before,
@@ -2550,9 +2568,22 @@ select:disabled {
   color: var(--red);
 }
 
-@keyframes cache-crescent-spin {
-  to {
-    transform: rotate(360deg);
+@keyframes rotate {
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes dash {
+  0% {
+    stroke-dasharray: 1, 200;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 89, 200;
+    stroke-dashoffset: -35;
+  }
+  100% {
+    stroke-dasharray: 89, 200;
+    stroke-dashoffset: -124;
   }
 }
 
@@ -2638,7 +2669,7 @@ select:disabled {
   flex-direction: column;
   justify-content: center;
   gap: 6px;
-  padding-right: 12px; /* 给右边缘留一点基本的呼吸空间 */
+  padding-right: 12px;
   margin: 0;
   padding-left: 0;
 }
@@ -2647,7 +2678,7 @@ select:disabled {
   margin-top: 0;
   font-size: 20px;
   font-weight: 700;
-  line-height: 1.15;
+  line-height: 1.35;
   color: var(--accent-deep);
   width: 100%;
 }
@@ -2843,7 +2874,7 @@ select:disabled {
 
 .song-retry-button {
   position: absolute;
-  top: calc(50% - var(--queue-badge-size) / 2 - 4px);
+  top: calc(50% - var(--queue-badge-size) / 2 - 12px);
   right: calc((var(--queue-badge-column-width) - var(--queue-badge-size)) / 2 - 6px);
   z-index: 3;
 }
@@ -2890,7 +2921,7 @@ select:disabled {
   width: 100%;
   font-size: 18px;
   font-weight: 700;
-  line-height: 1.15;
+  line-height: 1.35;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -3688,7 +3719,7 @@ select:disabled {
   min-width: 0;
   font-size: 17px;
   font-weight: 700;
-  line-height: 1.25;
+  line-height: 1.35;
 }
 
 .search-inputs,
