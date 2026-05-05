@@ -187,9 +187,14 @@
             <p class="panel-tag">Local Search</p>
             <h2 class="panel-title">搜索</h2>
           </div>
+          <div class="panel-head-actions">
+          <button type="button" id="lark-search-toggle" class="secondary-button lark-search-toggle" aria-pressed="false">
+            bilikara搜索
+          </button>
           <button type="button" id="follow-browse-toggle" class="secondary-button follow-browse-toggle" aria-pressed="false">
             关注浏览
           </button>
+          </div>
         </div>
         <form id="search-form" class="request-form search-form">
           <input
@@ -202,6 +207,19 @@
         </form>
         <p id="search-message" class="message search-message" role="status"></p>
         <div id="search-results" class="search-results hidden"></div>
+        <div id="lark-search-view" class="lark-search-view hidden">
+          <form id="lark-search-form" class="request-form search-form">
+            <input
+              id="lark-search-query"
+              type="text"
+              placeholder="在 bilikara 共享数据库中搜索"
+              autocomplete="off"
+            />
+            <button type="submit" id="lark-search-button" class="primary-button">搜索</button>
+          </form>
+          <p id="lark-search-message" class="message search-message" role="status"></p>
+          <div id="lark-search-results" class="search-results hidden"></div>
+        </div>
         <div id="follow-browse-view" class="follow-browser hidden">
           <div id="follow-up-list-view">
             <div id="follow-up-grid" class="follow-up-grid"></div>

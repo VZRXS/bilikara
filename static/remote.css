@@ -291,8 +291,35 @@ h1 {
   margin-bottom: 12px;
 }
 
+.panel-head-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
 .panel-head-stack {
   align-items: flex-start;
+}
+
+.search-panel .panel-head {
+  flex-wrap: wrap;
+}
+
+.search-panel .panel-head > div:first-child {
+  flex: 1 1 100%;
+}
+
+.search-panel .panel-head .panel-head-actions {
+  flex: 1 1 100%;
+  justify-content: stretch;
+}
+
+.search-panel .panel-head .panel-head-actions > button {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .now-playing-panel {
@@ -1280,10 +1307,20 @@ select:disabled {
   white-space: nowrap;
 }
 
-.follow-browse-toggle {
+.follow-browse-toggle,
+.lark-search-toggle {
   min-height: 40px;
   padding-inline: 12px;
   white-space: nowrap;
+}
+
+.lark-search-view {
+  display: grid;
+  gap: 12px;
+}
+
+.lark-search-view.hidden {
+  display: none;
 }
 
 .follow-browser {
