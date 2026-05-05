@@ -2366,6 +2366,15 @@ function ensurePlayerDelayOverlay() {
   return overlay;
 }
 
+function resumeMountedPlayerAfterOverlay() {
+  const video = activePrimaryVideoElement();
+  if (!video || !video.paused) {
+    return;
+  }
+  state.localShouldBePlaying = true;
+  video.play().catch(() => {});
+}
+
 function setPlayerDelayOverlayVisible(overlay) {
   if (!overlay) {
     return;
@@ -2380,9 +2389,18 @@ function setPlayerDelayOverlayVisible(overlay) {
   });
 }
 
-function hidePlayerDelayOverlay() {
+function hidePlayerDelayOverlay({ onHidden = null } = {}) {
   const overlay = playerDelayOverlay();
-  if (!overlay || overlay.classList.contains("hidden")) {
+  if (!overlay) {
+    if (typeof onHidden === "function") {
+      onHidden();
+    }
+    return;
+  }
+  if (overlay.classList.contains("hidden")) {
+    if (typeof onHidden === "function") {
+      onHidden();
+    }
     return;
   }
   overlay.classList.remove("is-visible");
@@ -2392,11 +2410,14 @@ function hidePlayerDelayOverlay() {
   state.localAdvanceOverlayHideTimer = window.setTimeout(() => {
     overlay.classList.add("hidden");
     state.localAdvanceOverlayHideTimer = null;
+    if (typeof onHidden === "function") {
+      onHidden();
+    }
   }, localAdvanceOverlayFadeMs);
 }
 
 function showSongTransitionOverlayForData(data) {
-  if (!data || !isPlayerPanelFullscreen()) {
+  if (!data) {
     return;
   }
   const playlist = Array.isArray(data.playlist) ? data.playlist : [];
@@ -2412,19 +2433,22 @@ function showSongTransitionOverlayForData(data) {
   state.localAdvanceOverlayPrimaryItem = primaryItem;
   state.localAdvanceOverlayFollowItems = data.current_item ? playlist : playlist.slice(1);
   state.localAdvanceOverlayTotalCount = (data.current_item ? 1 : 0) + playlist.length;
-  state.localAdvanceOverlayDurationMs = delaySeconds * 1000;
+  state.localAdvanceOverlayDurationMs = (delaySeconds * 1000) + localAdvanceOverlayFadeMs;
   state.localAdvanceDelayDeadline = Date.now() + state.localAdvanceOverlayDurationMs;
   updateLocalAdvanceDelayOverlay();
   state.localAdvanceCountdownTimer = window.setInterval(updateLocalAdvanceDelayOverlay, 250);
   state.localAdvanceDelayTimer = window.setTimeout(() => {
     if (state.localAdvanceDelayToken === token) {
-      clearLocalAdvanceDelay({ resetInFlight: false });
+      clearLocalAdvanceDelay({
+        resetInFlight: false,
+        onOverlayHidden: resumeMountedPlayerAfterOverlay,
+      });
     }
   }, state.localAdvanceOverlayDurationMs);
 }
 
 function maybeShowSongTransitionOverlay(previousData, nextData, { force = false } = {}) {
-  if (!nextData || !isPlayerPanelFullscreen()) {
+  if (!nextData) {
     return;
   }
   const previousId = currentItemIdFromData(previousData);
@@ -2437,6 +2461,7 @@ function maybeShowSongTransitionOverlay(previousData, nextData, { force = false 
     return;
   }
   state.lastSongTransitionOverlayKey = transitionKey;
+  state.localShouldBePlaying = false;
   state.pendingSongTransitionOverlayData = nextData;
 }
 
@@ -2601,6 +2626,54 @@ async function finishLocalAdvanceDelay(token, itemId) {
   }
   clearLocalAdvanceDelay({ resetInFlight: true });
   await advanceLocalPlayerNow({ showTransition: false });
+}
+
+function clearLocalAdvanceDelay({ resetInFlight = false, hideOverlay = true, onOverlayHidden = null } = {}) {
+  if (state.localAdvanceDelayTimer) {
+    window.clearTimeout(state.localAdvanceDelayTimer);
+    state.localAdvanceDelayTimer = null;
+  }
+  if (state.localAdvanceCountdownTimer) {
+    window.clearInterval(state.localAdvanceCountdownTimer);
+    state.localAdvanceCountdownTimer = null;
+  }
+  if (hideOverlay) {
+    state.localAdvanceDelayDeadline = 0;
+    state.localAdvanceOverlayDurationMs = 0;
+    state.localAdvanceOverlayMode = "";
+    state.localAdvanceOverlayPrimaryItem = null;
+    state.localAdvanceOverlayFollowItems = null;
+    state.localAdvanceOverlayTotalCount = null;
+    state.localAdvanceDelayItemId = "";
+    hidePlayerDelayOverlay({ onHidden: onOverlayHidden });
+  }
+  state.localAdvanceDelayToken += 1;
+  if (resetInFlight) {
+    state.localAdvanceInFlight = false;
+  }
+}
+
+async function finishLocalAdvanceDelay(token, itemId) {
+  if (token !== state.localAdvanceDelayToken || itemId !== state.localAdvanceDelayItemId) {
+    return;
+  }
+  clearLocalAdvanceDelay({
+    resetInFlight: true,
+    onOverlayHidden: () => {
+      advanceLocalPlayerNow({ showTransition: false }).catch(() => {});
+    },
+  });
+}
+
+function setPlayerFrameContent(html) {
+  const overlay = playerDelayOverlay();
+  if (overlay?.parentElement === elements.playerFrame) {
+    overlay.remove();
+  }
+  elements.playerFrame.innerHTML = html;
+  if (overlay) {
+    elements.playerFrame.appendChild(overlay);
+  }
 }
 
 function teardownMountedPlayer() {
@@ -3251,6 +3324,298 @@ function renderPlayer(currentItem, playbackMode) {
       src="${escapeHtml(selectedAudioUrl)}"
     ></audio>
   `;
+
+  const video = elements.playerFrame.querySelector('video[data-player-role="video"]');
+  const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
+
+  if (!video || !audio) {
+    return;
+  }
+
+  applyStoredVolumeToSplitPlayer(video, audio);
+  showMountedPlayerControls();
+
+  const reportCurrentVideoStatus = () => {
+    reportPlayerStatus(currentItem.id, video);
+  };
+
+  let restoreApplied = false;
+  const maybeRestorePlayback = () => {
+    const pendingRestore = state.pendingPlaybackRestore;
+    if (
+      restoreApplied
+      || !pendingRestore
+      || pendingRestore.itemId !== currentItem.id
+      || pendingRestore.variantId !== selectedAudioVariantForItem(currentItem)?.id
+      || video.readyState < 1
+      || audio.readyState < 1
+    ) {
+      return;
+    }
+
+    restoreApplied = true;
+    state.pendingPlaybackRestore = null;
+    beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: Boolean(pendingRestore.wasPlaying),
+      targetTime: pendingRestore.currentTime,
+      onSettled: reportCurrentVideoStatus,
+    });
+  };
+
+  video.addEventListener("loadedmetadata", () => {
+    showMountedPlayerControls();
+    maybeRestorePlayback();
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
+    reportCurrentVideoStatus();
+  });
+
+  audio.addEventListener("loadedmetadata", () => {
+    maybeRestorePlayback();
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
+  });
+
+  video.addEventListener("play", () => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      state.localSeekResumeAfterSettle = true;
+      state.localShouldBePlaying = true;
+      state.localSeekResumePending = true;
+      video.pause();
+      return;
+    }
+    state.localShouldBePlaying = true;
+    state.localSeekResumePending = false;
+    showMountedPlayerControls();
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    reportCurrentVideoStatus();
+  });
+
+  video.addEventListener("pause", () => {
+    if (state.localSeekResumePending) {
+      return;
+    }
+    if (document.hidden && state.localShouldBePlaying) {
+      window.setTimeout(() => {
+        video.play().catch(() => {});
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+      }, 0);
+      return;
+    }
+    state.localShouldBePlaying = false;
+    if (!audio.paused) {
+      audio.pause();
+    }
+    showMountedPlayerControls();
+    reportCurrentVideoStatus();
+  });
+
+  video.addEventListener("seeking", () => {
+    beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: !video.paused || state.localShouldBePlaying,
+      onSettled: reportCurrentVideoStatus,
+    });
+  });
+
+  video.addEventListener("seeked", () => {
+    showMountedPlayerControls();
+    if (!settleSplitPlayerSeek(video, audio)) {
+      reportCurrentVideoStatus();
+    }
+  });
+
+  video.addEventListener("canplay", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  audio.addEventListener("seeked", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  audio.addEventListener("canplay", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  video.addEventListener("waiting", () => {
+    if (!audio.paused) {
+      audio.pause();
+    }
+  });
+
+  video.addEventListener("playing", () => {
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  });
+
+  video.addEventListener("ratechange", () => {
+    showMountedPlayerControls();
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  });
+
+  video.addEventListener("volumechange", () => {
+    showMountedPlayerControls();
+    syncSplitPlayerVolumeFromVideo(video, audio);
+  });
+
+  ["pointermove", "pointerdown", "touchstart"].forEach((eventName) => {
+    video.addEventListener(eventName, () => {
+      showMountedPlayerControls();
+    }, { passive: true });
+  });
+
+  video.addEventListener("ended", async () => {
+    state.localShouldBePlaying = false;
+    state.localSeekResumePending = false;
+    audio.pause();
+    showMountedPlayerControls();
+    reportCurrentVideoStatus();
+    await handleLocalPlaybackEnded();
+  });
+
+  audio.addEventListener("ended", () => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      return;
+    }
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  });
+
+  state.localPlayerSyncTimer = window.setInterval(() => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+      reportCurrentVideoStatus();
+      return;
+    }
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+    reportCurrentVideoStatus();
+  }, localPlayerSyncIntervalMs);
+
+  window.setTimeout(() => {
+    showMountedPlayerControls();
+    maybeRestorePlayback();
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
+    reportCurrentVideoStatus();
+  }, 0);
+}
+
+function renderPlayer(currentItem, playbackMode) {
+  const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
+  const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
+  const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+
+  const signature = [
+    currentItem ? currentItem.id : "none",
+    playbackMode,
+    selectedVideoUrl,
+    selectedAudioUrl,
+    currentItem ? currentItem.cache_status : "",
+  ].join("|");
+
+  if (signature === state.playerSignature) {
+    if (hasSplitPlayback) {
+      syncMountedLocalPlayer(false);
+    }
+    return;
+  }
+
+  const previousPlayerContext = state.playerContext;
+  if (
+    !state.pendingPlaybackRestore
+    && playbackMode === "local"
+    && currentItem
+    && hasSplitPlayback
+    && previousPlayerContext?.playbackMode === "local"
+    && previousPlayerContext.itemId === currentItem.id
+    && (
+      previousPlayerContext.videoUrl !== selectedVideoUrl
+      || previousPlayerContext.audioUrl !== selectedAudioUrl
+    )
+  ) {
+    const currentVideo = elements.playerFrame.querySelector('video[data-player-role="video"]')
+      || elements.playerFrame.querySelector("video");
+
+    if (currentVideo) {
+      captureLocalPlayerPreferences();
+      state.pendingPlaybackRestore = {
+        itemId: currentItem.id,
+        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
+        currentTime: Number(currentVideo.currentTime || 0),
+        wasPlaying: !currentVideo.paused,
+      };
+    }
+  }
+
+  state.playerSignature = signature;
+  state.playerContext = {
+    itemId: currentItem ? currentItem.id : "",
+    videoUrl: selectedVideoUrl,
+    audioUrl: selectedAudioUrl,
+    playbackMode,
+  };
+
+  captureLocalPlayerPreferences();
+  teardownMountedPlayer();
+
+  if (!currentItem) {
+    setPlayerFrameContent(
+      '<div class="empty-state"><p>\u628a B \u7ad9\u89c6\u9891\u94fe\u63a5\u52a0\u5165\u70b9\u6b4c\u5217\u8868\u540e\uff0c\u8fd9\u91cc\u4f1a\u5f00\u59cb\u64ad\u653e\u3002</p></div>',
+    );
+    return;
+  }
+
+  if (playbackMode === "online") {
+    setPlayerFrameContent(`
+      <iframe
+        src="${escapeHtml(currentItem.embed_url)}"
+        allow="autoplay; fullscreen"
+        allowfullscreen="true"
+        referrerpolicy="origin"
+        sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        title="${escapeHtml(currentItem.display_title)}"
+      ></iframe>
+    `);
+    return;
+  }
+
+  if (!hasSplitPlayback) {
+    setPlayerFrameContent(`
+      <div class="empty-state">
+        <p>\u5f53\u524d\u6b4c\u66f2\u6b63\u5728\u51c6\u5907\u72ec\u7acb\u97f3\u89c6\u9891\u8f68\u3002</p>
+        <p class="empty-hint">${escapeHtml(currentItem.cache_message || "\u6b63\u5728\u540e\u53f0\u7f13\u5b58")}</p>
+      </div>
+    `);
+    return;
+  }
+
+  const willShowOverlay = Boolean(state.pendingSongTransitionOverlayData);
+  const isDelaying = state.localAdvanceDelayDeadline > 0 && Date.now() < state.localAdvanceDelayDeadline;
+  const shouldAutoplay = !(willShowOverlay || isDelaying);
+  const autoplayAttr = shouldAutoplay ? "autoplay" : "";
+
+  setPlayerFrameContent(`
+    <video
+      data-player-role="video"
+      controls
+      controlsList="nofullscreen"
+      ${autoplayAttr}
+      playsinline
+      preload="metadata"
+      src="${escapeHtml(selectedVideoUrl)}"
+    ></video>
+    <audio
+      data-player-role="audio"
+      preload="auto"
+      src="${escapeHtml(selectedAudioUrl)}"
+    ></audio>
+  `);
 
   const video = elements.playerFrame.querySelector('video[data-player-role="video"]');
   const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
@@ -4817,6 +5182,23 @@ async function handleLocalPlaybackEnded(options = {}) {
   // Remove !isPlayerPanelFullscreen() check to allow countdown in normal view
   if (delaySeconds <= 0 || !queuedNextItem()) {
     await advanceLocalPlayerNow();
+    return;
+  }
+  startLocalAdvanceDelay(delaySeconds);
+}
+
+async function handleLocalPlaybackEnded(options = {}) {
+  if (state.localAdvanceInFlight) {
+    return;
+  }
+  const manual = Boolean(options.manual);
+  const delaySeconds = currentSongAdvanceDelaySeconds();
+  if (delaySeconds <= 0 || !queuedNextItem()) {
+    await advanceLocalPlayerNow();
+    return;
+  }
+  if (manual) {
+    await advanceLocalPlayerNow({ showTransition: true });
     return;
   }
   startLocalAdvanceDelay(delaySeconds);
