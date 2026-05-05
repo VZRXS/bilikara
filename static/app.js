@@ -4379,6 +4379,7 @@ async function confirmBindingModal() {
   if (!intent?.url) {
     return;
   }
+  const source = intent.source || "request-form";
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
     setFormMessage("请先选择一个视频分P", true);
@@ -4400,6 +4401,12 @@ async function confirmBindingModal() {
     if (!intent.preserveInput) {
       elements.urlInput.value = "";
     }
+    if (source === "gatcha") {
+      state.gatchaCandidate = null;
+      elements.gatchaResultView.classList.add("hidden");
+      elements.gatchaInitView.classList.remove("hidden");
+      setGatchaMessage("Nozomi power 注入！");
+    }
     setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入点歌列表");
     render();
   } catch (error) {
@@ -4411,6 +4418,8 @@ async function confirmBindingModal() {
           requesterName: intent.requesterName || selectedRequesterName(),
           preserveInput: intent.preserveInput,
           allowRepeat: intent.allowRepeat,
+          source,
+          title: intent.title,
         },
         error.payload?.binding,
       );
@@ -4437,7 +4446,11 @@ async function confirmBindingModal() {
       });
       return;
     }
-    setFormMessage(error.message, true);
+    if (source === "gatcha") {
+      setGatchaMessage(error.message, true);
+    } else {
+      setFormMessage(error.message, true);
+    }
   }
 }
 
@@ -6071,6 +6084,8 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
           position: "tail",
           requesterName,
           preserveInput: false,
+          source: "gatcha",
+          title: state.gatchaCandidate.title,
         },
         error.payload?.binding,
       );
