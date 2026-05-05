@@ -118,6 +118,8 @@ const state = {
   retryActivityById: {},
   gatchaCandidate: null,
   searchCookieVisible: false,
+  searchLarkVisible: false,
+  larkSearchLoading: false,
   searchStageView: "",
   searchFlipTimer: null,
   searchFlipFrame: null,
@@ -254,9 +256,11 @@ const elements = {
   searchTag: document.getElementById("search-tag"),
   searchTitle: document.getElementById("search-title"),
   searchCookieToggle: document.getElementById("search-cookie-toggle"),
+  searchLarkToggle: document.getElementById("search-lark-toggle"),
   searchStage: document.getElementById("search-stage"),
   searchMainView: document.getElementById("search-main-view"),
   searchCookieView: document.getElementById("search-cookie-view"),
+  searchLarkView: document.getElementById("search-lark-view"),
   gatchaPanel: document.getElementById("gatcha-panel"),
   gatchaTag: document.getElementById("gatcha-tag"),
   gatchaTitle: document.getElementById("gatcha-title"),
@@ -287,6 +291,11 @@ const elements = {
   followSearchButton: document.getElementById("follow-search-button"),
   followSongResults: document.getElementById("follow-song-results"),
   followBrowseMessage: document.getElementById("follow-browse-message"),
+  larkSearchForm: document.getElementById("lark-search-form"),
+  larkSearchQuery: document.getElementById("lark-search-query"),
+  larkSearchButton: document.getElementById("lark-search-button"),
+  larkSearchMessage: document.getElementById("lark-search-message"),
+  larkSearchResults: document.getElementById("lark-search-results"),
   gatchaUidForm: document.getElementById("gatcha-uid-form"),
   gatchaUidInput: document.getElementById("gatcha-uid-input"),
   addGatchaUidButton: document.getElementById("add-gatcha-uid-button"),
@@ -901,6 +910,19 @@ async function searchGatchaCache(query) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
+async function searchLarkPool(query) {
+  const normalizedQuery = String(query || "").trim();
+  const response = await fetch(`/api/lark/search?q=${encodeURIComponent(normalizedQuery)}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || "bilikara搜索失败");
+  }
+  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
 async function fetchGatchaBrowse(uid = "", query = "") {
   const params = new URLSearchParams();
   const normalizedUid = String(uid || "").trim();
@@ -965,7 +987,7 @@ async function confirmGatchaUidAdd(intent) {
   }
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(`正在拉取 UP 主：${intent.name || intent.uid} 的稿件...`);
+  setGatchaUidMessage(`正在拉取 UP 主：${intent.name || intent.uid} 的稿件...(稿件较多时可能需要较长时间)`);
   try {
     const result = await addGatchaUid(intent.uid);
     setGatchaUidMessage(gatchaUidResultMessage(result, intent.uid));
@@ -1193,6 +1215,14 @@ function setFollowBrowseMessage(message, isError = false) {
   elements.followBrowseMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function setLarkSearchMessage(message, isError = false) {
+  if (!elements.larkSearchMessage) {
+    return;
+  }
+  elements.larkSearchMessage.textContent = message || "";
+  elements.larkSearchMessage.classList.toggle("is-error", Boolean(isError));
+}
+
 function setGatchaUidMessage(message, isError = false) {
   if (!elements.gatchaUidMessage) {
     return;
@@ -1209,8 +1239,8 @@ function gatchaTaskBusyMessage() {
   return state.data?.gatcha?.message || "拉取任务执行中，请等待任务结束";
 }
 
-function syncSearchStageView(showCookie) {
-  const nextView = showCookie ? "browse" : "search";
+function syncSearchStageView(view) {
+  const nextView = view || "search";
   const isInitialRender = !state.searchStageView;
   if (state.searchStageView === nextView) {
     return;
@@ -1227,7 +1257,8 @@ function syncSearchStageView(showCookie) {
   }
 
   if (isInitialRender) {
-    setClassToggle(elements.searchStage, "is-cookie-view", showCookie);
+    setClassToggle(elements.searchStage, "is-cookie-view", nextView === "browse");
+    setClassToggle(elements.searchStage, "is-lark-view", nextView === "lark");
     elements.searchStage?.classList.remove("is-flipping");
     return;
   }
@@ -1235,7 +1266,8 @@ function syncSearchStageView(showCookie) {
   elements.searchStage?.classList.add("is-flipping");
   state.searchFlipFrame = window.requestAnimationFrame(() => {
     state.searchFlipFrame = null;
-    setClassToggle(elements.searchStage, "is-cookie-view", showCookie);
+    setClassToggle(elements.searchStage, "is-cookie-view", nextView === "browse");
+    setClassToggle(elements.searchStage, "is-lark-view", nextView === "lark");
   });
   state.searchFlipTimer = window.setTimeout(() => {
     elements.searchStage?.classList.remove("is-flipping");
@@ -1245,10 +1277,13 @@ function syncSearchStageView(showCookie) {
 
 function renderSearchCookieFace() {
   const showCookie = Boolean(state.searchCookieVisible);
+  const showLark = Boolean(state.searchLarkVisible);
+  const view = showLark ? "lark" : showCookie ? "browse" : "search";
   const signature = JSON.stringify({
-    face: showCookie ? "browse" : "search",
+    face: view,
     selected: state.followBrowseSelectedUid,
     loading: state.followBrowseLoading,
+    larkLoading: state.larkSearchLoading,
   });
   if (signature === state.searchCookieFaceRenderSignature) {
     return;
@@ -1256,12 +1291,21 @@ function renderSearchCookieFace() {
   state.searchCookieFaceRenderSignature = signature;
 
   setClassToggle(elements.searchPanel, "is-cookie-view", showCookie);
-  syncSearchStageView(showCookie);
+  setClassToggle(elements.searchPanel, "is-lark-view", showLark);
+  syncSearchStageView(view);
   setTextContent(elements.searchTag, showCookie ? "Follow Browse" : "Local Search");
   setTextContent(elements.searchTitle, showCookie ? "关注列表" : "搜索");
   setTextContent(elements.searchCookieToggle, showCookie ? "返回搜索" : "关注浏览");
+  if (showLark) {
+    setTextContent(elements.searchTag, "Bilikara Search");
+    setTextContent(elements.searchTitle, "bilikara搜索");
+  }
+  setTextContent(elements.searchLarkToggle, showLark ? "返回搜索" : "bilikara搜索");
   if (elements.searchCookieToggle?.getAttribute("aria-pressed") !== String(showCookie)) {
     elements.searchCookieToggle.setAttribute("aria-pressed", String(showCookie));
+  }
+  if (elements.searchLarkToggle?.getAttribute("aria-pressed") !== String(showLark)) {
+    elements.searchLarkToggle.setAttribute("aria-pressed", String(showLark));
   }
   if (showCookie) {
     renderFollowBrowse();
@@ -4315,10 +4359,10 @@ async function confirmGatchaFavlistModal() {
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage("正在拉取选中的公开收藏夹...");
+  setGatchaUidMessage("正在拉取选中的公开收藏夹...（稿件较多时可能需要较长时间）");
+  closeGatchaFavlistModal();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
-    closeGatchaFavlistModal();
     setGatchaUidMessage(
       `已拉取 ${result?.matched_folder_count || 0} 个收藏夹，加入 ${result?.item_count || 0} 个稿件。`,
     );
@@ -5038,6 +5082,53 @@ elements.searchResults.addEventListener("click", async (event) => {
     hideSearchResults();
     setSearchMessage("");
     elements.searchQuery.value = "";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+elements.larkSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.larkSearchQuery?.value || "").trim();
+  if (!query) {
+    renderSearchResultItems(elements.larkSearchResults, []);
+    setLarkSearchMessage("请输入搜索关键词。", true);
+    return;
+  }
+
+  state.larkSearchLoading = true;
+  if (elements.larkSearchButton) {
+    elements.larkSearchButton.disabled = true;
+  }
+  setLarkSearchMessage("正在搜索 bilikara 数据库...(第一次搜索需要3-15s启动)");
+  try {
+    const items = await searchLarkPool(query);
+    renderSearchResultItems(elements.larkSearchResults, items, "bilikara 数据库里没有匹配结果。");
+    setLarkSearchMessage(items.length ? `搜索到 ${items.length} 条共享结果。` : "bilikara 数据库里没有匹配结果。");
+  } catch (error) {
+    renderSearchResultItems(elements.larkSearchResults, []);
+    setLarkSearchMessage(error.message, true);
+  } finally {
+    state.larkSearchLoading = false;
+    if (elements.larkSearchButton) {
+      elements.larkSearchButton.disabled = false;
+    }
+    renderSearchCookieFace();
+  }
+});
+
+elements.larkSearchResults?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-url]");
+  if (!button) {
+    return;
+  }
+  const url = String(button.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
   } finally {
     button.disabled = false;
   }
@@ -5877,6 +5968,7 @@ elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
 elements.searchCookieToggle?.addEventListener("click", () => {
+  state.searchLarkVisible = false;
   state.searchCookieVisible = !state.searchCookieVisible;
   renderSearchCookieFace();
   if (state.searchCookieVisible && !state.followBrowseLoading) {
@@ -5886,6 +5978,12 @@ elements.searchCookieToggle?.addEventListener("click", () => {
     }
     loadFollowBrowse({ uid: "", query: "" });
   }
+});
+
+elements.searchLarkToggle?.addEventListener("click", () => {
+  state.searchCookieVisible = false;
+  state.searchLarkVisible = !state.searchLarkVisible;
+  renderSearchCookieFace();
 });
 
 elements.followUpGrid?.addEventListener("click", async (event) => {

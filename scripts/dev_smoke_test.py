@@ -190,6 +190,8 @@ class SmokeRunner:
                 "refresh-gatcha-cache-button",
                 "pull-gatcha-favlist-button",
                 "gatcha-favlist-modal",
+                "search-lark-toggle",
+                "lark-search-form",
             ],
             "/remote": [
                 "follow-browse-toggle",
@@ -209,6 +211,7 @@ class SmokeRunner:
                 "downloadHistoryExport",
                 "previewGatchaUid",
                 "/api/gatcha/favlist/preview",
+                "/api/lark/search",
                 "/api/gatcha/refresh",
                 "/api/gatcha/favlist",
                 "/api/app/update",

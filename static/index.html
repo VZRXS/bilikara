@@ -433,9 +433,14 @@
                     <p class="section-tag" id="search-tag">Local Search</p>
                     <h2 id="search-title">搜索</h2>
                   </div>
-                  <button type="button" id="search-cookie-toggle" class="toolbar-button ghost search-cookie-toggle">
-                    关注浏览
-                  </button>
+                  <div class="search-head-actions">
+                    <button type="button" id="search-cookie-toggle" class="toolbar-button ghost search-cookie-toggle">
+                      关注浏览
+                    </button>
+                    <button type="button" id="search-lark-toggle" class="toolbar-button ghost search-lark-toggle">
+                      bilikara搜索
+                    </button>
+                  </div>
                 </div>
 
                 <div id="search-stage" class="search-stage">
@@ -477,6 +482,16 @@
                         </div>
                         <p class="gatcha-message" id="follow-browse-message" role="status"></p>
                       </div>
+                    </div>
+                    <div id="search-lark-view" class="search-face search-face-lark">
+                      <form id="lark-search-form" class="search-inputs">
+                        <div class="input-group">
+                          <input type="text" id="lark-search-query" placeholder="在 bilikara 共享数据库中搜索" autocomplete="off">
+                        </div>
+                        <button type="submit" id="lark-search-button" class="next-button">搜索</button>
+                      </form>
+                      <p class="search-message" id="lark-search-message" role="status"></p>
+                      <div id="lark-search-results" class="search-results hidden"></div>
                     </div>
                   </div>
                 </div>

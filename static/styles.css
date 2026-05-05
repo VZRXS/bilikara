@@ -3466,6 +3466,10 @@ select:disabled {
   transform: rotateY(180deg);
 }
 
+.search-stage.is-lark-view .search-stage-inner {
+  transform: none;
+}
+
 .search-face {
   grid-area: 1 / 1;
   display: grid;
@@ -3488,6 +3492,12 @@ select:disabled {
   transform: rotateY(180deg);
 }
 
+.search-face-lark {
+  pointer-events: none;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: 240px;
+}
+
 .search-stage.is-cookie-view .search-face-front {
   pointer-events: none;
 }
@@ -3496,8 +3506,15 @@ select:disabled {
   pointer-events: auto;
 }
 
+.search-stage.is-lark-view .search-face-lark {
+  pointer-events: auto;
+}
+
 .search-stage:not(.is-cookie-view):not(.is-flipping) .search-face-back,
-.search-stage.is-cookie-view:not(.is-flipping) .search-face-front {
+.search-stage.is-cookie-view:not(.is-flipping) .search-face-front,
+.search-stage:not(.is-lark-view):not(.is-flipping) .search-face-lark,
+.search-stage.is-lark-view:not(.is-flipping) .search-face-front,
+.search-stage.is-lark-view:not(.is-flipping) .search-face-back {
   display: none;
   content-visibility: hidden;
 }
@@ -3518,6 +3535,13 @@ select:disabled {
 
 .search-sub-card-head > div {
   min-width: 0;
+}
+
+.search-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .song-requester,

@@ -14,6 +14,7 @@ from .config import BILIBILI_HEADERS, GATCHA_KEYWORDS
 from dataclasses import dataclass
 from .models import PlaylistItem
 import bilikara.config as cfg  
+from .lark_pool_client import append_lark_pool_entries_in_background
 
 VIDEO_PATH_RE = re.compile(r"/video/(?P<vid>(BV[0-9A-Za-z]+|av\d+))", re.IGNORECASE)
 BV_RE = re.compile(r"^(BV[0-9A-Za-z]+)$", re.IGNORECASE)
@@ -880,14 +881,21 @@ def refresh_gatcha_favlist(
 ) -> dict:
     if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
         raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+    result: dict | None = None
+    entries: list[dict] = []
     try:
         if on_start is not None:
             on_start()
-        return _refresh_gatcha_favlist_unlocked(raw_mid, raw_folder_ids)
+        result = _refresh_gatcha_favlist_unlocked(raw_mid, raw_folder_ids)
+        with _GATCHA_FAVLIST_LOCK:
+            entries = list(_load_gatcha_favlist().get("items") or [])
     finally:
         _GATCHA_REFRESH_LOCK.release()
         if on_done is not None:
             on_done()
+    if entries:
+        _append_lark_pool_entries_async(entries)
+    return result or {}
 
 
 def _refresh_existing_gatcha_favlist_cache() -> dict | None:
@@ -1073,8 +1081,9 @@ def refresh_gatcha_cache_in_background(
             on_start()
 
     def _worker() -> None:
+        cache_payload: dict | None = None
         try:
-            refresh_gatcha_cache()
+            cache_payload = refresh_gatcha_cache()
         except Exception:
             return
         finally:
@@ -1082,6 +1091,8 @@ def refresh_gatcha_cache_in_background(
                 _GATCHA_REFRESH_LOCK.release()
                 if on_done is not None:
                     on_done()
+        if cache_payload is not None:
+            _append_lark_pool_entries_async(_gatcha_cache_payload_entries(cache_payload))
 
     threading.Thread(target=_worker, daemon=True, name="gatcha-cache-refresh").start()
     return True
@@ -1090,6 +1101,7 @@ def refresh_gatcha_cache_in_background(
 def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done: callable | None = None) -> dict:
     if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
         raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+    entries: list[dict] = []
     try:
         if on_start is not None:
             on_start()
@@ -1131,10 +1143,20 @@ def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done
         }
         cache_payload["profiles"] = cache_profiles
         cache_result = _refresh_gatcha_uid_cache(cache_payload, mid)
+        with _GATCHA_CACHE_LOCK:
+            fresh_cache_payload = _load_gatcha_cache()
+        entries = _gatcha_cache_payload_entries(
+            {
+                "uids": {mid: fresh_cache_payload.get("uids", {}).get(mid, [])},
+                "profiles": {mid: fresh_cache_payload.get("profiles", {}).get(mid, {})},
+            }
+        )
     finally:
         _GATCHA_REFRESH_LOCK.release()
         if on_done is not None:
             on_done()
+    if entries:
+        _append_lark_pool_entries_async(entries)
 
     return {
         "uid": mid,
@@ -1184,6 +1206,37 @@ def _local_gatcha_candidates_by_uid() -> dict[str, list[dict]]:
         if valid_entries:
             grouped_candidates[mid] = valid_entries
     return grouped_candidates
+
+
+def _gatcha_cache_payload_entries(cache_payload: dict) -> list[dict]:
+    uid_entries = cache_payload.get("uids") if isinstance(cache_payload, dict) else {}
+    if not isinstance(uid_entries, dict):
+        return []
+    profiles = cache_payload.get("profiles") if isinstance(cache_payload, dict) else {}
+    if not isinstance(profiles, dict):
+        profiles = {}
+    entries: list[dict] = []
+    for mid, raw_entries in uid_entries.items():
+        if not isinstance(raw_entries, list):
+            continue
+        profile = profiles.get(str(mid)) if isinstance(profiles.get(str(mid)), dict) else {}
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+            payload = dict(entry)
+            payload.setdefault("mid", str(mid))
+            if profile:
+                payload.setdefault("owner_name", str(profile.get("name") or ""))
+                payload.setdefault("owner_url", str(profile.get("space_url") or ""))
+            entries.append(payload)
+    return entries
+
+
+def _append_lark_pool_entries_async(entries: list[dict]) -> None:
+    try:
+        append_lark_pool_entries_in_background(entries)
+    except Exception:
+        pass
 
 
 def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
