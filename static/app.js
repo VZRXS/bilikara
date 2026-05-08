@@ -686,6 +686,10 @@ const avcPlaybackLevels = [
   { name: "Baseline@L2.1", codec: 'video/mp4; codecs="avc1.42E015"', maxAvcQualityIndex: 6 },
 ];
 
+function isSupportedCanPlayTypeResult(result) {
+  return result === "probably" || result === "maybe";
+}
+
 function detectMediaCapabilities() {
   const video = document.createElement("video");
   const canPlayType = {};
@@ -695,7 +699,7 @@ function detectMediaCapabilities() {
       ? video.canPlayType(mimeType)
       : "";
     canPlayType[mimeType] = result;
-    if (result === "probably" || result === "maybe") {
+    if (isSupportedCanPlayTypeResult(result)) {
       hevcSupported = true;
     }
   }
@@ -705,7 +709,7 @@ function detectMediaCapabilities() {
       ? video.canPlayType(level.codec)
       : "";
     canPlayType[level.codec] = result;
-    const supported = result === "probably" || result === "maybe";
+    const supported = isSupportedCanPlayTypeResult(result);
     if (!supportedAvcLevel && supported) {
       supportedAvcLevel = level;
     }
@@ -716,10 +720,14 @@ function detectMediaCapabilities() {
       max_avc_quality_index: level.maxAvcQualityIndex,
     };
   });
+  const assumeHighestAvcLevel = !supportedAvcLevel
+    && avcLevels.length > 0
+    && avcLevels.every((level) => !level.can_play_type);
+  const effectiveAvcLevel = supportedAvcLevel || (assumeHighestAvcLevel ? avcPlaybackLevels[0] : null);
   return {
     hevc_supported: hevcSupported,
-    avc_supported: Boolean(supportedAvcLevel),
-    max_avc_quality_index: supportedAvcLevel ? supportedAvcLevel.maxAvcQualityIndex : 6,
+    avc_supported: Boolean(effectiveAvcLevel),
+    max_avc_quality_index: effectiveAvcLevel ? effectiveAvcLevel.maxAvcQualityIndex : 6,
     avc_levels: avcLevels,
     can_play_type: canPlayType,
     user_agent: window.navigator?.userAgent || "",
