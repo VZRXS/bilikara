@@ -375,6 +375,9 @@ function invalidateLanguageSensitiveRenderCache() {
   state.gatchaTaskLastMessageSignature = "";
   state.queueRenderSignature = "";
   state.historyRenderSignature = "";
+  state.playerControlsRenderSignature = "";
+  state.listHeaderRenderSignature = "";
+  state.currentNowPlayingSignature = "";
 }
 
 function setLanguage(language) {

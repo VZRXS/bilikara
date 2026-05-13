@@ -111,10 +111,12 @@ h1 {
   margin-top: 14px;
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 12px;
   position: relative;
+  min-height: 92px;
+  padding-right: 104px;
 }
 
 .mode-control {
@@ -128,17 +130,18 @@ h1 {
 
 
 .language-control {
-  width: clamp(176px, 34vw, 224px);
-  min-width: 176px;
+  width: clamp(120px, 25vw, 180px);
+  min-width: 120px;
   justify-items: stretch;
 }
 
 
 .remote-qr-control {
-  position: relative;
+  position: absolute;
+  right: 0;
+  bottom: 0;
   width: 92px;
   min-width: 92px;
-  margin-left: auto;
   justify-items: center;
 }
 
@@ -293,7 +296,7 @@ h1 {
 .language-switch .mode-button {
   flex: 1 1 0;
   min-width: 0;
-  padding: 9px 8px;
+  padding: 9px 4px;
 }
 
 .mode-button.active {
