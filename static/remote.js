@@ -373,6 +373,8 @@ function invalidateLanguageSensitiveRenderCache() {
   state.followBrowseRenderSignature = "";
   state.requesterSelectRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
+  state.queueRenderSignature = "";
+  state.historyRenderSignature = "";
 }
 
 function setLanguage(language) {
@@ -2915,6 +2917,7 @@ function renderQueue(playlist) {
 
   playlist.forEach((item, index) => {
     const node = elements.queueItemTemplate.content.firstElementChild.cloneNode(true);
+    applyStaticI18n(node);
     node.classList.toggle("ready", item.cache_status === "ready");
     const orderNode = node.querySelector(".queue-order");
     if (orderNode) {
@@ -3121,6 +3124,7 @@ function renderHistory(history) {
 
   history.forEach((entry) => {
     const node = elements.historyItemTemplate.content.firstElementChild.cloneNode(true);
+    applyStaticI18n(node);
     node.querySelector(".history-title").textContent = entry.display_title;
     const requesterNode = node.querySelector(".history-requester");
     const requesterText = requesterBadgeText(entry.requester_name);

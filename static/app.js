@@ -4465,8 +4465,11 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
   });
 
   playlist.forEach((item, index) => {
-    const node = existingNodes.get(item.id)
-      || elements.playlistTemplate.content.firstElementChild.cloneNode(true);
+    let node = existingNodes.get(item.id);
+    if (!node) {
+      node = elements.playlistTemplate.content.firstElementChild.cloneNode(true);
+      applyStaticI18n(node);
+    }
     if (node.dataset.id !== item.id) {
       node.dataset.id = item.id;
     }
@@ -4670,6 +4673,7 @@ function renderHistory(history) {
 
   history.forEach((entry) => {
     const node = elements.historyTemplate.content.firstElementChild.cloneNode(true);
+    applyStaticI18n(node);
     const title = node.querySelector(".history-title");
     const requester = node.querySelector(".history-requester");
     title.textContent = entry.display_title;

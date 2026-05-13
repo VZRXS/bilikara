@@ -128,20 +128,9 @@ h1 {
 
 
 .language-control {
-  width: 132px;
-  min-width: 132px;
-  justify-items: start;
-}
-
-
-.language-switch {
-  align-self: center;
-}
-
-
-.language-switch .mode-button {
-  min-width: 0;
-  padding: 9px 10px;
+  width: clamp(176px, 34vw, 224px);
+  min-width: 176px;
+  justify-items: stretch;
 }
 
 
@@ -282,6 +271,12 @@ h1 {
   border: 1px solid rgba(255, 255, 255, 0.9);
 }
 
+.mode-switch.language-switch {
+  width: 100%;
+  align-self: stretch;
+  justify-content: space-between;
+}
+
 .mode-button {
   border: none;
   background: transparent;
@@ -293,6 +288,12 @@ h1 {
     transform 0.18s ease,
     background 0.18s ease,
     color 0.18s ease;
+}
+
+.language-switch .mode-button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 9px 8px;
 }
 
 .mode-button.active {

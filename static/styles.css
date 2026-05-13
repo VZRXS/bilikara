@@ -503,15 +503,6 @@ h2 {
   align-self: center;
 }
 
-.language-switch {
-  align-self: center;
-}
-
-.language-switch .mode-button {
-  min-width: 0;
-  padding: 9px 10px;
-}
-
 .playback-control {
   width: var(--playback-control-width);
   min-width: var(--playback-control-width);
@@ -1222,11 +1213,23 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.9);
 }
 
+.mode-switch.language-switch {
+  width: 100%;
+  align-self: stretch;
+  justify-content: space-between;
+}
+
 .mode-button {
   background: transparent;
   color: var(--muted);
   padding: 9px 14px;
   border-radius: 999px;
+}
+
+.language-switch .mode-button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 9px 8px;
 }
 
 .mode-button.active {
