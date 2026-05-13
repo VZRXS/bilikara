@@ -295,10 +295,6 @@ h1 {
     color 0.18s ease;
 }
 
-.mode-button:hover {
-  transform: translateY(-1px);
-}
-
 .mode-button.active {
   background: var(--accent);
   color: white;
@@ -470,10 +466,6 @@ h1 {
   cursor: pointer;
   box-shadow: 0 8px 18px rgba(79, 56, 39, 0.08);
   transition: transform 0.18s ease, box-shadow 0.18s ease;
-}
-
-.audio-variant-toggle:hover {
-  transform: translateY(-1px);
 }
 
 .audio-variant-toggle span {
@@ -687,16 +679,6 @@ h1 {
   border: 1px solid rgba(67, 53, 41, 0.08);
 }
 
-#remote-av-sync-panel .remote-step-button:hover,
-#remote-av-sync-panel .remote-reset-button:hover,
-#remote-volume-panel .remote-mute-button:hover {
-  border-color: rgba(202, 91, 60, 0.22);
-}
-
-#remote-av-sync-panel .remote-reset-button {
-  grid-column: 1;
-}
-
 #remote-av-sync-panel .remote-input-wrap {
   grid-column: 2 / -1;
   width: 100%;
@@ -759,6 +741,12 @@ h1 {
 .player-control-row .ghost-button,
 .player-control-row .primary-button {
   box-shadow: none;
+}
+
+.primary-button,
+.toggle-button.active,
+button[data-control-action="next-track"] {
+  transition: all 0.3s ease;
 }
 
 .player-control-row .ghost-button:active,
@@ -1323,11 +1311,17 @@ select:disabled {
 
 .search-result-item > div,
 .search-result-meta {
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
 }
 
 .search-result-item .primary-button {
+  grid-column: 2;
+  grid-row: 1;
   justify-self: end;
+  align-self: center;
+  min-width: max-content;
   white-space: nowrap;
 }
 
@@ -1378,9 +1372,9 @@ select:disabled {
   display: grid;
   gap: 12px;
   text-align: center;
-  height: 154px;
+  min-height: 154px;
   align-content: start;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .gatcha-actions {
@@ -1468,10 +1462,12 @@ select:disabled {
 }
 
 .remote-search-stage {
+  --remote-search-stage-height: 360px;
+  --remote-follow-grid-height: 360px;
   position: relative;
   min-width: 0;
   max-width: 100%;
-  height: clamp(260px, 46vh, 460px);
+  height: var(--remote-search-stage-height);
   perspective: 1400px;
 }
 
@@ -1481,6 +1477,7 @@ select:disabled {
 
 .remote-search-stage-inner {
   display: grid;
+  height: 100%;
   min-width: 0;
   max-width: 100%;
   transform-style: preserve-3d;
@@ -1530,6 +1527,7 @@ select:disabled {
 }
 
 .remote-search-face-back {
+  grid-template-rows: minmax(0, 1fr) auto;
   transform: rotateY(120deg);
 }
 
@@ -1561,8 +1559,10 @@ select:disabled {
 .remote-search-stage.is-flip-pruned[data-previous-view="search"] .remote-search-face-front,
 .remote-search-stage.is-flip-pruned[data-previous-view="browse"] .remote-search-face-back,
 .remote-search-stage.is-flip-pruned[data-previous-view="lark"] .remote-search-face-lark {
+  display: none;
   visibility: hidden;
   pointer-events: none;
+  content-visibility: hidden;
 }
 
 .remote-search-stage.is-flip-pruned[data-next-view="search"] .remote-search-face-back,
@@ -1571,8 +1571,10 @@ select:disabled {
 .remote-search-stage.is-flip-pruned[data-next-view="browse"] .remote-search-face-lark,
 .remote-search-stage.is-flip-pruned[data-next-view="lark"] .remote-search-face-front,
 .remote-search-stage.is-flip-pruned[data-next-view="lark"] .remote-search-face-back {
+  display: none;
   visibility: hidden;
   pointer-events: none;
+  content-visibility: hidden;
 }
 
 .remote-search-stage.is-flipping[data-skipped-view="search"] .remote-search-face-front,
@@ -1595,13 +1597,20 @@ select:disabled {
 #follow-up-items-view {
   display: grid;
   gap: 12px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.follow-up-items-view,
+#follow-up-items-view {
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .follow-up-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: 10px;
-  max-height: 240px;
+  gap: 8px;
+  max-height: var(--remote-follow-grid-height);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 4px 4px 4px 0;
@@ -1609,7 +1618,7 @@ select:disabled {
 
 .follow-up-button {
   display: grid;
-  min-height: 72px;
+  min-height: 68px;
   gap: 6px;
   align-content: center;
   padding: 10px;
@@ -1706,9 +1715,12 @@ select:disabled {
   font-size: 16px;
   line-height: 1.4;
   margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .gatcha-uid-view {

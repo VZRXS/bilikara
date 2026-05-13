@@ -987,7 +987,7 @@ h2 {
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 6px 14px rgba(88, 56, 30, 0.14);
   transform: translateX(0);
-  transition: transform 180ms ease;
+  transition: transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .cache-preview-field input:checked + .cache-preview-switch,
@@ -1837,12 +1837,13 @@ h2 {
 }
 
 .audio-variant-bar {
-  margin-top: 12px;
+  margin-top: 14px;
+  padding-top: 2px;
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  contain: paint;
-  isolation: isolate;
+  position: relative;
+  z-index: 10;
 }
 
 .audio-variant-list {
@@ -2197,6 +2198,11 @@ h2 {
   transform: translateY(-1px);
 }
 
+.audio-variant-button:hover,
+.audio-variant-button.active:hover {
+  transform: none;
+}
+
 .audio-variant-button:disabled {
   opacity: 0.58;
   cursor: wait;
@@ -2207,12 +2213,12 @@ h2 {
 .empty-state {
   padding: 24px;
   text-align: center;
-  color: rgba(15, 23, 42, 0.84);
+  color: rgba(255, 244, 233, 0.84);
 }
 
 .empty-hint {
   margin-top: 10px;
-  color: rgba(15, 23, 42, 0.68);
+  color: rgba(255, 244, 233, 0.68);
 }
 
 .compact-form {
@@ -3416,8 +3422,8 @@ select:disabled {
   margin: 6px 0;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
   overflow: hidden;
 }
 
@@ -3768,7 +3774,7 @@ select:disabled {
 
 .search-stage.is-lark-view:not(.is-flipping):has(#lark-search-hitbox-button:hover) #lark-search-button,
 .search-stage.is-lark-view:not(.is-flipping):has(#lark-search-hitbox-button:focus-visible) #lark-search-button {
-  box-shadow: 0 6px 20px rgba(0, 210, 255, 0.6);
+  box-shadow: 0 6px 20px rgba(208, 90, 63, 0.22);
   transform: translateY(-2px);
 }
 
@@ -4362,4 +4368,40 @@ select:disabled {
   .history-actions button {
     flex: 1 1 0;
   }
+}
+
+/* Keep PR #57 interaction behavior while using the reverted color theme. */
+.next-button,
+.compact-form button[type="submit"],
+.primary-button,
+.session-user-form button,
+.song-actions button:first-child,
+.history-actions button:first-child,
+.mode-button.active,
+.audio-variant-button.active,
+.audio-variant-toggle,
+.cache-update-button {
+  transition: all 0.3s ease;
+}
+
+.next-button:hover,
+.compact-form button[type="submit"]:hover,
+.primary-button:hover,
+.session-user-form button:hover,
+.song-actions button:first-child:hover,
+.history-actions button:first-child:hover,
+.audio-variant-button.active:hover,
+.audio-variant-toggle:hover,
+.cache-update-button:hover {
+  transform: translateY(-2px);
+}
+
+.player-frame {
+  position: relative;
+  z-index: 5;
+}
+
+.audio-variant-button:hover,
+.audio-variant-button.active:hover {
+  transform: none;
 }

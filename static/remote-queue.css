@@ -239,7 +239,7 @@
 }
 
 .queue-item.dragging {
-  opacity: 0.58;
+  opacity: 0.52;
   pointer-events: none;
 }
 
@@ -388,6 +388,7 @@
   border-radius: 22px;
   padding: 6px;
   box-shadow: 0 8px 24px rgba(79, 56, 39, 0.15);
+  backdrop-filter: blur(12px);
   z-index: 100;
   display: flex;
   flex-wrap: nowrap;
