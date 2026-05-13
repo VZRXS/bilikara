@@ -3647,29 +3647,23 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
 
   elements.audioVariantBar.append(list, toggleButton);
-  elements.audioVariantBar.classList.remove("is-collapsed", "is-expanded");
+
+  const firstButton = list.querySelector(".audio-variant-button");
+  const firstRowHeight = firstButton
+    ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
+    : 44;
+  const isWrapped = list.scrollHeight > firstRowHeight + 2;
+
+  elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
+  elements.audioVariantBar.classList.toggle("is-expanded", isWrapped && state.audioVariantBarExpanded);
+  toggleButton.classList.toggle("hidden", !isWrapped);
+  if (isWrapped) {
+    list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
+    toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
+  } else {
+    state.audioVariantBarExpanded = false;
+  }
   setClassToggle(elements.audioVariantBar, "hidden", false);
-
-  requestAnimationFrame(() => {
-    if (!elements.audioVariantBar.contains(list)) {
-      return;
-    }
-    const firstButton = list.querySelector(".audio-variant-button");
-    const firstRowHeight = firstButton
-      ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
-      : 44;
-    const isWrapped = list.scrollHeight > firstRowHeight + 2;
-
-    elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
-    elements.audioVariantBar.classList.toggle("is-expanded", isWrapped && state.audioVariantBarExpanded);
-    toggleButton.classList.toggle("hidden", !isWrapped);
-    if (isWrapped) {
-      list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
-      toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
-    } else {
-      state.audioVariantBarExpanded = false;
-    }
-  });
 }
 
 function renderAvSyncControls(playbackMode, playerSettings) {
