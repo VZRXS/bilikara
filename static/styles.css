@@ -13,7 +13,7 @@
   --action-button-width: 96px;
   --top-controls-width: 628px;
   --status-chip-width: 164px;
-  --language-control-width: 176px;
+  --language-control-width: 184px;
   --layout-control-width: 164px;
   --remote-mini-control-width: 100px;
   --playback-control-width: 228px;
@@ -1214,9 +1214,19 @@ h2 {
 }
 
 .mode-switch.language-switch {
-  width: 100%;
-  align-self: stretch;
-  justify-content: space-between;
+  width: fit-content;
+  align-self: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.language-switch .mode-button {
+  aspect-ratio: 1 / 1;
+  padding: 10px 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .mode-button {

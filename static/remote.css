@@ -130,8 +130,8 @@ h1 {
 
 
 .language-control {
-  width: clamp(120px, 25vw, 180px);
-  min-width: 120px;
+  width: fit-content;
+  min-width: 0;
   justify-items: stretch;
 }
 
@@ -294,9 +294,12 @@ h1 {
 }
 
 .language-switch .mode-button {
-  flex: 1 1 0;
-  min-width: 0;
-  padding: 9px 4px;
+  aspect-ratio: 1 / 1;
+  padding: 9px 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .mode-button.active {
