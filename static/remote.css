@@ -275,9 +275,11 @@ h1 {
 }
 
 .mode-switch.language-switch {
-  width: 100%;
-  align-self: stretch;
-  justify-content: space-between;
+  width: auto;
+  align-self: start;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .mode-button {
@@ -294,9 +296,11 @@ h1 {
 }
 
 .language-switch .mode-button {
-  aspect-ratio: 1 / 1;
-  padding: 9px 0;
-  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  padding: 0;
+  flex: 0 0 40px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1216,7 +1220,7 @@ select:disabled {
 
 .history-export-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 8px;
   margin: -4px 0 14px;
 }
@@ -1868,14 +1872,6 @@ select:disabled {
 
   .view-toggle {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .history-export-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .history-export-source {
-    grid-column: 1 / -1;
   }
 
   .player-control-row {
