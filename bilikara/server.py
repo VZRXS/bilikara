@@ -4,6 +4,9 @@ import atexit
 from email.utils import formatdate
 import json
 import mimetypes
+mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("video/mp4", ".m4s")
+mimetypes.add_type("audio/mp4", ".m4a")
 import re
 import socket
 import threading

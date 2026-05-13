@@ -958,9 +958,47 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertEqual(result["audio_variants"][0]["audio_url"], "/media/song-a/audio-p1/audio.m4a")
+        self.assertEqual(result["audio_variants"][0]["page"], 1)
         self.assertNotIn("media_url", result["audio_variants"][0])
         validation_labels = [entry["label"] for entry in result["validation_files"]]
         self.assertEqual(validation_labels, ["视频轨 P1", "音轨 P1"])
+
+    def test_download_selected_streams_records_page_for_single_p2_audio_binding(self):
+        item_dir = self.cache_dir / "song-a"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        video_file = item_dir / "video-p2" / "video.mp4"
+        audio_file = item_dir / "audio-p2" / "audio.m4a"
+        log_path = Path(self.temp_dir.name) / "logs" / "song-a.log"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        audio_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"video")
+        audio_file.write_bytes(b"audio")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                item.selected_pages = [2]
+                item.selected_parts = ["伴奏"]
+                item.available_pages = [1, 2]
+                item.available_parts = ["原曲", "伴奏"]
+                item.video_page = 2
+                manager.desired_ids.add(item.id)
+                with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_file]):
+                    result = manager._download_selected_streams(
+                        item,
+                        Path("/tools/BBDown"),
+                        Path("/tools/ffmpeg"),
+                        item_dir,
+                        log_path,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(Path(result["video_relative_path"]).as_posix(), "song-a/video-p2/video.mp4")
+        self.assertEqual(result["audio_variants"][0]["id"], "p2_track_1")
+        self.assertEqual(result["audio_variants"][0]["page"], 2)
+        self.assertEqual(result["selected_audio_variant_id"], "p2_track_1")
 
     def test_start_bbdown_login_removes_stale_qr_image(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"

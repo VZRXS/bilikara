@@ -26,7 +26,7 @@
     elements.queueList.innerHTML = "";
     if (!playlist.length) {
       elements.queueList.innerHTML =
-        '<div class="queue-empty">点歌列表暂时是空的，可以继续点下一首歌。</div>';
+        `<div class="queue-empty">${typeof htmlT === "function" ? htmlT("remote.queueEmpty") : "remote.queueEmpty"}</div>`;
       return;
     }
 
@@ -164,7 +164,7 @@
 
   async function reorderQueue(itemId, index) {
     state.data = await apiPost("/api/playlist/reorder", { item_id: itemId, index });
-    setFormMessage("已更新点歌列表顺序。");
+    setFormMessage(typeof t === "function" ? t("remote.queueOrderUpdated") : "remote.queueOrderUpdated");
     render();
   }
 
@@ -177,17 +177,17 @@
       remove: {
         url: "/api/playlist/remove",
         payload: { item_id: itemId },
-        message: "已从点歌列表移除。",
+        message: typeof t === "function" ? t("list.removedSong") : "list.removedSong",
       },
       "move-next": {
         url: "/api/playlist/move-next",
         payload: { item_id: itemId },
-        message: "已顶歌到下一首。",
+        message: typeof t === "function" ? t("remote.movedNext") : "remote.movedNext",
       },
       "play-now": {
         url: "/api/playlist/play-now",
         payload: { item_id: itemId },
-        message: "已立即播放这首歌。",
+        message: typeof t === "function" ? t("remote.playNowSuccess") : "remote.playNowSuccess",
       },
     };
 
@@ -196,7 +196,7 @@
       return;
     }
 
-    if (action === "remove" && !window.confirm("确定从点歌列表移除这首歌吗？")) {
+    if (action === "remove" && !window.confirm(typeof t === "function" ? t("list.removeConfirm") : "list.removeConfirm")) {
       return;
     }
 

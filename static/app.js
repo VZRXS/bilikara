@@ -26,6 +26,7 @@ const storageKeys = {
   playerMuted: "bilikara.player.muted",
   avOffsetMs: "bilikara.player.av_offset_ms",
   layoutMode: "bilikara.layout.mode",
+  language: "bilikara.ui.language",
   updatePreview: "bilikara.update.preview",
 };
 
@@ -148,6 +149,9 @@ const state = {
   fullscreenRequestToastTimer: null,
   fullscreenRequestToastHideTimer: null,
   layoutMode: "full",
+  language: "zh",
+  translations: {},
+  translationsLoaded: false,
 };
 
 const elements = {
@@ -221,6 +225,7 @@ const elements = {
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
+  languageSwitch: document.getElementById("language-switch"),
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
@@ -388,7 +393,7 @@ function showFullscreenRequestToast(title) {
   toast.replaceChildren();
   const label = document.createElement("span");
   label.className = "fullscreen-request-toast-label";
-  label.textContent = "新点歌";
+  label.textContent = t("toast.incomingRequest");
   const titleNode = document.createElement("span");
   titleNode.className = "fullscreen-request-toast-title";
   titleNode.textContent = normalizedTitle;
@@ -426,12 +431,12 @@ function maybeShowIncomingRequestToast(previousData, nextData) {
     return;
   }
   const item = newItems[newItems.length - 1];
-  showFullscreenRequestToast(item.display_title || item.title || "新点歌");
+  showFullscreenRequestToast(item.display_title || item.title || t("toast.incomingRequest"));
 }
 
 function requesterBadgeText(requesterName) {
   const normalized = String(requesterName || "").trim();
-  return normalized ? `点歌人 ${normalized}` : "";
+  return normalized ? t("request.requesterBadge", { name: normalized }) : "";
 }
 
 function setTextContent(element, value) {
@@ -474,6 +479,122 @@ function setElementTitle(element, value) {
   }
 }
 
+function normalizeLanguage(value) {
+  return ["zh", "en", "ja"].includes(value) ? value : "zh";
+}
+
+function t(key, values = {}) {
+  const normalizedKey = String(key || "");
+  const active = state.translations?.[state.language] || {};
+  const fallback = state.translations?.zh || {};
+  let text = active[normalizedKey] || fallback[normalizedKey] || normalizedKey;
+  Object.entries(values || {}).forEach(([name, value]) => {
+    text = text.split(`{${name}}`).join(String(value ?? ""));
+  });
+  return text;
+}
+
+function htmlT(key, values = {}) {
+  return escapeHtml(t(key, values));
+}
+
+function activeLocale() {
+  if (state.language === "ja") {
+    return "ja-JP";
+  }
+  if (state.language === "en") {
+    return "en-US";
+  }
+  return "zh-CN";
+}
+
+function applyStaticI18n(root = document) {
+  root.querySelectorAll("[data-i18n]").forEach((node) => {
+    setTextContent(node, t(node.dataset.i18n));
+  });
+  root.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
+  });
+  root.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    setElementTitle(node, t(node.dataset.i18nTitle));
+  });
+  root.querySelectorAll("[data-i18n-aria-label]").forEach((node) => {
+    setElementAttribute(node, "aria-label", t(node.dataset.i18nAriaLabel));
+  });
+  root.querySelectorAll("[data-i18n-alt]").forEach((node) => {
+    setElementAttribute(node, "alt", t(node.dataset.i18nAlt));
+  });
+  document.title = t("document.title");
+  document.documentElement.lang = state.language === "ja" ? "ja" : state.language === "en" ? "en" : "zh-CN";
+}
+
+function renderLanguageSwitch() {
+  elements.languageSwitch?.querySelectorAll("button[data-language]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.language === state.language);
+  });
+}
+
+function invalidateLanguageSensitiveRenderCache() {
+  state.lastPollRenderSignature = "";
+  state.requesterSelectRenderSignature = "";
+  state.sessionUsersRenderSignature = "";
+  state.playerFullscreenButtonRenderSignature = "";
+  state.followBrowseRenderSignature = "";
+  state.searchCookieFaceRenderSignature = "";
+  state.gatchaUidFaceRenderSignature = "";
+  state.gatchaTaskLastMessageSignature = "";
+  state.currentTitleRenderSignature = "";
+  state.remoteAccessRenderSignature = "";
+  state.listHeaderRenderSignature = "";
+  state.cacheSettingsRenderSignature = "";
+  state.bbdownLoginRenderSignature = "";
+  state.cachePolicyControlRenderSignature = "";
+  state.queueCurrentRenderSignature = "";
+  state.playlistEmptyRenderSignature = "";
+  state.historyRenderSignature = "";
+  state.audioVariantBarRenderSignature = "";
+  state.volumeControlsRenderSignature = "";
+  state.playerSignature = "";
+}
+
+function setLanguage(language) {
+  const nextLanguage = normalizeLanguage(language);
+  if (state.language === nextLanguage) {
+    renderLanguageSwitch();
+    return;
+  }
+  state.language = nextLanguage;
+  writeLocalPreference(storageKeys.language, nextLanguage);
+  invalidateLanguageSensitiveRenderCache();
+  applyStaticI18n();
+  renderLanguageSwitch();
+  render();
+}
+
+async function loadTranslations() {
+  state.language = normalizeLanguage(readLocalString(storageKeys.language, state.language));
+  try {
+    const response = await fetch("/i18n.json", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    state.translations = payload?.languages || {};
+  } catch {
+    state.translations = {
+      zh: {
+        "top.language": "语言",
+        "top.mobileRemote": "手机点歌",
+        "remote.qrLoading": "正在生成二维码...",
+        "player.empty": "把 Bilibili 视频链接加入点歌列表后，这里会开始播放。",
+      },
+    };
+  }
+  state.translationsLoaded = true;
+  applyStaticI18n();
+  renderLanguageSwitch();
+}
+
 function closeOpenMenus() {
   document.querySelectorAll(".menu-content").forEach((menu) => {
     menu.classList.add("hidden");
@@ -490,12 +611,12 @@ function hasSessionUsers() {
 
 function validatedRequesterNameForAdd(showMessage = setFormMessage) {
   if (!hasSessionUsers()) {
-    showMessage("请先在服务端添加本场 KTV 用户", true);
+    showMessage(t("session.requireUsers"), true);
     return "";
   }
   const requesterName = selectedRequesterName();
   if (!requesterName) {
-    showMessage("请先选择点歌人。", true);
+    showMessage(t("session.requireRequester"), true);
     return "";
   }
   return requesterName;
@@ -545,12 +666,12 @@ function renderPlayerFullscreenButton() {
   }
   const active = isPlayerPanelFullscreen();
   const enabled = canTogglePlayerFullscreen();
-  const label = active ? "退出全屏" : "全屏显示";
+  const label = active ? t("player.fullscreenExit") : t("player.fullscreen");
   const title = enabled
-    ? (active ? "退出播放器区域全屏" : "将播放器区域切换为全屏")
+    ? (active ? t("player.fullscreenExitLabel") : t("player.fullscreenEnterLabel"))
     : supportsPlayerFullscreen()
-      ? "当前没有可全屏的播放内容"
-      : "当前环境不支持区域全屏";
+      ? t("player.fullscreenDisabled")
+      : t("player.fullscreenUnsupported");
   const signature = JSON.stringify({ active, enabled, label, title });
 
   if (signature === state.playerFullscreenButtonRenderSignature) {
@@ -832,7 +953,7 @@ async function apiPost(url, payload = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || "请求失败");
+    const error = new Error(data.error || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
@@ -849,7 +970,7 @@ async function apiGet(url, options = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || "请求失败");
+    const error = new Error(data.error || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
@@ -866,7 +987,7 @@ async function fetchState() {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || "获取状态失败");
+    throw new Error(payload.error || t("error.stateFailed"));
   }
   state.data = payload.data;
   maybeShowIncomingRequestToast(previousData, state.data);
@@ -934,7 +1055,7 @@ async function searchGatchaCache(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || "Search failed");
+    throw new Error(payload.error || t("error.searchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -950,7 +1071,7 @@ async function searchLarkPool(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || "bilikara 搜索失败");
+    throw new Error(payload.error || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -967,7 +1088,7 @@ async function searchLarkPoolTable(query, tableIndex) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || "bilikara 搜索失败");
+    throw new Error(payload.error || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -989,7 +1110,7 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || "Browse failed");
+    throw new Error(payload.error || t("error.browseFailed"));
   }
   return payload.data || { owners: [], items: [] };
 }
@@ -1021,10 +1142,18 @@ function gatchaUidResultMessage(result, fallbackUid = "") {
   const cache = result?.cache || {};
   const addedCount = Number(cache.added_count || 0);
   const totalCount = Number(cache.total_count || 0);
-  const modeLabel = cache.mode === "incremental" ? "最新" : "所有";
-  const ownerLabel = result?.name ? `UP 主 ${result.name}` : `UID ${result?.uid || fallbackUid}`;
-  const listAction = result?.added ? "已添加" : "已在关注列表中";
-  return `${ownerLabel} ${listAction}，已拉取${modeLabel}稿件，新增 ${addedCount} 条，缓存共 ${totalCount} 条。`;
+  const modeLabel = cache.mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
+  const ownerLabel = result?.name
+    ? t("owner.upOwner", { name: result.name })
+    : t("owner.uid", { uid: result?.uid || fallbackUid });
+  const listAction = result?.added ? t("gatcha.addedToFollow") : t("gatcha.alreadyFollowed");
+  return t("gatcha.uidResult", {
+    owner: ownerLabel,
+    action: listAction,
+    mode: modeLabel,
+    added: addedCount,
+    total: totalCount,
+  });
 }
 
 async function confirmGatchaUidAdd(intent) {
@@ -1036,7 +1165,7 @@ async function confirmGatchaUidAdd(intent) {
   }
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(`正在拉取 UP 主：${intent.name || intent.uid} 的稿件...(稿件较多时可能需要较长时间)`);
+  setGatchaUidMessage(t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
   try {
     const result = await addGatchaUid(intent.uid);
     setGatchaUidMessage(gatchaUidResultMessage(result, intent.uid));
@@ -1057,7 +1186,31 @@ function hideSearchResults() {
   elements.searchResults.classList.add("hidden");
 }
 
-function renderSearchResultItems(container, items, emptyText = "No cached matches found.") {
+function searchResultOwnerName(item) {
+  return String(item?.owner_name || item?.author || "").trim();
+}
+
+function createSearchResultUrlLine(item) {
+  const line = document.createElement("div");
+  line.className = "search-result-url";
+
+  const bvid = document.createElement("span");
+  bvid.className = "search-result-bvid";
+  bvid.textContent = String(item?.bvid || item?.url || "");
+  line.appendChild(bvid);
+
+  const ownerName = searchResultOwnerName(item);
+  if (ownerName) {
+    const owner = document.createElement("span");
+    owner.className = "search-result-owner";
+    owner.textContent = t("owner.tooltip", { name: ownerName });
+    line.appendChild(owner);
+  }
+
+  return line;
+}
+
+function renderSearchResultItems(container, items, emptyText = t("search.empty")) {
   if (!container) {
     return;
   }
@@ -1083,15 +1236,13 @@ function renderSearchResultItems(container, items, emptyText = "No cached matche
     title.className = "search-result-title";
     title.textContent = String(item.title || "");
 
-    const url = document.createElement("div");
-    url.className = "search-result-url";
-    url.textContent = String(item.bvid || "");
+    const url = createSearchResultUrlLine(item);
 
     const button = document.createElement("button");
     button.type = "button";
     button.className = "next-button";
     button.dataset.url = String(item.url || "");
-    button.textContent = "点歌";
+    button.textContent = t("search.add");
 
     meta.append(title, url);
     row.append(meta, button);
@@ -1120,15 +1271,13 @@ function appendSearchResultItems(container, items) {
     title.className = "search-result-title";
     title.textContent = String(item.title || "");
 
-    const url = document.createElement("div");
-    url.className = "search-result-url";
-    url.textContent = String(item.bvid || "");
+    const url = createSearchResultUrlLine(item);
 
     const button = document.createElement("button");
     button.type = "button";
     button.className = "next-button";
     button.dataset.url = String(item.url || "");
-    button.textContent = "点歌";
+    button.textContent = t("search.add");
 
     meta.append(title, url);
     row.append(meta, button);
@@ -1188,6 +1337,7 @@ function renderFollowBrowse() {
     selected: state.followBrowseSelectedUid,
     owners,
     items,
+    language: state.language,
   });
   if (signature === state.followBrowseRenderSignature) {
     return;
@@ -1203,7 +1353,7 @@ function renderFollowBrowse() {
     if (!owners.length) {
       const empty = document.createElement("div");
       empty.className = "search-empty";
-      empty.textContent = state.followBrowseLoading ? "正在读取关注缓存..." : "还没有可浏览的关注 UID。";
+      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
       elements.followUpGrid.appendChild(empty);
     } else {
       owners.forEach((owner) => {
@@ -1220,13 +1370,13 @@ function renderFollowBrowse() {
 
         const count = document.createElement("span");
         count.className = "follow-up-count";
-        count.textContent = `${Number(owner.count || 0)} 首`;
+        count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
         elements.followUpGrid.appendChild(button);
       });
     }
-    setFollowBrowseMessage(state.followBrowseLoading ? "正在读取关注列表..." : "");
+    setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
     return;
   }
 
@@ -1236,14 +1386,14 @@ function renderFollowBrowse() {
   }
   if (elements.followBrowseCount) {
     const totalCount = Number(owner?.count || items.length || 0);
-    elements.followBrowseCount.textContent = `${items.length}/${totalCount} 首`;
+    elements.followBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
   }
   renderSearchResultItems(
     elements.followSongResults,
     items,
-    state.followBrowseLoading ? "正在读取稿件..." : "这个 UP 的缓存稿件里没有匹配结果。",
+    state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
   );
-  setFollowBrowseMessage(state.followBrowseLoading ? "正在读取稿件..." : "");
+  setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
 }
 
 async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
@@ -1273,12 +1423,12 @@ async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
 }
 
 async function handleGatchaDraw() {
-  setGatchaMessage("正在连接 B 站寻找幸运投稿...");
+  setGatchaMessage(t("gatcha.drawing"));
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.error || "获取幸运歌曲失败");
+      throw new Error(payload.error || t("gatcha.drawFailed"));
     }
 
     state.gatchaCandidate = payload.data;
@@ -1344,7 +1494,7 @@ function gatchaTaskBusy() {
 }
 
 function gatchaTaskBusyMessage() {
-  return state.data?.gatcha?.message || "拉取任务执行中，请等待任务结束";
+  return state.data?.gatcha?.message || t("gatcha.busyFallback");
 }
 
 function syncGatchaTaskTerminalMessage() {
@@ -1372,10 +1522,10 @@ function syncGatchaTaskTerminalMessage() {
   state.gatchaTaskLastMessageSignature = signature;
   const fallback =
     status === "success"
-      ? "抽卡缓存更新完成。"
+      ? t("gatcha.refreshDone")
       : status === "partial"
-        ? "抽卡缓存已部分更新，但有项目拉取失败。"
-        : "抽卡缓存更新失败。";
+        ? t("gatcha.refreshPartial")
+        : t("gatcha.refreshFailed");
   const detail = task.last_error ? `${task.last_message || fallback} ${task.last_error}` : task.last_message || fallback;
   setGatchaUidMessage(detail, status !== "success");
 }
@@ -1456,6 +1606,7 @@ function renderSearchCookieFace() {
     selected: state.followBrowseSelectedUid,
     loading: state.followBrowseLoading,
     larkLoading: state.larkSearchLoading,
+    language: state.language,
   });
   if (signature === state.searchCookieFaceRenderSignature) {
     return;
@@ -1465,14 +1616,14 @@ function renderSearchCookieFace() {
   setClassToggle(elements.searchPanel, "is-cookie-view", showCookie);
   setClassToggle(elements.searchPanel, "is-lark-view", showLark);
   syncSearchStageView(view);
-  setTextContent(elements.searchTag, showCookie ? "Follow Browse" : "Local Search");
-  setTextContent(elements.searchTitle, showCookie ? "关注列表" : "搜索");
-  setTextContent(elements.searchCookieToggle, showCookie ? "返回搜索" : "关注浏览");
+  setTextContent(elements.searchTag, showCookie ? t("search.followTag") : t("search.localTag"));
+  setTextContent(elements.searchTitle, showCookie ? t("follow.title") : t("search.title"));
+  setTextContent(elements.searchCookieToggle, showCookie ? t("search.followBrowseBack") : t("search.followBrowse"));
   if (showLark) {
-    setTextContent(elements.searchTag, "Bilikara Search");
-    setTextContent(elements.searchTitle, "bilikara 搜索");
+    setTextContent(elements.searchTag, t("search.larkTag"));
+    setTextContent(elements.searchTitle, t("search.larkSearch"));
   }
-  setTextContent(elements.searchLarkToggle, showLark ? "返回搜索" : "bilikara 搜索");
+  setTextContent(elements.searchLarkToggle, showLark ? t("search.larkBack") : t("search.larkSearch"));
   if (elements.searchCookieToggle?.getAttribute("aria-pressed") !== String(showCookie)) {
     elements.searchCookieToggle.setAttribute("aria-pressed", String(showCookie));
   }
@@ -1497,6 +1648,7 @@ function renderGatchaUidFace() {
     taskMessage: gatchaTaskBusyMessage(),
     taskLastStatus: state.data?.gatcha?.last_status || "",
     taskLastUpdatedAt: state.data?.gatcha?.last_updated_at || 0,
+    language: state.language,
   });
   if (signature === state.gatchaUidFaceRenderSignature) {
     return;
@@ -1505,30 +1657,30 @@ function renderGatchaUidFace() {
 
   setClassToggle(elements.gatchaPanel, "is-uid-view", showUid);
   setClassToggle(elements.gatchaStage, "is-uid-view", showUid);
-  setTextContent(elements.gatchaTag, showUid ? "Follow UID" : "gatcha Draw");
-  setTextContent(elements.gatchaTitle, showUid ? "关注 UID" : "试试运气");
-  setTextContent(elements.gatchaUidToggle, showUid ? "返回抽卡" : "添加 UID");
+  setTextContent(elements.gatchaTag, showUid ? t("gatcha.uidTag") : t("gatcha.tag"));
+  setTextContent(elements.gatchaTitle, showUid ? t("gatcha.uidTitle") : t("gatcha.title"));
+  setTextContent(elements.gatchaUidToggle, showUid ? t("gatcha.backToDraw") : t("gatcha.addUid"));
   if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
     elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
   if (elements.addGatchaUidButton) {
     elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
-    elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? "处理中" : "添加";
+    elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
   }
   if (elements.refreshGatchaCacheButton) {
     elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
-    elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? "更新中" : "手动更新";
+    elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? t("gatcha.refreshing") : t("gatcha.refresh");
   }
   if (elements.pullGatchaFavlistButton) {
     elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
-    elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? "拉取中" : "拉取收藏";
+    elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
-      elements.refreshGatchaCacheButton.textContent = "全局冷却中";
+      elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
     }
     if (elements.pullGatchaFavlistButton) {
-      elements.pullGatchaFavlistButton.textContent = "全局冷却中";
+      elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
     }
   }
 }
@@ -1559,7 +1711,7 @@ function render() {
   }
 
   const currentItem = data.current_item;
-  const currentTitle = currentItem ? currentItem.display_title : "还没有歌曲";
+  const currentTitle = currentItem ? currentItem.display_title : t("player.noSong");
   if (currentTitle !== state.currentTitleRenderSignature) {
     state.currentTitleRenderSignature = currentTitle;
     setTextContent(elements.currentTitle, currentTitle);
@@ -1660,7 +1812,7 @@ function renderRequesterSelect(sessionUsers) {
 
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = users.length ? "选择点歌人" : "请先添加用户";
+  placeholder.textContent = users.length ? t("session.selectRequester") : t("session.addUserFirst");
   elements.requesterSelect.appendChild(placeholder);
 
   users.forEach((userName) => {
@@ -1691,8 +1843,7 @@ function renderSessionUsers(sessionUsers) {
   elements.sessionUserList.innerHTML = "";
 
   if (!users.length) {
-    elements.sessionUserList.innerHTML =
-      '<div class="queue-empty session-user-empty">先添加本场用户，服务端和客户端才能开始点歌。</div>';
+    elements.sessionUserList.innerHTML = `<div class="queue-empty session-user-empty">${htmlT("session.empty")}</div>`;
     return;
   }
 
@@ -1705,9 +1856,9 @@ function renderSessionUsers(sessionUsers) {
         <strong class="session-user-name">${escapeHtml(userName)}</strong>
       </div>
       <div class="session-user-actions">
-        <button type="button" data-action="move-up" data-name="${escapeHtml(userName)}" ${index === 0 ? "disabled" : ""}>上移</button>
-        <button type="button" data-action="move-down" data-name="${escapeHtml(userName)}" ${index === users.length - 1 ? "disabled" : ""}>下移</button>
-        <button type="button" data-action="remove" data-name="${escapeHtml(userName)}" class="danger">删除</button>
+        <button type="button" data-action="move-up" data-name="${escapeHtml(userName)}" ${index === 0 ? "disabled" : ""}>${htmlT("common.moveUp")}</button>
+        <button type="button" data-action="move-down" data-name="${escapeHtml(userName)}" ${index === users.length - 1 ? "disabled" : ""}>${htmlT("common.moveDown")}</button>
+        <button type="button" data-action="remove" data-name="${escapeHtml(userName)}" class="danger">${htmlT("common.delete")}</button>
       </div>
     `;
     elements.sessionUserList.appendChild(item);
@@ -1724,11 +1875,11 @@ function renderRemoteAccess(remoteAccess) {
   elements.remoteUrlLink.textContent = displayUrl;
 
   if (lanUrls.length > 1) {
-    elements.remoteUrlHint.textContent = `同网地址候选：${lanUrls.join(" · ")}`;
+    elements.remoteUrlHint.textContent = t("remote.multipleLanHint", { urls: lanUrls.join(" · ") });
   } else if (lanUrls.length === 1) {
-    elements.remoteUrlHint.textContent = "手机和服务端在同一个局域网内时，可直接扫码访问。";
+    elements.remoteUrlHint.textContent = t("remote.sameLanHint");
   } else {
-    elements.remoteUrlHint.textContent = "暂未识别到局域网地址，可手动复制当前地址访问。";
+    elements.remoteUrlHint.textContent = t("remote.noLanHint");
   }
 
   renderRemoteQr(displayUrl);
@@ -1738,7 +1889,7 @@ function renderRemoteQr(url) {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) {
     elements.remoteQrImage.classList.add("hidden");
-    elements.remoteQrPlaceholder.textContent = "暂无可用访问地址";
+    elements.remoteQrPlaceholder.textContent = t("remote.noAddress");
     elements.remoteQrPlaceholder.classList.remove("hidden");
     return;
   }
@@ -1750,7 +1901,7 @@ function renderRemoteQr(url) {
 
   elements.remoteQrImage.dataset.qrUrl = qrUrl;
   elements.remoteQrImage.classList.add("hidden");
-  elements.remoteQrPlaceholder.textContent = "正在生成二维码...";
+  elements.remoteQrPlaceholder.textContent = t("remote.qrLoading");
   elements.remoteQrPlaceholder.classList.remove("hidden");
   elements.remoteQrImage.onload = () => {
     elements.remoteQrPlaceholder.classList.add("hidden");
@@ -1758,7 +1909,7 @@ function renderRemoteQr(url) {
   };
   elements.remoteQrImage.onerror = () => {
     elements.remoteQrImage.classList.add("hidden");
-    elements.remoteQrPlaceholder.textContent = "二维码加载失败，请复制下方链接到手机访问。";
+    elements.remoteQrPlaceholder.textContent = t("remote.qrImageFailed");
     elements.remoteQrPlaceholder.classList.remove("hidden");
   };
   elements.remoteQrImage.src = qrUrl;
@@ -1770,10 +1921,10 @@ function renderRemoteAccess(remoteAccess) {
   const localUrl = String(remoteAccess?.local_url || "");
   const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
   const displayHint = lanUrls.length > 1
-    ? `可用局域网地址: ${lanUrls.join(" · ")}`
+    ? t("remote.multipleLanHint", { urls: lanUrls.join(" · ") })
     : lanUrls.length === 1
-      ? "请确保手机和服务端在同一个局域网内。"
-      : "暂未检测到局域网地址，可稍后刷新或手动检查网络。";
+      ? t("remote.defaultHint")
+      : t("remote.noLanHint");
   const signature = JSON.stringify({ displayUrl, displayHint });
   if (signature === state.remoteAccessRenderSignature) {
     return;
@@ -1807,7 +1958,7 @@ function renderRemoteQr(url, targets = []) {
     targets.forEach(({ image, placeholder }) => {
       image?.classList.add("hidden");
       if (placeholder) {
-        placeholder.textContent = "暂无可用访问地址";
+        placeholder.textContent = t("remote.noAddress");
         placeholder.classList.remove("hidden");
       }
     });
@@ -1826,7 +1977,7 @@ function renderRemoteQr(url, targets = []) {
 
     image.dataset.qrUrl = qrUrl;
     image.classList.add("hidden");
-    placeholder.textContent = "正在生成二维码...";
+    placeholder.textContent = t("remote.qrLoading");
     placeholder.classList.remove("hidden");
     image.onload = () => {
       placeholder.classList.add("hidden");
@@ -1834,7 +1985,7 @@ function renderRemoteQr(url, targets = []) {
     };
     image.onerror = () => {
       image.classList.add("hidden");
-      placeholder.textContent = "二维码生成失败，请稍后重试";
+      placeholder.textContent = t("remote.qrFailed");
       placeholder.classList.remove("hidden");
     };
     image.src = qrUrl;
@@ -1844,7 +1995,7 @@ function renderRemoteQr(url, targets = []) {
 async function copyRemoteUrl() {
   const url = elements.remoteUrlLink.href;
   if (!url) {
-    setAppMessage("当前没有可复制的手机访问地址。", true);
+    setAppMessage(t("remote.copyUnavailable"), true);
     return;
   }
 
@@ -1859,21 +2010,22 @@ async function copyRemoteUrl() {
       document.execCommand("copy");
       input.remove();
     }
-    setAppMessage("手机访问链接已复制。");
+    setAppMessage(t("remote.copySuccess"));
   } catch {
-    setAppMessage("复制失败，请手动复制页面中的链接。", true);
+    setAppMessage(t("remote.copyFailed"), true);
   }
 }
 
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
-  const listTag = isHistoryView ? "History" : "Requests";
-  const listTitle = isHistoryView ? "历史记录" : "点歌列表";
-  const queueCount = isHistoryView ? `(${history.length}首)` : `(${playlist.length}首)`;
-  const historyButtonText = isHistoryView ? "点歌列表" : "历史记录";
+  const listTag = isHistoryView ? t("history.tag") : t("list.tag");
+  const listTitle = isHistoryView ? t("history.title") : t("list.title");
+  const queueCount = isHistoryView ? t("history.count", { count: history.length }) : t("list.count", { count: playlist.length });
+  const historyButtonText = isHistoryView ? t("list.title") : t("history.title");
   const signature = JSON.stringify({
     isHistoryView,
     queueCount,
+    language: state.language,
   });
 
   if (signature === state.listHeaderRenderSignature) {
@@ -1906,6 +2058,7 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
     bbdownTitle,
     ffmpegTitle,
     login: bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) },
+    language: state.language,
   });
 
   if (signature !== state.cacheSettingsRenderSignature) {
@@ -1950,8 +2103,8 @@ function renderPlaybackRepairControls(currentItem) {
   const hasCurrentItem = Boolean(currentItem?.id);
   button.disabled = !hasCurrentItem;
   button.title = hasCurrentItem
-    ? "重新缓存当前歌曲"
-    : "当前没有正在播放的歌曲";
+    ? t("service.retryCurrentTitle")
+    : t("service.noCurrentSong");
 }
 
 function renderBBDownLogin(login) {
@@ -1964,8 +2117,8 @@ function renderBBDownLogin(login) {
       setClassToggle(elements.bbdownLoginButton, "is-unlogged", !loggedIn);
       elements.bbdownLoginButton.classList.remove("is-unknown");
       const label = elements.bbdownLoginButton.querySelector(".bbdown-login-label");
-      setTextContent(label, loggedIn ? "已登录" : "未登录");
-      elements.bbdownLoginButton.title = loggedIn ? "点击退出 BBDown 登录" : "点击生成 BBDown 登录二维码";
+      setTextContent(label, loggedIn ? t("service.loggedIn") : t("service.notLoggedIn"));
+      elements.bbdownLoginButton.title = loggedIn ? t("service.bbdownLogoutTitle") : t("service.bbdownLoginTitle");
     }
 
     setClassToggle(elements.bbdownLoginPanel, "hidden", loggedIn);
@@ -1985,7 +2138,7 @@ function renderBBDownLogin(login) {
         setTextContent(elements.bbdownLoginQrText, qrText);
       }
       if (elements.bbdownLoginMessage) {
-        setTextContent(elements.bbdownLoginMessage, login?.message || "正在准备二维码...");
+        setTextContent(elements.bbdownLoginMessage, login?.message || t("service.qrPreparing"));
         setClassToggle(elements.bbdownLoginMessage, "is-error", login?.state === "failed");
       }
     }
@@ -2067,7 +2220,7 @@ function frontendPlaybackMode(_mode) {
 }
 
 function formatPlaybackMode(_mode) {
-  return "本地缓存";
+  return t("service.localPlayback");
 }
 
 function renderCacheSlider(cachePolicy) {
@@ -2154,11 +2307,11 @@ function renderCachePolicyControls(cachePolicy) {
       };
     }).filter((choice) => choice.value)
     : [
-      { value: "1080P 高码率", label: "1080P 高码率" },
-      { value: "1080P 高清", label: "1080P 高清" },
-      { value: "720P 高清", label: "720P 高清" },
-      { value: "480P 清晰", label: "480P 清晰" },
-      { value: "360P 流畅", label: "360P 流畅" },
+      { value: "1080P 高码率", label: t("quality.1080pHighBitrate") },
+      { value: "1080P 高清", label: t("quality.1080p") },
+      { value: "720P 高清", label: t("quality.720p") },
+      { value: "480P 清晰", label: t("quality.480p") },
+      { value: "360P 流畅", label: t("quality.360p") },
     ];
   const currentQuality = String(cachePolicy?.video_quality || choices[0]?.value || "1080P 高码率");
   const audioHires = Boolean(cachePolicy?.audio_hires);
@@ -2209,7 +2362,7 @@ function syncCachePanelVisibility(options = {}) {
 
 function renderQueueCurrent(currentItem) {
   if (!currentItem) {
-    const signature = "empty";
+    const signature = `empty|${state.language}`;
     if (signature === state.queueCurrentRenderSignature) {
       return;
     }
@@ -2218,8 +2371,8 @@ function renderQueueCurrent(currentItem) {
     if (elements.queueCurrent.dataset.state !== "idle") {
       elements.queueCurrent.dataset.state = "idle";
     }
-    setTextContent(elements.queueCurrentTag, "播放中");
-    setTextContent(elements.queueCurrentTitle, "还没有歌曲");
+    setTextContent(elements.queueCurrentTag, t("status.playing"));
+    setTextContent(elements.queueCurrentTitle, t("player.noSong"));
     setElementTitle(elements.queueCurrentTitle, "");
     setClassToggle(elements.queueCurrentRetry, "hidden", true);
     elements.queueCurrentRetry.removeAttribute("data-id");
@@ -2234,6 +2387,7 @@ function renderQueueCurrent(currentItem) {
     label: currentState.label,
     title: currentItem.display_title,
     requesterText,
+    language: state.language,
   });
 
   if (signature !== state.queueCurrentRenderSignature) {
@@ -2259,22 +2413,22 @@ function renderQueueCurrent(currentItem) {
 
 function currentStatusForItem(item) {
   if (!item) {
-    return { state: "idle", label: "播放中" };
+    return { state: "idle", label: t("status.playing") };
   }
   if (item.cache_status === "ready") {
-    return { state: "playing", label: "播放中" };
+    return { state: "playing", label: t("status.playing") };
   }
   if (item.cache_status === "failed") {
-    return { state: "failed", label: "失败" };
+    return { state: "failed", label: t("status.failed") };
   }
   const size = Number(item.cache_size_bytes || 0);
   if (size > 0) {
     return { state: "caching", label: formatCompactBytes(size) };
   }
   if (item.cache_status === "downloading") {
-    return { state: "caching", label: "缓存中" };
+    return { state: "caching", label: t("status.caching") };
   }
-  return { state: "pending", label: "待缓存" };
+  return { state: "pending", label: t("status.pendingCache") };
 }
 
 function audioVariantsForItem(item) {
@@ -2339,20 +2493,43 @@ function partOptionsForItem(item) {
     return [];
   }
 
+  const cachedVariants = audioVariantsForItem(item);
   const cachedVariantsById = new Map(
-    audioVariantsForItem(item).map((variant) => [String(variant.id || "").trim(), variant]),
+    cachedVariants.map((variant) => [String(variant.id || "").trim(), variant]),
   );
 
   return availableParts.map((entry) => {
-    const cachedVariant = cachedVariantsById.get(entry.id);
+    const cachedVariant = cachedVariantForPartEntry(entry, cachedVariantsById, cachedVariants);
     return {
       ...entry,
+      id: String(cachedVariant?.id || entry.id || "").trim(),
       audio_url: String(cachedVariant?.audio_url || ""),
       // LEGACY: cachedVariant.media_url used to point to a muxed MP4 variant.
       // The host player now uses video_media_url + audio_url split playback.
       // media_url: String(cachedVariant?.media_url || ""),
     };
   });
+}
+
+function audioVariantPageNumber(variant) {
+  const directPage = Number(variant?.page || 0);
+  if (Number.isFinite(directPage) && directPage > 0) {
+    return directPage;
+  }
+  const idMatch = String(variant?.id || "").trim().match(/^p(\d+)(?:_|$)/i);
+  return idMatch ? Number(idMatch[1] || 0) : 0;
+}
+
+function cachedVariantForPartEntry(entry, cachedVariantsById, cachedVariants) {
+  const exactMatch = cachedVariantsById.get(String(entry?.id || "").trim());
+  if (exactMatch) {
+    return exactMatch;
+  }
+  const page = Number(entry?.page || 0);
+  if (!page) {
+    return null;
+  }
+  return cachedVariants.find((variant) => audioVariantPageNumber(variant) === page) || null;
 }
 
 function selectedAudioVariantForItem(item) {
@@ -2459,7 +2636,7 @@ function escapeRegExpText(text) {
   return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function delayOverlayTitleForItem(item, fallback = "未命名歌曲") {
+function delayOverlayTitleForItem(item, fallback = t("player.untitledSong")) {
   let originalTitle = String(item?.display_title || item?.title || "").trim();
   let title = originalTitle;
   const partCandidates = [
@@ -2563,8 +2740,8 @@ function ensurePlayerDelayOverlay() {
   overlay.innerHTML = `
     <div class="player-delay-card">
       <div class="player-delay-head">
-        <p class="player-delay-heading">\u5373\u5c06\u64ad\u653e</p>
-        <div class="player-delay-countdown" aria-label="\u5207\u6b4c\u5012\u8ba1\u65f6">
+        <p class="player-delay-heading" data-i18n="player.upNext">即将播放</p>
+        <div class="player-delay-countdown" aria-label="切歌倒计时" data-i18n-aria-label="player.advanceCountdown">
           <svg class="player-delay-count-ring" viewBox="0 0 44 44" aria-hidden="true">
             <circle class="player-delay-count-track" cx="22" cy="22" r="19"></circle>
             <circle class="player-delay-count-progress" cx="22" cy="22" r="19"></circle>
@@ -2574,15 +2751,16 @@ function ensurePlayerDelayOverlay() {
       </div>
       <div class="player-delay-now-row">
         <span class="player-delay-play-icon" aria-hidden="true">\u25b6</span>
-        <p class="player-delay-song-title" data-delay-next-title>\u51c6\u5907\u4e0b\u4e00\u9996</p>
-        <p class="player-delay-requester" data-delay-next-requester>\u70b9\u6b4c\u4eba</p>
-        <p class="player-delay-duration" data-delay-next-duration>\u65f6\u957f</p>
+        <p class="player-delay-song-title" data-delay-next-title>${htmlT("player.prepareNext")}</p>
+        <p class="player-delay-requester" data-delay-next-requester>${htmlT("request.requester")}</p>
+        <p class="player-delay-duration" data-delay-next-duration>${htmlT("player.duration")}</p>
       </div>
-      <p class="player-delay-section-title">\u540e\u7eed\u70b9\u6b4c\u5217\u8868</p>
+      <p class="player-delay-section-title" data-i18n="player.followingQueue">后续点歌列表</p>
       <div class="player-delay-list" data-delay-list></div>
-      <p class="player-delay-total" data-delay-total>\u5171 0 \u9996</p>
+      <p class="player-delay-total" data-delay-total>${htmlT("player.totalSongs", { count: 0 })}</p>
     </div>
   `;
+  applyStaticI18n(overlay);
   elements.playerFrame.appendChild(overlay);
   return overlay;
 }
@@ -2810,13 +2988,14 @@ function renderLocalAdvanceDelayQueue(overlay) {
     delayOverlayItemSignature(primaryItem),
     ...followItemsSource.map(delayOverlayItemSignature),
     totalCount,
+    state.language,
   ].join("||");
   if (overlay.dataset.queueSignature === signature) {
     return;
   }
   overlay.dataset.queueSignature = signature;
 
-  setTextContent(overlay.querySelector("[data-delay-next-title]"), delayOverlayTitleForItem(primaryItem, "准备下一首"));
+  setTextContent(overlay.querySelector("[data-delay-next-title]"), delayOverlayTitleForItem(primaryItem, t("player.prepareNext")));
   setTextContent(overlay.querySelector("[data-delay-next-requester]"), primaryItem?.requester_name || "—");
   setTextContent(overlay.querySelector("[data-delay-next-duration]"), formatDurationSeconds(durationSecondsForItem(primaryItem)));
 
@@ -2827,20 +3006,20 @@ function renderLocalAdvanceDelayQueue(overlay) {
     if (!rows.length) {
       const emptyRow = document.createElement("div");
       emptyRow.className = "player-delay-list-more";
-      emptyRow.textContent = "后续点歌列表暂时为空";
+      emptyRow.textContent = t("player.followingQueueEmpty");
       rows.push(emptyRow);
     }
     const remainingCount = Math.max(0, followItemsSource.length - followItems.length);
     if (remainingCount > 0) {
       const moreRow = document.createElement("div");
       moreRow.className = "player-delay-list-more";
-      moreRow.textContent = `还有 ${remainingCount} 首点歌等待中`;
+      moreRow.textContent = t("player.remainingQueue", { count: remainingCount });
       rows.push(moreRow);
     }
     listNode.replaceChildren(...rows);
   }
 
-  setTextContent(overlay.querySelector("[data-delay-total]"), `共 ${totalCount} 首`);
+  setTextContent(overlay.querySelector("[data-delay-total]"), t("player.totalSongs", { count: totalCount }));
 }
 
 function updateLocalAdvanceDelayOverlay() {
@@ -3259,7 +3438,7 @@ function renderVolumeControls(playbackMode) {
   const isLocalMode = playbackMode === "local";
   const volumePercent = Math.round(state.localPlayerVolume * 100);
   const label = volumePercentText();
-  const muteLabel = state.localPlayerMuted ? "取消静音" : "静音";
+  const muteLabel = state.localPlayerMuted ? t("player.unmute") : t("player.mute");
   const muteButtonText = muteIcon(state.localPlayerMuted);
   const signature = JSON.stringify({
     isLocalMode,
@@ -3379,7 +3558,7 @@ function scheduleAudioVariantSwitchUnlock() {
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
-    const signature = JSON.stringify({ hidden: true, playbackMode, itemId: currentItem?.id || "" });
+    const signature = JSON.stringify({ hidden: true, playbackMode, itemId: currentItem?.id || "", language: state.language });
     if (signature === state.audioVariantBarRenderSignature) {
       return;
     }
@@ -3400,6 +3579,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
       playbackMode,
       itemId: currentItem.id,
       variantCount: variants.length,
+      language: state.language,
     });
     if (signature === state.audioVariantBarRenderSignature) {
       return;
@@ -3427,6 +3607,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     selectedVariantId: selectedVariant?.id || "",
     buttonsDisabled,
     expanded: state.audioVariantBarExpanded,
+    language: state.language,
     variants: variants.map((variant) => ({
       id: variant.id,
       label: variant.label || variant.id,
@@ -3461,7 +3642,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   toggleButton.type = "button";
   toggleButton.className = "audio-variant-toggle";
   toggleButton.dataset.action = "toggle-audio-variants";
-  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? "收起分P列表" : "展开分P列表");
+  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"));
   toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
   toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
 
@@ -3519,6 +3700,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    state.language,
   ].join("|");
 
   if (signature === state.playerSignature) {
@@ -3576,8 +3758,7 @@ function renderPlayer(currentItem, playbackMode) {
   teardownMountedPlayer({ preserveAdvanceDelayOverlay });
 
   if (!currentItem) {
-    elements.playerFrame.innerHTML =
-      '<div class="empty-state"><p>把 B 站视频链接加入点歌列表后，这里会开始播放。</p></div>';
+    elements.playerFrame.innerHTML = `<div class="empty-state"><p>${escapeHtml(t("player.emptyShort"))}</p></div>`;
     return;
   }
 
@@ -3600,8 +3781,8 @@ function renderPlayer(currentItem, playbackMode) {
   if (!hasSplitPlayback) {
     elements.playerFrame.innerHTML = `
       <div class="empty-state">
-        <p>当前歌曲正在准备独立音视频轨。</p>
-        <p class="empty-hint">${escapeHtml(currentItem.cache_message || "正在后台缓存")}</p>
+        <p>${escapeHtml(t("player.preparingTracks"))}</p>
+        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
       </div>
     `;
     return;
@@ -3829,6 +4010,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    state.language,
   ].join("|");
 
   if (signature === state.playerSignature) {
@@ -3887,7 +4069,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   if (!currentItem) {
     setPlayerFrameContent(
-      '<div class="empty-state"><p>\u628a B \u7ad9\u89c6\u9891\u94fe\u63a5\u52a0\u5165\u70b9\u6b4c\u5217\u8868\u540e\uff0c\u8fd9\u91cc\u4f1a\u5f00\u59cb\u64ad\u653e\u3002</p></div>',
+      `<div class="empty-state"><p>${escapeHtml(t("player.emptyShort"))}</p></div>`,
     );
     return;
   }
@@ -3909,8 +4091,8 @@ function renderPlayer(currentItem, playbackMode) {
   if (!hasSplitPlayback) {
     setPlayerFrameContent(`
       <div class="empty-state">
-        <p>\u5f53\u524d\u6b4c\u66f2\u6b63\u5728\u51c6\u5907\u72ec\u7acb\u97f3\u89c6\u9891\u8f68\u3002</p>
-        <p class="empty-hint">${escapeHtml(currentItem.cache_message || "\u6b63\u5728\u540e\u53f0\u7f13\u5b58")}</p>
+        <p>${escapeHtml(t("player.preparingTracks"))}</p>
+        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
       </div>
     `);
     return;
@@ -4262,9 +4444,9 @@ function reportPlayerStatusHeartbeat(itemId, video) {
 function renderPlaylist(playlist, currentItem, cachePolicy) {
   if (!playlist.length) {
     const emptyMessage = state.data?.current_item
-      ? '<div class="queue-empty"><p>点歌列表已经空了。</p><p>可以继续从左侧点下一首。</p></div>'
-      : '<div class="queue-empty"><p>点歌列表还是空的。</p><p>把链接加到左侧输入框里就行。</p></div>';
-    const signature = state.data?.current_item ? "empty-with-current" : "empty";
+      ? `<div class="queue-empty"><p>${htmlT("list.emptyWithCurrentTitle")}</p><p>${htmlT("list.emptyWithCurrentHint")}</p></div>`
+      : `<div class="queue-empty"><p>${htmlT("list.emptyTitle")}</p><p>${htmlT("list.emptyHint")}</p></div>`;
+    const signature = `${state.data?.current_item ? "empty-with-current" : "empty"}|${state.language}`;
     if (signature === state.playlistEmptyRenderSignature) {
       return;
     }
@@ -4307,6 +4489,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       title: item.display_title,
       ownerTooltip,
       requesterText,
+      language: state.language,
     });
     if (node.dataset.staticSignature !== staticSignature) {
       node.dataset.staticSignature = staticSignature;
@@ -4332,6 +4515,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       sizeText,
       noteText,
       cacheProgress: item.cache_progress,
+      language: state.language,
     });
     if (node.dataset.dynamicSignature !== dynamicSignature) {
       node.dataset.dynamicSignature = dynamicSignature;
@@ -4444,7 +4628,7 @@ function syncRetryButton(button, item) {
     }
     return;
   }
-  const tooltip = "点击重新下载";
+  const tooltip = t("cache.retryClick");
   if (button.dataset.id !== item.id) {
     button.dataset.id = item.id;
   }
@@ -4472,7 +4656,7 @@ function refreshRetryButtons() {
 }
 
 function renderHistory(history) {
-  const signature = JSON.stringify(history || []);
+  const signature = JSON.stringify({ history: history || [], language: state.language });
   if (signature === state.historyRenderSignature) {
     return;
   }
@@ -4480,8 +4664,7 @@ function renderHistory(history) {
   elements.historyList.innerHTML = "";
 
   if (!history.length) {
-    elements.historyList.innerHTML =
-      '<div class="queue-empty"><p>还没有点歌历史。</p><p>点过的歌曲会自动出现在这里。</p></div>';
+    elements.historyList.innerHTML = `<div class="queue-empty"><p>${htmlT("history.emptyTitle")}</p><p>${htmlT("history.emptyHint")}</p></div>`;
     return;
   }
 
@@ -4497,7 +4680,7 @@ function renderHistory(history) {
     requester.textContent = requesterText;
     requester.classList.toggle("hidden", !requesterText);
     node.querySelector(".history-time").textContent = formatHistoryTime(entry.requested_at);
-    node.querySelector(".history-count").textContent = `点歌 ${entry.request_count} 次`;
+    node.querySelector(".history-count").textContent = t("history.requestCount", { count: entry.request_count });
     node.querySelectorAll("button[data-action]").forEach((button) => {
       button.dataset.url = entry.resolved_url || entry.original_url;
     });
@@ -4507,26 +4690,26 @@ function renderHistory(history) {
 
 function badgeTitleForItem(item) {
   if (item.cache_status === "ready") {
-    return "缓存已完成";
+    return t("cache.ready");
   }
   if (item.cache_status === "failed") {
-    return item.cache_message || "缓存失败";
+    return item.cache_message || t("cache.failed");
   }
-  return item.cache_message || "正在缓存";
+  return item.cache_message || t("cache.caching");
 }
 
 function noteForItem(item) {
   if (item.cache_status === "failed") {
-    return item.cache_message || "缓存失败";
+    return item.cache_message || t("cache.failed");
   }
   return "";
 }
 
 function formatHistoryTime(timestamp) {
   if (!timestamp) {
-    return "刚刚点过";
+    return t("history.justNow");
   }
-  return new Date(timestamp * 1000).toLocaleString("zh-CN", {
+  return new Date(timestamp * 1000).toLocaleString(activeLocale(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -4539,45 +4722,45 @@ function ownerTooltipForEntry(entry) {
   if (!ownerName) {
     return "";
   }
-  return `UP 主：${ownerName}`;
+  return t("owner.tooltip", { name: ownerName });
 }
 
 function formatBBDownHint(bbdown) {
   if (!bbdown) {
-    return "未知";
+    return t("status.unknown");
   }
   const labelMap = {
-    idle: "待准备",
-    checking: "检查中",
-    installing: "更新中",
-    ready: "已就绪",
-    failed: "异常",
+    idle: t("status.idle"),
+    checking: t("status.checking"),
+    installing: t("status.installing"),
+    ready: t("status.ready"),
+    failed: t("status.error"),
   };
-  return labelMap[bbdown.state] || bbdown.state || "未知";
+  return labelMap[bbdown.state] || bbdown.state || t("status.unknown");
 }
 
 function formatFFmpegHint(ffmpeg) {
   if (!ffmpeg) {
-    return "未知";
+    return t("status.unknown");
   }
   const labelMap = {
-    idle: "待准备",
-    checking: "检查中",
-    ready: "已就绪",
-    failed: "异常",
+    idle: t("status.idle"),
+    checking: t("status.checking"),
+    ready: t("status.ready"),
+    failed: t("status.error"),
   };
-  return labelMap[ffmpeg.state] || ffmpeg.state || "未知";
+  return labelMap[ffmpeg.state] || ffmpeg.state || t("status.unknown");
 }
 
 function formatCacheChipMeta(cachePolicy) {
   const limit = Number(cachePolicy?.max_cache_items || 0);
-  return `${formatBytes(cachePolicy?.usage_bytes || 0)} · 缓存 ${limit} 首`;
+  return t("service.cacheChipMeta", { usage: formatBytes(cachePolicy?.usage_bytes || 0), limit });
 }
 
 function formatCacheUsage(cachePolicy) {
   const usage = formatBytes(cachePolicy?.usage_bytes || 0);
   const cachedItemCount = Number(cachePolicy?.cached_item_count || 0);
-  return `${usage} · ${cachedItemCount} 首已缓存`;
+  return t("service.cacheUsageDetail", { usage, count: cachedItemCount });
 }
 
 function cacheSizeLabelForItem(item) {
@@ -4586,15 +4769,15 @@ function cacheSizeLabelForItem(item) {
     return formatCompactBytes(size);
   }
   if (item.cache_status === "failed") {
-    return "失败";
+    return t("status.failed");
   }
   if (item.cache_status === "downloading") {
-    return "缓存中";
+    return t("status.caching");
   }
   if (item.cache_status === "queued" || item.cache_status === "pending") {
-    return "待缓存";
+    return t("status.pendingCache");
   }
-  return "待缓存";
+  return t("status.pendingCache");
 }
 
 function formatBytes(value) {
@@ -4654,9 +4837,9 @@ function renderBackupBanner(backup, hasCurrentItem, queueLength, autoRestoredBac
   }
 
   if (hasCurrentItem || queueLength > 0) {
-    elements.backupText.textContent = `已自动恢复上次歌单，共 ${backup.playlist_count} 首。`;
+    elements.backupText.textContent = t("backup.restored", { count: backup.playlist_count });
   } else {
-    elements.backupText.textContent = `检测到本地备份，共 ${backup.playlist_count} 首。`;
+    elements.backupText.textContent = t("backup.localDetected", { count: backup.playlist_count });
   }
 
   elements.backupBanner.classList.toggle("hidden", state.backupBannerDismissed);
@@ -4841,7 +5024,7 @@ function renderConfirmPopover() {
       controls.remove();
     }
   }
-  elements.confirmOk.textContent = intent.primaryLabel || "确认";
+  elements.confirmOk.textContent = intent.primaryLabel || t("common.confirm");
   if (elements.confirmSecondary) {
     elements.confirmSecondary.textContent = intent.secondaryLabel || "";
     elements.confirmSecondary.classList.toggle("hidden", !hasSecondaryAction);
@@ -4919,15 +5102,15 @@ function escapeHtml(value) {
 }
 
 function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
-  const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || "这首歌";
+  const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || t("request.thisSong");
   const count = Number(sessionEntry?.request_count || 0);
   if (activeItem && count > 0) {
-    return `《${title}》当前点歌列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
+    return t("request.duplicateActiveAndSession", { title, count });
   }
   if (activeItem) {
-    return `《${title}》当前点歌列表里已经有了，仍要继续点歌吗？`;
+    return t("request.duplicateActive", { title });
   }
-  return `《${title}》本次已经点过 ${count || 1} 次，仍要继续点歌吗？`;
+  return t("request.duplicateSession", { title, count: count || 1 });
 }
 
 async function submitAddRequest(url, position, options = {}) {
@@ -4982,7 +5165,7 @@ function renderBindingOption(inputType, name, entry, checked) {
   title.textContent = `P${entry.page} · ${entry.part}`;
   const meta = document.createElement("div");
   meta.className = "selection-option-meta";
-  meta.textContent = entry.duration > 0 ? `${entry.duration}s` : "时长未知";
+  meta.textContent = entry.duration > 0 ? t("player.durationSeconds", { seconds: entry.duration }) : t("player.durationUnknown");
   copy.append(title, meta);
 
   label.append(input, copy);
@@ -4992,14 +5175,14 @@ function renderBindingOption(inputType, name, entry, checked) {
 function openBindingModal(intent, payload) {
   const pages = Array.isArray(payload?.pages) ? payload.pages : [];
   if (!pages.length) {
-    setFormMessage("无法读取分P列表", true);
+    setFormMessage(t("binding.readFailed"), true);
     return;
   }
   state.bindingIntent = {
     ...intent,
     binding: payload,
   };
-  elements.bindingModalText.textContent = `《${payload.title || "该视频"}》包含多个分P，请选择要下载的视频画面和音频轨道。`;
+  elements.bindingModalText.textContent = t("binding.videoHasParts", { title: payload.title || t("binding.thisVideo") });
   elements.bindingVideoOptions.innerHTML = "";
   elements.bindingAudioOptions.innerHTML = "";
 
@@ -5042,11 +5225,13 @@ function renderGatchaFavlistOption(folder) {
   const copy = document.createElement("div");
   const title = document.createElement("div");
   title.className = "selection-option-title";
-  title.textContent = folder.title || `收藏夹 ${folder.id || ""}`;
+  title.textContent = folder.title || t("favlist.folderWithId", { id: folder.id || "" });
   const meta = document.createElement("div");
   meta.className = "selection-option-meta";
   const count = Number(folder.media_count || 0);
-  meta.textContent = `${count || 0} 个稿件${folder.selected ? " · 命中默认筛选" : ""}`;
+  meta.textContent = folder.selected
+    ? t("favlist.mediaCountSelected", { count: count || 0 })
+    : t("favlist.mediaCount", { count: count || 0 });
   copy.append(title, meta);
 
   label.append(input, copy);
@@ -5056,11 +5241,14 @@ function renderGatchaFavlistOption(folder) {
 function openGatchaFavlistModal(uid, payload) {
   const folders = Array.isArray(payload?.folders) ? payload.folders : [];
   if (!folders.length) {
-    setGatchaUidMessage("没有读取到公开收藏夹。", true);
+    setGatchaUidMessage(t("favlist.none"), true);
     return;
   }
   state.gatchaFavlistIntent = { uid, folders };
-  elements.gatchaFavlistModalText.textContent = `UID ${payload?.uid || uid} 共有 ${payload?.public_folder_count || folders.length} 个公开收藏夹，请选择要加入抽卡收藏池的收藏夹。`;
+  elements.gatchaFavlistModalText.textContent = t("favlist.chooseForUid", {
+    uid: payload?.uid || uid,
+    count: payload?.public_folder_count || folders.length,
+  });
   elements.gatchaFavlistOptions.innerHTML = "";
   folders.forEach((folder) => {
     elements.gatchaFavlistOptions.appendChild(renderGatchaFavlistOption(folder));
@@ -5075,7 +5263,7 @@ async function confirmGatchaFavlistModal() {
   }
   const folderIds = selectedGatchaFavlistFolderIds();
   if (!folderIds.length) {
-    setGatchaUidMessage("请选择至少一个收藏夹", true);
+    setGatchaUidMessage(t("favlist.selectAtLeastOne"), true);
     return;
   }
   if (gatchaTaskBusy()) {
@@ -5086,12 +5274,12 @@ async function confirmGatchaFavlistModal() {
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage("正在拉取选中的公开收藏夹...（稿件较多时可能需要较长时间）");
+  setGatchaUidMessage(t("favlist.pullingSelected"));
   closeGatchaFavlistModal();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
     setGatchaUidMessage(
-      `已拉取 ${result?.matched_folder_count || 0} 个收藏夹，加入 ${result?.item_count || 0} 个稿件。`,
+      t("favlist.pullResult", { folders: result?.matched_folder_count || 0, items: result?.item_count || 0 }),
     );
   } catch (error) {
     setGatchaUidMessage(error.message, true);
@@ -5109,11 +5297,11 @@ async function confirmBindingModal() {
   const source = intent.source || "request-form";
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
-    setFormMessage("请先选择一个视频分P", true);
+    setFormMessage(t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
-    setFormMessage("请至少选择一个音频分P", true);
+    setFormMessage(t("binding.selectAudioPart"), true);
     return;
   }
 
@@ -5132,9 +5320,9 @@ async function confirmBindingModal() {
       state.gatchaCandidate = null;
       elements.gatchaResultView.classList.add("hidden");
       elements.gatchaInitView.classList.remove("hidden");
-      setGatchaMessage("Nozomi power 注入！");
+      setGatchaMessage(t("gatcha.nozomi"));
     }
-    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入点歌列表");
+    setFormMessage(intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail"));
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -5184,7 +5372,7 @@ async function confirmBindingModal() {
 async function handleAdd(position, anchorPoint) {
   const url = elements.urlInput.value.trim();
   if (!url) {
-    setFormMessage("请输入 B 站视频链接或 BV 号", true);
+    setFormMessage(t("request.urlRequired"), true);
     return;
   }
   const requesterName = validatedRequesterNameForAdd();
@@ -5192,11 +5380,11 @@ async function handleAdd(position, anchorPoint) {
     return;
   }
 
-  setFormMessage("正在解析视频信息并加入点歌列表...");
+  setFormMessage(t("request.parsing"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
     elements.urlInput.value = "";
-    setFormMessage(position === "next" ? "已顶歌到下一首" : "已加入点歌列表末尾");
+    setFormMessage(position === "next" ? t("request.addedNext") : t("request.addedTail"));
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -5226,7 +5414,7 @@ async function handleAdd(position, anchorPoint) {
         x: anchorPoint?.x ?? anchorPointForEvent({}, elements.addForm).x,
         y: anchorPoint?.y ?? anchorPointForEvent({}, elements.addForm).y,
       });
-      setFormMessage("这首歌已经在当前点歌列表中，或本次已经点过，确认后可继续加入。");
+      setFormMessage(t("request.duplicateHint"));
       return;
     }
     setFormMessage(error.message, true);
@@ -5238,10 +5426,10 @@ async function handleAddByUrl(url, position, anchorPoint) {
   if (!requesterName) {
     return;
   }
-  setFormMessage("正在从历史记录加入点歌列表...");
+  setFormMessage(t("history.addingFromHistory"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
-    setFormMessage(position === "next" ? "已从历史顶歌到下一首" : "已从历史加入点歌列表");
+    setFormMessage(position === "next" ? t("history.addedNext") : t("history.addedTail"));
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -5271,7 +5459,7 @@ async function handleAddByUrl(url, position, anchorPoint) {
         x: anchorPoint?.x ?? anchorPointForEvent({}, elements.historyList).x,
         y: anchorPoint?.y ?? anchorPointForEvent({}, elements.historyList).y,
       });
-      setFormMessage("这首歌已经在当前点歌列表中，或本次已经点过，确认后可继续加入。");
+      setFormMessage(t("request.duplicateHint"));
       return;
     }
     setFormMessage(error.message, true);
@@ -5283,7 +5471,7 @@ async function discardBackup() {
     state.data = await apiPost("/api/backup/discard");
     dismissBackupBanner();
     closeConfirm();
-    setAppMessage("已清空本地备份。");
+    setAppMessage(t("backup.cleared"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5294,7 +5482,7 @@ async function clearPlaylist() {
   try {
     state.data = await apiPost("/api/playlist/clear");
     closeConfirm();
-    setAppMessage("点歌列表已清空。");
+    setAppMessage(t("list.cleared"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5305,7 +5493,7 @@ async function clearHistory() {
   try {
     state.data = await apiPost("/api/history/clear");
     closeConfirm();
-    setAppMessage("\u5386\u53f2\u8bb0\u5f55\u5df2\u6e05\u7a7a\u3002");
+    setAppMessage(t("history.cleared"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5335,7 +5523,7 @@ function normalizedHistoryExportSource(source) {
 }
 
 function historyExportSourceLabel(source) {
-  return normalizedHistoryExportSource(source) === "history" ? "全部历史" : "本场记录";
+  return normalizedHistoryExportSource(source) === "history" ? t("history.allSource") : t("history.playedSource");
 }
 
 function selectedConfirmHistoryExportSource(intent) {
@@ -5384,7 +5572,7 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
     headers: clientHeaders(),
   });
   if (!response.ok) {
-    let message = "导出失败";
+    let message = t("history.exportFailed");
     try {
       const payload = await response.json();
       message = payload.error || message;
@@ -5416,7 +5604,9 @@ async function exportHistory(format, source = "played", pageSize = 200) {
   try {
     await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
     closeConfirm();
-    setAppMessage(format === "csv" ? `${sourceLabel} CSV 已开始下载。` : `${sourceLabel}图片已开始下载。`);
+    setAppMessage(format === "csv"
+      ? t("history.csvDownloadStarted", { source: sourceLabel })
+      : t("history.imageDownloadStarted", { source: sourceLabel }));
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -5431,7 +5621,7 @@ async function resetRuntimeData() {
     closeConfirm();
     dismissBackupBanner();
     state.listView = "queue";
-    setAppMessage("已清空 data，保留已唱归档和抽卡缓存。");
+    setAppMessage(t("service.dataCleared"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5456,7 +5646,7 @@ async function resetPlayerState() {
     state.data = await apiPost("/api/player/reset");
     closeConfirm();
     render();
-    setAppMessage("\u64ad\u653e\u5668\u72b6\u6001\u5df2\u91cd\u7f6e\u3002");
+    setAppMessage(t("service.playerReset"));
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -5472,7 +5662,7 @@ async function checkAppUpdate(event) {
   renderUpdatePreviewControl();
   if (button) {
     button.disabled = true;
-    button.textContent = "检查中";
+    button.textContent = t("status.checking");
   }
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timeoutId = controller
@@ -5483,10 +5673,10 @@ async function checkAppUpdate(event) {
     const result = await apiGet(`/api/app/update${query}`, { signal: controller?.signal });
     if (result?.update_available || result?.switch_to_release_available) {
       const fallbackMessage = result?.switch_to_release_available
-        ? "当前为开发版或非正式版。是否打开 GitHub Releases 下载最新正式版？"
-        : "发现新版本。是否打开 GitHub Releases 下载更新？";
+        ? t("service.switchReleasePrompt")
+        : t("service.updateFoundPrompt");
       const message = result?.message
-        ? `${result.message} 是否打开 GitHub Releases？`
+        ? t("service.openReleaseWithMessage", { message: result.message })
         : fallbackMessage;
       openConfirm({
         type: "open-release",
@@ -5496,11 +5686,11 @@ async function checkAppUpdate(event) {
       });
       return;
     }
-    setAppMessage(result?.message || "当前已是最新版本。");
+    setAppMessage(result?.message || t("service.upToDate"));
   } catch (error) {
     const message = error?.name === "AbortError"
-      ? "连接 GitHub Releases 超时，请稍后重试。"
-      : error?.message || "检查更新失败，请稍后重试。";
+      ? t("service.updateTimeout")
+      : error?.message || t("service.updateFailed");
     setAppMessage(message, true);
   } finally {
     if (timeoutId !== null) {
@@ -5510,7 +5700,7 @@ async function checkAppUpdate(event) {
     renderUpdatePreviewControl();
     if (button) {
       button.disabled = false;
-      button.textContent = "检查更新";
+      button.textContent = t("service.checkUpdate");
     }
   }
 }
@@ -5559,13 +5749,13 @@ async function removeSessionUser(name) {
 async function addSessionUser() {
   const name = String(elements.sessionUserInput.value || "").trim();
   if (!name) {
-    setAppMessage("请输入用户名。", true);
+    setAppMessage(t("session.nameRequired"), true);
     return;
   }
   try {
     state.data = await apiPost("/api/session-users/add", { name });
     elements.sessionUserInput.value = "";
-    setAppMessage(`已将 ${name} 加入本场 KTV 用户列表。`);
+    setAppMessage(t("session.added", { name }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5575,7 +5765,7 @@ async function addSessionUser() {
 async function moveSessionUser(name, index) {
   try {
     state.data = await apiPost("/api/session-users/reorder", { name, index });
-    setAppMessage("已更新用户顺序。");
+    setAppMessage(t("session.orderUpdated"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5588,7 +5778,7 @@ async function removeSessionUser(name) {
     if (elements.requesterSelect.value === name) {
       elements.requesterSelect.value = "";
     }
-    setAppMessage(`已移除 ${name}。`);
+    setAppMessage(t("session.removed", { name }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5638,7 +5828,7 @@ async function reorderPlaylist(itemId, index) {
 
 async function resortPlaylistByCycle() {
   state.data = await apiPost("/api/playlist/resort");
-  setAppMessage("已按本场用户座次重新排序点歌列表。");
+  setAppMessage(t("list.resorted"));
   render();
 }
 
@@ -5656,7 +5846,7 @@ async function setCacheLimit(maxCacheItems) {
   renderCacheSlider(state.data?.cache_policy);
   try {
     state.data = await apiPost("/api/cache-policy", { max_cache_items: maxCacheItems });
-    setAppMessage(`自动缓存窗口已调整为缓存 ${maxCacheItems} 首。`);
+    setAppMessage(t("service.cacheLimitUpdated", { count: maxCacheItems }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5683,7 +5873,7 @@ async function setAdvanceDelay(delaySeconds) {
   renderAdvanceDelaySlider(state.data?.player_settings);
   try {
     state.data = await apiPost("/api/player/advance-delay", { delay_seconds: delaySeconds });
-    setAppMessage(`切歌延迟已调整为 ${delaySeconds} 秒。`);
+    setAppMessage(t("service.advanceDelayUpdated", { seconds: delaySeconds }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -5818,16 +6008,16 @@ elements.searchForm.addEventListener("submit", async (event) => {
   const query = String(elements.searchQuery.value || "").trim();
   if (!query) {
     hideSearchResults();
-    setSearchMessage("请输入搜索关键词。", true);
+    setSearchMessage(t("search.keywordRequired"), true);
     return;
   }
 
   elements.searchButton.disabled = true;
-  setSearchMessage("Searching local cache...");
+  setSearchMessage(t("search.localSearching"));
   try {
     const items = await searchGatchaCache(query);
     renderSearchResults(items);
-    setSearchMessage(items.length ? `搜索到 ${items.length} 条缓存结果。` : "缓存中未找到结果。");
+    setSearchMessage(items.length ? t("search.localFound", { count: items.length }) : t("search.localNotFound"));
   } catch (error) {
     hideSearchResults();
     setSearchMessage(error.message, true);
@@ -5866,7 +6056,7 @@ async function handleLarkSearchSubmit(event) {
   syncLarkSearchInputs(query, usingHitbox ? "hitbox" : "main");
   if (!query) {
     renderSearchResultItems(elements.larkSearchResults, []);
-    setLarkSearchMessage("请输入搜索关键词。", true);
+    setLarkSearchMessage(t("search.keywordRequired"), true);
     return;
   }
 
@@ -5886,7 +6076,7 @@ async function handleLarkSearchSubmit(event) {
     elements.larkSearchResults.innerHTML = "";
     elements.larkSearchResults.classList.remove("hidden");
   }
-  setLarkSearchMessage("正在搜索 bilikara 数据库...(联网搜索需要3-15s不等)");
+  setLarkSearchMessage(t("search.larkSearching"));
   try {
     const poolItems = await searchLarkPool(query);
     if (state.larkSearchSeq !== searchSeq) {
@@ -5908,14 +6098,14 @@ async function handleLarkSearchSubmit(event) {
       return;
     }
     if (!collectedItems.length) {
-      renderSearchResultItems(elements.larkSearchResults, [], "bilikara 数据库里没有匹配结果。");
+      renderSearchResultItems(elements.larkSearchResults, [], t("search.larkNoResults"));
     }
     setLarkSearchMessage(
       collectedItems.length
-        ? `搜索到 ${collectedItems.length} 条共享结果${partialFailure ? "，部分表搜索失败" : ""}。`
+        ? t(partialFailure ? "search.larkFoundPartial" : "search.larkFound", { count: collectedItems.length })
         : partialFailure
-          ? "部分表搜索失败，bilikara 数据库里暂时没有匹配结果。"
-          : "bilikara 数据库里没有匹配结果。快使用添加 UID 功能/拉取收藏添加你喜爱的up主/稿件吧",
+          ? t("search.larkPartialNoResults")
+          : t("search.larkNoResultsLong"),
       partialFailure && !collectedItems.length,
     );
   } catch (error) {
@@ -6058,7 +6248,7 @@ elements.bbdownLoginButton?.addEventListener("click", async () => {
   }
   try {
     state.data = await apiPost("/api/bbdown/logout");
-    setAppMessage("BBDown 已退出登录。");
+    setAppMessage(t("service.bbdownLoggedOut"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -6102,7 +6292,7 @@ elements.cacheQualitySelect?.addEventListener("change", async (event) => {
   }
   await setCachePolicyPreference(
     { video_quality: quality },
-    `默认清晰度已调整为 ${quality}。`,
+    t("service.qualityUpdated", { quality }),
   );
 });
 
@@ -6113,7 +6303,7 @@ elements.cacheHiresCheckbox?.addEventListener("change", async (event) => {
   }
   await setCachePolicyPreference(
     { audio_hires: audioHires },
-    audioHires ? "已启用 Hi-Res 音频优先。" : "已关闭 Hi-Res 音频优先。",
+    audioHires ? t("service.hiresEnabled") : t("service.hiresDisabled"),
   );
 });
 
@@ -6167,7 +6357,7 @@ elements.clearPlaylistButton.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearPlaylistButton);
   openConfirm({
     type: "clear-playlist",
-    message: "确定清空点歌列表吗？当前正在播放的歌曲不会受影响。",
+    message: t("list.clearConfirm"),
     x: point.x,
     y: point.y,
   });
@@ -6177,7 +6367,7 @@ elements.clearHistoryButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearHistoryButton);
   openConfirm({
     type: "clear-history",
-    message: "\u786e\u5b9a\u6e05\u7a7a\u5386\u53f2\u8bb0\u5f55\u5417\uff1f\u8fd9\u4e0d\u4f1a\u5f71\u54cd\u5f53\u524d\u64ad\u653e\u6216\u6392\u961f\u4e2d\u7684\u6b4c\u66f2\u3002",
+    message: t("history.clearConfirm"),
     x: point.x,
     y: point.y,
   });
@@ -6191,9 +6381,9 @@ elements.historyExportButton?.addEventListener("click", (event) => {
     pageSize: 200,
     sourceSelect: true,
     pageSizeSelect: true,
-    message: "选择导出范围、图片每页歌曲数和格式。本场记录是本次启动后已播放的歌曲，全部历史是累计点歌历史。",
-    primaryLabel: "导出图片",
-    secondaryLabel: "导出 CSV",
+    message: t("history.exportPromptWithPageSize"),
+    primaryLabel: t("history.exportImage"),
+    secondaryLabel: t("history.exportCsv"),
     x: point.x,
     y: point.y,
   });
@@ -6241,7 +6431,7 @@ elements.queueCurrentRetry.addEventListener("click", async () => {
   }
   try {
     state.data = await apiPost("/api/cache/retry", { item_id: itemId });
-    setAppMessage("已重新开始缓存。");
+    setAppMessage(t("cache.retryStarted"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -6271,12 +6461,20 @@ elements.layoutModeSwitch?.addEventListener("click", (event) => {
   setLayoutMode(button.dataset.layoutMode);
 });
 
+elements.languageSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-language]");
+  if (!button) {
+    return;
+  }
+  setLanguage(button.dataset.language);
+});
+
 elements.dataResetButton?.addEventListener("click", (event) => {
   event.stopPropagation();
   const point = anchorPointForEvent(event, elements.dataResetButton);
   openConfirm({
     type: "reset-data",
-    message: "确认清空 data？会清空当前点歌列表、用户、历史记录和缓存，但保留已唱归档与抽卡缓存。",
+    message: t("service.resetDataConfirm"),
     ...point,
   });
 });
@@ -6285,7 +6483,7 @@ elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
   event.stopPropagation();
   const currentItem = state.data?.current_item;
   if (!currentItem?.id) {
-    setAppMessage("当前没有正在播放的歌曲。", true);
+    setAppMessage(t("service.noCurrentSong"), true);
     return;
   }
   try {
@@ -6294,7 +6492,7 @@ elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
       item_id: currentItem.id,
       force: true,
     });
-    setAppMessage("已重新开始缓存当前歌曲。");
+    setAppMessage(t("service.retryCurrentStarted"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -6307,7 +6505,7 @@ elements.playerResetButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.playerResetButton);
   openConfirm({
     type: "reset-player",
-    message: "\u786e\u8ba4\u91cd\u7f6e\u64ad\u653e\u5668\u72b6\u6001\uff1f\u4f1a\u91cd\u65b0\u8f7d\u5165\u5f53\u524d\u64ad\u653e\u5668\u5e76\u6062\u590d\u64ad\u653e\u5668\u8bbe\u7f6e\u3002\u6b4c\u5355\u3001\u5386\u53f2\u548c\u7f13\u5b58\u4e0d\u4f1a\u88ab\u6e05\u7a7a\u3002",
+    message: t("service.resetPlayerConfirm"),
     ...point,
   });
 });
@@ -6352,7 +6550,7 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
         selectedVideoPage: page,
         selectedAudioPages: [page],
       });
-      setAppMessage("已将分P加入缓存任务");
+      setAppMessage(t("player.partAddedToCache"));
       render();
     } catch (error) {
       if (error.code === "duplicate_session_request") {
@@ -6427,7 +6625,7 @@ elements.playlist.addEventListener("click", async (event) => {
     openConfirm({
       type: "remove-item",
       itemId: button.dataset.id,
-      message: "确定从点歌列表移除这首歌吗？",
+      message: t("list.removeConfirm"),
       x: point.x,
       y: point.y,
     });
@@ -6535,20 +6733,20 @@ elements.confirmOk.addEventListener("click", async () => {
     if (intent.type === "open-release" && intent.releaseUrl) {
       window.open(intent.releaseUrl, "_blank", "noopener");
       closeConfirm();
-      setAppMessage("已打开 GitHub Releases。");
+      setAppMessage(t("service.openedReleases"));
       return;
     }
     if (intent.type === "remove-item" && intent.itemId) {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
-      setAppMessage("已移除这首歌。");
+      setAppMessage(t("list.removedSong"));
       render();
       return;
     }
     if (intent.type === "reorder-item" && intent.itemId && Number.isInteger(intent.targetIndex)) {
       await reorderPlaylist(intent.itemId, intent.targetIndex);
       closeConfirm();
-      setAppMessage("已更新点歌列表顺序。");
+      setAppMessage(t("remote.queueOrderUpdated"));
       return;
     }
     if (intent.type === "gatcha-uid-add" && intent.uid) {
@@ -6568,7 +6766,7 @@ elements.confirmOk.addEventListener("click", async () => {
       } else {
         elements.urlInput.value = "";
       }
-      setFormMessage(intent.position === "next" ? "已确认插队到下一首" : "已确认加入点歌列表");
+      setFormMessage(intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail"));
       render();
     }
   } catch (error) {
@@ -6790,8 +6988,11 @@ elements.playlist.addEventListener("drop", async (event) => {
     targetIndex,
     x: point.x,
     y: point.y,
-    message: `确认将《${draggedItem?.display_title || "这首歌"}》移动到第 ${targetIndex + 1} 首吗？`,
-    primaryLabel: "确认移动",
+    message: t("remote.queueOrderMessage", {
+      title: draggedItem?.display_title || t("request.thisSong"),
+      index: targetIndex + 1,
+    }),
+    primaryLabel: t("remote.queueOrderConfirm"),
   });
   render();
 });
@@ -6908,10 +7109,10 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
   if (!requesterName) {
     return;
   }
-  setGatchaMessage("Nozomi power 注入！");
+  setGatchaMessage(t("gatcha.nozomi"));
   try {
     state.data = await submitAddRequest(url, "tail", { requesterName });
-    setFormMessage(`点歌成功：${state.gatchaCandidate.title}`);
+    setFormMessage(t("gatcha.requestSuccess", { title: state.gatchaCandidate.title }));
     
 
     state.gatchaCandidate = null;
@@ -6958,7 +7159,7 @@ elements.gatchaUidForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const uid = String(elements.gatchaUidInput?.value || "").trim();
   if (!uid) {
-    setGatchaUidMessage("请输入 UID", true);
+    setGatchaUidMessage(t("gatcha.uidRequired"), true);
     return;
   }
 
@@ -6970,21 +7171,21 @@ elements.gatchaUidForm?.addEventListener("submit", async (event) => {
 
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage("正在检测 UID...");
+  setGatchaUidMessage(t("gatcha.checkingUid"));
   try {
     const preview = await previewGatchaUid(uid);
     const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
-    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? "最新" : "所有");
-    const followedPrefix = preview?.already_followed ? "已在关注列表中，" : "";
+    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode"));
+    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
     const point = anchorPointForEvent(event, elements.addGatchaUidButton);
     openConfirm({
       type: "gatcha-uid-add",
       uid: preview?.uid || uid,
       name: ownerName,
-      message: `确认拉取 UP 主：${ownerName} 的${modeLabel}稿件？`,
+      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
       ...point,
     });
-    setGatchaUidMessage(`${followedPrefix}检测到 UP 主：${ownerName}`);
+    setGatchaUidMessage(t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
   } catch (error) {
     setGatchaUidMessage(error.message, true);
   } finally {
@@ -7001,7 +7202,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
   }
   state.gatchaRefreshSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage("正在后台更新抽卡缓存...");
+  setGatchaUidMessage(t("gatcha.refreshingBackground"));
   try {
     const result = await refreshGatchaCache();
     if (result?.started !== false && state.data) {
@@ -7012,7 +7213,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
         last_status: "running",
       };
     }
-    setGatchaUidMessage(result?.started === false ? "抽卡缓存已经在更新中。" : "已开始更新抽卡缓存。");
+    setGatchaUidMessage(result?.started === false ? t("gatcha.refreshAlreadyRunning") : t("gatcha.refreshStarted"));
   } catch (error) {
     setGatchaUidMessage(error.message, true);
   } finally {
@@ -7024,7 +7225,7 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
 elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
   const uid = String(elements.gatchaUidInput?.value || "").trim();
   if (!uid) {
-    setGatchaUidMessage("请输入 UID", true);
+    setGatchaUidMessage(t("gatcha.uidRequired"), true);
     return;
   }
 
@@ -7036,11 +7237,11 @@ elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage("正在读取公开收藏夹...");
+  setGatchaUidMessage(t("gatcha.readingFavlists"));
   try {
     const result = await previewGatchaFavlist(uid);
     openGatchaFavlistModal(result?.uid || uid, result);
-    setGatchaUidMessage("请选择要拉取的收藏夹。");
+    setGatchaUidMessage(t("gatcha.chooseFavlists"));
   } catch (error) {
     setGatchaUidMessage(error.message, true);
   } finally {
@@ -7052,6 +7253,7 @@ elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
 
 async function startPolling() {
   hydrateLocalPreferences();
+  await loadTranslations();
   renderLayoutMode();
   try {
     await fetchState();

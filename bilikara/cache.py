@@ -1089,6 +1089,7 @@ class CacheManager:
                 {
                     "id": self._variant_id(page, label, index),
                     "label": label,
+                    "page": page,
                     "audio_url": self._build_media_url(str(audio_file.relative_to(CACHE_DIR))),
                 }
             )
