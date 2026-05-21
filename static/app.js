@@ -979,6 +979,92 @@ async function apiGet(url, options = {}) {
   return data.data;
 }
 
+const hevcCanPlayTypes = [
+  'video/mp4; codecs="hvc1.1.6.L93.B0"',
+  'video/mp4; codecs="hev1.1.6.L93.B0"',
+  'video/mp4; codecs="hvc1"',
+  'video/mp4; codecs="hev1"',
+];
+
+const avcPlaybackLevels = [
+  { name: "High@L5.2", codec: 'video/mp4; codecs="avc1.640034"', maxAvcQualityIndex: 0 },
+  { name: "High@L5.1", codec: 'video/mp4; codecs="avc1.640033"', maxAvcQualityIndex: 0 },
+  { name: "High@L5.0", codec: 'video/mp4; codecs="avc1.640032"', maxAvcQualityIndex: 1 },
+  { name: "High@L4.2", codec: 'video/mp4; codecs="avc1.64002A"', maxAvcQualityIndex: 1 },
+  { name: "High@L4.1", codec: 'video/mp4; codecs="avc1.640029"', maxAvcQualityIndex: 2 },
+  { name: "Main@L4.1", codec: 'video/mp4; codecs="avc1.4D0029"', maxAvcQualityIndex: 2 },
+  { name: "High@L4.0", codec: 'video/mp4; codecs="avc1.640028"', maxAvcQualityIndex: 3 },
+  { name: "Main@L4.0", codec: 'video/mp4; codecs="avc1.4D0028"', maxAvcQualityIndex: 3 },
+  { name: "High@L3.2", codec: 'video/mp4; codecs="avc1.640020"', maxAvcQualityIndex: 3 },
+  { name: "Main@L3.2", codec: 'video/mp4; codecs="avc1.4D0020"', maxAvcQualityIndex: 3 },
+  { name: "High@L3.1", codec: 'video/mp4; codecs="avc1.64001F"', maxAvcQualityIndex: 4 },
+  { name: "Main@L3.1", codec: 'video/mp4; codecs="avc1.4D001F"', maxAvcQualityIndex: 4 },
+  { name: "Main@L3.0", codec: 'video/mp4; codecs="avc1.4D001E"', maxAvcQualityIndex: 5 },
+  { name: "Baseline@L3.0", codec: 'video/mp4; codecs="avc1.42E01E"', maxAvcQualityIndex: 5 },
+  { name: "Main@L2.1", codec: 'video/mp4; codecs="avc1.4D0015"', maxAvcQualityIndex: 6 },
+  { name: "Baseline@L2.1", codec: 'video/mp4; codecs="avc1.42E015"', maxAvcQualityIndex: 6 },
+];
+
+function isSupportedCanPlayTypeResult(result) {
+  return result === "probably" || result === "maybe";
+}
+
+function detectMediaCapabilities() {
+  const video = document.createElement("video");
+  const canPlayType = {};
+  let hevcSupported = false;
+  for (const mimeType of hevcCanPlayTypes) {
+    const result = typeof video.canPlayType === "function"
+      ? video.canPlayType(mimeType)
+      : "";
+    canPlayType[mimeType] = result;
+    if (isSupportedCanPlayTypeResult(result)) {
+      hevcSupported = true;
+    }
+  }
+  let supportedAvcLevel = null;
+  const avcLevels = avcPlaybackLevels.map((level) => {
+    const result = typeof video.canPlayType === "function"
+      ? video.canPlayType(level.codec)
+      : "";
+    canPlayType[level.codec] = result;
+    const supported = isSupportedCanPlayTypeResult(result);
+    if (!supportedAvcLevel && supported) {
+      supportedAvcLevel = level;
+    }
+    return {
+      name: level.name,
+      codec: level.codec,
+      can_play_type: result,
+      max_avc_quality_index: level.maxAvcQualityIndex,
+    };
+  });
+  const assumeHighestAvcLevel = !supportedAvcLevel
+    && avcLevels.length > 0
+    && avcLevels.every((level) => !level.can_play_type);
+  const effectiveAvcLevel = supportedAvcLevel || (assumeHighestAvcLevel ? avcPlaybackLevels[0] : null);
+  return {
+    hevc_supported: hevcSupported,
+    avc_supported: Boolean(effectiveAvcLevel),
+    max_avc_quality_index: effectiveAvcLevel ? effectiveAvcLevel.maxAvcQualityIndex : 6,
+    avc_levels: avcLevels,
+    can_play_type: canPlayType,
+    user_agent: window.navigator?.userAgent || "",
+    platform: window.navigator?.platform || "",
+  };
+}
+
+async function reportMediaCapabilities() {
+  const capabilities = detectMediaCapabilities();
+  const signature = JSON.stringify(capabilities);
+  if (state.mediaCapabilitiesReported && state.mediaCapabilitiesSignature === signature) {
+    return;
+  }
+  await apiPost("/api/client/media-capabilities", capabilities);
+  state.mediaCapabilitiesReported = true;
+  state.mediaCapabilitiesSignature = signature;
+}
+
 async function fetchState() {
   const previousOffsetMs = currentAvOffsetMs();
   const previousData = state.data;
@@ -7259,6 +7345,11 @@ async function startPolling() {
   hydrateLocalPreferences();
   await loadTranslations();
   renderLayoutMode();
+  try {
+    await reportMediaCapabilities();
+  } catch {
+    // Playback capability reporting should not block the host UI from loading.
+  }
   try {
     await fetchState();
   } catch (error) {

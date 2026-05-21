@@ -121,4 +121,4 @@ python start_bilikara.py
 
 ## License
 
-本项目采用 [MIT License](LICENSE)。
+本项目采用 [MIT License](LICENSE)，不授予任何 B 站内容、音乐、视频、歌词、公开播放、下载缓存、商业使用或第三方平台服务的授权。使用前请阅读 [LEGAL.md](LEGAL.md) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

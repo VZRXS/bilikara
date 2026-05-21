@@ -238,6 +238,11 @@ class AppContext:
         )
         self._notify_state_changed()
 
+    def set_client_media_capabilities(self, payload: dict[str, object]) -> dict[str, object]:
+        result = self.cache_manager.set_client_media_capabilities(payload)
+        self._notify_state_changed()
+        return result
+
     def retry_cache_item(self, item_id: str, *, force: bool = False) -> None:
         self.cache_manager.retry_item(item_id, force=force)
 
@@ -950,6 +955,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/client/disconnect":
                 CONTEXT.disconnect_client(str(body.get("client_id") or ""))
                 self._write_json({"ok": True})
+                return
+            if route == "/api/client/media-capabilities":
+                result = CONTEXT.set_client_media_capabilities(body)
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/bbdown/login/start":
                 CONTEXT.cache_manager.start_bbdown_login(force_refresh_qr=bool(body.get("force")))
