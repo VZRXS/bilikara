@@ -7,26 +7,34 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <title>bilikara remote</title>
+    <title data-i18n="document.remoteTitle">bilikara remote</title>
     <link rel="stylesheet" href="/remote.css" />
     <link rel="stylesheet" href="/remote-queue.css" />
   </head>
   <body>
     <main class="remote-shell layout-mode-full" id="remote-shell">
       <header class="hero-card">
-        <p class="eyebrow">Mobile Request</p>
-        <h1>bilikara 点歌台</h1>
-        <p class="hero-copy">在同一个局域网里，用手机查看当前点歌列表、继续点歌，也可以远程控制正在播放的视频。</p>
+        <p class="eyebrow" data-i18n="remote.heroTag">Mobile Request</p>
+        <h1 data-i18n="remote.heroTitle">bilikara 点歌台</h1>
+        <p class="hero-copy" data-i18n="remote.heroCopy">在同一个局域网里，用手机查看当前点歌列表、继续点歌，也可以远程控制正在播放的视频。</p>
         <div class="hero-controls">
+          <div class="mode-control language-control">
+            <span class="panel-tag" data-i18n="top.language">语言</span>
+            <div class="mode-switch language-switch" id="language-switch">
+              <button type="button" class="mode-button" data-language="en">EN</button>
+              <button type="button" class="mode-button" data-language="ja">JA</button>
+              <button type="button" class="mode-button active" data-language="zh">ZH</button>
+            </div>
+          </div>
           <div class="mode-control layout-control">
-            <span class="panel-tag">切换布局</span>
+            <span class="panel-tag" data-i18n="top.layout">切换布局</span>
             <div class="mode-switch" id="layout-mode-switch">
-              <button type="button" class="mode-button" data-layout-mode="basic">基础</button>
-              <button type="button" class="mode-button active" data-layout-mode="full">完整</button>
+              <button type="button" class="mode-button" data-layout-mode="basic" data-i18n="layout.basic">基础</button>
+              <button type="button" class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
             </div>
           </div>
           <div class="mode-control remote-qr-control" id="remote-qr-control">
-            <span class="panel-tag">手机点歌</span>
+            <span class="panel-tag" data-i18n="top.mobileRemote">手机点歌</span>
             <button
               type="button"
               id="remote-qr-toggle"
@@ -34,19 +42,19 @@
               aria-expanded="false"
               aria-controls="remote-qr-popover"
             >
-              <img id="remote-mini-qr-image" class="remote-mini-qr-image hidden" alt="手机点歌二维码缩略图" />
-              <span id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder">生成中</span>
+              <img id="remote-mini-qr-image" class="remote-mini-qr-image hidden" alt="手机点歌二维码缩略图" data-i18n-alt="remote.miniQrAlt" />
+              <span id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder" data-i18n="remote.miniQrLoading">生成中</span>
             </button>
             <div id="remote-qr-popover" class="remote-qr-popover hidden">
               <div class="remote-qr-popover-card">
-                <button type="button" id="remote-qr-popover-close" class="remote-qr-popover-close" aria-label="关闭">×</button>
+                <button type="button" id="remote-qr-popover-close" class="remote-qr-popover-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
                 <div class="remote-qr-popover-image-wrap">
-                  <img id="remote-popover-qr-image" class="remote-popover-qr-image hidden" alt="手机点歌二维码" />
-                  <div id="remote-popover-qr-placeholder" class="remote-popover-qr-placeholder">正在生成二维码...</div>
+                  <img id="remote-popover-qr-image" class="remote-popover-qr-image hidden" alt="手机点歌二维码" data-i18n-alt="remote.qrAlt" />
+                  <div id="remote-popover-qr-placeholder" class="remote-popover-qr-placeholder" data-i18n="remote.qrLoading">正在生成二维码...</div>
                 </div>
-                <p class="remote-popover-copy-label">手机浏览器打开</p>
+                <p class="remote-popover-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
                 <a id="remote-popover-url-link" class="remote-popover-url-link" href="/remote" target="_blank" rel="noreferrer">/remote</a>
-                <p id="remote-popover-url-hint" class="remote-popover-url-hint">请确保手机和服务端在同一个局域网内。</p>
+                <p id="remote-popover-url-hint" class="remote-popover-url-hint" data-i18n="remote.defaultHint">请确保手机和服务端在同一个局域网内。</p>
               </div>
             </div>
           </div>
@@ -55,45 +63,48 @@
 
       <section class="panel now-playing-panel">
         <div class="panel-head">
-          <p class="panel-tag">Now Playing</p>
-          <button type="button" id="refresh-button" class="ghost-button">刷新</button>
+          <p class="panel-tag" data-i18n="player.tag">Now Playing</p>
+          <button type="button" id="refresh-button" class="ghost-button" data-i18n="remote.refresh">刷新</button>
         </div>
-        <h2 id="current-title">正在读取状态...</h2>
+        <h2 id="current-title" data-i18n="remote.loadingState">正在读取状态...</h2>
         <p id="current-requester" class="requester-line hidden"></p>
+        <p id="current-owner" class="current-owner-line hidden"></p>
+        <p id="current-cache-state" class="queue-state current-cache-state hidden"></p>
         <p id="current-meta" class="muted"></p>
         <div id="audio-variant-bar" class="audio-variant-bar hidden"></div>
         <div id="player-control-panel" class="player-control-panel hidden">
           <div class="player-control-row">
-            <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="-15">后退 15 秒</button>
-            <button type="button" class="primary-button" data-control-action="toggle-play">播放 / 暂停</button>
-            <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="15">快进 15 秒</button>
-            <button type="button" class="secondary-button" data-control-action="next-track">切歌</button>
+            <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="-15" data-i18n="remote.seekBack15">后退 15 秒</button>
+            <button type="button" class="primary-button" data-control-action="toggle-play" data-i18n="remote.playPause">播放 / 暂停</button>
+            <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="15" data-i18n="remote.seekForward15">快进 15 秒</button>
+            <button type="button" class="secondary-button" data-control-action="next-track" data-i18n="player.nextSong">切歌</button>
           </div>
           <p id="player-control-hint" class="player-control-hint"></p>
         </div>
         <section id="remote-av-sync-panel" class="remote-setting-panel hidden">
           <div class="remote-setting-copy">
-            <p class="panel-tag">音画延迟</p>
-            <p class="muted">正数表示音频延后，负数表示音频提前。</p>
+            <p class="panel-tag" data-i18n="player.avSyncTag">音画延迟</p>
+            <p class="muted" data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</p>
           </div>
           <div class="remote-setting-controls">
-            <button type="button" class="ghost-button remote-step-button" data-av-step="-200">-200ms</button>
-            <button type="button" class="ghost-button remote-step-button" data-av-step="-50">-50ms</button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="-200"><span class="step-symbol">«</span><span>-200</span></button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="-50"><span class="step-symbol">‹</span><span>-50</span></button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="50"><span>+50</span><span class="step-symbol">›</span></button>
+            <button type="button" class="ghost-button remote-step-button" data-av-step="200"><span>+200</span><span class="step-symbol">»</span></button>
+            <button type="button" id="remote-av-offset-reset-button" class="ghost-button remote-reset-button" data-reset-av-offset disabled data-i18n="common.resetShort">复位</button>
             <label class="remote-input-wrap" for="remote-av-offset-input">
               <input id="remote-av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
-              <span>ms</span>
+              <span data-i18n="player.ms">ms</span>
             </label>
-            <button type="button" class="ghost-button remote-step-button" data-av-step="50">+50ms</button>
-            <button type="button" class="ghost-button remote-step-button" data-av-step="200">+200ms</button>
           </div>
         </section>
         <section id="remote-volume-panel" class="remote-setting-panel hidden">
           <div class="remote-setting-copy">
-            <p class="panel-tag">播放音量</p>
-            <p class="muted">直接遥控服务端当前本地播放的音量。</p>
+            <p class="panel-tag" data-i18n="player.volumeTag">播放音量</p>
+            <p class="muted" data-i18n="player.volumeHint">直接遥控服务端当前本地播放的音量。</p>
           </div>
           <div class="remote-setting-controls">
-            <button type="button" id="remote-volume-mute-button" class="ghost-button remote-mute-button">静音</button>
+            <button type="button" id="remote-volume-mute-button" class="ghost-button remote-mute-button" aria-label="静音" title="静音" data-i18n-aria-label="player.mute" data-i18n-title="player.mute">🔊</button>
             <input
               id="remote-volume-slider"
               class="remote-volume-slider"
@@ -110,23 +121,27 @@
 
       <section class="panel request-panel">
         <div class="panel-head">
-          <p class="panel-tag">Song Request</p>
+          <div>
+            <p class="panel-tag" data-i18n="request.tag">Song Request</p>
+            <h2 class="panel-title" data-i18n="request.title">点歌</h2>
+          </div>
+          <button type="button" id="resort-playlist-button" class="secondary-button requester-row-button" data-i18n="request.resort">重新排序</button>
         </div>
         <form id="request-form" class="request-form">
           <div class="requester-row">
             <select id="requester-select" name="requester_name"></select>
-            <button type="button" id="resort-playlist-button" class="secondary-button requester-row-button">重新排序</button>
           </div>
           <textarea
             id="url-input"
             name="url"
-            rows="3"
+            rows="2"
             placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
+            data-i18n-placeholder="request.urlPlaceholder"
             autocomplete="off"
           ></textarea>
           <div class="action-row">
-            <button type="submit" class="primary-button">点歌</button>
-            <button type="button" id="add-next-button" class="secondary-button">顶歌到下一首</button>
+            <button type="submit" class="primary-button" data-i18n="request.submit">点歌</button>
+            <button type="button" id="add-next-button" class="secondary-button" data-i18n="request.next">顶歌到下一首</button>
           </div>
           <p id="form-message" class="message"></p>
         </form>
@@ -135,13 +150,13 @@
       <section class="panel queue-panel">
         <div class="panel-head panel-head-stack">
           <div>
-            <p class="panel-tag" id="list-tag">Requests</p>
-            <h2 class="list-heading" id="list-title">点歌列表</h2>
+            <p class="panel-tag" id="list-tag" data-i18n="list.tag">Requests</p>
+            <h2 class="list-heading" id="list-title" data-i18n="list.title">点歌列表</h2>
           </div>
-          <span id="list-count" class="count-chip">0 首</span>
+          <span id="list-count" class="count-chip" data-i18n="follow.zeroCount">0 首</span>
         </div>
 
-        <div class="view-toggle" role="tablist" aria-label="切换点歌列表和历史记录">
+        <div class="view-toggle" role="tablist" aria-label="切换点歌列表和历史记录" data-i18n-aria-label="remote.queueViewToggle">
           <button
             type="button"
             id="queue-view-button"
@@ -150,7 +165,7 @@
             role="tab"
             aria-selected="true"
           >
-            点歌列表
+            <span data-i18n="list.title">点歌列表</span>
           </button>
           <button
             type="button"
@@ -160,8 +175,25 @@
             role="tab"
             aria-selected="false"
           >
-            历史记录
+            <span data-i18n="history.title">历史记录</span>
           </button>
+        </div>
+        <div id="history-export-row" class="history-export-row hidden">
+          <select id="history-export-source" class="history-export-source" aria-label="导出范围" data-i18n-aria-label="history.exportRange">
+            <option value="played" data-i18n="history.playedSource">导出本场</option>
+            <option value="history" data-i18n="history.allSource">全部历史</option>
+          </select>
+          <select id="history-export-page-size" class="history-export-page-size" aria-label="图片每页歌曲数" data-i18n-aria-label="history.exportPageSizeLabel">
+            <option value="200" selected data-i18n="history.exportPageSize200">图片每页 200 首</option>
+            <option value="150" data-i18n="history.exportPageSize150">图片每页 150 首</option>
+            <option value="100" data-i18n="history.exportPageSize100">图片每页 100 首</option>
+            <option value="80" data-i18n="history.exportPageSize80">图片每页 80 首</option>
+            <option value="60" data-i18n="history.exportPageSize60">图片每页 60 首</option>
+            <option value="50" data-i18n="history.exportPageSize50">图片每页 50 首</option>
+          </select>
+          <p class="history-export-note" data-i18n="history.exportPageSizeNote">仅影响图片分页；CSV 会导出完整列表。</p>
+          <button type="button" id="history-export-image-button" class="primary-button" data-i18n="history.exportImage">导出图片</button>
+          <button type="button" id="history-export-csv-button" class="ghost-button" data-i18n="history.exportCsv">导出 CSV</button>
         </div>
 
         <div id="queue-list" class="list"></div>
@@ -170,39 +202,125 @@
 
       <section class="panel search-panel">
         <div class="panel-head">
-          <p class="panel-tag">Local Search</p>
-        </div>
-        <form id="search-form" class="request-form">
-          <input
-            id="search-query"
-            type="text"
-            placeholder="搜索本地歌曲目录"
-            autocomplete="off"
-          />
-          <div class="action-row action-row-single">
-            <button type="submit" id="search-button" class="primary-button">搜索</button>
+          <div>
+            <p class="panel-tag" data-i18n="search.localTag">Local Search</p>
+            <h2 class="panel-title" data-i18n="search.title">搜索</h2>
           </div>
-        </form>
-        <div id="search-results" class="search-results hidden"></div>
+          <div class="panel-head-actions">
+          <button type="button" id="lark-search-toggle" class="secondary-button lark-search-toggle" aria-pressed="false" data-i18n="search.larkSearch">
+            bilikara 搜索
+          </button>
+          <button type="button" id="follow-browse-toggle" class="secondary-button follow-browse-toggle" aria-pressed="false" data-i18n="search.followBrowse">
+            关注浏览
+          </button>
+          </div>
+        </div>
+        <div id="remote-search-stage" class="remote-search-stage">
+          <div class="remote-search-stage-inner">
+            <div id="remote-search-main-view" class="remote-search-face remote-search-face-front">
+              <form id="search-form" class="request-form search-form">
+                <input
+                  id="search-query"
+                  type="text"
+                  placeholder="在本地歌曲目录中搜索"
+                  data-i18n-placeholder="search.localPlaceholder"
+                  autocomplete="off"
+                />
+                <button type="submit" id="search-button" class="primary-button" data-i18n="search.submit">搜索</button>
+              </form>
+              <p id="search-message" class="message search-message" role="status"></p>
+              <div id="search-results" class="search-results hidden"></div>
+            </div>
+            <div id="lark-search-view" class="remote-search-face remote-search-face-lark">
+              <form id="lark-search-form" class="request-form search-form">
+                <input
+                  id="lark-search-query"
+                  type="text"
+                  placeholder="在 bilikara 共享数据库中搜索"
+                  data-i18n-placeholder="search.larkPlaceholder"
+                  autocomplete="off"
+                />
+                <button type="submit" id="lark-search-button" class="primary-button" data-i18n="search.submit">搜索</button>
+              </form>
+              <p id="lark-search-message" class="message search-message" role="status"></p>
+              <div id="lark-search-results" class="search-results hidden"></div>
+            </div>
+          </div>
+        </div>
+        <div id="follow-browse-view" class="follow-browser hidden">
+          <div id="follow-up-list-view">
+            <div id="follow-up-grid" class="follow-up-grid"></div>
+          </div>
+          <div id="follow-up-items-view" class="hidden">
+            <div class="follow-browser-head">
+              <button type="button" id="follow-browse-back" class="secondary-button" data-i18n="common.back">返回</button>
+              <div class="follow-browser-title">
+                <h3 id="follow-browse-title" data-i18n="follow.title">关注列表</h3>
+                <span id="follow-browse-count"></span>
+              </div>
+            </div>
+            <form id="follow-search-form" class="request-form follow-search-form">
+              <input
+                type="text"
+                id="follow-search-query"
+                placeholder="在这个 UP 的缓存稿件里搜索"
+                data-i18n-placeholder="search.followPlaceholder"
+                autocomplete="off"
+              />
+              <button type="submit" id="follow-search-button" class="primary-button" data-i18n="search.submit">搜索</button>
+            </form>
+            <div id="follow-song-results" class="search-results"></div>
+          </div>
+          <p class="gatcha-message" id="follow-browse-message" role="status"></p>
+        </div>
       </section>
 
       <section class="panel gatcha-panel">
         <div class="panel-head">
-          <p class="panel-tag">Gatcha Draw</p>
+          <div>
+            <p class="panel-tag" id="gatcha-tag" data-i18n="gatcha.tag">Gatcha Draw</p>
+            <h2 class="panel-title" id="gatcha-title" data-i18n="gatcha.title">试试运气</h2>
+          </div>
+          <button type="button" id="gatcha-uid-toggle" class="secondary-button gatcha-uid-toggle" aria-pressed="false" data-i18n="gatcha.addUid">
+            添加 UID
+          </button>
         </div>
         <div id="gatcha-init-view" class="gatcha-content">
           <div class="gatcha-icon">🎲</div>
-          <p class="gatcha-desc">从关注的投稿中随机抽取一首歌曲</p>
-          <button type="button" id="gatcha-button" class="primary-button">试试运气</button>
+          <p class="gatcha-desc" data-i18n="gatcha.description">从关注的投稿中随机抽取一首歌曲</p>
+          <button type="button" id="gatcha-button" class="primary-button" data-i18n="gatcha.title">试试运气</button>
           <p class="gatcha-message" id="gatcha-message" role="status"></p>
         </div>
         <div id="gatcha-result-view" class="gatcha-content hidden">
-          <p class="gatcha-label">运气不错，抽到了：</p>
-          <h3 id="gatcha-candidate-title">歌曲标题加载中...</h3>
-          <div class="action-row">
-            <button type="button" id="gatcha-confirm-button" class="primary-button">确定点歌</button>
-            <button type="button" id="gatcha-retry-button" class="secondary-button">重新再来</button>
+          <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
+          <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
+          <div class="action-row gatcha-actions">
+            <button type="button" id="gatcha-confirm-button" class="primary-button" data-i18n="gatcha.confirm">确认点歌</button>
+            <button type="button" id="gatcha-retry-button" class="secondary-button" data-i18n="gatcha.retry">重新再来</button>
           </div>
+        </div>
+        <div id="gatcha-uid-view" class="gatcha-content gatcha-uid-view hidden">
+          <form id="gatcha-uid-form" class="request-form gatcha-uid-form">
+            <input
+              type="text"
+              id="gatcha-uid-input"
+              placeholder="UID 或 UP 主空间链接"
+              aria-label="UID 或 UP 主空间链接"
+              data-i18n-placeholder="gatcha.uidPlaceholder"
+              data-i18n-aria-label="gatcha.uidPlaceholder"
+              autocomplete="off"
+            />
+            <button type="submit" id="add-gatcha-uid-button" class="primary-button" data-i18n="gatcha.add">添加</button>
+          </form>
+          <div class="action-row gatcha-actions">
+            <button type="button" id="refresh-gatcha-cache-button" class="secondary-button gatcha-refresh-button">
+              <span data-i18n="gatcha.refresh">手动更新</span>
+            </button>
+            <button type="button" id="pull-gatcha-favlist-button" class="secondary-button gatcha-refresh-button">
+              <span data-i18n="gatcha.pullFavlist">拉取收藏</span>
+            </button>
+          </div>
+          <p class="gatcha-message" id="gatcha-uid-message" role="status"></p>
         </div>
       </section>
 
@@ -212,12 +330,12 @@
           <div class="binding-sheet-handle" aria-hidden="true"></div>
           <div class="binding-sheet-head">
             <div>
-              <p class="panel-tag">Part Binding</p>
-              <h2>选择分P绑定</h2>
+              <p class="panel-tag" data-i18n="binding.tag">Part Binding</p>
+              <h2 data-i18n="binding.title">选择分P绑定</h2>
             </div>
-            <button type="button" id="binding-sheet-close" class="ghost-button binding-sheet-close">关闭</button>
+            <button type="button" id="binding-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
           </div>
-          <p id="binding-sheet-text" class="muted">请选择要下载的视频分P和音频分P。</p>
+          <p id="binding-sheet-text" class="muted" data-i18n="binding.text">请选择要下载的视频分P和音频分P。</p>
           <section class="binding-sheet-section binding-accordion" id="binding-video-section">
             <button
               type="button"
@@ -226,7 +344,7 @@
               aria-expanded="false"
               aria-controls="binding-sheet-video-options-wrap"
             >
-              <span>视频</span>
+              <span data-i18n="binding.video">视频</span>
               <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
             </button>
             <div id="binding-sheet-video-options-wrap" class="binding-accordion-panel hidden">
@@ -241,7 +359,7 @@
               aria-expanded="false"
               aria-controls="binding-sheet-audio-options-wrap"
             >
-              <span>音频</span>
+              <span data-i18n="binding.audio">音频</span>
               <span class="binding-accordion-chevron" aria-hidden="true">▾</span>
             </button>
             <div id="binding-sheet-audio-options-wrap" class="binding-accordion-panel hidden">
@@ -249,8 +367,47 @@
             </div>
           </section>
           <div class="binding-sheet-actions">
-            <button type="button" id="binding-sheet-cancel" class="ghost-button">取消</button>
-            <button type="button" id="binding-sheet-confirm" class="primary-button">加入点歌列表</button>
+            <button type="button" id="binding-sheet-cancel" class="ghost-button" data-i18n="common.cancel">取消</button>
+            <button type="button" id="binding-sheet-confirm" class="primary-button" data-i18n="binding.confirm">加入点歌列表</button>
+          </div>
+        </div>
+      </div>
+      <div id="gatcha-favlist-sheet" class="binding-sheet hidden" aria-hidden="true">
+        <div id="gatcha-favlist-sheet-backdrop" class="binding-sheet-backdrop"></div>
+        <div class="binding-sheet-panel">
+          <div class="binding-sheet-handle" aria-hidden="true"></div>
+          <div class="binding-sheet-head">
+            <div>
+              <p class="panel-tag" data-i18n="favlist.tag">Favlist Pull</p>
+              <h2 data-i18n="favlist.title">选择收藏夹</h2>
+            </div>
+            <button type="button" id="gatcha-favlist-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
+          </div>
+          <p id="gatcha-favlist-sheet-text" class="muted" data-i18n="favlist.text">请选择要拉取的公开收藏夹。</p>
+          <section class="binding-sheet-section">
+            <div id="gatcha-favlist-sheet-options" class="binding-option-list"></div>
+          </section>
+          <div class="binding-sheet-actions">
+            <button type="button" id="gatcha-favlist-sheet-cancel" class="ghost-button" data-i18n="common.cancel">取消</button>
+            <button type="button" id="gatcha-favlist-sheet-confirm" class="primary-button" data-i18n="favlist.confirm">拉取选中收藏夹</button>
+          </div>
+        </div>
+      </div>
+      <div id="reorder-confirm-sheet" class="binding-sheet hidden" aria-hidden="true">
+        <div id="reorder-confirm-sheet-backdrop" class="binding-sheet-backdrop"></div>
+        <div class="binding-sheet-panel reorder-confirm-panel">
+          <div class="binding-sheet-handle" aria-hidden="true"></div>
+          <div class="binding-sheet-head">
+            <div>
+              <p class="panel-tag" data-i18n="remote.queueOrderTag">Queue Order</p>
+              <h2 data-i18n="remote.queueOrderTitle">确认调整顺序</h2>
+            </div>
+            <button type="button" id="reorder-confirm-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
+          </div>
+          <p id="reorder-confirm-sheet-text" class="muted reorder-confirm-text"></p>
+          <div class="binding-sheet-actions">
+            <button type="button" id="reorder-confirm-sheet-cancel" class="ghost-button" data-i18n="common.cancel">取消</button>
+            <button type="button" id="reorder-confirm-sheet-confirm" class="primary-button" data-i18n="remote.queueOrderConfirm">确认移动</button>
           </div>
         </div>
       </div>
@@ -259,7 +416,7 @@
     <template id="queue-item-template">
       <article class="queue-item">
         <div class="queue-item-head">
-          <button type="button" class="queue-drag-handle" data-drag-handle aria-label="拖动排序">
+          <button type="button" class="queue-drag-handle" data-drag-handle aria-label="拖动排序" data-i18n-aria-label="remote.dragSort">
             <span aria-hidden="true">⋮⋮</span>
           </button>
           <div class="queue-badge-column">
@@ -269,24 +426,35 @@
           <div class="queue-main">
             <h3 class="queue-title"></h3>
             <div class="queue-meta-row">
-              <span class="queue-requester hidden"></span>
-              <div class="queue-actions">
-                <button type="button" data-action="play-now" class="primary-button">立即播放</button>
-                <button type="button" data-action="move-next" class="secondary-button">顶歌</button>
-                <button
-                  type="button"
-                  data-action="remove"
-                  class="ghost-button danger-button icon-button"
-                  title="删除"
-                  aria-label="删除"
-                >
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
-                      fill="currentColor"
-                    />
+              <div class="queue-meta-info">
+                <span class="queue-requester hidden"></span>
+              </div>
+              <div class="queue-actions-wrap">
+                <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作" data-i18n-aria-label="common.moreActions">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+                    <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/>
                   </svg>
                 </button>
+                <div class="queue-actions menu-content hidden">
+                  <button type="button" data-action="play-now" class="primary-button" data-i18n="list.playNow">立即播放</button>
+                  <button type="button" data-action="move-next" class="secondary-button" data-i18n="request.moveNext">顶歌</button>
+                  <button
+                    type="button"
+                    data-action="remove"
+                    class="ghost-button danger-button icon-button"
+                    title="删除"
+                    aria-label="删除"
+                    data-i18n-title="common.delete"
+                    data-i18n-aria-label="common.delete"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
             <p class="queue-note"></p>
@@ -299,18 +467,29 @@
       <article class="history-item">
         <div class="history-main">
           <h3 class="history-title"></h3>
-          <p class="history-requester hidden"></p>
           <div class="history-meta">
-            <span class="history-time"></span>
-            <span class="history-count"></span>
+            <div class="history-meta-info">
+              <span class="history-time"></span>
+              <span class="history-count"></span>
+              <span class="history-requester hidden"></span>
+            </div>
+            <div class="history-actions-wrap">
+              <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作" data-i18n-aria-label="common.moreActions">
+                <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+                  <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/>
+                </svg>
+              </button>
+              <div class="history-actions menu-content hidden">
+                <button type="button" data-action="history-tail" class="primary-button" data-i18n="request.submit">点歌</button>
+                <button type="button" data-action="history-next" class="secondary-button" data-i18n="request.moveNext">顶歌</button>
+              </div>
+            </div>
           </div>
-        </div>
-        <div class="history-actions">
-          <button type="button" data-action="history-tail" class="primary-button">再点一次</button>
-          <button type="button" data-action="history-next" class="secondary-button">顶歌</button>
         </div>
       </article>
     </template>
+
+    <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
 
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>

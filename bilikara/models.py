@@ -56,7 +56,8 @@ class PlaylistItem:
         # LEGACY: old state files used local_media_url for one muxed file.
         # Split playback requires both video and audio.
         data["is_cached"] = bool(
-            self.video_media_url
+            self.cache_status == "ready"
+            and self.video_media_url
             and any(
                 isinstance(variant, dict)
                 and str(variant.get("audio_url") or "").strip()

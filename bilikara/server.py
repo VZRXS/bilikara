@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+from email.utils import formatdate
 import json
 import mimetypes
 import re
@@ -17,16 +18,25 @@ from .bilibili import (
     BilibiliError,
     ManualBindingRequiredError,
     MISSING_BILIBILI_COOKIE_MESSAGE,
+    add_gatcha_uid,
+    browse_gatcha_cache,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
+    gatcha_task_snapshot,
     fetch_owner_info,
     fetch_video_item,
-    refresh_gatcha_cache,
+    gatcha_uid_snapshot,
+    preview_gatcha_favlist,
+    preview_gatcha_uid,
     refresh_gatcha_cache_in_background,
+    refresh_gatcha_favlist,
     search_gatcha_cache,
 )
+from .lark_pool_client import delete_cloudflare_pool_entry, search_lark_pool, search_lark_pool_table
 from .cache import CacheManager
 from .config import (
+    APP_RELEASES_URL,
+    APP_VERSION,
     BACKUP_FILE,
     CACHE_DIR,
     HOST,
@@ -37,9 +47,13 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
+from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .store import PlaylistStore
+from .updater import check_for_update
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
+BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
+MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 
 
 class DuplicateSessionRequestError(ValueError):
@@ -65,7 +79,7 @@ class AppContext:
         self.cache_manager = CacheManager(
             self.store,
             max_cache_items=MAX_CACHE_ITEMS,
-            on_bbdown_login_success=refresh_gatcha_cache_in_background,
+            on_bbdown_login_success=self.refresh_startup_gatcha_cache_in_background,
         )
         self.cache_manager.prepare_session()
         self._closed = False
@@ -95,8 +109,10 @@ class AppContext:
         self._remote_access = self._build_remote_access_payload(self._host, self._port, [])
         self._startup_lock = threading.RLock()
         self._startup_started = False
+        self._startup_gatcha_refresh_bypass_available = True
 
     def snapshot(self) -> dict:
+        self.cache_manager.reconcile_cache_state()
         with self._state_change_condition:
             state_revision = self._state_revision
         payload = self.store.snapshot()
@@ -109,10 +125,28 @@ class AppContext:
             "auto_restored_backup": self.auto_restored_backup,
         }
         payload["remote_access"] = self.remote_access_snapshot()
+        payload["gatcha"] = gatcha_task_snapshot()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
+        payload["app"] = {
+            "version": APP_VERSION,
+            "releases_url": APP_RELEASES_URL,
+        }
         payload["state_revision"] = state_revision
         return payload
+
+    def refresh_gatcha_cache_in_background(self) -> bool:
+        return refresh_gatcha_cache_in_background(
+            on_start=self._notify_state_changed,
+            on_done=self._notify_state_changed,
+        )
+
+    def refresh_startup_gatcha_cache_in_background(self) -> bool:
+        with self._startup_lock:
+            if not self._startup_gatcha_refresh_bypass_available:
+                return self.refresh_gatcha_cache_in_background()
+            self._startup_gatcha_refresh_bypass_available = False
+        return refresh_gatcha_cache_in_background(use_global_lock=False, upload_default_uids_to_lark=False)
 
     def add_item(self, item, *, position: str, requester_name: str) -> None:
         self.store.add_item(item, position=position, requester_name=requester_name)
@@ -135,6 +169,13 @@ class AppContext:
 
     def clear_history(self) -> None:
         self.store.clear_history()
+
+    def history_snapshot(self) -> list[dict]:
+        history = self.store.snapshot().get("history") or []
+        return list(history) if isinstance(history, list) else []
+
+    def session_played_snapshot(self) -> list[dict]:
+        return self.store.session_played_snapshot()
 
     def move_item(self, item_id: str, direction: str) -> None:
         self.store.move_item(item_id, direction)
@@ -205,12 +246,16 @@ class AppContext:
     def retry_cache_item(self, item_id: str, *, force: bool = False) -> None:
         self.cache_manager.retry_item(item_id, force=force)
 
+    def is_current_item(self, item_id: str) -> bool:
+        return self.store.is_current_item(item_id)
+
     def issue_player_control(
         self,
         *,
         action: str,
         item_id: str = "",
         delta_seconds: int = 0,
+        target_seconds: float | None = None,
     ) -> dict[str, object]:
         with self._player_control_lock:
             self._player_control_seq += 1
@@ -219,6 +264,7 @@ class AppContext:
                 "action": action,
                 "item_id": item_id,
                 "delta_seconds": delta_seconds,
+                "target_seconds": target_seconds,
                 "issued_at": time.time(),
             }
             command = dict(self._player_control_command)
@@ -244,17 +290,43 @@ class AppContext:
         item_id: str,
         is_paused: bool,
         current_time: float = 0.0,
+        duration: float | None = None,
+        client_info: object | None = None,
     ) -> None:
         normalized_item_id = str(item_id or "").strip()
         if not normalized_item_id:
             return
+        normalized_duration = 0.0
+        if duration is not None:
+            try:
+                normalized_duration = max(0.0, float(duration or 0.0))
+            except (TypeError, ValueError):
+                normalized_duration = 0.0
         with self._player_status_lock:
-            self._player_status = {
+            previous_duration = 0.0
+            if (
+                isinstance(self._player_status, dict)
+                and str(self._player_status.get("item_id") or "").strip() == normalized_item_id
+            ):
+                try:
+                    previous_duration = max(0.0, float(self._player_status.get("duration") or 0.0))
+                except (TypeError, ValueError):
+                    previous_duration = 0.0
+            next_status = {
                 "item_id": normalized_item_id,
                 "is_paused": bool(is_paused),
                 "current_time": max(0.0, float(current_time or 0.0)),
+                "duration": normalized_duration or previous_duration,
                 "updated_at": time.time(),
             }
+            if isinstance(client_info, dict):
+                next_status["client_info"] = {
+                    "user_agent": str(client_info.get("user_agent") or "")[:500],
+                    "platform": str(client_info.get("platform") or "")[:120],
+                    "language": str(client_info.get("language") or "")[:80],
+                    "vendor": str(client_info.get("vendor") or "")[:120],
+                }
+            self._player_status = next_status
         if (not is_paused) or float(current_time or 0.0) > 0:
             self.store.mark_item_playback_started(normalized_item_id)
         self._notify_state_changed()
@@ -303,6 +375,7 @@ class AppContext:
             self._player_control_command = None
         with self._player_status_lock:
             self._player_status = None
+        self._notify_state_changed()
 
     def bind_server(self, server: ThreadingHTTPServer, *, shutdown_on_last_client: bool) -> None:
         with self._client_lock:
@@ -493,6 +566,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
             return
+        if route == "/api/app/update":
+            try:
+                include_preview = str(query.get("include_preview", [""])[0]).lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                self._write_json({"ok": True, "data": check_for_update(include_preview=include_preview)})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)}, status=HTTPStatus.BAD_GATEWAY)
+            return
         if route == "/api/gatcha/candidate":
             try:
                 candidate = fetch_gatcha_candidate()
@@ -510,6 +595,90 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True, "data": {"items": results}})
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/lark/search":
+            route_query = parse_qs(urlparse(self.path).query)
+            query = route_query.get("q", [""])[0]
+            table_index = route_query.get("table", [""])[0]
+            try:
+                limit = max(1, min(100, int(route_query.get("limit", ["80"])[0] or "80")))
+            except (TypeError, ValueError):
+                limit = 80
+            try:
+                if table_index:
+                    results = search_lark_pool_table(query, int(table_index), limit=limit)
+                else:
+                    results = search_lark_pool(query, limit=limit)
+                self._write_json({"ok": True, "data": {"items": results}})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/gatcha/browse":
+            route_query = parse_qs(urlparse(self.path).query)
+            selected_uid = route_query.get("uid", [""])[0]
+            search_query = route_query.get("q", [""])[0]
+            try:
+                self._write_json({"ok": True, "data": browse_gatcha_cache(selected_uid, search_query)})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/gatcha/uids":
+            try:
+                self._write_json({"ok": True, "data": gatcha_uid_snapshot()})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route in ("/api/playlist/export", "/api/history/export"):
+            query = parse_qs(urlparse(self.path).query)
+            export_format = str(query.get("format", ["csv"])[0] or "csv").strip().lower()
+            export_source = str(query.get("source", ["history"])[0] or "history").strip().lower()
+            try:
+                export_page_size = int(query.get("page_size", ["200"])[0] or "200")
+            except (TypeError, ValueError):
+                export_page_size = 200
+            export_page_size = export_page_size if export_page_size in {200, 150, 100, 80, 60, 50} else 200
+            source_settings = {
+                "history": {
+                    "items": lambda: CONTEXT.history_snapshot(),
+                    "filename": "history",
+                    "title": "bilikara 歌单导出",
+                    "time_header": "播放时间",
+                },
+                "played": {
+                    "items": lambda: CONTEXT.session_played_snapshot(),
+                    "filename": "played",
+                    "title": "bilikara 歌单导出",
+                    "time_header": "播放时间",
+                },
+            }
+            if export_source not in source_settings:
+                self._write_json({"ok": False, "error": "source must be history or played"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            settings = source_settings[export_source]
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            try:
+                history = settings["items"]()
+                if export_format == "csv":
+                    self._write_download(
+                        playlist_csv_bytes(history, time_header=str(settings["time_header"])),
+                        content_type="text/csv; charset=utf-8",
+                        filename=f"bilikara-{settings['filename']}-{timestamp}.csv",
+                    )
+                    return
+                if export_format == "image":
+                    payload, content_type, default_filename = playlist_image_export(
+                        history,
+                        logo_path=_playlist_export_logo_path(),
+                        title=str(settings["title"]),
+                        page_size=export_page_size,
+                    )
+                    suffix = Path(default_filename).suffix or ".png"
+                    filename = f"bilikara-{settings['filename']}-{timestamp}{suffix}"
+                    self._write_download(payload, content_type=content_type, filename=filename)
+                    return
+                raise ValueError("format must be csv or image")
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)}, status=HTTPStatus.BAD_REQUEST)
             return
         if route.startswith("/media/"):
             self._serve_media(route)
@@ -643,8 +812,50 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/cache/retry":
                 self._require_id(body)
-                CONTEXT.retry_cache_item(body["item_id"], force=bool(body.get("force")))
+                force = bool(body.get("force"))
+                if CONTEXT.is_current_item(body["item_id"]):
+                    force = True
+                CONTEXT.retry_cache_item(body["item_id"], force=force)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/gatcha/uids/add":
+                result = add_gatcha_uid(
+                    body.get("uid"),
+                    on_start=CONTEXT._notify_state_changed,
+                    on_done=CONTEXT._notify_state_changed,
+                )
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/gatcha/uids/preview":
+                gatcha_task = gatcha_task_snapshot()
+                if gatcha_task.get("busy"):
+                    raise ValueError(gatcha_task.get("message") or "拉取任务执行中，请等待任务结束")
+                result = preview_gatcha_uid(body.get("uid"))
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/gatcha/refresh":
+                if not effective_bilibili_cookie():
+                    raise ValueError(MISSING_BILIBILI_COOKIE_MESSAGE)
+                started = CONTEXT.refresh_gatcha_cache_in_background()
+                if not started:
+                    raise ValueError("拉取任务执行中，请等待任务结束")
+                self._write_json({"ok": True, "data": {"started": started}})
+                return
+            if route == "/api/gatcha/favlist/preview":
+                gatcha_task = gatcha_task_snapshot()
+                if gatcha_task.get("busy"):
+                    raise ValueError(gatcha_task.get("message") or "拉取任务执行中，请等待任务结束")
+                result = preview_gatcha_favlist(body.get("uid"))
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/gatcha/favlist":
+                result = refresh_gatcha_favlist(
+                    body.get("uid"),
+                    body.get("folder_ids"),
+                    on_start=CONTEXT._notify_state_changed,
+                    on_done=CONTEXT._notify_state_changed,
+                )
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/player/audio-variant":
                 self._require_id(body)
@@ -658,17 +869,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/player/control":
                 action = str(body.get("action") or "").strip()
                 item_id = str(body.get("item_id") or "").strip()
-                if action not in {"toggle-play", "seek-relative"}:
+                if action not in {"toggle-play", "seek-relative", "seek-absolute", "next-track"}:
                     raise ValueError("invalid player control action")
                 delta_seconds = int(body.get("delta_seconds") or 0)
+                target_seconds = None
                 if action == "seek-relative" and delta_seconds == 0:
                     raise ValueError("missing delta_seconds")
                 if action == "seek-relative" and abs(delta_seconds) > 300:
                     raise ValueError("delta_seconds too large")
+                if action == "seek-absolute":
+                    target_seconds = float(body.get("target_seconds") or 0.0)
+                    if target_seconds < 0:
+                        raise ValueError("target_seconds must be non-negative")
                 CONTEXT.issue_player_control(
                     action=action,
                     item_id=item_id,
                     delta_seconds=delta_seconds,
+                    target_seconds=target_seconds,
                 )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
@@ -687,10 +904,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not isinstance(is_paused, bool):
                     raise ValueError("is_paused must be boolean")
                 current_time = float(body.get("current_time") or 0.0)
+                duration = None
+                if "duration" in body:
+                    duration = float(body.get("duration") or 0.0)
                 CONTEXT.update_player_status(
                     item_id=item_id,
                     is_paused=is_paused,
                     current_time=current_time,
+                    duration=duration,
+                    client_info=body.get("client_info"),
                 )
                 self._write_json({"ok": True})
                 return
@@ -756,7 +978,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     cfg.COOKIE = f"SESSDATA={sessdata}; bili_jct={jct}"
                 if not effective_bilibili_cookie():
                     raise ValueError(MISSING_BILIBILI_COOKIE_MESSAGE)
-                refresh_gatcha_cache_in_background()
+                CONTEXT.refresh_gatcha_cache_in_background()
                 self._write_json({"ok": True, "message": "配置已实时生效"})
                 return
             self._write_json(
@@ -786,6 +1008,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 status=HTTPStatus.CONFLICT,
             )
         except BilibiliError as exc:
+            if route == "/api/playlist/add":
+                self._delete_missing_bvid_from_pool_if_needed(body, exc)
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except DuplicateSessionRequestError as exc:
             self._write_json(
@@ -833,6 +1057,21 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         CONTEXT.add_item(item, position=position, requester_name=requester_name)
         self._write_json({"ok": True, "data": CONTEXT.snapshot()})
 
+    def _delete_missing_bvid_from_pool_if_needed(self, body: dict, error: Exception) -> None:
+        error_message = str(error).strip()
+        if error_message != MISSING_BILIBILI_VIDEO_MESSAGE:
+            return
+        bvid = self._extract_bvid_from_add_body(body)
+        if not bvid:
+            return
+        delete_cloudflare_pool_entry(bvid)
+
+    @staticmethod
+    def _extract_bvid_from_add_body(body: dict) -> str:
+        raw_url = str(body.get("url") or "")
+        match = BVID_IN_TEXT_RE.search(raw_url)
+        return match.group(0) if match else ""
+
     def _serve_static(self, route: str) -> None:
         if route in {"", "/"}:
             relative = "index.html"
@@ -879,6 +1118,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+        self.wfile.flush()
+
+    def _write_download(self, payload: bytes, *, content_type: str, filename: str) -> None:
+        safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip("-") or "download.bin"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Last-Modified", formatdate(timeval=None, localtime=False, usegmt=True))
+        self.end_headers()
+        self.wfile.write(payload)
         self.wfile.flush()
 
     def _serve_events(self, client_id: str) -> None:
@@ -945,12 +1196,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     with file_path.open("rb") as handle:
                         handle.seek(start)
                         remaining = end - start + 1
-                        while remaining > 0:
-                            chunk = handle.read(min(64 * 1024, remaining))
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
+                        try:
+                            while remaining > 0:
+                                chunk = handle.read(min(64 * 1024, remaining))
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                                remaining -= len(chunk)
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            pass
                     return
 
         self.send_response(HTTPStatus.OK)
@@ -960,11 +1214,14 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
         with file_path.open("rb") as handle:
-            while True:
-                chunk = handle.read(64 * 1024)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+            try:
+                while True:
+                    chunk = handle.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
     def _guess_type(self, file_path: Path) -> str:
         return mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
@@ -982,6 +1239,8 @@ def _serve(
     actual_port = _find_available_port(host, port) if auto_select_port else port
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
+    if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
+        CONTEXT.refresh_startup_gatcha_cache_in_background()
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
     print(f"{status_label} running on {url}")
@@ -1033,14 +1292,33 @@ def run_webui(
     )
 
 
+def _playlist_export_logo_path() -> Path | None:
+    for filename in ("bili.png", "bili.jpg", "bili.jpeg"):
+        candidate = STATIC_DIR / "pic" / filename
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _port_probe_hosts(host: str) -> tuple[str, ...]:
+    if host == "0.0.0.0":
+        return (host, "127.0.0.1")
+    return (host,)
+
+
+def _can_bind_port(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
 def _find_available_port(host: str, preferred_port: int) -> int:
     for candidate in range(preferred_port, preferred_port + 30):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind((host, candidate))
-            except OSError:
-                continue
+        if all(_can_bind_port(probe_host, candidate) for probe_host in _port_probe_hosts(host)):
             return candidate
     raise OSError(f"无法为 bilikara 找到可用端口，起始端口: {preferred_port}")
 

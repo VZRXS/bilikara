@@ -5,3 +5,6 @@ tools/
 build/
 dist/
 .vscode/
+APP_VERSION
+.tmp/
+bilikara-api/

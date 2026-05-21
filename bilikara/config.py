@@ -216,6 +216,7 @@ def _default_app_home() -> Path:
 ROOT_DIR = _resource_root()
 APP_HOME = _default_app_home()
 STATIC_DIR = ROOT_DIR / "static"
+APP_VERSION_FILE = ROOT_DIR / "APP_VERSION"
 DATA_DIR = APP_HOME / "data"
 CACHE_DIR = DATA_DIR / "cache"
 LOG_DIR = DATA_DIR / "logs"
@@ -233,8 +234,8 @@ FFPROBE_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffprobe.exe" if os.name == "nt" else
 FFMPEG_BUNDLED_PATH = VENDOR_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 FFPROBE_BUNDLED_PATH = VENDOR_DIR / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
 BB_DOWN_VERSION_FILE = BB_DOWN_DIR / "VERSION"
-GATCHA_UIDS = ["3145040","671767","33091201","3494356589742209","44627483","8474818","10077309","74089392","1879151","87101327","99061404","602998","1159885664","215040","31624333","21129450","2625848","29955371","3014315","80148988"]
-GATCHA_KEYWORDS = ["卡拉", "カラ", "投屏","KTV","纯K"]
+GATCHA_UIDS = ["3145040", "671767", "33091201", "3494356589742209", "44627483", "8474818", "10077309", "74089392", "1879151", "87101327", "99061404", "602998", "1159885664", "215040", "31624333", "21129450", "2625848", "29955371", "3014315", "80148988", "464873", "41924655", "356716", "174980119", "1326466", "13775191", "524220885"]
+GATCHA_KEYWORDS = ["卡拉", "カラ", "投屏","KTV","纯K","纯k","kara","Kara","karaoke","Karaoke","vocal","Vocal","伴奏"]
 USER_VIDEO_API = "https://api.bilibili.com/x/space/wbi/arc/search?mid={mid}&ps=50&tid=0&pn=1&order=pubdate"
 
 HOST = _default_host()
@@ -255,6 +256,41 @@ BILIBILI_HEADERS = {
 }
 
 BB_DOWN_RELEASE_API = "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
+APP_RELEASE_API = "https://api.github.com/repos/VZRXS/bilikara/releases/latest"
+APP_RELEASES_URL = "https://github.com/VZRXS/bilikara/releases"
+
+
+def _detect_app_version() -> str:
+    override = os.getenv("BILIKARA_VERSION", "").strip()
+    if override:
+        return override
+    if not getattr(sys, "frozen", False):
+        try:
+            process = subprocess.run(
+                ["git", "describe", "--tags", "--always", "--dirty"],
+                cwd=ROOT_DIR,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            process = None
+        if process and process.returncode == 0:
+            detected = (process.stdout or "").strip()
+            if detected:
+                return detected
+    try:
+        version = APP_VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        version = ""
+    if version:
+        return version
+    return "dev"
+
+
+APP_VERSION = _detect_app_version()
 
 
 def ensure_directories() -> None:

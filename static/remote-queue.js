@@ -26,12 +26,15 @@
     elements.queueList.innerHTML = "";
     if (!playlist.length) {
       elements.queueList.innerHTML =
-        '<div class="queue-empty">点歌列表暂时是空的，可以继续点下一首歌。</div>';
+        `<div class="queue-empty">${typeof htmlT === "function" ? htmlT("remote.queueEmpty") : "remote.queueEmpty"}</div>`;
       return;
     }
 
     playlist.forEach((item, index) => {
       const node = elements.queueItemTemplate.content.firstElementChild.cloneNode(true);
+      if (typeof applyStaticI18n === "function") {
+        applyStaticI18n(node);
+      }
       node.dataset.id = item.id;
       node.classList.toggle("ready", item.cache_status === "ready");
       const orderNode = node.querySelector(".queue-order");
@@ -58,6 +61,13 @@
       node.querySelectorAll("button[data-action]").forEach((button) => {
         button.dataset.id = item.id;
       });
+      if (state.openQueueMenuId === item.id) {
+        const menu = node.querySelector(".menu-content");
+        if (menu) {
+          menu.classList.remove("hidden");
+          menu.classList.add("no-animate");
+        }
+      }
       elements.queueList.appendChild(node);
     });
   };
@@ -157,7 +167,7 @@
 
   async function reorderQueue(itemId, index) {
     state.data = await apiPost("/api/playlist/reorder", { item_id: itemId, index });
-    setFormMessage("已更新点歌列表顺序。");
+    setFormMessage(typeof t === "function" ? t("remote.queueOrderUpdated") : "remote.queueOrderUpdated");
     render();
   }
 
@@ -170,17 +180,17 @@
       remove: {
         url: "/api/playlist/remove",
         payload: { item_id: itemId },
-        message: "已从点歌列表移除。",
+        message: typeof t === "function" ? t("list.removedSong") : "list.removedSong",
       },
       "move-next": {
         url: "/api/playlist/move-next",
         payload: { item_id: itemId },
-        message: "已顶歌到下一首。",
+        message: typeof t === "function" ? t("remote.movedNext") : "remote.movedNext",
       },
       "play-now": {
         url: "/api/playlist/play-now",
         payload: { item_id: itemId },
-        message: "已立即播放这首歌。",
+        message: typeof t === "function" ? t("remote.playNowSuccess") : "remote.playNowSuccess",
       },
     };
 
@@ -189,7 +199,7 @@
       return;
     }
 
-    if (action === "remove" && !window.confirm("确定从点歌列表移除这首歌吗？")) {
+    if (action === "remove" && !window.confirm(typeof t === "function" ? t("list.removeConfirm") : "list.removeConfirm")) {
       return;
     }
 
@@ -242,6 +252,17 @@
       return;
     }
 
+    const draggedItem = playlist[sourceIndex];
+    if (typeof openReorderConfirmSheet === "function") {
+      openReorderConfirmSheet({
+        itemId: draggedId,
+        targetIndex,
+        title: draggedItem?.display_title || "",
+      });
+      render();
+      return;
+    }
+
     try {
       await reorderQueue(draggedId, targetIndex);
     } catch (error) {
@@ -256,6 +277,35 @@
     const button = event.target.closest("button[data-action]");
     if (!button) {
       return;
+    }
+
+    if (button.dataset.action === "toggle-menu") {
+      const wrap = button.closest(".queue-actions-wrap");
+      const content = wrap?.querySelector(".menu-content");
+      if (content) {
+        const isHidden = content.classList.contains("hidden");
+        if (typeof closeOpenMenus === "function") {
+          closeOpenMenus();
+        } else {
+          document.querySelectorAll(".menu-content").forEach((el) => el.classList.add("hidden"));
+          state.openQueueMenuId = null;
+        }
+        if (isHidden) {
+          content.classList.remove("hidden");
+          content.classList.remove("no-animate");
+          state.openQueueMenuId = button.dataset.id;
+        }
+      }
+      return;
+    }
+
+    if (button.dataset.action === "play-now" || button.dataset.action === "move-next") {
+      if (typeof closeOpenMenus === "function") {
+        closeOpenMenus();
+      } else {
+        document.querySelectorAll(".menu-content").forEach((el) => el.classList.add("hidden"));
+        state.openQueueMenuId = null;
+      }
     }
     await handleQueueAction(button.dataset.action, button.dataset.id);
   });

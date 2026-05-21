@@ -1,7 +1,6 @@
 const pollIntervalMs = 1000;
 const bannerAutoHideMs = 5000;
 const stalledRetrySeconds = 5;
-const gatchaCooldownMs = 15000;
 const localPlayerSyncIntervalMs = 120;
 const localPlayerHardSyncThresholdSeconds = 0.08;
 const localPlayerForceSyncEpsilonSeconds = 0.015;
@@ -14,11 +13,21 @@ const playerClickDelayMs = 220;
 const playerControlsAutoHideMs = 5000;
 const defaultSongAdvanceDelaySeconds = 3;
 const maxSongAdvanceDelaySeconds = 30;
+const appUpdateCheckTimeoutMs = 10000;
+const fullscreenRequestToastMs = 4200;
+const fullscreenRequestToastFadeMs = 500;
+const localAdvanceOverlayFadeMs = 500;
+const localAdvanceOverlayMaxRows = 5;
+const larkSearchTableCount = 5;
+const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
+  .has("bilikara_smoke_bypass_fullscreen");
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
   avOffsetMs: "bilikara.player.av_offset_ms",
   layoutMode: "bilikara.layout.mode",
+  language: "bilikara.ui.language",
+  updatePreview: "bilikara.update.preview",
 };
 
 const state = {
@@ -33,10 +42,16 @@ const state = {
   remoteAccessRenderSignature: "",
   cacheSettingsRenderSignature: "",
   bbdownLoginRenderSignature: "",
-  gatchaCookieFaceRenderSignature: "",
+  searchCookieFaceRenderSignature: "",
+  gatchaUidFaceRenderSignature: "",
+  gatchaTaskLastMessageSignature: "",
+  confirmPopoverRenderSignature: "",
+  gatchaTaskWatchStartedAt: Date.now() / 1000,
   historyRenderSignature: "",
   playlistEmptyRenderSignature: "",
   cacheSliderRenderSignature: "",
+  advanceDelaySliderRenderSignature: "",
+  advanceDelaySaving: false,
   cachePolicyControlRenderSignature: "",
   playerFullscreenButtonRenderSignature: "",
   volumeControlsRenderSignature: "",
@@ -49,6 +64,7 @@ const state = {
   listView: "queue",
   listStageView: "",
   listFlipTimer: null,
+  listFlipFrame: null,
   cacheSettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
@@ -76,7 +92,16 @@ const state = {
   localAdvanceInFlight: false,
   localAdvanceDelayTimer: null,
   localAdvanceCountdownTimer: null,
+  localAdvanceOverlayHideTimer: null,
+  localAdvanceDelayStartAt: 0,
   localAdvanceDelayDeadline: 0,
+  localAdvanceOverlayDurationMs: 0,
+  localAdvanceOverlayMode: "",
+  localAdvanceOverlayPrimaryItem: null,
+  localAdvanceOverlayFollowItems: null,
+  localAdvanceOverlayTotalCount: null,
+  pendingSongTransitionOverlayData: null,
+  lastSongTransitionOverlayKey: "",
   localAdvanceDelayToken: 0,
   localAdvanceDelayItemId: "",
   localShouldBePlaying: false,
@@ -91,22 +116,42 @@ const state = {
   pendingPlaybackRestore: null,
   lastAppliedPlayerControlSeq: 0,
   lastReportedPlayerStatusSignature: "",
+  lastPlayerStatusHeartbeatAt: 0,
   playerFrameClickTimer: null,
   dragItemId: "",
   dragTargetId: "",
   dragTargetAfter: false,
   confirmIntent: null,
   bindingIntent: null,
+  gatchaFavlistIntent: null,
   retryActivityById: {},
   gatchaCandidate: null,
-  gatchaCooldownUntil: 0,
-  gatchaCooldownTimer: null,
-  gatchaCookieVisible: false,
+  searchCookieVisible: false,
+  searchLarkVisible: false,
+  larkSearchLoading: false,
+  larkSearchSeq: 0,
+  searchStageView: "",
+  searchStageAngle: 0,
+  searchFlipTimer: null,
+  searchFlipFrame: null,
+  followBrowseData: null,
+  followBrowseSelectedUid: "",
+  followBrowseLoading: false,
+  followBrowseRenderSignature: "",
+  gatchaUidVisible: false,
+  gatchaUidSaving: false,
+  gatchaRefreshSaving: false,
+  gatchaFavlistSaving: false,
   bbdownLoginRequesting: false,
-  mediaCapabilitiesReported: false,
-  mediaCapabilitiesSignature: "",
+  updateChecking: false,
+  updatePreviewEnabled: false,
   appToastTimer: null,
+  fullscreenRequestToastTimer: null,
+  fullscreenRequestToastHideTimer: null,
   layoutMode: "full",
+  language: "zh",
+  translations: {},
+  translationsLoaded: false,
 };
 
 const elements = {
@@ -129,21 +174,26 @@ const elements = {
   ffmpegStatusRow: document.getElementById("ffmpeg-status-row"),
   bbdownPanelStatusIndicator: document.getElementById("bbdown-panel-status-indicator"),
   ffmpegPanelStatusIndicator: document.getElementById("ffmpeg-panel-status-indicator"),
-  cacheLimitValue: document.getElementById("cache-limit-value"),
   cacheLimitSlider: document.getElementById("cache-limit-slider"),
   cacheLimitScale: document.getElementById("cache-limit-scale"),
+  advanceDelaySlider: document.getElementById("advance-delay-slider"),
+  advanceDelayScale: document.getElementById("advance-delay-scale"),
   cacheQualitySelect: document.getElementById("cache-quality-select"),
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
   playerResetButton: document.getElementById("player-reset-button"),
+  updatePreviewCheckbox: document.getElementById("update-preview-checkbox"),
+  updateCheckButton: document.getElementById("update-check-button"),
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
+  fullscreenRequestToast: document.getElementById("fullscreen-request-toast"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   avSyncPanel: document.getElementById("av-sync-panel"),
   avOffsetInput: document.getElementById("av-offset-input"),
+  avOffsetResetButton: document.getElementById("av-offset-reset-button"),
   volumePanel: document.getElementById("volume-panel"),
   volumeMuteButton: document.getElementById("volume-mute-button"),
   volumeSlider: document.getElementById("volume-slider"),
@@ -166,7 +216,8 @@ const elements = {
   historyList: document.getElementById("history-list"),
   queueCount: document.getElementById("queue-count"),
   queueCurrent: document.getElementById("queue-current"),
-  queueCurrentIndicator: document.getElementById("queue-current-indicator"),
+  queueCurrentProgressBadge: document.getElementById("queue-current-progress-badge"),
+  queueCurrentIconWrap: document.getElementById("queue-current-icon-wrap"),
   queueCurrentTag: document.getElementById("queue-current-tag"),
   queueCurrentTitle: document.getElementById("queue-current-title"),
   queueCurrentRequester: document.getElementById("queue-current-requester"),
@@ -174,17 +225,23 @@ const elements = {
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
+  languageSwitch: document.getElementById("language-switch"),
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   historyToggleButton: document.getElementById("history-toggle-button"),
   clearPlaylistButton: document.getElementById("clear-playlist-button"),
+  historyExportButton: document.getElementById("history-export-button"),
   clearHistoryButton: document.getElementById("clear-history-button"),
   playlistTemplate: document.getElementById("playlist-item-template"),
   historyTemplate: document.getElementById("history-item-template"),
   confirmPopover: document.getElementById("confirm-popover"),
   confirmText: document.getElementById("confirm-text"),
+  confirmSource: document.getElementById("confirm-source"),
+  confirmPageSize: document.getElementById("confirm-page-size"),
+  confirmPageSizeNote: document.getElementById("confirm-page-size-note"),
   confirmCancel: document.getElementById("confirm-cancel"),
+  confirmSecondary: document.getElementById("confirm-secondary"),
   confirmOk: document.getElementById("confirm-ok"),
   bindingModal: document.getElementById("binding-modal"),
   bindingModalBackdrop: document.getElementById("binding-modal-backdrop"),
@@ -194,6 +251,13 @@ const elements = {
   bindingModalClose: document.getElementById("binding-modal-close"),
   bindingModalCancel: document.getElementById("binding-modal-cancel"),
   bindingModalConfirm: document.getElementById("binding-modal-confirm"),
+  gatchaFavlistModal: document.getElementById("gatcha-favlist-modal"),
+  gatchaFavlistModalBackdrop: document.getElementById("gatcha-favlist-modal-backdrop"),
+  gatchaFavlistModalText: document.getElementById("gatcha-favlist-modal-text"),
+  gatchaFavlistOptions: document.getElementById("gatcha-favlist-options"),
+  gatchaFavlistModalClose: document.getElementById("gatcha-favlist-modal-close"),
+  gatchaFavlistModalCancel: document.getElementById("gatcha-favlist-modal-cancel"),
+  gatchaFavlistModalConfirm: document.getElementById("gatcha-favlist-modal-confirm"),
   copyRemoteUrlButton: document.getElementById("copy-remote-url-button"),
   remoteQrImage: document.getElementById("remote-qr-image"),
   remoteQrPlaceholder: document.getElementById("remote-qr-placeholder"),
@@ -205,14 +269,24 @@ const elements = {
   remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
+  searchPanel: document.getElementById("search-panel"),
+  searchTag: document.getElementById("search-tag"),
+  searchTitle: document.getElementById("search-title"),
+  searchCookieToggle: document.getElementById("search-cookie-toggle"),
+  searchLarkToggle: document.getElementById("search-lark-toggle"),
+  searchStage: document.getElementById("search-stage"),
+  searchStageInner: document.getElementById("search-stage-inner"),
+  searchMainView: document.getElementById("search-main-view"),
+  searchCookieView: document.getElementById("search-cookie-view"),
+  searchLarkView: document.getElementById("search-lark-view"),
   gatchaPanel: document.getElementById("gatcha-panel"),
   gatchaTag: document.getElementById("gatcha-tag"),
   gatchaTitle: document.getElementById("gatcha-title"),
   gatchaStage: document.getElementById("gatcha-stage"),
   gatchaButton: document.getElementById("gatcha-button"),
-  gatchaCookieToggle: document.getElementById("gatcha-cookie-toggle"),
+  gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaMainView: document.getElementById("gatcha-main-view"),
-  gatchaCookieView: document.getElementById("gatcha-cookie-view"),
+  gatchaUidView: document.getElementById("gatcha-uid-view"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
   gatchaMessage: document.getElementById("gatcha-message"),
@@ -224,10 +298,31 @@ const elements = {
   searchButton: document.getElementById("search-button"),
   searchMessage: document.getElementById("search-message"),
   searchResults: document.getElementById("search-results"),
-  cookieSessdata: document.getElementById("cookie-sessdata"),
-  cookieJct: document.getElementById("cookie-jct"),
-  saveCookieButton: document.getElementById("save-cookie-button"),
-  cookieMessage: document.getElementById("cookie-message"),
+  followUpListView: document.getElementById("follow-up-list-view"),
+  followUpGrid: document.getElementById("follow-up-grid"),
+  followUpItemsView: document.getElementById("follow-up-items-view"),
+  followBrowseBack: document.getElementById("follow-browse-back"),
+  followBrowseTitle: document.getElementById("follow-browse-title"),
+  followBrowseCount: document.getElementById("follow-browse-count"),
+  followSearchForm: document.getElementById("follow-search-form"),
+  followSearchQuery: document.getElementById("follow-search-query"),
+  followSearchButton: document.getElementById("follow-search-button"),
+  followSongResults: document.getElementById("follow-song-results"),
+  followBrowseMessage: document.getElementById("follow-browse-message"),
+  larkSearchForm: document.getElementById("lark-search-form"),
+  larkSearchQuery: document.getElementById("lark-search-query"),
+  larkSearchButton: document.getElementById("lark-search-button"),
+  larkSearchHitboxForm: document.getElementById("lark-search-hitbox-form"),
+  larkSearchHitboxQuery: document.getElementById("lark-search-hitbox-query"),
+  larkSearchHitboxButton: document.getElementById("lark-search-hitbox-button"),
+  larkSearchMessage: document.getElementById("lark-search-message"),
+  larkSearchResults: document.getElementById("lark-search-results"),
+  gatchaUidForm: document.getElementById("gatcha-uid-form"),
+  gatchaUidInput: document.getElementById("gatcha-uid-input"),
+  addGatchaUidButton: document.getElementById("add-gatcha-uid-button"),
+  refreshGatchaCacheButton: document.getElementById("refresh-gatcha-cache-button"),
+  pullGatchaFavlistButton: document.getElementById("pull-gatcha-favlist-button"),
+  gatchaUidMessage: document.getElementById("gatcha-uid-message"),
 };
 
 function setFormMessage(message, isError = false) {
@@ -262,9 +357,86 @@ function setAppMessage(message, isError = false) {
   }
 }
 
+function hideFullscreenRequestToast() {
+  if (state.fullscreenRequestToastTimer) {
+    window.clearTimeout(state.fullscreenRequestToastTimer);
+    state.fullscreenRequestToastTimer = null;
+  }
+  const toast = elements.fullscreenRequestToast;
+  if (!toast || toast.classList.contains("hidden")) {
+    return;
+  }
+  toast.classList.remove("is-visible");
+  if (state.fullscreenRequestToastHideTimer) {
+    window.clearTimeout(state.fullscreenRequestToastHideTimer);
+  }
+  state.fullscreenRequestToastHideTimer = window.setTimeout(() => {
+    toast.classList.add("hidden");
+    state.fullscreenRequestToastHideTimer = null;
+  }, fullscreenRequestToastFadeMs);
+}
+
+function showFullscreenRequestToast(title) {
+  const toast = elements.fullscreenRequestToast;
+  const normalizedTitle = String(title || "").trim();
+  if (!toast || !normalizedTitle || !isPlayerPanelFullscreen()) {
+    return;
+  }
+  if (state.fullscreenRequestToastTimer) {
+    window.clearTimeout(state.fullscreenRequestToastTimer);
+    state.fullscreenRequestToastTimer = null;
+  }
+  if (state.fullscreenRequestToastHideTimer) {
+    window.clearTimeout(state.fullscreenRequestToastHideTimer);
+    state.fullscreenRequestToastHideTimer = null;
+  }
+  toast.replaceChildren();
+  const label = document.createElement("span");
+  label.className = "fullscreen-request-toast-label";
+  label.textContent = t("toast.incomingRequest");
+  const titleNode = document.createElement("span");
+  titleNode.className = "fullscreen-request-toast-title";
+  titleNode.textContent = normalizedTitle;
+  toast.append(label, titleNode);
+  toast.classList.remove("hidden");
+  window.requestAnimationFrame(() => {
+    toast.classList.add("is-visible");
+  });
+  state.fullscreenRequestToastTimer = window.setTimeout(() => {
+    hideFullscreenRequestToast();
+  }, fullscreenRequestToastMs);
+}
+
+function maybeShowIncomingRequestToast(previousData, nextData) {
+  if (!previousData || !nextData || !isPlayerPanelFullscreen()) {
+    return;
+  }
+  const previousId = currentItemIdFromData(previousData);
+  const nextId = currentItemIdFromData(nextData);
+  if (previousId !== nextId && nextId) {
+    return;
+  }
+  const previousItems = [
+    previousData.current_item,
+    ...(Array.isArray(previousData.playlist) ? previousData.playlist : []),
+  ];
+  const previousIds = new Set(previousItems.map((item) => String(item?.id || "")).filter(Boolean));
+  const nextItems = [
+    ...(Array.isArray(nextData.playlist) ? nextData.playlist : []),
+    nextData.current_item,
+  ];
+  const newItems = nextItems
+    .filter((item) => item?.id && !previousIds.has(String(item.id)));
+  if (!newItems.length) {
+    return;
+  }
+  const item = newItems[newItems.length - 1];
+  showFullscreenRequestToast(item.display_title || item.title || t("toast.incomingRequest"));
+}
+
 function requesterBadgeText(requesterName) {
   const normalized = String(requesterName || "").trim();
-  return normalized ? `点歌人 ${normalized}` : "";
+  return normalized ? t("request.requesterBadge", { name: normalized }) : "";
 }
 
 function setTextContent(element, value) {
@@ -307,6 +479,128 @@ function setElementTitle(element, value) {
   }
 }
 
+function normalizeLanguage(value) {
+  return ["zh", "en", "ja"].includes(value) ? value : "zh";
+}
+
+function t(key, values = {}) {
+  const normalizedKey = String(key || "");
+  const active = state.translations?.[state.language] || {};
+  const fallback = state.translations?.zh || {};
+  let text = active[normalizedKey] || fallback[normalizedKey] || normalizedKey;
+  Object.entries(values || {}).forEach(([name, value]) => {
+    text = text.split(`{${name}}`).join(String(value ?? ""));
+  });
+  return text;
+}
+
+function htmlT(key, values = {}) {
+  return escapeHtml(t(key, values));
+}
+
+function activeLocale() {
+  if (state.language === "ja") {
+    return "ja-JP";
+  }
+  if (state.language === "en") {
+    return "en-US";
+  }
+  return "zh-CN";
+}
+
+function applyStaticI18n(root = document) {
+  root.querySelectorAll("[data-i18n]").forEach((node) => {
+    setTextContent(node, t(node.dataset.i18n));
+  });
+  root.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
+  });
+  root.querySelectorAll("[data-i18n-title]").forEach((node) => {
+    setElementTitle(node, t(node.dataset.i18nTitle));
+  });
+  root.querySelectorAll("[data-i18n-aria-label]").forEach((node) => {
+    setElementAttribute(node, "aria-label", t(node.dataset.i18nAriaLabel));
+  });
+  root.querySelectorAll("[data-i18n-alt]").forEach((node) => {
+    setElementAttribute(node, "alt", t(node.dataset.i18nAlt));
+  });
+  document.title = t("document.title");
+  document.documentElement.lang = state.language === "ja" ? "ja" : state.language === "en" ? "en" : "zh-CN";
+}
+
+function renderLanguageSwitch() {
+  elements.languageSwitch?.querySelectorAll("button[data-language]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.language === state.language);
+  });
+}
+
+function invalidateLanguageSensitiveRenderCache() {
+  state.lastPollRenderSignature = "";
+  state.requesterSelectRenderSignature = "";
+  state.sessionUsersRenderSignature = "";
+  state.playerFullscreenButtonRenderSignature = "";
+  state.followBrowseRenderSignature = "";
+  state.searchCookieFaceRenderSignature = "";
+  state.gatchaUidFaceRenderSignature = "";
+  state.gatchaTaskLastMessageSignature = "";
+  state.currentTitleRenderSignature = "";
+  state.remoteAccessRenderSignature = "";
+  state.listHeaderRenderSignature = "";
+  state.cacheSettingsRenderSignature = "";
+  state.bbdownLoginRenderSignature = "";
+  state.cachePolicyControlRenderSignature = "";
+  state.queueCurrentRenderSignature = "";
+  state.playlistEmptyRenderSignature = "";
+  state.historyRenderSignature = "";
+  state.audioVariantBarRenderSignature = "";
+  state.volumeControlsRenderSignature = "";
+  state.playerSignature = "";
+}
+
+function setLanguage(language) {
+  const nextLanguage = normalizeLanguage(language);
+  if (state.language === nextLanguage) {
+    renderLanguageSwitch();
+    return;
+  }
+  state.language = nextLanguage;
+  writeLocalPreference(storageKeys.language, nextLanguage);
+  invalidateLanguageSensitiveRenderCache();
+  applyStaticI18n();
+  renderLanguageSwitch();
+  render();
+}
+
+async function loadTranslations() {
+  state.language = normalizeLanguage(readLocalString(storageKeys.language, state.language));
+  try {
+    const response = await fetch("/i18n.json", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    state.translations = payload?.languages || {};
+  } catch {
+    state.translations = {
+      zh: {
+        "top.language": "语言",
+        "top.mobileRemote": "手机点歌",
+        "remote.qrLoading": "正在生成二维码...",
+        "player.empty": "把 Bilibili 视频链接加入点歌列表后，这里会开始播放。",
+      },
+    };
+  }
+  state.translationsLoaded = true;
+  applyStaticI18n();
+  renderLanguageSwitch();
+}
+
+function closeOpenMenus() {
+  document.querySelectorAll(".menu-content").forEach((menu) => {
+    menu.classList.add("hidden");
+  });
+}
+
 function selectedRequesterName() {
   return String(elements.requesterSelect?.value || "").trim();
 }
@@ -317,12 +611,12 @@ function hasSessionUsers() {
 
 function validatedRequesterNameForAdd(showMessage = setFormMessage) {
   if (!hasSessionUsers()) {
-    showMessage("请先在服务端添加本场 KTV 用户", true);
+    showMessage(t("session.requireUsers"), true);
     return "";
   }
   const requesterName = selectedRequesterName();
   if (!requesterName) {
-    showMessage("请先选择点歌人。", true);
+    showMessage(t("session.requireRequester"), true);
     return "";
   }
   return requesterName;
@@ -341,6 +635,10 @@ function fullscreenElement() {
 
 function isPlayerPanelFullscreen() {
   return fullscreenElement() === elements.playerPanel;
+}
+
+function isPlayerPanelFullscreenForTransition() {
+  return isPlayerPanelFullscreen() || smokeTestBypassPlayerFullscreen;
 }
 
 function supportsPlayerFullscreen() {
@@ -368,12 +666,12 @@ function renderPlayerFullscreenButton() {
   }
   const active = isPlayerPanelFullscreen();
   const enabled = canTogglePlayerFullscreen();
-  const label = active ? "退出全屏" : "全屏显示";
+  const label = active ? t("player.fullscreenExit") : t("player.fullscreen");
   const title = enabled
-    ? (active ? "退出播放器区域全屏" : "将播放器区域切换为全屏")
+    ? (active ? t("player.fullscreenExitLabel") : t("player.fullscreenEnterLabel"))
     : supportsPlayerFullscreen()
-      ? "当前没有可全屏的播放内容"
-      : "当前环境不支持区域全屏";
+      ? t("player.fullscreenDisabled")
+      : t("player.fullscreenUnsupported");
   const signature = JSON.stringify({ active, enabled, label, title });
 
   if (signature === state.playerFullscreenButtonRenderSignature) {
@@ -486,8 +784,11 @@ function showMountedPlayerControls() {
 }
 
 function toggleMountedLocalPlayback() {
-  if (state.data?.playback_mode !== "local" || !state.data?.current_item) {
+  if (frontendPlaybackMode(state.data?.playback_mode) !== "local" || !state.data?.current_item) {
     return false;
+  }
+  if (isLocalAdvanceHoldingItem(state.data.current_item.id)) {
+    return true;
   }
   const video = activePrimaryVideoElement();
   if (!video) {
@@ -572,6 +873,7 @@ function hydrateLocalPreferences() {
   );
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
+  state.updatePreviewEnabled = readLocalBoolean(storageKeys.updatePreview, state.updatePreviewEnabled);
 }
 
 function normalizeLayoutMode(value) {
@@ -651,7 +953,24 @@ async function apiPost(url, payload = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || "请求失败");
+    const error = new Error(data.error || t("error.requestFailed"));
+    error.status = response.status;
+    error.code = data.code || "";
+    error.payload = data;
+    throw error;
+  }
+  return data.data;
+}
+
+async function apiGet(url, options = {}) {
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: clientHeaders(),
+    signal: options.signal,
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    const error = new Error(data.error || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
@@ -748,14 +1067,17 @@ async function reportMediaCapabilities() {
 
 async function fetchState() {
   const previousOffsetMs = currentAvOffsetMs();
+  const previousData = state.data;
   const response = await fetch("/api/state", {
     headers: clientHeaders(),
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || "获取状态失败");
+    throw new Error(payload.error || t("error.stateFailed"));
   }
   state.data = payload.data;
+  maybeShowIncomingRequestToast(previousData, state.data);
+  maybeShowSongTransitionOverlay(previousData, state.data);
   syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
   if (!state.localOffsetRestoreApplied) {
     const rememberedOffset = rememberedAvOffsetMs();
@@ -819,9 +1141,130 @@ async function searchGatchaCache(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || "Search failed");
+    throw new Error(payload.error || t("error.searchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+async function searchLarkPool(query) {
+  const normalizedQuery = String(query || "").trim();
+  const params = new URLSearchParams();
+  params.set("q", normalizedQuery);
+  params.set("limit", "80");
+  const response = await fetch(`/api/lark/search?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || t("error.larkSearchFailed"));
+  }
+  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+async function searchLarkPoolTable(query, tableIndex) {
+  const normalizedQuery = String(query || "").trim();
+  const params = new URLSearchParams();
+  params.set("q", normalizedQuery);
+  params.set("table", String(tableIndex));
+  params.set("limit", "80");
+  const response = await fetch(`/api/lark/search?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || t("error.larkSearchFailed"));
+  }
+  return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+async function fetchGatchaBrowse(uid = "", query = "") {
+  const params = new URLSearchParams();
+  const normalizedUid = String(uid || "").trim();
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedUid) {
+    params.set("uid", normalizedUid);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const queryString = params.toString();
+  const response = await fetch(`/api/gatcha/browse${queryString ? `?${queryString}` : ""}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error || t("error.browseFailed"));
+  }
+  return payload.data || { owners: [], items: [] };
+}
+
+async function previewGatchaUid(uid) {
+  return apiPost("/api/gatcha/uids/preview", { uid: String(uid || "").trim() });
+}
+
+async function addGatchaUid(uid) {
+  return apiPost("/api/gatcha/uids/add", { uid: String(uid || "").trim() });
+}
+
+async function refreshGatchaCache() {
+  return apiPost("/api/gatcha/refresh");
+}
+
+async function previewGatchaFavlist(uid) {
+  return apiPost("/api/gatcha/favlist/preview", { uid: String(uid || "").trim() });
+}
+
+async function pullGatchaFavlist(uid, folderIds = []) {
+  return apiPost("/api/gatcha/favlist", {
+    uid: String(uid || "").trim(),
+    folder_ids: Array.isArray(folderIds) ? folderIds : [],
+  });
+}
+
+function gatchaUidResultMessage(result, fallbackUid = "") {
+  const cache = result?.cache || {};
+  const addedCount = Number(cache.added_count || 0);
+  const totalCount = Number(cache.total_count || 0);
+  const modeLabel = cache.mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
+  const ownerLabel = result?.name
+    ? t("owner.upOwner", { name: result.name })
+    : t("owner.uid", { uid: result?.uid || fallbackUid });
+  const listAction = result?.added ? t("gatcha.addedToFollow") : t("gatcha.alreadyFollowed");
+  return t("gatcha.uidResult", {
+    owner: ownerLabel,
+    action: listAction,
+    mode: modeLabel,
+    added: addedCount,
+    total: totalCount,
+  });
+}
+
+async function confirmGatchaUidAdd(intent) {
+  closeConfirm();
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+  state.gatchaUidSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage(t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
+  try {
+    const result = await addGatchaUid(intent.uid);
+    setGatchaUidMessage(gatchaUidResultMessage(result, intent.uid));
+    if (elements.gatchaUidInput) {
+      elements.gatchaUidInput.value = "";
+    }
+    await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || intent.uid);
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidFace();
+  }
 }
 
 function hideSearchResults() {
@@ -829,15 +1272,42 @@ function hideSearchResults() {
   elements.searchResults.classList.add("hidden");
 }
 
-function renderSearchResults(items) {
-  elements.searchResults.innerHTML = "";
-  elements.searchResults.classList.remove("hidden");
+function searchResultOwnerName(item) {
+  return String(item?.owner_name || item?.author || "").trim();
+}
+
+function createSearchResultUrlLine(item) {
+  const line = document.createElement("div");
+  line.className = "search-result-url";
+
+  const bvid = document.createElement("span");
+  bvid.className = "search-result-bvid";
+  bvid.textContent = String(item?.bvid || item?.url || "");
+  line.appendChild(bvid);
+
+  const ownerName = searchResultOwnerName(item);
+  if (ownerName) {
+    const owner = document.createElement("span");
+    owner.className = "search-result-owner";
+    owner.textContent = t("owner.tooltip", { name: ownerName });
+    line.appendChild(owner);
+  }
+
+  return line;
+}
+
+function renderSearchResultItems(container, items, emptyText = t("search.empty")) {
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+  container.classList.remove("hidden");
 
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "search-empty";
-    empty.textContent = "No cached matches found.";
-    elements.searchResults.appendChild(empty);
+    empty.textContent = emptyText;
+    container.appendChild(empty);
     return;
   }
 
@@ -852,38 +1322,203 @@ function renderSearchResults(items) {
     title.className = "search-result-title";
     title.textContent = String(item.title || "");
 
-    const url = document.createElement("div");
-    url.className = "search-result-url";
-    url.textContent = String(item.bvid || "");
+    const url = createSearchResultUrlLine(item);
 
     const button = document.createElement("button");
     button.type = "button";
     button.className = "next-button";
     button.dataset.url = String(item.url || "");
-    button.textContent = "点歌";
+    button.textContent = t("search.add");
 
     meta.append(title, url);
     row.append(meta, button);
-    elements.searchResults.appendChild(row);
+    container.appendChild(row);
   });
 }
 
-async function handleGatchaDraw() {
-  if (gatchaCooldownRemainingSeconds() > 0) {
-    syncGatchaCooldownButtons();
+function appendSearchResultItems(container, items) {
+  if (!container || !items.length) {
     return;
   }
-  setGatchaMessage("正在连接 B 站寻找幸运投稿...");
+  const existingEmpty = container.querySelector(".search-empty");
+  if (existingEmpty) {
+    existingEmpty.remove();
+  }
+  container.classList.remove("hidden");
+
+  items.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "search-result-item";
+
+    const meta = document.createElement("div");
+    meta.className = "search-result-meta";
+
+    const title = document.createElement("div");
+    title.className = "search-result-title";
+    title.textContent = String(item.title || "");
+
+    const url = createSearchResultUrlLine(item);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "next-button";
+    button.dataset.url = String(item.url || "");
+    button.textContent = t("search.add");
+
+    meta.append(title, url);
+    row.append(meta, button);
+    container.appendChild(row);
+  });
+}
+
+function renderSearchResults(items) {
+  renderSearchResultItems(elements.searchResults, items);
+}
+
+function selectedFollowOwner() {
+  const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
+  return owners.find((owner) => String(owner.uid || "") === state.followBrowseSelectedUid) || null;
+}
+
+function ownerNameFromStateByUid(uid) {
+  const normalizedUid = String(uid || "").trim();
+  if (!normalizedUid || !state.data) {
+    return "";
+  }
+  const entries = [
+    state.data.current_item,
+    ...(Array.isArray(state.data.playlist) ? state.data.playlist : []),
+    ...(Array.isArray(state.data.history) ? state.data.history : []),
+  ];
+  for (const entry of entries) {
+    if (String(entry?.owner_mid || "").trim() !== normalizedUid) {
+      continue;
+    }
+    const ownerName = String(entry?.owner_name || "").trim();
+    if (ownerName) {
+      return ownerName;
+    }
+  }
+  return "";
+}
+
+function followOwnerDisplayName(owner) {
+  const uid = String(owner?.uid || "").trim();
+  const ownerName = String(owner?.name || "").trim();
+  const stateOwnerName = ownerNameFromStateByUid(uid);
+  if (ownerName && ownerName !== `UID ${uid}`) {
+    return ownerName;
+  }
+  return stateOwnerName || ownerName || `UID ${uid}`;
+}
+
+function renderFollowBrowse() {
+  if (!elements.followUpGrid || !elements.followSongResults) {
+    return;
+  }
+  const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
+  const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
+  const signature = JSON.stringify({
+    loading: state.followBrowseLoading,
+    selected: state.followBrowseSelectedUid,
+    owners,
+    items,
+    language: state.language,
+  });
+  if (signature === state.followBrowseRenderSignature) {
+    return;
+  }
+  state.followBrowseRenderSignature = signature;
+
+  const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
+  elements.followUpListView?.classList.toggle("hidden", hasSelectedUid);
+  elements.followUpItemsView?.classList.toggle("hidden", !hasSelectedUid);
+
+  if (!hasSelectedUid) {
+    elements.followUpGrid.innerHTML = "";
+    if (!owners.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
+      elements.followUpGrid.appendChild(empty);
+    } else {
+      owners.forEach((owner) => {
+        const displayName = followOwnerDisplayName(owner);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button";
+        button.dataset.uid = String(owner.uid || "");
+        button.title = displayName;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name";
+        name.textContent = displayName;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count";
+        count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
+
+        button.append(name, count);
+        elements.followUpGrid.appendChild(button);
+      });
+    }
+    setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
+    return;
+  }
+
+  const owner = selectedFollowOwner();
+  if (elements.followBrowseTitle) {
+    elements.followBrowseTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
+  }
+  if (elements.followBrowseCount) {
+    const totalCount = Number(owner?.count || items.length || 0);
+    elements.followBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.followSongResults,
+    items,
+    state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
+  );
+  setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
+}
+
+async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
+  state.followBrowseLoading = true;
+  state.followBrowseSelectedUid = String(uid || "").trim();
+  renderFollowBrowse();
+  try {
+    const nextData = await fetchGatchaBrowse(state.followBrowseSelectedUid, query);
+    state.followBrowseData = nextData;
+    state.followBrowseSelectedUid = String(nextData.selected_uid || state.followBrowseSelectedUid || "");
+    if (!keepQuery && elements.followSearchQuery) {
+      elements.followSearchQuery.value = String(nextData.query || "");
+    }
+  } catch (error) {
+    setFollowBrowseMessage(error.message, true);
+  } finally {
+    state.followBrowseLoading = false;
+    renderFollowBrowse();
+  }
+}
+
+async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
+  state.followBrowseRenderSignature = "";
+  const currentUid = String(state.followBrowseSelectedUid || "").trim();
+  const nextUid = currentUid || String(uid || "").trim();
+  await loadFollowBrowse({ uid: nextUid, query: "", keepQuery: false });
+}
+
+async function handleGatchaDraw() {
+  setGatchaMessage(t("gatcha.drawing"));
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.error || "获取幸运歌曲失败");
+      throw new Error(payload.error || t("gatcha.drawFailed"));
     }
 
     state.gatchaCandidate = payload.data;
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
-    startGatchaCooldown();
     
     // 切换界面
     elements.gatchaInitView.classList.add("hidden");
@@ -902,62 +1537,237 @@ function setGatchaMessage(message, isError = false) {
   elements.gatchaMessage.classList.toggle("is-error", Boolean(isError));
 }
 
-function setCookieMessage(message, isError = false) {
-  if (!elements.cookieMessage) {
+function setFollowBrowseMessage(message, isError = false) {
+  if (!elements.followBrowseMessage) {
     return;
   }
-  elements.cookieMessage.textContent = message || "";
-  elements.cookieMessage.classList.toggle("is-error", Boolean(isError));
+  elements.followBrowseMessage.textContent = message || "";
+  elements.followBrowseMessage.classList.toggle("is-error", Boolean(isError));
 }
 
-function renderGatchaCookieFace() {
-  const showCookie = Boolean(state.gatchaCookieVisible);
-  const signature = showCookie ? "cookie" : "gatcha";
-  if (signature === state.gatchaCookieFaceRenderSignature) {
+function setLarkSearchMessage(message, isError = false) {
+  if (!elements.larkSearchMessage) {
     return;
   }
-  state.gatchaCookieFaceRenderSignature = signature;
+  elements.larkSearchMessage.textContent = message || "";
+  elements.larkSearchMessage.classList.toggle("is-error", Boolean(isError));
+}
 
-  setClassToggle(elements.gatchaPanel, "is-cookie-view", showCookie);
-  setClassToggle(elements.gatchaStage, "is-cookie-view", showCookie);
-  setTextContent(elements.gatchaTag, showCookie ? "Cookie Config" : "gatcha Draw");
-  setTextContent(elements.gatchaTitle, showCookie ? "Cookie" : "试试运气");
-  setTextContent(elements.gatchaCookieToggle, showCookie ? "返回抽卡" : "输入 Cookie");
-  if (elements.gatchaCookieToggle?.getAttribute("aria-pressed") !== String(showCookie)) {
-    elements.gatchaCookieToggle.setAttribute("aria-pressed", String(showCookie));
+function syncLarkSearchInputs(value, source = "") {
+  const nextValue = String(value || "");
+  if (source !== "main" && elements.larkSearchQuery && elements.larkSearchQuery.value !== nextValue) {
+    elements.larkSearchQuery.value = nextValue;
+  }
+  if (
+    source !== "hitbox" &&
+    elements.larkSearchHitboxQuery &&
+    elements.larkSearchHitboxQuery.value !== nextValue
+  ) {
+    elements.larkSearchHitboxQuery.value = nextValue;
   }
 }
 
-function gatchaCooldownRemainingSeconds() {
-  return Math.max(0, Math.ceil((state.gatchaCooldownUntil - Date.now()) / 1000));
+function setGatchaUidMessage(message, isError = false) {
+  if (!elements.gatchaUidMessage) {
+    return;
+  }
+  elements.gatchaUidMessage.textContent = message || "";
+  elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
 }
 
-function startGatchaCooldown() {
-  state.gatchaCooldownUntil = Date.now() + gatchaCooldownMs;
-  syncGatchaCooldownButtons();
-  if (state.gatchaCooldownTimer) {
-    clearInterval(state.gatchaCooldownTimer);
+function gatchaTaskBusy() {
+  return Boolean(state.data?.gatcha?.busy);
+}
+
+function gatchaTaskBusyMessage() {
+  return state.data?.gatcha?.message || t("gatcha.busyFallback");
+}
+
+function syncGatchaTaskTerminalMessage() {
+  const task = state.data?.gatcha || {};
+  if (task.busy || state.gatchaUidSaving || state.gatchaRefreshSaving || state.gatchaFavlistSaving) {
+    return;
   }
-  state.gatchaCooldownTimer = setInterval(() => {
-    syncGatchaCooldownButtons();
-    if (gatchaCooldownRemainingSeconds() <= 0) {
-      clearInterval(state.gatchaCooldownTimer);
-      state.gatchaCooldownTimer = null;
+  const status = String(task.last_status || "");
+  if (!["success", "partial", "failed"].includes(status)) {
+    return;
+  }
+  const updatedAt = Number(task.last_updated_at || 0);
+  if (updatedAt && updatedAt < state.gatchaTaskWatchStartedAt - 1) {
+    return;
+  }
+  const signature = JSON.stringify({
+    status,
+    message: task.last_message || "",
+    error: task.last_error || "",
+    updatedAt,
+  });
+  if (signature === state.gatchaTaskLastMessageSignature) {
+    return;
+  }
+  state.gatchaTaskLastMessageSignature = signature;
+  const fallback =
+    status === "success"
+      ? t("gatcha.refreshDone")
+      : status === "partial"
+        ? t("gatcha.refreshPartial")
+        : t("gatcha.refreshFailed");
+  const detail = task.last_error ? `${task.last_message || fallback} ${task.last_error}` : task.last_message || fallback;
+  setGatchaUidMessage(detail, status !== "success");
+}
+
+function syncSearchStageView(view) {
+  const nextView = view || "search";
+  const previousView = state.searchStageView || "search";
+  const isInitialRender = !state.searchStageView;
+  if (state.searchStageView === nextView) {
+    return;
+  }
+  state.searchStageView = nextView;
+
+  if (state.searchFlipTimer) {
+    window.clearTimeout(state.searchFlipTimer);
+    state.searchFlipTimer = null;
+  }
+  if (state.searchFlipFrame) {
+    window.cancelAnimationFrame(state.searchFlipFrame);
+    state.searchFlipFrame = null;
+    elements.searchStage?.classList.remove("is-preparing-flip");
+  }
+
+  if (isInitialRender) {
+    const initialAngles = { search: 0, browse: -120, lark: 120 };
+    state.searchStageAngle = initialAngles[nextView] ?? 0;
+    if (elements.searchStageInner) {
+      elements.searchStageInner.style.transform = `rotateY(${state.searchStageAngle}deg)`;
     }
-  }, 250);
+    setClassToggle(elements.searchStage, "is-cookie-view", nextView === "browse");
+    setClassToggle(elements.searchStage, "is-lark-view", nextView === "lark");
+    elements.searchStage?.classList.remove("is-flipping");
+    elements.searchStage?.classList.remove("is-flip-involving-cookie", "is-flip-involving-lark");
+    return;
+  }
+
+  const applySearchStageClass = (activeView) => {
+    setClassToggle(elements.searchStage, "is-cookie-view", activeView === "browse");
+    setClassToggle(elements.searchStage, "is-lark-view", activeView === "lark");
+  };
+  const clearFlip = () => {
+    elements.searchStage?.classList.remove("is-flipping", "is-preparing-flip");
+    state.searchFlipTimer = null;
+  };
+  const searchViewOrder = ["search", "browse", "lark"];
+  const previousIndex = searchViewOrder.indexOf(previousView);
+  const nextIndex = searchViewOrder.indexOf(nextView);
+  const forwardSteps = (nextIndex - previousIndex + searchViewOrder.length) % searchViewOrder.length;
+  const startAngle = state.searchStageAngle;
+  if (forwardSteps === 1) {
+    state.searchStageAngle -= 120;
+  } else if (forwardSteps === 2) {
+    state.searchStageAngle += 120;
+  }
+
+  elements.searchStage?.classList.add("is-preparing-flip", "is-flipping");
+  if (elements.searchStageInner) {
+    elements.searchStageInner.style.transform = `rotateY(${startAngle}deg)`;
+    elements.searchStageInner.getBoundingClientRect();
+  }
+  state.searchFlipFrame = window.requestAnimationFrame(() => {
+    state.searchFlipFrame = null;
+    elements.searchStage?.classList.remove("is-preparing-flip");
+    if (elements.searchStageInner) {
+      elements.searchStageInner.style.transform = `rotateY(${state.searchStageAngle}deg)`;
+    }
+    applySearchStageClass(nextView);
+  });
+  state.searchFlipTimer = window.setTimeout(clearFlip, 440);
 }
 
-function syncGatchaCooldownButtons() {
-  const remainingSeconds = gatchaCooldownRemainingSeconds();
-  const coolingDown = remainingSeconds > 0;
-  const cooldownText = `等待 ${remainingSeconds}s`;
-  if (elements.gatchaButton) {
-    elements.gatchaButton.disabled = coolingDown;
-    elements.gatchaButton.textContent = coolingDown ? cooldownText : "试试运气";
+function renderSearchCookieFace() {
+  const showCookie = Boolean(state.searchCookieVisible);
+  const showLark = Boolean(state.searchLarkVisible);
+  const view = showLark ? "lark" : showCookie ? "browse" : "search";
+  const signature = JSON.stringify({
+    face: view,
+    selected: state.followBrowseSelectedUid,
+    loading: state.followBrowseLoading,
+    larkLoading: state.larkSearchLoading,
+    language: state.language,
+  });
+  if (signature === state.searchCookieFaceRenderSignature) {
+    return;
   }
-  if (elements.gatchaRetryButton) {
-    elements.gatchaRetryButton.disabled = coolingDown;
-    elements.gatchaRetryButton.textContent = coolingDown ? cooldownText : "重新再来";
+  state.searchCookieFaceRenderSignature = signature;
+
+  setClassToggle(elements.searchPanel, "is-cookie-view", showCookie);
+  setClassToggle(elements.searchPanel, "is-lark-view", showLark);
+  syncSearchStageView(view);
+  setTextContent(elements.searchTag, showCookie ? t("search.followTag") : t("search.localTag"));
+  setTextContent(elements.searchTitle, showCookie ? t("follow.title") : t("search.title"));
+  setTextContent(elements.searchCookieToggle, showCookie ? t("search.followBrowseBack") : t("search.followBrowse"));
+  if (showLark) {
+    setTextContent(elements.searchTag, t("search.larkTag"));
+    setTextContent(elements.searchTitle, t("search.larkSearch"));
+  }
+  setTextContent(elements.searchLarkToggle, showLark ? t("search.larkBack") : t("search.larkSearch"));
+  if (elements.searchCookieToggle?.getAttribute("aria-pressed") !== String(showCookie)) {
+    elements.searchCookieToggle.setAttribute("aria-pressed", String(showCookie));
+  }
+  if (elements.searchLarkToggle?.getAttribute("aria-pressed") !== String(showLark)) {
+    elements.searchLarkToggle.setAttribute("aria-pressed", String(showLark));
+  }
+  if (showCookie) {
+    renderFollowBrowse();
+  }
+}
+
+function renderGatchaUidFace() {
+  syncGatchaTaskTerminalMessage();
+  const showUid = Boolean(state.gatchaUidVisible);
+  const taskBusy = gatchaTaskBusy();
+  const signature = JSON.stringify({
+    showUid,
+    saving: state.gatchaUidSaving,
+    refreshing: state.gatchaRefreshSaving,
+    favlistSaving: state.gatchaFavlistSaving,
+    taskBusy,
+    taskMessage: gatchaTaskBusyMessage(),
+    taskLastStatus: state.data?.gatcha?.last_status || "",
+    taskLastUpdatedAt: state.data?.gatcha?.last_updated_at || 0,
+    language: state.language,
+  });
+  if (signature === state.gatchaUidFaceRenderSignature) {
+    return;
+  }
+  state.gatchaUidFaceRenderSignature = signature;
+
+  setClassToggle(elements.gatchaPanel, "is-uid-view", showUid);
+  setClassToggle(elements.gatchaStage, "is-uid-view", showUid);
+  setTextContent(elements.gatchaTag, showUid ? t("gatcha.uidTag") : t("gatcha.tag"));
+  setTextContent(elements.gatchaTitle, showUid ? t("gatcha.uidTitle") : t("gatcha.title"));
+  setTextContent(elements.gatchaUidToggle, showUid ? t("gatcha.backToDraw") : t("gatcha.addUid"));
+  if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
+    elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
+  }
+  if (elements.addGatchaUidButton) {
+    elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
+    elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
+  }
+  if (elements.refreshGatchaCacheButton) {
+    elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
+    elements.refreshGatchaCacheButton.textContent = state.gatchaRefreshSaving ? t("gatcha.refreshing") : t("gatcha.refresh");
+  }
+  if (elements.pullGatchaFavlistButton) {
+    elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  }
+  if (taskBusy) {
+    if (elements.refreshGatchaCacheButton) {
+      elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
+    }
+    if (elements.pullGatchaFavlistButton) {
+      elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
+    }
   }
 }
 
@@ -987,7 +1797,7 @@ function render() {
   }
 
   const currentItem = data.current_item;
-  const currentTitle = currentItem ? currentItem.display_title : "还没有歌曲";
+  const currentTitle = currentItem ? currentItem.display_title : t("player.noSong");
   if (currentTitle !== state.currentTitleRenderSignature) {
     state.currentTitleRenderSignature = currentTitle;
     setTextContent(elements.currentTitle, currentTitle);
@@ -1000,13 +1810,14 @@ function render() {
   renderRemoteAccess(data.remote_access);
   renderLayoutMode();
 
-  renderAudioVariantBar(currentItem, data.playback_mode);
-  renderAvSyncControls(data.playback_mode, data.player_settings);
-  renderVolumeControls(data.playback_mode);
+  const playbackMode = frontendPlaybackMode(data.playback_mode);
+  renderAudioVariantBar(currentItem, playbackMode);
+  renderAvSyncControls(playbackMode, data.player_settings);
+  renderVolumeControls(playbackMode);
   applyStoredVolumeToMountedPlayer();
-  renderPlayer(currentItem, data.playback_mode);
+  renderPlayer(currentItem, playbackMode);
   renderPlayerFullscreenButton();
-  applyRemotePlayerControl(data.player_control_command, currentItem, data.playback_mode);
+  applyRemotePlayerControl(data.player_control_command, currentItem, playbackMode);
   renderQueueCurrent(currentItem);
   if (!state.dragItemId) {
     renderPlaylist(data.playlist, data.current_item, data.cache_policy);
@@ -1019,8 +1830,10 @@ function render() {
     Boolean(data.session_flags?.auto_restored_backup),
   );
   syncListStageView();
-  renderGatchaCookieFace();
+  renderSearchCookieFace();
+  renderGatchaUidFace();
   renderConfirmPopover();
+  flushPendingSongTransitionOverlay();
   state.lastPollRenderSignature = renderSignatureForData(data);
 }
 
@@ -1036,18 +1849,26 @@ function syncListStageView() {
     window.clearTimeout(state.listFlipTimer);
     state.listFlipTimer = null;
   }
+  if (state.listFlipFrame) {
+    window.cancelAnimationFrame(state.listFlipFrame);
+    state.listFlipFrame = null;
+  }
 
-  setClassToggle(elements.listStage, "is-history-view", nextView === "history");
   if (isInitialRender) {
+    setClassToggle(elements.listStage, "is-history-view", nextView === "history");
     elements.listStage?.classList.remove("is-flipping");
     return;
   }
 
   elements.listStage?.classList.add("is-flipping");
+  state.listFlipFrame = window.requestAnimationFrame(() => {
+    state.listFlipFrame = null;
+    setClassToggle(elements.listStage, "is-history-view", nextView === "history");
+  });
   state.listFlipTimer = window.setTimeout(() => {
     elements.listStage?.classList.remove("is-flipping");
     state.listFlipTimer = null;
-  }, 460);
+  }, 440);
 }
 
 function activeScrollableList() {
@@ -1077,7 +1898,7 @@ function renderRequesterSelect(sessionUsers) {
 
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = users.length ? "选择点歌人" : "请先添加用户";
+  placeholder.textContent = users.length ? t("session.selectRequester") : t("session.addUserFirst");
   elements.requesterSelect.appendChild(placeholder);
 
   users.forEach((userName) => {
@@ -1108,8 +1929,7 @@ function renderSessionUsers(sessionUsers) {
   elements.sessionUserList.innerHTML = "";
 
   if (!users.length) {
-    elements.sessionUserList.innerHTML =
-      '<div class="queue-empty session-user-empty">先添加本场用户，服务端和客户端才能开始点歌。</div>';
+    elements.sessionUserList.innerHTML = `<div class="queue-empty session-user-empty">${htmlT("session.empty")}</div>`;
     return;
   }
 
@@ -1122,9 +1942,9 @@ function renderSessionUsers(sessionUsers) {
         <strong class="session-user-name">${escapeHtml(userName)}</strong>
       </div>
       <div class="session-user-actions">
-        <button type="button" data-action="move-up" data-name="${escapeHtml(userName)}" ${index === 0 ? "disabled" : ""}>上移</button>
-        <button type="button" data-action="move-down" data-name="${escapeHtml(userName)}" ${index === users.length - 1 ? "disabled" : ""}>下移</button>
-        <button type="button" data-action="remove" data-name="${escapeHtml(userName)}" class="danger">删除</button>
+        <button type="button" data-action="move-up" data-name="${escapeHtml(userName)}" ${index === 0 ? "disabled" : ""}>${htmlT("common.moveUp")}</button>
+        <button type="button" data-action="move-down" data-name="${escapeHtml(userName)}" ${index === users.length - 1 ? "disabled" : ""}>${htmlT("common.moveDown")}</button>
+        <button type="button" data-action="remove" data-name="${escapeHtml(userName)}" class="danger">${htmlT("common.delete")}</button>
       </div>
     `;
     elements.sessionUserList.appendChild(item);
@@ -1141,11 +1961,11 @@ function renderRemoteAccess(remoteAccess) {
   elements.remoteUrlLink.textContent = displayUrl;
 
   if (lanUrls.length > 1) {
-    elements.remoteUrlHint.textContent = `同网地址候选：${lanUrls.join(" · ")}`;
+    elements.remoteUrlHint.textContent = t("remote.multipleLanHint", { urls: lanUrls.join(" · ") });
   } else if (lanUrls.length === 1) {
-    elements.remoteUrlHint.textContent = "手机和服务端在同一个局域网内时，可直接扫码访问。";
+    elements.remoteUrlHint.textContent = t("remote.sameLanHint");
   } else {
-    elements.remoteUrlHint.textContent = "暂未识别到局域网地址，可手动复制当前地址访问。";
+    elements.remoteUrlHint.textContent = t("remote.noLanHint");
   }
 
   renderRemoteQr(displayUrl);
@@ -1155,7 +1975,7 @@ function renderRemoteQr(url) {
   const normalizedUrl = String(url || "").trim();
   if (!normalizedUrl) {
     elements.remoteQrImage.classList.add("hidden");
-    elements.remoteQrPlaceholder.textContent = "暂无可用访问地址";
+    elements.remoteQrPlaceholder.textContent = t("remote.noAddress");
     elements.remoteQrPlaceholder.classList.remove("hidden");
     return;
   }
@@ -1167,7 +1987,7 @@ function renderRemoteQr(url) {
 
   elements.remoteQrImage.dataset.qrUrl = qrUrl;
   elements.remoteQrImage.classList.add("hidden");
-  elements.remoteQrPlaceholder.textContent = "正在生成二维码...";
+  elements.remoteQrPlaceholder.textContent = t("remote.qrLoading");
   elements.remoteQrPlaceholder.classList.remove("hidden");
   elements.remoteQrImage.onload = () => {
     elements.remoteQrPlaceholder.classList.add("hidden");
@@ -1175,7 +1995,7 @@ function renderRemoteQr(url) {
   };
   elements.remoteQrImage.onerror = () => {
     elements.remoteQrImage.classList.add("hidden");
-    elements.remoteQrPlaceholder.textContent = "二维码加载失败，请复制下方链接到手机访问。";
+    elements.remoteQrPlaceholder.textContent = t("remote.qrImageFailed");
     elements.remoteQrPlaceholder.classList.remove("hidden");
   };
   elements.remoteQrImage.src = qrUrl;
@@ -1187,10 +2007,10 @@ function renderRemoteAccess(remoteAccess) {
   const localUrl = String(remoteAccess?.local_url || "");
   const displayUrl = preferredUrl || localUrl || `${window.location.origin}/remote`;
   const displayHint = lanUrls.length > 1
-    ? `可用局域网地址: ${lanUrls.join(" · ")}`
+    ? t("remote.multipleLanHint", { urls: lanUrls.join(" · ") })
     : lanUrls.length === 1
-      ? "请确保手机和服务端在同一个局域网内。"
-      : "暂未检测到局域网地址，可稍后刷新或手动检查网络。";
+      ? t("remote.defaultHint")
+      : t("remote.noLanHint");
   const signature = JSON.stringify({ displayUrl, displayHint });
   if (signature === state.remoteAccessRenderSignature) {
     return;
@@ -1224,7 +2044,7 @@ function renderRemoteQr(url, targets = []) {
     targets.forEach(({ image, placeholder }) => {
       image?.classList.add("hidden");
       if (placeholder) {
-        placeholder.textContent = "暂无可用访问地址";
+        placeholder.textContent = t("remote.noAddress");
         placeholder.classList.remove("hidden");
       }
     });
@@ -1243,7 +2063,7 @@ function renderRemoteQr(url, targets = []) {
 
     image.dataset.qrUrl = qrUrl;
     image.classList.add("hidden");
-    placeholder.textContent = "正在生成二维码...";
+    placeholder.textContent = t("remote.qrLoading");
     placeholder.classList.remove("hidden");
     image.onload = () => {
       placeholder.classList.add("hidden");
@@ -1251,7 +2071,7 @@ function renderRemoteQr(url, targets = []) {
     };
     image.onerror = () => {
       image.classList.add("hidden");
-      placeholder.textContent = "二维码生成失败，请稍后重试";
+      placeholder.textContent = t("remote.qrFailed");
       placeholder.classList.remove("hidden");
     };
     image.src = qrUrl;
@@ -1261,7 +2081,7 @@ function renderRemoteQr(url, targets = []) {
 async function copyRemoteUrl() {
   const url = elements.remoteUrlLink.href;
   if (!url) {
-    setAppMessage("当前没有可复制的手机访问地址。", true);
+    setAppMessage(t("remote.copyUnavailable"), true);
     return;
   }
 
@@ -1276,21 +2096,22 @@ async function copyRemoteUrl() {
       document.execCommand("copy");
       input.remove();
     }
-    setAppMessage("手机访问链接已复制。");
+    setAppMessage(t("remote.copySuccess"));
   } catch {
-    setAppMessage("复制失败，请手动复制页面中的链接。", true);
+    setAppMessage(t("remote.copyFailed"), true);
   }
 }
 
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
-  const listTag = isHistoryView ? "History" : "Requests";
-  const listTitle = isHistoryView ? "历史记录" : "点歌列表";
-  const queueCount = isHistoryView ? `(${history.length}首)` : `(${playlist.length}首)`;
-  const historyButtonText = isHistoryView ? "返回点歌列表" : "历史记录";
+  const listTag = isHistoryView ? t("history.tag") : t("list.tag");
+  const listTitle = isHistoryView ? t("history.title") : t("list.title");
+  const queueCount = isHistoryView ? t("history.count", { count: history.length }) : t("list.count", { count: playlist.length });
+  const historyButtonText = isHistoryView ? t("list.title") : t("history.title");
   const signature = JSON.stringify({
     isHistoryView,
     queueCount,
+    language: state.language,
   });
 
   if (signature === state.listHeaderRenderSignature) {
@@ -1303,6 +2124,7 @@ function renderListHeader(playlist, history) {
   setTextContent(elements.queueCount, queueCount);
   setTextContent(elements.historyToggleButton, historyButtonText);
   setClassToggle(elements.clearPlaylistButton, "hidden", isHistoryView);
+  setClassToggle(elements.historyExportButton, "hidden", !isHistoryView);
   setClassToggle(elements.clearHistoryButton, "hidden", !isHistoryView || !history.length);
   setClassToggle(elements.nextButton, "hidden", isHistoryView);
 }
@@ -1322,6 +2144,7 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
     bbdownTitle,
     ffmpegTitle,
     login: bbdown?.login || { logged_in: Boolean(bbdown?.logged_in) },
+    language: state.language,
   });
 
   if (signature !== state.cacheSettingsRenderSignature) {
@@ -1344,8 +2167,18 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   setTextContent(elements.cacheChipMeta, cacheChipMeta);
   setTextContent(elements.cacheUsageDetail, cacheUsageDetail);
   renderCacheSlider(cachePolicy);
+  renderAdvanceDelaySlider(state.data?.player_settings);
   renderCachePolicyControls(cachePolicy);
+  renderUpdatePreviewControl();
   syncCachePanelVisibility();
+}
+
+function renderUpdatePreviewControl() {
+  if (!elements.updatePreviewCheckbox) {
+    return;
+  }
+  elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
+  elements.updatePreviewCheckbox.disabled = state.updateChecking;
 }
 
 function renderPlaybackRepairControls(currentItem) {
@@ -1356,8 +2189,8 @@ function renderPlaybackRepairControls(currentItem) {
   const hasCurrentItem = Boolean(currentItem?.id);
   button.disabled = !hasCurrentItem;
   button.title = hasCurrentItem
-    ? "重新缓存当前歌曲"
-    : "当前没有正在播放的歌曲";
+    ? t("service.retryCurrentTitle")
+    : t("service.noCurrentSong");
 }
 
 function renderBBDownLogin(login) {
@@ -1370,8 +2203,8 @@ function renderBBDownLogin(login) {
       setClassToggle(elements.bbdownLoginButton, "is-unlogged", !loggedIn);
       elements.bbdownLoginButton.classList.remove("is-unknown");
       const label = elements.bbdownLoginButton.querySelector(".bbdown-login-label");
-      setTextContent(label, loggedIn ? "已登录" : "未登录");
-      elements.bbdownLoginButton.title = loggedIn ? "点击退出 BBDown 登录" : "点击生成 BBDown 登录二维码";
+      setTextContent(label, loggedIn ? t("service.loggedIn") : t("service.notLoggedIn"));
+      elements.bbdownLoginButton.title = loggedIn ? t("service.bbdownLogoutTitle") : t("service.bbdownLoginTitle");
     }
 
     setClassToggle(elements.bbdownLoginPanel, "hidden", loggedIn);
@@ -1391,7 +2224,7 @@ function renderBBDownLogin(login) {
         setTextContent(elements.bbdownLoginQrText, qrText);
       }
       if (elements.bbdownLoginMessage) {
-        setTextContent(elements.bbdownLoginMessage, login?.message || "正在准备二维码...");
+        setTextContent(elements.bbdownLoginMessage, login?.message || t("service.qrPreparing"));
         setClassToggle(elements.bbdownLoginMessage, "is-error", login?.state === "failed");
       }
     }
@@ -1468,8 +2301,12 @@ function aggregateToolStatusState(bbdown, ffmpeg) {
   return "loading";
 }
 
-function formatPlaybackMode(mode) {
-  return mode === "online" ? "在线外挂" : "本地缓存";
+function frontendPlaybackMode(_mode) {
+  return "local";
+}
+
+function formatPlaybackMode(_mode) {
+  return t("service.localPlayback");
 }
 
 function renderCacheSlider(cachePolicy) {
@@ -1495,7 +2332,6 @@ function renderCacheSlider(cachePolicy) {
   elements.cacheLimitSlider.step = "1";
   elements.cacheLimitSlider.value = String(currentValue);
   elements.cacheLimitSlider.disabled = state.cacheLimitSaving;
-  elements.cacheLimitValue.textContent = `缓存 ${currentValue} 首`;
   updateCacheSliderFill(currentValue, minValue, maxValue);
 
   elements.cacheLimitScale.innerHTML = "";
@@ -1505,6 +2341,41 @@ function renderCacheSlider(cachePolicy) {
     mark.classList.toggle("active", Number(choice) === currentValue);
     elements.cacheLimitScale.appendChild(mark);
   });
+}
+
+function renderAdvanceDelaySlider(playerSettings) {
+  if (!elements.advanceDelaySlider) {
+    return;
+  }
+  const currentValue = currentSongAdvanceDelaySeconds(playerSettings);
+  const signature = JSON.stringify({
+    currentValue,
+    saving: state.advanceDelaySaving,
+  });
+
+  if (signature === state.advanceDelaySliderRenderSignature) {
+    return;
+  }
+  state.advanceDelaySliderRenderSignature = signature;
+
+  elements.advanceDelaySlider.min = "1";
+  elements.advanceDelaySlider.max = "5";
+  elements.advanceDelaySlider.step = "1";
+  elements.advanceDelaySlider.value = String(currentValue);
+  elements.advanceDelaySlider.disabled = state.advanceDelaySaving;
+  updateAdvanceDelaySliderFill(currentValue);
+
+  elements.advanceDelayScale.querySelectorAll("span").forEach((mark) => {
+    mark.classList.toggle("active", Number(mark.textContent || "0") === currentValue);
+  });
+}
+
+function updateAdvanceDelaySliderFill(value) {
+  const min = 1;
+  const max = 5;
+  const current = Number(value);
+  const ratio = max <= min ? 1 : (current - min) / (max - min);
+  elements.advanceDelaySlider.style.setProperty("--slider-progress", `${ratio * 100}%`);
 }
 
 function renderCachePolicyControls(cachePolicy) {
@@ -1522,11 +2393,11 @@ function renderCachePolicyControls(cachePolicy) {
       };
     }).filter((choice) => choice.value)
     : [
-      { value: "1080P 高码率", label: "1080P 高码率" },
-      { value: "1080P 高清", label: "1080P 高清" },
-      { value: "720P 高清", label: "720P 高清" },
-      { value: "480P 清晰", label: "480P 清晰" },
-      { value: "360P 流畅", label: "360P 流畅" },
+      { value: "1080P 高码率", label: t("quality.1080pHighBitrate") },
+      { value: "1080P 高清", label: t("quality.1080p") },
+      { value: "720P 高清", label: t("quality.720p") },
+      { value: "480P 清晰", label: t("quality.480p") },
+      { value: "360P 流畅", label: t("quality.360p") },
     ];
   const currentQuality = String(cachePolicy?.video_quality || choices[0]?.value || "1080P 高码率");
   const audioHires = Boolean(cachePolicy?.audio_hires);
@@ -1577,7 +2448,7 @@ function syncCachePanelVisibility(options = {}) {
 
 function renderQueueCurrent(currentItem) {
   if (!currentItem) {
-    const signature = "empty";
+    const signature = `empty|${state.language}`;
     if (signature === state.queueCurrentRenderSignature) {
       return;
     }
@@ -1586,8 +2457,8 @@ function renderQueueCurrent(currentItem) {
     if (elements.queueCurrent.dataset.state !== "idle") {
       elements.queueCurrent.dataset.state = "idle";
     }
-    setTextContent(elements.queueCurrentTag, "播放中");
-    setTextContent(elements.queueCurrentTitle, "还没有歌曲");
+    setTextContent(elements.queueCurrentTag, t("status.playing"));
+    setTextContent(elements.queueCurrentTitle, t("player.noSong"));
     setElementTitle(elements.queueCurrentTitle, "");
     setClassToggle(elements.queueCurrentRetry, "hidden", true);
     elements.queueCurrentRetry.removeAttribute("data-id");
@@ -1602,6 +2473,7 @@ function renderQueueCurrent(currentItem) {
     label: currentState.label,
     title: currentItem.display_title,
     requesterText,
+    language: state.language,
   });
 
   if (signature !== state.queueCurrentRenderSignature) {
@@ -1615,28 +2487,34 @@ function renderQueueCurrent(currentItem) {
     setElementTitle(elements.queueCurrentTitle, ownerTooltipForEntry(currentItem));
     setTextContent(elements.queueCurrentRequester, requesterText);
     setClassToggle(elements.queueCurrentRequester, "hidden", !requesterText);
+
+    setClassToggle(elements.queueCurrentProgressBadge, "idle", currentState.state === "pending");
+    setClassToggle(elements.queueCurrentProgressBadge, "active", currentState.state === "caching");
+    setClassToggle(elements.queueCurrentProgressBadge, "ready", currentState.state === "playing");
+    setClassToggle(elements.queueCurrentProgressBadge, "failed", currentState.state === "failed");
   }
+
   syncRetryButton(elements.queueCurrentRetry, currentItem);
 }
 
 function currentStatusForItem(item) {
   if (!item) {
-    return { state: "idle", label: "播放中" };
+    return { state: "idle", label: t("status.playing") };
   }
   if (item.cache_status === "ready") {
-    return { state: "playing", label: "播放中" };
+    return { state: "playing", label: t("status.playing") };
   }
   if (item.cache_status === "failed") {
-    return { state: "failed", label: "失败" };
+    return { state: "failed", label: t("status.failed") };
   }
   const size = Number(item.cache_size_bytes || 0);
   if (size > 0) {
     return { state: "caching", label: formatCompactBytes(size) };
   }
   if (item.cache_status === "downloading") {
-    return { state: "caching", label: "缓存中" };
+    return { state: "caching", label: t("status.caching") };
   }
-  return { state: "pending", label: "待缓存" };
+  return { state: "pending", label: t("status.pendingCache") };
 }
 
 function audioVariantsForItem(item) {
@@ -1701,20 +2579,43 @@ function partOptionsForItem(item) {
     return [];
   }
 
+  const cachedVariants = audioVariantsForItem(item);
   const cachedVariantsById = new Map(
-    audioVariantsForItem(item).map((variant) => [String(variant.id || "").trim(), variant]),
+    cachedVariants.map((variant) => [String(variant.id || "").trim(), variant]),
   );
 
   return availableParts.map((entry) => {
-    const cachedVariant = cachedVariantsById.get(entry.id);
+    const cachedVariant = cachedVariantForPartEntry(entry, cachedVariantsById, cachedVariants);
     return {
       ...entry,
+      id: String(cachedVariant?.id || entry.id || "").trim(),
       audio_url: String(cachedVariant?.audio_url || ""),
       // LEGACY: cachedVariant.media_url used to point to a muxed MP4 variant.
       // The host player now uses video_media_url + audio_url split playback.
       // media_url: String(cachedVariant?.media_url || ""),
     };
   });
+}
+
+function audioVariantPageNumber(variant) {
+  const directPage = Number(variant?.page || 0);
+  if (Number.isFinite(directPage) && directPage > 0) {
+    return directPage;
+  }
+  const idMatch = String(variant?.id || "").trim().match(/^p(\d+)(?:_|$)/i);
+  return idMatch ? Number(idMatch[1] || 0) : 0;
+}
+
+function cachedVariantForPartEntry(entry, cachedVariantsById, cachedVariants) {
+  const exactMatch = cachedVariantsById.get(String(entry?.id || "").trim());
+  if (exactMatch) {
+    return exactMatch;
+  }
+  const page = Number(entry?.page || 0);
+  if (!page) {
+    return null;
+  }
+  return cachedVariants.find((variant) => audioVariantPageNumber(variant) === page) || null;
 }
 
 function selectedAudioVariantForItem(item) {
@@ -1775,12 +2676,85 @@ function currentSongAdvanceDelaySeconds(playerSettings = state.data?.player_sett
   if (!Number.isFinite(rawValue)) {
     return defaultSongAdvanceDelaySeconds;
   }
-  return Math.max(0, Math.min(maxSongAdvanceDelaySeconds, Math.round(rawValue)));
+  return Math.max(1, Math.min(maxSongAdvanceDelaySeconds, Math.round(rawValue)));
 }
 
 function queuedNextItem() {
   const playlist = state.data?.playlist;
   return Array.isArray(playlist) && playlist.length ? playlist[0] : null;
+}
+
+function currentItemIdFromData(data) {
+  return String(data?.current_item?.id || "");
+}
+
+function durationSecondsForItem(item) {
+  if (!item) {
+    return 0;
+  }
+  const selectedDurations = Array.isArray(item.selected_durations) ? item.selected_durations : [];
+  const selectedPages = Array.isArray(item.selected_pages) ? item.selected_pages : [];
+  const currentPage = Number(item.page || item.video_page || selectedPages[0] || 0);
+  const selectedIndex = selectedPages.findIndex((page) => Number(page) === currentPage);
+  const selectedDuration = Number(selectedDurations[selectedIndex >= 0 ? selectedIndex : 0] || 0);
+  if (selectedDuration > 0) {
+    return Math.round(selectedDuration);
+  }
+
+  const availableDurations = Array.isArray(item.available_durations) ? item.available_durations : [];
+  const availablePages = Array.isArray(item.available_pages) ? item.available_pages : [];
+  const availableIndex = availablePages.findIndex((page) => Number(page) === currentPage);
+  const availableDuration = Number(availableDurations[availableIndex >= 0 ? availableIndex : 0] || 0);
+  return availableDuration > 0 ? Math.round(availableDuration) : 0;
+}
+
+function formatDurationSeconds(seconds) {
+  const normalizedSeconds = Math.max(0, Math.round(Number(seconds || 0)));
+  if (!normalizedSeconds) {
+    return "—";
+  }
+  const minutes = Math.floor(normalizedSeconds / 60);
+  const restSeconds = normalizedSeconds % 60;
+  return `${minutes}:${String(restSeconds).padStart(2, "0")}`;
+}
+
+function escapeRegExpText(text) {
+  return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function delayOverlayTitleForItem(item, fallback = t("player.untitledSong")) {
+  let originalTitle = String(item?.display_title || item?.title || "").trim();
+  let title = originalTitle;
+  const partCandidates = [
+    item?.part_title,
+    ...(Array.isArray(item?.selected_parts) ? item.selected_parts : []),
+  ]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  for (const partTitle of partCandidates) {
+    const escapedPart = escapeRegExpText(partTitle);
+    title = title
+      .replace(new RegExp(`\\s*(?:-|–|—|·|\\||/)?\\s*${escapedPart}\\s*$`, "i"), "")
+      .trim();
+  }
+  return title || originalTitle || fallback;
+}
+
+function delayOverlayItemSignature(item) {
+  if (!item) {
+    return "";
+  }
+  return [
+    item.id || "",
+    delayOverlayTitleForItem(item, ""),
+    item.requester_name || "",
+    durationSecondsForItem(item),
+  ].join("|");
+}
+
+function manualTransitionOverlaySeconds(data = state.data) {
+  const delaySeconds = currentSongAdvanceDelaySeconds(data?.player_settings);
+  return delaySeconds > 0 ? delaySeconds : defaultSongAdvanceDelaySeconds;
 }
 
 function boundedAvOffsetMs(rawValue) {
@@ -1848,50 +2822,324 @@ function ensurePlayerDelayOverlay() {
   overlay = document.createElement("div");
   overlay.className = "player-delay-overlay hidden";
   overlay.setAttribute("aria-live", "polite");
+  overlay.setAttribute("aria-hidden", "true");
   overlay.innerHTML = `
-    <div class="player-delay-copy">
-      <p class="player-delay-label">\u4e0b\u4e00\u9996\u5012\u8ba1\u65f6</p>
-      <p class="player-delay-count" data-delay-count>0</p>
-      <p class="player-delay-next" data-delay-next>\u51c6\u5907\u4e0b\u4e00\u9996</p>
+    <div class="player-delay-card">
+      <div class="player-delay-head">
+        <p class="player-delay-heading" data-i18n="player.upNext">即将播放</p>
+        <div class="player-delay-countdown" aria-label="切歌倒计时" data-i18n-aria-label="player.advanceCountdown">
+          <svg class="player-delay-count-ring" viewBox="0 0 44 44" aria-hidden="true">
+            <circle class="player-delay-count-track" cx="22" cy="22" r="19"></circle>
+            <circle class="player-delay-count-progress" cx="22" cy="22" r="19"></circle>
+          </svg>
+          <span class="player-delay-count-text"><span data-delay-count>0</span>s</span>
+        </div>
+      </div>
+      <div class="player-delay-now-row">
+        <span class="player-delay-play-icon" aria-hidden="true">\u25b6</span>
+        <p class="player-delay-song-title" data-delay-next-title>${htmlT("player.prepareNext")}</p>
+        <p class="player-delay-requester" data-delay-next-requester>${htmlT("request.requester")}</p>
+        <p class="player-delay-duration" data-delay-next-duration>${htmlT("player.duration")}</p>
+      </div>
+      <p class="player-delay-section-title" data-i18n="player.followingQueue">后续点歌列表</p>
+      <div class="player-delay-list" data-delay-list></div>
+      <p class="player-delay-total" data-delay-total>${htmlT("player.totalSongs", { count: 0 })}</p>
     </div>
   `;
+  applyStaticI18n(overlay);
   elements.playerFrame.appendChild(overlay);
   return overlay;
 }
 
-function updateLocalAdvanceDelayOverlay() {
-  const overlay = ensurePlayerDelayOverlay();
-  const remainingSeconds = Math.max(
-    0,
-    Math.ceil((state.localAdvanceDelayDeadline - Date.now()) / 1000),
-  );
-  const countNode = overlay.querySelector("[data-delay-count]");
-  const nextNode = overlay.querySelector("[data-delay-next]");
-  const nextItem = queuedNextItem();
-  setTextContent(countNode, String(remainingSeconds));
-  setTextContent(nextNode, nextItem?.display_title ? `\u63a5\u4e0b\u6765\uff1a${nextItem.display_title}` : "\u51c6\u5907\u4e0b\u4e00\u9996");
-  overlay.classList.toggle("hidden", state.localAdvanceDelayDeadline <= 0);
+function resumeMountedPlayerAfterOverlay() {
+  const video = activePrimaryVideoElement();
+  if (!video || !video.paused) {
+    return;
+  }
+  state.localShouldBePlaying = true;
+  video.play().catch(() => {});
 }
 
-function clearLocalAdvanceDelay({ resetInFlight = false } = {}) {
-  if (state.localAdvanceDelayTimer) {
-    window.clearTimeout(state.localAdvanceDelayTimer);
-    state.localAdvanceDelayTimer = null;
+function isLocalAdvanceHoldingItem(itemId) {
+  const normalizedItemId = String(itemId || "");
+  return Boolean(
+    normalizedItemId
+    && state.localAdvanceDelayDeadline > 0
+    && normalizedItemId === state.localAdvanceDelayItemId,
+  );
+}
+
+function stopMountedPlayerForAdvanceDelay(itemId) {
+  if (!isLocalAdvanceHoldingItem(itemId)) {
+    return;
   }
-  if (state.localAdvanceCountdownTimer) {
-    window.clearInterval(state.localAdvanceCountdownTimer);
-    state.localAdvanceCountdownTimer = null;
+  state.localShouldBePlaying = false;
+  clearLocalPlayerSeekState();
+
+  const { video, audio } = activeLocalPlayerElements();
+  if (audio && !audio.paused) {
+    audio.pause();
   }
-  state.localAdvanceDelayDeadline = 0;
-  state.localAdvanceDelayItemId = "";
-  state.localAdvanceDelayToken += 1;
+  if (video && !video.paused) {
+    video.pause();
+  }
+}
+
+function setPlayerDelayOverlayVisible(overlay) {
+  if (!overlay) {
+    return;
+  }
+  if (state.localAdvanceOverlayHideTimer) {
+    window.clearTimeout(state.localAdvanceOverlayHideTimer);
+    state.localAdvanceOverlayHideTimer = null;
+  }
+  if (
+    !overlay.classList.contains("hidden")
+    && (
+      overlay.classList.contains("is-visible")
+      || overlay.classList.contains("is-entering")
+    )
+  ) {
+    return;
+  }
+  overlay.classList.remove("is-visible", "is-leaving");
+  overlay.classList.remove("hidden");
+  overlay.setAttribute("aria-hidden", "false");
+  // Force the browser to commit the hidden/base style so the following class
+  // change always starts an animation.
+  overlay.getBoundingClientRect();
+  overlay.classList.add("is-entering");
+  state.localAdvanceOverlayHideTimer = window.setTimeout(() => {
+    overlay.classList.remove("is-entering");
+    overlay.classList.add("is-visible");
+    state.localAdvanceOverlayHideTimer = null;
+  }, localAdvanceOverlayFadeMs);
+}
+
+function hidePlayerDelayOverlay({ onHidden = null } = {}) {
   const overlay = playerDelayOverlay();
-  if (overlay) {
+  if (!overlay) {
+    if (typeof onHidden === "function") {
+      onHidden();
+    }
+    return;
+  }
+  if (overlay.classList.contains("hidden")) {
+    if (typeof onHidden === "function") {
+      onHidden();
+    }
+    return;
+  }
+  if (state.localAdvanceOverlayHideTimer) {
+    window.clearTimeout(state.localAdvanceOverlayHideTimer);
+  }
+  overlay.classList.remove("hidden", "is-entering", "is-leaving");
+  overlay.classList.add("is-visible");
+  overlay.setAttribute("aria-hidden", "false");
+  // Same idea as show: make sure the visible style is committed before
+  // entering the leaving animation.
+  overlay.getBoundingClientRect();
+  overlay.classList.remove("is-visible");
+  overlay.classList.add("is-leaving");
+  state.localAdvanceOverlayHideTimer = window.setTimeout(() => {
+    overlay.classList.remove("is-leaving", "is-entering", "is-visible");
     overlay.classList.add("hidden");
+    overlay.setAttribute("aria-hidden", "true");
+    state.localAdvanceOverlayHideTimer = null;
+    if (typeof onHidden === "function") {
+      onHidden();
+    }
+  }, localAdvanceOverlayFadeMs);
+}
+
+function showSongTransitionOverlayForData(data) {
+  if (!data) {
+    return;
   }
-  if (resetInFlight) {
-    state.localAdvanceInFlight = false;
+  const playlist = Array.isArray(data.playlist) ? data.playlist : [];
+  const primaryItem = data.current_item || playlist[0] || null;
+  if (!primaryItem) {
+    return;
   }
+  const delaySeconds = manualTransitionOverlaySeconds(data);
+  clearLocalAdvanceDelay({ resetInFlight: true, hideOverlay: false });
+  const token = state.localAdvanceDelayToken;
+
+  state.localAdvanceOverlayMode = "manual";
+  state.localAdvanceOverlayPrimaryItem = primaryItem;
+  state.localAdvanceOverlayFollowItems = data.current_item ? playlist : playlist.slice(1);
+  state.localAdvanceOverlayTotalCount = (data.current_item ? 1 : 0) + playlist.length;
+  state.localAdvanceDelayItemId = String(primaryItem.id || "");
+  state.localAdvanceOverlayDurationMs = delaySeconds * 1000;
+  state.localAdvanceDelayStartAt = Date.now() + localAdvanceOverlayFadeMs;
+  state.localAdvanceDelayDeadline = state.localAdvanceDelayStartAt + state.localAdvanceOverlayDurationMs;
+  updateLocalAdvanceDelayOverlay();
+  state.localAdvanceCountdownTimer = window.setInterval(updateLocalAdvanceDelayOverlay, 250);
+  state.localAdvanceDelayTimer = window.setTimeout(() => {
+    if (state.localAdvanceDelayToken === token) {
+      updateLocalAdvanceDelayOverlay();
+      clearLocalAdvanceDelay({
+        resetInFlight: false,
+        onOverlayHidden: resumeMountedPlayerAfterOverlay,
+      });
+    }
+  }, Math.max(0, state.localAdvanceDelayDeadline - Date.now()));
+}
+
+function maybeShowSongTransitionOverlay(previousData, nextData, { force = false } = {}) {
+  if (!nextData) {
+    return;
+  }
+  const previousId = currentItemIdFromData(previousData);
+  const nextId = currentItemIdFromData(nextData);
+  if (!nextId || (!force && previousId === nextId)) {
+    return;
+  }
+  if (
+    currentItemIdFromData(state.pendingSongTransitionOverlayData) === nextId
+    || isLocalAdvanceHoldingItem(nextId)
+  ) {
+    return;
+  }
+  const transitionKey = `${nextId}|${Number(nextData.state_revision || 0)}`;
+  if (!force && state.lastSongTransitionOverlayKey === transitionKey) {
+    return;
+  }
+  state.lastSongTransitionOverlayKey = transitionKey;
+  state.localShouldBePlaying = false;
+  state.pendingSongTransitionOverlayData = nextData;
+}
+
+function hasPendingSongTransitionOverlayForItem(item) {
+  const itemId = String(item?.id || "");
+  return Boolean(
+    itemId
+    && currentItemIdFromData(state.pendingSongTransitionOverlayData) === itemId,
+  );
+}
+
+function flushPendingSongTransitionOverlay() {
+  if (!state.pendingSongTransitionOverlayData) {
+    return;
+  }
+  const overlayItemId = currentItemIdFromData(state.pendingSongTransitionOverlayData);
+  const currentItemId = currentItemIdFromData(state.data);
+  if (!overlayItemId || overlayItemId !== currentItemId) {
+    state.pendingSongTransitionOverlayData = null;
+    return;
+  }
+  const currentItem = state.data?.current_item;
+  if (!selectedVideoUrlForItem(currentItem) || !selectedAudioUrlForItem(currentItem)) {
+    return;
+  }
+  state.pendingSongTransitionOverlayData = null;
+  showSongTransitionOverlayForData(state.data);
+}
+
+function renderPlayerDelayItemRow(item, index) {
+  const row = document.createElement("div");
+  row.className = "player-delay-list-row";
+
+  const indexNode = document.createElement("span");
+  indexNode.className = "player-delay-list-index";
+  indexNode.textContent = String(index);
+
+  const titleNode = document.createElement("p");
+  titleNode.className = "player-delay-song-title";
+  titleNode.textContent = delayOverlayTitleForItem(item);
+
+  const requesterNode = document.createElement("p");
+  requesterNode.className = "player-delay-requester";
+  requesterNode.textContent = item?.requester_name || "—";
+
+  const durationNode = document.createElement("p");
+  durationNode.className = "player-delay-duration";
+  durationNode.textContent = formatDurationSeconds(durationSecondsForItem(item));
+
+  row.append(indexNode, titleNode, requesterNode, durationNode);
+  return row;
+}
+
+function renderLocalAdvanceDelayQueue(overlay) {
+  const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
+  const primaryItem = state.localAdvanceOverlayPrimaryItem || playlist[0] || null;
+  const followItemsSource = Array.isArray(state.localAdvanceOverlayFollowItems)
+    ? state.localAdvanceOverlayFollowItems
+    : playlist.slice(1);
+  const totalCount = Number.isFinite(state.localAdvanceOverlayTotalCount)
+    ? Number(state.localAdvanceOverlayTotalCount)
+    : (state.data?.current_item ? 1 : 0) + playlist.length;
+  const signature = [
+    state.localAdvanceOverlayMode || "auto",
+    delayOverlayItemSignature(primaryItem),
+    ...followItemsSource.map(delayOverlayItemSignature),
+    totalCount,
+    state.language,
+  ].join("||");
+  if (overlay.dataset.queueSignature === signature) {
+    return;
+  }
+  overlay.dataset.queueSignature = signature;
+
+  setTextContent(overlay.querySelector("[data-delay-next-title]"), delayOverlayTitleForItem(primaryItem, t("player.prepareNext")));
+  setTextContent(overlay.querySelector("[data-delay-next-requester]"), primaryItem?.requester_name || "—");
+  setTextContent(overlay.querySelector("[data-delay-next-duration]"), formatDurationSeconds(durationSecondsForItem(primaryItem)));
+
+  const listNode = overlay.querySelector("[data-delay-list]");
+  if (listNode) {
+    const followItems = followItemsSource.slice(0, localAdvanceOverlayMaxRows);
+    const rows = followItems.map((item, index) => renderPlayerDelayItemRow(item, index + 1));
+    if (!rows.length) {
+      const emptyRow = document.createElement("div");
+      emptyRow.className = "player-delay-list-more";
+      emptyRow.textContent = t("player.followingQueueEmpty");
+      rows.push(emptyRow);
+    }
+    const remainingCount = Math.max(0, followItemsSource.length - followItems.length);
+    if (remainingCount > 0) {
+      const moreRow = document.createElement("div");
+      moreRow.className = "player-delay-list-more";
+      moreRow.textContent = t("player.remainingQueue", { count: remainingCount });
+      rows.push(moreRow);
+    }
+    listNode.replaceChildren(...rows);
+  }
+
+  setTextContent(overlay.querySelector("[data-delay-total]"), t("player.totalSongs", { count: totalCount }));
+}
+
+function updateLocalAdvanceDelayOverlay() {
+  const overlay = ensurePlayerDelayOverlay();
+  const now = Date.now();
+  const countdownStartAt = Number(state.localAdvanceDelayStartAt || 0);
+  const countdownNow = countdownStartAt > 0 ? Math.max(now, countdownStartAt) : now;
+  const totalDurationMs = Math.max(1000, Number(state.localAdvanceOverlayDurationMs || 0));
+  const remainingMs = Math.max(0, state.localAdvanceDelayDeadline - countdownNow);
+  const remainingSeconds = Math.max(
+    0,
+    Math.ceil(remainingMs / 1000),
+  );
+  const countNode = overlay.querySelector("[data-delay-count]");
+  setTextContent(countNode, String(remainingSeconds));
+  const progress = Math.max(0, Math.min(1, remainingMs / totalDurationMs));
+  overlay.style.setProperty("--delay-ring-offset", String(119.38 * (1 - progress)));
+  renderLocalAdvanceDelayQueue(overlay);
+  const isFullscreen = isPlayerPanelFullscreen();
+  overlay.classList.toggle("is-compact", !isFullscreen);
+  if (state.localAdvanceDelayDeadline > 0) {
+    setPlayerDelayOverlayVisible(overlay);
+  } else {
+    hidePlayerDelayOverlay();
+  }
+}
+
+function hasLocalAdvanceDelayOverlay() {
+  return Boolean(
+    state.localAdvanceDelayDeadline > 0
+    || state.localAdvanceDelayStartAt > 0
+    || state.localAdvanceDelayTimer
+    || state.localAdvanceCountdownTimer,
+  );
 }
 
 function startLocalAdvanceDelay(delaySeconds) {
@@ -1904,28 +3152,89 @@ function startLocalAdvanceDelay(delaySeconds) {
   state.localAdvanceDelayItemId = currentItemId;
   state.localAdvanceDelayToken += 1;
   const token = state.localAdvanceDelayToken;
-  state.localAdvanceDelayDeadline = Date.now() + delaySeconds * 1000;
+  state.localAdvanceOverlayMode = "auto";
+  state.localAdvanceOverlayDurationMs = delaySeconds * 1000;
+  state.localAdvanceDelayStartAt = Date.now() + localAdvanceOverlayFadeMs;
+  state.localAdvanceDelayDeadline = state.localAdvanceDelayStartAt + state.localAdvanceOverlayDurationMs;
+  stopMountedPlayerForAdvanceDelay(currentItemId);
   updateLocalAdvanceDelayOverlay();
   showMountedPlayerControls();
   state.localAdvanceCountdownTimer = window.setInterval(updateLocalAdvanceDelayOverlay, 250);
   state.localAdvanceDelayTimer = window.setTimeout(() => {
     finishLocalAdvanceDelay(token, currentItemId).catch(() => {});
-  }, delaySeconds * 1000);
+  }, Math.max(0, state.localAdvanceDelayDeadline - Date.now()));
+}
+
+function clearLocalAdvanceDelay({ resetInFlight = false, hideOverlay = true, onOverlayHidden = null } = {}) {
+  if (state.localAdvanceDelayTimer) {
+    window.clearTimeout(state.localAdvanceDelayTimer);
+    state.localAdvanceDelayTimer = null;
+  }
+  if (state.localAdvanceCountdownTimer) {
+    window.clearInterval(state.localAdvanceCountdownTimer);
+    state.localAdvanceCountdownTimer = null;
+  }
+  if (hideOverlay) {
+    state.localAdvanceDelayStartAt = 0;
+    state.localAdvanceDelayDeadline = 0;
+    state.localAdvanceOverlayDurationMs = 0;
+    state.localAdvanceOverlayMode = "";
+    state.localAdvanceOverlayPrimaryItem = null;
+    state.localAdvanceOverlayFollowItems = null;
+    state.localAdvanceOverlayTotalCount = null;
+    state.localAdvanceDelayItemId = "";
+    hidePlayerDelayOverlay({ onHidden: onOverlayHidden });
+  }
+  state.localAdvanceDelayToken += 1;
+  if (resetInFlight) {
+    state.localAdvanceInFlight = false;
+  }
 }
 
 async function finishLocalAdvanceDelay(token, itemId) {
   if (token !== state.localAdvanceDelayToken || itemId !== state.localAdvanceDelayItemId) {
     return;
   }
-  clearLocalAdvanceDelay({ resetInFlight: true });
-  await advanceLocalPlayerNow();
+  updateLocalAdvanceDelayOverlay();
+  clearLocalAdvanceDelay({
+    resetInFlight: true,
+    onOverlayHidden: () => {
+      advanceLocalPlayerNow({ showTransition: false }).catch(() => {});
+    },
+  });
 }
 
-function teardownMountedPlayer() {
+function setPlayerFrameContent(html) {
+  const overlay = playerDelayOverlay();
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const nextNodes = Array.from(template.content.childNodes);
+  Array.from(elements.playerFrame.childNodes).forEach((node) => {
+    if (node !== overlay) {
+      node.remove();
+    }
+  });
+  elements.playerFrame.prepend(...nextNodes);
+  if (overlay && overlay.parentElement !== elements.playerFrame) {
+    elements.playerFrame.appendChild(overlay);
+  }
+}
+
+function syncPlayerFrameCacheHint(currentItem) {
+  const hint = elements.playerFrame.querySelector(".empty-state .empty-hint");
+  if (!hint || !currentItem) {
+    return;
+  }
+  setTextContent(hint, currentItem.cache_message || "正在后台缓存");
+}
+
+function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
   clearLocalPlayerSyncTimer();
   clearLocalPlayerControlsHideTimer();
   clearLocalPlayerSeekState();
-  clearLocalAdvanceDelay({ resetInFlight: true });
+  if (!preserveAdvanceDelayOverlay) {
+    clearLocalAdvanceDelay({ resetInFlight: true });
+  }
   elements.playerFrame.querySelectorAll("video, audio").forEach((media) => {
     try {
       media.pause();
@@ -2003,7 +3312,7 @@ function syncSplitPlayerVolumeFromVideo(video, audio) {
     state.localPlayerVolume = nextVolume;
     state.localPlayerMuted = nextMuted;
     persistLocalVolumePreferences();
-    renderVolumeControls(state.data?.playback_mode || "local");
+    renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   }
 
   if (Math.abs(audio.volume - state.localPlayerVolume) > 0.001) {
@@ -2192,6 +3501,10 @@ function volumePercentText() {
   return `${Math.round(state.localPlayerVolume * 100)}%`;
 }
 
+function muteIcon(isMuted) {
+  return isMuted ? "🔇" : "🔊";
+}
+
 function setRangeFillPercent(input, percent) {
   if (!input) {
     return;
@@ -2211,12 +3524,14 @@ function renderVolumeControls(playbackMode) {
   const isLocalMode = playbackMode === "local";
   const volumePercent = Math.round(state.localPlayerVolume * 100);
   const label = volumePercentText();
-  const muteLabel = state.localPlayerMuted ? "取消静音" : "静音";
+  const muteLabel = state.localPlayerMuted ? t("player.unmute") : t("player.mute");
+  const muteButtonText = muteIcon(state.localPlayerMuted);
   const signature = JSON.stringify({
     isLocalMode,
     volumePercent,
     label,
     muteLabel,
+    muteButtonText,
     muted: state.localPlayerMuted,
   });
 
@@ -2231,7 +3546,9 @@ function renderVolumeControls(playbackMode) {
   }
   setRangeFillPercent(elements.volumeSlider, volumePercent);
   setTextContent(elements.volumeValue, label);
-  setTextContent(elements.volumeMuteButton, muteLabel);
+  setTextContent(elements.volumeMuteButton, muteButtonText);
+  elements.volumeMuteButton.setAttribute("aria-label", muteLabel);
+  elements.volumeMuteButton.setAttribute("title", muteLabel);
   setClassToggle(elements.volumeMuteButton, "is-muted", state.localPlayerMuted);
 }
 
@@ -2251,7 +3568,7 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
   }
   persistLocalVolumePreferences();
   applyStoredVolumeToMountedPlayer();
-  renderVolumeControls(state.data?.playback_mode || "local");
+  renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   try {
     const nextData = await apiPost("/api/player/volume", {
       volume_percent: Math.round(normalizedVolume * 100),
@@ -2271,7 +3588,7 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
     state.localPlayerMuted = previousMuted;
     persistLocalVolumePreferences();
     applyStoredVolumeToMountedPlayer();
-    renderVolumeControls(state.data?.playback_mode || "local");
+    renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
     setAppMessage(error.message, true);
   }
 }
@@ -2282,7 +3599,7 @@ async function toggleLocalPlayerMute() {
   state.localPlayerMuted = !state.localPlayerMuted;
   persistLocalVolumePreferences();
   applyStoredVolumeToMountedPlayer();
-  renderVolumeControls(state.data?.playback_mode || "local");
+  renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   try {
     const nextData = await apiPost("/api/player/volume", {
       volume_percent: Math.round(state.localPlayerVolume * 100),
@@ -2301,7 +3618,7 @@ async function toggleLocalPlayerMute() {
     state.localPlayerMuted = previousMuted;
     persistLocalVolumePreferences();
     applyStoredVolumeToMountedPlayer();
-    renderVolumeControls(state.data?.playback_mode || "local");
+    renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
     setAppMessage(error.message, true);
   }
 }
@@ -2320,14 +3637,14 @@ function scheduleAudioVariantSwitchUnlock() {
     state.audioVariantSwitchUnlockAt = 0;
     state.audioVariantSwitchTimer = null;
     if (state.data) {
-      renderAudioVariantBar(state.data.current_item, state.data.playback_mode);
+      renderAudioVariantBar(state.data.current_item, frontendPlaybackMode(state.data.playback_mode));
     }
   }, remainingMs);
 }
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
-    const signature = JSON.stringify({ hidden: true, playbackMode, itemId: currentItem?.id || "" });
+    const signature = JSON.stringify({ hidden: true, playbackMode, itemId: currentItem?.id || "", language: state.language });
     if (signature === state.audioVariantBarRenderSignature) {
       return;
     }
@@ -2348,6 +3665,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
       playbackMode,
       itemId: currentItem.id,
       variantCount: variants.length,
+      language: state.language,
     });
     if (signature === state.audioVariantBarRenderSignature) {
       return;
@@ -2375,6 +3693,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     selectedVariantId: selectedVariant?.id || "",
     buttonsDisabled,
     expanded: state.audioVariantBarExpanded,
+    language: state.language,
     variants: variants.map((variant) => ({
       id: variant.id,
       label: variant.label || variant.id,
@@ -2409,28 +3728,34 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   toggleButton.type = "button";
   toggleButton.className = "audio-variant-toggle";
   toggleButton.dataset.action = "toggle-audio-variants";
-  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? "收起分P列表" : "展开分P列表");
+  toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"));
   toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
   toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
 
   elements.audioVariantBar.append(list, toggleButton);
-
-  const firstButton = list.querySelector(".audio-variant-button");
-  const firstRowHeight = firstButton
-    ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
-    : 44;
-  const isWrapped = list.scrollHeight > firstRowHeight + 2;
-
-  elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
-  elements.audioVariantBar.classList.toggle("is-expanded", isWrapped && state.audioVariantBarExpanded);
-  toggleButton.classList.toggle("hidden", !isWrapped);
-  if (isWrapped) {
-    list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
-    toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
-  } else {
-    state.audioVariantBarExpanded = false;
-  }
+  elements.audioVariantBar.classList.remove("is-collapsed", "is-expanded");
   setClassToggle(elements.audioVariantBar, "hidden", false);
+
+  requestAnimationFrame(() => {
+    if (!elements.audioVariantBar.contains(list)) {
+      return;
+    }
+    const firstButton = list.querySelector(".audio-variant-button");
+    const firstRowHeight = firstButton
+      ? Math.ceil(firstButton.getBoundingClientRect().height) + 6
+      : 44;
+    const isWrapped = list.scrollHeight > firstRowHeight + 2;
+
+    elements.audioVariantBar.classList.toggle("is-collapsed", isWrapped && !state.audioVariantBarExpanded);
+    elements.audioVariantBar.classList.toggle("is-expanded", isWrapped && state.audioVariantBarExpanded);
+    toggleButton.classList.toggle("hidden", !isWrapped);
+    if (isWrapped) {
+      list.style.setProperty("--audio-variant-collapsed-height", `${firstRowHeight}px`);
+      toggleButton.classList.toggle("is-expanded", state.audioVariantBarExpanded);
+    } else {
+      state.audioVariantBarExpanded = false;
+    }
+  });
 }
 
 function renderAvSyncControls(playbackMode, playerSettings) {
@@ -2442,6 +3767,9 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   elements.avSyncPanel.classList.toggle("hidden", !isLocalMode);
   const offsetMs = currentAvOffsetMs();
   elements.avOffsetInput.disabled = state.avOffsetSaving;
+  if (elements.avOffsetResetButton) {
+    elements.avOffsetResetButton.disabled = state.avOffsetSaving || offsetMs === 0;
+  }
   if (document.activeElement !== elements.avOffsetInput || state.avOffsetSaving) {
     elements.avOffsetInput.value = String(offsetMs);
   }
@@ -2458,11 +3786,14 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    state.language,
   ].join("|");
 
   if (signature === state.playerSignature) {
     if (hasSplitPlayback) {
       syncMountedLocalPlayer(false);
+    } else {
+      syncPlayerFrameCacheHint(currentItem);
     }
     return;
   }
@@ -2503,14 +3834,22 @@ function renderPlayer(currentItem, playbackMode) {
   };
 
   captureLocalPlayerPreferences();
-  teardownMountedPlayer();
+  const preserveAdvanceDelayOverlay = Boolean(
+    currentItem
+    && (
+      hasPendingSongTransitionOverlayForItem(currentItem)
+      || hasLocalAdvanceDelayOverlay()
+    ),
+  );
+  teardownMountedPlayer({ preserveAdvanceDelayOverlay });
 
   if (!currentItem) {
-    elements.playerFrame.innerHTML =
-      '<div class="empty-state"><p>把 B 站视频链接加入点歌列表后，这里会开始播放。</p></div>';
+    elements.playerFrame.innerHTML = `<div class="empty-state"><p>${escapeHtml(t("player.emptyShort"))}</p></div>`;
     return;
   }
 
+  // LEGACY: online embed playback is kept for reference, but normal frontend
+  // rendering now passes only the local mode.
   if (playbackMode === "online") {
     elements.playerFrame.innerHTML = `
       <iframe
@@ -2528,19 +3867,24 @@ function renderPlayer(currentItem, playbackMode) {
   if (!hasSplitPlayback) {
     elements.playerFrame.innerHTML = `
       <div class="empty-state">
-        <p>当前歌曲正在准备独立音视频轨。</p>
-        <p class="empty-hint">${escapeHtml(currentItem.cache_message || "正在后台缓存")}</p>
+        <p>${escapeHtml(t("player.preparingTracks"))}</p>
+        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
       </div>
     `;
     return;
   }
+
+  const willShowOverlay = hasPendingSongTransitionOverlayForItem(currentItem);
+  const isDelaying = state.localAdvanceDelayDeadline > 0 && Date.now() < state.localAdvanceDelayDeadline;
+  const shouldAutoplay = !(willShowOverlay || isDelaying);
+  const autoplayAttr = shouldAutoplay ? "autoplay" : "";
 
   elements.playerFrame.innerHTML = `
     <video
       data-player-role="video"
       controls
       controlsList="nofullscreen"
-      autoplay
+      ${autoplayAttr}
       playsinline
       preload="metadata"
       src="${escapeHtml(selectedVideoUrl)}"
@@ -2610,6 +3954,10 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("play", () => {
+    if (isLocalAdvanceHoldingItem(currentItem.id)) {
+      stopMountedPlayerForAdvanceDelay(currentItem.id);
+      return;
+    }
     if (isSplitPlayerSeekSettling(video, audio)) {
       state.localSeekResumeAfterSettle = true;
       state.localShouldBePlaying = true;
@@ -2679,6 +4027,10 @@ function renderPlayer(currentItem, playbackMode) {
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
   });
 
+  video.addEventListener("timeupdate", () => {
+    reportPlayerStatusHeartbeat(currentItem.id, video);
+  });
+
   video.addEventListener("ratechange", () => {
     showMountedPlayerControls();
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
@@ -2714,9 +4066,321 @@ function renderPlayer(currentItem, playbackMode) {
   state.localPlayerSyncTimer = window.setInterval(() => {
     if (isSplitPlayerSeekSettling(video, audio)) {
       settleSplitPlayerSeek(video, audio);
+      reportCurrentVideoStatus();
       return;
     }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+    reportCurrentVideoStatus();
+  }, localPlayerSyncIntervalMs);
+
+  window.setTimeout(() => {
+    showMountedPlayerControls();
+    maybeRestorePlayback();
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
+    reportCurrentVideoStatus();
+  }, 0);
+}
+
+function renderPlayer(currentItem, playbackMode) {
+  const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
+  const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
+  const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+
+  const signature = [
+    currentItem ? currentItem.id : "none",
+    playbackMode,
+    selectedVideoUrl,
+    selectedAudioUrl,
+    currentItem ? currentItem.cache_status : "",
+    state.language,
+  ].join("|");
+
+  if (signature === state.playerSignature) {
+    if (hasSplitPlayback) {
+      syncMountedLocalPlayer(false);
+    } else {
+      syncPlayerFrameCacheHint(currentItem);
+    }
+    return;
+  }
+
+  const previousPlayerContext = state.playerContext;
+  if (
+    !state.pendingPlaybackRestore
+    && playbackMode === "local"
+    && currentItem
+    && hasSplitPlayback
+    && previousPlayerContext?.playbackMode === "local"
+    && previousPlayerContext.itemId === currentItem.id
+    && (
+      previousPlayerContext.videoUrl !== selectedVideoUrl
+      || previousPlayerContext.audioUrl !== selectedAudioUrl
+    )
+  ) {
+    const currentVideo = elements.playerFrame.querySelector('video[data-player-role="video"]')
+      || elements.playerFrame.querySelector("video");
+
+    if (currentVideo) {
+      captureLocalPlayerPreferences();
+      state.pendingPlaybackRestore = {
+        itemId: currentItem.id,
+        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
+        currentTime: Number(currentVideo.currentTime || 0),
+        wasPlaying: !currentVideo.paused,
+      };
+    }
+  }
+
+  state.playerSignature = signature;
+  state.playerContext = {
+    itemId: currentItem ? currentItem.id : "",
+    videoUrl: selectedVideoUrl,
+    audioUrl: selectedAudioUrl,
+    playbackMode,
+  };
+
+  captureLocalPlayerPreferences();
+  const preserveAdvanceDelayOverlay = Boolean(
+    currentItem
+    && (
+      hasPendingSongTransitionOverlayForItem(currentItem)
+      || hasLocalAdvanceDelayOverlay()
+    ),
+  );
+  teardownMountedPlayer({ preserveAdvanceDelayOverlay });
+
+  if (!currentItem) {
+    setPlayerFrameContent(
+      `<div class="empty-state"><p>${escapeHtml(t("player.emptyShort"))}</p></div>`,
+    );
+    return;
+  }
+
+  if (playbackMode === "online") {
+    setPlayerFrameContent(`
+      <iframe
+        src="${escapeHtml(currentItem.embed_url)}"
+        allow="autoplay; fullscreen"
+        allowfullscreen="true"
+        referrerpolicy="origin"
+        sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        title="${escapeHtml(currentItem.display_title)}"
+      ></iframe>
+    `);
+    return;
+  }
+
+  if (!hasSplitPlayback) {
+    setPlayerFrameContent(`
+      <div class="empty-state">
+        <p>${escapeHtml(t("player.preparingTracks"))}</p>
+        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
+      </div>
+    `);
+    return;
+  }
+
+  const willShowOverlay = hasPendingSongTransitionOverlayForItem(currentItem);
+  const isDelaying = state.localAdvanceDelayDeadline > 0 && Date.now() < state.localAdvanceDelayDeadline;
+  const shouldAutoplay = !(willShowOverlay || isDelaying);
+  const autoplayAttr = shouldAutoplay ? "autoplay" : "";
+
+  setPlayerFrameContent(`
+    <video
+      data-player-role="video"
+      controls
+      controlsList="nofullscreen"
+      ${autoplayAttr}
+      playsinline
+      preload="metadata"
+      src="${escapeHtml(selectedVideoUrl)}"
+    ></video>
+    <audio
+      data-player-role="audio"
+      preload="auto"
+      src="${escapeHtml(selectedAudioUrl)}"
+    ></audio>
+  `);
+
+  const video = elements.playerFrame.querySelector('video[data-player-role="video"]');
+  const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
+
+  if (!video || !audio) {
+    return;
+  }
+
+  applyStoredVolumeToSplitPlayer(video, audio);
+  showMountedPlayerControls();
+
+  const reportCurrentVideoStatus = () => {
+    reportPlayerStatus(currentItem.id, video);
+  };
+
+  let restoreApplied = false;
+  const maybeRestorePlayback = () => {
+    const pendingRestore = state.pendingPlaybackRestore;
+    if (
+      restoreApplied
+      || !pendingRestore
+      || pendingRestore.itemId !== currentItem.id
+      || pendingRestore.variantId !== selectedAudioVariantForItem(currentItem)?.id
+      || video.readyState < 1
+      || audio.readyState < 1
+    ) {
+      return;
+    }
+
+    restoreApplied = true;
+    state.pendingPlaybackRestore = null;
+    beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: Boolean(pendingRestore.wasPlaying),
+      targetTime: pendingRestore.currentTime,
+      onSettled: reportCurrentVideoStatus,
+    });
+  };
+
+  video.addEventListener("loadedmetadata", () => {
+    showMountedPlayerControls();
+    maybeRestorePlayback();
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
+    reportCurrentVideoStatus();
+  });
+
+  audio.addEventListener("loadedmetadata", () => {
+    maybeRestorePlayback();
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+    } else {
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    }
+  });
+
+  video.addEventListener("play", () => {
+    if (isLocalAdvanceHoldingItem(currentItem.id)) {
+      stopMountedPlayerForAdvanceDelay(currentItem.id);
+      return;
+    }
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      state.localSeekResumeAfterSettle = true;
+      state.localShouldBePlaying = true;
+      state.localSeekResumePending = true;
+      video.pause();
+      return;
+    }
+    state.localShouldBePlaying = true;
+    state.localSeekResumePending = false;
+    showMountedPlayerControls();
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    reportCurrentVideoStatus();
+  });
+
+  video.addEventListener("pause", () => {
+    if (state.localSeekResumePending) {
+      return;
+    }
+    if (document.hidden && state.localShouldBePlaying) {
+      window.setTimeout(() => {
+        video.play().catch(() => {});
+        syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+      }, 0);
+      return;
+    }
+    state.localShouldBePlaying = false;
+    if (!audio.paused) {
+      audio.pause();
+    }
+    showMountedPlayerControls();
+    reportCurrentVideoStatus();
+  });
+
+  video.addEventListener("seeking", () => {
+    beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: !video.paused || state.localShouldBePlaying,
+      onSettled: reportCurrentVideoStatus,
+    });
+  });
+
+  video.addEventListener("seeked", () => {
+    showMountedPlayerControls();
+    if (!settleSplitPlayerSeek(video, audio)) {
+      reportCurrentVideoStatus();
+    }
+  });
+
+  video.addEventListener("canplay", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  audio.addEventListener("seeked", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  audio.addEventListener("canplay", () => {
+    settleSplitPlayerSeek(video, audio);
+  });
+
+  video.addEventListener("waiting", () => {
+    if (!audio.paused) {
+      audio.pause();
+    }
+  });
+
+  video.addEventListener("playing", () => {
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  });
+
+  video.addEventListener("timeupdate", () => {
+    reportPlayerStatusHeartbeat(currentItem.id, video);
+  });
+
+  video.addEventListener("ratechange", () => {
+    showMountedPlayerControls();
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  });
+
+  video.addEventListener("volumechange", () => {
+    showMountedPlayerControls();
+    syncSplitPlayerVolumeFromVideo(video, audio);
+  });
+
+  ["pointermove", "pointerdown", "touchstart"].forEach((eventName) => {
+    video.addEventListener(eventName, () => {
+      showMountedPlayerControls();
+    }, { passive: true });
+  });
+
+  video.addEventListener("ended", async () => {
+    state.localShouldBePlaying = false;
+    state.localSeekResumePending = false;
+    audio.pause();
+    showMountedPlayerControls();
+    reportCurrentVideoStatus();
+    await handleLocalPlaybackEnded();
+  });
+
+  audio.addEventListener("ended", () => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      return;
+    }
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+  });
+
+  state.localPlayerSyncTimer = window.setInterval(() => {
+    if (isSplitPlayerSeekSettling(video, audio)) {
+      settleSplitPlayerSeek(video, audio);
+      reportCurrentVideoStatus();
+      return;
+    }
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+    reportCurrentVideoStatus();
   }, localPlayerSyncIntervalMs);
 
   window.setTimeout(() => {
@@ -2745,47 +4409,57 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     && currentItem
     && (!commandItemId || commandItemId === currentItem.id)
   ) {
-    const video = elements.playerFrame.querySelector("video");
-    const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
-    if (video) {
-      if (action === "toggle-play") {
-        if (audio && isSplitPlayerSeekSettling(video, audio)) {
-          const shouldResume = !state.localSeekResumeAfterSettle;
-          state.localSeekResumeAfterSettle = shouldResume;
-          state.localShouldBePlaying = shouldResume;
-          state.localSeekResumePending = shouldResume;
-          if (!shouldResume) {
-            video.pause();
-            audio.pause();
-          }
-        } else if (video.paused) {
-          state.localShouldBePlaying = true;
-          video.play().catch(() => {});
-        } else {
-          state.localShouldBePlaying = false;
-          video.pause();
-        }
-      } else if (action === "seek-relative") {
-        const deltaSeconds = Number(command?.delta_seconds || 0);
-        if (Number.isFinite(deltaSeconds) && deltaSeconds !== 0) {
-          const resumeAfterSeek = !video.paused || state.localShouldBePlaying;
-          const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
-          const nextTime = Math.max(0, Number(video.currentTime || 0) + deltaSeconds);
-          const clampedNextTime = Number.isFinite(duration)
-            ? Math.min(nextTime, duration)
-            : nextTime;
-          if (audio) {
-            beginSplitPlayerSeek(video, audio, {
-              resumeAfterSeek,
-              targetTime: clampedNextTime,
-              onSettled: () => reportPlayerStatus(currentItem.id, video),
-            });
-          } else {
-            state.localSeekResumePending = resumeAfterSeek;
-            setMediaCurrentTime(video, clampedNextTime);
-          }
-          if (!audio && state.localSeekResumePending) {
+    if (action === "next-track") {
+      requestNextTrack().catch(() => {});
+    } else {
+      const video = elements.playerFrame.querySelector("video");
+      const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
+      if (video) {
+        if (action === "toggle-play") {
+          if (audio && isSplitPlayerSeekSettling(video, audio)) {
+            const shouldResume = !state.localSeekResumeAfterSettle;
+            state.localSeekResumeAfterSettle = shouldResume;
+            state.localShouldBePlaying = shouldResume;
+            state.localSeekResumePending = shouldResume;
+            if (!shouldResume) {
+              video.pause();
+              audio.pause();
+            }
+          } else if (video.paused) {
+            state.localShouldBePlaying = true;
             video.play().catch(() => {});
+          } else {
+            state.localShouldBePlaying = false;
+            video.pause();
+          }
+        } else if (action === "seek-relative" || action === "seek-absolute") {
+          const deltaSeconds = Number(command?.delta_seconds || 0);
+          const targetSeconds = Number(command?.target_seconds ?? 0);
+          if (
+            (action === "seek-relative" && Number.isFinite(deltaSeconds) && deltaSeconds !== 0)
+            || (action === "seek-absolute" && Number.isFinite(targetSeconds))
+          ) {
+            const resumeAfterSeek = !video.paused || state.localShouldBePlaying;
+            const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
+            const nextTime = action === "seek-absolute"
+              ? Math.max(0, targetSeconds)
+              : Math.max(0, Number(video.currentTime || 0) + deltaSeconds);
+            const clampedNextTime = Number.isFinite(duration)
+              ? Math.min(nextTime, duration)
+              : nextTime;
+            if (audio) {
+              beginSplitPlayerSeek(video, audio, {
+                resumeAfterSeek,
+                targetTime: clampedNextTime,
+                onSettled: () => reportPlayerStatus(currentItem.id, video),
+              });
+            } else {
+              state.localSeekResumePending = resumeAfterSeek;
+              setMediaCurrentTime(video, clampedNextTime);
+            }
+            if (!audio && state.localSeekResumePending) {
+              video.play().catch(() => {});
+            }
           }
         }
       }
@@ -2815,10 +4489,12 @@ function reportPlayerStatus(itemId, video) {
   }
 
   const currentTime = Number(video.currentTime || 0);
+  const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
   const signature = [
     normalizedItemId,
     video.paused ? "paused" : "playing",
     Math.round(currentTime),
+    Math.round(duration),
   ].join("|");
   if (signature === state.lastReportedPlayerStatusSignature) {
     return;
@@ -2829,15 +4505,34 @@ function reportPlayerStatus(itemId, video) {
     item_id: normalizedItemId,
     is_paused: video.paused,
     current_time: currentTime,
+    duration,
+    client_info: {
+      user_agent: String(window.navigator?.userAgent || ""),
+      platform: String(window.navigator?.platform || ""),
+      language: String(window.navigator?.language || ""),
+      vendor: String(window.navigator?.vendor || ""),
+    },
   }).catch(() => {});
+}
+
+function reportPlayerStatusHeartbeat(itemId, video) {
+  if (!video || video.paused) {
+    return;
+  }
+  const now = Date.now();
+  if (now - Number(state.lastPlayerStatusHeartbeatAt || 0) < 5000) {
+    return;
+  }
+  state.lastPlayerStatusHeartbeatAt = now;
+  reportPlayerStatus(itemId, video);
 }
 
 function renderPlaylist(playlist, currentItem, cachePolicy) {
   if (!playlist.length) {
     const emptyMessage = state.data?.current_item
-      ? '<div class="queue-empty"><p>点歌列表已经空了。</p><p>可以继续从左侧点下一首。</p></div>'
-      : '<div class="queue-empty"><p>点歌列表还是空的。</p><p>把链接加到左侧输入框里就行。</p></div>';
-    const signature = state.data?.current_item ? "empty-with-current" : "empty";
+      ? `<div class="queue-empty"><p>${htmlT("list.emptyWithCurrentTitle")}</p><p>${htmlT("list.emptyWithCurrentHint")}</p></div>`
+      : `<div class="queue-empty"><p>${htmlT("list.emptyTitle")}</p><p>${htmlT("list.emptyHint")}</p></div>`;
+    const signature = `${state.data?.current_item ? "empty-with-current" : "empty"}|${state.language}`;
     if (signature === state.playlistEmptyRenderSignature) {
       return;
     }
@@ -2856,8 +4551,11 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
   });
 
   playlist.forEach((item, index) => {
-    const node = existingNodes.get(item.id)
-      || elements.playlistTemplate.content.firstElementChild.cloneNode(true);
+    let node = existingNodes.get(item.id);
+    if (!node) {
+      node = elements.playlistTemplate.content.firstElementChild.cloneNode(true);
+      applyStaticI18n(node);
+    }
     if (node.dataset.id !== item.id) {
       node.dataset.id = item.id;
     }
@@ -2880,6 +4578,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       title: item.display_title,
       ownerTooltip,
       requesterText,
+      language: state.language,
     });
     if (node.dataset.staticSignature !== staticSignature) {
       node.dataset.staticSignature = staticSignature;
@@ -2904,6 +4603,8 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       badgeTitle: badgeTitleForItem(item),
       sizeText,
       noteText,
+      cacheProgress: item.cache_progress,
+      language: state.language,
     });
     if (node.dataset.dynamicSignature !== dynamicSignature) {
       node.dataset.dynamicSignature = dynamicSignature;
@@ -3016,7 +4717,7 @@ function syncRetryButton(button, item) {
     }
     return;
   }
-  const tooltip = "点击重新下载";
+  const tooltip = t("cache.retryClick");
   if (button.dataset.id !== item.id) {
     button.dataset.id = item.id;
   }
@@ -3044,7 +4745,7 @@ function refreshRetryButtons() {
 }
 
 function renderHistory(history) {
-  const signature = JSON.stringify(history || []);
+  const signature = JSON.stringify({ history: history || [], language: state.language });
   if (signature === state.historyRenderSignature) {
     return;
   }
@@ -3052,13 +4753,13 @@ function renderHistory(history) {
   elements.historyList.innerHTML = "";
 
   if (!history.length) {
-    elements.historyList.innerHTML =
-      '<div class="queue-empty"><p>还没有点歌历史。</p><p>点过的歌曲会自动出现在这里。</p></div>';
+    elements.historyList.innerHTML = `<div class="queue-empty"><p>${htmlT("history.emptyTitle")}</p><p>${htmlT("history.emptyHint")}</p></div>`;
     return;
   }
 
   history.forEach((entry) => {
     const node = elements.historyTemplate.content.firstElementChild.cloneNode(true);
+    applyStaticI18n(node);
     const title = node.querySelector(".history-title");
     const requester = node.querySelector(".history-requester");
     title.textContent = entry.display_title;
@@ -3069,8 +4770,8 @@ function renderHistory(history) {
     requester.textContent = requesterText;
     requester.classList.toggle("hidden", !requesterText);
     node.querySelector(".history-time").textContent = formatHistoryTime(entry.requested_at);
-    node.querySelector(".history-count").textContent = `点歌 ${entry.request_count} 次`;
-    node.querySelectorAll("button").forEach((button) => {
+    node.querySelector(".history-count").textContent = t("history.requestCount", { count: entry.request_count });
+    node.querySelectorAll("button[data-action]").forEach((button) => {
       button.dataset.url = entry.resolved_url || entry.original_url;
     });
     elements.historyList.appendChild(node);
@@ -3079,26 +4780,26 @@ function renderHistory(history) {
 
 function badgeTitleForItem(item) {
   if (item.cache_status === "ready") {
-    return "缓存已完成";
+    return t("cache.ready");
   }
   if (item.cache_status === "failed") {
-    return item.cache_message || "缓存失败";
+    return item.cache_message || t("cache.failed");
   }
-  return item.cache_message || "正在缓存";
+  return item.cache_message || t("cache.caching");
 }
 
 function noteForItem(item) {
   if (item.cache_status === "failed") {
-    return item.cache_message || "缓存失败";
+    return item.cache_message || t("cache.failed");
   }
   return "";
 }
 
 function formatHistoryTime(timestamp) {
   if (!timestamp) {
-    return "刚刚点过";
+    return t("history.justNow");
   }
-  return new Date(timestamp * 1000).toLocaleString("zh-CN", {
+  return new Date(timestamp * 1000).toLocaleString(activeLocale(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -3111,45 +4812,45 @@ function ownerTooltipForEntry(entry) {
   if (!ownerName) {
     return "";
   }
-  return `UP主: ${ownerName}`;
+  return t("owner.tooltip", { name: ownerName });
 }
 
 function formatBBDownHint(bbdown) {
   if (!bbdown) {
-    return "未知";
+    return t("status.unknown");
   }
   const labelMap = {
-    idle: "待准备",
-    checking: "检查中",
-    installing: "更新中",
-    ready: "已就绪",
-    failed: "异常",
+    idle: t("status.idle"),
+    checking: t("status.checking"),
+    installing: t("status.installing"),
+    ready: t("status.ready"),
+    failed: t("status.error"),
   };
-  return labelMap[bbdown.state] || bbdown.state || "未知";
+  return labelMap[bbdown.state] || bbdown.state || t("status.unknown");
 }
 
 function formatFFmpegHint(ffmpeg) {
   if (!ffmpeg) {
-    return "未知";
+    return t("status.unknown");
   }
   const labelMap = {
-    idle: "待准备",
-    checking: "检查中",
-    ready: "已就绪",
-    failed: "异常",
+    idle: t("status.idle"),
+    checking: t("status.checking"),
+    ready: t("status.ready"),
+    failed: t("status.error"),
   };
-  return labelMap[ffmpeg.state] || ffmpeg.state || "未知";
+  return labelMap[ffmpeg.state] || ffmpeg.state || t("status.unknown");
 }
 
 function formatCacheChipMeta(cachePolicy) {
   const limit = Number(cachePolicy?.max_cache_items || 0);
-  return `${formatBytes(cachePolicy?.usage_bytes || 0)} · 缓存 ${limit} 首`;
+  return t("service.cacheChipMeta", { usage: formatBytes(cachePolicy?.usage_bytes || 0), limit });
 }
 
 function formatCacheUsage(cachePolicy) {
   const usage = formatBytes(cachePolicy?.usage_bytes || 0);
   const cachedItemCount = Number(cachePolicy?.cached_item_count || 0);
-  return `${usage} · ${cachedItemCount} 首已缓存`;
+  return t("service.cacheUsageDetail", { usage, count: cachedItemCount });
 }
 
 function cacheSizeLabelForItem(item) {
@@ -3158,15 +4859,15 @@ function cacheSizeLabelForItem(item) {
     return formatCompactBytes(size);
   }
   if (item.cache_status === "failed") {
-    return "失败";
+    return t("status.failed");
   }
   if (item.cache_status === "downloading") {
-    return "缓存中";
+    return t("status.caching");
   }
   if (item.cache_status === "queued" || item.cache_status === "pending") {
-    return "待缓存";
+    return t("status.pendingCache");
   }
-  return "待缓存";
+  return t("status.pendingCache");
 }
 
 function formatBytes(value) {
@@ -3226,9 +4927,9 @@ function renderBackupBanner(backup, hasCurrentItem, queueLength, autoRestoredBac
   }
 
   if (hasCurrentItem || queueLength > 0) {
-    elements.backupText.textContent = `已自动恢复上次歌单，共 ${backup.playlist_count} 首。`;
+    elements.backupText.textContent = t("backup.restored", { count: backup.playlist_count });
   } else {
-    elements.backupText.textContent = `检测到本地备份，共 ${backup.playlist_count} 首。`;
+    elements.backupText.textContent = t("backup.localDetected", { count: backup.playlist_count });
   }
 
   elements.backupBanner.classList.toggle("hidden", state.backupBannerDismissed);
@@ -3321,18 +5022,56 @@ function openConfirm(intent) {
 
 function closeConfirm() {
   state.confirmIntent = null;
+  state.confirmPopoverRenderSignature = "";
   renderConfirmPopover();
+}
+
+function confirmPopoverRenderSignature(intent) {
+  if (!intent) {
+    return "";
+  }
+  return JSON.stringify({
+    type: intent.type || "",
+    message: intent.message || "",
+    primaryLabel: intent.primaryLabel || "",
+    secondaryLabel: intent.secondaryLabel || "",
+    sourceSelect: Boolean(intent.sourceSelect),
+    pageSizeSelect: Boolean(intent.pageSizeSelect),
+    hideMessage: Boolean(intent.hideMessage),
+    source: normalizedHistoryExportSource(intent.source),
+    pageSize: selectedConfirmHistoryExportPageSize(intent),
+    x: Math.round(Number(intent.x || 0)),
+    y: Math.round(Number(intent.y || 0)),
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
 }
 
 function renderConfirmPopover() {
   const intent = state.confirmIntent;
   if (!intent) {
+    state.confirmPopoverRenderSignature = "";
     elements.confirmPopover.classList.add("hidden");
     return;
   }
 
-  const width = 260;
-  const popoverHeight = 112;
+  const renderSignature = confirmPopoverRenderSignature(intent);
+  if (
+    renderSignature === state.confirmPopoverRenderSignature &&
+    !elements.confirmPopover.classList.contains("hidden")
+  ) {
+    return;
+  }
+  state.confirmPopoverRenderSignature = renderSignature;
+
+  const hasSecondaryAction = Boolean(intent.secondaryLabel);
+  const hasSourceSelect = Boolean(intent.sourceSelect);
+  const hasPageSizeSelect = Boolean(intent.pageSizeSelect);
+  const hideMessage = Boolean(intent.hideMessage);
+  const width = hasSourceSelect || hasPageSizeSelect ? 420 : 260;
+  const popoverHeight = (hasSecondaryAction ? 126 : 112)
+    + (hasSourceSelect || hasPageSizeSelect ? 76 : 0)
+    - (hideMessage ? 34 : 0);
   const margin = 12;
   const left = Math.min(
     Math.max(intent.x, margin),
@@ -3343,9 +5082,46 @@ function renderConfirmPopover() {
     window.innerHeight - popoverHeight - margin,
   );
 
-  elements.confirmText.textContent = intent.message;
+  elements.confirmText.textContent = intent.message || "";
+  elements.confirmText.classList.toggle("hidden", hideMessage);
+  if (elements.confirmSource) {
+    elements.confirmSource.classList.toggle("hidden", !hasSourceSelect);
+    if (hasSourceSelect) {
+      elements.confirmSource.value = normalizedHistoryExportSource(intent.source);
+    }
+  }
+  if (elements.confirmPageSize) {
+    elements.confirmPageSize.classList.toggle("hidden", !hasPageSizeSelect);
+    if (hasPageSizeSelect) {
+      elements.confirmPageSize.value = String(selectedConfirmHistoryExportPageSize(intent));
+    }
+  }
+  elements.confirmPageSizeNote?.classList.toggle("hidden", !hasPageSizeSelect);
+  const shouldGroupExportControls = hasSourceSelect && hasPageSizeSelect && elements.confirmSource && elements.confirmPageSize;
+  if (shouldGroupExportControls) {
+    let controls = elements.confirmPopover.querySelector(".confirm-export-controls");
+    if (!controls) {
+      controls = document.createElement("div");
+      controls.className = "confirm-export-controls";
+      elements.confirmSource.before(controls);
+    }
+    controls.append(elements.confirmSource, elements.confirmPageSize);
+  } else {
+    const controls = elements.confirmPopover.querySelector(".confirm-export-controls");
+    if (controls) {
+      controls.before(elements.confirmSource);
+      elements.confirmSource.after(elements.confirmPageSize);
+      controls.remove();
+    }
+  }
+  elements.confirmOk.textContent = intent.primaryLabel || t("common.confirm");
+  if (elements.confirmSecondary) {
+    elements.confirmSecondary.textContent = intent.secondaryLabel || "";
+    elements.confirmSecondary.classList.toggle("hidden", !hasSecondaryAction);
+  }
   elements.confirmPopover.style.left = `${left}px`;
   elements.confirmPopover.style.top = `${top}px`;
+  elements.confirmPopover.classList.toggle("confirm-popover-wide", hasSourceSelect || hasPageSizeSelect);
   elements.confirmPopover.classList.remove("hidden");
 }
 
@@ -3416,15 +5192,15 @@ function escapeHtml(value) {
 }
 
 function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
-  const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || "这首歌";
+  const title = duplicateItem?.display_title || activeItem?.display_title || sessionEntry?.display_title || t("request.thisSong");
   const count = Number(sessionEntry?.request_count || 0);
   if (activeItem && count > 0) {
-    return `《${title}》当前点歌列表里已经有了，而且本次已点过 ${count} 次，仍要继续点歌吗？`;
+    return t("request.duplicateActiveAndSession", { title, count });
   }
   if (activeItem) {
-    return `《${title}》当前点歌列表里已经有了，仍要继续点歌吗？`;
+    return t("request.duplicateActive", { title });
   }
-  return `《${title}》本次已经点过 ${count || 1} 次，仍要继续点歌吗？`;
+  return t("request.duplicateSession", { title, count: count || 1 });
 }
 
 async function submitAddRequest(url, position, options = {}) {
@@ -3479,7 +5255,7 @@ function renderBindingOption(inputType, name, entry, checked) {
   title.textContent = `P${entry.page} · ${entry.part}`;
   const meta = document.createElement("div");
   meta.className = "selection-option-meta";
-  meta.textContent = entry.duration > 0 ? `${entry.duration}s` : "时长未知";
+  meta.textContent = entry.duration > 0 ? t("player.durationSeconds", { seconds: entry.duration }) : t("player.durationUnknown");
   copy.append(title, meta);
 
   label.append(input, copy);
@@ -3489,14 +5265,14 @@ function renderBindingOption(inputType, name, entry, checked) {
 function openBindingModal(intent, payload) {
   const pages = Array.isArray(payload?.pages) ? payload.pages : [];
   if (!pages.length) {
-    setFormMessage("无法读取分P列表", true);
+    setFormMessage(t("binding.readFailed"), true);
     return;
   }
   state.bindingIntent = {
     ...intent,
     binding: payload,
   };
-  elements.bindingModalText.textContent = `《${payload.title || "该视频"}》包含多个分P，请选择要下载的视频画面和音频轨道。`;
+  elements.bindingModalText.textContent = t("binding.videoHasParts", { title: payload.title || t("binding.thisVideo") });
   elements.bindingVideoOptions.innerHTML = "";
   elements.bindingAudioOptions.innerHTML = "";
 
@@ -3512,18 +5288,110 @@ function openBindingModal(intent, payload) {
   elements.bindingModal.classList.remove("hidden");
 }
 
+function closeGatchaFavlistModal() {
+  state.gatchaFavlistIntent = null;
+  elements.gatchaFavlistModal?.classList.add("hidden");
+  if (elements.gatchaFavlistOptions) {
+    elements.gatchaFavlistOptions.innerHTML = "";
+  }
+}
+
+function selectedGatchaFavlistFolderIds() {
+  return [...(elements.gatchaFavlistOptions?.querySelectorAll('input[name="gatcha-favlist-folder"]:checked') || [])]
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+function renderGatchaFavlistOption(folder) {
+  const label = document.createElement("label");
+  label.className = "selection-option";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = "gatcha-favlist-folder";
+  input.value = String(folder.id || "");
+  input.checked = Boolean(folder.selected);
+
+  const copy = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "selection-option-title";
+  title.textContent = folder.title || t("favlist.folderWithId", { id: folder.id || "" });
+  const meta = document.createElement("div");
+  meta.className = "selection-option-meta";
+  const count = Number(folder.media_count || 0);
+  meta.textContent = folder.selected
+    ? t("favlist.mediaCountSelected", { count: count || 0 })
+    : t("favlist.mediaCount", { count: count || 0 });
+  copy.append(title, meta);
+
+  label.append(input, copy);
+  return label;
+}
+
+function openGatchaFavlistModal(uid, payload) {
+  const folders = Array.isArray(payload?.folders) ? payload.folders : [];
+  if (!folders.length) {
+    setGatchaUidMessage(t("favlist.none"), true);
+    return;
+  }
+  state.gatchaFavlistIntent = { uid, folders };
+  elements.gatchaFavlistModalText.textContent = t("favlist.chooseForUid", {
+    uid: payload?.uid || uid,
+    count: payload?.public_folder_count || folders.length,
+  });
+  elements.gatchaFavlistOptions.innerHTML = "";
+  folders.forEach((folder) => {
+    elements.gatchaFavlistOptions.appendChild(renderGatchaFavlistOption(folder));
+  });
+  elements.gatchaFavlistModal.classList.remove("hidden");
+}
+
+async function confirmGatchaFavlistModal() {
+  const intent = state.gatchaFavlistIntent;
+  if (!intent?.uid) {
+    return;
+  }
+  const folderIds = selectedGatchaFavlistFolderIds();
+  if (!folderIds.length) {
+    setGatchaUidMessage(t("favlist.selectAtLeastOne"), true);
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage(t("favlist.pullingSelected"));
+  closeGatchaFavlistModal();
+  try {
+    const result = await pullGatchaFavlist(intent.uid, folderIds);
+    setGatchaUidMessage(
+      t("favlist.pullResult", { folders: result?.matched_folder_count || 0, items: result?.item_count || 0 }),
+    );
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
 async function confirmBindingModal() {
   const intent = state.bindingIntent;
   if (!intent?.url) {
     return;
   }
+  const source = intent.source || "request-form";
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
-    setFormMessage("请先选择一个视频分P", true);
+    setFormMessage(t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
-    setFormMessage("请至少选择一个音频分P", true);
+    setFormMessage(t("binding.selectAudioPart"), true);
     return;
   }
 
@@ -3538,7 +5406,13 @@ async function confirmBindingModal() {
     if (!intent.preserveInput) {
       elements.urlInput.value = "";
     }
-    setFormMessage(intent.position === "next" ? "已按绑定关系顶歌到下一首" : "已按绑定关系加入点歌列表");
+    if (source === "gatcha") {
+      state.gatchaCandidate = null;
+      elements.gatchaResultView.classList.add("hidden");
+      elements.gatchaInitView.classList.remove("hidden");
+      setGatchaMessage(t("gatcha.nozomi"));
+    }
+    setFormMessage(intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail"));
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -3549,6 +5423,8 @@ async function confirmBindingModal() {
           requesterName: intent.requesterName || selectedRequesterName(),
           preserveInput: intent.preserveInput,
           allowRepeat: intent.allowRepeat,
+          source,
+          title: intent.title,
         },
         error.payload?.binding,
       );
@@ -3575,14 +5451,18 @@ async function confirmBindingModal() {
       });
       return;
     }
-    setFormMessage(error.message, true);
+    if (source === "gatcha") {
+      setGatchaMessage(error.message, true);
+    } else {
+      setFormMessage(error.message, true);
+    }
   }
 }
 
 async function handleAdd(position, anchorPoint) {
   const url = elements.urlInput.value.trim();
   if (!url) {
-    setFormMessage("请输入 B 站视频链接或 BV 号", true);
+    setFormMessage(t("request.urlRequired"), true);
     return;
   }
   const requesterName = validatedRequesterNameForAdd();
@@ -3590,11 +5470,11 @@ async function handleAdd(position, anchorPoint) {
     return;
   }
 
-  setFormMessage("正在解析视频信息并加入点歌列表...");
+  setFormMessage(t("request.parsing"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
     elements.urlInput.value = "";
-    setFormMessage(position === "next" ? "已顶歌到下一首" : "已加入点歌列表末尾");
+    setFormMessage(position === "next" ? t("request.addedNext") : t("request.addedTail"));
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -3624,7 +5504,7 @@ async function handleAdd(position, anchorPoint) {
         x: anchorPoint?.x ?? anchorPointForEvent({}, elements.addForm).x,
         y: anchorPoint?.y ?? anchorPointForEvent({}, elements.addForm).y,
       });
-      setFormMessage("这首歌已经在当前点歌列表中，或本次已经点过，确认后可继续加入。");
+      setFormMessage(t("request.duplicateHint"));
       return;
     }
     setFormMessage(error.message, true);
@@ -3636,10 +5516,10 @@ async function handleAddByUrl(url, position, anchorPoint) {
   if (!requesterName) {
     return;
   }
-  setFormMessage("正在从历史记录加入点歌列表...");
+  setFormMessage(t("history.addingFromHistory"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
-    setFormMessage(position === "next" ? "已从历史顶歌到下一首" : "已从历史加入点歌列表");
+    setFormMessage(position === "next" ? t("history.addedNext") : t("history.addedTail"));
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -3669,7 +5549,7 @@ async function handleAddByUrl(url, position, anchorPoint) {
         x: anchorPoint?.x ?? anchorPointForEvent({}, elements.historyList).x,
         y: anchorPoint?.y ?? anchorPointForEvent({}, elements.historyList).y,
       });
-      setFormMessage("这首歌已经在当前点歌列表中，或本次已经点过，确认后可继续加入。");
+      setFormMessage(t("request.duplicateHint"));
       return;
     }
     setFormMessage(error.message, true);
@@ -3681,7 +5561,7 @@ async function discardBackup() {
     state.data = await apiPost("/api/backup/discard");
     dismissBackupBanner();
     closeConfirm();
-    setAppMessage("已清空本地备份。");
+    setAppMessage(t("backup.cleared"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -3692,7 +5572,7 @@ async function clearPlaylist() {
   try {
     state.data = await apiPost("/api/playlist/clear");
     closeConfirm();
-    setAppMessage("点歌列表已清空。");
+    setAppMessage(t("list.cleared"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -3703,8 +5583,120 @@ async function clearHistory() {
   try {
     state.data = await apiPost("/api/history/clear");
     closeConfirm();
-    setAppMessage("\u5386\u53f2\u8bb0\u5f55\u5df2\u6e05\u7a7a\u3002");
+    setAppMessage(t("history.cleared"));
     render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+  }
+}
+
+function filenameFromContentDisposition(header, fallback) {
+  const value = String(header || "");
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return fallback;
+    }
+  }
+  const quotedMatch = value.match(/filename="([^"]+)"/i);
+  if (quotedMatch) {
+    return quotedMatch[1];
+  }
+  const plainMatch = value.match(/filename=([^;]+)/i);
+  return plainMatch ? plainMatch[1].trim() : fallback;
+}
+
+function normalizedHistoryExportSource(source) {
+  return String(source || "").trim().toLowerCase() === "history" ? "history" : "played";
+}
+
+function historyExportSourceLabel(source) {
+  return normalizedHistoryExportSource(source) === "history" ? t("history.allSource") : t("history.playedSource");
+}
+
+function selectedConfirmHistoryExportSource(intent) {
+  return normalizedHistoryExportSource(elements.confirmSource?.value || intent?.source);
+}
+
+function normalizedHistoryExportPageSize(pageSize) {
+  const normalizedPageSize = Number.parseInt(String(pageSize || "200"), 10);
+  return [200, 150, 100, 80, 60, 50].includes(normalizedPageSize) ? normalizedPageSize : 200;
+}
+
+function selectedConfirmHistoryExportPageSize(intent) {
+  return normalizedHistoryExportPageSize(elements.confirmPageSize?.value || intent?.pageSize);
+}
+
+function updateConfirmHistoryExportSource() {
+  if (state.confirmIntent?.type !== "export-history") {
+    return;
+  }
+  state.confirmIntent.source = selectedConfirmHistoryExportSource(state.confirmIntent);
+  state.confirmPopoverRenderSignature = "";
+}
+
+function updateConfirmHistoryExportPageSize() {
+  if (state.confirmIntent?.type !== "export-history") {
+    return;
+  }
+  state.confirmIntent.pageSize = selectedConfirmHistoryExportPageSize(state.confirmIntent);
+  state.confirmPopoverRenderSignature = "";
+}
+
+async function downloadHistoryExport(format, source = "played", pageSize = 200) {
+  const normalizedFormat = String(format || "").trim().toLowerCase();
+  const normalizedSource = normalizedHistoryExportSource(source);
+  const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
+  if (!["csv", "image"].includes(normalizedFormat)) {
+    return;
+  }
+  const params = new URLSearchParams({
+    format: normalizedFormat,
+    source: normalizedSource,
+    page_size: String(normalizedPageSize),
+  });
+  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  if (!response.ok) {
+    let message = t("history.exportFailed");
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      // Keep the generic message when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const fallback = normalizedFormat === "csv"
+    ? `bilikara-${normalizedSource}.csv`
+    : `bilikara-${normalizedSource}.png`;
+  const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+}
+
+async function exportHistory(format, source = "played", pageSize = 200) {
+  const normalizedSource = normalizedHistoryExportSource(source);
+  const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
+  const sourceLabel = historyExportSourceLabel(normalizedSource);
+  try {
+    await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
+    closeConfirm();
+    setAppMessage(format === "csv"
+      ? t("history.csvDownloadStarted", { source: sourceLabel })
+      : t("history.imageDownloadStarted", { source: sourceLabel }));
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -3719,7 +5711,7 @@ async function resetRuntimeData() {
     closeConfirm();
     dismissBackupBanner();
     state.listView = "queue";
-    setAppMessage("已清空 data，保留已唱归档和抽卡缓存。");
+    setAppMessage(t("service.dataCleared"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -3744,9 +5736,62 @@ async function resetPlayerState() {
     state.data = await apiPost("/api/player/reset");
     closeConfirm();
     render();
-    setAppMessage("\u64ad\u653e\u5668\u72b6\u6001\u5df2\u91cd\u7f6e\u3002");
+    setAppMessage(t("service.playerReset"));
   } catch (error) {
     setAppMessage(error.message, true);
+  }
+}
+
+async function checkAppUpdate(event) {
+  if (state.updateChecking) {
+    return;
+  }
+  const button = elements.updateCheckButton;
+  const point = anchorPointForEvent(event, button || elements.cacheSettings);
+  state.updateChecking = true;
+  renderUpdatePreviewControl();
+  if (button) {
+    button.disabled = true;
+    button.textContent = t("status.checking");
+  }
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => controller.abort(), appUpdateCheckTimeoutMs)
+    : null;
+  try {
+    const query = state.updatePreviewEnabled ? "?include_preview=1" : "";
+    const result = await apiGet(`/api/app/update${query}`, { signal: controller?.signal });
+    if (result?.update_available || result?.switch_to_release_available) {
+      const fallbackMessage = result?.switch_to_release_available
+        ? t("service.switchReleasePrompt")
+        : t("service.updateFoundPrompt");
+      const message = result?.message
+        ? t("service.openReleaseWithMessage", { message: result.message })
+        : fallbackMessage;
+      openConfirm({
+        type: "open-release",
+        releaseUrl: result.release_url,
+        message,
+        ...point,
+      });
+      return;
+    }
+    setAppMessage(result?.message || t("service.upToDate"));
+  } catch (error) {
+    const message = error?.name === "AbortError"
+      ? t("service.updateTimeout")
+      : error?.message || t("service.updateFailed");
+    setAppMessage(message, true);
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+    state.updateChecking = false;
+    renderUpdatePreviewControl();
+    if (button) {
+      button.disabled = false;
+      button.textContent = t("service.checkUpdate");
+    }
   }
 }
 
@@ -3794,13 +5839,13 @@ async function removeSessionUser(name) {
 async function addSessionUser() {
   const name = String(elements.sessionUserInput.value || "").trim();
   if (!name) {
-    setAppMessage("请输入用户名。", true);
+    setAppMessage(t("session.nameRequired"), true);
     return;
   }
   try {
     state.data = await apiPost("/api/session-users/add", { name });
     elements.sessionUserInput.value = "";
-    setAppMessage(`已将 ${name} 加入本场 KTV 用户列表。`);
+    setAppMessage(t("session.added", { name }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -3810,7 +5855,7 @@ async function addSessionUser() {
 async function moveSessionUser(name, index) {
   try {
     state.data = await apiPost("/api/session-users/reorder", { name, index });
-    setAppMessage("已更新用户顺序。");
+    setAppMessage(t("session.orderUpdated"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -3823,27 +5868,35 @@ async function removeSessionUser(name) {
     if (elements.requesterSelect.value === name) {
       elements.requesterSelect.value = "";
     }
-    setAppMessage(`已移除 ${name}。`);
+    setAppMessage(t("session.removed", { name }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
   }
 }
 
-async function advanceLocalPlayerNow() {
+async function advanceLocalPlayerNow({ showTransition = true } = {}) {
   if (state.localAdvanceInFlight) {
     return;
   }
-  clearLocalAdvanceDelay();
+  clearLocalAdvanceDelay({ hideOverlay: !showTransition });
   state.localAdvanceInFlight = true;
   try {
+    const previousData = state.data;
     state.data = await apiPost("/api/player/next");
+    if (showTransition) {
+      maybeShowSongTransitionOverlay(previousData, state.data, { force: true });
+    }
     render();
   } catch (error) {
     setAppMessage(error.message, true);
   } finally {
     state.localAdvanceInFlight = false;
   }
+}
+
+async function requestNextTrack() {
+  await handleLocalPlaybackEnded();
 }
 
 async function handleLocalPlaybackEnded() {
@@ -3855,7 +5908,7 @@ async function handleLocalPlaybackEnded() {
     await advanceLocalPlayerNow();
     return;
   }
-  startLocalAdvanceDelay(delaySeconds);
+  await advanceLocalPlayerNow({ showTransition: true });
 }
 
 async function reorderPlaylist(itemId, index) {
@@ -3865,7 +5918,7 @@ async function reorderPlaylist(itemId, index) {
 
 async function resortPlaylistByCycle() {
   state.data = await apiPost("/api/playlist/resort");
-  setAppMessage("已按本场用户座次重新排序点歌列表。");
+  setAppMessage(t("list.resorted"));
   render();
 }
 
@@ -3883,7 +5936,7 @@ async function setCacheLimit(maxCacheItems) {
   renderCacheSlider(state.data?.cache_policy);
   try {
     state.data = await apiPost("/api/cache-policy", { max_cache_items: maxCacheItems });
-    setAppMessage(`自动缓存窗口已调整为缓存 ${maxCacheItems} 首。`);
+    setAppMessage(t("service.cacheLimitUpdated", { count: maxCacheItems }));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -3892,6 +5945,33 @@ async function setCacheLimit(maxCacheItems) {
     state.cacheLimitSaving = false;
     if (state.data) {
       renderCacheSlider(state.data.cache_policy);
+    }
+  }
+}
+
+async function setAdvanceDelay(delaySeconds) {
+  if (state.advanceDelaySaving) {
+    return;
+  }
+
+  const currentValue = currentSongAdvanceDelaySeconds();
+  if (delaySeconds === currentValue) {
+    return;
+  }
+
+  state.advanceDelaySaving = true;
+  renderAdvanceDelaySlider(state.data?.player_settings);
+  try {
+    state.data = await apiPost("/api/player/advance-delay", { delay_seconds: delaySeconds });
+    setAppMessage(t("service.advanceDelayUpdated", { seconds: delaySeconds }));
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+    render();
+  } finally {
+    state.advanceDelaySaving = false;
+    if (state.data) {
+      renderAdvanceDelaySlider(state.data.player_settings);
     }
   }
 }
@@ -3942,7 +6022,7 @@ async function setAvOffset(offsetMs) {
   }
   syncMountedLocalPlayer(true);
   state.avOffsetSaving = true;
-  renderAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
+  renderAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   try {
     const nextData = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
     if (requestSeq !== state.avOffsetSaveSeq) {
@@ -3963,7 +6043,7 @@ async function setAvOffset(offsetMs) {
   } finally {
     if (requestSeq === state.avOffsetSaveSeq) {
       state.avOffsetSaving = false;
-      renderAvSyncControls(state.data?.playback_mode, state.data?.player_settings);
+      renderAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
     }
   }
 }
@@ -3993,7 +6073,14 @@ async function handlePlaylistAction(button) {
   }
 
   try {
+    const previousData = state.data;
     state.data = await apiPost(target[0], target[1]);
+    if (action === "play-now") {
+      maybeShowSongTransitionOverlay(previousData, state.data, { force: true });
+    }
+    if (action === "play-now" || action === "move-next") {
+      closeOpenMenus();
+    }
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -4011,16 +6098,16 @@ elements.searchForm.addEventListener("submit", async (event) => {
   const query = String(elements.searchQuery.value || "").trim();
   if (!query) {
     hideSearchResults();
-    setSearchMessage("请输入搜索关键词。", true);
+    setSearchMessage(t("search.keywordRequired"), true);
     return;
   }
 
   elements.searchButton.disabled = true;
-  setSearchMessage("Searching local cache...");
+  setSearchMessage(t("search.localSearching"));
   try {
     const items = await searchGatchaCache(query);
     renderSearchResults(items);
-    setSearchMessage(items.length ? `搜索到 ${items.length} 条缓存结果。` : "缓存中未找到结果。");
+    setSearchMessage(items.length ? t("search.localFound", { count: items.length }) : t("search.localNotFound"));
   } catch (error) {
     hideSearchResults();
     setSearchMessage(error.message, true);
@@ -4046,6 +6133,109 @@ elements.searchResults.addEventListener("click", async (event) => {
     hideSearchResults();
     setSearchMessage("");
     elements.searchQuery.value = "";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+async function handleLarkSearchSubmit(event) {
+  event.preventDefault();
+  const usingHitbox = event.currentTarget === elements.larkSearchHitboxForm;
+  const querySource = usingHitbox ? elements.larkSearchHitboxQuery : elements.larkSearchQuery;
+  const query = String(querySource?.value || "").trim();
+  syncLarkSearchInputs(query, usingHitbox ? "hitbox" : "main");
+  if (!query) {
+    renderSearchResultItems(elements.larkSearchResults, []);
+    setLarkSearchMessage(t("search.keywordRequired"), true);
+    return;
+  }
+
+  state.larkSearchLoading = true;
+  if (elements.larkSearchButton) {
+    elements.larkSearchButton.disabled = true;
+  }
+  if (elements.larkSearchHitboxButton) {
+    elements.larkSearchHitboxButton.disabled = true;
+  }
+  const searchSeq = state.larkSearchSeq + 1;
+  state.larkSearchSeq = searchSeq;
+  const seenBvids = new Set();
+  const collectedItems = [];
+  let partialFailure = false;
+  if (elements.larkSearchResults) {
+    elements.larkSearchResults.innerHTML = "";
+    elements.larkSearchResults.classList.remove("hidden");
+  }
+  setLarkSearchMessage(t("search.larkSearching"));
+  try {
+    const poolItems = await searchLarkPool(query);
+    if (state.larkSearchSeq !== searchSeq) {
+      return;
+    }
+    const freshItems = poolItems.filter((item) => {
+      const bvid = String(item?.bvid || "").trim();
+      if (!bvid || seenBvids.has(bvid)) {
+        return false;
+      }
+      seenBvids.add(bvid);
+      return true;
+    });
+    if (freshItems.length) {
+      collectedItems.push(...freshItems);
+      appendSearchResultItems(elements.larkSearchResults, freshItems);
+    }
+    if (state.larkSearchSeq !== searchSeq) {
+      return;
+    }
+    if (!collectedItems.length) {
+      renderSearchResultItems(elements.larkSearchResults, [], t("search.larkNoResults"));
+    }
+    setLarkSearchMessage(
+      collectedItems.length
+        ? t(partialFailure ? "search.larkFoundPartial" : "search.larkFound", { count: collectedItems.length })
+        : partialFailure
+          ? t("search.larkPartialNoResults")
+          : t("search.larkNoResultsLong"),
+      partialFailure && !collectedItems.length,
+    );
+  } catch (error) {
+    renderSearchResultItems(elements.larkSearchResults, []);
+    setLarkSearchMessage(error.message, true);
+  } finally {
+    if (state.larkSearchSeq === searchSeq) {
+      state.larkSearchLoading = false;
+      if (elements.larkSearchButton) {
+        elements.larkSearchButton.disabled = false;
+      }
+      if (elements.larkSearchHitboxButton) {
+        elements.larkSearchHitboxButton.disabled = false;
+      }
+      renderSearchCookieFace();
+    }
+  }
+}
+
+elements.larkSearchForm?.addEventListener("submit", handleLarkSearchSubmit);
+elements.larkSearchHitboxForm?.addEventListener("submit", handleLarkSearchSubmit);
+elements.larkSearchQuery?.addEventListener("input", () => {
+  syncLarkSearchInputs(elements.larkSearchQuery.value, "main");
+});
+elements.larkSearchHitboxQuery?.addEventListener("input", () => {
+  syncLarkSearchInputs(elements.larkSearchHitboxQuery.value, "hitbox");
+});
+
+elements.larkSearchResults?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-url]");
+  if (!button) {
+    return;
+  }
+  const url = String(button.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
   } finally {
     button.disabled = false;
   }
@@ -4148,7 +6338,7 @@ elements.bbdownLoginButton?.addEventListener("click", async () => {
   }
   try {
     state.data = await apiPost("/api/bbdown/logout");
-    setAppMessage("BBDown 已退出登录。");
+    setAppMessage(t("service.bbdownLoggedOut"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -4163,7 +6353,6 @@ elements.cacheLimitSlider.addEventListener("input", (event) => {
   const currentValue = Number(event.target.value || "1");
   const minValue = Number(elements.cacheLimitSlider.min || "1");
   const maxValue = Number(elements.cacheLimitSlider.max || "5");
-  elements.cacheLimitValue.textContent = `缓存 ${currentValue} 首`;
   updateCacheSliderFill(currentValue, minValue, maxValue);
   elements.cacheLimitScale.querySelectorAll("span").forEach((mark) => {
     mark.classList.toggle("active", Number(mark.textContent || "0") === currentValue);
@@ -4174,6 +6363,18 @@ elements.cacheLimitSlider.addEventListener("change", async (event) => {
   await setCacheLimit(Number(event.target.value || "1"));
 });
 
+elements.advanceDelaySlider?.addEventListener("input", (event) => {
+  const currentValue = Number(event.target.value || "1");
+  updateAdvanceDelaySliderFill(currentValue);
+  elements.advanceDelayScale.querySelectorAll("span").forEach((mark) => {
+    mark.classList.toggle("active", Number(mark.textContent || "0") === currentValue);
+  });
+});
+
+elements.advanceDelaySlider?.addEventListener("change", async (event) => {
+  await setAdvanceDelay(Number(event.target.value || "1"));
+});
+
 elements.cacheQualitySelect?.addEventListener("change", async (event) => {
   const quality = String(event.target.value || "").trim();
   if (!quality || quality === String(state.data?.cache_policy?.video_quality || "")) {
@@ -4181,7 +6382,7 @@ elements.cacheQualitySelect?.addEventListener("change", async (event) => {
   }
   await setCachePolicyPreference(
     { video_quality: quality },
-    `默认清晰度已调整为 ${quality}。`,
+    t("service.qualityUpdated", { quality }),
   );
 });
 
@@ -4192,13 +6393,26 @@ elements.cacheHiresCheckbox?.addEventListener("change", async (event) => {
   }
   await setCachePolicyPreference(
     { audio_hires: audioHires },
-    audioHires ? "已启用 Hi-Res 音频优先。" : "已关闭 Hi-Res 音频优先。",
+    audioHires ? t("service.hiresEnabled") : t("service.hiresDisabled"),
   );
 });
 
+elements.updatePreviewCheckbox?.addEventListener("change", (event) => {
+  state.updatePreviewEnabled = Boolean(event.target.checked);
+  writeLocalPreference(storageKeys.updatePreview, state.updatePreviewEnabled);
+  renderUpdatePreviewControl();
+});
+
 elements.avSyncPanel?.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-step]");
+  const button = event.target.closest("button[data-step], button[data-reset-av-offset]");
   if (!button) {
+    return;
+  }
+  if (button.disabled) {
+    return;
+  }
+  if (button.hasAttribute("data-reset-av-offset")) {
+    await setAvOffset(0);
     return;
   }
   const step = Number(button.dataset.step || 0);
@@ -4233,7 +6447,7 @@ elements.clearPlaylistButton.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearPlaylistButton);
   openConfirm({
     type: "clear-playlist",
-    message: "确定清空点歌列表吗？当前正在播放的歌曲不会受影响。",
+    message: t("list.clearConfirm"),
     x: point.x,
     y: point.y,
   });
@@ -4243,7 +6457,23 @@ elements.clearHistoryButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearHistoryButton);
   openConfirm({
     type: "clear-history",
-    message: "\u786e\u5b9a\u6e05\u7a7a\u5386\u53f2\u8bb0\u5f55\u5417\uff1f\u8fd9\u4e0d\u4f1a\u5f71\u54cd\u5f53\u524d\u64ad\u653e\u6216\u6392\u961f\u4e2d\u7684\u6b4c\u66f2\u3002",
+    message: t("history.clearConfirm"),
+    x: point.x,
+    y: point.y,
+  });
+});
+
+elements.historyExportButton?.addEventListener("click", (event) => {
+  const point = anchorPointForEvent(event, elements.historyExportButton);
+  openConfirm({
+    type: "export-history",
+    source: "played",
+    pageSize: 200,
+    sourceSelect: true,
+    pageSizeSelect: true,
+    message: t("history.exportPromptWithPageSize"),
+    primaryLabel: t("history.exportImage"),
+    secondaryLabel: t("history.exportCsv"),
     x: point.x,
     y: point.y,
   });
@@ -4278,9 +6508,7 @@ elements.playerFrame?.addEventListener("dblclick", (event) => {
 
 elements.nextButton.addEventListener("click", async () => {
   try {
-    clearLocalAdvanceDelay({ resetInFlight: true });
-    state.data = await apiPost("/api/player/next");
-    render();
+    await requestNextTrack();
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -4293,21 +6521,22 @@ elements.queueCurrentRetry.addEventListener("click", async () => {
   }
   try {
     state.data = await apiPost("/api/cache/retry", { item_id: itemId });
-    setAppMessage("已重新开始缓存。");
+    setAppMessage(t("cache.retryStarted"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
   }
 });
 
+// LEGACY: the online embed mode endpoint still exists server-side, but the
+// frontend no longer exposes a switch into it.
 elements.modeSwitch?.addEventListener("click", async (event) => {
   const button = event.target.closest("button");
   if (!button) {
     return;
   }
-  const nextMode = state.data?.playback_mode === "online" ? "local" : "online";
   try {
-    state.data = await apiPost("/api/mode", { mode: nextMode });
+    state.data = await apiPost("/api/mode", { mode: "local" });
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -4322,12 +6551,20 @@ elements.layoutModeSwitch?.addEventListener("click", (event) => {
   setLayoutMode(button.dataset.layoutMode);
 });
 
+elements.languageSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-language]");
+  if (!button) {
+    return;
+  }
+  setLanguage(button.dataset.language);
+});
+
 elements.dataResetButton?.addEventListener("click", (event) => {
   event.stopPropagation();
   const point = anchorPointForEvent(event, elements.dataResetButton);
   openConfirm({
     type: "reset-data",
-    message: "确认清空 data？会清空当前点歌列表、用户、历史记录和缓存，但保留已唱归档与抽卡缓存。",
+    message: t("service.resetDataConfirm"),
     ...point,
   });
 });
@@ -4336,7 +6573,7 @@ elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
   event.stopPropagation();
   const currentItem = state.data?.current_item;
   if (!currentItem?.id) {
-    setAppMessage("当前没有正在播放的歌曲。", true);
+    setAppMessage(t("service.noCurrentSong"), true);
     return;
   }
   try {
@@ -4345,7 +6582,7 @@ elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
       item_id: currentItem.id,
       force: true,
     });
-    setAppMessage("已重新开始缓存当前歌曲。");
+    setAppMessage(t("service.retryCurrentStarted"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -4358,9 +6595,14 @@ elements.playerResetButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.playerResetButton);
   openConfirm({
     type: "reset-player",
-    message: "\u786e\u8ba4\u91cd\u7f6e\u64ad\u653e\u5668\u72b6\u6001\uff1f\u4f1a\u91cd\u65b0\u8f7d\u5165\u5f53\u524d\u64ad\u653e\u5668\u5e76\u6062\u590d\u64ad\u653e\u5668\u8bbe\u7f6e\u3002\u6b4c\u5355\u3001\u5386\u53f2\u548c\u7f13\u5b58\u4e0d\u4f1a\u88ab\u6e05\u7a7a\u3002",
+    message: t("service.resetPlayerConfirm"),
     ...point,
   });
+});
+
+elements.updateCheckButton?.addEventListener("click", async (event) => {
+  event.stopPropagation();
+  await checkAppUpdate(event);
 });
 
 elements.audioVariantBar.addEventListener("click", async (event) => {
@@ -4368,7 +6610,7 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
   if (toggleButton) {
     state.audioVariantBarExpanded = !state.audioVariantBarExpanded;
     if (state.data?.current_item) {
-      renderAudioVariantBar(state.data.current_item, state.data.playback_mode);
+      renderAudioVariantBar(state.data.current_item, frontendPlaybackMode(state.data.playback_mode));
     }
     return;
   }
@@ -4398,7 +6640,7 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
         selectedVideoPage: page,
         selectedAudioPages: [page],
       });
-      setAppMessage("已将分P加入缓存任务");
+      setAppMessage(t("player.partAddedToCache"));
       render();
     } catch (error) {
       if (error.code === "duplicate_session_request") {
@@ -4439,7 +6681,7 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
   const video = elements.playerFrame.querySelector("video");
   state.audioVariantSwitchInFlight = true;
   state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
-  renderAudioVariantBar(currentItem, state.data?.playback_mode);
+  renderAudioVariantBar(currentItem, frontendPlaybackMode(state.data?.playback_mode));
   state.pendingPlaybackRestore = {
     itemId: currentItem.id,
     variantId: nextVariantId,
@@ -4473,7 +6715,7 @@ elements.playlist.addEventListener("click", async (event) => {
     openConfirm({
       type: "remove-item",
       itemId: button.dataset.id,
-      message: "确定从点歌列表移除这首歌吗？",
+      message: t("list.removeConfirm"),
       x: point.x,
       y: point.y,
     });
@@ -4484,7 +6726,7 @@ elements.playlist.addEventListener("click", async (event) => {
 
 elements.historyList.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
-  if (!button) {
+  if (!button || button.dataset.action === "toggle-menu") {
     return;
   }
   const url = button.dataset.url;
@@ -4493,10 +6735,30 @@ elements.historyList.addEventListener("click", async (event) => {
   }
   const point = anchorPointForEvent(event, button);
   await handleAddByUrl(url, button.dataset.action === "history-next" ? "next" : "tail", point);
+  closeOpenMenus();
 });
 
 elements.confirmCancel.addEventListener("click", () => {
   closeConfirm();
+});
+
+elements.confirmSource?.addEventListener("change", () => {
+  updateConfirmHistoryExportSource();
+});
+
+elements.confirmPageSize?.addEventListener("change", () => {
+  updateConfirmHistoryExportPageSize();
+});
+
+elements.confirmSecondary?.addEventListener("click", async () => {
+  const intent = state.confirmIntent;
+  if (!intent) {
+    return;
+  }
+  if (intent.type === "export-history") {
+    await exportHistory("csv", selectedConfirmHistoryExportSource(intent), selectedConfirmHistoryExportPageSize(intent));
+    return;
+  }
 });
 
 elements.bindingModalClose?.addEventListener("click", () => {
@@ -4515,6 +6777,22 @@ elements.bindingModalConfirm?.addEventListener("click", async () => {
   await confirmBindingModal();
 });
 
+elements.gatchaFavlistModalClose?.addEventListener("click", () => {
+  closeGatchaFavlistModal();
+});
+
+elements.gatchaFavlistModalCancel?.addEventListener("click", () => {
+  closeGatchaFavlistModal();
+});
+
+elements.gatchaFavlistModalBackdrop?.addEventListener("click", () => {
+  closeGatchaFavlistModal();
+});
+
+elements.gatchaFavlistModalConfirm?.addEventListener("click", async () => {
+  await confirmGatchaFavlistModal();
+});
+
 elements.confirmOk.addEventListener("click", async () => {
   const intent = state.confirmIntent;
   if (!intent) {
@@ -4530,6 +6808,10 @@ elements.confirmOk.addEventListener("click", async () => {
       await clearHistory();
       return;
     }
+    if (intent.type === "export-history") {
+      await exportHistory("image", selectedConfirmHistoryExportSource(intent), selectedConfirmHistoryExportPageSize(intent));
+      return;
+    }
     if (intent.type === "reset-data") {
       await resetRuntimeData();
       return;
@@ -4538,11 +6820,27 @@ elements.confirmOk.addEventListener("click", async () => {
       await resetPlayerState();
       return;
     }
+    if (intent.type === "open-release" && intent.releaseUrl) {
+      window.open(intent.releaseUrl, "_blank", "noopener");
+      closeConfirm();
+      setAppMessage(t("service.openedReleases"));
+      return;
+    }
     if (intent.type === "remove-item" && intent.itemId) {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
-      setAppMessage("已移除这首歌。");
+      setAppMessage(t("list.removedSong"));
       render();
+      return;
+    }
+    if (intent.type === "reorder-item" && intent.itemId && Number.isInteger(intent.targetIndex)) {
+      await reorderPlaylist(intent.itemId, intent.targetIndex);
+      closeConfirm();
+      setAppMessage(t("remote.queueOrderUpdated"));
+      return;
+    }
+    if (intent.type === "gatcha-uid-add" && intent.uid) {
+      await confirmGatchaUidAdd(intent);
       return;
     }
     if (intent.type === "duplicate-add" && intent.url) {
@@ -4558,7 +6856,7 @@ elements.confirmOk.addEventListener("click", async () => {
       } else {
         elements.urlInput.value = "";
       }
-      setFormMessage(intent.position === "next" ? "已确认插队到下一首" : "已确认加入点歌列表");
+      setFormMessage(intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail"));
       render();
     }
   } catch (error) {
@@ -4575,13 +6873,17 @@ document.addEventListener("click", (event) => {
     if (
       event.target.closest("#confirm-popover") ||
       event.target.closest("#clear-playlist-button") ||
+      event.target.closest("#history-export-button") ||
       event.target.closest("#clear-history-button") ||
       event.target.closest('button[data-action="remove"]') ||
       event.target.closest("#queue-next-button") ||
       event.target.closest("#data-reset-button") ||
       event.target.closest("#current-cache-retry-button") ||
       event.target.closest("#player-reset-button") ||
+      event.target.closest("#update-check-button") ||
       event.target.closest("#add-form") ||
+      event.target.closest("#gatcha-uid-form") ||
+      event.target.closest("#refresh-gatcha-cache-button") ||
       event.target.closest("#history-list")
     ) {
       return;
@@ -4595,12 +6897,38 @@ document.addEventListener("click", (event) => {
   }
 });
 
+document.addEventListener("click", (event) => {
+  const toggle = event.target.closest('[data-action="toggle-menu"]');
+  if (toggle) {
+    const wrap = toggle.closest(".song-actions-wrap, .history-actions-wrap");
+    const menu = wrap?.querySelector(".menu-content");
+    if (menu) {
+      const isHidden = menu.classList.contains("hidden");
+      // Close all other menus first
+      closeOpenMenus();
+      if (isHidden) {
+        menu.classList.remove("hidden");
+      }
+      event.stopPropagation();
+      return;
+    }
+  }
+
+  // Close menus if clicking outside
+  if (!event.target.closest(".menu-content")) {
+    closeOpenMenus();
+  }
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
   }
   if (state.bindingIntent) {
     closeBindingModal();
+  }
+  if (state.gatchaFavlistIntent) {
+    closeGatchaFavlistModal();
   }
   if (state.confirmIntent) {
     closeConfirm();
@@ -4628,8 +6956,20 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
-document.addEventListener("fullscreenchange", renderPlayerFullscreenButton);
-document.addEventListener("webkitfullscreenchange", renderPlayerFullscreenButton);
+function handleFullscreenChange() {
+  if (!isPlayerPanelFullscreen()) {
+    hideFullscreenRequestToast();
+    if (hasLocalAdvanceDelayOverlay()) {
+      updateLocalAdvanceDelayOverlay();
+    } else {
+      hidePlayerDelayOverlay();
+    }
+  }
+  renderPlayerFullscreenButton();
+}
+
+document.addEventListener("fullscreenchange", handleFullscreenChange);
+document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
 
 elements.playlist.addEventListener("dragstart", (event) => {
   const item = event.target.closest(".song-item");
@@ -4730,11 +7070,21 @@ elements.playlist.addEventListener("drop", async (event) => {
     return;
   }
 
-  try {
-    await reorderPlaylist(draggedId, targetIndex);
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
+  const draggedItem = playlist[sourceIndex];
+  const point = anchorPointForEvent(event, elements.playlist);
+  openConfirm({
+    type: "reorder-item",
+    itemId: draggedId,
+    targetIndex,
+    x: point.x,
+    y: point.y,
+    message: t("remote.queueOrderMessage", {
+      title: draggedItem?.display_title || t("request.thisSong"),
+      index: targetIndex + 1,
+    }),
+    primaryLabel: t("remote.queueOrderConfirm"),
+  });
+  render();
 });
 
 elements.listStage.addEventListener("wheel", (event) => {
@@ -4763,9 +7113,82 @@ elements.listStage.addEventListener("wheel", (event) => {
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
-elements.gatchaCookieToggle?.addEventListener("click", () => {
-  state.gatchaCookieVisible = !state.gatchaCookieVisible;
-  renderGatchaCookieFace();
+elements.searchCookieToggle?.addEventListener("click", () => {
+  state.searchLarkVisible = false;
+  state.searchCookieVisible = !state.searchCookieVisible;
+  renderSearchCookieFace();
+  if (state.searchCookieVisible && !state.followBrowseLoading) {
+    state.followBrowseSelectedUid = "";
+    if (elements.followSearchQuery) {
+      elements.followSearchQuery.value = "";
+    }
+    loadFollowBrowse({ uid: "", query: "" });
+  }
+});
+
+elements.searchLarkToggle?.addEventListener("click", () => {
+  state.searchCookieVisible = false;
+  state.searchLarkVisible = !state.searchLarkVisible;
+  renderSearchCookieFace();
+});
+
+elements.followUpGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-uid]");
+  if (!button) {
+    return;
+  }
+  const uid = String(button.dataset.uid || "").trim();
+  if (!uid) {
+    return;
+  }
+  state.followBrowseSelectedUid = uid;
+  if (elements.followSearchQuery) {
+    elements.followSearchQuery.value = "";
+  }
+  await loadFollowBrowse({ uid, query: "" });
+});
+
+elements.followBrowseBack?.addEventListener("click", () => {
+  state.followBrowseSelectedUid = "";
+  if (elements.followSearchQuery) {
+    elements.followSearchQuery.value = "";
+  }
+  renderFollowBrowse();
+  renderSearchCookieFace();
+});
+
+elements.followSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.followSearchQuery?.value || "").trim();
+  await loadFollowBrowse({
+    uid: state.followBrowseSelectedUid,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.followSongResults?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-url]");
+  if (!button) {
+    return;
+  }
+
+  const url = String(button.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+  } finally {
+    button.disabled = false;
+  }
+});
+
+elements.gatchaUidToggle?.addEventListener("click", () => {
+  state.gatchaUidVisible = !state.gatchaUidVisible;
+  renderGatchaUidFace();
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
@@ -4776,10 +7199,10 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
   if (!requesterName) {
     return;
   }
-  setGatchaMessage("Nozomi power 注入！");
+  setGatchaMessage(t("gatcha.nozomi"));
   try {
     state.data = await submitAddRequest(url, "tail", { requesterName });
-    setFormMessage(`点歌成功：${state.gatchaCandidate.title}`);
+    setFormMessage(t("gatcha.requestSuccess", { title: state.gatchaCandidate.title }));
     
 
     state.gatchaCandidate = null;
@@ -4794,6 +7217,8 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
           position: "tail",
           requesterName,
           preserveInput: false,
+          source: "gatcha",
+          title: state.gatchaCandidate.title,
         },
         error.payload?.binding,
       );
@@ -4820,26 +7245,105 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
   }
 });
 
-elements.saveCookieButton.addEventListener("click", async () => {
-  const sessdata = elements.cookieSessdata.value.trim();
-  const jct = elements.cookieJct.value.trim();
+elements.gatchaUidForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const uid = String(elements.gatchaUidInput?.value || "").trim();
+  if (!uid) {
+    setGatchaUidMessage(t("gatcha.uidRequired"), true);
+    return;
+  }
 
-  setCookieMessage("正在更新 Cookie 配置...");
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage(t("gatcha.checkingUid"));
   try {
-    await apiPost("/api/config/cookie", {
-      sessdata: sessdata,
-      bili_jct: jct
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode"));
+    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
+    const point = anchorPointForEvent(event, elements.addGatchaUidButton);
+    openConfirm({
+      type: "gatcha-uid-add",
+      uid: preview?.uid || uid,
+      name: ownerName,
+      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
+      ...point,
     });
-    setCookieMessage("Cookie 已更新，正在拉取稿件信息（第一次拉取稿件数量会影响拉取时间）");
-    elements.cookieSessdata.value = "";
-    elements.cookieJct.value = "";
+    setGatchaUidMessage(t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
   } catch (error) {
-    setCookieMessage(error.message, true);
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidFace();
   }
 });
 
+elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+  state.gatchaRefreshSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage(t("gatcha.refreshingBackground"));
+  try {
+    const result = await refreshGatchaCache();
+    if (result?.started !== false && state.data) {
+      state.data.gatcha = {
+        ...(state.data.gatcha || {}),
+        busy: true,
+        message: gatchaTaskBusyMessage(),
+        last_status: "running",
+      };
+    }
+    setGatchaUidMessage(result?.started === false ? t("gatcha.refreshAlreadyRunning") : t("gatcha.refreshStarted"));
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaRefreshSaving = false;
+    renderGatchaUidFace();
+  }
+});
+
+elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
+  const uid = String(elements.gatchaUidInput?.value || "").trim();
+  if (!uid) {
+    setGatchaUidMessage(t("gatcha.uidRequired"), true);
+    return;
+  }
+
+  if (gatchaTaskBusy()) {
+    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidMessage(t("gatcha.readingFavlists"));
+  try {
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistModal(result?.uid || uid, result);
+    setGatchaUidMessage(t("gatcha.chooseFavlists"));
+  } catch (error) {
+    setGatchaUidMessage(error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidFace();
+  }
+});
+
+
 async function startPolling() {
   hydrateLocalPreferences();
+  await loadTranslations();
   renderLayoutMode();
   try {
     await reportMediaCapabilities();
@@ -4867,6 +7371,7 @@ window.addEventListener("pagehide", () => {
 window.addEventListener("beforeunload", disconnectClient);
 window.addEventListener("pageshow", () => {
   showMountedPlayerControls();
+  renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
 });
 
 startPolling();

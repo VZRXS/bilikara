@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -10,32 +10,41 @@
     <div class="app-shell layout-mode-full" id="app-shell">
       <section class="backup-banner hidden" id="backup-banner">
         <div class="backup-copy">
-          <p class="backup-title">Auto Restore</p>
-          <p class="backup-text" id="backup-text">检测到上次未完成的点歌列表</p>
+          <p class="backup-title" data-i18n="backup.tag">Auto Restore</p>
+          <p class="backup-text" id="backup-text" data-i18n="backup.detected">检测到上次未完成的点歌列表</p>
         </div>
         <div class="backup-actions">
-          <button type="button" id="discard-backup-button" class="banner-action">清空备份</button>
-          <button type="button" id="dismiss-backup-button" class="banner-close" aria-label="关闭">×</button>
+          <button type="button" id="discard-backup-button" class="banner-action" data-i18n="backup.clear">清空备份</button>
+          <button type="button" id="dismiss-backup-button" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
         </div>
       </section>
 
       <header class="topbar">
         <div>
-          <p class="eyebrow">bilibili karaoke host</p>
-          <h1>bilikara</h1>
-          <p class="designer">@VZRXS</p>
+          <p class="eyebrow" data-i18n="brand.eyebrow">bilikara host</p>
+          <h1 data-i18n="brand.name">bilikara</h1>
+          <p class="designer" data-i18n="brand.designer">@VZRXS</p>
         </div>
         <div class="top-controls">
+          <div class="mode-control language-control" id="language-control">
+            <span class="control-label" data-i18n="top.language">语言</span>
+            <div class="mode-switch language-switch" id="language-switch">
+              <button class="mode-button" data-language="en">EN</button>
+              <button class="mode-button" data-language="ja">JA</button>
+              <button class="mode-button active" data-language="zh">ZH</button>
+            </div>
+          </div>
           <div class="mode-control remote-mini-control" id="remote-mini-control">
-            <span class="control-label">手机点歌</span>
+            <span class="control-label" data-i18n="top.mobileRemote">手机点歌</span>
             <div class="remote-mini-trigger">
               <div class="remote-mini-qr-wrap">
                 <img
                   id="remote-mini-qr-image"
                   class="remote-mini-qr-image hidden"
                   alt="手机访问二维码缩略图"
+                  data-i18n-alt="remote.miniQrAlt"
                 />
-                <div id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder">
+                <div id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder" data-i18n="remote.miniQrLoading">
                   生成中
                 </div>
               </div>
@@ -47,13 +56,14 @@
                     id="remote-popover-qr-image"
                     class="remote-qr-image hidden"
                     alt="手机访问二维码"
+                    data-i18n-alt="remote.qrAlt"
                   />
-                  <div id="remote-popover-qr-placeholder" class="remote-qr-placeholder">
+                  <div id="remote-popover-qr-placeholder" class="remote-qr-placeholder" data-i18n="remote.qrLoading">
                     正在生成二维码...
                   </div>
                 </div>
                 <div class="remote-copy">
-                  <p class="remote-copy-label">手机浏览器打开</p>
+                  <p class="remote-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
                   <a id="remote-popover-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
                     /remote
                   </a>
@@ -65,16 +75,16 @@
             </div>
           </div>
           <div class="mode-control layout-control">
-            <span class="control-label">切换布局</span>
+            <span class="control-label" data-i18n="top.layout">切换布局</span>
             <div class="mode-switch" id="layout-mode-switch">
-              <button class="mode-button" data-layout-mode="basic">基础</button>
-              <button class="mode-button active" data-layout-mode="full">完整</button>
+              <button class="mode-button" data-layout-mode="basic" data-i18n="layout.basic">基础</button>
+              <button class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
             </div>
           </div>
           <div class="status-chip" id="cache-settings">
             <button type="button" class="status-chip-toggle" id="cache-settings-toggle" aria-expanded="false">
               <span class="status-chip-label-row">
-                <span class="control-label">服务设置</span>
+                <span class="control-label" data-i18n="service.title">服务设置</span>
                 <span
                   class="tool-status-indicator is-loading"
                   id="service-status-indicator"
@@ -82,18 +92,18 @@
                 ></span>
               </span>
               <div class="service-mode-summary">
-                <span id="playback-mode-summary">本地缓存</span>
+                <span id="playback-mode-summary" data-i18n="service.localPlayback">本地缓存</span>
               </div>
-              <p class="cache-chip-meta" id="cache-chip-meta">缓存占用 0 MB</p>
+              <p class="cache-chip-meta" id="cache-chip-meta" data-i18n="service.cacheUsageZero">缓存占用 0 MB</p>
             </button>
             <div class="cache-panel hidden" id="cache-panel">
               <div class="cache-panel-row">
                 <div>
-                  <p class="cache-panel-label">当前缓存占用</p>
+                  <p class="cache-panel-label" data-i18n="service.currentCacheUsage">当前缓存占用</p>
                   <strong class="cache-panel-value" id="cache-usage-detail">0 MB</strong>
                 </div>
                 <div class="cache-panel-side">
-                  <p class="cache-panel-hint">关闭服务后会自动清空</p>
+                  <p class="cache-panel-hint" data-i18n="service.autoClearHint">关闭服务后会自动清空</p>
                   <div class="cache-panel-tool-list">
                     <p id="bbdown-status-row">
                       <span>BBDown</span>
@@ -102,8 +112,8 @@
                         class="bbdown-login-badge is-unknown"
                         id="bbdown-login-button"
                       >
-                        <span class="bbdown-login-label">未登录</span>
-                        <span class="bbdown-login-hover-label">退出</span>
+                        <span class="bbdown-login-label" data-i18n="service.notLoggedIn">未登录</span>
+                        <span class="bbdown-login-hover-label" data-i18n="service.logout">退出</span>
                       </button>
                       <span
                         class="tool-status-indicator is-loading cache-panel-tool-indicator"
@@ -124,11 +134,10 @@
               </div>
               <div class="cache-panel-row cache-panel-row-stack">
                 <div>
-                  <p class="cache-panel-label">缓存数量</p>
-                  <p class="cache-panel-hint">调整后立即生效</p>
+                  <p class="cache-panel-label" data-i18n="service.cacheCount">缓存数量</p>
+                  <p class="cache-panel-hint" data-i18n="service.applyImmediately">调整后立即生效</p>
                 </div>
                 <div class="cache-slider-block">
-                  <strong class="cache-panel-value cache-limit-value" id="cache-limit-value">缓存 3 首</strong>
                   <input
                     id="cache-limit-slider"
                     class="cache-limit-slider"
@@ -149,11 +158,11 @@
               </div>
               <div class="cache-panel-row cache-policy-row">
                 <label class="cache-quality-field" for="cache-quality-select">
-                  <span class="cache-panel-label">默认清晰度</span>
+                  <span class="cache-panel-label" data-i18n="service.defaultQuality">默认清晰度</span>
                   <select id="cache-quality-select" class="cache-quality-select"></select>
                 </label>
                 <label class="cache-hires-field" for="cache-hires-checkbox">
-                  <span class="cache-panel-label">Hi-Res 无损</span>
+                  <span class="cache-panel-label" data-i18n="service.hires">Hi-Res 无损</span>
                   <input id="cache-hires-checkbox" type="checkbox" />
                   <span class="cache-hires-switch" aria-hidden="true">
                     <span class="cache-hires-switch-thumb"></span>
@@ -162,48 +171,74 @@
               </div>
               <div class="bbdown-login-panel hidden" id="bbdown-login-panel">
                 <div class="bbdown-login-copy">
-                  <p class="cache-panel-label">BBDown 登录</p>
+                  <p class="cache-panel-label" data-i18n="service.bbdownLogin">BBDown 登录</p>
                   <!-- <p class="cache-panel-hint">使用哔哩哔哩 App 扫码后，BBDown 会生成本地 BBDown.data。</p> -->
                 </div>
                 <div class="bbdown-login-qr">
-                  <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="BBDown 登录二维码" />
+                  <img id="bbdown-login-qr-image" class="bbdown-login-qr-image hidden" alt="BBDown 登录二维码" data-i18n-alt="service.bbdownQrAlt" />
                   <pre id="bbdown-login-qr-text" class="bbdown-login-qr-text hidden"></pre>
-                  <p id="bbdown-login-message" class="bbdown-login-message">正在准备二维码...</p>
+                  <p id="bbdown-login-message" class="bbdown-login-message" data-i18n="service.qrPreparing">正在准备二维码...</p>
                 </div>
                 <button type="button" class="toolbar-button bbdown-login-refresh" id="bbdown-login-refresh">
-                  重新生成二维码
+                  <span data-i18n="service.regenerateQr">重新生成二维码</span>
                 </button>
               </div>
-              <div class="cache-panel-row cache-panel-mode-row">
+              <!-- LEGACY: 在线外挂模式暂时下线，保留元素 id 仅避免旧脚本引用失效。 -->
+              <div class="cache-panel-row cache-panel-mode-row hidden" aria-hidden="true">
                 <div>
-                  <p class="cache-panel-label">播放模式</p>
-                  <p class="cache-panel-hint">⚠️在线外挂仅作为备用</p>
+                  <p class="cache-panel-label" data-i18n="service.playbackMode">播放模式</p>
+                  <p class="cache-panel-hint" data-i18n="service.localPlayback">本地缓存</p>
                 </div>
                 <div class="cache-mode-control">
-                  <span id="playback-mode-current">本地缓存</span>
+                  <span id="playback-mode-current" data-i18n="service.localPlayback">本地缓存</span>
                   <button type="button" class="toolbar-button cache-mode-toggle" id="mode-switch">
-                    切换
+                    <span data-i18n="common.switch">切换</span>
                   </button>
+                </div>
+              </div>
+              <div class="cache-panel-row cache-panel-row-stack">
+                <div>
+                  <p class="cache-panel-label" data-i18n="service.advanceDelay">切歌延迟</p>
+                  <p class="cache-panel-hint" data-i18n="service.advanceDelayHint">切歌过渡界面的显示时长</p>
+                </div>
+                <div class="cache-slider-block">
+                  <input
+                    id="advance-delay-slider"
+                    class="cache-limit-slider"
+                    type="range"
+                    min="1"
+                    max="5"
+                    step="1"
+                    value="3"
+                  />
+                  <div class="cache-limit-scale advance-delay-scale" id="advance-delay-scale">
+                    <span>1</span>
+                    <span>2</span>
+                    <span>3</span>
+                    <span>4</span>
+                    <span>5</span>
+                  </div>
                 </div>
               </div>
               <div class="cache-panel-row cache-panel-danger-row">
                 <div>
-                  <p class="cache-panel-label">数据维护</p>
-                  <p class="cache-panel-hint">保留已唱归档和抽卡缓存</p>
+                  <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
+                  <p class="cache-panel-hint" data-i18n="service.dataCleanupHint">保留已唱归档和抽卡缓存</p>
                 </div>
                 <button
                   type="button"
                   class="toolbar-button cache-data-reset-button"
                   id="data-reset-button"
                   title="清空 data"
+                  data-i18n-title="service.clearDataTitle"
                 >
-                  清空
+                  <span data-i18n="common.clear">清空</span>
                 </button>
               </div>
               <div class="cache-panel-row cache-panel-danger-row">
                 <div>
-                  <p class="cache-panel-label">播放异常处理</p>
-                  <p class="cache-panel-hint">本地播放出错时重新缓存或重置播放器</p>
+                  <p class="cache-panel-label" data-i18n="service.playbackRepair">播放异常处理</p>
+                  <p class="cache-panel-hint" data-i18n="service.playbackRepairHint">本地播放出错时重新缓存或重置播放器</p>
                 </div>
                 <div class="cache-panel-actions">
                   <button
@@ -211,17 +246,43 @@
                     class="toolbar-button cache-retry-current-button"
                     id="current-cache-retry-button"
                     title="重新缓存当前歌曲"
+                    data-i18n-title="service.retryCurrentTitle"
                     disabled
                   >
-                    重新缓存
+                    <span data-i18n="service.retryCache">重新缓存</span>
                   </button>
                   <button
                     type="button"
                     class="toolbar-button cache-data-reset-button"
                     id="player-reset-button"
                     title="重置播放器状态"
+                    data-i18n-title="service.resetPlayerTitle"
                   >
-                    重置
+                    <span data-i18n="common.reset">重置</span>
+                  </button>
+                </div>
+              </div>
+              <div class="cache-panel-row cache-panel-update-row">
+                <div>
+                  <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
+                  <p class="cache-panel-hint" data-i18n="service.releaseOnlyHint">默认检查正式版</p>
+                </div>
+                <div class="cache-update-control">
+                  <label class="cache-preview-field" for="update-preview-checkbox" title="同时检查预览版 Release" data-i18n-title="service.previewTitle">
+                    <span data-i18n="service.previewRelease">预览版</span>
+                    <input id="update-preview-checkbox" type="checkbox" />
+                    <span class="cache-preview-switch" aria-hidden="true">
+                      <span class="cache-preview-switch-thumb"></span>
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    class="toolbar-button cache-update-button"
+                    id="update-check-button"
+                    title="检查 bilikara 新版本"
+                    data-i18n-title="service.checkUpdateTitle"
+                  >
+                    <span data-i18n="service.checkUpdate">检查更新</span>
                   </button>
                 </div>
               </div>
@@ -235,8 +296,8 @@
           <section class="player-panel">
             <div class="panel-head">
               <div>
-                <p class="section-tag">Now Playing</p>
-                <h2 id="current-title">还没有歌曲</h2>
+                <p class="section-tag" data-i18n="player.tag">Now Playing</p>
+                <h2 id="current-title" data-i18n="player.noSong">还没有歌曲</h2>
               </div>
               <button
                 type="button"
@@ -251,33 +312,39 @@
 
             <div class="player-frame" id="player-frame">
               <div class="empty-state">
-                <p>把 Bilibili 视频链接加入点歌列表后，这里会开始播放。</p>
+                <p data-i18n="player.empty">把 Bilibili 视频链接加入点歌列表后，这里会开始播放。</p>
               </div>
             </div>
+            <div
+              class="fullscreen-request-toast hidden"
+              id="fullscreen-request-toast"
+              aria-live="polite"
+            ></div>
             <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
             <section class="av-sync-panel" id="av-sync-panel">
               <div class="av-sync-copy">
-                <p class="section-tag">音画延迟</p>
-                <p class="av-sync-hint">正数表示音频延后，负数表示音频提前。</p>
+                <p class="section-tag" data-i18n="player.avSyncTag">音画延迟</p>
+                <p class="av-sync-hint" data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</p>
               </div>
               <div class="av-sync-controls">
-                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-200">-200ms</button>
-                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-50">-50ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-200">« -200</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-50">‹ -50</button>
                 <label class="av-sync-input-wrap" for="av-offset-input">
                   <input id="av-offset-input" type="number" min="-5000" max="5000" step="10" value="0" />
-                  <span>ms</span>
+                  <span data-i18n="player.ms">ms</span>
                 </label>
-                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="50">+50ms</button>
-                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="200">+200ms</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="50">+50 ›</button>
+                <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="200">+200 »</button>
+                <button type="button" class="toolbar-button ghost av-sync-reset-button" id="av-offset-reset-button" data-reset-av-offset disabled data-i18n="common.resetShort">复位</button>
               </div>
             </section>
             <section class="volume-panel" id="volume-panel">
               <div class="volume-copy">
-                <p class="section-tag">播放音量</p>
-                <p class="volume-hint">直接控制服务端当前本地播放的音量。</p>
+                <p class="section-tag" data-i18n="player.volumeTag">播放音量</p>
+                <p class="volume-hint" data-i18n="player.volumeHint">直接控制服务端当前本地播放的音量。</p>
               </div>
               <div class="volume-controls">
-                <button type="button" class="toolbar-button ghost volume-mute-button" id="volume-mute-button">静音</button>
+                <button type="button" class="toolbar-button ghost volume-mute-button" id="volume-mute-button" aria-label="静音" title="静音" data-i18n-aria-label="player.mute" data-i18n-title="player.mute">🔊</button>
                 <input
                   id="volume-slider"
                   class="volume-slider"
@@ -295,10 +362,10 @@
           <section class="request-panel">
             <div class="request-head">
               <div>
-                <p class="section-tag">Song Request</p>
-                <h2>点歌</h2>
+                <p class="section-tag" data-i18n="request.tag">Song Request</p>
+                <h2 data-i18n="request.title">点歌</h2>
               </div>
-              <button type="button" id="resort-playlist-button" class="toolbar-button ghost">重新排序</button>
+              <button type="button" id="resort-playlist-button" class="toolbar-button ghost" data-i18n="request.resort">重新排序</button>
             </div>
 
             <form id="add-form" class="add-form compact-form">
@@ -308,10 +375,11 @@
                 name="url"
                 type="text"
                 placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
+                data-i18n-placeholder="request.urlPlaceholder"
                 autocomplete="off"
               />
-              <button type="submit">点歌</button>
-              <button type="button" id="queue-next-button" class="secondary">顶歌到下一首</button>
+              <button type="submit" data-i18n="request.submit">点歌</button>
+              <button type="button" id="queue-next-button" class="secondary" data-i18n="request.next">顶歌到下一首</button>
               <p class="help-text" id="form-message"></p>
             </form>
           </section>
@@ -319,8 +387,8 @@
           <section class="request-panel session-users-panel">
             <div class="request-head">
               <div>
-                <p class="section-tag">Singer Order</p>
-                <h2>本场用户</h2>
+                <p class="section-tag" data-i18n="session.tag">Singer Order</p>
+                <h2 data-i18n="session.title">本场用户</h2>
               </div>
             </div>
 
@@ -331,11 +399,12 @@
                 type="text"
                 maxlength="24"
                 placeholder="输入用户名"
+                data-i18n-placeholder="session.namePlaceholder"
                 autocomplete="off"
               />
-              <button type="submit">添加用户</button>
+              <button type="submit" data-i18n="session.addUser">添加用户</button>
             </form>
-            <p class="help-text">点歌会按这里的顺序轮转插入，可以用上下按钮调整顺序。</p>
+            <p class="help-text" data-i18n="session.help">点歌会按这里的顺序轮转插入，可以用上下按钮调整顺序。</p>
             <div id="session-user-list" class="session-user-list"></div>
           </section>
 
@@ -343,10 +412,10 @@
             <section class="remote-panel">
               <div class="request-head remote-head">
                 <div>
-                  <p class="section-tag">Mobile Remote</p>
-                  <h2>手机点歌入口</h2>
+                  <p class="section-tag" data-i18n="remote.tag">Mobile Remote</p>
+                  <h2 data-i18n="remote.entryTitle">手机点歌入口</h2>
                 </div>
-                <button type="button" id="copy-remote-url-button" class="toolbar-button">
+                <button type="button" id="copy-remote-url-button" class="toolbar-button" data-i18n="remote.copyLink">
                   复制链接
                 </button>
               </div>
@@ -356,13 +425,14 @@
                     id="remote-qr-image"
                     class="remote-qr-image hidden"
                     alt="手机访问二维码"
+                    data-i18n-alt="remote.qrAlt"
                   />
-                  <div id="remote-qr-placeholder" class="remote-qr-placeholder">
+                  <div id="remote-qr-placeholder" class="remote-qr-placeholder" data-i18n="remote.qrLoading">
                     正在生成二维码...
                   </div>
                 </div>
                 <div class="remote-copy">
-                  <p class="remote-copy-label">手机浏览器打开</p>
+                  <p class="remote-copy-label" data-i18n="remote.openInBrowser">手机浏览器打开</p>
                   <a id="remote-url-link" class="remote-url-link" href="/remote" target="_blank" rel="noreferrer">
                     /remote
                   </a>
@@ -373,33 +443,93 @@
               </div>
             </section>
 
-            <section class="list-card sub-card search-sub-card">
+            <section class="list-card sub-card search-sub-card" id="search-panel">
               <div class="search-card">
                 <div class="search-sub-card-head">
                   <div>
-                    <p class="section-tag">Local Search</p>
-                    <h2>搜索</h2>
+                    <p class="section-tag" id="search-tag" data-i18n="search.localTag">Local Search</p>
+                    <h2 id="search-title" data-i18n="search.title">搜索</h2>
+                  </div>
+                  <div class="search-head-actions">
+                    <button type="button" id="search-cookie-toggle" class="toolbar-button ghost search-cookie-toggle" data-i18n="search.followBrowse">
+                      关注浏览
+                    </button>
+                    <button type="button" id="search-lark-toggle" class="toolbar-button ghost search-lark-toggle" data-i18n="search.larkSearch">
+                      bilikara 搜索
+                    </button>
                   </div>
                 </div>
-                <form id="search-form" class="search-inputs">
-                  <div class="input-group">
-                    <input type="text" id="search-query" placeholder="搜索本地歌曲目录 (需要登录或者 cookie)" autocomplete="off">
+
+                <div id="search-stage" class="search-stage">
+                  <div id="search-stage-inner" class="search-stage-inner">
+                    <div id="search-main-view" class="search-face search-face-front">
+                      <form id="search-form" class="search-inputs">
+                        <div class="input-group">
+                          <input type="text" id="search-query" placeholder="在本地歌曲目录中搜索" data-i18n-placeholder="search.localPlaceholder" autocomplete="off">
+                        </div>
+                        <button type="submit" id="search-button" class="next-button" data-i18n="search.submit">搜索</button>
+                      </form>
+                      <p class="search-message" id="search-message" role="status"></p>
+                      <div id="search-results" class="search-results hidden"></div>
+                    </div>
+
+                    <div id="search-cookie-view" class="search-face search-face-back search-cookie-view">
+                      <div class="follow-browser" id="follow-browser">
+                        <div id="follow-up-list-view" class="follow-up-list-view">
+                          <div id="follow-up-grid" class="follow-up-grid" role="list"></div>
+                        </div>
+                        <div id="follow-up-items-view" class="follow-up-items-view hidden">
+                          <div class="follow-browser-head">
+                            <button type="button" id="follow-browse-back" class="toolbar-button ghost" data-i18n="common.back">返回</button>
+                            <div class="follow-browser-title-block">
+                              <h3 id="follow-browse-title" data-i18n="follow.ownerItemsTitle">UP 主稿件</h3>
+                              <p id="follow-browse-count" class="follow-browser-count" data-i18n="follow.zeroCount">0 首</p>
+                            </div>
+                          </div>
+                          <form id="follow-search-form" class="follow-search-form">
+                            <input
+                              type="text"
+                              id="follow-search-query"
+                              placeholder="在这个 UP 的缓存稿件里搜索"
+                              data-i18n-placeholder="search.followPlaceholder"
+                              autocomplete="off"
+                            >
+                            <button type="submit" id="follow-search-button" class="next-button" data-i18n="search.submit">搜索</button>
+                          </form>
+                          <div id="follow-song-results" class="search-results"></div>
+                        </div>
+                        <p class="gatcha-message" id="follow-browse-message" role="status"></p>
+                      </div>
+                    </div>
+                    <div id="search-lark-view" class="search-face search-face-lark">
+                      <form id="lark-search-form" class="search-inputs">
+                        <div class="input-group">
+                          <input type="text" id="lark-search-query" placeholder="在 bilikara 共享数据库中搜索" data-i18n-placeholder="search.larkPlaceholder" autocomplete="off">
+                        </div>
+                        <button type="submit" id="lark-search-button" class="next-button" data-i18n="search.submit">搜索</button>
+                      </form>
+                      <p class="search-message" id="lark-search-message" role="status"></p>
+                      <div id="lark-search-results" class="search-results hidden"></div>
+                    </div>
                   </div>
-                  <button type="submit" id="search-button" class="next-button">搜索</button>
-                </form>
-                <p class="search-message" id="search-message" role="status"></p>
-                <div id="search-results" class="search-results hidden"></div>
+                  <form id="lark-search-hitbox-form" class="search-inputs lark-search-hitbox" aria-label="bilikara 搜索" data-i18n-aria-label="search.larkSearch">
+                    <div class="input-group">
+                      <input type="text" id="lark-search-hitbox-query" autocomplete="off" tabindex="-1">
+                    </div>
+                    <button type="submit" id="lark-search-hitbox-button" class="next-button" tabindex="-1" data-i18n="search.submit">搜索</button>
+                  </form>
+                </div>
               </div>
             </section>
             
             <section class="gatcha-panel" id="gatcha-panel">
              <div class="request-head gatcha-head">
                 <div>
-                 <p class="section-tag" id="gatcha-tag">gatcha Draw</p>
-                 <h2 id="gatcha-title">试试运气</h2>
+                 <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">gatcha Draw</p>
+                 <h2 id="gatcha-title" data-i18n="gatcha.title">试试运气</h2>
                 </div>
-                <button type="button" id="gatcha-cookie-toggle" class="toolbar-button ghost gatcha-cookie-toggle">
-                  输入 Cookie
+                <button type="button" id="gatcha-uid-toggle" class="toolbar-button ghost gatcha-uid-toggle" data-i18n="gatcha.addUid">
+                  添加 UID
                 </button>
               </div>
       
@@ -408,35 +538,36 @@
                   <div id="gatcha-main-view" class="gatcha-face gatcha-face-front">
                     <div id="gatcha-init-view" class="gatcha-content">
                       <div class="gatcha-icon">🎲</div>
-                      <p class="gatcha-desc">从关注的投稿中随机抽取一首歌曲</p>
-                      <button type="button" id="gatcha-button" class="next-button gatcha-main-btn">试试运气</button>
+                      <p class="gatcha-desc" data-i18n="gatcha.description">从关注的投稿中随机抽取一首歌曲</p>
+                      <button type="button" id="gatcha-button" class="next-button gatcha-main-btn" data-i18n="gatcha.title">试试运气</button>
                       <p class="gatcha-message" id="gatcha-message" role="status"></p>
                     </div>
 
                     <div id="gatcha-result-view" class="gatcha-content hidden">
-                      <p class="gatcha-label">运气不错，抽到了：</p>
-                      <h3 id="gatcha-candidate-title">歌曲标题加载中...</h3>
+                      <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
+                      <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
                       <div class="gatcha-actions">
-                        <button type="button" id="gatcha-confirm-button" class="next-button">确定点歌</button>
-                        <button type="button" id="gatcha-retry-button" class="toolbar-button">重新再来</button>
+                        <button type="button" id="gatcha-confirm-button" class="next-button" data-i18n="gatcha.confirm">确定点歌</button>
+                        <button type="button" id="gatcha-retry-button" class="toolbar-button" data-i18n="gatcha.retry">重新再来</button>
                       </div>
                     </div>
                   </div>
 
-                  <div id="gatcha-cookie-view" class="gatcha-face gatcha-face-back gatcha-cookie-view">
-                    <div class="cookie-config-bar">
-                      <div class="cookie-inputs">
+                  <div id="gatcha-uid-view" class="gatcha-face gatcha-face-back gatcha-uid-view">
+                    <div class="gatcha-uid-bar">
+                      <form id="gatcha-uid-form" class="gatcha-uid-form">
                         <div class="input-group">
-                          <label>SESSDATA</label>
-                          <input type="text" id="cookie-sessdata" placeholder="从浏览器获取的 SESSDATA">
+                          <input type="text" id="gatcha-uid-input" placeholder="UID 或 UP 主空间链接" data-i18n-placeholder="gatcha.uidPlaceholder">
                         </div>
-                        <div class="input-group">
-                          <label>bili_jct</label>
-                          <input type="text" id="cookie-jct" placeholder="从浏览器获取的 bili_jct">
-                        </div>
-                        <button type="button" id="save-cookie-button" class="next-button">更新配置</button>
-                      </div>
-                      <p class="gatcha-message" id="cookie-message" role="status"></p>
+                        <button type="submit" id="add-gatcha-uid-button" class="next-button" data-i18n="gatcha.add">添加</button>
+                      </form>
+                      <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button gatcha-refresh-button">
+                        <span data-i18n="gatcha.refresh">手动更新</span>
+                      </button>
+                      <button type="button" id="pull-gatcha-favlist-button" class="toolbar-button gatcha-refresh-button">
+                        <span data-i18n="gatcha.pullFavlist">拉取收藏</span>
+                      </button>
+                      <p class="gatcha-message" id="gatcha-uid-message" role="status"></p>
                     </div>
                   </div>
                 </div>
@@ -448,13 +579,17 @@
         <aside class="queue-card list-card">
           <div class="queue-card-head">
             <div>
-              <p class="section-tag" id="list-tag">Requests</p>
-              <h2><span id="list-title">点歌列表</span> <span class="queue-count" id="queue-count">(0首)</span></h2>
+              <p class="section-tag" id="list-tag" data-i18n="list.tag">Requests</p>
+              <h2><span id="list-title" data-i18n="list.title">点歌列表</span> <span class="queue-count" id="queue-count">(0首)</span></h2>
             </div>
             <div class="queue-toolbar">
-              <button type="button" id="clear-playlist-button" class="toolbar-button ghost">清空点歌列表</button>
-              <button type="button" id="clear-history-button" class="toolbar-button ghost hidden">清空历史</button>
-              <button type="button" id="history-toggle-button" class="toolbar-button ghost">历史记录</button>
+              <button type="button" id="clear-playlist-button" class="toolbar-button ghost" data-i18n="list.clearQueue">清空点歌列表</button>
+              <button type="button" id="history-export-button" class="toolbar-button ghost hidden" title="导出歌单" data-i18n-title="history.exportTitle">
+                <!-- <span aria-hidden="true">⇩</span> -->
+                <span data-i18n="history.export">导出</span>
+              </button>
+              <button type="button" id="clear-history-button" class="toolbar-button ghost hidden" data-i18n="history.clear">清空历史</button>
+              <button type="button" id="history-toggle-button" class="toolbar-button ghost" data-i18n="history.title">历史记录</button>
             </div>
           </div>
           <div class="list-stage" id="list-stage">
@@ -462,36 +597,52 @@
               <section class="list-face list-face-front">
                 <section class="queue-current hidden" id="queue-current">
                   <div class="queue-current-side">
-                    <div class="queue-current-status">
-                      <div class="queue-current-label">
-                        <span class="queue-current-indicator" id="queue-current-indicator" aria-hidden="true"></span>
-                        <p class="queue-current-tag" id="queue-current-tag">播放中</p>
-                        <button
-                          type="button"
-                          class="cache-retry-button queue-current-retry hidden"
-                          id="queue-current-retry"
-                          title="重新下载缓存"
-                          aria-label="重新下载缓存"
-                        >
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path
-                              d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                            />
-                          </svg>
-                        </button>
+                    <div class="queue-current-progress-badge" id="queue-current-progress-badge">
+                      <svg class="badge-loader circular" viewBox="25 25 50 50">
+                        <circle class="path-fancy" cx="50" cy="50" r="20" fill="none" stroke-width="1.5" stroke-miterlimit="10"/>
+                      </svg>
+                      <div class="queue-current-icon-wrap" id="queue-current-icon-wrap">
+                        <!-- 播放中图标 -->
+                        <svg class="playing-icon icon-play" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                        <!-- 缓存中图标 -->
+                        <svg class="playing-icon icon-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12 17V3m0 14l-4-4m4 4l4-4M4 21h16" />
+                        </svg>
+                        <!-- 出错图标 -->
+                        <svg class="playing-icon icon-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M18 6L6 18M6 6l12 12" />
+                        </svg>
                       </div>
                     </div>
-                    <button class="next-button queue-current-next" id="next-button">切歌</button>
+                    <button
+                      type="button"
+                      class="cache-retry-button queue-current-retry hidden"
+                      id="queue-current-retry"
+                      title="重新下载缓存"
+                      aria-label="重新下载缓存"
+                      data-i18n-title="cache.retryDownload"
+                      data-i18n-aria-label="cache.retryDownload"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                        />
+                      </svg>
+                    </button>
+                    <p class="queue-current-tag" id="queue-current-tag" data-i18n="status.playing">播放中</p>
                   </div>
                   <div class="queue-current-main">
-                    <h3 class="queue-current-title" id="queue-current-title">还没有歌曲</h3>
+                    <h3 class="queue-current-title" id="queue-current-title" data-i18n="player.noSong">还没有歌曲</h3>
                     <p class="queue-current-requester hidden" id="queue-current-requester"></p>
                   </div>
+                  <button class="next-button queue-current-next" id="next-button" data-i18n="player.nextSong">切歌</button>
                 </section>
                 <div id="playlist" class="playlist"></div>
               </section>
@@ -509,52 +660,60 @@
     <!-- Templates -->
     <template id="playlist-item-template">
       <article class="song-item">
-        <div class="song-badge-column" draggable="true" data-drag-handle title="拖动调整顺序">
+        <div class="song-badge-column" draggable="true" data-drag-handle>
           <div class="song-progress-badge">
+            <svg class="badge-loader circular" viewBox="25 25 50 50">
+              <circle class="path-fancy" cx="50" cy="50" r="20" fill="none" stroke-width="1.5" stroke-miterlimit="10"/>
+            </svg>
             <span class="song-index-label"></span>
             <span class="song-badge-check hidden">✓</span>
-            <button
-              type="button"
-              class="cache-retry-button song-retry-button hidden"
-              data-action="retry-cache"
-              draggable="false"
-              title="重新下载缓存"
-              aria-label="重新下载缓存"
-            >
+          </div>
+          <button
+            type="button"
+            class="cache-retry-button song-retry-button hidden"
+            data-action="retry-cache"
+            draggable="false"
+            title="重新下载缓存"
+            aria-label="重新下载缓存"
+            data-i18n-title="cache.retryDownload"
+            data-i18n-aria-label="cache.retryDownload"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+              />
+            </svg>
+          </button>
+          <span class="song-size-label"></span>
+        </div>
+        <div class="song-main">
+          <h3 class="song-title"></h3>
+          <span class="song-requester hidden"></span>
+          <p class="song-note hidden"></p>
+        </div>
+        <div class="song-actions-wrap">
+          <div class="song-actions menu-content hidden">
+            <button type="button" data-action="play-now" class="primary-button" data-i18n="list.playNow">立即播放</button>
+            <button type="button" data-action="move-next" class="secondary-button" data-i18n="request.moveNext">顶歌</button>
+            <button type="button" data-action="remove" class="icon-button danger-button" title="移除" aria-label="移除" data-i18n-title="common.remove" data-i18n-aria-label="common.remove">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
-                  d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
+                  d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
+                  fill="currentColor"
                 />
               </svg>
             </button>
           </div>
-          <span class="song-size-label"></span>
-        </div>
-        <div class="song-main">
-          <div class="song-top-row">
-            <h3 class="song-title"></h3>
-            <p class="song-note hidden"></p>
-            <span class="song-requester hidden"></span>
-          </div>
-          <div class="song-bottom-row">
-            <div class="song-actions">
-              <button data-action="play-now">立即播放</button>
-              <button data-action="move-next" class="secondary">顶歌</button>
-              <button data-action="remove" class="icon-button action-danger" title="移除" aria-label="移除">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
-                    fill="currentColor"
-                  />
-                </svg>
-              </button>
-            </div>
-          </div>
+          <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作" data-i18n-aria-label="common.moreActions">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+            </svg>
+          </button>
         </div>
       </article>
     </template>
@@ -563,24 +722,45 @@
       <article class="history-item">
         <div class="history-main">
           <h3 class="history-title"></h3>
-          <p class="history-requester hidden"></p>
-          <div class="history-meta">
+          <div class="history-meta-row">
             <span class="history-time"></span>
             <span class="history-count"></span>
+            <span class="history-requester hidden"></span>
           </div>
         </div>
-        <div class="history-actions">
-          <button data-action="history-tail">点歌</button>
-          <button data-action="history-next" class="secondary">顶歌</button>
+        <div class="history-actions-wrap">
+          <div class="history-actions menu-content hidden">
+            <button type="button" data-action="history-tail" class="primary-button" data-i18n="request.submit">点歌</button>
+            <button type="button" data-action="history-next" class="secondary-button" data-i18n="request.moveNext">顶歌</button>
+          </div>
+          <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作" data-i18n-aria-label="common.moreActions">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+            </svg>
+          </button>
         </div>
       </article>
     </template>
 
     <div class="confirm-popover hidden" id="confirm-popover" role="dialog" aria-modal="false">
-      <p class="confirm-text" id="confirm-text">确定执行这个操作吗？</p>
+      <p class="confirm-text" id="confirm-text" data-i18n="confirm.default">确定执行这个操作吗？</p>
+      <select id="confirm-source" class="confirm-source hidden" aria-label="导出范围" data-i18n-aria-label="history.exportRange">
+        <option value="played" data-i18n="history.playedSource">本场记录</option>
+        <option value="history" data-i18n="history.allSource">全部历史</option>
+      </select>
+      <select id="confirm-page-size" class="confirm-page-size hidden" aria-label="图片每页歌曲数" data-i18n-aria-label="history.exportPageSizeLabel">
+        <option value="200" selected data-i18n="history.exportPageSize200">图片每页 200 首</option>
+        <option value="150" data-i18n="history.exportPageSize150">图片每页 150 首</option>
+        <option value="100" data-i18n="history.exportPageSize100">图片每页 100 首</option>
+        <option value="80" data-i18n="history.exportPageSize80">图片每页 80 首</option>
+        <option value="60" data-i18n="history.exportPageSize60">图片每页 60 首</option>
+        <option value="50" data-i18n="history.exportPageSize50">图片每页 50 首</option>
+      </select>
+      <p id="confirm-page-size-note" class="confirm-page-size-note hidden" data-i18n="history.exportPageSizeNote">仅影响图片分页；CSV 会导出完整列表。</p>
       <div class="confirm-actions">
-        <button type="button" id="confirm-cancel" class="toolbar-button">取消</button>
-        <button type="button" id="confirm-ok" class="next-button">确认</button>
+        <button type="button" id="confirm-cancel" class="toolbar-button" data-i18n="common.cancel">取消</button>
+        <button type="button" id="confirm-secondary" class="toolbar-button hidden" data-i18n="history.exportCsv">导出 CSV</button>
+        <button type="button" id="confirm-ok" class="next-button" data-i18n="common.confirm">确认</button>
       </div>
     </div>
 
@@ -589,25 +769,49 @@
       <div class="selection-modal-card">
         <div class="selection-modal-head">
           <div>
-            <p class="section-tag">Part Binding</p>
-            <h2>选择分P绑定</h2>
+            <p class="section-tag" data-i18n="binding.tag">Part Binding</p>
+            <h2 data-i18n="binding.title">选择分P绑定</h2>
           </div>
-          <button type="button" id="binding-modal-close" class="banner-close" aria-label="关闭">x</button>
+          <button type="button" id="binding-modal-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
         </div>
-        <p class="selection-modal-text" id="binding-modal-text">请选择要下载的视频分P和音频分P。</p>
+        <p class="selection-modal-text" id="binding-modal-text" data-i18n="binding.text">请选择要下载的视频分P和音频分P。</p>
         <div class="selection-modal-grid">
           <section class="selection-modal-column">
-            <h3>视频画面</h3>
+            <h3 data-i18n="binding.video">视频画面</h3>
             <div id="binding-video-options" class="selection-option-list"></div>
           </section>
           <section class="selection-modal-column">
-            <h3>音频轨道</h3>
+            <h3 data-i18n="binding.audio">音频轨道</h3>
             <div id="binding-audio-options" class="selection-option-list"></div>
           </section>
         </div>
         <div class="selection-modal-actions">
-          <button type="button" id="binding-modal-cancel" class="toolbar-button">取消</button>
-          <button type="button" id="binding-modal-confirm" class="next-button">加入点歌列表</button>
+          <button type="button" id="binding-modal-cancel" class="toolbar-button" data-i18n="common.cancel">取消</button>
+          <button type="button" id="binding-modal-confirm" class="next-button" data-i18n="binding.confirm">加入点歌列表</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="selection-modal hidden" id="gatcha-favlist-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="gatcha-favlist-modal-backdrop"></div>
+      <div class="selection-modal-card selection-modal-card-single">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag" data-i18n="favlist.tag">Favlist Pull</p>
+            <h2 data-i18n="favlist.title">选择收藏夹</h2>
+          </div>
+          <button type="button" id="gatcha-favlist-modal-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
+        </div>
+        <p class="selection-modal-text" id="gatcha-favlist-modal-text" data-i18n="favlist.text">请选择要拉取的公开收藏夹。</p>
+        <div class="selection-modal-grid selection-modal-grid-single">
+          <section class="selection-modal-column">
+            <h3 data-i18n="favlist.folder">收藏夹</h3>
+            <div id="gatcha-favlist-options" class="selection-option-list"></div>
+          </section>
+        </div>
+        <div class="selection-modal-actions">
+          <button type="button" id="gatcha-favlist-modal-cancel" class="toolbar-button" data-i18n="common.cancel">取消</button>
+          <button type="button" id="gatcha-favlist-modal-confirm" class="next-button" data-i18n="favlist.confirm">拉取选中收藏夹</button>
         </div>
       </div>
     </div>

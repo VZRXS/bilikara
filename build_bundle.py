@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ from pathlib import Path
 
 APP_NAME = "bilikara"
 ROOT_DIR = Path(__file__).resolve().parent
+VERSION_FILE = ROOT_DIR / "APP_VERSION"
 REQUIRED_TOOL_BINARIES = ("ffmpeg",)
 OPTIONAL_TOOL_BINARIES = ("ffprobe",)
 LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
@@ -16,6 +18,8 @@ LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
 def main() -> None:
     data_separator = ";" if platform.system() == "Windows" else ":"
     static_arg = f"{ROOT_DIR / 'static'}{data_separator}static"
+    version_arg = f"{VERSION_FILE}{data_separator}."
+    VERSION_FILE.write_text(_bundle_version(), encoding="utf-8")
 
     command = [
         sys.executable,
@@ -28,6 +32,8 @@ def main() -> None:
         APP_NAME,
         "--add-data",
         static_arg,
+        "--add-data",
+        version_arg,
         str(ROOT_DIR / "start_bilikara.py"),
     ]
     command.extend(_bundled_binary_args(data_separator, verbose=True, validate=True))
@@ -41,18 +47,33 @@ def main() -> None:
     print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")
 
 
-def _bundled_binary_args(
-    data_separator: str,
-    *,
-    verbose: bool = False,
-    validate: bool = False,
-) -> list[str]:
-    bundled_paths, optional_missing = _resolved_bundle_binary_paths()
-    missing = [
-        binary_name
-        for binary_name in REQUIRED_TOOL_BINARIES
-        if binary_name not in bundled_paths
-    ]
+def _bundle_version() -> str:
+    version = os.getenv("BILIKARA_VERSION", "").strip()
+    if version:
+        return version
+    ref_name = os.getenv("GITHUB_REF_NAME", "").strip()
+    if ref_name:
+        return ref_name
+    return "dev"
+
+
+def _bundled_binary_args(data_separator: str, *, verbose: bool = False) -> list[str]:
+    args: list[str] = []
+    bundled: list[str] = []
+    missing: list[str] = []
+    optional_missing: list[str] = []
+    for binary_name in REQUIRED_TOOL_BINARIES:
+        binary_path = _resolve_bundle_binary_path(binary_name)
+        if not binary_path:
+            missing.append(binary_name)
+            continue
+        bundled.append(str(binary_path.resolve()))
+    for binary_name in OPTIONAL_TOOL_BINARIES:
+        binary_path = _resolve_bundle_binary_path(binary_name)
+        if not binary_path:
+            optional_missing.append(binary_name)
+            continue
+        bundled.append(str(binary_path.resolve()))
 
     if missing:
         missing_text = ", ".join(missing)

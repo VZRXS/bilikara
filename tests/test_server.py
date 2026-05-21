@@ -1,8 +1,11 @@
+import csv
+import io
 import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import bilikara.server as server_module
 from bilikara.server import AppContext, BilikaraHandler, run
 
 
@@ -46,6 +49,26 @@ class AppContextRemoteAccessTest(unittest.TestCase):
 
 
 class AppContextStateRevisionTest(unittest.TestCase):
+    def test_startup_gatcha_refresh_bypasses_global_lock_only_once(self):
+        context = AppContext.__new__(AppContext)
+        context._startup_lock = threading.RLock()
+        context._startup_gatcha_refresh_bypass_available = True
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+
+        with patch("bilikara.server.refresh_gatcha_cache_in_background", return_value=True) as refresh:
+            self.assertTrue(context.refresh_startup_gatcha_cache_in_background())
+            self.assertTrue(context.refresh_startup_gatcha_cache_in_background())
+
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(
+            refresh.call_args_list[0].kwargs,
+            {"use_global_lock": False, "upload_default_uids_to_lark": False},
+        )
+        self.assertIn("on_start", refresh.call_args_list[1].kwargs)
+        self.assertIn("on_done", refresh.call_args_list[1].kwargs)
+        self.assertNotIn("use_global_lock", refresh.call_args_list[1].kwargs)
+
     def test_wait_for_state_change_unblocks_after_notify(self):
         context = AppContext.__new__(AppContext)
         context._closed = False
@@ -64,6 +87,56 @@ class AppContextStateRevisionTest(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(results, [True])
+
+    def test_reset_player_state_notifies_after_clearing_player_state(self):
+        context = AppContext.__new__(AppContext)
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+        context._player_control_lock = threading.RLock()
+        context._player_control_seq = 7
+        context._player_control_ack_seq = 0
+        context._player_control_command = {"type": "play"}
+        context._player_status_lock = threading.RLock()
+        context._player_status = {"item_id": "song-a", "current_time": 12.0}
+        context.store = SimpleNamespace(reset_player_state=lambda: None)
+
+        context.reset_player_state()
+
+        self.assertEqual(context._state_revision, 1)
+        self.assertEqual(context._player_control_ack_seq, 7)
+        self.assertIsNone(context._player_control_command)
+        self.assertIsNone(context._player_status)
+
+
+class AppContextPlayerStatusTest(unittest.TestCase):
+    def make_context(self) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._player_status_lock = threading.RLock()
+        context._player_status = None
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+        context.store = SimpleNamespace(mark_item_playback_started=lambda item_id: None)
+        return context
+
+    def test_player_status_preserves_reported_duration(self):
+        context = self.make_context()
+
+        context.update_player_status(
+            item_id="song-1",
+            is_paused=False,
+            current_time=12.0,
+            duration=123.4,
+        )
+        context.update_player_status(
+            item_id="song-1",
+            is_paused=True,
+            current_time=13.0,
+        )
+
+        snapshot = context.player_status_snapshot({"id": "song-1"})
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot["duration"], 123.4)
+        self.assertEqual(snapshot["current_time"], 13.0)
 
 
 class AppContextClientTrackingTest(unittest.TestCase):
@@ -101,6 +174,21 @@ class RunDefaultsTest(unittest.TestCase):
         self.assertTrue(serve.call_args.kwargs["shutdown_on_last_client"])
 
 
+class PortSelectionTest(unittest.TestCase):
+    def test_find_available_port_skips_loopback_conflict_for_wildcard_host(self):
+        def can_bind(host: str, port: int) -> bool:
+            if (host, port) == ("0.0.0.0", 8080):
+                return True
+            if (host, port) == ("127.0.0.1", 8080):
+                return False
+            return True
+
+        with patch("bilikara.server._can_bind_port", side_effect=can_bind):
+            port = server_module._find_available_port("0.0.0.0", 8080)
+
+        self.assertEqual(port, 8081)
+
+
 class PlaylistAddRequestTest(unittest.TestCase):
     def test_add_requires_session_user_before_parsing_video(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -121,8 +209,211 @@ class PlaylistAddRequestTest(unittest.TestCase):
 
         fetch_video.assert_not_called()
 
+    def test_missing_bilibili_video_error_deletes_pool_bvid(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
 
-class HistoryRouteTest(unittest.TestCase):
+        with patch(
+            "bilikara.server.delete_cloudflare_pool_entry",
+            return_value={"success": True, "found": True, "deleted": True},
+        ) as delete_entry:
+            handler._delete_missing_bvid_from_pool_if_needed(
+                {"url": "https://www.bilibili.com/video/BV1VpCJBHEGg"},
+                server_module.BilibiliError("啥都木有"),
+            )
+
+        delete_entry.assert_called_once_with("BV1VpCJBHEGg")
+
+    def test_other_bilibili_errors_do_not_delete_pool_bvid(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+
+        with patch("bilikara.server.delete_cloudflare_pool_entry") as delete_entry:
+            handler._delete_missing_bvid_from_pool_if_needed(
+                {"url": "https://www.bilibili.com/video/BV1VpCJBHEGg"},
+                server_module.BilibiliError("请求太频繁"),
+            )
+
+        delete_entry.assert_not_called()
+
+
+class PlaylistExportRouteTest(unittest.TestCase):
+    def test_playlist_export_csv_route_downloads_friendly_csv(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        history = [
+            {
+                "display_title": "Second song",
+                "resolved_url": "https://www.bilibili.com/video/BV2xx411c7mD",
+                "original_url": "BV2xx411c7mD",
+                "requester_name": "Later",
+                "owner_name": "Later UP",
+                "owner_mid": "67890",
+                "request_count": 1,
+                "requested_at": 200,
+                "part_title": "P2",
+            },
+            {
+                "display_title": "First song",
+                "resolved_url": "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+                "original_url": "BV1xx411c7mD",
+                "requester_name": "Kevin",
+                "owner_name": "μ's",
+                "owner_mid": "12345",
+                "request_count": 2,
+                "requested_at": 100,
+                "part_title": "P1",
+            },
+            {
+                "display_title": "Undated song",
+                "resolved_url": "https://www.bilibili.com/video/BV3xx411c7mD",
+                "requester_name": "No Time",
+                "requested_at": 0,
+            },
+        ]
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            history_snapshot=lambda: history,
+        )
+
+        handler.path = "/api/playlist/export?format=csv"
+        handler.headers = {}
+        handler._write_download = lambda payload, content_type, filename: writes.append(
+            {
+                "payload": payload,
+                "content_type": content_type,
+                "filename": filename,
+            }
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.time.strftime",
+            return_value="20260430-123456",
+        ):
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["content_type"], "text/csv; charset=utf-8")
+        self.assertEqual(writes[0]["filename"], "bilikara-history-20260430-123456.csv")
+        decoded = writes[0]["payload"].decode("utf-8-sig")
+        rows = list(csv.DictReader(io.StringIO(decoded)))
+        self.assertEqual([row["标题"] for row in rows], ["First song", "Second song", "Undated song"])
+        self.assertEqual(rows[0]["序号"], "1")
+        self.assertEqual(rows[0]["BV 号"], "BV1xx411c7mD")
+        self.assertEqual(rows[0]["点歌人"], "Kevin")
+        self.assertEqual(rows[0]["UP 主"], "μ's")
+        self.assertEqual(rows[0]["UP 主 UID"], "12345")
+        self.assertEqual(rows[0]["点歌次数"], "2")
+        self.assertTrue(rows[0]["播放时间"])
+        self.assertEqual(rows[0]["视频链接"], "https://www.bilibili.com/video/BV1xx411c7mD?p=1")
+        self.assertEqual(rows[0]["原始链接"], "BV1xx411c7mD")
+        self.assertEqual(rows[0]["分P/版本"], "P1")
+        self.assertEqual(rows[2]["播放时间"], "")
+
+    def test_playlist_export_image_route_uses_generated_suffix(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            history_snapshot=lambda: [{"display_title": "song"}],
+        )
+
+        handler.path = "/api/playlist/export?format=image"
+        handler.headers = {}
+        handler._write_download = lambda payload, content_type, filename: writes.append(
+            {
+                "payload": payload,
+                "content_type": content_type,
+                "filename": filename,
+            }
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.time.strftime",
+            return_value="20260430-123456",
+        ), patch(
+            "bilikara.server.playlist_image_export",
+            return_value=(b"zip-bytes", "application/zip", "bilikara-playlist-images.zip"),
+        ) as image_export:
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["payload"], b"zip-bytes")
+        self.assertEqual(writes[0]["content_type"], "application/zip")
+        self.assertEqual(writes[0]["filename"], "bilikara-history-20260430-123456.zip")
+        self.assertEqual(image_export.call_args.kwargs["page_size"], 200)
+
+    def test_playlist_export_played_source_downloads_session_csv(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        played = [
+            {
+                "display_title": "中文歌曲",
+                "resolved_url": "https://www.bilibili.com/video/BV9xx411c7mD",
+                "requester_name": "小明",
+                "requested_at": 300,
+            }
+        ]
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            history_snapshot=lambda: (_ for _ in ()).throw(AssertionError("should export played")),
+            session_played_snapshot=lambda: played,
+        )
+
+        handler.path = "/api/playlist/export?format=csv&source=played"
+        handler.headers = {}
+        handler._write_download = lambda payload, content_type, filename: writes.append(
+            {
+                "payload": payload,
+                "content_type": content_type,
+                "filename": filename,
+            }
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.time.strftime",
+            return_value="20260430-123456",
+        ):
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["filename"], "bilikara-played-20260430-123456.csv")
+        self.assertTrue(writes[0]["payload"].startswith(b"\xef\xbb\xbf"))
+        decoded = writes[0]["payload"].decode("utf-8-sig")
+        rows = list(csv.DictReader(io.StringIO(decoded)))
+        self.assertIn("播放时间", rows[0])
+        self.assertEqual(rows[0]["标题"], "中文歌曲")
+        self.assertEqual(rows[0]["点歌人"], "小明")
+
+    def test_playlist_export_image_route_applies_selected_page_size(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        history = [
+            {"display_title": f"Song {index}", "requested_at": index}
+            for index in range(160)
+        ]
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            history_snapshot=lambda: history,
+        )
+
+        handler.path = "/api/playlist/export?format=image&page_size=150"
+        handler.headers = {}
+        handler._write_download = lambda payload, content_type, filename: writes.append(
+            {
+                "payload": payload,
+                "content_type": content_type,
+                "filename": filename,
+            }
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.time.strftime",
+            return_value="20260430-123456",
+        ), patch(
+            "bilikara.server.playlist_image_export",
+            return_value=(b"image-bytes", "image/png", "bilikara-playlist.png"),
+        ) as image_export:
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["payload"], b"image-bytes")
+        self.assertEqual(image_export.call_args.kwargs["page_size"], 150)
+
     def test_history_clear_route_returns_fresh_snapshot(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
@@ -142,6 +433,57 @@ class HistoryRouteTest(unittest.TestCase):
 
         self.assertEqual(writes[0], {"cleared": True})
         self.assertEqual(writes[1], {"ok": True, "data": {"history": []}})
+
+
+class UpdateRouteTest(unittest.TestCase):
+    def test_update_check_route_returns_update_payload(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+
+        handler.path = "/api/app/update"
+        handler.headers = {}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.check_for_update",
+            return_value={
+                "current_version": "v0.4.0",
+                "latest_version": "v0.4.1",
+                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.4.1",
+                "update_available": True,
+            },
+        ) as update_check:
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["ok"], True)
+        self.assertTrue(writes[0]["data"]["update_available"])
+        update_check.assert_called_once_with(include_preview=False)
+
+    def test_update_check_route_can_include_preview_releases(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+
+        handler.path = "/api/app/update?include_preview=1"
+        handler.headers = {}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.check_for_update",
+            return_value={
+                "current_version": "v0.4.0",
+                "latest_version": "v0.5.0-preview.1",
+                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.5.0-preview.1",
+                "update_available": True,
+                "include_preview": True,
+            },
+        ) as update_check:
+            handler.do_GET()
+
+        self.assertEqual(writes[0]["ok"], True)
+        self.assertTrue(writes[0]["data"]["include_preview"])
+        update_check.assert_called_once_with(include_preview=True)
 
 
 class PlayerResetRouteTest(unittest.TestCase):
@@ -166,28 +508,106 @@ class PlayerResetRouteTest(unittest.TestCase):
         self.assertEqual(writes[1], {"ok": True, "data": {"playback_mode": "local"}})
 
 
-class ClientMediaCapabilitiesRouteTest(unittest.TestCase):
-    def test_client_media_capabilities_route_returns_cache_manager_result(self):
+class CacheRetryRouteTest(unittest.TestCase):
+    def test_retry_current_item_forces_recache(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
-        payload = {"hevc_supported": False}
+        retries: list[dict] = []
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
-            set_client_media_capabilities=lambda body: {
-                "hevc_supported": body["hevc_supported"],
-                "force_avc": not body["hevc_supported"],
-            },
+            is_current_item=lambda item_id: item_id == "current-song",
+            retry_cache_item=lambda item_id, force=False: retries.append(
+                {"item_id": item_id, "force": force}
+            ),
+            snapshot=lambda: {"current_item": {"id": "current-song"}},
         )
 
-        handler.path = "/api/client/media-capabilities"
+        handler.path = "/api/cache/retry"
         handler.headers = {}
-        handler._read_json_body = lambda: payload
-        handler._write_json = lambda response, status=None: writes.append(response)
+        handler._read_json_body = lambda: {"item_id": "current-song"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
 
         with patch("bilikara.server.CONTEXT", context):
             handler.do_POST()
 
-        self.assertEqual(writes, [{"ok": True, "data": {"hevc_supported": False, "force_avc": True}}])
+        self.assertEqual(retries, [{"item_id": "current-song", "force": True}])
+        self.assertEqual(writes[0], {"ok": True, "data": {"current_item": {"id": "current-song"}}})
+
+    def test_retry_playlist_item_keeps_requested_force_flag(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        retries: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            is_current_item=lambda item_id: False,
+            retry_cache_item=lambda item_id, force=False: retries.append(
+                {"item_id": item_id, "force": force}
+            ),
+            snapshot=lambda: {"playlist": [{"id": "queued-song"}]},
+        )
+
+        handler.path = "/api/cache/retry"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"item_id": "queued-song"}
+        handler._write_json = lambda payload, status=None: None
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(retries, [{"item_id": "queued-song", "force": False}])
+
+
+class PlayerControlRouteTest(unittest.TestCase):
+    def test_next_track_route_issues_player_control_command(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        issued: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            issue_player_control=lambda **kwargs: issued.append(kwargs),
+            snapshot=lambda: {"player_control_command": issued[-1]},
+        )
+
+        handler.path = "/api/player/control"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "action": "next-track",
+            "item_id": "song-1",
+        }
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(issued[0]["action"], "next-track")
+        self.assertEqual(issued[0]["item_id"], "song-1")
+        self.assertEqual(writes[0]["data"]["player_control_command"]["action"], "next-track")
+
+    def test_absolute_seek_route_forwards_target_seconds(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        issued: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            issue_player_control=lambda **kwargs: issued.append(kwargs),
+            snapshot=lambda: {"player_control_command": issued[-1]},
+        )
+
+        handler.path = "/api/player/control"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "action": "seek-absolute",
+            "item_id": "song-1",
+            "target_seconds": 262.5,
+        }
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(issued[0]["action"], "seek-absolute")
+        self.assertEqual(issued[0]["item_id"], "song-1")
+        self.assertEqual(issued[0]["target_seconds"], 262.5)
+        self.assertEqual(writes[0]["data"]["player_control_command"]["target_seconds"], 262.5)
 
 
 class PlaylistResortRouteTest(unittest.TestCase):

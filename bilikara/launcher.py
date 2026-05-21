@@ -7,9 +7,15 @@ import threading
 import traceback
 from pathlib import Path
 
+DEBUG_LOG_FILE_HANDLE = None
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def startup_logging_enabled() -> bool:
-    return os.getenv("BILIKARA_STARTUP_LOG", "").strip().lower() in {"1", "true", "yes", "on"}
+    return _env_flag("DEBUG_LOG") or _env_flag("BILIKARA_STARTUP_LOG")
 
 
 def _fallback_app_home() -> Path:
@@ -19,9 +25,54 @@ def _fallback_app_home() -> Path:
 
 
 def startup_log_path() -> Path:
+    override = os.getenv("DEBUG_LOG_FILE", "").strip()
+    if override:
+        log_path = Path(override).expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        return log_path
     log_dir = _fallback_app_home() / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    return log_dir / "startup.log"
+    return log_dir / ("debug.log" if _env_flag("DEBUG_LOG") else "startup.log")
+
+
+class _TeeStream:
+    def __init__(self, primary, log_handle) -> None:
+        self.primary = primary
+        self.log_handle = log_handle
+        self.encoding = getattr(primary, "encoding", "utf-8")
+        self.errors = getattr(primary, "errors", "replace")
+
+    def write(self, text) -> int:
+        if not isinstance(text, str):
+            text = str(text)
+        self.primary.write(text)
+        self.primary.flush()
+        self.log_handle.write(text)
+        self.log_handle.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        self.primary.flush()
+        self.log_handle.flush()
+
+    def isatty(self) -> bool:
+        return bool(getattr(self.primary, "isatty", lambda: False)())
+
+
+def _install_debug_log_streams() -> None:
+    global DEBUG_LOG_FILE_HANDLE
+    if not _env_flag("DEBUG_LOG") or DEBUG_LOG_FILE_HANDLE is not None:
+        return
+    try:
+        log_path = startup_log_path()
+        DEBUG_LOG_FILE_HANDLE = log_path.open("a", encoding="utf-8", buffering=1)
+        DEBUG_LOG_FILE_HANDLE.write(
+            f"\n--- debug log {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+        )
+        sys.stdout = _TeeStream(sys.stdout, DEBUG_LOG_FILE_HANDLE)
+        sys.stderr = _TeeStream(sys.stderr, DEBUG_LOG_FILE_HANDLE)
+    except Exception:
+        DEBUG_LOG_FILE_HANDLE = None
 
 
 def append_startup_log(message: str) -> None:
@@ -64,6 +115,7 @@ def _install_startup_exception_hooks() -> None:
 
 
 def run_with_startup_logging() -> None:
+    _install_debug_log_streams()
     _install_startup_exception_hooks()
     if startup_logging_enabled():
         append_startup_log(

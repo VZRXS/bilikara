@@ -42,7 +42,9 @@ MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
 AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp3", ".flac", ".ogg", ".opus", ".wav"}
 PROGRESS_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re.IGNORECASE)
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
+CACHE_RETENTION_BUFFER_ITEMS = 3
 CREATE_NO_WINDOW = 0x08000000
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
@@ -91,7 +93,9 @@ class CacheManager:
         self.on_bbdown_login_success = on_bbdown_login_success
         self.tasks: "queue.Queue[str]" = queue.Queue()
         self.pending_ids: set[str] = set()
+        self.requeued_active_ids: set[str] = set()
         self.desired_ids: set[str] = set()
+        self.ordered_desired_ids: list[str] = []
         self.stop_event = threading.Event()
         self.lock = threading.RLock()
         self.binary_state = "idle"
@@ -105,7 +109,9 @@ class CacheManager:
         self.active_process: subprocess.Popen[str] | None = None
         self.active_item_id: str | None = None
         self.item_activity_at: dict[str, float] = {}
+        self.item_stage_progress_signatures: dict[str, str] = {}
         self.retry_requested_ids: set[str] = set()
+        self.cache_interrupted_messages: dict[str, str] = {}
         self.log_dir = LOG_DIR / "bbdown"
         self.bbdown_login_process: subprocess.Popen[str] | None = None
         self.bbdown_login_state = "idle"
@@ -332,6 +338,47 @@ class CacheManager:
                     )
         return payload
 
+    def reconcile_cache_state(self) -> None:
+        items = self.store.list_items()
+        if not items:
+            return
+        desired_ids, ordered_desired_ids = self._cache_window_plan(items)
+        invalidated_ids: list[str] = []
+
+        for item in items:
+            if item.cache_status != "ready" or self._item_cache_ready(item):
+                continue
+            self.store.update_item(
+                item.id,
+                cache_status="pending",
+                cache_progress=0.0,
+                cache_message="缓存文件已清空，等待重新缓存",
+                video_relative_path="",
+                video_media_url="",
+                audio_variants=[],
+                selected_audio_variant_id="",
+                persist_backup=False,
+            )
+            self._record_item_activity(item.id)
+            invalidated_ids.append(item.id)
+
+        if not invalidated_ids:
+            return
+
+        with self.lock:
+            self.desired_ids = set(desired_ids)
+            self.ordered_desired_ids = list(ordered_desired_ids)
+
+        fresh_items = self.store.list_items()
+        fresh_by_id = {item.id: item for item in fresh_items}
+        for item_id in invalidated_ids:
+            if item_id not in desired_ids:
+                continue
+            item = fresh_by_id.get(item_id)
+            if item:
+                self._ensure_item_cached(item)
+        self._prioritize_cache_window(fresh_items, desired_ids)
+
     def set_max_cache_items(self, max_cache_items: int) -> int:
         self.set_cache_policy(max_cache_items=max_cache_items)
         with self.lock:
@@ -450,6 +497,11 @@ class CacheManager:
         with self.lock:
             self.item_activity_at.clear()
             self.retry_requested_ids.clear()
+            self.cache_interrupted_messages.clear()
+            self.pending_ids.clear()
+            self.requeued_active_ids.clear()
+            self.desired_ids.clear()
+            self.ordered_desired_ids.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -479,6 +531,7 @@ class CacheManager:
         with self.lock:
             self.item_activity_at.clear()
             self.retry_requested_ids.clear()
+            self.cache_interrupted_messages.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -497,8 +550,11 @@ class CacheManager:
         with self.lock:
             process = self.active_process
             self.pending_ids.clear()
+            self.requeued_active_ids.clear()
             self.desired_ids.clear()
+            self.ordered_desired_ids.clear()
             self.retry_requested_ids.clear()
+            self.cache_interrupted_messages.clear()
             self.item_activity_at.clear()
             self.active_process = None
             self.active_item_id = None
@@ -518,7 +574,7 @@ class CacheManager:
             raise ValueError("这首歌已经缓存完成，无需重新下载")
         if item.cache_status not in {"downloading", "failed", "ready", "pending", "queued"}:
             raise ValueError("当前缓存状态不能重新下载")
-        if not self._should_cache(item_id):
+        if not self._is_in_cache_window(item_id):
             raise ValueError("当前不在自动缓存窗口中")
 
         log_path = self._item_log_path(item_id)
@@ -526,9 +582,13 @@ class CacheManager:
 
         with self.lock:
             active_process = self.active_process if self.active_item_id == item_id else None
+            preempted_item_id = self.active_item_id if force and self.active_item_id != item_id else None
+            preempted_process = self.active_process if preempted_item_id else None
             in_flight = item_id in self.pending_ids or self.active_item_id == item_id
             if in_flight:
                 self.retry_requested_ids.add(item_id)
+            if preempted_item_id:
+                self.cache_interrupted_messages[preempted_item_id] = "等待当前歌曲重新下载"
 
         self.store.update_item(
             item_id,
@@ -549,14 +609,53 @@ class CacheManager:
             return
 
         self._remove_cache_dir(item_id)
+        if preempted_item_id:
+            self._append_log_line(
+                self._item_log_path(preempted_item_id),
+                f"[{self._log_timestamp()}] interrupted by manual retry: {item.display_title}",
+            )
+            self._enqueue_retry_front(item_id, requeue_after=preempted_item_id)
+            self._terminate_process(preempted_process)
+            return
         self.enqueue(item_id)
+
+    def _cache_window_plan(self, items: list[Any]) -> tuple[set[str], list[str]]:
+        if self.max_cache_items <= 0:
+            return set(), []
+        window_items = list(items[: self.max_cache_items])
+        desired_ids = {item.id for item in window_items}
+        ordered_desired_ids = [
+            item.id
+            for item in window_items
+            if not self._item_cache_ready(item)
+        ]
+        return desired_ids, ordered_desired_ids
+
+    def _retained_cache_ids(self, items: list[Any], desired_ids: set[str]) -> set[str]:
+        retained_ids = set(desired_ids)
+        if self.max_cache_items <= 0:
+            return retained_ids
+        buffer_remaining = CACHE_RETENTION_BUFFER_ITEMS
+        if buffer_remaining <= 0:
+            return retained_ids
+
+        for item in items:
+            if item.id in retained_ids or not self._item_cache_ready(item):
+                continue
+            retained_ids.add(item.id)
+            buffer_remaining -= 1
+            if buffer_remaining <= 0:
+                break
+        return retained_ids
 
     def sync_with_playlist(self) -> None:
         items = self.store.list_items()
-        desired_ids = {item.id for item in items[: self.max_cache_items]} if self.max_cache_items > 0 else set()
+        desired_ids, ordered_desired_ids = self._cache_window_plan(items)
+        retained_ids = self._retained_cache_ids(items, desired_ids)
         current_ids = {item.id for item in items}
         with self.lock:
-            self.desired_ids = desired_ids
+            self.desired_ids = set(desired_ids)
+            self.ordered_desired_ids = list(ordered_desired_ids)
 
         self._cleanup_orphan_cache_dirs(current_ids)
         self._stop_active_if_not_desired(desired_ids)
@@ -564,8 +663,9 @@ class CacheManager:
         for item in items:
             if item.id in desired_ids:
                 self._ensure_item_cached(item)
-            else:
+            elif item.id not in retained_ids:
                 self._drop_item_cache(item.id, self._outside_window_message())
+        self._prioritize_cache_window(items, desired_ids)
 
     def enqueue(self, item_id: str) -> None:
         with self.lock:
@@ -574,33 +674,141 @@ class CacheManager:
             self.pending_ids.add(item_id)
         self.tasks.put(item_id)
 
+    def _enqueue_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
+        with self.lock:
+            if self.stop_event.is_set():
+                return
+            drained: list[str] = []
+            skip_ids = {item_id}
+            if requeue_after:
+                skip_ids.add(requeue_after)
+            while True:
+                try:
+                    queued_id = self.tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if queued_id not in skip_ids:
+                    drained.append(queued_id)
+                self.tasks.task_done()
+
+            ordered = [item_id]
+            self.pending_ids.add(item_id)
+            if requeue_after and requeue_after != item_id and requeue_after in self.desired_ids:
+                ordered.append(requeue_after)
+                self.pending_ids.add(requeue_after)
+                if requeue_after == self.active_item_id:
+                    self.requeued_active_ids.add(requeue_after)
+            for queued_id in ordered + drained:
+                self.tasks.put(queued_id)
+
+    def _enqueue_retry_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
+        self._enqueue_front(item_id, requeue_after=requeue_after)
+
+    def _reorder_pending_cache_queue(self, ordered_ids: list[str]) -> None:
+        ordered_set = set(ordered_ids)
+        with self.lock:
+            if self.stop_event.is_set():
+                return
+            active_item_id = self.active_item_id
+            drained: list[str] = []
+            while True:
+                try:
+                    queued_id = self.tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if queued_id in self.desired_ids:
+                    drained.append(queued_id)
+                else:
+                    self.pending_ids.discard(queued_id)
+                self.tasks.task_done()
+
+            drained_set = set(drained)
+            reordered: list[str] = []
+            for item_id in ordered_ids:
+                if item_id == active_item_id:
+                    continue
+                if item_id in drained_set or item_id in self.pending_ids:
+                    reordered.append(item_id)
+
+            for item_id in drained:
+                if item_id not in ordered_set and item_id not in reordered:
+                    reordered.append(item_id)
+
+            for item_id in reordered:
+                self.pending_ids.add(item_id)
+                self.tasks.put(item_id)
+
+    def _prioritize_cache_window(self, items: list[Any], desired_ids: set[str]) -> None:
+        ordered_items = [item for item in items if item.id in desired_ids]
+        ordered_cache_ids = [
+            item.id
+            for item in ordered_items
+            if not self._item_cache_ready(item)
+        ]
+        if not ordered_cache_ids:
+            return
+
+        self._reorder_pending_cache_queue(ordered_cache_ids)
+
+        with self.lock:
+            active_item_id = self.active_item_id
+            active_process = self.active_process
+        if not active_item_id or active_item_id not in desired_ids:
+            return
+        if active_item_id == ordered_cache_ids[0]:
+            return
+        if active_item_id not in ordered_cache_ids:
+            return
+
+        next_item_id = ordered_cache_ids[0]
+        next_item = next((item for item in ordered_items if item.id == next_item_id), None)
+        with self.lock:
+            if self.active_item_id != active_item_id:
+                return
+            title = str(getattr(next_item, "display_title", "") or "").strip()
+            self.cache_interrupted_messages[active_item_id] = (
+                f"等待优先缓存: {title}" if title else "等待优先缓存"
+            )
+        self._enqueue_front(next_item_id, requeue_after=active_item_id)
+        self._terminate_process(active_process)
+
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
                 item_id = self.tasks.get(timeout=0.5)
             except queue.Empty:
                 continue
+            should_resync = False
             try:
-                self._cache_item(item_id)
+                with self.lock:
+                    self.active_item_id = item_id
+                should_resync = self._cache_item(item_id)
             finally:
                 with self.lock:
-                    self.pending_ids.discard(item_id)
+                    if self.active_item_id == item_id:
+                        self.active_item_id = None
+                    if item_id in self.requeued_active_ids:
+                        self.requeued_active_ids.discard(item_id)
+                    else:
+                        self.pending_ids.discard(item_id)
                 self.tasks.task_done()
+            if should_resync and not self.stop_event.is_set():
+                self.sync_with_playlist()
 
-    def _cache_item(self, item_id: str, allow_refresh_retry: bool = True) -> None:
+    def _cache_item(self, item_id: str, allow_refresh_retry: bool = True) -> bool:
         if self.stop_event.is_set() or not self._should_cache(item_id):
-            return
+            return False
         if self._take_retry_request(item_id):
             self._remove_cache_dir(item_id)
         item = self.store.get_item(item_id)
         if not item:
             self._remove_cache_dir(item_id)
-            return
+            return False
         # Current cache flow keeps video and audio tracks separate so the host
         # can switch audio variants without remuxing a single output file.
-        self._cache_item_multi(item_id, item, allow_refresh_retry=allow_refresh_retry)
+        return self._cache_item_multi(item_id, item, allow_refresh_retry=allow_refresh_retry)
 
-    def _cache_item_multi(self, item_id: str, item, *, allow_refresh_retry: bool) -> None:
+    def _cache_item_multi(self, item_id: str, item, *, allow_refresh_retry: bool) -> bool:
         self.store.update_item(
             item_id,
             cache_status="queued",
@@ -625,7 +833,7 @@ class CacheManager:
                 cache_message=f"BBDown 不可用: {exc}",
                 persist_backup=False,
             )
-            return
+            return False
 
         try:
             ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
@@ -637,10 +845,10 @@ class CacheManager:
                 cache_message=f"FFmpeg 不可用: {exc}",
                 persist_backup=False,
             )
-            return
+            return False
 
         if not self._should_cache(item_id):
-            return
+            return False
 
         self.store.update_item(
             item_id,
@@ -653,27 +861,29 @@ class CacheManager:
         try:
             cache_result = self._download_selected_streams(item, binary_path, ffmpeg_path, item_dir, log_path)
             self._raise_if_retry_requested(item_id)
+            self._raise_if_priority_shift(item_id)
             self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
             self._raise_if_retry_requested(item_id)
+            self._raise_if_priority_shift(item_id)
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
                 self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
-                return
+                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                return False
             self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
             self._drop_item_cache(item_id, str(exc))
-            return
+            return False
         except DownloadCommandError as exc:
             if self._take_retry_request(item_id):
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
                 self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
-                return
+                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                return False
             last_message = str(exc)
             if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
                 self._append_log_line(
@@ -682,10 +892,9 @@ class CacheManager:
                 )
                 try:
                     self._ensure_bbdown(force_refresh=True)
-                    shutil.rmtree(item_dir, ignore_errors=True)
+                    self._safe_rmtree(item_dir)
                     item_dir.mkdir(parents=True, exist_ok=True)
-                    self._cache_item_multi(item_id, item, allow_refresh_retry=False)
-                    return
+                    return self._cache_item_multi(item_id, item, allow_refresh_retry=False)
                 except Exception as refresh_exc:  # noqa: BLE001
                     self._append_log_line(
                         log_path,
@@ -699,7 +908,7 @@ class CacheManager:
                 persist_backup=False,
             )
             self._record_item_activity(item_id)
-            return
+            return False
 
         video_file = cache_result["video_file"]
         self.store.update_item(
@@ -715,6 +924,7 @@ class CacheManager:
         )
         self._record_item_activity(item_id)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {video_file.name}")
+        return True
 
     # LEGACY: old single-pass BBDown cache path. It produced one muxed media
     # file and populated local_relative_path/local_media_url. The current host
@@ -911,6 +1121,7 @@ class CacheManager:
         item_dir: Path,
         log_path: Path,
     ) -> dict[str, object]:
+        self._raise_if_priority_shift(item.id)
         selected_pages = self._selected_pages_for_item(item)
         video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
         download_stage_count = len(selected_pages) + 1
@@ -974,6 +1185,7 @@ class CacheManager:
                 {
                     "id": self._variant_id(page, label, index),
                     "label": label,
+                    "page": page,
                     "audio_url": self._build_media_url(str(audio_file.relative_to(CACHE_DIR))),
                 }
             )
@@ -1064,6 +1276,7 @@ class CacheManager:
 
         label = "视频轨" if stream_kind == "video" else "音轨"
         stage_label = f"下载{label} P{page}"
+        self._raise_if_priority_shift(item.id)
         self._run_item_command(
             item.id,
             command,
@@ -1072,6 +1285,8 @@ class CacheManager:
             stage_label=stage_label,
             stage_index=stage_index,
             stage_count=stage_count,
+            stream_kind=stream_kind,
+            target_dir=target_dir,
         )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
@@ -1151,10 +1366,14 @@ class CacheManager:
         stage_label: str,
         stage_index: int,
         stage_count: int,
+        stream_kind: str,
+        target_dir: Path,
     ) -> None:
         progress_start = 94.0 * stage_index / max(stage_count, 1)
         progress_span = 94.0 / max(stage_count, 1)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+        target_bytes_state = {"value": 0}
+        monitor_stop = threading.Event()
 
         process = subprocess.Popen(
             command,
@@ -1172,6 +1391,29 @@ class CacheManager:
         with self.lock:
             self.active_process = process
             self.active_item_id = item_id
+        self._update_structured_stage_progress(
+            item_id,
+            stage_label=stage_label,
+            target_dir=target_dir,
+            target_bytes=0,
+            progress_start=progress_start,
+            progress_span=progress_span,
+        )
+        monitor = threading.Thread(
+            target=self._monitor_structured_stage_progress,
+            kwargs={
+                "item_id": item_id,
+                "process": process,
+                "stop_event": monitor_stop,
+                "stage_label": stage_label,
+                "target_dir": target_dir,
+                "target_bytes_state": target_bytes_state,
+                "progress_start": progress_start,
+                "progress_span": progress_span,
+            },
+            daemon=True,
+        )
+        monitor.start()
         try:
             assert process.stdout is not None
             for raw_line in self._iter_output_messages(process.stdout):
@@ -1181,11 +1423,24 @@ class CacheManager:
                 last_message = line
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
                 self._record_item_activity(item_id)
+                target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
+                if target_bytes:
+                    target_bytes_state["value"] = target_bytes
                 progress = self._extract_progress(line)
-                changes = {"cache_message": self._display_stage_message(stage_label, line, progress)}
                 if progress is not None:
-                    changes["cache_progress"] = progress_start + (progress / 100.0) * progress_span
-                self.store.update_item(item_id, persist_backup=False, **changes)
+                    self.store.update_item(
+                        item_id,
+                        cache_progress=progress_start + (progress / 100.0) * progress_span,
+                        persist_backup=False,
+                    )
+                self._update_structured_stage_progress(
+                    item_id,
+                    stage_label=stage_label,
+                    target_dir=target_dir,
+                    target_bytes=target_bytes_state["value"],
+                    progress_start=progress_start,
+                    progress_span=progress_span,
+                )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
                     raise CacheCancelledError("缓存已停止")
@@ -1194,10 +1449,16 @@ class CacheManager:
                     raise CacheCancelledError(self._outside_window_message())
             return_code = process.wait()
         finally:
+            monitor_stop.set()
+            monitor.join(timeout=1.0)
             with self.lock:
                 if self.active_process is process:
                     self.active_process = None
                     self.active_item_id = None
+
+        interrupt_message = self._take_cache_interrupt_message(item_id)
+        if interrupt_message:
+            raise CacheCancelledError(interrupt_message)
 
         if self._take_retry_request(item_id):
             raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
@@ -1682,6 +1943,118 @@ class CacheManager:
             return f"{stage_label}: {line}"
         return stage_label
 
+    @staticmethod
+    def _selected_stream_size_hint_bytes(line: str, stream_kind: str) -> int:
+        normalized_line = str(line or "").strip()
+        expected_prefix = "[视频]" if stream_kind == "video" else "[音频]"
+        if not normalized_line.startswith(expected_prefix):
+            return 0
+        matches = STREAM_SIZE_HINT_RE.findall(normalized_line)
+        if not matches:
+            return 0
+        amount, unit = matches[-1]
+        try:
+            value = float(amount)
+        except (TypeError, ValueError):
+            return 0
+        unit_index = {"B": 0, "KB": 1, "MB": 2, "GB": 3, "TB": 4}.get(str(unit or "").upper())
+        if unit_index is None:
+            return 0
+        return max(0, int(value * (1024 ** unit_index)))
+
+    @staticmethod
+    def _format_stage_bytes(value: object) -> str:
+        try:
+            size = max(0.0, float(value or 0.0))
+        except (TypeError, ValueError):
+            size = 0.0
+        units = ("B", "KB", "MB", "GB", "TB")
+        unit_index = 0
+        while size >= 1024 and unit_index < len(units) - 1:
+            size /= 1024
+            unit_index += 1
+        if unit_index == 0:
+            return f"{round(size)} {units[unit_index]}"
+        return f"{size:.1f} {units[unit_index]}"
+
+    @classmethod
+    def _structured_stage_message(cls, stage_label: str, current_bytes: int, target_bytes: int) -> str:
+        normalized_current = max(0, int(current_bytes or 0))
+        normalized_target = max(0, int(target_bytes or 0))
+        if normalized_target > 0 and normalized_current > 0:
+            percent = min(99, max(0, round((normalized_current / normalized_target) * 100)))
+            return (
+                f"{stage_label} {percent}% · "
+                f"{cls._format_stage_bytes(normalized_current)} / {cls._format_stage_bytes(normalized_target)}"
+            )
+        if normalized_target > 0:
+            return f"{stage_label} · 预计 {cls._format_stage_bytes(normalized_target)}"
+        if normalized_current > 0:
+            return f"{stage_label} · 已写入 {cls._format_stage_bytes(normalized_current)}"
+        return f"{stage_label} 准备中"
+
+    def _update_structured_stage_progress(
+        self,
+        item_id: str,
+        *,
+        stage_label: str,
+        target_dir: Path,
+        target_bytes: int,
+        progress_start: float,
+        progress_span: float,
+    ) -> None:
+        current_bytes = self._path_size(target_dir)
+        message = self._structured_stage_message(stage_label, current_bytes, target_bytes)
+        changes: dict[str, object] = {"cache_message": message}
+        normalized_target = max(0, int(target_bytes or 0))
+        if normalized_target > 0:
+            stage_ratio = max(0.0, min(float(current_bytes) / float(normalized_target), 0.99))
+            changes["cache_progress"] = progress_start + stage_ratio * progress_span
+        cache_progress_signature = (
+            round(float(changes["cache_progress"]), 3)
+            if "cache_progress" in changes
+            else None
+        )
+        signature = json.dumps(
+            {
+                "item_id": item_id,
+                "message": message,
+                "cache_progress": cache_progress_signature,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self.lock:
+            if self.item_stage_progress_signatures.get(item_id) == signature:
+                return
+            self.item_stage_progress_signatures[item_id] = signature
+        self.store.update_item(item_id, persist_backup=False, **changes)
+        self._record_item_activity(item_id)
+
+    def _monitor_structured_stage_progress(
+        self,
+        *,
+        item_id: str,
+        process: subprocess.Popen[str],
+        stop_event: threading.Event,
+        stage_label: str,
+        target_dir: Path,
+        target_bytes_state: dict[str, int],
+        progress_start: float,
+        progress_span: float,
+    ) -> None:
+        while not stop_event.wait(1.0):
+            self._update_structured_stage_progress(
+                item_id,
+                stage_label=stage_label,
+                target_dir=target_dir,
+                target_bytes=target_bytes_state.get("value", 0),
+                progress_start=progress_start,
+                progress_span=progress_span,
+            )
+            if process.poll() is not None:
+                return
+
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         with self.binary_prepare_lock:
             override = Path(BB_DOWN_PATH_OVERRIDE) if BB_DOWN_PATH_OVERRIDE else None
@@ -2123,20 +2496,21 @@ class CacheManager:
         for child in CACHE_DIR.iterdir():
             if child.name not in valid_ids:
                 if child.is_dir():
-                    shutil.rmtree(child, ignore_errors=True)
+                    self._safe_rmtree(child)
                 else:
-                    child.unlink(missing_ok=True)
+                    self._safe_unlink(child)
                 self._remove_item_log(child.name)
 
     def _clear_cache_root(self) -> None:
         for child in CACHE_DIR.iterdir():
             if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
+                self._safe_rmtree(child)
             else:
-                child.unlink(missing_ok=True)
+                self._safe_unlink(child)
         self._clear_log_root()
 
-    def _path_size(self, path: Path) -> int:
+    @staticmethod
+    def _path_size(path: Path) -> int:
         if not path.exists():
             return 0
         if path.is_file():
@@ -2146,22 +2520,60 @@ class CacheManager:
                 return 0
 
         total = 0
-        for child in path.rglob("*"):
-            if not child.is_file():
-                continue
-            try:
-                total += child.stat().st_size
-            except OSError:
-                continue
+        try:
+            for child in path.rglob("*"):
+                if not child.is_file():
+                    continue
+                try:
+                    total += child.stat().st_size
+                except OSError:
+                    continue
+        except OSError:
+            return total
         return total
 
-    def _ensure_item_cached(self, item) -> None:
-        video_path = CACHE_DIR / item.video_relative_path if item.video_relative_path else None
-        has_audio_variants = any(
-            isinstance(variant, dict) and str(variant.get("audio_url") or "").strip()
+    @staticmethod
+    def _cache_path_from_relative_path(relative_path: object) -> Path | None:
+        value = str(relative_path or "").strip().replace("\\", "/")
+        if not value:
+            return None
+        candidate = Path(value)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            return None
+        return CACHE_DIR / candidate
+
+    @classmethod
+    def _cache_path_from_media_url(cls, media_url: object) -> Path | None:
+        value = str(media_url or "").strip()
+        if not value:
+            return None
+        parsed = urllib.parse.urlparse(value)
+        path = urllib.parse.unquote(parsed.path or value)
+        for prefix in ("/media/", "media/"):
+            if path.startswith(prefix):
+                return cls._cache_path_from_relative_path(path.removeprefix(prefix))
+        return None
+
+    def _item_cache_ready(self, item) -> bool:
+        video_path = self._cache_path_from_relative_path(item.video_relative_path)
+        if not video_path or not video_path.exists():
+            return False
+
+        audio_variants = [
+            variant
             for variant in item.audio_variants
-        )
-        if video_path and video_path.exists() and has_audio_variants:
+            if isinstance(variant, dict)
+        ]
+        if not audio_variants:
+            return False
+        for variant in audio_variants:
+            audio_path = self._cache_path_from_media_url(variant.get("audio_url"))
+            if not audio_path or not audio_path.exists():
+                return False
+        return True
+
+    def _ensure_item_cached(self, item) -> None:
+        if self._item_cache_ready(item):
             self.store.update_item(
                 item.id,
                 video_media_url=self._build_media_url(item.video_relative_path) if item.video_relative_path else "",
@@ -2209,20 +2621,34 @@ class CacheManager:
         self._record_item_activity(item_id)
 
     def _remove_cache_dir(self, item_id: str) -> None:
-        shutil.rmtree(CACHE_DIR / item_id, ignore_errors=True)
+        self._safe_rmtree(CACHE_DIR / item_id)
         self._remove_item_log(item_id)
 
     def _remove_item_log(self, item_id: str) -> None:
-        self._item_log_path(item_id).unlink(missing_ok=True)
+        self._safe_unlink(self._item_log_path(item_id))
 
     def _clear_log_root(self) -> None:
         if not self.log_dir.exists():
             return
         for child in self.log_dir.iterdir():
             if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
+                self._safe_rmtree(child)
             else:
-                child.unlink(missing_ok=True)
+                self._safe_unlink(child)
+
+    @staticmethod
+    def _safe_rmtree(path: Path) -> None:
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            return
+
+    @staticmethod
+    def _safe_unlink(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            return
 
     def _record_item_activity(self, item_id: str) -> None:
         with self.lock:
@@ -2235,13 +2661,29 @@ class CacheManager:
             self.retry_requested_ids.discard(item_id)
             return True
 
+    def _take_cache_interrupt_message(self, item_id: str) -> str:
+        with self.lock:
+            return self.cache_interrupted_messages.pop(item_id, "")
+
     def _raise_if_retry_requested(self, item_id: str) -> None:
         if self._take_retry_request(item_id):
             raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
 
-    def _should_cache(self, item_id: str) -> bool:
+    def _raise_if_priority_shift(self, item_id: str) -> None:
+        if not self._should_cache(item_id):
+            raise CacheCancelledError(self._outside_window_message())
+
+    def _is_in_cache_window(self, item_id: str) -> bool:
         with self.lock:
             return item_id in self.desired_ids and not self.stop_event.is_set()
+
+    def _should_cache(self, item_id: str) -> bool:
+        with self.lock:
+            if self.stop_event.is_set():
+                return False
+            if not self.ordered_desired_ids:
+                return item_id in self.desired_ids
+            return item_id == self.ordered_desired_ids[0]
 
     def _stop_active_if_not_desired(self, desired_ids: set[str]) -> None:
         with self.lock:
@@ -2254,11 +2696,8 @@ class CacheManager:
         if not process or process.poll() is not None:
             return
         process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+        # We don't block here to avoid stalling the API thread.
+        # The worker thread will detect the termination via _run_tool_process.
 
     def _bbdown_login_worker(self) -> None:
             try:
