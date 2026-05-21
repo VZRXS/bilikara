@@ -57,23 +57,11 @@ def _bundle_version() -> str:
     return "dev"
 
 
-def _bundled_binary_args(data_separator: str, *, verbose: bool = False) -> list[str]:
+def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate: bool = False) -> list[str]:
     args: list[str] = []
-    bundled: list[str] = []
-    missing: list[str] = []
-    optional_missing: list[str] = []
-    for binary_name in REQUIRED_TOOL_BINARIES:
-        binary_path = _resolve_bundle_binary_path(binary_name)
-        if not binary_path:
-            missing.append(binary_name)
-            continue
-        bundled.append(str(binary_path.resolve()))
-    for binary_name in OPTIONAL_TOOL_BINARIES:
-        binary_path = _resolve_bundle_binary_path(binary_name)
-        if not binary_path:
-            optional_missing.append(binary_name)
-            continue
-        bundled.append(str(binary_path.resolve()))
+    bundled_paths, missing_tools = _resolved_bundle_binary_paths()
+    missing = [name for name in missing_tools if name in REQUIRED_TOOL_BINARIES]
+    optional_missing = [name for name in missing_tools if name in OPTIONAL_TOOL_BINARIES]
 
     if missing:
         missing_text = ", ".join(missing)
@@ -81,10 +69,10 @@ def _bundled_binary_args(data_separator: str, *, verbose: bool = False) -> list[
             f"Missing required external tools for bundle build: {missing_text}. "
             "Install ffmpeg and ensure it is available on PATH."
         )
+
     if validate:
         _validate_ffmpeg_redistribution_metadata(bundled_paths)
 
-    args: list[str] = []
     bundled = [str(path.resolve()) for path in bundled_paths.values()]
     for source in bundled:
         args.extend(["--add-binary", f"{source}{data_separator}vendor"])
