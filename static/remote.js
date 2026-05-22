@@ -5,6 +5,93 @@ const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const larkSearchTableCount = 5;
+const d1BrowseItemLimit = 450;
+const d1BrowseTagLimit = 450;
+const d1BrowseMergeMinLength = 5;
+const d1BrowseCountConcurrency = 4;
+const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
+const categoryBrowsePageSize = 100;
+const categoryBrowseDefinitionsRaw = [
+  { key: "hotBlood", tags: ["热血", "战斗"] },
+  { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
+  { key: "yuri", tags: ["百合"] },
+  { key: "vtuberSeries", tags: ["vtuber系列", "Hololive", "Vtuber"] },
+  { key: "idol", tags: ["偶像", "bangdream", "Lovelive系列", "偶像大师系列","SHOW BY ROCK!!","ガールズバンドクライ","22/7","Togenashi Togeari"] },
+  { key: "school", tags: ["校园", "学园","社团"] },
+  { key: "healing", tags: ["治愈", "催泪", "致郁"] },
+  { key: "vocaloid", tags: ["V家", "VOCALOID","DECO*27","Giga"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "detective", tags: ["推理","名探偵コナン","智斗"] },
+  { key: "mecha", tags: ["机战", "高达系列"] },
+  { key: "sliceOfLife", tags: ["日常"] },
+  { key: "moe", tags: ["萌系"] },
+  { key: "sports", tags: ["运动"] },
+  { key: "original", tags: ["原创"] },
+  { key: "mangaAdapted", tags: ["漫画改", "漫改", "动漫改"] },
+  { key: "gameAdapted", tags: ["游戏改", "Galgame", "GALGAME","鳴潮","ウマ娘","Key社","MAGES","Leaf","柚子社","August","游戏","ヘブンバーンズレッド","原神"] },
+  { key: "novelAdapted", tags: ["小说改", "轻改","轻小说改"] },
+  { key: "pjsk", tags: ["pjsk","プロジェクトセカイ"] },
+  { key: "symphogear", tags: ["战姬绝唱","戦姫絶唱シンフォギア"] },
+  { key: "pokemonSeries", tags: ["宝可梦系列"] },
+  { key: "childhood", tags: ["童年", "宝可梦系列"] },
+  { key: "bangDream", tags: ["bangdream","BanG Dream!","バンドリ！"] },
+  { key: "loveLive", tags: ["Lovelive系列","ラブライブ!"] },
+  { key: "idolmaster", tags: ["偶像大师系列","アイドルマスター"] },
+  { key: "isekai", tags: ["异世界", "穿越"] },
+  { key: "kamitsubaki", tags: ["神椿", "KAMITSUBAKI", "神椿工作室", "KAMITSUBAKI STUDIO","V.W.P","ヰ世界情緒","Albemuth","花譜"] },
+  { key: "youth", tags: ["青春","WHITE ALBUM2","HoneyWorks","励志"] },
+  { key: "otome", tags: ["乙女", "逆后宫"] },
+  { key: "kids", tags: ["子供向"] },
+  { key: "comedy", tags: ["搞笑", "喜剧"] },
+  { key: "tokusatsu", tags: ["特摄"] },
+  { key: "dark", tags: ["黑暗", "悬疑", "战争", "心理", "恐怖", "犯罪","扭曲"] },
+  { key: "godsDemons", tags: ["神魔"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "gourmet", tags: ["美食"] },
+  { key: "history", tags: ["历史","架空"] },
+  { key: "touhouProject", tags: ["东方project"] },
+  { key: "macross", tags: ["マクロス", "超时空要塞"] },
+];
+const categoryBrowseImageUrls = [
+  "/pic/cat_1.png",
+  "/pic/cat_2.png",
+  "/pic/cat_3.png",
+  "/pic/cat_4.png",
+  "/pic/cat_5.png",
+  "/pic/cat_6.png",
+  "/pic/cat_7.jpg",
+  "/pic/cat_8.jpg",
+  "/pic/cat_9.png",
+  "/pic/cat_10.jpg",
+  "/pic/cat_11.jpg",
+  "/pic/cat_12.jpg",
+  "/pic/cat_13.jpg",
+  "/pic/cat_14.png",
+  "/pic/cat_15.png",
+  "/pic/cat_16.jpg",
+  "/pic/cat_17.jpg",
+  "/pic/cat_18.jpg",
+  "/pic/cat_19.jpg",
+  "/pic/cat_20.jpg",
+  "/pic/cat_21.png",
+  "/pic/cat_22.jpg",
+  "/pic/cat_23.jpg",
+  "/pic/cat_24.jpg",
+  "/pic/cat_25.png",
+  "/pic/cat_26.png",
+  "/pic/cat_27.jpg",
+  "/pic/cat_28.jpg",
+  "/pic/cat_29.png",
+  "/pic/cat_30.jpg",
+  "/pic/cat_31.jpg",
+  "/pic/cat_32.jpg",
+  "/pic/cat_33.jpg",
+  "/pic/cat_34.jpg",
+  "/pic/cat_35.jpg",
+  "/pic/cat_36.jpg",
+  "/pic/cat_37.jpg",
+  "/pic/cat_38.jpg",
+];
 const playerControlStatusRefreshDelaysMs = [180, 520, 1100, 1800];
 const playerControlStatusSyncTimeoutMs = 3200;
 const storageKeys = {
@@ -64,6 +151,10 @@ const state = {
   larkSearchVisible: false,
   larkSearchLoading: false,
   larkSearchSeq: 0,
+  searchModalOpen: false,
+  searchModalView: "search",
+  searchModalLarkLoading: false,
+  searchModalLarkSeq: 0,
   remoteSearchStageView: "",
   remoteSearchStageAngle: 0,
   remoteSearchFlipTimer: null,
@@ -79,6 +170,29 @@ const state = {
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
   followBrowseRenderSignature: "",
+  favlistBrowseData: null,
+  favlistBrowseSelectedFolderId: "",
+  favlistBrowseLoading: false,
+  favlistBrowseRenderSignature: "",
+  d1BrowseKind: "",
+  d1BrowseLetter: "",
+  d1BrowseTag: "",
+  d1BrowseLocale: "",
+  d1BrowseAliases: [],
+  d1BrowseQuery: "",
+  d1BrowseData: null,
+  d1BrowseLoading: false,
+  d1BrowseSeq: 0,
+  d1BrowseResolvedCounts: new Map(),
+  d1BrowseItemCache: new Map(),
+  categoryBrowseSelectedId: "",
+  categoryBrowseQuery: "",
+  categoryBrowseItems: [],
+  categoryBrowseOffset: 0,
+  categoryBrowseHasMore: false,
+  categoryBrowseLoading: false,
+  categoryBrowseSeq: 0,
+  categoryBrowseError: "",
   requesterSelectRenderSignature: "",
   dataRenderSignature: "",
   currentNowPlayingSignature: "",
@@ -166,6 +280,31 @@ const elements = {
   remoteSearchStageInner: document.getElementById("remote-search-stage-inner"),
   searchTag: document.querySelector(".search-panel .panel-tag"),
   searchTitle: document.querySelector(".search-panel .panel-title"),
+  searchLibraryOpen: document.getElementById("search-library-open"),
+  searchModal: document.getElementById("search-modal"),
+  searchModalBackdrop: document.getElementById("search-modal-backdrop"),
+  searchModalClose: document.getElementById("search-modal-close"),
+  searchModalTabs: document.querySelectorAll(".remote-search-modal-tab"),
+  searchModalSearchView: document.getElementById("search-modal-search-view"),
+  searchModalLarkForm: document.getElementById("search-modal-lark-form"),
+  searchModalLarkQuery: document.getElementById("search-modal-lark-query"),
+  searchModalLarkButton: document.getElementById("search-modal-lark-button"),
+  searchModalLarkMessage: document.getElementById("search-modal-lark-message"),
+  searchModalLarkResults: document.getElementById("search-modal-lark-results"),
+  favlistBrowserView: document.getElementById("favlist-browser-view"),
+  favlistListView: document.getElementById("favlist-list-view"),
+  favlistGrid: document.getElementById("favlist-grid"),
+  favlistItemsView: document.getElementById("favlist-items-view"),
+  favlistBrowseBack: document.getElementById("favlist-browse-back"),
+  favlistBrowseAvatar: document.getElementById("favlist-browse-avatar"),
+  favlistBrowseTitle: document.getElementById("favlist-browse-title"),
+  favlistBrowseCount: document.getElementById("favlist-browse-count"),
+  favlistSearchForm: document.getElementById("favlist-search-form"),
+  favlistSearchQuery: document.getElementById("favlist-search-query"),
+  favlistSearchButton: document.getElementById("favlist-search-button"),
+  favlistSongResults: document.getElementById("favlist-song-results"),
+  favlistBrowseMessage: document.getElementById("favlist-browse-message"),
+  searchModalOtherView: document.getElementById("search-modal-other-view"),
   larkSearchToggle: document.getElementById("lark-search-toggle"),
   larkSearchView: document.getElementById("lark-search-view"),
   larkSearchForm: document.getElementById("lark-search-form"),
@@ -388,6 +527,7 @@ function renderLanguageSwitch() {
 function invalidateLanguageSensitiveRenderCache() {
   state.remoteAccessRenderSignature = "";
   state.followBrowseRenderSignature = "";
+  state.favlistBrowseRenderSignature = "";
   state.requesterSelectRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
   state.listHeaderRenderSignature = "";
@@ -408,6 +548,9 @@ function setLanguage(language) {
   renderLanguageSwitch();
   if (state.data) {
     render();
+  }
+  if (state.searchModalOpen) {
+    renderSearchModalView(state.searchModalView);
   }
 }
 
@@ -666,6 +809,22 @@ function setMessageForSource(source, message, isError = false) {
   if (source === "lark") {
     setLarkSearchMessage(message, isError);
     return;
+  }
+  if (source === "modalSearch") {
+    setSearchModalLarkMessage(message, isError);
+    return;
+  }
+  if (source === "modalFavlist") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalBrowse") {
+    const messageElement = elements.searchModalOtherView?.querySelector(".tag-browser-message");
+    if (messageElement) {
+      messageElement.textContent = message || "";
+      messageElement.classList.toggle("is-error", Boolean(isError));
+      return;
+    }
   }
   if (source === "follow") {
     setFollowBrowseMessage(message, isError);
@@ -1288,6 +1447,70 @@ async function searchLarkPoolTable(query, tableIndex) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  params.set("kind", kind === "artist" ? "artist" : "name");
+  params.set("limit", String(limit));
+  const normalizedLetter = String(letter || "").trim().toUpperCase();
+  const normalizedQuery = String(query || "").trim();
+  const normalizedTag = String(tag || "").trim();
+  const normalizedLocale = String(locale || "").trim();
+  if (normalizedLetter) {
+    params.set("letter", normalizedLetter);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  if (normalizedTag) {
+    params.set("tag", normalizedTag);
+  }
+  if (normalizedLocale) {
+    params.set("locale", normalizedLocale);
+  }
+  const response = await fetch(`/api/d1/browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
+}
+
+async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  const normalizedTags = uniqueD1BrowseAliases(
+    (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
+  ).map((entry) => entry.tag);
+  normalizedTags.forEach((tag) => {
+    params.append("tag", tag);
+  });
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const response = await fetch(`/api/d1/category-browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || {
+    tags: normalizedTags,
+    query: normalizedQuery,
+    offset,
+    limit,
+    items: [],
+    has_more: false,
+    next_offset: offset,
+  };
+}
+
 async function fetchGatchaBrowse(uid = "", query = "") {
   const params = new URLSearchParams();
   const normalizedUid = String(uid || "").trim();
@@ -1308,6 +1531,28 @@ async function fetchGatchaBrowse(uid = "", query = "") {
     throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
   }
   return payload.data || { owners: [], items: [] };
+}
+
+async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
+  const params = new URLSearchParams();
+  const normalizedFolderId = String(folderId || "").trim();
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedFolderId) {
+    params.set("folder_id", normalizedFolderId);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const queryString = params.toString();
+  const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
+  }
+  return payload.data || { folders: [], items: [] };
 }
 
 async function previewGatchaUid(uid) {
@@ -1438,6 +1683,85 @@ function hideLarkSearchResults() {
 
 function searchResultOwnerName(item) {
   return String(item?.owner_name || item?.author || "").trim();
+}
+
+function firstSearchResultValue(item, keys) {
+  for (const key of keys) {
+    const value = String(item?.[key] ?? "").trim();
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function searchResultCoverUrl(item) {
+  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  if (coverUrl.startsWith("//")) {
+    coverUrl = `https:${coverUrl}`;
+  }
+  return coverUrl;
+}
+
+function formatCompactCount(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  const numeric = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) {
+    return raw;
+  }
+  if (numeric >= 100000000) {
+    return `${Number((numeric / 100000000).toFixed(numeric >= 1000000000 ? 0 : 1))}亿`;
+  }
+  if (numeric >= 10000) {
+    return `${Number((numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1))}万`;
+  }
+  return String(Math.round(numeric));
+}
+
+function formatSearchDuration(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw.includes(":")) {
+    return raw;
+  }
+  const totalSeconds = Number(raw);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return raw;
+  }
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+  return `${minutes}:${paddedSeconds}`;
+}
+
+function searchResultStatusLabel(item) {
+  const localSource = String(item?.local_source || "").trim();
+  if (localSource === "favlist") {
+    return t("search.favorited");
+  }
+  if (localSource === "follow") {
+    return t("search.followed");
+  }
+  const source = String(item?.source || "").trim();
+  if (source === "bilikara" || source === "cloudflare") {
+    return "";
+  }
+  if (source === "favlist") {
+    return t("search.favorited");
+  }
+  if (String(item?.mid || item?.fav_uid || "").trim()) {
+    return t("search.followed");
+  }
+  return "";
 }
 
 function createSearchResultUrlLine(item) {
@@ -1576,6 +1900,967 @@ function setFollowBrowseMessage(message, isError = false) {
   elements.followBrowseMessage.textContent = message || "";
   elements.followBrowseMessage.classList.toggle("is-error", Boolean(isError));
   elements.followBrowseMessage.classList.toggle("hidden", !message);
+}
+
+function setSearchModalLarkMessage(message, isError = false) {
+  if (!elements.searchModalLarkMessage) {
+    return;
+  }
+  elements.searchModalLarkMessage.textContent = message || "";
+  elements.searchModalLarkMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setFavlistBrowseMessage(message, isError = false) {
+  if (!elements.favlistBrowseMessage) {
+    return;
+  }
+  elements.favlistBrowseMessage.textContent = message || "";
+  elements.favlistBrowseMessage.classList.toggle("is-error", Boolean(isError));
+  elements.favlistBrowseMessage.classList.toggle("hidden", !message);
+}
+
+function createSearchResultRow(item) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  const itemUrl = String(item?.url || "").trim();
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+
+  const coverUrl = searchResultCoverUrl(item);
+  const cover = document.createElement("div");
+  cover.className = "search-result-cover";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    cover.appendChild(image);
+  } else {
+    const fallback = document.createElement("span");
+    fallback.textContent = String(item?.bvid || "Bili");
+    cover.appendChild(fallback);
+    cover.classList.add("is-empty");
+  }
+
+  const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
+  if (duration) {
+    const durationNode = document.createElement("span");
+    durationNode.className = "search-result-duration";
+    durationNode.textContent = duration;
+    cover.appendChild(durationNode);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "search-result-meta search-result-body";
+  const title = document.createElement("div");
+  title.className = "search-result-title";
+  title.textContent = String(item?.title || "");
+
+  const statusLine = document.createElement("div");
+  statusLine.className = "search-result-status";
+  const statusLabel = searchResultStatusLabel(item);
+  if (statusLabel) {
+    const status = document.createElement("span");
+    status.className = "search-result-follow";
+    status.textContent = statusLabel;
+    statusLine.appendChild(status);
+  }
+  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
+  if (playCount) {
+    const plays = document.createElement("span");
+    plays.className = "search-result-plays";
+    const playLabel = document.createElement("span");
+    playLabel.className = "search-result-play-label";
+    playLabel.textContent = t("search.playCountLabel");
+    const playValue = document.createElement("span");
+    playValue.textContent = playCount;
+    plays.append(playLabel, playValue);
+    statusLine.appendChild(plays);
+  }
+
+  const url = createSearchResultUrlLine(item);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary-button search-result-add";
+  button.dataset.url = itemUrl;
+  button.textContent = t("search.add");
+
+  meta.append(title);
+  if (statusLine.children.length) {
+    meta.appendChild(statusLine);
+  }
+  meta.appendChild(url);
+  row.append(cover, meta, button);
+  return row;
+}
+
+function renderSearchResultItems(container, items, emptyText = "") {
+  if (!container) {
+    return;
+  }
+  const normalizedItems = Array.isArray(items) ? items : [];
+  container.innerHTML = "";
+  container.classList.remove("hidden");
+  if (!normalizedItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = emptyText || t("search.empty");
+    container.appendChild(empty);
+    return;
+  }
+  normalizedItems.forEach((item) => {
+    container.appendChild(createSearchResultRow(item));
+  });
+}
+
+function appendSearchResultItems(container, items) {
+  if (!container || !Array.isArray(items) || !items.length) {
+    return;
+  }
+  const existingEmpty = container.querySelector(".search-empty");
+  if (existingEmpty) {
+    existingEmpty.remove();
+  }
+  container.classList.remove("hidden");
+  items.forEach((item) => {
+    container.appendChild(createSearchResultRow(item));
+  });
+}
+
+function normalizeD1BrowseTagForMerge(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/[\s"'`._!?,:;~\-\/\\|()[\]{}<>]+/g, "")
+    .replace(/[\u2018-\u201f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g, "");
+}
+
+function d1BrowseMergeLength(value) {
+  return Array.from(value || "").length;
+}
+
+function d1BrowseTitle(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.artistBrowse") : t("search.nameBrowse");
+}
+
+function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.browsePickArtistLetter") : t("search.browsePickLetter");
+}
+
+function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
+  return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
+}
+
+function d1BrowseMergeCandidate(entry) {
+  const tag = String(entry?.tag || "").trim();
+  const locale = String(entry?.locale || "").trim();
+  const normalized = normalizeD1BrowseTagForMerge(tag);
+  return {
+    tag,
+    locale,
+    normalized,
+    count: Number(entry?.count || 0),
+    yomi: String(entry?.yomi || ""),
+    letter: String(entry?.letter || ""),
+  };
+}
+
+function isBetterD1BrowseMergeLabel(candidate, current) {
+  const candidateLength = d1BrowseMergeLength(candidate.normalized);
+  const currentLength = d1BrowseMergeLength(current.normalized);
+  if (candidateLength !== currentLength) {
+    return candidateLength < currentLength;
+  }
+  if (candidate.count !== current.count) {
+    return candidate.count > current.count;
+  }
+  return false;
+}
+
+function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
+  const seen = new Set();
+  const results = [];
+  const source = Array.isArray(aliases) && aliases.length ? aliases : [{ tag: fallbackTag, locale: fallbackLocale }];
+  source.forEach((entry) => {
+    const tag = String(entry?.tag || "").trim();
+    const locale = String(entry?.locale || "").trim();
+    if (!tag) {
+      return;
+    }
+    const key = `${locale}\n${tag}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push({ tag, locale });
+  });
+  return results;
+}
+
+function d1BrowseAliasKey(aliases, { kind = state.d1BrowseKind, query = state.d1BrowseQuery } = {}) {
+  const normalizedAliases = uniqueD1BrowseAliases(aliases)
+    .map((entry) => ({ tag: entry.tag, locale: entry.locale }))
+    .sort((left, right) => `${left.locale}\n${left.tag}`.localeCompare(`${right.locale}\n${right.tag}`));
+  return JSON.stringify({
+    kind: kind === "artist" ? "artist" : "name",
+    query: String(query || "").trim(),
+    aliases: normalizedAliases,
+  });
+}
+
+function mergeD1BrowseTags(tags) {
+  const groups = [];
+  (Array.isArray(tags) ? tags : []).forEach((entry) => {
+    const candidate = d1BrowseMergeCandidate(entry);
+    if (!candidate.tag) {
+      return;
+    }
+    const canMerge = d1BrowseMergeLength(candidate.normalized) >= d1BrowseMergeMinLength;
+    let group = null;
+    if (canMerge) {
+      group = groups.find((item) => (
+        item.canMerge
+        && item.normalized
+        && (candidate.normalized.startsWith(item.normalized) || item.normalized.startsWith(candidate.normalized))
+      ));
+    }
+    if (!group) {
+      groups.push({
+        ...candidate,
+        canMerge,
+        aliases: [{ tag: candidate.tag, locale: candidate.locale }],
+      });
+      return;
+    }
+    group.count += candidate.count;
+    group.aliases.push({ tag: candidate.tag, locale: candidate.locale });
+    if (isBetterD1BrowseMergeLabel(candidate, group)) {
+      group.tag = candidate.tag;
+      group.locale = candidate.locale;
+      group.normalized = candidate.normalized;
+      group.yomi = candidate.yomi;
+      group.letter = candidate.letter;
+    }
+  });
+  groups.forEach((group) => {
+    group.aliases = uniqueD1BrowseAliases(group.aliases, group.tag, group.locale);
+    group.aliasKey = d1BrowseAliasKey(group.aliases, { kind: state.d1BrowseKind, query: "" });
+    if (state.d1BrowseResolvedCounts.has(group.aliasKey)) {
+      group.count = state.d1BrowseResolvedCounts.get(group.aliasKey);
+    }
+  });
+  return groups;
+}
+
+function d1BrowseItemKey(item) {
+  return String(item?.bvid || item?.url || item?.id || `${item?.title || ""}\n${searchResultOwnerName(item)}`).trim();
+}
+
+function categoryBrowseIdForName(name) {
+  return encodeURIComponent(String(name || "").trim()).replace(/%/g, "_");
+}
+
+function categoryBrowseDefinitions() {
+  const groups = [];
+  const byKey = new Map();
+  categoryBrowseDefinitionsRaw.forEach((definition) => {
+    const key = String(definition?.key || "").trim();
+    const tags = (Array.isArray(definition?.tags) ? definition.tags : []).map((value) => String(value || "").trim()).filter(Boolean);
+    if (!key || !tags.length) {
+      return;
+    }
+    let group = byKey.get(key);
+    if (!group) {
+      const imageIndex = groups.length;
+      group = {
+        id: categoryBrowseIdForName(key),
+        key,
+        name: t(`search.category.${key}`),
+        coverUrl: categoryBrowseImageUrls[imageIndex] || "",
+        tags: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    tags.forEach((tag) => {
+      if (!group.tags.includes(tag)) {
+        group.tags.push(tag);
+      }
+    });
+  });
+  return groups;
+}
+
+function selectedCategoryBrowseDefinition() {
+  const selectedId = String(state.categoryBrowseSelectedId || "");
+  return categoryBrowseDefinitions().find((entry) => entry.id === selectedId) || null;
+}
+
+function mergeCategoryBrowseItems(existingItems, nextItems) {
+  const seen = new Set();
+  const items = [];
+  [...(Array.isArray(existingItems) ? existingItems : []), ...(Array.isArray(nextItems) ? nextItems : [])].forEach((item) => {
+    const key = d1BrowseItemKey(item);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    items.push(item);
+  });
+  return items;
+}
+
+function mergeD1BrowseItemPayloads(payloads) {
+  const seen = new Set();
+  const items = [];
+  (Array.isArray(payloads) ? payloads : []).forEach((payload) => {
+    (Array.isArray(payload?.items) ? payload.items : []).forEach((item) => {
+      const key = d1BrowseItemKey(item);
+      if (!key || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      items.push(item);
+    });
+  });
+  return items;
+}
+
+async function resolveD1BrowseMergedTagCounts(groups, { kind, letter, query } = {}) {
+  const targets = (Array.isArray(groups) ? groups : []).filter((group) => (
+    Array.isArray(group.aliases)
+    && group.aliases.length > 1
+    && group.aliasKey
+    && !state.d1BrowseResolvedCounts.has(group.aliasKey)
+  ));
+  if (!targets.length) {
+    return;
+  }
+  let targetIndex = 0;
+  const workerCount = Math.min(d1BrowseCountConcurrency, targets.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (targetIndex < targets.length) {
+      const group = targets[targetIndex];
+      targetIndex += 1;
+      try {
+        const payloads = await Promise.all(group.aliases.map((alias) => fetchD1Browse({
+          kind,
+          letter,
+          query,
+          tag: alias.tag,
+          locale: alias.locale,
+          limit: d1BrowseItemLimit,
+        })));
+        const items = mergeD1BrowseItemPayloads(payloads);
+        state.d1BrowseResolvedCounts.set(group.aliasKey, items.length);
+        state.d1BrowseItemCache.set(group.aliasKey, items);
+      } catch {
+        // Keep the aggregate count if exact merged counts fail.
+      }
+    }
+  }));
+}
+
+function ensureD1BrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("remote-search-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-d1-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "tag-browser";
+  view.dataset.d1BrowseView = "1";
+  view.innerHTML = `
+    <form class="tag-browser-search" data-d1-browse-search>
+      <input type="text" autocomplete="off" data-d1-browse-query>
+      <button type="submit" class="primary-button" data-d1-browse-submit></button>
+    </form>
+    <div class="tag-browser-alphabet" data-d1-browse-alphabet></div>
+    <div class="tag-browser-nav">
+      <button type="button" class="secondary-button tag-browser-back hidden" data-d1-browse-back></button>
+      <div class="tag-browser-current" data-d1-browse-current></div>
+    </div>
+    <div class="tag-browser-tags" data-d1-browse-tags></div>
+    <div class="search-results hidden" data-d1-browse-results></div>
+    <p class="gatcha-message tag-browser-message" data-d1-browse-message role="status"></p>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function renderD1BrowseView() {
+  const view = ensureD1BrowseView();
+  if (!view) {
+    return;
+  }
+  const kind = state.d1BrowseKind || "name";
+  const title = d1BrowseTitle(kind);
+  const queryInput = view.querySelector("[data-d1-browse-query]");
+  const submitButton = view.querySelector("[data-d1-browse-submit]");
+  const alphabet = view.querySelector("[data-d1-browse-alphabet]");
+  const backButton = view.querySelector("[data-d1-browse-back]");
+  const current = view.querySelector("[data-d1-browse-current]");
+  const tagGrid = view.querySelector("[data-d1-browse-tags]");
+  const results = view.querySelector("[data-d1-browse-results]");
+  const message = view.querySelector("[data-d1-browse-message]");
+
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.d1BrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.d1BrowseLoading;
+  }
+  if (alphabet) {
+    alphabet.innerHTML = "";
+    alphabet.classList.toggle("hidden", Boolean(state.d1BrowseLetter));
+    d1BrowseLetters.forEach((letter) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tag-letter-button";
+      button.dataset.letter = letter;
+      button.textContent = letter;
+      button.classList.toggle("active", state.d1BrowseLetter === letter);
+      button.disabled = state.d1BrowseLoading;
+      alphabet.appendChild(button);
+    });
+  }
+  view.classList.toggle("has-letter", Boolean(state.d1BrowseLetter));
+  view.classList.toggle("has-tag", Boolean(state.d1BrowseTag));
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.classList.toggle("hidden", !state.d1BrowseLetter);
+    backButton.disabled = state.d1BrowseLoading;
+  }
+
+  const tags = mergeD1BrowseTags(state.d1BrowseData?.tags);
+  const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
+  if (current) {
+    const parts = [title];
+    if (state.d1BrowseLetter) {
+      parts.push(state.d1BrowseLetter);
+    }
+    if (state.d1BrowseTag) {
+      parts.push(state.d1BrowseTag);
+    }
+    current.textContent = parts.join(" / ");
+  }
+  if (tagGrid) {
+    tagGrid.innerHTML = "";
+    tagGrid.classList.toggle("hidden", Boolean(state.d1BrowseTag));
+    if (!state.d1BrowseTag) {
+      if (state.d1BrowseLoading) {
+        const loading = document.createElement("div");
+        loading.className = "search-empty";
+        loading.textContent = t("search.browseLoading");
+        tagGrid.appendChild(loading);
+      } else if (!state.d1BrowseLetter) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = d1BrowsePickLetterText(kind);
+        tagGrid.appendChild(empty);
+      } else if (!tags.length) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = t("search.browseNoTags");
+        tagGrid.appendChild(empty);
+      } else {
+        tags.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tag-browser-tag";
+          button.dataset.tag = String(entry.tag || "");
+          button.dataset.locale = String(entry.locale || "");
+          button.dataset.aliases = JSON.stringify(entry.aliases || []);
+          const name = document.createElement("span");
+          name.className = "tag-browser-tag-name";
+          name.textContent = String(entry.tag || "");
+          const count = document.createElement("span");
+          count.className = "tag-browser-tag-count";
+          count.textContent = t("search.browseTagCount", { count: Number(entry.count || 0) });
+          button.append(name, count);
+          tagGrid.appendChild(button);
+        });
+      }
+    }
+  }
+  if (results) {
+    if (state.d1BrowseTag) {
+      renderSearchResultItems(results, items, t("search.larkNoResults"));
+    } else {
+      results.innerHTML = "";
+      results.classList.add("hidden");
+    }
+  }
+  if (message) {
+    let text = "";
+    if (state.d1BrowseTag && !state.d1BrowseLoading) {
+      text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
+    } else if (!state.d1BrowseTag && tags.length) {
+      text = t("search.browseTagsFound", { count: tags.length });
+    }
+    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
+    message.classList.toggle("is-error", false);
+  }
+}
+
+async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "", aliases = [] } = {}) {
+  const searchSeq = state.d1BrowseSeq + 1;
+  state.d1BrowseSeq = searchSeq;
+  state.d1BrowseKind = kind === "artist" ? "artist" : "name";
+  state.d1BrowseLetter = String(letter || "").trim().toUpperCase();
+  state.d1BrowseQuery = String(query || "").trim();
+  state.d1BrowseTag = String(tag || "").trim();
+  state.d1BrowseLocale = String(locale || "").trim();
+  state.d1BrowseAliases = state.d1BrowseTag ? uniqueD1BrowseAliases(aliases, state.d1BrowseTag, state.d1BrowseLocale) : [];
+  state.d1BrowseLoading = true;
+  renderD1BrowseView();
+  try {
+    const requestAliases = state.d1BrowseTag ? state.d1BrowseAliases : [];
+    const requestAliasKey = requestAliases.length ? d1BrowseAliasKey(requestAliases, {
+      kind: state.d1BrowseKind,
+      query: state.d1BrowseQuery,
+    }) : "";
+    if (requestAliasKey && state.d1BrowseItemCache.has(requestAliasKey)) {
+      const items = state.d1BrowseItemCache.get(requestAliasKey) || [];
+      state.d1BrowseData = { kind: state.d1BrowseKind, letter: state.d1BrowseLetter, query: state.d1BrowseQuery, tag: state.d1BrowseTag, locale: state.d1BrowseLocale, tags: [], items };
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      return;
+    }
+    const payloads = requestAliases.length > 1
+      ? await Promise.all(requestAliases.map((alias) => fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: alias.tag,
+        locale: alias.locale,
+        limit: d1BrowseItemLimit,
+      })))
+      : [await fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: state.d1BrowseTag,
+        locale: state.d1BrowseLocale,
+        limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
+      })];
+    if (state.d1BrowseSeq !== searchSeq) {
+      return;
+    }
+    const data = payloads[0] || {};
+    if (!state.d1BrowseTag) {
+      const mergedTags = mergeD1BrowseTags(data.tags);
+      await resolveD1BrowseMergedTagCounts(mergedTags, {
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: "",
+      });
+      if (state.d1BrowseSeq !== searchSeq) {
+        return;
+      }
+    }
+    state.d1BrowseData = requestAliases.length > 1 ? { ...data, items: mergeD1BrowseItemPayloads(payloads) } : data;
+    if (requestAliasKey) {
+      const items = Array.isArray(state.d1BrowseData.items) ? state.d1BrowseData.items : [];
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      state.d1BrowseItemCache.set(requestAliasKey, items);
+    }
+  } catch (error) {
+    const view = ensureD1BrowseView();
+    const message = view?.querySelector("[data-d1-browse-message]");
+    if (message) {
+      message.textContent = error.message;
+      message.classList.add("is-error");
+    }
+  } finally {
+    if (state.d1BrowseSeq === searchSeq) {
+      state.d1BrowseLoading = false;
+      renderD1BrowseView();
+    }
+  }
+}
+
+function ensureCategoryBrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("remote-search-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-category-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "category-browser";
+  view.dataset.categoryBrowseView = "1";
+  view.innerHTML = `
+    <div class="category-browser-home" data-category-browser-home>
+      <div class="category-browser-grid" data-category-browser-grid></div>
+    </div>
+    <div class="category-browser-detail hidden" data-category-browser-detail>
+      <form class="tag-browser-search category-browser-search" data-category-browse-search>
+        <input type="text" autocomplete="off" data-category-browse-query>
+        <button type="submit" class="primary-button" data-category-browse-submit></button>
+      </form>
+      <div class="category-browser-tabs" data-category-browser-tabs></div>
+      <div class="tag-browser-nav">
+        <button type="button" class="secondary-button tag-browser-back" data-category-browse-back></button>
+        <div class="tag-browser-current hidden" data-category-browse-current></div>
+      </div>
+      <div class="search-results category-browser-results" data-category-browse-results></div>
+      <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
+    </div>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function createCategoryBrowseCard(category, { compact = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = compact ? "category-browser-tab" : "category-browser-card";
+  button.dataset.categoryId = category.id;
+  const media = document.createElement("span");
+  media.className = compact ? "category-browser-tab-media" : "category-browser-card-media";
+  if (category.coverUrl) {
+    const image = document.createElement("img");
+    image.src = category.coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    media.appendChild(image);
+  }
+  const name = document.createElement("span");
+  name.className = compact ? "category-browser-tab-name" : "category-browser-card-name";
+  name.textContent = category.name;
+  button.append(media, name);
+  return button;
+}
+
+function renderCategoryBrowseView() {
+  const view = ensureCategoryBrowseView();
+  if (!view) {
+    return;
+  }
+  const categories = categoryBrowseDefinitions();
+  const selected = selectedCategoryBrowseDefinition();
+  const home = view.querySelector("[data-category-browser-home]");
+  const detail = view.querySelector("[data-category-browser-detail]");
+  const grid = view.querySelector("[data-category-browser-grid]");
+  const tabs = view.querySelector("[data-category-browser-tabs]");
+  const queryInput = view.querySelector("[data-category-browse-query]");
+  const submitButton = view.querySelector("[data-category-browse-submit]");
+  const backButton = view.querySelector("[data-category-browse-back]");
+  const results = view.querySelector("[data-category-browse-results]");
+  const message = view.querySelector("[data-category-browse-message]");
+
+  home?.classList.toggle("hidden", Boolean(selected));
+  detail?.classList.toggle("hidden", !selected);
+  if (grid && !selected) {
+    grid.innerHTML = "";
+    categories.forEach((category) => {
+      grid.appendChild(createCategoryBrowseCard(category));
+    });
+  }
+  if (!selected) {
+    return;
+  }
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.categoryBrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = t("search.browseItemPlaceholder");
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.categoryBrowseLoading;
+  }
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.disabled = state.categoryBrowseLoading;
+  }
+  if (tabs) {
+    tabs.innerHTML = "";
+    categories.forEach((category) => {
+      const tab = createCategoryBrowseCard(category, { compact: true });
+      tab.classList.toggle("active", category.id === selected.id);
+      tab.disabled = state.categoryBrowseLoading && category.id === selected.id;
+      tabs.appendChild(tab);
+    });
+  }
+  if (results) {
+    renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
+  }
+  if (message) {
+    let text = "";
+    if (state.categoryBrowseError) {
+      text = state.categoryBrowseError;
+    } else if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
+      text = t("search.browseLoading");
+    } else if (state.categoryBrowseItems.length) {
+      text = state.categoryBrowseHasMore
+        ? t("search.categoryLoadedMore", { count: state.categoryBrowseItems.length })
+        : t("search.categoryLoadedAll", { count: state.categoryBrowseItems.length });
+    } else if (!state.categoryBrowseLoading) {
+      text = t("search.larkNoResults");
+    }
+    message.textContent = text;
+    message.classList.toggle("is-error", Boolean(state.categoryBrowseError));
+  }
+}
+
+async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId, query = state.categoryBrowseQuery, append = false } = {}) {
+  const category = categoryBrowseDefinitions().find((entry) => entry.id === categoryId);
+  if (!category) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    renderCategoryBrowseView();
+    return;
+  }
+  const searchSeq = state.categoryBrowseSeq + 1;
+  state.categoryBrowseSeq = searchSeq;
+  state.categoryBrowseSelectedId = category.id;
+  state.categoryBrowseQuery = String(query || "").trim();
+  state.categoryBrowseError = "";
+  if (!append) {
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = true;
+  }
+  state.categoryBrowseLoading = true;
+  renderCategoryBrowseView();
+  try {
+    const data = await fetchD1CategoryBrowse({
+      tags: category.tags,
+      query: state.categoryBrowseQuery,
+      offset: append ? state.categoryBrowseOffset : 0,
+      limit: categoryBrowsePageSize,
+    });
+    if (state.categoryBrowseSeq !== searchSeq) {
+      return;
+    }
+    const nextItems = Array.isArray(data.items) ? data.items : [];
+    state.categoryBrowseItems = append ? mergeCategoryBrowseItems(state.categoryBrowseItems, nextItems) : mergeCategoryBrowseItems([], nextItems);
+    state.categoryBrowseHasMore = Boolean(data.has_more);
+    state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
+  } catch (error) {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseError = error.message;
+    }
+  } finally {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseLoading = false;
+      renderCategoryBrowseView();
+    }
+  }
+}
+
+function maybeLoadMoreCategoryBrowse(scrollContainer) {
+  if (
+    !state.categoryBrowseSelectedId
+    || state.categoryBrowseLoading
+    || !state.categoryBrowseHasMore
+    || !scrollContainer
+  ) {
+    return;
+  }
+  const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+  if (remaining <= 160) {
+    loadCategoryBrowse({ append: true });
+  }
+}
+
+function selectedFavlistFolder() {
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  return folders.find((folder) => String(folder.id || "") === state.favlistBrowseSelectedFolderId) || null;
+}
+
+function renderFavlistBrowse() {
+  if (!elements.favlistGrid || !elements.favlistSongResults) {
+    return;
+  }
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  const signature = JSON.stringify({
+    loading: state.favlistBrowseLoading,
+    selected: state.favlistBrowseSelectedFolderId,
+    folders,
+    items,
+    language: state.language,
+  });
+  if (signature === state.favlistBrowseRenderSignature) {
+    return;
+  }
+  state.favlistBrowseRenderSignature = signature;
+
+  const hasSelectedFolder = Boolean(state.favlistBrowseSelectedFolderId);
+  elements.favlistListView?.classList.toggle("hidden", hasSelectedFolder);
+  elements.favlistItemsView?.classList.toggle("hidden", !hasSelectedFolder);
+
+  if (!hasSelectedFolder) {
+    elements.favlistGrid.innerHTML = "";
+    if (!folders.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
+      elements.favlistGrid.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const folderId = String(folder.id || "").trim();
+        const title = String(folder.title || folderId || t("favlist.folder")).trim();
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button favlist-browse-button";
+        button.dataset.folderId = folderId;
+        button.title = title;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name favlist-browse-name";
+        name.textContent = title;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count favlist-browse-count";
+        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
+
+        button.append(name, count);
+
+        if (folder.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar favlist-browse-avatar";
+          avatar.src = folder.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
+        elements.favlistGrid.appendChild(button);
+      });
+    }
+    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    return;
+  }
+
+  const folder = selectedFavlistFolder();
+  if (elements.favlistBrowseAvatar) {
+    const avatarUrl = String(folder?.avatar_url || "").trim();
+    elements.favlistBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.favlistBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.favlistBrowseAvatar.removeAttribute("src");
+    }
+  }
+  if (elements.favlistBrowseTitle) {
+    elements.favlistBrowseTitle.textContent = String(folder?.title || state.favlistBrowseSelectedFolderId || t("favlist.folder"));
+  }
+  if (elements.favlistBrowseCount) {
+    const totalCount = Number(folder?.media_count || folder?.count || items.length || 0);
+    elements.favlistBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.favlistSongResults,
+    items,
+    state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
+  );
+  setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+}
+
+async function loadFavlistBrowse({
+  folderId = state.favlistBrowseSelectedFolderId,
+  query = "",
+  keepQuery = false,
+} = {}) {
+  state.favlistBrowseLoading = true;
+  state.favlistBrowseSelectedFolderId = String(folderId || "").trim();
+  renderFavlistBrowse();
+  let caughtError = null;
+  try {
+    const nextData = await fetchGatchaFavlistBrowse(state.favlistBrowseSelectedFolderId, query);
+    state.favlistBrowseData = nextData;
+    state.favlistBrowseSelectedFolderId = String(
+      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+    );
+    if (!keepQuery && elements.favlistSearchQuery) {
+      elements.favlistSearchQuery.value = String(nextData.query || "");
+    }
+  } catch (error) {
+    caughtError = error;
+  } finally {
+    state.favlistBrowseLoading = false;
+    renderFavlistBrowse();
+    if (caughtError) {
+      setFavlistBrowseMessage(caughtError.message, true);
+    }
+  }
+}
+
+function setSearchModalOpen(open) {
+  state.searchModalOpen = Boolean(open);
+  elements.searchModal?.classList.toggle("hidden", !state.searchModalOpen);
+  document.body.classList.toggle("remote-search-modal-open", state.searchModalOpen);
+  if (state.searchModalOpen) {
+    renderSearchModalView(state.searchModalView || "search");
+    window.setTimeout(() => {
+      if (state.searchModalView === "search") {
+        elements.searchModalLarkQuery?.focus();
+      }
+    }, 0);
+  }
+}
+
+function renderSearchModalView(target = state.searchModalView || "search") {
+  const nextTarget = ["search", "favlist", "category", "name", "artist"].includes(target) ? target : "search";
+  state.searchModalView = nextTarget;
+  elements.searchModalTabs?.forEach((button) => {
+    button.classList.toggle("active", button.dataset.target === nextTarget);
+  });
+  elements.searchModalSearchView?.classList.toggle("hidden", nextTarget !== "search");
+  elements.favlistBrowserView?.classList.toggle("hidden", nextTarget !== "favlist");
+  elements.searchModalOtherView?.classList.toggle("hidden", !["category", "name", "artist"].includes(nextTarget));
+
+  if (nextTarget === "favlist") {
+    if (!state.favlistBrowseData && !state.favlistBrowseLoading) {
+      state.favlistBrowseSelectedFolderId = "";
+      if (elements.favlistSearchQuery) {
+        elements.favlistSearchQuery.value = "";
+      }
+      loadFavlistBrowse({ folderId: "", query: "" });
+    } else {
+      renderFavlistBrowse();
+    }
+    return;
+  }
+  if (nextTarget === "category") {
+    renderCategoryBrowseView();
+    return;
+  }
+  if (nextTarget === "name" || nextTarget === "artist") {
+    if (state.d1BrowseKind !== nextTarget) {
+      state.d1BrowseData = null;
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+    }
+    state.d1BrowseKind = nextTarget;
+    renderD1BrowseView();
+  }
 }
 
 function selectedFollowOwner() {
@@ -3524,6 +4809,313 @@ elements.searchResults.addEventListener("click", async (event) => {
   await addByUrl(String(button.dataset.url || ""), "tail", "search");
 });
 
+elements.searchLibraryOpen?.addEventListener("click", () => {
+  setSearchModalOpen(true);
+});
+
+elements.searchModalClose?.addEventListener("click", () => {
+  setSearchModalOpen(false);
+});
+
+elements.searchModalBackdrop?.addEventListener("click", () => {
+  setSearchModalOpen(false);
+});
+
+elements.searchModalTabs?.forEach((button) => {
+  button.addEventListener("click", () => {
+    renderSearchModalView(button.dataset.target || "search");
+  });
+});
+
+elements.searchModalLarkForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.searchModalLarkQuery?.value || "").trim();
+  if (!query) {
+    renderSearchResultItems(elements.searchModalLarkResults, [], t("search.keywordRequired"));
+    setSearchModalLarkMessage(t("search.keywordRequired"), true);
+    return;
+  }
+
+  state.searchModalLarkLoading = true;
+  if (elements.searchModalLarkButton) {
+    elements.searchModalLarkButton.disabled = true;
+  }
+  const searchSeq = state.searchModalLarkSeq + 1;
+  state.searchModalLarkSeq = searchSeq;
+  const seenBvids = new Set();
+  const collectedItems = [];
+  if (elements.searchModalLarkResults) {
+    elements.searchModalLarkResults.innerHTML = "";
+    elements.searchModalLarkResults.classList.remove("hidden");
+  }
+  setSearchModalLarkMessage(t("search.larkSearching"));
+  try {
+    const poolItems = await searchLarkPool(query);
+    if (state.searchModalLarkSeq !== searchSeq) {
+      return;
+    }
+    const freshItems = poolItems.filter((item) => {
+      const bvid = String(item?.bvid || "").trim();
+      if (!bvid || seenBvids.has(bvid)) {
+        return false;
+      }
+      seenBvids.add(bvid);
+      return true;
+    });
+    if (freshItems.length) {
+      collectedItems.push(...freshItems);
+      appendSearchResultItems(elements.searchModalLarkResults, freshItems);
+    }
+    if (!collectedItems.length) {
+      renderSearchResultItems(elements.searchModalLarkResults, [], t("search.larkNoResults"));
+    }
+    setSearchModalLarkMessage(
+      collectedItems.length ? t("search.larkFound", { count: collectedItems.length }) : t("search.larkNoResults"),
+    );
+  } catch (error) {
+    renderSearchResultItems(elements.searchModalLarkResults, [], "");
+    setSearchModalLarkMessage(error.message, true);
+  } finally {
+    if (state.searchModalLarkSeq === searchSeq) {
+      state.searchModalLarkLoading = false;
+      if (elements.searchModalLarkButton) {
+        elements.searchModalLarkButton.disabled = false;
+      }
+    }
+  }
+});
+
+elements.searchModalLarkResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.searchModalLarkResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalSearch");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.favlistGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-folder-id]");
+  if (!button) {
+    return;
+  }
+  const folderId = String(button.dataset.folderId || "").trim();
+  if (!folderId) {
+    return;
+  }
+  state.favlistBrowseSelectedFolderId = folderId;
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  await loadFavlistBrowse({ folderId, query: "" });
+});
+
+elements.favlistBrowseBack?.addEventListener("click", () => {
+  state.favlistBrowseSelectedFolderId = "";
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  state.favlistBrowseRenderSignature = "";
+  renderFavlistBrowse();
+});
+
+elements.favlistSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.favlistSearchQuery?.value || "").trim();
+  await loadFavlistBrowse({
+    folderId: state.favlistBrowseSelectedFolderId,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.favlistSongResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.favlistSongResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalFavlist");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("submit", (event) => {
+  const categoryForm = event.target.closest("[data-category-browse-search]");
+  if (categoryForm && elements.searchModalOtherView.contains(categoryForm)) {
+    event.preventDefault();
+    const input = categoryForm.querySelector("[data-category-browse-query]");
+    loadCategoryBrowse({
+      query: input?.value || "",
+      append: false,
+    });
+    return;
+  }
+  const form = event.target.closest("[data-d1-browse-search]");
+  if (!form || !elements.searchModalOtherView.contains(form)) {
+    return;
+  }
+  event.preventDefault();
+  const input = form.querySelector("[data-d1-browse-query]");
+  if (!state.d1BrowseLetter) {
+    if (input) {
+      input.value = "";
+    }
+    state.d1BrowseQuery = "";
+    state.d1BrowseTag = "";
+    state.d1BrowseLocale = "";
+    state.d1BrowseAliases = [];
+    state.d1BrowseData = null;
+    renderD1BrowseView();
+    return;
+  }
+  if (state.d1BrowseTag) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: input?.value || "",
+      tag: state.d1BrowseTag,
+      locale: state.d1BrowseLocale,
+      aliases: state.d1BrowseAliases,
+    });
+    return;
+  }
+  loadD1Browse({
+    kind: state.d1BrowseKind || "name",
+    letter: state.d1BrowseLetter,
+    query: input?.value || "",
+    tag: "",
+    locale: "",
+  });
+});
+
+elements.searchModalOtherView?.addEventListener("click", (event) => {
+  const categoryBackButton = event.target.closest("[data-category-browse-back]");
+  if (categoryBackButton && elements.searchModalOtherView.contains(categoryBackButton)) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseQuery = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    state.categoryBrowseError = "";
+    renderCategoryBrowseView();
+    return;
+  }
+  const categoryButton = event.target.closest("[data-category-id]");
+  if (categoryButton && elements.searchModalOtherView.contains(categoryButton)) {
+    loadCategoryBrowse({
+      categoryId: categoryButton.dataset.categoryId || "",
+      query: "",
+      append: false,
+    });
+    return;
+  }
+  const backButton = event.target.closest("[data-d1-browse-back]");
+  if (backButton && elements.searchModalOtherView.contains(backButton)) {
+    if (state.d1BrowseTag) {
+      loadD1Browse({
+        kind: state.d1BrowseKind || "name",
+        letter: state.d1BrowseLetter,
+        query: "",
+        tag: "",
+        locale: "",
+        aliases: [],
+      });
+    } else if (state.d1BrowseLetter) {
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+      state.d1BrowseData = null;
+      renderD1BrowseView();
+    }
+    return;
+  }
+  const letterButton = event.target.closest("[data-letter]");
+  if (letterButton && elements.searchModalOtherView.contains(letterButton)) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: letterButton.dataset.letter || "",
+      query: "",
+      tag: "",
+      locale: "",
+      aliases: [],
+    });
+    return;
+  }
+  const tagButton = event.target.closest("[data-tag]");
+  if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
+    let aliases = [];
+    try {
+      aliases = JSON.parse(tagButton.dataset.aliases || "[]");
+    } catch {
+      aliases = [];
+    }
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: "",
+      tag: tagButton.dataset.tag || "",
+      locale: tagButton.dataset.locale || "",
+      aliases,
+    });
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.searchModalOtherView.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalBrowse");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("scroll", (event) => {
+  const target = event.target;
+  if (target instanceof Element && target.matches("[data-category-browse-results]")) {
+    maybeLoadMoreCategoryBrowse(target);
+  }
+}, true);
+
 elements.larkSearchToggle?.addEventListener("click", () => {
   state.followBrowseVisible = false;
   state.larkSearchVisible = !state.larkSearchVisible;
@@ -3719,6 +5311,9 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (state.searchModalOpen) {
+      setSearchModalOpen(false);
+    }
     setRemoteQrPopoverOpen(false);
   }
 });
