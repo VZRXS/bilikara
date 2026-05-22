@@ -2597,6 +2597,14 @@ body.remote-search-modal-open {
 }
 
 
+.category-browser-tab-name {
+  max-width: calc(100% - 10px);
+  padding: 4px 7px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+
 .category-browser-tab.active {
   border-color: rgba(0, 210, 255, 0.72);
   box-shadow: 0 0 0 1px rgba(0, 210, 255, 0.18), 0 0 20px rgba(0, 210, 255, 0.24);

@@ -1764,14 +1764,16 @@ function searchResultStatusLabel(item) {
   return "";
 }
 
-function createSearchResultUrlLine(item) {
+function createSearchResultUrlLine(item, { showBvid = true } = {}) {
   const line = document.createElement("div");
   line.className = "search-result-url";
 
-  const bvid = document.createElement("span");
-  bvid.className = "search-result-bvid";
-  bvid.textContent = String(item?.bvid || item?.url || "");
-  line.appendChild(bvid);
+  if (showBvid) {
+    const bvid = document.createElement("span");
+    bvid.className = "search-result-bvid";
+    bvid.textContent = String(item?.bvid || item?.url || "");
+    line.appendChild(bvid);
+  }
 
   const ownerName = searchResultOwnerName(item);
   if (ownerName) {
@@ -1981,7 +1983,7 @@ function createSearchResultRow(item) {
     statusLine.appendChild(plays);
   }
 
-  const url = createSearchResultUrlLine(item);
+  const url = createSearchResultUrlLine(item, { showBvid: false });
 
   const button = document.createElement("button");
   button.type = "button";
