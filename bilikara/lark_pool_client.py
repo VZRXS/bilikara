@@ -420,7 +420,7 @@ def _record_to_item(record: dict) -> dict | None:
         "owner_url": _field_text(fields.get("owner_url")).strip(),
         "source": "bilikara",
     }
-    for key in ("cover_url", "played_count", "preserved_1"):
+    for key in ("cover_url", "rank", "played_count", "preserved_1"):
         value = _field_text(fields.get(key)).strip()
         if value:
             item[key] = value
@@ -508,6 +508,7 @@ def _cloudflare_search_item(raw_item: Any) -> dict | None:
     }
     for key in (
         "cover_url",
+        "rank",
         "played_count",
         "preserved_1",
         "preserved_2",
@@ -867,6 +868,47 @@ def delete_cloudflare_pool_entry(bvid: str) -> dict:
         "feishu_queued": bool(payload.get("feishu_queued")),
         "error": str(payload.get("error") or ""),
     }
+
+
+def submit_cloudflare_song_rating(*, session_user_name: str, play_id: str, bvid: str, score: int) -> dict:
+    normalized_user_name = str(session_user_name or "").strip()
+    normalized_play_id = str(play_id or "").strip()
+    normalized_bvid = str(bvid or "").strip()
+    try:
+        normalized_score = int(score)
+    except (TypeError, ValueError):
+        normalized_score = 0
+    if not normalized_user_name:
+        return {"success": False, "error": "missing session_user_name"}
+    if not normalized_play_id:
+        return {"success": False, "error": "missing play_id"}
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "error": "invalid bvid"}
+    if normalized_score < 1 or normalized_score > 5:
+        return {"success": False, "error": "score must be between 1 and 5"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/rate-song",
+            {
+                "session_user_name": normalized_user_name,
+                "play_id": normalized_play_id,
+                "bvid": normalized_bvid,
+                "score": normalized_score,
+            },
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "play_id": normalized_play_id, "bvid": normalized_bvid, "score": normalized_score, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "play_id": normalized_play_id,
+            "bvid": normalized_bvid,
+            "score": normalized_score,
+            "error": "Cloudflare returned an invalid payload",
+        }
+    return dict(payload)
 
 
 

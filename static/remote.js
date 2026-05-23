@@ -94,6 +94,7 @@ const categoryBrowseImageUrls = [
 ];
 const playerControlStatusRefreshDelaysMs = [180, 520, 1100, 1800];
 const playerControlStatusSyncTimeoutMs = 3200;
+const remoteRatingPromptThreshold = 0.5;
 const storageKeys = {
   language: "bilikara.ui.language",
   layoutMode: "bilikara.remote.layout.mode",
@@ -202,6 +203,14 @@ const state = {
   currentPlaybackClockStartedAt: 0,
   currentPlaybackClockPaused: true,
   currentPlaybackClockTimer: null,
+  ratingPromptElement: null,
+  ratingPromptItem: null,
+  ratingPromptItemId: "",
+  ratingPromptBvid: "",
+  ratingPromptScore: 5,
+  ratingPromptSubmitted: false,
+  ratingPromptSeenPlayIds: new Set(),
+  ratingOptOut: false,
   playerControlsRenderSignature: "",
   listHeaderRenderSignature: "",
   queueRenderSignature: "",
@@ -1124,6 +1133,171 @@ async function apiPost(url, payload = {}) {
   return data.data;
 }
 
+function submitSongRating(item, score) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+  const sessionUserName = selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+  if (!bvid) {
+    return null;
+  }
+  const payload = {
+    session_user_name: sessionUserName,
+    play_id: playId,
+    bvid,
+    score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
+  };
+  fetch("/api/rating/submit", {
+    method: "POST",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    console.warn("Rating submit failed:", error);
+  });
+  return true;
+}
+
+function ratingItemUrl(item) {
+  return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
+}
+
+function ratingOwnerUid(item) {
+  const rawMid = item?.owner_mid ?? item?.mid;
+  const uid = String(rawMid || "").trim();
+  return /^\d+$/.test(uid) ? uid : "";
+}
+
+function renderRatingStars() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("[data-rating-score]").forEach((button) => {
+    const score = Number(button.dataset.ratingScore || "0");
+    button.classList.toggle("active", score <= state.ratingPromptScore);
+    button.setAttribute("aria-pressed", score === state.ratingPromptScore ? "true" : "false");
+  });
+}
+
+function setRatingOptOut(enabled) {
+  state.ratingOptOut = Boolean(enabled);
+}
+
+function closeRatingPrompt({ submit = true } = {}) {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const promptItem = state.ratingPromptItem;
+  const bvid = state.ratingPromptBvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  state.ratingPromptSubmitted = true;
+  root.remove();
+  state.ratingPromptElement = null;
+  state.ratingPromptItem = null;
+  state.ratingPromptItemId = "";
+  state.ratingPromptBvid = "";
+
+  if (shouldSubmit) {
+    submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
+  }
+}
+
+function openRatingPrompt(item) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.id || bvid).trim();
+  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+    return;
+  }
+  closeRatingPrompt({ submit: true });
+  state.ratingPromptSeenPlayIds.add(playId);
+  state.ratingPromptItem = item;
+  state.ratingPromptItemId = playId;
+  state.ratingPromptBvid = bvid;
+  state.ratingPromptScore = 5;
+  state.ratingPromptSubmitted = false;
+
+  const ownerName = String(item.owner_name || "").trim() || t("rating.unknownOwner");
+  const coverUrl = String(item.cover_url || "").trim();
+  const url = ratingItemUrl(item) || `https://www.bilibili.com/video/${bvid}`;
+  const ownerUid = ratingOwnerUid(item);
+  const root = document.createElement("div");
+  root.className = "rating-modal";
+  root.innerHTML = `
+    <div class="rating-modal-backdrop" data-rating-close></div>
+    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
+      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
+      <div class="rating-media">
+        ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
+        <div class="rating-copy">
+          <p class="rating-kicker">${htmlT("rating.kicker")}</p>
+          <h2>${htmlT("rating.title")}</h2>
+          <p class="rating-hint">${htmlT("rating.hint")}</p>
+          <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
+          <a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>
+        </div>
+      </div>
+      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
+        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
+      </div>
+      <div class="rating-actions">
+        <button type="button" class="secondary-button" data-rating-add-up ${ownerUid ? "" : "disabled"}>${ownerUid ? htmlT("rating.addUp") : htmlT("rating.missingUid")}</button>
+        <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
+      </div>
+      <label class="rating-opt-out">
+        <input type="checkbox" data-rating-opt-out>
+        <span>${htmlT("rating.optOut")}</span>
+      </label>
+      <p class="rating-message" data-rating-message></p>
+    </section>
+  `;
+  document.body.appendChild(root);
+  state.ratingPromptElement = root;
+  renderRatingStars();
+}
+
+function currentPlaybackClockSeconds() {
+  const durationSeconds = Math.max(0, Number(state.currentPlaybackClockDurationSeconds || 0));
+  if (!(durationSeconds > 0)) {
+    return { currentSeconds: 0, durationSeconds: 0 };
+  }
+  const baseSeconds = Math.max(0, Number(state.currentPlaybackClockBaseSeconds || 0));
+  const elapsedSeconds = state.currentPlaybackClockPaused
+    ? 0
+    : Math.max(0, (Date.now() - Number(state.currentPlaybackClockStartedAt || Date.now())) / 1000);
+  return {
+    currentSeconds: Math.min(durationSeconds, baseSeconds + elapsedSeconds),
+    durationSeconds,
+  };
+}
+
+function maybeUpdateRemoteRatingPrompt(currentItem) {
+  if (!currentItem) {
+    return;
+  }
+  const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
+  if (!(durationSeconds > 0)) {
+    return;
+  }
+  const ratio = currentSeconds / durationSeconds;
+  if (
+    state.ratingPromptElement
+    && state.ratingPromptItemId
+    && state.ratingPromptItemId !== String(currentItem.id || "")
+  ) {
+    if (ratio >= 0.5) {
+      closeRatingPrompt({ submit: true });
+    }
+    return;
+  }
+  if (ratio >= remoteRatingPromptThreshold) {
+    openRatingPrompt(currentItem);
+  }
+}
+
 function filenameFromContentDisposition(headerValue, fallback) {
   const value = String(headerValue || "");
   const quotedMatch = value.match(/filename="([^"]+)"/i);
@@ -1743,6 +1917,37 @@ function formatSearchDuration(value) {
   return `${minutes}:${paddedSeconds}`;
 }
 
+function searchResultRatingValue(item) {
+  const raw = firstSearchResultValue(item, ["rank", "rating", "score"]);
+  const value = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(5, value));
+}
+
+function formatSearchRating(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return Number(value.toFixed(1)).toString();
+}
+
+function searchResultRatingText(item) {
+  const rating = searchResultRatingValue(item);
+  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}`;
+}
+
+function createSearchResultRatingStars(item) {
+  const rating = searchResultRatingValue(item);
+  const stars = document.createElement("span");
+  stars.className = "search-result-rating-stars";
+  stars.setAttribute("aria-label", searchResultRatingText(item));
+  stars.style.setProperty("--rating-width", `${rating == null ? 0 : (rating / 5) * 100}%`);
+  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
+  return stars;
+}
+
 function searchResultStatusLabel(item) {
   const localSource = String(item?.local_source || "").trim();
   if (localSource === "favlist") {
@@ -1782,6 +1987,10 @@ function createSearchResultUrlLine(item, { showBvid = true } = {}) {
     owner.textContent = t("owner.tooltip", { name: ownerName });
     line.appendChild(owner);
   }
+  const rating = document.createElement("span");
+  rating.className = "search-result-rating-text";
+  rating.textContent = searchResultRatingText(item);
+  line.appendChild(rating);
 
   return line;
 }
@@ -1954,6 +2163,7 @@ function createSearchResultRow(item) {
     durationNode.textContent = duration;
     cover.appendChild(durationNode);
   }
+  cover.appendChild(createSearchResultRatingStars(item));
 
   const meta = document.createElement("div");
   meta.className = "search-result-meta search-result-body";
@@ -4128,6 +4338,26 @@ function currentPlayerStatus(currentItem) {
   return playerStatus;
 }
 
+function durationSecondsForItem(item) {
+  if (!item) {
+    return 0;
+  }
+  const selectedDurations = Array.isArray(item.selected_durations) ? item.selected_durations : [];
+  const selectedPages = Array.isArray(item.selected_pages) ? item.selected_pages : [];
+  const currentPage = Number(item.page || item.video_page || selectedPages[0] || 0);
+  const selectedIndex = selectedPages.findIndex((page) => Number(page) === currentPage);
+  const selectedDuration = Number(selectedDurations[selectedIndex >= 0 ? selectedIndex : 0] || 0);
+  if (selectedDuration > 0) {
+    return Math.round(selectedDuration);
+  }
+
+  const availableDurations = Array.isArray(item.available_durations) ? item.available_durations : [];
+  const availablePages = Array.isArray(item.available_pages) ? item.available_pages : [];
+  const availableIndex = availablePages.findIndex((page) => Number(page) === currentPage);
+  const availableDuration = Number(availableDurations[availableIndex >= 0 ? availableIndex : 0] || 0);
+  return availableDuration > 0 ? Math.round(availableDuration) : 0;
+}
+
 function playerStatusUpdatedAt(playerStatus) {
   const updatedAt = Number(playerStatus?.updated_at || 0);
   return Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0;
@@ -4408,15 +4638,10 @@ function clearCurrentPlaybackClock() {
 }
 
 function currentPlaybackClockText() {
-  const durationSeconds = Math.max(0, Number(state.currentPlaybackClockDurationSeconds || 0));
+  const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   if (!(durationSeconds > 0)) {
     return "";
   }
-  const baseSeconds = Math.max(0, Number(state.currentPlaybackClockBaseSeconds || 0));
-  const elapsedSeconds = state.currentPlaybackClockPaused
-    ? 0
-    : Math.max(0, (Date.now() - Number(state.currentPlaybackClockStartedAt || Date.now())) / 1000);
-  const currentSeconds = Math.min(durationSeconds, baseSeconds + elapsedSeconds);
   return `${formatPlaybackClockSeconds(currentSeconds)} / ${formatPlaybackClockSeconds(durationSeconds)}`;
 }
 
@@ -4427,6 +4652,11 @@ function paintCurrentPlaybackClock() {
   }
   if (elements.currentCacheState.textContent !== text) {
     elements.currentCacheState.textContent = text;
+  }
+  try {
+    maybeUpdateRemoteRatingPrompt(state.data?.current_item);
+  } catch (error) {
+    console.warn("Rating prompt update failed:", error);
   }
 }
 
@@ -4446,7 +4676,9 @@ function renderCurrentPlaybackState(current) {
   }
 
   const playerStatus = currentPlayerStatus(current);
-  const durationSeconds = Number(playerStatus?.duration || 0);
+  const itemDurationSeconds = durationSecondsForItem(current);
+  const reportedDurationSeconds = Number(playerStatus?.duration || 0);
+  const durationSeconds = itemDurationSeconds > 0 ? itemDurationSeconds : reportedDurationSeconds;
   const currentSeconds = Math.max(0, Number(playerStatus?.current_time || 0));
   const isPaused = Boolean(playerStatus?.is_paused);
   const waitingForHostStatus = playerControlStatusSyncPending(current, playerStatus);
@@ -5384,6 +5616,51 @@ elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaUidToggle?.addEventListener("click", () => {
   state.gatchaUidVisible = !state.gatchaUidVisible;
   renderGatchaUidView();
+});
+
+document.addEventListener("click", async (event) => {
+  const root = state.ratingPromptElement;
+  if (!root || !root.contains(event.target)) {
+    return;
+  }
+  const scoreButton = event.target.closest("[data-rating-score]");
+  if (scoreButton) {
+    state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
+    renderRatingStars();
+    return;
+  }
+  const optOutInput = event.target.closest("[data-rating-opt-out]");
+  if (optOutInput) {
+    setRatingOptOut(optOutInput.checked);
+    if (optOutInput.checked) {
+      closeRatingPrompt({ submit: false });
+    }
+    return;
+  }
+  const addUpButton = event.target.closest("[data-rating-add-up]");
+  if (addUpButton) {
+    const promptItem = state.ratingPromptItem;
+    const uid = ratingOwnerUid(promptItem);
+    const message = root.querySelector("[data-rating-message]");
+    if (!uid) {
+      if (message) message.textContent = t("rating.missingUidMessage");
+      return;
+    }
+    addUpButton.disabled = true;
+    if (message) message.textContent = t("rating.addingUp");
+    try {
+      await addGatchaUid(uid);
+      if (message) message.textContent = t("rating.addedUp");
+    } catch (error) {
+      if (message) message.textContent = error.message || t("rating.addFailed");
+    } finally {
+      addUpButton.disabled = false;
+    }
+    return;
+  }
+  if (event.target.closest("[data-rating-close]")) {
+    closeRatingPrompt({ submit: true });
+  }
 });
 
 elements.gatchaUidForm?.addEventListener("submit", handleGatchaUidSubmit);

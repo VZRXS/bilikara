@@ -168,6 +168,14 @@ const state = {
   bbdownLoginRequesting: false,
   updateChecking: false,
   updatePreviewEnabled: false,
+  ratingPromptElement: null,
+  ratingPromptItem: null,
+  ratingPromptItemId: "",
+  ratingPromptBvid: "",
+  ratingPromptScore: 5,
+  ratingPromptSubmitted: false,
+  ratingPromptSeenPlayIds: new Set(),
+  ratingOptOut: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
   fullscreenRequestToastHideTimer: null,
@@ -1025,6 +1033,156 @@ async function apiPost(url, payload = {}) {
   return data.data;
 }
 
+function submitSongRating(item, score) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+  const sessionUserName = selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+  if (!bvid) {
+    return null;
+  }
+  const payload = {
+    session_user_name: sessionUserName,
+    play_id: playId,
+    bvid,
+    score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
+  };
+  fetch("/api/rating/submit", {
+    method: "POST",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    console.warn("Rating submit failed:", error);
+  });
+  return true;
+}
+
+function ratingItemUrl(item) {
+  return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
+}
+
+function ratingOwnerUid(item) {
+  const rawMid = item?.owner_mid ?? item?.mid;
+  const uid = String(rawMid || "").trim();
+  return /^\d+$/.test(uid) ? uid : "";
+}
+
+function renderRatingStars() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("[data-rating-score]").forEach((button) => {
+    const score = Number(button.dataset.ratingScore || "0");
+    button.classList.toggle("active", score <= state.ratingPromptScore);
+    button.setAttribute("aria-pressed", score === state.ratingPromptScore ? "true" : "false");
+  });
+}
+
+function closeRatingPrompt({ submit = true } = {}) {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const item = state.data?.current_item;
+  const bvid = state.ratingPromptBvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  state.ratingPromptSubmitted = true;
+  const promptItem = state.ratingPromptItem;
+  root.remove();
+  state.ratingPromptElement = null;
+  state.ratingPromptItem = null;
+  state.ratingPromptItemId = "";
+  state.ratingPromptBvid = "";
+
+  if (shouldSubmit) {
+    submitSongRating({ ...(promptItem || item), bvid }, state.ratingPromptScore);
+  }
+}
+
+function setRatingOptOut(enabled) {
+  state.ratingOptOut = Boolean(enabled);
+}
+
+function openRatingPrompt(item) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.id || bvid).trim();
+  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+    return;
+  }
+  if (fullscreenElement()) {
+    return;
+  }
+  closeRatingPrompt({ submit: true });
+  state.ratingPromptSeenPlayIds.add(playId);
+  state.ratingPromptItemId = playId;
+  state.ratingPromptItem = item;
+  state.ratingPromptBvid = bvid;
+  state.ratingPromptScore = 5;
+  state.ratingPromptSubmitted = false;
+
+  const ownerName = String(item.owner_name || "").trim() || t("rating.unknownOwner");
+  const coverUrl = String(item.cover_url || "").trim();
+  const url = ratingItemUrl(item) || `https://www.bilibili.com/video/${bvid}`;
+  const ownerUid = ratingOwnerUid(item);
+  const root = document.createElement("div");
+  root.className = "rating-modal";
+  root.innerHTML = `
+    <div class="rating-modal-backdrop" data-rating-close></div>
+    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
+      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
+      <div class="rating-media">
+        ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
+        <div class="rating-copy">
+          <p class="rating-kicker">${htmlT("rating.kicker")}</p>
+          <h2>${htmlT("rating.title")}</h2>
+          <p class="rating-hint">${htmlT("rating.hint")}</p>
+          <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
+          <a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>
+        </div>
+      </div>
+      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
+        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
+      </div>
+      <div class="rating-actions">
+        <button type="button" class="toolbar-button" data-rating-add-up ${ownerUid ? "" : "disabled"}>${ownerUid ? htmlT("rating.addUp") : htmlT("rating.missingUid")}</button>
+        <button type="button" class="next-button" data-rating-close>${htmlT("rating.done")}</button>
+      </div>
+      <label class="rating-opt-out">
+        <input type="checkbox" data-rating-opt-out>
+        <span>${htmlT("rating.optOut")}</span>
+      </label>
+      <p class="rating-message" data-rating-message></p>
+    </section>
+  `;
+  document.body.appendChild(root);
+  state.ratingPromptElement = root;
+  renderRatingStars();
+}
+
+function maybeShowRatingPromptForProgress(item, currentTime, duration) {
+  const bvid = String(item?.bvid || "").trim();
+  const seconds = Number(currentTime || 0);
+  const totalSeconds = Number(duration || 0);
+  if (!item || !bvid || !(totalSeconds > 0) || seconds / totalSeconds < 0.8) {
+    return;
+  }
+  openRatingPrompt(item);
+}
+
+function handleRatingCurrentItemChange(currentItem) {
+  if (!state.ratingPromptElement) {
+    return;
+  }
+  const currentId = String(currentItem?.id || "");
+  if (!currentId || currentId !== state.ratingPromptItemId) {
+    closeRatingPrompt({ submit: true });
+  }
+}
+
 async function apiGet(url, options = {}) {
   const response = await fetch(url, {
     cache: "no-store",
@@ -1397,6 +1555,37 @@ function formatSearchDuration(value) {
   return `${minutes}:${paddedSeconds}`;
 }
 
+function searchResultRatingValue(item) {
+  const raw = firstSearchResultValue(item, ["rank", "rating", "score"]);
+  const value = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(5, value));
+}
+
+function formatSearchRating(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return Number(value.toFixed(1)).toString();
+}
+
+function searchResultRatingText(item) {
+  const rating = searchResultRatingValue(item);
+  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}`;
+}
+
+function createSearchResultRatingStars(item) {
+  const rating = searchResultRatingValue(item);
+  const stars = document.createElement("span");
+  stars.className = "search-result-rating-stars";
+  stars.setAttribute("aria-label", rating == null ? searchResultRatingText(item) : searchResultRatingText(item));
+  stars.style.setProperty("--rating-width", `${rating == null ? 0 : (rating / 5) * 100}%`);
+  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
+  return stars;
+}
+
 function searchResultStatusLabel(item) {
   const localSource = String(item?.local_source || "").trim();
   if (localSource === "favlist") {
@@ -1435,6 +1624,10 @@ function createSearchResultUrlLine(item) {
     owner.textContent = t("owner.tooltip", { name: ownerName });
     line.appendChild(owner);
   }
+  const rating = document.createElement("span");
+  rating.className = "search-result-rating-text";
+  rating.textContent = searchResultRatingText(item);
+  line.appendChild(rating);
 
   return line;
 }
@@ -1471,6 +1664,7 @@ function createSearchResultItem(item) {
     durationNode.textContent = duration;
     cover.appendChild(durationNode);
   }
+  cover.appendChild(createSearchResultRatingStars(item));
 
   const body = document.createElement("div");
   body.className = "search-result-meta search-result-body";
@@ -4944,6 +5138,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
 }
 
 function renderPlayer(currentItem, playbackMode) {
+  handleRatingCurrentItemChange(currentItem);
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
@@ -5173,6 +5368,7 @@ function renderPlayer(currentItem, playbackMode) {
     if (!settleSplitPlayerSeek(video, audio)) {
       reportCurrentVideoStatus();
     }
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   });
 
   video.addEventListener("canplay", () => {
@@ -5199,6 +5395,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   video.addEventListener("timeupdate", () => {
     reportPlayerStatusHeartbeat(currentItem.id, video);
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   });
 
   video.addEventListener("ratechange", () => {
@@ -5241,6 +5438,7 @@ function renderPlayer(currentItem, playbackMode) {
     }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
     reportCurrentVideoStatus();
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   }, localPlayerSyncIntervalMs);
 
   window.setTimeout(() => {
@@ -5662,6 +5860,10 @@ function reportPlayerStatus(itemId, video) {
 
   const currentTime = Number(video.currentTime || 0);
   const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
+  const currentItem = state.data?.current_item;
+  if (currentItem && String(currentItem.id || "") === normalizedItemId) {
+    maybeShowRatingPromptForProgress(currentItem, currentTime, duration);
+  }
   const signature = [
     normalizedItemId,
     video.paused ? "paused" : "playing",
@@ -8311,6 +8513,65 @@ elements.listStage.addEventListener("wheel", (event) => {
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
+
+document.addEventListener("click", async (event) => {
+  const root = state.ratingPromptElement;
+  if (!root || !root.contains(event.target)) {
+    return;
+  }
+  const scoreButton = event.target.closest("[data-rating-score]");
+  if (scoreButton) {
+    state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
+    renderRatingStars();
+    return;
+  }
+  const optOutInput = event.target.closest("[data-rating-opt-out]");
+  if (optOutInput) {
+    setRatingOptOut(optOutInput.checked);
+    if (optOutInput.checked) {
+      closeRatingPrompt({ submit: false });
+    }
+    return;
+  }
+  const addUpButton = event.target.closest("[data-rating-add-up]");
+  if (addUpButton) {
+    const promptItem = state.ratingPromptItem;
+    const uid = ratingOwnerUid(promptItem);
+    const message = root.querySelector("[data-rating-message]");
+    if (!uid) {
+      if (message) message.textContent = t("rating.missingUidMessage");
+      return;
+    }
+    addUpButton.disabled = true;
+    if (message) message.textContent = t("rating.addingUp");
+    try {
+      await addGatchaUid(uid);
+      if (message) message.textContent = t("rating.addedUp");
+    } catch (error) {
+      if (message) message.textContent = error.message || t("rating.addFailed");
+    } finally {
+      addUpButton.disabled = false;
+    }
+    return;
+  }
+  if (event.target.closest("[data-rating-close]")) {
+    closeRatingPrompt({ submit: true });
+  }
+});
+
+function handleRatingFullscreenChange() {
+  if (fullscreenElement()) {
+    return;
+  }
+  const currentItem = state.data?.current_item;
+  const video = elements.playerFrame?.querySelector?.('video[data-player-role="video"]');
+  if (currentItem && video) {
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
+  }
+}
+
+document.addEventListener("fullscreenchange", handleRatingFullscreenChange);
+document.addEventListener("webkitfullscreenchange", handleRatingFullscreenChange);
 
 elements.searchExpandButton?.addEventListener("click", () => {
   if (elements.searchModalPlaceholder && elements.searchCardContent && elements.searchModal) {

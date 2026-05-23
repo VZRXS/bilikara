@@ -37,7 +37,7 @@ from .bilibili import (
     refresh_gatcha_favlist,
     search_gatcha_cache,
 )
-from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_pool_entry, search_lark_pool, search_lark_pool_table
+from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_pool_entry, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating
 from .cache import CacheManager
 from .config import (
     APP_RELEASES_URL,
@@ -974,6 +974,49 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True})
                 return
+            if route == "/api/rating/submit":
+                session_user_name = str(
+                    body.get("session_user_name")
+                    or body.get("sessionUserName")
+                    or body.get("user_name")
+                    or body.get("userName")
+                    or body.get("session_user_id")
+                    or body.get("user_id")
+                    or ""
+                ).strip()
+                bvid = str(body.get("bvid") or "").strip()
+                play_id = str(
+                    body.get("play_id")
+                    or body.get("playId")
+                    or body.get("item_id")
+                    or body.get("itemId")
+                    or bvid
+                ).strip()
+                try:
+                    score = int(body.get("score") or 0)
+                except (TypeError, ValueError):
+                    score = 0
+                if not session_user_name:
+                    raise ValueError("missing session_user_name")
+                if not play_id:
+                    raise ValueError("missing play_id")
+                if not BVID_IN_TEXT_RE.fullmatch(bvid):
+                    raise ValueError("invalid bvid")
+                if score < 1 or score > 5:
+                    raise ValueError("score must be between 1 and 5")
+                self._submit_rating_in_background(session_user_name, play_id, bvid, score)
+                self._write_json({
+                    "ok": True,
+                    "data": {
+                        "success": True,
+                        "queued": True,
+                        "session_user_name": session_user_name,
+                        "play_id": play_id,
+                        "bvid": bvid,
+                        "score": score,
+                    },
+                })
+                return
             if route == "/api/cache-policy":
                 max_cache_items = body.get("max_cache_items") if "max_cache_items" in body else None
                 video_quality = body.get("video_quality") if "video_quality" in body else None
@@ -1121,6 +1164,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         delete_cloudflare_pool_entry(bvid)
 
     @staticmethod
+    def _submit_rating_in_background(session_user_name: str, play_id: str, bvid: str, score: int) -> None:
+        def worker() -> None:
+            result = submit_cloudflare_song_rating(
+                session_user_name=session_user_name,
+                play_id=play_id,
+                bvid=bvid,
+                score=score,
+            )
+            if not result.get("success"):
+                print(f"[bilikara] rating submit failed: {result.get('error') or 'unknown error'}", flush=True)
+
+        threading.Thread(target=worker, daemon=True, name="bilikara-rating-submit").start()
+
+    @staticmethod
     def _extract_bvid_from_add_body(body: dict) -> str:
         raw_url = str(body.get("url") or "")
         match = BVID_IN_TEXT_RE.search(raw_url)
@@ -1137,7 +1194,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if not str(static_path).startswith(str(STATIC_DIR.resolve())) or not static_path.exists():
             self._write_json({"ok": False, "error": "资源不存在"}, status=HTTPStatus.NOT_FOUND)
             return
-        self._stream_file(static_path, content_type=self._guess_type(static_path))
+        self._stream_file(
+            static_path,
+            content_type=self._guess_type(static_path),
+            cache_control="no-store",
+        )
 
     def _serve_media(self, route: str) -> None:
         relative = route.removeprefix("/media/")
@@ -1230,6 +1291,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         *,
         content_type: str,
         allow_ranges: bool = False,
+        cache_control: str | None = None,
     ) -> None:
         file_size = file_path.stat().st_size
         range_header = self.headers.get("Range", "")
@@ -1246,6 +1308,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     self.send_header("Accept-Ranges", "bytes")
                     self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                     self.send_header("Content-Length", str(end - start + 1))
+                    if cache_control:
+                        self.send_header("Cache-Control", cache_control)
                     self.end_headers()
                     with file_path.open("rb") as handle:
                         handle.seek(start)
@@ -1264,6 +1328,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(file_size))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         if allow_ranges:
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
