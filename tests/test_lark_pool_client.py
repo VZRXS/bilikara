@@ -310,7 +310,7 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertFalse(result["deleted"])
 
-    def test_verify_cloudflare_admin_secret_posts_secret(self):
+    def test_verify_cloudflare_bilikara_secret_posts_secret(self):
         requests = []
 
         def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
@@ -318,14 +318,14 @@ class LarkPoolClientTest(unittest.TestCase):
             return {"verified": True}
 
         with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
-            result = lark_pool.verify_cloudflare_admin_secret("admin-secret")
+            result = lark_pool.verify_cloudflare_bilikara_secret("bilikara-secret")
 
         self.assertTrue(result["verified"])
         self.assertEqual(len(requests), 1)
         method, path, payload, timeout = requests[0]
         self.assertEqual(method, "POST")
         self.assertEqual(path, "/admin/verify")
-        self.assertEqual(payload, {"adminsecret": "admin-secret"})
+        self.assertEqual(payload, {"BILIKARA_ADMIN_SECRET": "bilikara-secret"})
         self.assertEqual(timeout, 10)
 
     def test_reset_cloudflare_video_tags_posts_bvid_and_secret(self):
@@ -336,19 +336,19 @@ class LarkPoolClientTest(unittest.TestCase):
             return {"success": True, "bvid": "BV1xx411c7mD", "changed": 1}
 
         with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
-            result = lark_pool.reset_cloudflare_video_tags("BV1xx411c7mD", "admin-secret")
+            result = lark_pool.reset_cloudflare_video_tags("BV1xx411c7mD", "bilikara-secret")
 
         self.assertTrue(result["success"])
         self.assertEqual(len(requests), 1)
         method, path, payload, timeout = requests[0]
         self.assertEqual(method, "POST")
         self.assertEqual(path, "/admin/reset-tags")
-        self.assertEqual(payload, {"bvid": "BV1xx411c7mD", "adminsecret": "admin-secret"})
+        self.assertEqual(payload, {"bvid": "BV1xx411c7mD", "BILIKARA_ADMIN_SECRET": "bilikara-secret"})
         self.assertEqual(timeout, 10)
 
     def test_reset_cloudflare_video_tags_rejects_invalid_bvid(self):
         with patch.object(lark_pool, "_cloudflare_json") as cloudflare:
-            result = lark_pool.reset_cloudflare_video_tags("BVSHORT", "admin-secret")
+            result = lark_pool.reset_cloudflare_video_tags("BVSHORT", "bilikara-secret")
 
         cloudflare.assert_not_called()
         self.assertFalse(result["success"])

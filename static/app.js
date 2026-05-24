@@ -22,7 +22,7 @@ const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
-const developerProfileUrl = "https://github.com/VZRXS";
+const developerProfileUrl = "https://github.com/VZRXS/bilikara";
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -138,8 +138,8 @@ const state = {
   bindingIntent: null,
   gatchaFavlistIntent: null,
   developerMode: false,
-  adminSecret: "",
-  adminSecretVerifying: false,
+  bilikaraSecret: "",
+  bilikaraSecretVerifying: false,
   developerTagResetItem: null,
   developerTagResetSaving: false,
   retryActivityById: {},
@@ -328,14 +328,14 @@ const elements = {
   searchModalPlaceholder: document.getElementById("search-modal-content-placeholder"),
   favlistBrowserView: document.getElementById("favlist-browser-view"),
   searchModalOtherView: document.getElementById("search-modal-other-view"),
-  adminSecretModal: document.getElementById("admin-secret-modal"),
-  adminSecretBackdrop: document.getElementById("admin-secret-backdrop"),
-  adminSecretClose: document.getElementById("admin-secret-close"),
-  adminSecretCancel: document.getElementById("admin-secret-cancel"),
-  adminSecretForm: document.getElementById("admin-secret-form"),
-  adminSecretInput: document.getElementById("admin-secret-input"),
-  adminSecretConfirm: document.getElementById("admin-secret-confirm"),
-  adminSecretMessage: document.getElementById("admin-secret-message"),
+  bilikaraSecretModal: document.getElementById("bilikara-secret-modal"),
+  bilikaraSecretBackdrop: document.getElementById("bilikara-secret-backdrop"),
+  bilikaraSecretClose: document.getElementById("bilikara-secret-close"),
+  bilikaraSecretCancel: document.getElementById("bilikara-secret-cancel"),
+  bilikaraSecretForm: document.getElementById("bilikara-secret-form"),
+  bilikaraSecretInput: document.getElementById("bilikara-secret-input"),
+  bilikaraSecretConfirm: document.getElementById("bilikara-secret-confirm"),
+  bilikaraSecretMessage: document.getElementById("bilikara-secret-message"),
   developerTagResetModal: document.getElementById("developer-tag-reset-modal"),
   developerTagResetBackdrop: document.getElementById("developer-tag-reset-backdrop"),
   developerTagResetClose: document.getElementById("developer-tag-reset-close"),
@@ -1525,7 +1525,7 @@ async function confirmGatchaUidAdd(intent) {
 function setDeveloperMode(enabled) {
   state.developerMode = Boolean(enabled);
   if (!state.developerMode) {
-    state.adminSecret = "";
+    state.bilikaraSecret = "";
   }
   document.body?.classList.toggle("developer-mode", state.developerMode);
   elements.appShell?.classList.toggle("developer-mode", state.developerMode);
@@ -1533,7 +1533,7 @@ function setDeveloperMode(enabled) {
   elements.developerModeTrigger?.setAttribute("aria-pressed", String(state.developerMode));
 }
 
-function openAdminSecretModal() {
+function openBilikaraSecretModal() {
   if (state.developerMode) {
     return;
   }
@@ -1541,74 +1541,73 @@ function openAdminSecretModal() {
     window.location.href = developerProfileUrl;
     return;
   }
-  if (elements.adminSecretInput) {
-    elements.adminSecretInput.value = "";
+  if (elements.bilikaraSecretInput) {
+    elements.bilikaraSecretInput.value = "";
   }
-  if (elements.adminSecretMessage) {
-    elements.adminSecretMessage.textContent = "";
-    elements.adminSecretMessage.classList.remove("is-error");
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
   }
-  elements.adminSecretModal?.classList.remove("hidden");
-  window.setTimeout(() => elements.adminSecretInput?.focus(), 0);
+  elements.bilikaraSecretModal?.classList.remove("hidden");
+  window.setTimeout(() => elements.bilikaraSecretInput?.focus(), 0);
 }
 
-function closeAdminSecretModal() {
-  if (state.adminSecretVerifying) {
+function closeBilikaraSecretModal() {
+  if (state.bilikaraSecretVerifying) {
     return;
   }
-  elements.adminSecretModal?.classList.add("hidden");
-  if (elements.adminSecretInput) {
-    elements.adminSecretInput.value = "";
+  elements.bilikaraSecretModal?.classList.add("hidden");
+  if (elements.bilikaraSecretInput) {
+    elements.bilikaraSecretInput.value = "";
   }
-  if (elements.adminSecretMessage) {
-    elements.adminSecretMessage.textContent = "";
-    elements.adminSecretMessage.classList.remove("is-error");
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
   }
 }
 
-async function verifyAdminSecret() {
-  if (state.adminSecretVerifying) {
+async function verifyBilikaraSecret() {
+  if (state.bilikaraSecretVerifying) {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
     window.location.href = developerProfileUrl;
     return;
   }
-  const adminsecret = String(elements.adminSecretInput?.value || "").trim();
-  if (!adminsecret) {
-    if (elements.adminSecretMessage) {
-      elements.adminSecretMessage.textContent = "请输入 BILIKARA_ADMIN_SECRET。";
-      elements.adminSecretMessage.classList.add("is-error");
+  const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();
+  if (!bilikaraSecret) {
+    if (elements.bilikaraSecretMessage) {
+      elements.bilikaraSecretMessage.textContent = "请输入 BILIKARA_ADMIN_SECRET。";
+      elements.bilikaraSecretMessage.classList.add("is-error");
     }
     return;
   }
-  state.adminSecretVerifying = true;
-  if (elements.adminSecretConfirm) {
-    elements.adminSecretConfirm.disabled = true;
+  state.bilikaraSecretVerifying = true;
+  if (elements.bilikaraSecretConfirm) {
+    elements.bilikaraSecretConfirm.disabled = true;
   }
-  if (elements.adminSecretMessage) {
-    elements.adminSecretMessage.textContent = "验证中...";
-    elements.adminSecretMessage.classList.remove("is-error");
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "验证中...";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
   }
   try {
-    await apiPost("/api/admin-secret/verify", { adminsecret });
-    state.adminSecret = adminsecret;
+    await apiPost("/api/bilikara-secret/verify", { BILIKARA_ADMIN_SECRET: bilikaraSecret });
+    state.bilikaraSecret = bilikaraSecret;
     setDeveloperMode(true);
-    state.adminSecretVerifying = false;
-    closeAdminSecretModal();
+    state.bilikaraSecretVerifying = false;
+    closeBilikaraSecretModal();
   } catch {
-    if (elements.adminSecretMessage) {
-      elements.adminSecretMessage.textContent = "验证失败。";
-      elements.adminSecretMessage.classList.add("is-error");
+    if (elements.bilikaraSecretMessage) {
+      elements.bilikaraSecretMessage.textContent = "验证失败。";
+      elements.bilikaraSecretMessage.classList.add("is-error");
     }
   } finally {
-    state.adminSecretVerifying = false;
-    if (elements.adminSecretConfirm) {
-      elements.adminSecretConfirm.disabled = false;
+    state.bilikaraSecretVerifying = false;
+    if (elements.bilikaraSecretConfirm) {
+      elements.bilikaraSecretConfirm.disabled = false;
     }
   }
 }
-
 function closeDeveloperTagResetModal() {
   if (state.developerTagResetSaving) {
     return;
@@ -1680,7 +1679,7 @@ async function resetDeveloperTagFields() {
     return;
   }
   const snapshot = state.developerTagResetItem;
-  if (!state.developerMode || !state.adminSecret || !snapshot?.bvid) {
+  if (!state.developerMode || !state.bilikaraSecret || !snapshot?.bvid) {
     closeDeveloperTagResetModal();
     return;
   }
@@ -1691,7 +1690,7 @@ async function resetDeveloperTagFields() {
   try {
     await apiPost("/api/admin-tags/reset", {
       bvid: snapshot.bvid,
-      adminsecret: state.adminSecret,
+      BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
     });
     state.developerTagResetSaving = false;
     closeDeveloperTagResetModal();
@@ -8467,7 +8466,7 @@ elements.gatchaFavlistModalConfirm?.addEventListener("click", async () => {
 });
 
 elements.developerModeTrigger?.addEventListener("click", () => {
-  openAdminSecretModal();
+  openBilikaraSecretModal();
 });
 
 elements.developerModeTrigger?.addEventListener("keydown", (event) => {
@@ -8475,24 +8474,24 @@ elements.developerModeTrigger?.addEventListener("keydown", (event) => {
     return;
   }
   event.preventDefault();
-  openAdminSecretModal();
+  openBilikaraSecretModal();
 });
 
-elements.adminSecretForm?.addEventListener("submit", async (event) => {
+elements.bilikaraSecretForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await verifyAdminSecret();
+  await verifyBilikaraSecret();
 });
 
-elements.adminSecretClose?.addEventListener("click", () => {
-  closeAdminSecretModal();
+elements.bilikaraSecretClose?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
 });
 
-elements.adminSecretCancel?.addEventListener("click", () => {
-  closeAdminSecretModal();
+elements.bilikaraSecretCancel?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
 });
 
-elements.adminSecretBackdrop?.addEventListener("click", () => {
-  closeAdminSecretModal();
+elements.bilikaraSecretBackdrop?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
 });
 
 document.addEventListener("click", handleDeveloperTagResetButtonClick);

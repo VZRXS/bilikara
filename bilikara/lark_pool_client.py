@@ -911,7 +911,7 @@ def submit_cloudflare_song_rating(*, session_user_name: str, play_id: str, bvid:
     return dict(payload)
 
 
-def verify_cloudflare_admin_secret(secret: str) -> dict:
+def verify_cloudflare_bilikara_secret(secret: str) -> dict:
     normalized_secret = str(secret or "").strip()
     if not normalized_secret:
         return {"success": False, "verified": False, "error": "missing secret"}
@@ -919,7 +919,7 @@ def verify_cloudflare_admin_secret(secret: str) -> dict:
         payload = _cloudflare_json(
             "POST",
             "/admin/verify",
-            {"adminsecret": normalized_secret},
+            {"BILIKARA_ADMIN_SECRET": normalized_secret},
             timeout=10,
         )
     except LarkPoolError as exc:
@@ -951,7 +951,7 @@ def reset_cloudflare_video_tags(bvid: str, secret: str) -> dict:
         payload = _cloudflare_json(
             "POST",
             "/admin/reset-tags",
-            {"bvid": normalized_bvid, "adminsecret": normalized_secret},
+            {"bvid": normalized_bvid, "BILIKARA_ADMIN_SECRET": normalized_secret},
             timeout=10,
         )
     except LarkPoolError as exc:
