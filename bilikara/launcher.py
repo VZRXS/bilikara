@@ -39,23 +39,33 @@ class _TeeStream:
     def __init__(self, primary, log_handle) -> None:
         self.primary = primary
         self.log_handle = log_handle
-        self.encoding = getattr(primary, "encoding", "utf-8")
-        self.errors = getattr(primary, "errors", "replace")
+        self.encoding = getattr(primary, "encoding", "utf-8") if primary is not None else "utf-8"
+        self.errors = getattr(primary, "errors", "replace") if primary is not None else "replace"
 
     def write(self, text) -> int:
         if not isinstance(text, str):
             text = str(text)
-        self.primary.write(text)
-        self.primary.flush()
+        if self.primary is not None:
+            try:
+                self.primary.write(text)
+                self.primary.flush()
+            except Exception:
+                pass
         self.log_handle.write(text)
         self.log_handle.flush()
         return len(text)
 
     def flush(self) -> None:
-        self.primary.flush()
+        if self.primary is not None:
+            try:
+                self.primary.flush()
+            except Exception:
+                pass
         self.log_handle.flush()
 
     def isatty(self) -> bool:
+        if self.primary is None:
+            return False
         return bool(getattr(self.primary, "isatty", lambda: False)())
 
 

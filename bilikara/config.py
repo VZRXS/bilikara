@@ -194,11 +194,18 @@ def _resource_root() -> Path:
         meipass = getattr(sys, "_MEIPASS", "")
         if meipass:
             return Path(meipass)
-        return Path(sys.executable).resolve().parent
+        exe_dir = Path(sys.executable).resolve().parent
+        if sys.platform == "darwin" and exe_dir.name == "MacOS" and exe_dir.parent.name == "Contents":
+            resources = exe_dir.parent / "Resources"
+            if resources.exists():
+                return resources
+        return exe_dir
     return Path(__file__).resolve().parent.parent
 
 
 def _frozen_runtime_home() -> Path:
+    if sys.platform == "darwin":
+        return Path("~/Library/Application Support/bilikara").expanduser()
     return Path(sys.executable).resolve().parent / "runtime"
 
 
