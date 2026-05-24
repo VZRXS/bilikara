@@ -2473,7 +2473,9 @@ class CacheManager:
         path = urllib.parse.unquote(parsed.path or value)
         for prefix in ("/media/", "media/"):
             if path.startswith(prefix):
-                return cls._cache_path_from_relative_path(path.removeprefix(prefix))
+                # return cls._cache_path_from_relative_path(path.removeprefix(prefix))  # Python 3.9+
+                rel_path = path[len(prefix):] if path.startswith(prefix) else path
+                return cls._cache_path_from_relative_path(rel_path)
         return None
 
     def _item_cache_ready(self, item) -> bool:

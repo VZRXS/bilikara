@@ -1201,7 +1201,9 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         )
 
     def _serve_media(self, route: str) -> None:
-        relative = route.removeprefix("/media/")
+        # relative = route.removeprefix("/media/")  # Python 3.9+
+        prefix = "/media/"
+        relative = route[len(prefix):] if route.startswith(prefix) else route
         decoded = unquote(relative)
         media_path = (CACHE_DIR / decoded).resolve()
         if not str(media_path).startswith(str(CACHE_DIR.resolve())) or not media_path.exists():
