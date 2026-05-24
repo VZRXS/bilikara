@@ -1573,15 +1573,18 @@ function formatSearchRating(value) {
 
 function searchResultRatingText(item) {
   const rating = searchResultRatingValue(item);
-  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}`;
+  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
 }
 
 function createSearchResultRatingStars(item) {
   const rating = searchResultRatingValue(item);
+  if (rating == null) {
+    return null;
+  }
   const stars = document.createElement("span");
   stars.className = "search-result-rating-stars";
-  stars.setAttribute("aria-label", rating == null ? searchResultRatingText(item) : searchResultRatingText(item));
-  stars.style.setProperty("--rating-width", `${rating == null ? 0 : (rating / 5) * 100}%`);
+  stars.setAttribute("aria-label", searchResultRatingText(item));
+  stars.style.setProperty("--rating-width", `${(rating / 5) * 100}%`);
   stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
   return stars;
 }
@@ -1664,7 +1667,10 @@ function createSearchResultItem(item) {
     durationNode.textContent = duration;
     cover.appendChild(durationNode);
   }
-  cover.appendChild(createSearchResultRatingStars(item));
+  const ratingStars = createSearchResultRatingStars(item);
+  if (ratingStars) {
+    cover.appendChild(ratingStars);
+  }
 
   const body = document.createElement("div");
   body.className = "search-result-meta search-result-body";
