@@ -22,7 +22,7 @@ const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
-const developerProfileUrl = "https://github.com/VZRXS/bilikara";
+const developerProfileUrl = "https://github.com/VZRXS";
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -1574,8 +1574,8 @@ async function verifyAdminSecret() {
     window.location.href = developerProfileUrl;
     return;
   }
-  const adminSecretValue = String(elements.adminSecretInput?.value || "").trim();
-  if (!adminSecretValue) {
+  const adminsecret = String(elements.adminSecretInput?.value || "").trim();
+  if (!adminsecret) {
     if (elements.adminSecretMessage) {
       elements.adminSecretMessage.textContent = "请输入 BILIKARA_ADMIN_SECRET。";
       elements.adminSecretMessage.classList.add("is-error");
@@ -1591,8 +1591,8 @@ async function verifyAdminSecret() {
     elements.adminSecretMessage.classList.remove("is-error");
   }
   try {
-    await apiPost("/api/admin-secret/verify", { BILIKARA_ADMIN_SECRET: adminSecretValue });
-    state.adminSecret = adminSecretValue;
+    await apiPost("/api/admin-secret/verify", { adminsecret });
+    state.adminSecret = adminsecret;
     setDeveloperMode(true);
     state.adminSecretVerifying = false;
     closeAdminSecretModal();
@@ -1691,7 +1691,7 @@ async function resetDeveloperTagFields() {
   try {
     await apiPost("/api/admin-tags/reset", {
       bvid: snapshot.bvid,
-      BILIKARA_ADMIN_SECRET: state.adminSecret,
+      adminsecret: state.adminSecret,
     });
     state.developerTagResetSaving = false;
     closeDeveloperTagResetModal();
@@ -8466,8 +8466,7 @@ elements.gatchaFavlistModalConfirm?.addEventListener("click", async () => {
   await confirmGatchaFavlistModal();
 });
 
-elements.developerModeTrigger?.addEventListener("click", (event) => {
-  event.preventDefault();
+elements.developerModeTrigger?.addEventListener("click", () => {
   openAdminSecretModal();
 });
 

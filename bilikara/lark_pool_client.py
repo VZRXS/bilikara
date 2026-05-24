@@ -919,7 +919,7 @@ def verify_cloudflare_admin_secret(secret: str) -> dict:
         payload = _cloudflare_json(
             "POST",
             "/admin/verify",
-            {"BILIKARA_ADMIN_SECRET": normalized_secret},
+            {"adminsecret": normalized_secret},
             timeout=10,
         )
     except LarkPoolError as exc:
@@ -951,7 +951,7 @@ def reset_cloudflare_video_tags(bvid: str, secret: str) -> dict:
         payload = _cloudflare_json(
             "POST",
             "/admin/reset-tags",
-            {"bvid": normalized_bvid, "BILIKARA_ADMIN_SECRET": normalized_secret},
+            {"bvid": normalized_bvid, "adminsecret": normalized_secret},
             timeout=10,
         )
     except LarkPoolError as exc:

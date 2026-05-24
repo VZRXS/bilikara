@@ -447,7 +447,7 @@ class UpdateRouteTest(unittest.TestCase):
 
         handler.path = "/api/admin-secret/verify"
         handler.headers = {}
-        handler._read_json_body = lambda: {"BILIKARA_ADMIN_SECRET": "local-secret"}
+        handler._read_json_body = lambda: {"adminsecret": "local-secret"}
         handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
 
         with patch("bilikara.server.CONTEXT", context), patch.dict(
@@ -467,7 +467,7 @@ class UpdateRouteTest(unittest.TestCase):
 
         handler.path = "/api/admin-secret/verify"
         handler.headers = {}
-        handler._read_json_body = lambda: {"BILIKARA_ADMIN_SECRET": "wrong-secret"}
+        handler._read_json_body = lambda: {"adminsecret": "wrong-secret"}
         handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
 
         with patch("bilikara.server.CONTEXT", context), patch.dict(

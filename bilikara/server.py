@@ -805,10 +805,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/admin-secret/verify":
-                admin_secret_value = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                adminsecret = str(body.get("adminsecret") or "").strip()
                 local_admin_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
                 if local_admin_secret:
-                    if not admin_secret_value or not hmac.compare_digest(admin_secret_value, local_admin_secret):
+                    if not adminsecret or not hmac.compare_digest(adminsecret, local_admin_secret):
                         self._write_json(
                             {"ok": False, "error": "invalid secret"},
                             status=HTTPStatus.FORBIDDEN,
@@ -816,7 +816,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         return
                     self._write_json({"ok": True, "data": {"verified": True}})
                     return
-                result = verify_cloudflare_admin_secret(admin_secret_value)
+                result = verify_cloudflare_admin_secret(adminsecret)
                 if not result.get("verified"):
                     self._write_json(
                         {"ok": False, "error": result.get("error") or "invalid secret"},
@@ -828,7 +828,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/admin-tags/reset":
                 result = reset_cloudflare_video_tags(
                     str(body.get("bvid") or ""),
-                    str(body.get("BILIKARA_ADMIN_SECRET") or ""),
+                    str(body.get("adminsecret") or ""),
                 )
                 if not result.get("success"):
                     message = str(result.get("error") or "reset failed")

@@ -340,17 +340,6 @@ p {
   user-select: none;
 }
 
-.designer a {
-  color: inherit;
-  text-decoration: none;
-}
-
-.designer a:hover,
-.designer a:focus-visible {
-  color: inherit;
-  text-decoration: none;
-}
-
 .designer.active {
   color: var(--accent);
   text-shadow: 0 0 12px rgba(0, 210, 255, 0.45);
