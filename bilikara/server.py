@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import atexit
 from email.utils import formatdate
+import hmac
 import json
 import mimetypes
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("video/mp4", ".m4s")
 mimetypes.add_type("audio/mp4", ".m4a")
+import os
 import re
 import socket
 import threading
@@ -37,7 +39,7 @@ from .bilibili import (
     refresh_gatcha_favlist,
     search_gatcha_cache,
 )
-from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_pool_entry, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating
+from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_pool_entry, reset_cloudflare_video_tags, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating, verify_cloudflare_admin_secret
 from .cache import CacheManager
 from .config import (
     APP_RELEASES_URL,
@@ -801,6 +803,45 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("index must be an integer")
                 CONTEXT.move_session_user_to_index(name, index)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/admin-secret/verify":
+                adminsecret = str(body.get("adminsecret") or "").strip()
+                local_admin_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if local_admin_secret:
+                    if not adminsecret or not hmac.compare_digest(adminsecret, local_admin_secret):
+                        self._write_json(
+                            {"ok": False, "error": "invalid secret"},
+                            status=HTTPStatus.FORBIDDEN,
+                        )
+                        return
+                    self._write_json({"ok": True, "data": {"verified": True}})
+                    return
+                result = verify_cloudflare_admin_secret(adminsecret)
+                if not result.get("verified"):
+                    self._write_json(
+                        {"ok": False, "error": result.get("error") or "invalid secret"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                self._write_json({"ok": True, "data": {"verified": True}})
+                return
+            if route == "/api/admin-tags/reset":
+                result = reset_cloudflare_video_tags(
+                    str(body.get("bvid") or ""),
+                    str(body.get("adminsecret") or ""),
+                )
+                if not result.get("success"):
+                    message = str(result.get("error") or "reset failed")
+                    lowered = message.lower()
+                    if "invalid bvid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/playlist/move":
                 self._require_id(body)

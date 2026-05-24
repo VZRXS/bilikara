@@ -21,6 +21,19 @@ const localAdvanceOverlayMaxRows = 5;
 const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
+const developerModeRequesterName = "VZRXS";
+const developerProfileUrl = "https://github.com/VZRXS";
+const developerTagResetFieldKeys = [
+  "tag_1",
+  "tag_2",
+  "tag_3",
+  "tag_4",
+  "tag_5",
+  "preserved_2",
+  "preserved_3",
+  "preserved_4",
+  "preserved_5",
+];
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
@@ -124,6 +137,11 @@ const state = {
   confirmIntent: null,
   bindingIntent: null,
   gatchaFavlistIntent: null,
+  developerMode: false,
+  adminSecret: "",
+  adminSecretVerifying: false,
+  developerTagResetItem: null,
+  developerTagResetSaving: false,
   retryActivityById: {},
   gatchaCandidate: null,
   searchCookieVisible: false,
@@ -187,6 +205,7 @@ const state = {
 
 const elements = {
   appShell: document.getElementById("app-shell"),
+  developerModeTrigger: document.getElementById("developer-mode-trigger"),
   serviceStatusIndicator: document.getElementById("service-status-indicator"),
   playbackModeSummary: document.getElementById("playback-mode-summary"),
   playbackModeCurrent: document.getElementById("playback-mode-current"),
@@ -309,6 +328,21 @@ const elements = {
   searchModalPlaceholder: document.getElementById("search-modal-content-placeholder"),
   favlistBrowserView: document.getElementById("favlist-browser-view"),
   searchModalOtherView: document.getElementById("search-modal-other-view"),
+  adminSecretModal: document.getElementById("admin-secret-modal"),
+  adminSecretBackdrop: document.getElementById("admin-secret-backdrop"),
+  adminSecretClose: document.getElementById("admin-secret-close"),
+  adminSecretCancel: document.getElementById("admin-secret-cancel"),
+  adminSecretForm: document.getElementById("admin-secret-form"),
+  adminSecretInput: document.getElementById("admin-secret-input"),
+  adminSecretConfirm: document.getElementById("admin-secret-confirm"),
+  adminSecretMessage: document.getElementById("admin-secret-message"),
+  developerTagResetModal: document.getElementById("developer-tag-reset-modal"),
+  developerTagResetBackdrop: document.getElementById("developer-tag-reset-backdrop"),
+  developerTagResetClose: document.getElementById("developer-tag-reset-close"),
+  developerTagResetCancel: document.getElementById("developer-tag-reset-cancel"),
+  developerTagResetConfirm: document.getElementById("developer-tag-reset-confirm"),
+  developerTagResetText: document.getElementById("developer-tag-reset-text"),
+  developerTagResetFields: document.getElementById("developer-tag-reset-fields"),
   searchSidebarItems: document.querySelectorAll(".search-sidebar-item"),
   searchOriginalContainer: document.querySelector(".search-card"),
   searchTag: document.getElementById("search-tag"),
@@ -1488,6 +1522,190 @@ async function confirmGatchaUidAdd(intent) {
   }
 }
 
+function setDeveloperMode(enabled) {
+  state.developerMode = Boolean(enabled);
+  if (!state.developerMode) {
+    state.adminSecret = "";
+  }
+  document.body?.classList.toggle("developer-mode", state.developerMode);
+  elements.appShell?.classList.toggle("developer-mode", state.developerMode);
+  elements.developerModeTrigger?.classList.toggle("active", state.developerMode);
+  elements.developerModeTrigger?.setAttribute("aria-pressed", String(state.developerMode));
+}
+
+function openAdminSecretModal() {
+  if (state.developerMode) {
+    return;
+  }
+  if (selectedRequesterName() !== developerModeRequesterName) {
+    window.location.href = developerProfileUrl;
+    return;
+  }
+  if (elements.adminSecretInput) {
+    elements.adminSecretInput.value = "";
+  }
+  if (elements.adminSecretMessage) {
+    elements.adminSecretMessage.textContent = "";
+    elements.adminSecretMessage.classList.remove("is-error");
+  }
+  elements.adminSecretModal?.classList.remove("hidden");
+  window.setTimeout(() => elements.adminSecretInput?.focus(), 0);
+}
+
+function closeAdminSecretModal() {
+  if (state.adminSecretVerifying) {
+    return;
+  }
+  elements.adminSecretModal?.classList.add("hidden");
+  if (elements.adminSecretInput) {
+    elements.adminSecretInput.value = "";
+  }
+  if (elements.adminSecretMessage) {
+    elements.adminSecretMessage.textContent = "";
+    elements.adminSecretMessage.classList.remove("is-error");
+  }
+}
+
+async function verifyAdminSecret() {
+  if (state.adminSecretVerifying) {
+    return;
+  }
+  if (selectedRequesterName() !== developerModeRequesterName) {
+    window.location.href = developerProfileUrl;
+    return;
+  }
+  const adminsecret = String(elements.adminSecretInput?.value || "").trim();
+  if (!adminsecret) {
+    if (elements.adminSecretMessage) {
+      elements.adminSecretMessage.textContent = "请输入 BILIKARA_ADMIN_SECRET。";
+      elements.adminSecretMessage.classList.add("is-error");
+    }
+    return;
+  }
+  state.adminSecretVerifying = true;
+  if (elements.adminSecretConfirm) {
+    elements.adminSecretConfirm.disabled = true;
+  }
+  if (elements.adminSecretMessage) {
+    elements.adminSecretMessage.textContent = "验证中...";
+    elements.adminSecretMessage.classList.remove("is-error");
+  }
+  try {
+    await apiPost("/api/admin-secret/verify", { adminsecret });
+    state.adminSecret = adminsecret;
+    setDeveloperMode(true);
+    state.adminSecretVerifying = false;
+    closeAdminSecretModal();
+  } catch {
+    if (elements.adminSecretMessage) {
+      elements.adminSecretMessage.textContent = "验证失败。";
+      elements.adminSecretMessage.classList.add("is-error");
+    }
+  } finally {
+    state.adminSecretVerifying = false;
+    if (elements.adminSecretConfirm) {
+      elements.adminSecretConfirm.disabled = false;
+    }
+  }
+}
+
+function closeDeveloperTagResetModal() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  state.developerTagResetItem = null;
+  elements.developerTagResetModal?.classList.add("hidden");
+  if (elements.developerTagResetFields) {
+    elements.developerTagResetFields.innerHTML = "";
+  }
+}
+
+function openDeveloperTagResetModal(snapshot) {
+  if (!state.developerMode || !snapshot?.bvid) {
+    return;
+  }
+  state.developerTagResetItem = snapshot;
+  if (elements.developerTagResetText) {
+    const title = snapshot.title ? `《${snapshot.title}》` : "当前条目";
+    elements.developerTagResetText.textContent = `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
+  }
+  if (elements.developerTagResetFields) {
+    elements.developerTagResetFields.innerHTML = "";
+    developerTagResetFieldKeys.forEach((key) => {
+      const row = document.createElement("div");
+      row.className = "developer-tag-reset-field";
+      const name = document.createElement("span");
+      name.className = "developer-tag-reset-field-name";
+      name.textContent = key;
+      const value = document.createElement("span");
+      value.className = "developer-tag-reset-field-value";
+      value.textContent = String(snapshot.fields?.[key] || "") || "空";
+      row.append(name, value);
+      elements.developerTagResetFields.appendChild(row);
+    });
+  }
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = false;
+  }
+  elements.developerTagResetModal?.classList.remove("hidden");
+}
+
+function parseDeveloperTagResetButton(button) {
+  try {
+    const snapshot = JSON.parse(String(button?.dataset?.item || "{}"));
+    if (!snapshot || typeof snapshot !== "object") {
+      return null;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function handleDeveloperTagResetButtonClick(event) {
+  const button = event.target.closest('button[data-dev-action="reset-tags"]');
+  if (!button || !elements.searchModal?.contains(button)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const snapshot = parseDeveloperTagResetButton(button);
+  if (snapshot) {
+    openDeveloperTagResetModal(snapshot);
+  }
+}
+
+async function resetDeveloperTagFields() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  const snapshot = state.developerTagResetItem;
+  if (!state.developerMode || !state.adminSecret || !snapshot?.bvid) {
+    closeDeveloperTagResetModal();
+    return;
+  }
+  state.developerTagResetSaving = true;
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = true;
+  }
+  try {
+    await apiPost("/api/admin-tags/reset", {
+      bvid: snapshot.bvid,
+      adminsecret: state.adminSecret,
+    });
+    state.developerTagResetSaving = false;
+    closeDeveloperTagResetModal();
+    setAppMessage(`已重置 ${snapshot.bvid} 的标签字段。`);
+  } catch (error) {
+    setAppMessage(error?.message || "重置失败。", true);
+  } finally {
+    state.developerTagResetSaving = false;
+    if (elements.developerTagResetConfirm) {
+      elements.developerTagResetConfirm.disabled = false;
+    }
+  }
+}
+
 function hideSearchResults() {
   elements.searchResults.innerHTML = "";
   elements.searchResults.classList.add("hidden");
@@ -1505,6 +1723,43 @@ function firstSearchResultValue(item, keys) {
     }
   }
   return "";
+}
+
+function searchResultBvid(item) {
+  const direct = String(item?.bvid || "").trim();
+  if (direct) {
+    return direct;
+  }
+  const source = String(item?.url || item?.resolved_url || item?.original_url || "").trim();
+  const match = source.match(/BV[0-9A-Za-z]{10}/);
+  return match ? match[0] : "";
+}
+
+function developerTagResetSnapshot(item) {
+  const snapshot = {
+    bvid: searchResultBvid(item),
+    title: String(item?.title || "").trim(),
+    fields: {},
+  };
+  developerTagResetFieldKeys.forEach((key) => {
+    snapshot.fields[key] = String(item?.[key] ?? "").trim();
+  });
+  return snapshot;
+}
+
+function createDeveloperTagResetButton(item) {
+  const snapshot = developerTagResetSnapshot(item);
+  if (!snapshot.bvid) {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "toolbar-button developer-reset-tag-button";
+  button.dataset.devAction = "reset-tags";
+  button.dataset.item = JSON.stringify(snapshot);
+  button.textContent = "重置";
+  button.title = "重置标签字段";
+  return button;
 }
 
 function searchResultCoverUrl(item) {
@@ -1639,8 +1894,12 @@ function createSearchResultItem(item) {
   const row = document.createElement("article");
   row.className = "search-result-item";
   const itemUrl = String(item?.url || "").trim();
+  const bvid = searchResultBvid(item);
   if (itemUrl) {
     row.dataset.url = itemUrl;
+  }
+  if (bvid) {
+    row.dataset.bvid = bvid;
   }
 
   const coverUrl = searchResultCoverUrl(item);
@@ -1670,6 +1929,10 @@ function createSearchResultItem(item) {
   const ratingStars = createSearchResultRatingStars(item);
   if (ratingStars) {
     cover.appendChild(ratingStars);
+  }
+  const developerResetButton = createDeveloperTagResetButton(item);
+  if (developerResetButton) {
+    cover.appendChild(developerResetButton);
   }
 
   const body = document.createElement("div");
@@ -7495,6 +7758,9 @@ elements.searchForm.addEventListener("submit", async (event) => {
 });
 
 function searchResultRequestTarget(event, container) {
+  if (event.target.closest("button[data-dev-action]")) {
+    return null;
+  }
   const button = event.target.closest("button[data-url]");
   if (button && container?.contains(button)) {
     return {
@@ -8198,6 +8464,53 @@ elements.gatchaFavlistModalBackdrop?.addEventListener("click", () => {
 
 elements.gatchaFavlistModalConfirm?.addEventListener("click", async () => {
   await confirmGatchaFavlistModal();
+});
+
+elements.developerModeTrigger?.addEventListener("click", () => {
+  openAdminSecretModal();
+});
+
+elements.developerModeTrigger?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  event.preventDefault();
+  openAdminSecretModal();
+});
+
+elements.adminSecretForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await verifyAdminSecret();
+});
+
+elements.adminSecretClose?.addEventListener("click", () => {
+  closeAdminSecretModal();
+});
+
+elements.adminSecretCancel?.addEventListener("click", () => {
+  closeAdminSecretModal();
+});
+
+elements.adminSecretBackdrop?.addEventListener("click", () => {
+  closeAdminSecretModal();
+});
+
+document.addEventListener("click", handleDeveloperTagResetButtonClick);
+
+elements.developerTagResetClose?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetCancel?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetBackdrop?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetConfirm?.addEventListener("click", async () => {
+  await resetDeveloperTagFields();
 });
 
 elements.confirmOk.addEventListener("click", async () => {

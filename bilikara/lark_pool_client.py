@@ -911,6 +911,60 @@ def submit_cloudflare_song_rating(*, session_user_name: str, play_id: str, bvid:
     return dict(payload)
 
 
+def verify_cloudflare_admin_secret(secret: str) -> dict:
+    normalized_secret = str(secret or "").strip()
+    if not normalized_secret:
+        return {"success": False, "verified": False, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/verify",
+            {"adminsecret": normalized_secret},
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "verified": False, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "verified": False, "error": "Cloudflare returned an invalid payload"}
+    verified = bool(
+        payload.get("verified")
+        or payload.get("valid")
+        or payload.get("authorized")
+        or payload.get("success")
+        or payload.get("ok")
+    )
+    return {
+        "success": verified,
+        "verified": verified,
+        "error": "" if verified else str(payload.get("error") or payload.get("message") or "invalid secret"),
+    }
+
+
+def reset_cloudflare_video_tags(bvid: str, secret: str) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/reset-tags",
+            {"bvid": normalized_bvid, "adminsecret": normalized_secret},
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "bvid": normalized_bvid, "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result["success"] = bool(result.get("success"))
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("error", "" if result["success"] else "reset failed")
+    return result
+
+
 
 def append_lark_pool_entries(entries: list[dict]) -> dict:
     return append_cloudflare_pool_entries(entries)

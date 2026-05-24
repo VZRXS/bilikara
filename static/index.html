@@ -24,7 +24,7 @@
         <div>
           <p class="eyebrow" data-i18n="brand.eyebrow">bilikara host kevinx96 ver</p>
           <h1 data-i18n="brand.name">bilikara</h1>
-          <p class="designer" data-i18n="brand.designer">@VZRXS</p>
+          <p class="designer" id="developer-mode-trigger" role="button" tabindex="0" data-i18n="brand.designer">@VZRXS</p>
         </div>
         <div class="top-controls">
           <div class="mode-control language-control" id="language-control">
@@ -873,6 +873,52 @@
           <div id="search-modal-other-view" class="search-modal-other-view hidden">
             此功能开发中...
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="selection-modal hidden" id="admin-secret-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="admin-secret-backdrop"></div>
+      <div class="selection-modal-card selection-modal-card-single admin-secret-card">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag">Access</p>
+            <h2>访问验证</h2>
+          </div>
+          <button type="button" id="admin-secret-close" class="banner-close" aria-label="关闭">×</button>
+        </div>
+        <form id="admin-secret-form" class="admin-secret-form">
+          <label class="input-group" for="admin-secret-input">
+            <span>BILIKARA_ADMIN_SECRET</span>
+            <input type="password" id="admin-secret-input" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="search-message" id="admin-secret-message" role="status"></p>
+          <div class="selection-modal-actions">
+            <button type="button" id="admin-secret-cancel" class="toolbar-button">取消</button>
+            <button type="submit" id="admin-secret-confirm" class="next-button">确认</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="selection-modal hidden" id="developer-tag-reset-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="developer-tag-reset-backdrop"></div>
+      <div class="selection-modal-card selection-modal-card-single developer-tag-reset-card">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag">Tools</p>
+            <h2>重置标签字段</h2>
+          </div>
+          <button type="button" id="developer-tag-reset-close" class="banner-close" aria-label="关闭">×</button>
+        </div>
+        <p class="selection-modal-text" id="developer-tag-reset-text"></p>
+        <div class="developer-tag-reset-fields" id="developer-tag-reset-fields"></div>
+        <div class="developer-tag-reset-note">
+          确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。
+        </div>
+        <div class="selection-modal-actions">
+          <button type="button" id="developer-tag-reset-cancel" class="toolbar-button">取消</button>
+          <button type="button" id="developer-tag-reset-confirm" class="next-button">确认重置</button>
         </div>
       </div>
     </div>
