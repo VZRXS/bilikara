@@ -3893,7 +3893,7 @@ function openBindingSheet(intent, payload) {
   const preferredPage = Number(payload.preferred_page || pages[0]?.page || 1);
   pages.forEach((entry) => {
     elements.bindingSheetVideoOptions.appendChild(renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage));
-    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage));
+    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, false));
   });
   renderBindingAccordion();
 

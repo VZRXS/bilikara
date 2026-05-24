@@ -6658,7 +6658,7 @@ function openBindingModal(intent, payload) {
       renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage),
     );
     elements.bindingAudioOptions.appendChild(
-      renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage),
+      renderBindingOption("checkbox", "binding-audio-page", entry, false),
     );
   });
   elements.bindingModal.classList.remove("hidden");
