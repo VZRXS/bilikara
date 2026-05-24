@@ -16,8 +16,22 @@ class ConfigPathTest(unittest.TestCase):
             expected_home = fake_executable.resolve().parent / "runtime"
             with patch.dict(os.environ, {}, clear=True):
                 with patch.object(config.sys, "frozen", True, create=True):
-                    with patch.object(config.sys, "executable", str(fake_executable)):
-                        self.assertEqual(config._default_app_home(), expected_home)
+                    with patch.object(config.sys, "platform", "win32"):
+                        with patch.object(config.sys, "executable", str(fake_executable)):
+                            self.assertEqual(config._default_app_home(), expected_home)
+
+    def test_frozen_build_on_macos_defaults_to_application_support(self):
+        with TemporaryDirectory() as temp_dir:
+            fake_executable = Path(temp_dir) / "bilikara"
+            fake_executable.touch()
+            # Provide HOME and USERPROFILE so expanduser() doesn't crash on Windows runner
+            env_patch = {"HOME": "/Users/fake", "USERPROFILE": "C:\\Users\\fake"}
+            with patch.dict(os.environ, env_patch, clear=True):
+                expected_home = Path("~/Library/Application Support/bilikara").expanduser()
+                with patch.object(config.sys, "frozen", True, create=True):
+                    with patch.object(config.sys, "platform", "darwin"):
+                        with patch.object(config.sys, "executable", str(fake_executable)):
+                            self.assertEqual(config._default_app_home(), expected_home)
 
     def test_windows_frozen_prefers_detected_lan_host(self):
         with patch.dict(os.environ, {}, clear=True):
