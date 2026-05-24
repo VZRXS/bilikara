@@ -57,15 +57,15 @@ VIDEO_QUALITY_CHOICES = (
     # "杜比视界",
     # "HDR 真彩",
     # "4K 超清",
-    "1080P 60帧",
-    "1080P 高码率",
+    "1080P 高帧率",
+    # "1080P 高码率",
     "1080P 高清",
-    "720P 60帧",
+    # "720P 60帧",
     "720P 高清",
     "480P 清晰",
     "360P 流畅",
 )
-DEFAULT_VIDEO_QUALITY = "1080P 60帧"
+DEFAULT_VIDEO_QUALITY = "1080P 高帧率"
 DEFAULT_AUDIO_HIRES = True
 
 
@@ -2585,9 +2585,8 @@ class CacheManager:
         path = urllib.parse.unquote(parsed.path or value)
         for prefix in ("/media/", "media/"):
             if path.startswith(prefix):
-                # return cls._cache_path_from_relative_path(path.removeprefix(prefix))  # Python 3.9+
-                rel_path = path[len(prefix):] if path.startswith(prefix) else path
-                return cls._cache_path_from_relative_path(rel_path)
+                # return cls._cache_path_from_relative_path(path.removeprefix(prefix))  # Python
+                return cls._cache_path_from_relative_path(path.removeprefix(prefix))
         return None
 
     def _item_cache_ready(self, item) -> bool:

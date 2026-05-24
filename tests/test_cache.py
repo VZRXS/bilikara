@@ -189,17 +189,17 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     {
                         "hevc_supported": False,
                         "avc_supported": True,
-                        "max_avc_quality_index": 4,
+                        "max_avc_quality_index": 2,
                         "can_play_type": {'video/mp4; codecs="hvc1"': ""},
                         "user_agent": "Firefox on Windows 7",
                         "platform": "Win32",
                     }
                 )
                 self.assertTrue(snapshot["force_avc"])
-                self.assertEqual(snapshot["max_avc_quality"], VIDEO_QUALITY_CHOICES[4])
+                self.assertEqual(snapshot["max_avc_quality"], VIDEO_QUALITY_CHOICES[2])
                 self.assertEqual(
                     manager._bbdown_stream_preference_args("video"),
-                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[4:]), "-e", "avc"],
+                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[2:]), "-e", "avc"],
                 )
                 self.assertEqual(manager._bbdown_stream_preference_args("audio"), [])
             finally:
@@ -209,17 +209,17 @@ class CacheManagerPolicyTest(unittest.TestCase):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
-                manager.set_cache_policy(video_quality=VIDEO_QUALITY_CHOICES[5])
+                manager.set_cache_policy(video_quality=VIDEO_QUALITY_CHOICES[3])
                 manager.set_client_media_capabilities(
                     {
                         "hevc_supported": False,
                         "avc_supported": True,
-                        "max_avc_quality_index": 4,
+                        "max_avc_quality_index": 2,
                     }
                 )
                 self.assertEqual(
                     manager._bbdown_stream_preference_args("video"),
-                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[5:]), "-e", "avc"],
+                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[3:]), "-e", "avc"],
                 )
             finally:
                 manager.shutdown()
