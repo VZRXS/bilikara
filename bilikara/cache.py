@@ -9,10 +9,12 @@ import platform
 import queue
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import tarfile
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -1976,7 +1978,7 @@ class CacheManager:
 
             asset = self._select_asset(release)
             tmp_archive = BB_DOWN_DIR / asset["name"]
-            urllib.request.urlretrieve(asset["browser_download_url"], tmp_archive)
+            self._download_url(asset["browser_download_url"], tmp_archive)
             self._extract_archive(tmp_archive, BB_DOWN_DIR)
             tmp_archive.unlink(missing_ok=True)
 
@@ -1998,8 +2000,40 @@ class CacheManager:
             BB_DOWN_RELEASE_API,
             headers={"User-Agent": "bilikara"},
         )
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with self._urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _is_ssl_certificate_error(exc: BaseException) -> bool:
+        if isinstance(exc, ssl.SSLCertVerificationError):
+            return True
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return True
+        return "CERTIFICATE_VERIFY_FAILED" in str(exc)
+
+    @classmethod
+    def _urlopen(cls, request: urllib.request.Request | str, *, timeout: float):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.URLError as exc:
+            if not cls._is_ssl_certificate_error(exc):
+                raise
+            try:
+                import certifi  # type: ignore[import-not-found]
+            except Exception as certifi_exc:  # noqa: BLE001
+                raise RuntimeError(
+                    "Python SSL certificate verification failed. "
+                    "Install system certificates or set BB_DOWN_PATH to a manually downloaded BBDown binary."
+                ) from certifi_exc
+            context = ssl.create_default_context(cafile=certifi.where())
+            return urllib.request.urlopen(request, timeout=timeout, context=context)
+
+    @classmethod
+    def _download_url(cls, url: str, target_path: Path) -> None:
+        request = urllib.request.Request(url, headers={"User-Agent": "bilikara"})
+        with cls._urlopen(request, timeout=60) as response:
+            target_path.write_bytes(response.read())
 
     def _select_asset(self, release: dict) -> dict:
         system = platform.system().lower()

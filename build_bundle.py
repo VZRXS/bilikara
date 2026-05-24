@@ -12,7 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
 REQUIRED_TOOL_BINARIES = ("ffmpeg",)
 OPTIONAL_TOOL_BINARIES = ("ffprobe",)
-PYTHON_HTTPS_HIDDEN_IMPORTS = ("ssl", "_ssl", "urllib.request", "http.client")
+PYTHON_HTTPS_HIDDEN_IMPORTS = ("ssl", "_ssl", "urllib.request", "http.client", "certifi")
 
 
 def main() -> None:
@@ -41,6 +41,7 @@ def main() -> None:
         str(ROOT_DIR / "start_bilikara.py"),
     ]
     command.extend(_python_https_args(data_separator, verbose=True))
+    command.extend(_python_certifi_args(data_separator, verbose=True))
     command.extend(_bundled_binary_args(data_separator, verbose=True))
 
     if platform.system() == "Darwin":
@@ -143,6 +144,23 @@ def _python_https_binary_paths() -> list[Path]:
                 if candidate.is_file():
                     paths[str(candidate.resolve()).lower()] = candidate
     return list(paths.values())
+
+
+def _python_certifi_args(data_separator: str, *, verbose: bool = False) -> list[str]:
+    try:
+        import certifi
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("certifi is required for bundle builds; run pip install -r requirements-packaging.txt") from exc
+
+    cert_path = Path(certifi.where())
+    if not cert_path.exists():
+        raise RuntimeError(f"certifi CA bundle not found: {cert_path}")
+
+    if verbose:
+        print("Bundling certifi CA bundle:")
+        print(f"  - {cert_path}")
+
+    return ["--add-data", f"{cert_path.resolve()}{data_separator}certifi"]
 
 
 def _resolve_bundle_binary_path(binary_name: str) -> Path | None:
