@@ -36,6 +36,7 @@ def main() -> None:
         version_arg,
         str(ROOT_DIR / "start_bilikara.py"),
     ]
+    command.extend(_python_certifi_args(data_separator, verbose=True))
     command.extend(_bundled_binary_args(data_separator, verbose=True, validate=True))
 
     if platform.system() == "Darwin":
@@ -212,6 +213,23 @@ def _tool_version_output(binary_path: Path) -> str:
 
 def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def _python_certifi_args(data_separator: str, *, verbose: bool = False) -> list[str]:
+    try:
+        import certifi
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("certifi is required for bundle builds; run pip install -r requirements-packaging.txt") from exc
+
+    cert_path = Path(certifi.where())
+    if not cert_path.exists():
+        raise RuntimeError(f"certifi CA bundle not found: {cert_path}")
+
+    if verbose:
+        print("Bundling certifi CA bundle:")
+        print(f"  - {cert_path}")
+
+    return ["--add-data", f"{cert_path.resolve()}{data_separator}certifi"]
 
 
 def _resolve_bundle_binary_path(binary_name: str) -> Path | None:

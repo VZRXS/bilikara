@@ -2,7 +2,10 @@ import io
 import json
 import os
 import queue
+import ssl
+import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -965,6 +968,49 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         manager._ensure_bbdown()
             finally:
                 manager.shutdown()
+
+    def test_select_asset_uses_macos_arm64_package(self):
+        release = {
+            "assets": [
+                {
+                    "name": "BBDown_1.6.3_20240814_osx-x64.zip",
+                    "browser_download_url": "https://example.test/osx-x64.zip",
+                },
+                {
+                    "name": "BBDown_1.6.3_20240814_osx-arm64.zip",
+                    "browser_download_url": "https://example.test/osx-arm64.zip",
+                },
+            ],
+        }
+
+        with patch("bilikara.cache.platform.system", return_value="Darwin"), patch(
+            "bilikara.cache.platform.machine",
+            return_value="arm64",
+        ):
+            selected = CacheManager._select_asset(object(), release)
+
+        self.assertEqual(selected["name"], "BBDown_1.6.3_20240814_osx-arm64.zip")
+
+    def test_urlopen_retries_ssl_certificate_failure_with_certifi(self):
+        certificate_error = urllib.error.URLError(
+            ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED")
+        )
+        fallback_response = object()
+        fake_certifi = SimpleNamespace(where=lambda: "certifi.pem")
+
+        with patch.dict(sys.modules, {"certifi": fake_certifi}), patch(
+            "bilikara.cache.ssl.create_default_context",
+            return_value="ssl-context",
+        ) as context_mock, patch(
+            "bilikara.cache.urllib.request.urlopen",
+            side_effect=[certificate_error, fallback_response],
+        ) as urlopen_mock:
+            response = CacheManager._urlopen("https://example.test", timeout=20)
+
+        self.assertIs(response, fallback_response)
+        context_mock.assert_called_once_with(cafile="certifi.pem")
+        self.assertEqual(urlopen_mock.call_count, 2)
+        self.assertEqual(urlopen_mock.call_args.kwargs["context"], "ssl-context")
 
     def test_ensure_ffmpeg_syncs_bundled_binary_into_runtime_tools(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"
