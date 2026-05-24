@@ -325,7 +325,7 @@ class LarkPoolClientTest(unittest.TestCase):
         method, path, payload, timeout = requests[0]
         self.assertEqual(method, "POST")
         self.assertEqual(path, "/admin/verify")
-        self.assertEqual(payload, {"adminsecret": "admin-secret"})
+        self.assertEqual(payload, {"BILIKARA_ADMIN_SECRET": "admin-secret"})
         self.assertEqual(timeout, 10)
 
     def test_reset_cloudflare_video_tags_posts_bvid_and_secret(self):
@@ -343,7 +343,7 @@ class LarkPoolClientTest(unittest.TestCase):
         method, path, payload, timeout = requests[0]
         self.assertEqual(method, "POST")
         self.assertEqual(path, "/admin/reset-tags")
-        self.assertEqual(payload, {"bvid": "BV1xx411c7mD", "adminsecret": "admin-secret"})
+        self.assertEqual(payload, {"bvid": "BV1xx411c7mD", "BILIKARA_ADMIN_SECRET": "admin-secret"})
         self.assertEqual(timeout, 10)
 
     def test_reset_cloudflare_video_tags_rejects_invalid_bvid(self):
