@@ -647,6 +647,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 for packed in route_query.get("tags", [])
                 for tag in str(packed or "").split(",")
             )
+            tag45s = route_query.get("tag45", [])
+            tag45s.extend(
+                tag
+                for packed in route_query.get("tag45s", [])
+                for tag in str(packed or "").split(",")
+            )
             search_query = route_query.get("q", [""])[0]
             try:
                 limit = max(1, min(100, int(route_query.get("limit", ["100"])[0] or "100")))
@@ -657,7 +663,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 offset = 0
             try:
-                results = browse_d1_category_pool(tags, query=search_query, limit=limit, offset=offset)
+                results = browse_d1_category_pool(tags, tag45s=tag45s, query=search_query, limit=limit, offset=offset)
                 if isinstance(results.get("items"), list):
                     results["items"] = annotate_gatcha_local_status(results["items"])
                 self._write_json({"ok": True, "data": results})

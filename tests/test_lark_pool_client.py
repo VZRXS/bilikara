@@ -420,6 +420,25 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertLessEqual(timeout, 2.0)
 
+    def test_browse_d1_category_pool_forwards_tag45s(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"items": [], "has_more": False, "next_offset": 0}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.browse_d1_category_pool(["Hololive"], tag45s=["乙女"], limit=100)
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(len(requests), 1)
+        method, path, payload, timeout = requests[0]
+        self.assertEqual(method, "GET")
+        self.assertIn("tag=Hololive", path)
+        self.assertIn("tag45=%E4%B9%99%E5%A5%B3", path)
+        self.assertIsNone(payload)
+        self.assertLessEqual(timeout, 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

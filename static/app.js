@@ -1385,7 +1385,7 @@ async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit 
     (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
   ).map((entry) => entry.tag);
   normalizedTags.forEach((tag) => {
-    params.append("tag", tag);
+    params.append(categoryBrowseUsesFullFieldSearch(tag) ? "tag" : "tag45", tag);
   });
   params.set("limit", String(limit));
   params.set("offset", String(offset));
@@ -2078,6 +2078,48 @@ const CATEGORY_BROWSE_DEFINITIONS = [
   { key: "touhouProject", tags: ["东方project"] },
   { key: "macross", tags: ["マクロス", "超时空要塞"] },
 ];
+const CATEGORY_BROWSE_FULL_FIELD_TAGS = new Set([
+  "Hololive",
+  "Vtuber",
+  "SHOW BY ROCK!!",
+  "ガールズバンドクライ",
+  "22/7",
+  "Togenashi Togeari",
+  "VOCALOID",
+  "DECO*27",
+  "Giga",
+  "名探偵コナン",
+  "Galgame",
+  "GALGAME",
+  "鳴潮",
+  "ウマ娘",
+  "Key社",
+  "MAGES",
+  "Leaf",
+  "柚子社",
+  "August",
+  "游戏",
+  "ヘブンバーンズレッド",
+  "原神",
+  "プロジェクトセカイ",
+  "戦姫絶唱シンフォギア",
+  "BanG Dream!",
+  "バンドリ！",
+  "ラブライブ!",
+  "アイドルマスター",
+  "KAMITSUBAKI",
+  "神椿工作室",
+  "KAMITSUBAKI STUDIO",
+  "V.W.P",
+  "ヰ世界情緒",
+  "Albemuth",
+  "花譜",
+  "WHITE ALBUM2",
+  "HoneyWorks",
+  "超时空要塞",
+  "东方project",
+  "マクロス",
+].map(categoryBrowseTagKey));
 const CATEGORY_BROWSE_IMAGE_URLS = [
   "/pic/cat_1.png",
   "/pic/cat_2.png",
@@ -2118,6 +2160,14 @@ const CATEGORY_BROWSE_IMAGE_URLS = [
   "/pic/cat_37.jpg",
   "/pic/cat_38.jpg",
 ];
+
+function categoryBrowseTagKey(value) {
+  return String(value || "").normalize("NFKC").trim().toLowerCase();
+}
+
+function categoryBrowseUsesFullFieldSearch(tag) {
+  return CATEGORY_BROWSE_FULL_FIELD_TAGS.has(categoryBrowseTagKey(tag));
+}
 
 function normalizeD1BrowseTagForMerge(value) {
   return String(value || "")

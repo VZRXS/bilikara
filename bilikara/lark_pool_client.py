@@ -663,6 +663,7 @@ def browse_d1_pool(
 def browse_d1_category_pool(
     tags: list[str],
     *,
+    tag45s: list[str] | None = None,
     query: str = "",
     limit: int = 100,
     offset: int = 0,
@@ -675,13 +676,22 @@ def browse_d1_category_pool(
             continue
         seen_tags.add(normalized_tag)
         normalized_tags.append(normalized_tag)
+    normalized_tag45s: list[str] = []
+    seen_tag45s: set[str] = set()
+    for tag in tag45s or []:
+        normalized_tag = str(tag or "").strip()
+        if not normalized_tag or normalized_tag in seen_tag45s:
+            continue
+        seen_tag45s.add(normalized_tag)
+        normalized_tag45s.append(normalized_tag)
     normalized_limit = max(1, min(100, int(limit)))
     normalized_offset = max(0, int(offset))
     normalized_query = str(query or "").strip()
-    if not normalized_tags:
+    if not normalized_tags and not normalized_tag45s:
         return {
             "query": normalized_query,
             "tags": [],
+            "tag45s": [],
             "offset": normalized_offset,
             "limit": normalized_limit,
             "items": [],
@@ -695,6 +705,7 @@ def browse_d1_category_pool(
     if normalized_query:
         params.append(("q", normalized_query))
     params.extend(("tag", tag) for tag in normalized_tags)
+    params.extend(("tag45", tag) for tag in normalized_tag45s)
     try:
         payload = _cloudflare_json(
             "GET",
@@ -705,6 +716,7 @@ def browse_d1_category_pool(
         return {
             "query": normalized_query,
             "tags": normalized_tags,
+            "tag45s": normalized_tag45s,
             "offset": normalized_offset,
             "limit": normalized_limit,
             "items": [],
@@ -728,6 +740,7 @@ def browse_d1_category_pool(
     return {
         "query": str(payload_dict.get("query") or normalized_query),
         "tags": normalized_tags,
+        "tag45s": normalized_tag45s,
         "offset": normalized_offset,
         "limit": normalized_limit,
         "items": items[:normalized_limit],
