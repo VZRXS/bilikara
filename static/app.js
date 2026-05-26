@@ -2077,6 +2077,8 @@ const CATEGORY_BROWSE_DEFINITIONS = [
   { key: "history", tags: ["历史","架空"] },
   { key: "touhouProject", tags: ["东方project"] },
   { key: "macross", tags: ["マクロス", "超时空要塞"] },
+  { key: "gundam", tags: ["高达系列"] },
+  { key: "longRunning", tags: ["名探偵コナン","NARUTO","ナルト","BLEACH","ONE PIECE","火影忍者","海贼王","銀魂","银魂","家庭教師ヒットマンREBORN!","家庭教师","鬼滅の刃","鬼灭之刃","呪術廻戦","咒术回战","ジョジョの奇妙な冒険","ドラゴンボール","聖闘士星矢","幽☆遊☆白書","THE FIRST SLAM DUNK","FAIRY TAIL"] },
 ];
 const CATEGORY_BROWSE_FULL_FIELD_TAGS = new Set([
   "Hololive",
@@ -2119,6 +2121,26 @@ const CATEGORY_BROWSE_FULL_FIELD_TAGS = new Set([
   "超时空要塞",
   "东方project",
   "マクロス",
+  "NARUTO",
+  "ナルト",
+  "BLEACH",
+  "ONE PIECE",
+  "火影忍者",
+  "海贼王",
+  "銀魂",
+  "银魂",
+  "家庭教師ヒットマンREBORN!",
+  "家庭教师",
+  "鬼滅の刃",
+  "鬼灭之刃",
+  "呪術廻戦",
+  "咒术回战",
+  "ジョジョの奇妙な冒険",
+  "ドラゴンボール",
+  "聖闘士星矢",
+  "幽☆遊☆白書",
+  "THE FIRST SLAM DUNK",
+  "FAIRY TAIL",
 ].map(categoryBrowseTagKey));
 const CATEGORY_BROWSE_IMAGE_URLS = [
   "/pic/cat_1.png",
@@ -2159,6 +2181,8 @@ const CATEGORY_BROWSE_IMAGE_URLS = [
   "/pic/cat_36.jpg",
   "/pic/cat_37.jpg",
   "/pic/cat_38.jpg",
+  "/pic/cat_39.webp",
+  "/pic/cat_40.png",
 ];
 
 function categoryBrowseTagKey(value) {

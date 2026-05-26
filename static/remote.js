@@ -51,6 +51,8 @@ const categoryBrowseDefinitionsRaw = [
   { key: "history", tags: ["历史","架空"] },
   { key: "touhouProject", tags: ["东方project"] },
   { key: "macross", tags: ["マクロス", "超时空要塞"] },
+  { key: "gundam", tags: ["高达系列"] },
+  { key: "longRunning", tags: ["名探偵コナン"] },
 ];
 const categoryBrowseFullFieldTags = new Set([
   "Hololive",
@@ -131,6 +133,8 @@ const categoryBrowseImageUrls = [
   "/pic/cat_36.jpg",
   "/pic/cat_37.jpg",
   "/pic/cat_38.jpg",
+  "/pic/cat_39.webp",
+  "/pic/cat_40.png",
 ];
 const playerControlStatusRefreshDelaysMs = [180, 520, 1100, 1800];
 const playerControlStatusSyncTimeoutMs = 3200;
