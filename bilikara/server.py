@@ -29,6 +29,7 @@ from .bilibili import (
     browse_gatcha_favlist,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
+    gatcha_favlist_updated_at,
     gatcha_task_snapshot,
     fetch_owner_info,
     fetch_video_item,
@@ -133,6 +134,7 @@ class AppContext:
         }
         payload["remote_access"] = self.remote_access_snapshot()
         payload["gatcha"] = gatcha_task_snapshot()
+        payload["gatcha_favlist_updated_at"] = gatcha_favlist_updated_at()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
         payload["app"] = {

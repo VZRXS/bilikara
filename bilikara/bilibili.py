@@ -2315,6 +2315,14 @@ def browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
     }
 
 
+def gatcha_favlist_updated_at() -> float:
+    with _GATCHA_FAVLIST_LOCK:
+        payload = _load_gatcha_favlist()
+    if not isinstance(payload, dict):
+        return 0.0
+    return float(payload.get("updated_at") or 0)
+
+
 
 
 def request_json(url: str) -> dict:

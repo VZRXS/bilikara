@@ -2126,13 +2126,16 @@ body.remote-search-modal-open {
 }
 
 
-#favlist-browser-view {
+#favlist-browser-view,
+#modal-follow-browser-view {
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
 
 #favlist-list-view,
-#favlist-items-view {
+#favlist-items-view,
+#modal-follow-up-list-view,
+#modal-follow-up-items-view {
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -2141,12 +2144,14 @@ body.remote-search-modal-open {
 }
 
 
-#favlist-list-view {
-  grid-template-rows: minmax(0, 1fr);
+#favlist-list-view,
+#modal-follow-up-list-view {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 
-#favlist-list-view .follow-up-grid {
+#favlist-list-view .follow-up-grid,
+#modal-follow-up-list-view .follow-up-grid {
   max-height: none;
   height: 100%;
   align-content: start;
@@ -2154,19 +2159,38 @@ body.remote-search-modal-open {
 }
 
 
-#favlist-items-view {
+#favlist-items-view,
+#modal-follow-up-items-view {
   grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 
 #favlist-items-view.hidden,
-#favlist-list-view.hidden {
+#favlist-list-view.hidden,
+#modal-follow-up-items-view.hidden,
+#modal-follow-up-list-view.hidden {
   display: none;
 }
 
 
-#favlist-items-view .follow-browser-head {
+#favlist-items-view .follow-browser-head,
+#modal-follow-up-items-view .follow-browser-head {
   margin-bottom: 4px;
+}
+
+.modal-uid-form {
+  min-width: 0;
+  margin: 0;
+  align-self: start;
+  gap: 8px;
+}
+
+.remote-search-modal .modal-uid-form input {
+  height: 44px;
+}
+
+.remote-search-modal .modal-uid-form .primary-button {
+  min-height: 44px;
 }
 
 

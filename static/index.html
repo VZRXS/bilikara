@@ -485,6 +485,16 @@
                     <div id="search-cookie-view" class="search-face search-face-back search-cookie-view">
                       <div class="follow-browser" id="follow-browser">
                         <div id="follow-up-list-view" class="follow-up-list-view">
+                          <form id="modal-follow-uid-form" class="follow-search-form modal-uid-form modal-follow-uid-form">
+                            <input
+                              type="text"
+                              id="modal-follow-uid-input"
+                              placeholder="UID 或 UP 主空间链接"
+                              data-i18n-placeholder="gatcha.uidPlaceholder"
+                              autocomplete="off"
+                            >
+                            <button type="submit" id="modal-add-follow-uid-button" class="next-button" data-i18n="gatcha.add">添加</button>
+                          </form>
                           <div id="follow-up-grid" class="follow-up-grid" role="list"></div>
                         </div>
                         <div id="follow-up-items-view" class="follow-up-items-view hidden">
@@ -845,6 +855,16 @@
           </div>
           <div id="favlist-browser-view" class="favlist-browser search-modal-browser-view hidden">
             <div id="favlist-list-view" class="follow-up-list-view">
+              <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form modal-favlist-pull-form">
+                <input
+                  type="text"
+                  id="modal-favlist-uid-input"
+                  placeholder="UID 或 UP 主空间链接"
+                  data-i18n-placeholder="gatcha.uidPlaceholder"
+                  autocomplete="off"
+                >
+                <button type="submit" id="modal-pull-favlist-button" class="next-button" data-i18n="gatcha.pullFavlist">拉取收藏</button>
+              </form>
               <div id="favlist-grid" class="follow-up-grid favlist-grid" role="list"></div>
             </div>
             <div id="favlist-items-view" class="follow-up-items-view hidden">

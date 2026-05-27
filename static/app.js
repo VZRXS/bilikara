@@ -160,6 +160,7 @@ const state = {
   favlistBrowseSelectedFolderId: "",
   favlistBrowseLoading: false,
   favlistBrowseRenderSignature: "",
+  favlistBrowseReloadTimer: null,
   d1BrowseKind: "",
   d1BrowseLetter: "",
   d1BrowseTag: "",
@@ -374,6 +375,9 @@ const elements = {
   searchMessage: document.getElementById("search-message"),
   searchResults: document.getElementById("search-results"),
   followUpListView: document.getElementById("follow-up-list-view"),
+  modalFollowUidForm: document.getElementById("modal-follow-uid-form"),
+  modalFollowUidInput: document.getElementById("modal-follow-uid-input"),
+  modalAddFollowUidButton: document.getElementById("modal-add-follow-uid-button"),
   followUpGrid: document.getElementById("follow-up-grid"),
   followUpItemsView: document.getElementById("follow-up-items-view"),
   followBrowseBack: document.getElementById("follow-browse-back"),
@@ -386,6 +390,9 @@ const elements = {
   followSongResults: document.getElementById("follow-song-results"),
   followBrowseMessage: document.getElementById("follow-browse-message"),
   favlistListView: document.getElementById("favlist-list-view"),
+  modalFavlistPullForm: document.getElementById("modal-favlist-pull-form"),
+  modalFavlistUidInput: document.getElementById("modal-favlist-uid-input"),
+  modalPullFavlistButton: document.getElementById("modal-pull-favlist-button"),
   favlistGrid: document.getElementById("favlist-grid"),
   favlistItemsView: document.getElementById("favlist-items-view"),
   favlistBrowseBack: document.getElementById("favlist-browse-back"),
@@ -1272,6 +1279,7 @@ async function fetchState() {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
   }
+  scheduleFavlistBrowseReloadFromState(previousData, state.data);
   const renderSignature = renderSignatureForData(state.data);
   if (renderSignature !== state.lastPollRenderSignature) {
     state.lastPollRenderSignature = renderSignature;
@@ -1499,23 +1507,22 @@ function gatchaUidResultMessage(result, fallbackUid = "") {
 
 async function confirmGatchaUidAdd(intent) {
   closeConfirm();
+  const messageTarget = intent.messageTarget || "gatcha";
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
   }
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
   try {
     const result = await addGatchaUid(intent.uid);
-    setGatchaUidMessage(gatchaUidResultMessage(result, intent.uid));
-    if (elements.gatchaUidInput) {
-      elements.gatchaUidInput.value = "";
-    }
+    setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, intent.uid));
+    clearGatchaUidFlowInput(intent.clearInputId || "gatcha-uid-input");
     await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || intent.uid);
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaUidSaving = false;
     renderGatchaUidFace();
@@ -3121,6 +3128,99 @@ async function refreshFavlistBrowseAfterPull() {
   });
 }
 
+function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
+  const previousUpdatedAt = Number(previousSnapshot?.gatcha_favlist_updated_at || 0);
+  const nextUpdatedAt = Number(nextSnapshot?.gatcha_favlist_updated_at || 0);
+  if (!state.favlistBrowseData || state.favlistBrowseLoading || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
+    return;
+  }
+  if (state.favlistBrowseReloadTimer) {
+    window.clearTimeout(state.favlistBrowseReloadTimer);
+  }
+  state.favlistBrowseReloadTimer = window.setTimeout(() => {
+    state.favlistBrowseReloadTimer = null;
+    if (!state.favlistBrowseData || state.favlistBrowseLoading) {
+      return;
+    }
+    refreshFavlistBrowseAfterPull();
+  }, 0);
+}
+
+async function previewGatchaUidAddFromInput(input, {
+  messageTarget = "gatcha",
+  anchor = elements.addGatchaUidButton,
+  event = null,
+} = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.checkingUid"));
+  try {
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
+    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
+    const point = anchorPointForEvent(event || {}, anchor || input);
+    openConfirm({
+      type: "gatcha-uid-add",
+      uid: preview?.uid || uid,
+      name: ownerName,
+      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
+      messageTarget,
+      clearInputId: input?.id || "",
+      ...point,
+    });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
+async function previewGatchaFavlistFromInput(input, {
+  messageTarget = "gatcha",
+  modalSource = "gatcha",
+} = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.readingFavlists"));
+  try {
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistModal(result?.uid || uid, result, { messageTarget: modalSource });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.chooseFavlists"));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
 async function handleGatchaDraw() {
   setGatchaMessage(t("gatcha.drawing"));
   try {
@@ -3229,6 +3329,25 @@ function setGatchaUidMessage(message, isError = false) {
   }
   elements.gatchaUidMessage.textContent = message || "";
   elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setGatchaUidFlowMessage(target, message, isError = false) {
+  if (target === "follow-modal") {
+    setFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (target === "favlist-modal") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  setGatchaUidMessage(message, isError);
+}
+
+function clearGatchaUidFlowInput(inputId) {
+  const input = inputId ? document.getElementById(inputId) : null;
+  if (input instanceof HTMLInputElement) {
+    input.value = "";
+  }
 }
 
 function gatchaTaskBusy() {
@@ -3438,9 +3557,19 @@ function renderGatchaUidFace() {
   if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
     elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
+  if (elements.modalFollowUidInput) {
+    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
+  }
+  if (elements.modalFavlistUidInput) {
+    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
+  }
   if (elements.addGatchaUidButton) {
     elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
     elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
+  }
+  if (elements.modalAddFollowUidButton) {
+    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
+    elements.modalAddFollowUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
   }
   if (elements.refreshGatchaCacheButton) {
     elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
@@ -3450,12 +3579,22 @@ function renderGatchaUidFace() {
     elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
     elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
+  if (elements.modalPullFavlistButton) {
+    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
       elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
     }
     if (elements.pullGatchaFavlistButton) {
       elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
+    }
+    if (elements.modalAddFollowUidButton) {
+      elements.modalAddFollowUidButton.textContent = t("gatcha.globalCooldown");
+    }
+    if (elements.modalPullFavlistButton) {
+      elements.modalPullFavlistButton.textContent = t("gatcha.globalCooldown");
     }
   }
 }
@@ -7040,13 +7179,13 @@ function renderGatchaFavlistOption(folder) {
   return label;
 }
 
-function openGatchaFavlistModal(uid, payload) {
+function openGatchaFavlistModal(uid, payload, { messageTarget = "gatcha" } = {}) {
   const folders = Array.isArray(payload?.folders) ? payload.folders : [];
   if (!folders.length) {
-    setGatchaUidMessage(t("favlist.none"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.none"), true);
     return;
   }
-  state.gatchaFavlistIntent = { uid, folders };
+  state.gatchaFavlistIntent = { uid, folders, messageTarget };
   elements.gatchaFavlistModalText.textContent = t("favlist.chooseForUid", {
     uid: payload?.uid || uid,
     count: payload?.public_folder_count || folders.length,
@@ -7063,29 +7202,31 @@ async function confirmGatchaFavlistModal() {
   if (!intent?.uid) {
     return;
   }
+  const messageTarget = intent.messageTarget || "gatcha";
   const folderIds = selectedGatchaFavlistFolderIds();
   if (!folderIds.length) {
-    setGatchaUidMessage(t("favlist.selectAtLeastOne"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
   }
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(t("favlist.pullingSelected"));
+  setGatchaUidFlowMessage(messageTarget, t("favlist.pullingSelected"));
   closeGatchaFavlistModal();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
-    setGatchaUidMessage(
+    setGatchaUidFlowMessage(
+      messageTarget,
       t("favlist.pullResult", { folders: result?.matched_folder_count || 0, items: result?.item_count || 0 }),
     );
     await refreshFavlistBrowseAfterPull();
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaFavlistSaving = false;
     renderGatchaUidFace();
@@ -8676,6 +8817,7 @@ document.addEventListener("click", (event) => {
       event.target.closest("#update-check-button") ||
       event.target.closest("#add-form") ||
       event.target.closest("#gatcha-uid-form") ||
+      event.target.closest("#modal-follow-uid-form") ||
       event.target.closest("#refresh-gatcha-cache-button") ||
       event.target.closest("#history-list")
     ) {
@@ -9395,41 +9537,20 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
 
 elements.gatchaUidForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
+  await previewGatchaUidAddFromInput(elements.gatchaUidInput, {
+    messageTarget: "gatcha",
+    anchor: elements.addGatchaUidButton,
+    event,
+  });
+});
 
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidFace();
-    return;
-  }
-
-  state.gatchaUidSaving = true;
-  renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.checkingUid"));
-  try {
-    const preview = await previewGatchaUid(uid);
-    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
-    const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
-    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
-    const point = anchorPointForEvent(event, elements.addGatchaUidButton);
-    openConfirm({
-      type: "gatcha-uid-add",
-      uid: preview?.uid || uid,
-      name: ownerName,
-      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
-      ...point,
-    });
-    setGatchaUidMessage(t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaUidSaving = false;
-    renderGatchaUidFace();
-  }
+elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaUidAddFromInput(elements.modalFollowUidInput, {
+    messageTarget: "follow-modal",
+    anchor: elements.modalAddFollowUidButton,
+    event,
+  });
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
@@ -9461,31 +9582,18 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
 });
 
 elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
+  await previewGatchaFavlistFromInput(elements.gatchaUidInput, {
+    messageTarget: "gatcha",
+    modalSource: "gatcha",
+  });
+});
 
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidFace();
-    return;
-  }
-
-  state.gatchaFavlistSaving = true;
-  renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.readingFavlists"));
-  try {
-    const result = await previewGatchaFavlist(uid);
-    openGatchaFavlistModal(result?.uid || uid, result);
-    setGatchaUidMessage(t("gatcha.chooseFavlists"));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaFavlistSaving = false;
-    renderGatchaUidFace();
-  }
+elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaFavlistFromInput(elements.modalFavlistUidInput, {
+    messageTarget: "favlist-modal",
+    modalSource: "favlist-modal",
+  });
 });
 
 

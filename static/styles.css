@@ -3679,6 +3679,38 @@ select:disabled {
   padding: 0 18px;
 }
 
+.modal-uid-form {
+  min-width: 0;
+}
+
+.modal-follow-uid-form {
+  display: none;
+}
+
+#search-modal-content-placeholder .modal-follow-uid-form {
+  display: grid;
+}
+
+.modal-favlist-pull-form {
+  padding-right: 46px;
+}
+
+.search-modal-browser-view #favlist-list-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.search-modal-browser-view .modal-favlist-pull-form {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.search-modal-browser-view #favlist-grid {
+  min-height: 0;
+}
+
 #follow-song-results {
   min-height: 0;
   max-height: none;
