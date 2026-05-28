@@ -40,7 +40,7 @@ from .bilibili import (
     refresh_gatcha_favlist,
     search_gatcha_cache,
 )
-from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_pool_entry, reset_cloudflare_video_tags, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating, verify_cloudflare_bilikara_secret
+from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_mid_entries, delete_cloudflare_pool_entry, delete_cloudflare_video_entry, reset_cloudflare_video_tags, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating, verify_cloudflare_bilikara_secret
 from .cache import CacheManager
 from .config import (
     APP_RELEASES_URL,
@@ -842,6 +842,60 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     message = str(result.get("error") or "reset failed")
                     lowered = message.lower()
                     if "invalid bvid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-video/delete":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    verified = bool(bilikara_secret) and hmac.compare_digest(
+                        bilikara_secret,
+                        configured_bilikara_secret,
+                    )
+                else:
+                    verified = bool(verify_cloudflare_bilikara_secret(bilikara_secret).get("verified"))
+                if not verified:
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = delete_cloudflare_video_entry(str(body.get("bvid") or ""), bilikara_secret)
+                if not result.get("success"):
+                    message = str(result.get("error") or "delete failed")
+                    lowered = message.lower()
+                    if "invalid bvid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-video/delete-mid":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    verified = bool(bilikara_secret) and hmac.compare_digest(
+                        bilikara_secret,
+                        configured_bilikara_secret,
+                    )
+                else:
+                    verified = bool(verify_cloudflare_bilikara_secret(bilikara_secret).get("verified"))
+                if not verified:
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = delete_cloudflare_mid_entries(str(body.get("mid") or ""), bilikara_secret)
+                if not result.get("success"):
+                    message = str(result.get("error") or "delete failed")
+                    lowered = message.lower()
+                    if "invalid mid" in lowered or "missing" in lowered:
                         status = HTTPStatus.BAD_REQUEST
                     elif "unauthorized" in lowered or "secret" in lowered:
                         status = HTTPStatus.FORBIDDEN

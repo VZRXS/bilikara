@@ -927,17 +927,18 @@
         <div class="selection-modal-head">
           <div>
             <p class="section-tag">Tools</p>
-            <h2>重置标签字段</h2>
+            <h2 id="developer-tag-reset-title">重置标签字段</h2>
           </div>
           <button type="button" id="developer-tag-reset-close" class="banner-close" aria-label="关闭">×</button>
         </div>
         <p class="selection-modal-text" id="developer-tag-reset-text"></p>
         <div class="developer-tag-reset-fields" id="developer-tag-reset-fields"></div>
-        <div class="developer-tag-reset-note">
+        <div class="developer-tag-reset-note" id="developer-tag-reset-note">
           确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。
         </div>
         <div class="selection-modal-actions">
           <button type="button" id="developer-tag-reset-cancel" class="toolbar-button">取消</button>
+          <button type="button" id="developer-tag-reset-delete-mid" class="toolbar-button danger-button hidden">按 MID 删除</button>
           <button type="button" id="developer-tag-reset-confirm" class="next-button">确认重置</button>
         </div>
       </div>

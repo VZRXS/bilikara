@@ -883,6 +883,66 @@ def delete_cloudflare_pool_entry(bvid: str) -> dict:
     }
 
 
+def delete_cloudflare_video_entry(bvid: str, secret: str) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "deleted": False, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "deleted": False, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/delete-video",
+            {"bvid": normalized_bvid, "BILIKARA_ADMIN_SECRET": normalized_secret},
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "deleted": False, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "bvid": normalized_bvid,
+            "deleted": False,
+            "error": "Cloudflare returned an invalid payload",
+        }
+    result = dict(payload)
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("deleted", False)
+    result.setdefault("error", "" if result.get("success") else "delete failed")
+    return result
+
+
+def delete_cloudflare_mid_entries(mid: str, secret: str) -> dict:
+    normalized_mid = str(mid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not normalized_mid.isdigit() or int(normalized_mid) <= 0:
+        return {"success": False, "mid": normalized_mid, "deleted": False, "error": "invalid mid"}
+    if not normalized_secret:
+        return {"success": False, "mid": normalized_mid, "deleted": False, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/delete-mid",
+            {"mid": normalized_mid, "BILIKARA_ADMIN_SECRET": normalized_secret},
+            timeout=20,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "mid": normalized_mid, "deleted": False, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "mid": normalized_mid,
+            "deleted": False,
+            "error": "Cloudflare returned an invalid payload",
+        }
+    result = dict(payload)
+    result.setdefault("mid", normalized_mid)
+    result.setdefault("deleted", False)
+    result.setdefault("error", "" if result.get("success") else "delete failed")
+    return result
+
+
 def submit_cloudflare_song_rating(*, session_user_name: str, play_id: str, bvid: str, score: int) -> dict:
     normalized_user_name = str(session_user_name or "").strip()
     normalized_play_id = str(play_id or "").strip()

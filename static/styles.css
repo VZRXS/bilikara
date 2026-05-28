@@ -4777,14 +4777,15 @@ select:focus {
   display: none;
 }
 
-.developer-reset-tag-button {
+.developer-reset-tag-button,
+.developer-delete-entry-button {
   display: none;
 }
 
-.developer-mode #search-modal .search-result-cover .developer-reset-tag-button {
+.developer-mode #search-modal .search-result-cover .developer-reset-tag-button,
+.developer-mode #search-modal .search-result-cover .developer-delete-entry-button {
   position: absolute;
   top: 8px;
-  right: 8px;
   z-index: 2;
   display: inline-flex;
   align-items: center;
@@ -4801,8 +4802,26 @@ select:focus {
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.32);
 }
 
+.developer-mode #search-modal .search-result-cover .developer-reset-tag-button {
+  right: 8px;
+}
+
+.developer-mode #search-modal .search-result-cover .developer-delete-entry-button {
+  right: 60px;
+  background: rgba(225, 29, 72, 0.92);
+}
+
 .developer-mode #search-modal .search-result-cover .developer-reset-tag-button:hover {
   background: rgba(255, 51, 102, 0.95);
+}
+
+.developer-mode #search-modal .search-result-cover .developer-delete-entry-button:hover {
+  background: rgba(190, 18, 60, 0.96);
+}
+
+.developer-tag-reset-card .danger-button {
+  background: rgba(225, 29, 72, 0.94);
+  box-shadow: 0 10px 22px rgba(225, 29, 72, 0.26);
 }
 
 .developer-tag-reset-card {

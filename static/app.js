@@ -34,6 +34,28 @@ const developerTagResetFieldKeys = [
   "preserved_4",
   "preserved_5",
 ];
+const developerDeletePreferredFieldKeys = [
+  "bvid",
+  "mid",
+  "title",
+  "url",
+  "owner_name",
+  "owner_url",
+  "cover_url",
+  "rank",
+  "played_count",
+  "tag_1",
+  "tag_2",
+  "tag_3",
+  "tag_4",
+  "tag_5",
+  "tag_status",
+  "preserved_1",
+  "preserved_2",
+  "preserved_3",
+  "preserved_4",
+  "preserved_5",
+];
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
@@ -141,6 +163,7 @@ const state = {
   bilikaraSecret: "",
   bilikaraSecretVerifying: false,
   developerTagResetItem: null,
+  developerTagResetAction: "",
   developerTagResetSaving: false,
   retryActivityById: {},
   gatchaCandidate: null,
@@ -342,8 +365,11 @@ const elements = {
   developerTagResetClose: document.getElementById("developer-tag-reset-close"),
   developerTagResetCancel: document.getElementById("developer-tag-reset-cancel"),
   developerTagResetConfirm: document.getElementById("developer-tag-reset-confirm"),
+  developerTagResetDeleteMid: document.getElementById("developer-tag-reset-delete-mid"),
+  developerTagResetTitle: document.getElementById("developer-tag-reset-title"),
   developerTagResetText: document.getElementById("developer-tag-reset-text"),
   developerTagResetFields: document.getElementById("developer-tag-reset-fields"),
+  developerTagResetNote: document.getElementById("developer-tag-reset-note"),
   searchSidebarItems: document.querySelectorAll(".search-sidebar-item"),
   searchOriginalContainer: document.querySelector(".search-card"),
   searchTag: document.getElementById("search-tag"),
@@ -1620,43 +1646,70 @@ function closeDeveloperTagResetModal() {
     return;
   }
   state.developerTagResetItem = null;
+  state.developerTagResetAction = "";
   elements.developerTagResetModal?.classList.add("hidden");
   if (elements.developerTagResetFields) {
     elements.developerTagResetFields.innerHTML = "";
   }
+  elements.developerTagResetDeleteMid?.classList.add("hidden");
 }
 
-function openDeveloperTagResetModal(snapshot) {
+function renderDeveloperActionFields(fields) {
+  if (!elements.developerTagResetFields) {
+    return;
+  }
+  elements.developerTagResetFields.innerHTML = "";
+  Object.entries(fields || {}).forEach(([key, rawValue]) => {
+    const row = document.createElement("div");
+    row.className = "developer-tag-reset-field";
+    const name = document.createElement("span");
+    name.className = "developer-tag-reset-field-name";
+    name.textContent = key;
+    const value = document.createElement("span");
+    value.className = "developer-tag-reset-field-value";
+    value.textContent = String(rawValue ?? "") || "空";
+    row.append(name, value);
+    elements.developerTagResetFields.appendChild(row);
+  });
+}
+
+function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
   if (!state.developerMode || !snapshot?.bvid) {
     return;
   }
   state.developerTagResetItem = snapshot;
+  state.developerTagResetAction = action;
+  const isDelete = action === "delete-entry";
+  if (elements.developerTagResetTitle) {
+    elements.developerTagResetTitle.textContent = isDelete ? "删除 D1 条目" : "重置标签字段";
+  }
   if (elements.developerTagResetText) {
     const title = snapshot.title ? `《${snapshot.title}》` : "当前条目";
-    elements.developerTagResetText.textContent = `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
+    elements.developerTagResetText.textContent = isDelete
+      ? `确认从 D1 删除 ${title} (${snapshot.bvid})？`
+      : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
   }
-  if (elements.developerTagResetFields) {
-    elements.developerTagResetFields.innerHTML = "";
-    developerTagResetFieldKeys.forEach((key) => {
-      const row = document.createElement("div");
-      row.className = "developer-tag-reset-field";
-      const name = document.createElement("span");
-      name.className = "developer-tag-reset-field-name";
-      name.textContent = key;
-      const value = document.createElement("span");
-      value.className = "developer-tag-reset-field-value";
-      value.textContent = String(snapshot.fields?.[key] || "") || "空";
-      row.append(name, value);
-      elements.developerTagResetFields.appendChild(row);
-    });
+  renderDeveloperActionFields(snapshot.fields);
+  if (elements.developerTagResetNote) {
+    elements.developerTagResetNote.textContent = isDelete
+      ? "确认后将按 bvid 删除 D1 中对应条目；此操作不会删除 B 站视频本体。"
+      : "确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。";
   }
   if (elements.developerTagResetConfirm) {
     elements.developerTagResetConfirm.disabled = false;
+    elements.developerTagResetConfirm.textContent = isDelete ? "确认删除" : "确认重置";
+    elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete);
+  }
+  if (elements.developerTagResetDeleteMid) {
+    const mid = String(snapshot.fields?.mid || "").trim();
+    elements.developerTagResetDeleteMid.classList.toggle("hidden", !isDelete || !mid);
+    elements.developerTagResetDeleteMid.disabled = false;
+    elements.developerTagResetDeleteMid.textContent = mid ? `按 MID 删除 ${mid}` : "按 MID 删除";
   }
   elements.developerTagResetModal?.classList.remove("hidden");
 }
 
-function parseDeveloperTagResetButton(button) {
+function parseDeveloperActionButton(button) {
   try {
     const snapshot = JSON.parse(String(button?.dataset?.item || "{}"));
     if (!snapshot || typeof snapshot !== "object") {
@@ -1669,23 +1722,53 @@ function parseDeveloperTagResetButton(button) {
 }
 
 function handleDeveloperTagResetButtonClick(event) {
-  const button = event.target.closest('button[data-dev-action="reset-tags"]');
+  const button = event.target.closest('button[data-dev-action="reset-tags"], button[data-dev-action="delete-entry"]');
   if (!button || !elements.searchModal?.contains(button)) {
     return;
   }
   event.preventDefault();
   event.stopPropagation();
-  const snapshot = parseDeveloperTagResetButton(button);
+  const snapshot = parseDeveloperActionButton(button);
   if (snapshot) {
-    openDeveloperTagResetModal(snapshot);
+    openDeveloperTagResetModal(snapshot, String(button.dataset.devAction || "reset-tags"));
   }
 }
 
-async function resetDeveloperTagFields() {
+async function deleteDeveloperD1Entry(snapshot) {
+  await apiPost("/api/admin-video/delete", {
+    bvid: snapshot.bvid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
+}
+
+async function deleteDeveloperD1EntriesByMid(snapshot) {
+  const mid = String(snapshot.fields?.mid || "").trim();
+  if (!mid) {
+    throw new Error("缺少 MID，无法按 MID 删除。");
+  }
+  const result = await apiPost("/api/admin-video/delete-mid", {
+    mid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  const deleted = Number(result?.deleted_count ?? result?.changed ?? 0);
+  setAppMessage(`已按 MID ${mid} 删除 ${deleted} 条 D1 条目。`);
+}
+
+async function resetDeveloperTagFields(snapshot) {
+  await apiPost("/api/admin-tags/reset", {
+    bvid: snapshot.bvid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  setAppMessage(`已重置 ${snapshot.bvid} 的标签字段。`);
+}
+
+async function confirmDeveloperAction() {
   if (state.developerTagResetSaving) {
     return;
   }
   const snapshot = state.developerTagResetItem;
+  const action = state.developerTagResetAction || "reset-tags";
   if (!state.developerMode || !state.bilikaraSecret || !snapshot?.bvid) {
     closeDeveloperTagResetModal();
     return;
@@ -1694,20 +1777,26 @@ async function resetDeveloperTagFields() {
   if (elements.developerTagResetConfirm) {
     elements.developerTagResetConfirm.disabled = true;
   }
+  if (elements.developerTagResetDeleteMid) {
+    elements.developerTagResetDeleteMid.disabled = true;
+  }
   try {
-    await apiPost("/api/admin-tags/reset", {
-      bvid: snapshot.bvid,
-      BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
-    });
+    if (action === "delete-entry") {
+      await deleteDeveloperD1Entry(snapshot);
+    } else {
+      await resetDeveloperTagFields(snapshot);
+    }
     state.developerTagResetSaving = false;
     closeDeveloperTagResetModal();
-    setAppMessage(`已重置 ${snapshot.bvid} 的标签字段。`);
   } catch (error) {
-    setAppMessage(error?.message || "重置失败。", true);
+    setAppMessage(error?.message || (action === "delete-entry" ? "删除失败。" : "重置失败。"), true);
   } finally {
     state.developerTagResetSaving = false;
     if (elements.developerTagResetConfirm) {
       elements.developerTagResetConfirm.disabled = false;
+    }
+    if (elements.developerTagResetDeleteMid) {
+      elements.developerTagResetDeleteMid.disabled = false;
     }
   }
 }
@@ -1753,6 +1842,78 @@ function developerTagResetSnapshot(item) {
   return snapshot;
 }
 
+async function confirmDeveloperDeleteMid() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  const snapshot = state.developerTagResetItem;
+  if (!state.developerMode || !state.bilikaraSecret || !snapshot?.fields?.mid) {
+    closeDeveloperTagResetModal();
+    return;
+  }
+  state.developerTagResetSaving = true;
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = true;
+  }
+  if (elements.developerTagResetDeleteMid) {
+    elements.developerTagResetDeleteMid.disabled = true;
+  }
+  try {
+    await deleteDeveloperD1EntriesByMid(snapshot);
+    state.developerTagResetSaving = false;
+    closeDeveloperTagResetModal();
+  } catch (error) {
+    setAppMessage(error?.message || "按 MID 删除失败。", true);
+  } finally {
+    state.developerTagResetSaving = false;
+    if (elements.developerTagResetConfirm) {
+      elements.developerTagResetConfirm.disabled = false;
+    }
+    if (elements.developerTagResetDeleteMid) {
+      elements.developerTagResetDeleteMid.disabled = false;
+    }
+  }
+}
+
+function developerFieldValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value).trim();
+}
+
+function developerDeleteSnapshot(item) {
+  const snapshot = {
+    bvid: searchResultBvid(item),
+    title: String(item?.title || "").trim(),
+    fields: {},
+  };
+  if (snapshot.bvid) {
+    snapshot.fields.bvid = snapshot.bvid;
+  }
+  const itemKeys = Object.keys(item || {});
+  const orderedKeys = [
+    ...developerDeletePreferredFieldKeys,
+    ...itemKeys.filter((key) => !developerDeletePreferredFieldKeys.includes(key)).sort(),
+  ];
+  orderedKeys.forEach((key) => {
+    if (key === "bvid" && snapshot.fields.bvid) {
+      return;
+    }
+    if (key in (item || {})) {
+      snapshot.fields[key] = developerFieldValue(item[key]);
+    }
+  });
+  return snapshot;
+}
+
 function createDeveloperTagResetButton(item) {
   const snapshot = developerTagResetSnapshot(item);
   if (!snapshot.bvid) {
@@ -1765,6 +1926,21 @@ function createDeveloperTagResetButton(item) {
   button.dataset.item = JSON.stringify(snapshot);
   button.textContent = "重置";
   button.title = "重置标签字段";
+  return button;
+}
+
+function createDeveloperDeleteButton(item) {
+  const snapshot = developerDeleteSnapshot(item);
+  if (!snapshot.bvid) {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "toolbar-button developer-delete-entry-button";
+  button.dataset.devAction = "delete-entry";
+  button.dataset.item = JSON.stringify(snapshot);
+  button.textContent = "删除";
+  button.title = "删除 D1 条目";
   return button;
 }
 
@@ -1935,6 +2111,10 @@ function createSearchResultItem(item) {
   const ratingStars = createSearchResultRatingStars(item);
   if (ratingStars) {
     cover.appendChild(ratingStars);
+  }
+  const developerDeleteButton = createDeveloperDeleteButton(item);
+  if (developerDeleteButton) {
+    cover.appendChild(developerDeleteButton);
   }
   const developerResetButton = createDeveloperTagResetButton(item);
   if (developerResetButton) {
@@ -8724,7 +8904,11 @@ elements.developerTagResetBackdrop?.addEventListener("click", () => {
 });
 
 elements.developerTagResetConfirm?.addEventListener("click", async () => {
-  await resetDeveloperTagFields();
+  await confirmDeveloperAction();
+});
+
+elements.developerTagResetDeleteMid?.addEventListener("click", async () => {
+  await confirmDeveloperDeleteMid();
 });
 
 elements.confirmOk.addEventListener("click", async () => {
