@@ -189,17 +189,17 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     {
                         "hevc_supported": False,
                         "avc_supported": True,
-                        "max_avc_quality_index": 4,
+                        "max_avc_quality_index": 2,
                         "can_play_type": {'video/mp4; codecs="hvc1"': ""},
                         "user_agent": "Firefox on Windows 7",
                         "platform": "Win32",
                     }
                 )
                 self.assertTrue(snapshot["force_avc"])
-                self.assertEqual(snapshot["max_avc_quality"], VIDEO_QUALITY_CHOICES[4])
+                self.assertEqual(snapshot["max_avc_quality"], VIDEO_QUALITY_CHOICES[2])
                 self.assertEqual(
                     manager._bbdown_stream_preference_args("video"),
-                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[4:]), "-e", "avc"],
+                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[2:]), "-e", "avc"],
                 )
                 self.assertEqual(manager._bbdown_stream_preference_args("audio"), [])
             finally:
