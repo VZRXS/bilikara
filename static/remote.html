@@ -204,6 +204,7 @@
         <div class="panel-head">
           <div>
             <p class="panel-tag" data-i18n="search.localTag">Local Search</p>
+            <button type="button" id="search-library-open" class="ghost-button search-expand-button" data-i18n="search.expand" data-i18n-title="search.expand" data-i18n-aria-label="search.expand">展开</button>
             <h2 class="panel-title" data-i18n="search.title">搜索</h2>
           </div>
           <div class="panel-head-actions">
@@ -254,6 +255,7 @@
           <div id="follow-up-items-view" class="hidden">
             <div class="follow-browser-head">
               <button type="button" id="follow-browse-back" class="secondary-button" data-i18n="common.back">返回</button>
+              <img id="follow-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy" referrerpolicy="no-referrer">
               <div class="follow-browser-title">
                 <h3 id="follow-browse-title" data-i18n="follow.title">关注列表</h3>
                 <span id="follow-browse-count"></span>
@@ -274,6 +276,118 @@
           <p class="gatcha-message" id="follow-browse-message" role="status"></p>
         </div>
       </section>
+
+      <div class="remote-search-modal hidden" id="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-modal-title">
+        <div class="remote-search-modal-backdrop" id="search-modal-backdrop"></div>
+        <div class="remote-search-modal-card">
+          <div class="remote-search-modal-head">
+            <div>
+              <p class="panel-tag" data-i18n="search.modalLibrary">搜索库</p>
+              <h2 id="search-modal-title" data-i18n="search.modalLibrary">搜索库</h2>
+            </div>
+            <button type="button" id="search-modal-close" class="ghost-button remote-search-modal-close" data-i18n="common.close">关闭</button>
+          </div>
+          <div class="remote-search-modal-tabs" role="tablist" aria-label="Search library">
+            <button type="button" class="remote-search-modal-tab active" data-target="search" data-i18n="search.modalSearch">搜索</button>
+            <button type="button" class="remote-search-modal-tab" data-target="follow" data-i18n="search.followBrowse">关注浏览</button>
+            <button type="button" class="remote-search-modal-tab" data-target="favlist" data-i18n="search.favlistBrowse">按收藏夹浏览</button>
+            <button type="button" class="remote-search-modal-tab" data-target="category" data-i18n="search.categoryBrowse">按类别浏览</button>
+            <button type="button" class="remote-search-modal-tab" data-target="name" data-i18n="search.nameBrowse">按名称浏览</button>
+            <button type="button" class="remote-search-modal-tab" data-target="artist" data-i18n="search.artistBrowse">按歌手浏览</button>
+          </div>
+          <div class="remote-search-modal-body">
+            <div id="search-modal-search-view" class="remote-search-modal-view">
+              <form id="search-modal-lark-form" class="request-form search-form">
+                <input
+                  id="search-modal-lark-query"
+                  type="text"
+                  placeholder="在 bilikara 共享数据库中搜索"
+                  data-i18n-placeholder="search.larkPlaceholder"
+                  autocomplete="off"
+                />
+                <button type="submit" id="search-modal-lark-button" class="primary-button" data-i18n="search.submit">搜索</button>
+              </form>
+              <p id="search-modal-lark-message" class="message search-message" role="status"></p>
+              <div id="search-modal-lark-results" class="search-results hidden"></div>
+            </div>
+            <div id="modal-follow-browser-view" class="remote-search-modal-view follow-browser hidden">
+              <div id="modal-follow-up-list-view">
+                <form id="modal-follow-uid-form" class="request-form follow-search-form modal-uid-form">
+                  <input
+                    type="text"
+                    id="modal-follow-uid-input"
+                    placeholder="UID 或 UP 主空间链接"
+                    data-i18n-placeholder="gatcha.uidPlaceholder"
+                    autocomplete="off"
+                  />
+                  <button type="submit" id="modal-add-follow-uid-button" class="primary-button" data-i18n="gatcha.add">添加</button>
+                </form>
+                <div id="modal-follow-up-grid" class="follow-up-grid"></div>
+              </div>
+              <div id="modal-follow-up-items-view" class="hidden">
+                <div class="follow-browser-head">
+                  <button type="button" id="modal-follow-browse-back" class="secondary-button" data-i18n="common.back">返回</button>
+                  <img id="modal-follow-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy" referrerpolicy="no-referrer">
+                  <div class="follow-browser-title">
+                    <h3 id="modal-follow-browse-title" data-i18n="follow.title">关注列表</h3>
+                    <span id="modal-follow-browse-count"></span>
+                  </div>
+                </div>
+                <form id="modal-follow-search-form" class="request-form follow-search-form">
+                  <input
+                    type="text"
+                    id="modal-follow-search-query"
+                    placeholder="在这个 UP 的缓存稿件里搜索"
+                    data-i18n-placeholder="search.followPlaceholder"
+                    autocomplete="off"
+                  />
+                  <button type="submit" id="modal-follow-search-button" class="primary-button" data-i18n="search.submit">搜索</button>
+                </form>
+                <div id="modal-follow-song-results" class="search-results"></div>
+              </div>
+              <p class="gatcha-message" id="modal-follow-browse-message" role="status"></p>
+            </div>
+            <div id="favlist-browser-view" class="remote-search-modal-view favlist-browser hidden">
+              <div id="favlist-list-view">
+                <form id="modal-favlist-pull-form" class="request-form follow-search-form modal-uid-form">
+                  <input
+                    type="text"
+                    id="modal-favlist-uid-input"
+                    placeholder="UID 或 UP 主空间链接"
+                    data-i18n-placeholder="gatcha.uidPlaceholder"
+                    autocomplete="off"
+                  />
+                  <button type="submit" id="modal-pull-favlist-button" class="primary-button" data-i18n="gatcha.pullFavlist">拉取收藏</button>
+                </form>
+                <div id="favlist-grid" class="follow-up-grid"></div>
+              </div>
+              <div id="favlist-items-view" class="hidden">
+                <div class="follow-browser-head">
+                  <button type="button" id="favlist-browse-back" class="secondary-button" data-i18n="common.back">返回</button>
+                  <img id="favlist-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy" referrerpolicy="no-referrer">
+                  <div class="follow-browser-title">
+                    <h3 id="favlist-browse-title" data-i18n="favlist.browseItemsTitle">收藏夹稿件</h3>
+                    <span id="favlist-browse-count"></span>
+                  </div>
+                </div>
+                <form id="favlist-search-form" class="request-form follow-search-form">
+                  <input
+                    type="text"
+                    id="favlist-search-query"
+                    placeholder="在当前收藏夹中搜索"
+                    data-i18n-placeholder="favlist.searchPlaceholder"
+                    autocomplete="off"
+                  />
+                  <button type="submit" id="favlist-search-button" class="primary-button" data-i18n="search.submit">搜索</button>
+                </form>
+                <div id="favlist-song-results" class="search-results"></div>
+              </div>
+              <p class="gatcha-message" id="favlist-browse-message" role="status"></p>
+            </div>
+            <div id="search-modal-other-view" class="remote-search-modal-view hidden"></div>
+          </div>
+        </div>
+      </div>
 
       <section class="panel gatcha-panel">
         <div class="panel-head">

@@ -156,6 +156,39 @@ class BuildBundleTest(unittest.TestCase):
             self.assertEqual((licenses_dir / "ffmpeg-version.txt").read_text(encoding="utf-8"), "tool version\n")
             self.assertEqual((licenses_dir / "ffprobe-version.txt").read_text(encoding="utf-8"), "tool version\n")
 
+    def test_python_https_args_includes_hidden_imports(self):
+        with patch("build_bundle.platform.system", return_value="Linux"):
+            args = build_bundle._python_https_args(":")
+
+        for module_name in build_bundle.PYTHON_HTTPS_HIDDEN_IMPORTS:
+            self.assertIn("--hidden-import", args)
+            self.assertIn(module_name, args)
+
+    def test_python_https_binary_paths_collects_windows_openssl_dlls(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bin_dir = root / "Library" / "bin"
+            bin_dir.mkdir(parents=True)
+            ssl_dll = bin_dir / "libssl-3-x64.dll"
+            crypto_dll = bin_dir / "libcrypto-3-x64.dll"
+            ignored_pdb = bin_dir / "libssl-3-x64.pdb"
+            ssl_dll.write_text("", encoding="utf-8")
+            crypto_dll.write_text("", encoding="utf-8")
+            ignored_pdb.write_text("", encoding="utf-8")
+
+            with patch("build_bundle.platform.system", return_value="Windows"), patch.object(
+                build_bundle.sys,
+                "prefix",
+                str(root),
+            ), patch.object(build_bundle.sys, "base_prefix", str(root)), patch.object(
+                build_bundle.sys,
+                "exec_prefix",
+                str(root),
+            ), patch.object(build_bundle.sys, "base_exec_prefix", str(root)):
+                paths = build_bundle._python_https_binary_paths()
+
+        self.assertEqual({path.name for path in paths}, {"libssl-3-x64.dll", "libcrypto-3-x64.dll"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,11 +92,23 @@ class LarkPoolClientTest(unittest.TestCase):
 
         with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
             result = lark_pool.append_lark_pool_entries(
-                [{"bvid": "BV1CFADD0001", "title": "new", "url": "https://www.bilibili.com/video/BV1CFADD0001"}]
+                [
+                    {
+                        "bvid": "BV1CFADD0001",
+                        "title": "new",
+                        "url": "https://www.bilibili.com/video/BV1CFADD0001",
+                        "cover_url": "https://example.com/cover.jpg",
+                        "played_count": 683,
+                        "preserved_1": 201,
+                    }
+                ]
             )
 
         self.assertEqual(result["added"], 1)
         self.assertEqual(posted_payloads[0]["records"][0]["bvid"], "BV1CFADD0001")
+        self.assertEqual(posted_payloads[0]["records"][0]["cover_url"], "https://example.com/cover.jpg")
+        self.assertEqual(posted_payloads[0]["records"][0]["played_count"], "683")
+        self.assertEqual(posted_payloads[0]["records"][0]["preserved_1"], "201")
 
     def test_append_lark_pool_entries_rejects_short_dummy_bvids(self):
         with patch.object(lark_pool, "_cloudflare_json") as cloudflare:
@@ -297,6 +309,135 @@ class LarkPoolClientTest(unittest.TestCase):
         cloudflare.assert_not_called()
         self.assertFalse(result["success"])
         self.assertFalse(result["deleted"])
+
+    def test_verify_cloudflare_bilikara_secret_posts_secret(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"verified": True}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.verify_cloudflare_bilikara_secret("bilikara-secret")
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(len(requests), 1)
+        method, path, payload, timeout = requests[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/admin/verify")
+        self.assertEqual(payload, {"BILIKARA_ADMIN_SECRET": "bilikara-secret"})
+        self.assertEqual(timeout, 10)
+
+    def test_reset_cloudflare_video_tags_posts_bvid_and_secret(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"success": True, "bvid": "BV1xx411c7mD", "changed": 1}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.reset_cloudflare_video_tags("BV1xx411c7mD", "bilikara-secret")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(requests), 1)
+        method, path, payload, timeout = requests[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/admin/reset-tags")
+        self.assertEqual(payload, {"bvid": "BV1xx411c7mD", "BILIKARA_ADMIN_SECRET": "bilikara-secret"})
+        self.assertEqual(timeout, 10)
+
+    def test_reset_cloudflare_video_tags_rejects_invalid_bvid(self):
+        with patch.object(lark_pool, "_cloudflare_json") as cloudflare:
+            result = lark_pool.reset_cloudflare_video_tags("BVSHORT", "bilikara-secret")
+
+        cloudflare.assert_not_called()
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "invalid bvid")
+
+    def test_browse_d1_pool_posts_query_to_cloudflare(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {
+                "kind": "name",
+                "letter": "W",
+                "tags": [{"tag": "我推的孩子", "letter": "W", "locale": "zh", "count": 2}],
+                "items": [
+                    {
+                        "bvid": "BV1xx411c7mD",
+                        "title": "song",
+                        "url": "https://www.bilibili.com/video/BV1xx411c7mD",
+                    }
+                ],
+            }
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.browse_d1_pool("name", letter="W", tag="我推的孩子", locale="zh")
+
+        self.assertEqual(result["tags"][0]["tag"], "我推的孩子")
+        self.assertEqual(result["items"][0]["bvid"], "BV1xx411c7mD")
+        self.assertEqual(len(requests), 1)
+        method, path, payload, timeout = requests[0]
+        self.assertEqual(method, "GET")
+        self.assertIn("/browse?", path)
+        self.assertIn("kind=name", path)
+        self.assertIn("letter=W", path)
+        self.assertIsNone(payload)
+        self.assertLessEqual(timeout, 2.0)
+
+    def test_browse_d1_category_pool_uses_repeated_tags_and_offset(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {
+                "items": [
+                    {
+                        "bvid": "BV1xx411c7mD",
+                        "title": "song",
+                        "url": "https://www.bilibili.com/video/BV1xx411c7mD",
+                    }
+                ],
+                "has_more": True,
+                "next_offset": 120,
+            }
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.browse_d1_category_pool(["热血", "战斗"], query="op", offset=20, limit=100)
+
+        self.assertEqual(result["items"][0]["bvid"], "BV1xx411c7mD")
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["next_offset"], 120)
+        self.assertEqual(len(requests), 1)
+        method, path, payload, timeout = requests[0]
+        self.assertEqual(method, "GET")
+        self.assertIn("/browse-category?", path)
+        self.assertIn("tag=%E7%83%AD%E8%A1%80", path)
+        self.assertIn("tag=%E6%88%98%E6%96%97", path)
+        self.assertIn("q=op", path)
+        self.assertIn("offset=20", path)
+        self.assertIsNone(payload)
+        self.assertLessEqual(timeout, 2.0)
+
+    def test_browse_d1_category_pool_forwards_tag45s(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"items": [], "has_more": False, "next_offset": 0}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.browse_d1_category_pool(["Hololive"], tag45s=["乙女"], limit=100)
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(len(requests), 1)
+        method, path, payload, timeout = requests[0]
+        self.assertEqual(method, "GET")
+        self.assertIn("tag=Hololive", path)
+        self.assertIn("tag45=%E4%B9%99%E5%A5%B3", path)
+        self.assertIsNone(payload)
+        self.assertLessEqual(timeout, 2.0)
 
 
 if __name__ == "__main__":

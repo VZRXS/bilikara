@@ -63,7 +63,11 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertEqual(refresh.call_count, 2)
         self.assertEqual(
             refresh.call_args_list[0].kwargs,
-            {"use_global_lock": False, "upload_default_uids_to_lark": False},
+            {
+                "use_global_lock": False,
+                "upload_default_uids_to_lark": False,
+                "startup_schema_rebuild": True,
+            },
         )
         self.assertIn("on_start", refresh.call_args_list[1].kwargs)
         self.assertIn("on_done", refresh.call_args_list[1].kwargs)
@@ -436,6 +440,46 @@ class PlaylistExportRouteTest(unittest.TestCase):
 
 
 class UpdateRouteTest(unittest.TestCase):
+    def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+
+        handler.path = "/api/bilikara-secret/verify"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"BILIKARA_ADMIN_SECRET": "local-secret"}
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+
+        with patch("bilikara.server.CONTEXT", context), patch.dict(
+            "bilikara.server.os.environ",
+            {"BILIKARA_ADMIN_SECRET": "local-secret"},
+            clear=False,
+        ), patch("bilikara.server.verify_cloudflare_bilikara_secret") as cloudflare_verify:
+            handler.do_POST()
+
+        cloudflare_verify.assert_not_called()
+        self.assertEqual(writes[0]["payload"], {"ok": True, "data": {"verified": True}})
+
+    def test_bilikara_secret_verify_rejects_wrong_local_bilikara_secret(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+
+        handler.path = "/api/bilikara-secret/verify"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"BILIKARA_ADMIN_SECRET": "wrong-secret"}
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+
+        with patch("bilikara.server.CONTEXT", context), patch.dict(
+            "bilikara.server.os.environ",
+            {"BILIKARA_ADMIN_SECRET": "local-secret"},
+            clear=False,
+        ), patch("bilikara.server.verify_cloudflare_bilikara_secret") as cloudflare_verify:
+            handler.do_POST()
+
+        cloudflare_verify.assert_not_called()
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.FORBIDDEN)
+
     def test_update_check_route_returns_update_payload(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []

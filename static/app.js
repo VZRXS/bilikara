@@ -21,6 +21,41 @@ const localAdvanceOverlayMaxRows = 5;
 const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
+const developerModeRequesterName = "VZRXS";
+const developerProfileUrl = "https://github.com/VZRXS/bilikara";
+const developerTagResetFieldKeys = [
+  "tag_1",
+  "tag_2",
+  "tag_3",
+  "tag_4",
+  "tag_5",
+  "preserved_2",
+  "preserved_3",
+  "preserved_4",
+  "preserved_5",
+];
+const developerDeletePreferredFieldKeys = [
+  "bvid",
+  "mid",
+  "title",
+  "url",
+  "owner_name",
+  "owner_url",
+  "cover_url",
+  "rank",
+  "played_count",
+  "tag_1",
+  "tag_2",
+  "tag_3",
+  "tag_4",
+  "tag_5",
+  "tag_status",
+  "preserved_1",
+  "preserved_2",
+  "preserved_3",
+  "preserved_4",
+  "preserved_5",
+];
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
@@ -124,10 +159,16 @@ const state = {
   confirmIntent: null,
   bindingIntent: null,
   gatchaFavlistIntent: null,
+  developerMode: false,
+  bilikaraSecret: "",
+  bilikaraSecretVerifying: false,
+  developerTagResetItem: null,
+  developerTagResetAction: "",
+  developerTagResetSaving: false,
   retryActivityById: {},
   gatchaCandidate: null,
   searchCookieVisible: false,
-  searchLarkVisible: false,
+  searchLarkVisible: true,
   larkSearchLoading: false,
   larkSearchSeq: 0,
   searchStageView: "",
@@ -138,6 +179,30 @@ const state = {
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
   followBrowseRenderSignature: "",
+  favlistBrowseData: null,
+  favlistBrowseSelectedFolderId: "",
+  favlistBrowseLoading: false,
+  favlistBrowseRenderSignature: "",
+  favlistBrowseReloadTimer: null,
+  d1BrowseKind: "",
+  d1BrowseLetter: "",
+  d1BrowseTag: "",
+  d1BrowseLocale: "",
+  d1BrowseAliases: [],
+  d1BrowseQuery: "",
+  d1BrowseData: null,
+  d1BrowseLoading: false,
+  d1BrowseSeq: 0,
+  d1BrowseResolvedCounts: new Map(),
+  d1BrowseItemCache: new Map(),
+  categoryBrowseSelectedId: "",
+  categoryBrowseQuery: "",
+  categoryBrowseItems: [],
+  categoryBrowseOffset: 0,
+  categoryBrowseHasMore: false,
+  categoryBrowseLoading: false,
+  categoryBrowseSeq: 0,
+  categoryBrowseError: "",
   gatchaUidVisible: false,
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
@@ -145,6 +210,14 @@ const state = {
   bbdownLoginRequesting: false,
   updateChecking: false,
   updatePreviewEnabled: false,
+  ratingPromptElement: null,
+  ratingPromptItem: null,
+  ratingPromptItemId: "",
+  ratingPromptBvid: "",
+  ratingPromptScore: 5,
+  ratingPromptSubmitted: false,
+  ratingPromptSeenPlayIds: new Set(),
+  ratingOptOut: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
   fullscreenRequestToastHideTimer: null,
@@ -156,6 +229,7 @@ const state = {
 
 const elements = {
   appShell: document.getElementById("app-shell"),
+  developerModeTrigger: document.getElementById("developer-mode-trigger"),
   serviceStatusIndicator: document.getElementById("service-status-indicator"),
   playbackModeSummary: document.getElementById("playback-mode-summary"),
   playbackModeCurrent: document.getElementById("playback-mode-current"),
@@ -270,6 +344,34 @@ const elements = {
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
   searchPanel: document.getElementById("search-panel"),
+  searchExpandButton: document.getElementById("search-expand-button"),
+  searchCardContent: document.getElementById("search-card-content"),
+  searchModal: document.getElementById("search-modal"),
+  searchModalBackdrop: document.getElementById("search-modal-backdrop"),
+  searchModalClose: document.getElementById("search-modal-close"),
+  searchModalPlaceholder: document.getElementById("search-modal-content-placeholder"),
+  favlistBrowserView: document.getElementById("favlist-browser-view"),
+  searchModalOtherView: document.getElementById("search-modal-other-view"),
+  bilikaraSecretModal: document.getElementById("bilikara-secret-modal"),
+  bilikaraSecretBackdrop: document.getElementById("bilikara-secret-backdrop"),
+  bilikaraSecretClose: document.getElementById("bilikara-secret-close"),
+  bilikaraSecretCancel: document.getElementById("bilikara-secret-cancel"),
+  bilikaraSecretForm: document.getElementById("bilikara-secret-form"),
+  bilikaraSecretInput: document.getElementById("bilikara-secret-input"),
+  bilikaraSecretConfirm: document.getElementById("bilikara-secret-confirm"),
+  bilikaraSecretMessage: document.getElementById("bilikara-secret-message"),
+  developerTagResetModal: document.getElementById("developer-tag-reset-modal"),
+  developerTagResetBackdrop: document.getElementById("developer-tag-reset-backdrop"),
+  developerTagResetClose: document.getElementById("developer-tag-reset-close"),
+  developerTagResetCancel: document.getElementById("developer-tag-reset-cancel"),
+  developerTagResetConfirm: document.getElementById("developer-tag-reset-confirm"),
+  developerTagResetDeleteMid: document.getElementById("developer-tag-reset-delete-mid"),
+  developerTagResetTitle: document.getElementById("developer-tag-reset-title"),
+  developerTagResetText: document.getElementById("developer-tag-reset-text"),
+  developerTagResetFields: document.getElementById("developer-tag-reset-fields"),
+  developerTagResetNote: document.getElementById("developer-tag-reset-note"),
+  searchSidebarItems: document.querySelectorAll(".search-sidebar-item"),
+  searchOriginalContainer: document.querySelector(".search-card"),
   searchTag: document.getElementById("search-tag"),
   searchTitle: document.getElementById("search-title"),
   searchCookieToggle: document.getElementById("search-cookie-toggle"),
@@ -299,9 +401,13 @@ const elements = {
   searchMessage: document.getElementById("search-message"),
   searchResults: document.getElementById("search-results"),
   followUpListView: document.getElementById("follow-up-list-view"),
+  modalFollowUidForm: document.getElementById("modal-follow-uid-form"),
+  modalFollowUidInput: document.getElementById("modal-follow-uid-input"),
+  modalAddFollowUidButton: document.getElementById("modal-add-follow-uid-button"),
   followUpGrid: document.getElementById("follow-up-grid"),
   followUpItemsView: document.getElementById("follow-up-items-view"),
   followBrowseBack: document.getElementById("follow-browse-back"),
+  followBrowseAvatar: document.getElementById("follow-browse-avatar"),
   followBrowseTitle: document.getElementById("follow-browse-title"),
   followBrowseCount: document.getElementById("follow-browse-count"),
   followSearchForm: document.getElementById("follow-search-form"),
@@ -309,6 +415,21 @@ const elements = {
   followSearchButton: document.getElementById("follow-search-button"),
   followSongResults: document.getElementById("follow-song-results"),
   followBrowseMessage: document.getElementById("follow-browse-message"),
+  favlistListView: document.getElementById("favlist-list-view"),
+  modalFavlistPullForm: document.getElementById("modal-favlist-pull-form"),
+  modalFavlistUidInput: document.getElementById("modal-favlist-uid-input"),
+  modalPullFavlistButton: document.getElementById("modal-pull-favlist-button"),
+  favlistGrid: document.getElementById("favlist-grid"),
+  favlistItemsView: document.getElementById("favlist-items-view"),
+  favlistBrowseBack: document.getElementById("favlist-browse-back"),
+  favlistBrowseAvatar: document.getElementById("favlist-browse-avatar"),
+  favlistBrowseTitle: document.getElementById("favlist-browse-title"),
+  favlistBrowseCount: document.getElementById("favlist-browse-count"),
+  favlistSearchForm: document.getElementById("favlist-search-form"),
+  favlistSearchQuery: document.getElementById("favlist-search-query"),
+  favlistSearchButton: document.getElementById("favlist-search-button"),
+  favlistSongResults: document.getElementById("favlist-song-results"),
+  favlistBrowseMessage: document.getElementById("favlist-browse-message"),
   larkSearchForm: document.getElementById("lark-search-form"),
   larkSearchQuery: document.getElementById("lark-search-query"),
   larkSearchButton: document.getElementById("lark-search-button"),
@@ -540,6 +661,7 @@ function invalidateLanguageSensitiveRenderCache() {
   state.sessionUsersRenderSignature = "";
   state.playerFullscreenButtonRenderSignature = "";
   state.followBrowseRenderSignature = "";
+  state.favlistBrowseRenderSignature = "";
   state.searchCookieFaceRenderSignature = "";
   state.gatchaUidFaceRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
@@ -945,6 +1067,22 @@ function clientHeaders(extraHeaders = {}) {
   };
 }
 
+function localizedApiMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const gatchaMessage = localizedGatchaTaskMessage(raw);
+  if (gatchaMessage && gatchaMessage !== raw) {
+    return gatchaMessage;
+  }
+  const cacheMessage = localizedCacheMessage(raw);
+  if (cacheMessage && cacheMessage !== raw) {
+    return cacheMessage;
+  }
+  return raw;
+}
+
 async function apiPost(url, payload = {}) {
   const response = await fetch(url, {
     method: "POST",
@@ -953,13 +1091,163 @@ async function apiPost(url, payload = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || t("error.requestFailed"));
+    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
     throw error;
   }
   return data.data;
+}
+
+function submitSongRating(item, score) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+  const sessionUserName = selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+  if (!bvid) {
+    return null;
+  }
+  const payload = {
+    session_user_name: sessionUserName,
+    play_id: playId,
+    bvid,
+    score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
+  };
+  fetch("/api/rating/submit", {
+    method: "POST",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    console.warn("Rating submit failed:", error);
+  });
+  return true;
+}
+
+function ratingItemUrl(item) {
+  return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
+}
+
+function ratingOwnerUid(item) {
+  const rawMid = item?.owner_mid ?? item?.mid;
+  const uid = String(rawMid || "").trim();
+  return /^\d+$/.test(uid) ? uid : "";
+}
+
+function renderRatingStars() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("[data-rating-score]").forEach((button) => {
+    const score = Number(button.dataset.ratingScore || "0");
+    button.classList.toggle("active", score <= state.ratingPromptScore);
+    button.setAttribute("aria-pressed", score === state.ratingPromptScore ? "true" : "false");
+  });
+}
+
+function closeRatingPrompt({ submit = true } = {}) {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const item = state.data?.current_item;
+  const bvid = state.ratingPromptBvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  state.ratingPromptSubmitted = true;
+  const promptItem = state.ratingPromptItem;
+  root.remove();
+  state.ratingPromptElement = null;
+  state.ratingPromptItem = null;
+  state.ratingPromptItemId = "";
+  state.ratingPromptBvid = "";
+
+  if (shouldSubmit) {
+    submitSongRating({ ...(promptItem || item), bvid }, state.ratingPromptScore);
+  }
+}
+
+function setRatingOptOut(enabled) {
+  state.ratingOptOut = Boolean(enabled);
+}
+
+function openRatingPrompt(item) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.id || bvid).trim();
+  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+    return;
+  }
+  if (fullscreenElement()) {
+    return;
+  }
+  closeRatingPrompt({ submit: true });
+  state.ratingPromptSeenPlayIds.add(playId);
+  state.ratingPromptItemId = playId;
+  state.ratingPromptItem = item;
+  state.ratingPromptBvid = bvid;
+  state.ratingPromptScore = 5;
+  state.ratingPromptSubmitted = false;
+
+  const ownerName = String(item.owner_name || "").trim() || t("rating.unknownOwner");
+  const coverUrl = String(item.cover_url || "").trim();
+  const url = ratingItemUrl(item) || `https://www.bilibili.com/video/${bvid}`;
+  const ownerUid = ratingOwnerUid(item);
+  const root = document.createElement("div");
+  root.className = "rating-modal";
+  root.innerHTML = `
+    <div class="rating-modal-backdrop" data-rating-close></div>
+    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
+      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
+      <div class="rating-media">
+        ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
+        <div class="rating-copy">
+          <p class="rating-kicker">${htmlT("rating.kicker")}</p>
+          <h2>${htmlT("rating.title")}</h2>
+          <p class="rating-hint">${htmlT("rating.hint")}</p>
+          <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
+          <a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>
+        </div>
+      </div>
+      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
+        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
+      </div>
+      <div class="rating-actions">
+        <button type="button" class="toolbar-button" data-rating-add-up ${ownerUid ? "" : "disabled"}>${ownerUid ? htmlT("rating.addUp") : htmlT("rating.missingUid")}</button>
+        <button type="button" class="next-button" data-rating-close>${htmlT("rating.done")}</button>
+      </div>
+      <label class="rating-opt-out">
+        <input type="checkbox" data-rating-opt-out>
+        <span>${htmlT("rating.optOut")}</span>
+      </label>
+      <p class="rating-message" data-rating-message></p>
+    </section>
+  `;
+  document.body.appendChild(root);
+  state.ratingPromptElement = root;
+  renderRatingStars();
+}
+
+function maybeShowRatingPromptForProgress(item, currentTime, duration) {
+  const bvid = String(item?.bvid || "").trim();
+  const seconds = Number(currentTime || 0);
+  const totalSeconds = Number(duration || 0);
+  if (!item || !bvid || !(totalSeconds > 0) || seconds / totalSeconds < 0.8) {
+    return;
+  }
+  openRatingPrompt(item);
+}
+
+function handleRatingCurrentItemChange(currentItem) {
+  if (!state.ratingPromptElement) {
+    return;
+  }
+  const currentId = String(currentItem?.id || "");
+  if (!currentId || currentId !== state.ratingPromptItemId) {
+    closeRatingPrompt({ submit: true });
+  }
 }
 
 async function apiGet(url, options = {}) {
@@ -970,7 +1258,7 @@ async function apiGet(url, options = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || t("error.requestFailed"));
+    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
@@ -1073,7 +1361,7 @@ async function fetchState() {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.stateFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
   state.data = payload.data;
   maybeShowIncomingRequestToast(previousData, state.data);
@@ -1103,6 +1391,7 @@ async function fetchState() {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
   }
+  scheduleFavlistBrowseReloadFromState(previousData, state.data);
   const renderSignature = renderSignatureForData(state.data);
   if (renderSignature !== state.lastPollRenderSignature) {
     state.lastPollRenderSignature = renderSignature;
@@ -1141,7 +1430,7 @@ async function searchGatchaCache(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.searchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.searchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -1157,7 +1446,7 @@ async function searchLarkPool(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -1174,9 +1463,73 @@ async function searchLarkPoolTable(query, tableIndex) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  params.set("kind", kind === "artist" ? "artist" : "name");
+  params.set("limit", String(limit));
+  const normalizedLetter = String(letter || "").trim().toUpperCase();
+  const normalizedQuery = String(query || "").trim();
+  const normalizedTag = String(tag || "").trim();
+  const normalizedLocale = String(locale || "").trim();
+  if (normalizedLetter) {
+    params.set("letter", normalizedLetter);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  if (normalizedTag) {
+    params.set("tag", normalizedTag);
+  }
+  if (normalizedLocale) {
+    params.set("locale", normalizedLocale);
+  }
+  const response = await fetch(`/api/d1/browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
+}
+
+async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  const normalizedTags = uniqueD1BrowseAliases(
+    (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
+  ).map((entry) => entry.tag);
+  normalizedTags.forEach((tag) => {
+    params.append(categoryBrowseUsesFullFieldSearch(tag) ? "tag" : "tag45", tag);
+  });
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const response = await fetch(`/api/d1/category-browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || {
+    tags: normalizedTags,
+    query: normalizedQuery,
+    offset,
+    limit,
+    items: [],
+    has_more: false,
+    next_offset: offset,
+  };
 }
 
 async function fetchGatchaBrowse(uid = "", query = "") {
@@ -1196,9 +1549,31 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.browseFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
   }
   return payload.data || { owners: [], items: [] };
+}
+
+async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
+  const params = new URLSearchParams();
+  const normalizedFolderId = String(folderId || "").trim();
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedFolderId) {
+    params.set("folder_id", normalizedFolderId);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const queryString = params.toString();
+  const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
+  }
+  return payload.data || { folders: [], items: [] };
 }
 
 async function previewGatchaUid(uid) {
@@ -1244,26 +1619,271 @@ function gatchaUidResultMessage(result, fallbackUid = "") {
 
 async function confirmGatchaUidAdd(intent) {
   closeConfirm();
+  const messageTarget = intent.messageTarget || "gatcha";
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
   }
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
   try {
     const result = await addGatchaUid(intent.uid);
-    setGatchaUidMessage(gatchaUidResultMessage(result, intent.uid));
-    if (elements.gatchaUidInput) {
-      elements.gatchaUidInput.value = "";
-    }
+    setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, intent.uid));
+    clearGatchaUidFlowInput(intent.clearInputId || "gatcha-uid-input");
     await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || intent.uid);
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaUidSaving = false;
     renderGatchaUidFace();
+  }
+}
+
+function setDeveloperMode(enabled) {
+  state.developerMode = Boolean(enabled);
+  if (!state.developerMode) {
+    state.bilikaraSecret = "";
+  }
+  document.body?.classList.toggle("developer-mode", state.developerMode);
+  elements.appShell?.classList.toggle("developer-mode", state.developerMode);
+  elements.developerModeTrigger?.classList.toggle("active", state.developerMode);
+  elements.developerModeTrigger?.setAttribute("aria-pressed", String(state.developerMode));
+}
+
+function openBilikaraSecretModal() {
+  if (state.developerMode) {
+    return;
+  }
+  if (selectedRequesterName() !== developerModeRequesterName) {
+    window.location.href = developerProfileUrl;
+    return;
+  }
+  if (elements.bilikaraSecretInput) {
+    elements.bilikaraSecretInput.value = "";
+  }
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
+  }
+  elements.bilikaraSecretModal?.classList.remove("hidden");
+  window.setTimeout(() => elements.bilikaraSecretInput?.focus(), 0);
+}
+
+function closeBilikaraSecretModal() {
+  if (state.bilikaraSecretVerifying) {
+    return;
+  }
+  elements.bilikaraSecretModal?.classList.add("hidden");
+  if (elements.bilikaraSecretInput) {
+    elements.bilikaraSecretInput.value = "";
+  }
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
+  }
+}
+
+async function verifyBilikaraSecret() {
+  if (state.bilikaraSecretVerifying) {
+    return;
+  }
+  if (selectedRequesterName() !== developerModeRequesterName) {
+    window.location.href = developerProfileUrl;
+    return;
+  }
+  const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();
+  if (!bilikaraSecret) {
+    if (elements.bilikaraSecretMessage) {
+      elements.bilikaraSecretMessage.textContent = "请输入 BILIKARA_ADMIN_SECRET。";
+      elements.bilikaraSecretMessage.classList.add("is-error");
+    }
+    return;
+  }
+  state.bilikaraSecretVerifying = true;
+  if (elements.bilikaraSecretConfirm) {
+    elements.bilikaraSecretConfirm.disabled = true;
+  }
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "验证中...";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
+  }
+  try {
+    await apiPost("/api/bilikara-secret/verify", { BILIKARA_ADMIN_SECRET: bilikaraSecret });
+    state.bilikaraSecret = bilikaraSecret;
+    setDeveloperMode(true);
+    state.bilikaraSecretVerifying = false;
+    closeBilikaraSecretModal();
+  } catch {
+    if (elements.bilikaraSecretMessage) {
+      elements.bilikaraSecretMessage.textContent = "验证失败。";
+      elements.bilikaraSecretMessage.classList.add("is-error");
+    }
+  } finally {
+    state.bilikaraSecretVerifying = false;
+    if (elements.bilikaraSecretConfirm) {
+      elements.bilikaraSecretConfirm.disabled = false;
+    }
+  }
+}
+function closeDeveloperTagResetModal() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  state.developerTagResetItem = null;
+  state.developerTagResetAction = "";
+  elements.developerTagResetModal?.classList.add("hidden");
+  if (elements.developerTagResetFields) {
+    elements.developerTagResetFields.innerHTML = "";
+  }
+  elements.developerTagResetDeleteMid?.classList.add("hidden");
+}
+
+function renderDeveloperActionFields(fields) {
+  if (!elements.developerTagResetFields) {
+    return;
+  }
+  elements.developerTagResetFields.innerHTML = "";
+  Object.entries(fields || {}).forEach(([key, rawValue]) => {
+    const row = document.createElement("div");
+    row.className = "developer-tag-reset-field";
+    const name = document.createElement("span");
+    name.className = "developer-tag-reset-field-name";
+    name.textContent = key;
+    const value = document.createElement("span");
+    value.className = "developer-tag-reset-field-value";
+    value.textContent = String(rawValue ?? "") || "空";
+    row.append(name, value);
+    elements.developerTagResetFields.appendChild(row);
+  });
+}
+
+function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
+  if (!state.developerMode || !snapshot?.bvid) {
+    return;
+  }
+  state.developerTagResetItem = snapshot;
+  state.developerTagResetAction = action;
+  const isDelete = action === "delete-entry";
+  if (elements.developerTagResetTitle) {
+    elements.developerTagResetTitle.textContent = isDelete ? "删除 D1 条目" : "重置标签字段";
+  }
+  if (elements.developerTagResetText) {
+    const title = snapshot.title ? `《${snapshot.title}》` : "当前条目";
+    elements.developerTagResetText.textContent = isDelete
+      ? `确认从 D1 删除 ${title} (${snapshot.bvid})？`
+      : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
+  }
+  renderDeveloperActionFields(snapshot.fields);
+  if (elements.developerTagResetNote) {
+    elements.developerTagResetNote.textContent = isDelete
+      ? "确认后将按 bvid 删除 D1 中对应条目；此操作不会删除 B 站视频本体。"
+      : "确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。";
+  }
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = false;
+    elements.developerTagResetConfirm.textContent = isDelete ? "确认删除" : "确认重置";
+    elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete);
+  }
+  if (elements.developerTagResetDeleteMid) {
+    const mid = String(snapshot.fields?.mid || "").trim();
+    elements.developerTagResetDeleteMid.classList.toggle("hidden", !isDelete || !mid);
+    elements.developerTagResetDeleteMid.disabled = false;
+    elements.developerTagResetDeleteMid.textContent = mid ? `按 MID 删除 ${mid}` : "按 MID 删除";
+  }
+  elements.developerTagResetModal?.classList.remove("hidden");
+}
+
+function parseDeveloperActionButton(button) {
+  try {
+    const snapshot = JSON.parse(String(button?.dataset?.item || "{}"));
+    if (!snapshot || typeof snapshot !== "object") {
+      return null;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function handleDeveloperTagResetButtonClick(event) {
+  const button = event.target.closest('button[data-dev-action="reset-tags"], button[data-dev-action="delete-entry"]');
+  if (!button || !elements.searchModal?.contains(button)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const snapshot = parseDeveloperActionButton(button);
+  if (snapshot) {
+    openDeveloperTagResetModal(snapshot, String(button.dataset.devAction || "reset-tags"));
+  }
+}
+
+async function deleteDeveloperD1Entry(snapshot) {
+  await apiPost("/api/admin-video/delete", {
+    bvid: snapshot.bvid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
+}
+
+async function deleteDeveloperD1EntriesByMid(snapshot) {
+  const mid = String(snapshot.fields?.mid || "").trim();
+  if (!mid) {
+    throw new Error("缺少 MID，无法按 MID 删除。");
+  }
+  const result = await apiPost("/api/admin-video/delete-mid", {
+    mid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  const deleted = Number(result?.deleted_count ?? result?.changed ?? 0);
+  setAppMessage(`已按 MID ${mid} 删除 ${deleted} 条 D1 条目。`);
+}
+
+async function resetDeveloperTagFields(snapshot) {
+  await apiPost("/api/admin-tags/reset", {
+    bvid: snapshot.bvid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  setAppMessage(`已重置 ${snapshot.bvid} 的标签字段。`);
+}
+
+async function confirmDeveloperAction() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  const snapshot = state.developerTagResetItem;
+  const action = state.developerTagResetAction || "reset-tags";
+  if (!state.developerMode || !state.bilikaraSecret || !snapshot?.bvid) {
+    closeDeveloperTagResetModal();
+    return;
+  }
+  state.developerTagResetSaving = true;
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = true;
+  }
+  if (elements.developerTagResetDeleteMid) {
+    elements.developerTagResetDeleteMid.disabled = true;
+  }
+  try {
+    if (action === "delete-entry") {
+      await deleteDeveloperD1Entry(snapshot);
+    } else {
+      await resetDeveloperTagFields(snapshot);
+    }
+    state.developerTagResetSaving = false;
+    closeDeveloperTagResetModal();
+  } catch (error) {
+    setAppMessage(error?.message || (action === "delete-entry" ? "删除失败。" : "重置失败。"), true);
+  } finally {
+    state.developerTagResetSaving = false;
+    if (elements.developerTagResetConfirm) {
+      elements.developerTagResetConfirm.disabled = false;
+    }
+    if (elements.developerTagResetDeleteMid) {
+      elements.developerTagResetDeleteMid.disabled = false;
+    }
   }
 }
 
@@ -1274,6 +1894,244 @@ function hideSearchResults() {
 
 function searchResultOwnerName(item) {
   return String(item?.owner_name || item?.author || "").trim();
+}
+
+function firstSearchResultValue(item, keys) {
+  for (const key of keys) {
+    const value = String(item?.[key] ?? "").trim();
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function searchResultBvid(item) {
+  const direct = String(item?.bvid || "").trim();
+  if (direct) {
+    return direct;
+  }
+  const source = String(item?.url || item?.resolved_url || item?.original_url || "").trim();
+  const match = source.match(/BV[0-9A-Za-z]{10}/);
+  return match ? match[0] : "";
+}
+
+function developerTagResetSnapshot(item) {
+  const snapshot = {
+    bvid: searchResultBvid(item),
+    title: String(item?.title || "").trim(),
+    fields: {},
+  };
+  developerTagResetFieldKeys.forEach((key) => {
+    snapshot.fields[key] = String(item?.[key] ?? "").trim();
+  });
+  return snapshot;
+}
+
+async function confirmDeveloperDeleteMid() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  const snapshot = state.developerTagResetItem;
+  if (!state.developerMode || !state.bilikaraSecret || !snapshot?.fields?.mid) {
+    closeDeveloperTagResetModal();
+    return;
+  }
+  state.developerTagResetSaving = true;
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = true;
+  }
+  if (elements.developerTagResetDeleteMid) {
+    elements.developerTagResetDeleteMid.disabled = true;
+  }
+  try {
+    await deleteDeveloperD1EntriesByMid(snapshot);
+    state.developerTagResetSaving = false;
+    closeDeveloperTagResetModal();
+  } catch (error) {
+    setAppMessage(error?.message || "按 MID 删除失败。", true);
+  } finally {
+    state.developerTagResetSaving = false;
+    if (elements.developerTagResetConfirm) {
+      elements.developerTagResetConfirm.disabled = false;
+    }
+    if (elements.developerTagResetDeleteMid) {
+      elements.developerTagResetDeleteMid.disabled = false;
+    }
+  }
+}
+
+function developerFieldValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value).trim();
+}
+
+function developerDeleteSnapshot(item) {
+  const snapshot = {
+    bvid: searchResultBvid(item),
+    title: String(item?.title || "").trim(),
+    fields: {},
+  };
+  if (snapshot.bvid) {
+    snapshot.fields.bvid = snapshot.bvid;
+  }
+  const itemKeys = Object.keys(item || {});
+  const orderedKeys = [
+    ...developerDeletePreferredFieldKeys,
+    ...itemKeys.filter((key) => !developerDeletePreferredFieldKeys.includes(key)).sort(),
+  ];
+  orderedKeys.forEach((key) => {
+    if (key === "bvid" && snapshot.fields.bvid) {
+      return;
+    }
+    if (key in (item || {})) {
+      snapshot.fields[key] = developerFieldValue(item[key]);
+    }
+  });
+  return snapshot;
+}
+
+function createDeveloperTagResetButton(item) {
+  const snapshot = developerTagResetSnapshot(item);
+  if (!snapshot.bvid) {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "toolbar-button developer-reset-tag-button";
+  button.dataset.devAction = "reset-tags";
+  button.dataset.item = JSON.stringify(snapshot);
+  button.textContent = "重置";
+  button.title = "重置标签字段";
+  return button;
+}
+
+function createDeveloperDeleteButton(item) {
+  const snapshot = developerDeleteSnapshot(item);
+  if (!snapshot.bvid) {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "toolbar-button developer-delete-entry-button";
+  button.dataset.devAction = "delete-entry";
+  button.dataset.item = JSON.stringify(snapshot);
+  button.textContent = "删除";
+  button.title = "删除 D1 条目";
+  return button;
+}
+
+function searchResultCoverUrl(item) {
+  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  if (coverUrl.startsWith("//")) {
+    coverUrl = `https:${coverUrl}`;
+  }
+  return coverUrl;
+}
+
+function formatCompactCount(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  const numeric = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) {
+    return raw;
+  }
+  if (numeric >= 100000000) {
+    return `${Number((numeric / 100000000).toFixed(numeric >= 1000000000 ? 0 : 1))}亿`;
+  }
+  if (numeric >= 10000) {
+    return `${Number((numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1))}万`;
+  }
+  return String(Math.round(numeric));
+}
+
+function formatSearchDuration(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw.includes(":")) {
+    return raw;
+  }
+  const totalSeconds = Number(raw);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return raw;
+  }
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+  return `${minutes}:${paddedSeconds}`;
+}
+
+function searchResultRatingValue(item) {
+  const raw = firstSearchResultValue(item, ["rank", "rating", "score"]);
+  const value = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(5, value));
+}
+
+function formatSearchRating(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return Number(value.toFixed(1)).toString();
+}
+
+function searchResultRatingText(item) {
+  const rating = searchResultRatingValue(item);
+  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
+}
+
+function createSearchResultRatingStars(item) {
+  const rating = searchResultRatingValue(item);
+  if (rating == null) {
+    return null;
+  }
+  const stars = document.createElement("span");
+  stars.className = "search-result-rating-stars";
+  stars.setAttribute("aria-label", searchResultRatingText(item));
+  stars.style.setProperty("--rating-width", `${(rating / 5) * 100}%`);
+  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
+  return stars;
+}
+
+function searchResultStatusLabel(item) {
+  const localSource = String(item?.local_source || "").trim();
+  if (localSource === "favlist") {
+    return t("search.favorited");
+  }
+  if (localSource === "follow") {
+    return t("search.followed");
+  }
+
+  const source = String(item?.source || "").trim();
+  if (source === "bilikara" || source === "cloudflare") {
+    return "";
+  }
+  if (source === "favlist") {
+    return t("search.favorited");
+  }
+  if (String(item?.mid || item?.fav_uid || "").trim()) {
+    return t("search.followed");
+  }
+  return "";
 }
 
 function createSearchResultUrlLine(item) {
@@ -1292,8 +2150,107 @@ function createSearchResultUrlLine(item) {
     owner.textContent = t("owner.tooltip", { name: ownerName });
     line.appendChild(owner);
   }
+  const rating = document.createElement("span");
+  rating.className = "search-result-rating-text";
+  rating.textContent = searchResultRatingText(item);
+  line.appendChild(rating);
 
   return line;
+}
+
+function createSearchResultItem(item) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  const itemUrl = String(item?.url || "").trim();
+  const bvid = searchResultBvid(item);
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+  if (bvid) {
+    row.dataset.bvid = bvid;
+  }
+
+  const coverUrl = searchResultCoverUrl(item);
+  const cover = document.createElement("div");
+  cover.className = "search-result-cover";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    cover.appendChild(image);
+  } else {
+    const fallback = document.createElement("span");
+    fallback.textContent = String(item?.bvid || "Bili");
+    cover.appendChild(fallback);
+    cover.classList.add("is-empty");
+  }
+
+  const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
+  if (duration) {
+    const durationNode = document.createElement("span");
+    durationNode.className = "search-result-duration";
+    durationNode.textContent = duration;
+    cover.appendChild(durationNode);
+  }
+  const ratingStars = createSearchResultRatingStars(item);
+  if (ratingStars) {
+    cover.appendChild(ratingStars);
+  }
+  const developerDeleteButton = createDeveloperDeleteButton(item);
+  if (developerDeleteButton) {
+    cover.appendChild(developerDeleteButton);
+  }
+  const developerResetButton = createDeveloperTagResetButton(item);
+  if (developerResetButton) {
+    cover.appendChild(developerResetButton);
+  }
+
+  const body = document.createElement("div");
+  body.className = "search-result-meta search-result-body";
+
+  const title = document.createElement("div");
+  title.className = "search-result-title";
+  title.textContent = String(item.title || "");
+
+  const statusLine = document.createElement("div");
+  statusLine.className = "search-result-status";
+  const statusLabel = searchResultStatusLabel(item);
+  if (statusLabel) {
+    const status = document.createElement("span");
+    status.className = "search-result-follow";
+    status.textContent = statusLabel;
+    statusLine.appendChild(status);
+  }
+  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
+  if (playCount) {
+    const plays = document.createElement("span");
+    plays.className = "search-result-plays";
+    const playLabel = document.createElement("span");
+    playLabel.className = "search-result-play-label";
+    playLabel.textContent = t("search.playCountLabel");
+    const playValue = document.createElement("span");
+    playValue.textContent = playCount;
+    plays.append(playLabel, playValue);
+    statusLine.appendChild(plays);
+  }
+
+  const url = createSearchResultUrlLine(item);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "next-button search-result-add";
+  button.dataset.url = itemUrl;
+  button.textContent = t("search.add");
+
+  body.append(title);
+  if (statusLine.children.length) {
+    body.appendChild(statusLine);
+  }
+  body.appendChild(url);
+  row.append(cover, body, button);
+  return row;
 }
 
 function renderSearchResultItems(container, items, emptyText = t("search.empty")) {
@@ -1312,27 +2269,7 @@ function renderSearchResultItems(container, items, emptyText = t("search.empty")
   }
 
   items.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "search-result-item";
-
-    const meta = document.createElement("div");
-    meta.className = "search-result-meta";
-
-    const title = document.createElement("div");
-    title.className = "search-result-title";
-    title.textContent = String(item.title || "");
-
-    const url = createSearchResultUrlLine(item);
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "next-button";
-    button.dataset.url = String(item.url || "");
-    button.textContent = t("search.add");
-
-    meta.append(title, url);
-    row.append(meta, button);
-    container.appendChild(row);
+    container.appendChild(createSearchResultItem(item));
   });
 }
 
@@ -1347,32 +2284,824 @@ function appendSearchResultItems(container, items) {
   container.classList.remove("hidden");
 
   items.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "search-result-item";
-
-    const meta = document.createElement("div");
-    meta.className = "search-result-meta";
-
-    const title = document.createElement("div");
-    title.className = "search-result-title";
-    title.textContent = String(item.title || "");
-
-    const url = createSearchResultUrlLine(item);
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "next-button";
-    button.dataset.url = String(item.url || "");
-    button.textContent = t("search.add");
-
-    meta.append(title, url);
-    row.append(meta, button);
-    container.appendChild(row);
+    container.appendChild(createSearchResultItem(item));
   });
 }
 
 function renderSearchResults(items) {
   renderSearchResultItems(elements.searchResults, items);
+}
+
+function d1BrowseTitle(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.artistBrowse") : t("search.nameBrowse");
+}
+
+function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.browsePickArtistLetter") : t("search.browsePickLetter");
+}
+
+function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
+  return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
+}
+
+const D1_BROWSE_ITEM_LIMIT = 450;
+const D1_BROWSE_TAG_LIMIT = 450;
+const D1_BROWSE_MERGE_MIN_LENGTH = 5;
+const D1_BROWSE_COUNT_CONCURRENCY = 4;
+const D1_BROWSE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
+const CATEGORY_BROWSE_PAGE_SIZE = 100;
+const CATEGORY_BROWSE_DEFINITIONS = [
+  { key: "hotBlood", tags: ["热血", "战斗"] },
+  { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
+  { key: "yuri", tags: ["百合"] },
+  { key: "vtuberSeries", tags: ["vtuber系列", "Hololive", "Vtuber"] },
+  { key: "idol", tags: ["偶像", "bangdream", "Lovelive系列", "偶像大师系列","SHOW BY ROCK!!","ガールズバンドクライ","22/7","Togenashi Togeari"] },
+  { key: "school", tags: ["校园", "学园","社团"] },
+  { key: "healing", tags: ["治愈", "催泪", "致郁"] },
+  { key: "vocaloid", tags: ["V家", "VOCALOID","DECO*27","Giga"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "detective", tags: ["推理","名探偵コナン","智斗"] },
+  { key: "mecha", tags: ["机战", "高达系列"] },
+  { key: "sliceOfLife", tags: ["日常"] },
+  { key: "moe", tags: ["萌系"] },
+  { key: "sports", tags: ["运动"] },
+  { key: "original", tags: ["原创"] },
+  { key: "mangaAdapted", tags: ["漫画改", "漫改", "动漫改"] },
+  { key: "gameAdapted", tags: ["游戏改", "Galgame", "GALGAME","鳴潮","ウマ娘","Key社","MAGES","Leaf","柚子社","August","游戏","ヘブンバーンズレッド","原神"] },
+  { key: "novelAdapted", tags: ["小说改", "轻改","轻小说改"] },
+  { key: "pjsk", tags: ["pjsk","プロジェクトセカイ"] },
+  { key: "symphogear", tags: ["战姬绝唱","戦姫絶唱シンフォギア"] },
+  { key: "pokemonSeries", tags: ["宝可梦系列"] },
+  { key: "childhood", tags: ["童年", "宝可梦系列"] },
+  { key: "bangDream", tags: ["bangdream","BanG Dream!","バンドリ！"] },
+  { key: "loveLive", tags: ["Lovelive系列","ラブライブ!"] },
+  { key: "idolmaster", tags: ["偶像大师系列","アイドルマスター"] },
+  { key: "isekai", tags: ["异世界", "穿越"] },
+  { key: "kamitsubaki", tags: ["神椿", "KAMITSUBAKI", "神椿工作室", "KAMITSUBAKI STUDIO","V.W.P","ヰ世界情緒","Albemuth","花譜"] },
+  { key: "youth", tags: ["青春","WHITE ALBUM2","HoneyWorks","励志"] },
+  { key: "otome", tags: ["乙女", "逆后宫"] },
+  { key: "kids", tags: ["子供向"] },
+  { key: "comedy", tags: ["搞笑", "喜剧"] },
+  { key: "tokusatsu", tags: ["特摄"] },
+  { key: "dark", tags: ["黑暗", "悬疑", "战争", "心理", "恐怖", "犯罪","扭曲"] },
+  { key: "godsDemons", tags: ["神魔"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "gourmet", tags: ["美食"] },
+  { key: "history", tags: ["历史","架空"] },
+  { key: "touhouProject", tags: ["东方project"] },
+  { key: "macross", tags: ["マクロス", "超时空要塞"] },
+  { key: "gundam", tags: ["高达系列"] },
+  { key: "longRunning", tags: ["名探偵コナン","NARUTO","ナルト","BLEACH","ONE PIECE","火影忍者","海贼王","銀魂","银魂","家庭教師ヒットマンREBORN!","家庭教师","鬼滅の刃","鬼灭之刃","呪術廻戦","咒术回战","ジョジョの奇妙な冒険","ドラゴンボール","聖闘士星矢","幽☆遊☆白書","THE FIRST SLAM DUNK","FAIRY TAIL"] },
+];
+const CATEGORY_BROWSE_FULL_FIELD_TAGS = new Set([
+  "Hololive",
+  "Vtuber",
+  "SHOW BY ROCK!!",
+  "ガールズバンドクライ",
+  "22/7",
+  "Togenashi Togeari",
+  "VOCALOID",
+  "DECO*27",
+  "Giga",
+  "名探偵コナン",
+  "Galgame",
+  "GALGAME",
+  "鳴潮",
+  "ウマ娘",
+  "Key社",
+  "MAGES",
+  "Leaf",
+  "柚子社",
+  "August",
+  "游戏",
+  "ヘブンバーンズレッド",
+  "原神",
+  "プロジェクトセカイ",
+  "戦姫絶唱シンフォギア",
+  "BanG Dream!",
+  "バンドリ！",
+  "ラブライブ!",
+  "アイドルマスター",
+  "KAMITSUBAKI",
+  "神椿工作室",
+  "KAMITSUBAKI STUDIO",
+  "V.W.P",
+  "ヰ世界情緒",
+  "Albemuth",
+  "花譜",
+  "WHITE ALBUM2",
+  "HoneyWorks",
+  "超时空要塞",
+  "东方project",
+  "マクロス",
+  "NARUTO",
+  "ナルト",
+  "BLEACH",
+  "ONE PIECE",
+  "火影忍者",
+  "海贼王",
+  "銀魂",
+  "银魂",
+  "家庭教師ヒットマンREBORN!",
+  "家庭教师",
+  "鬼滅の刃",
+  "鬼灭之刃",
+  "呪術廻戦",
+  "咒术回战",
+  "ジョジョの奇妙な冒険",
+  "ドラゴンボール",
+  "聖闘士星矢",
+  "幽☆遊☆白書",
+  "THE FIRST SLAM DUNK",
+  "FAIRY TAIL",
+].map(categoryBrowseTagKey));
+const CATEGORY_BROWSE_IMAGE_URLS = [
+  "/pic/cat_1.png",
+  "/pic/cat_2.png",
+  "/pic/cat_3.png",
+  "/pic/cat_4.png",
+  "/pic/cat_5.png",
+  "/pic/cat_6.png",
+  "/pic/cat_7.jpg",
+  "/pic/cat_8.jpg",
+  "/pic/cat_9.png",
+  "/pic/cat_10.jpg",
+  "/pic/cat_11.jpg",
+  "/pic/cat_12.jpg",
+  "/pic/cat_13.jpg",
+  "/pic/cat_14.png",
+  "/pic/cat_15.png",
+  "/pic/cat_16.jpg",
+  "/pic/cat_17.jpg",
+  "/pic/cat_18.jpg",
+  "/pic/cat_19.jpg",
+  "/pic/cat_20.jpg",
+  "/pic/cat_21.png",
+  "/pic/cat_22.jpg",
+  "/pic/cat_23.jpg",
+  "/pic/cat_24.jpg",
+  "/pic/cat_25.png",
+  "/pic/cat_26.png",
+  "/pic/cat_27.jpg",
+  "/pic/cat_28.jpg",
+  "/pic/cat_29.png",
+  "/pic/cat_30.jpg",
+  "/pic/cat_31.jpg",
+  "/pic/cat_32.jpg",
+  "/pic/cat_33.jpg",
+  "/pic/cat_34.jpg",
+  "/pic/cat_35.jpg",
+  "/pic/cat_36.jpg",
+  "/pic/cat_37.jpg",
+  "/pic/cat_38.jpg",
+  "/pic/cat_39.webp",
+  "/pic/cat_40.png",
+];
+
+function categoryBrowseTagKey(value) {
+  return String(value || "").normalize("NFKC").trim().toLowerCase();
+}
+
+function categoryBrowseUsesFullFieldSearch(tag) {
+  return CATEGORY_BROWSE_FULL_FIELD_TAGS.has(categoryBrowseTagKey(tag));
+}
+
+function normalizeD1BrowseTagForMerge(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/[\s"'`._!?,:;~\-\/\\|()[\]{}<>]+/g, "")
+    .replace(/[\u2018-\u201f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g, "");
+}
+
+function d1BrowseMergeLength(value) {
+  return Array.from(value || "").length;
+}
+
+function d1BrowseMergeCandidate(entry) {
+  const tag = String(entry?.tag || "").trim();
+  const locale = String(entry?.locale || "").trim();
+  const normalized = normalizeD1BrowseTagForMerge(tag);
+  return {
+    tag,
+    locale,
+    normalized,
+    count: Number(entry?.count || 0),
+    yomi: String(entry?.yomi || ""),
+    letter: String(entry?.letter || ""),
+  };
+}
+
+function isBetterD1BrowseMergeLabel(candidate, current) {
+  const candidateLength = d1BrowseMergeLength(candidate.normalized);
+  const currentLength = d1BrowseMergeLength(current.normalized);
+  if (candidateLength !== currentLength) {
+    return candidateLength < currentLength;
+  }
+  if (candidate.count !== current.count) {
+    return candidate.count > current.count;
+  }
+  return false;
+}
+
+function mergeD1BrowseTags(tags) {
+  const groups = [];
+  (Array.isArray(tags) ? tags : []).forEach((entry) => {
+    const candidate = d1BrowseMergeCandidate(entry);
+    if (!candidate.tag) {
+      return;
+    }
+    const canMerge = d1BrowseMergeLength(candidate.normalized) >= D1_BROWSE_MERGE_MIN_LENGTH;
+    let group = null;
+    if (canMerge) {
+      group = groups.find((item) => (
+        item.canMerge
+        && item.normalized
+        && (candidate.normalized.startsWith(item.normalized) || item.normalized.startsWith(candidate.normalized))
+      ));
+    }
+    if (!group) {
+      groups.push({
+        ...candidate,
+        canMerge,
+        aliases: [{ tag: candidate.tag, locale: candidate.locale }],
+      });
+      return;
+    }
+    group.count += candidate.count;
+    group.aliases.push({ tag: candidate.tag, locale: candidate.locale });
+    if (isBetterD1BrowseMergeLabel(candidate, group)) {
+      group.tag = candidate.tag;
+      group.locale = candidate.locale;
+      group.normalized = candidate.normalized;
+      group.yomi = candidate.yomi;
+      group.letter = candidate.letter;
+    }
+  });
+  groups.forEach((group) => {
+    group.aliases = uniqueD1BrowseAliases(group.aliases, group.tag, group.locale);
+    group.aliasKey = d1BrowseAliasKey(group.aliases, { kind: state.d1BrowseKind, query: "" });
+    if (state.d1BrowseResolvedCounts.has(group.aliasKey)) {
+      group.count = state.d1BrowseResolvedCounts.get(group.aliasKey);
+    }
+  });
+  return groups;
+}
+
+function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
+  const seen = new Set();
+  const results = [];
+  const source = Array.isArray(aliases) && aliases.length ? aliases : [{ tag: fallbackTag, locale: fallbackLocale }];
+  source.forEach((entry) => {
+    const tag = String(entry?.tag || "").trim();
+    const locale = String(entry?.locale || "").trim();
+    if (!tag) {
+      return;
+    }
+    const key = `${locale}\n${tag}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push({ tag, locale });
+  });
+  return results;
+}
+
+function d1BrowseAliasKey(aliases, { kind = state.d1BrowseKind, query = state.d1BrowseQuery } = {}) {
+  const normalizedAliases = uniqueD1BrowseAliases(aliases)
+    .map((entry) => ({ tag: entry.tag, locale: entry.locale }))
+    .sort((left, right) => `${left.locale}\n${left.tag}`.localeCompare(`${right.locale}\n${right.tag}`));
+  return JSON.stringify({
+    kind: kind === "artist" ? "artist" : "name",
+    query: String(query || "").trim(),
+    aliases: normalizedAliases,
+  });
+}
+
+function d1BrowseItemKey(item) {
+  return String(item?.bvid || item?.url || item?.id || `${item?.title || ""}\n${searchResultOwnerName(item)}`).trim();
+}
+
+function categoryBrowseIdForName(name) {
+  return encodeURIComponent(String(name || "").trim()).replace(/%/g, "_");
+}
+
+function categoryBrowseDefinitions() {
+  const groups = [];
+  const byKey = new Map();
+  CATEGORY_BROWSE_DEFINITIONS.forEach((definition) => {
+    const key = String(definition?.key || "").trim();
+    const tags = (Array.isArray(definition?.tags) ? definition.tags : []).map((value) => String(value || "").trim()).filter(Boolean);
+    if (!key || !tags.length) {
+      return;
+    }
+    let group = byKey.get(key);
+    if (!group) {
+      const imageIndex = groups.length;
+      group = {
+        id: categoryBrowseIdForName(key),
+        key,
+        name: t(`search.category.${key}`),
+        coverUrl: CATEGORY_BROWSE_IMAGE_URLS[imageIndex] || "",
+        tags: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    tags.forEach((tag) => {
+      if (!group.tags.includes(tag)) {
+        group.tags.push(tag);
+      }
+    });
+  });
+  return groups;
+}
+
+function selectedCategoryBrowseDefinition() {
+  const selectedId = String(state.categoryBrowseSelectedId || "");
+  return categoryBrowseDefinitions().find((entry) => entry.id === selectedId) || null;
+}
+
+function mergeCategoryBrowseItems(existingItems, nextItems) {
+  const seen = new Set();
+  const items = [];
+  [...(Array.isArray(existingItems) ? existingItems : []), ...(Array.isArray(nextItems) ? nextItems : [])].forEach((item) => {
+    const key = d1BrowseItemKey(item);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    items.push(item);
+  });
+  return items;
+}
+
+function mergeD1BrowseItemPayloads(payloads) {
+  const seen = new Set();
+  const items = [];
+  (Array.isArray(payloads) ? payloads : []).forEach((payload) => {
+    (Array.isArray(payload?.items) ? payload.items : []).forEach((item) => {
+      const key = d1BrowseItemKey(item);
+      if (!key || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      items.push(item);
+    });
+  });
+  return items;
+}
+
+async function resolveD1BrowseMergedTagCounts(groups, { kind, letter, query } = {}) {
+  const targets = (Array.isArray(groups) ? groups : []).filter((group) => (
+    Array.isArray(group.aliases)
+    && group.aliases.length > 1
+    && group.aliasKey
+    && !state.d1BrowseResolvedCounts.has(group.aliasKey)
+  ));
+  if (!targets.length) {
+    return;
+  }
+  let targetIndex = 0;
+  const workerCount = Math.min(D1_BROWSE_COUNT_CONCURRENCY, targets.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (targetIndex < targets.length) {
+      const group = targets[targetIndex];
+      targetIndex += 1;
+      try {
+        const payloads = await Promise.all(group.aliases.map((alias) => fetchD1Browse({
+          kind,
+          letter,
+          query,
+          tag: alias.tag,
+          locale: alias.locale,
+          limit: D1_BROWSE_ITEM_LIMIT,
+        })));
+        const items = mergeD1BrowseItemPayloads(payloads);
+        state.d1BrowseResolvedCounts.set(group.aliasKey, items.length);
+        state.d1BrowseItemCache.set(group.aliasKey, items);
+      } catch (error) {
+        // Keep the optimistic aggregate count if the exact count fails.
+      }
+    }
+  }));
+}
+
+function ensureD1BrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("search-modal-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-d1-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "tag-browser";
+  view.dataset.d1BrowseView = "1";
+  view.innerHTML = `
+    <form class="tag-browser-search" data-d1-browse-search>
+      <input type="text" autocomplete="off" data-d1-browse-query>
+      <button type="submit" class="next-button" data-d1-browse-submit></button>
+    </form>
+    <div class="tag-browser-alphabet" data-d1-browse-alphabet></div>
+    <div class="tag-browser-nav">
+      <button type="button" class="tag-browser-back hidden" data-d1-browse-back></button>
+      <div class="tag-browser-current" data-d1-browse-current></div>
+    </div>
+    <div class="tag-browser-tags" data-d1-browse-tags></div>
+    <div class="search-results hidden" data-d1-browse-results></div>
+    <p class="gatcha-message tag-browser-message" data-d1-browse-message role="status"></p>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function renderD1BrowseView() {
+  const view = ensureD1BrowseView();
+  if (!view) {
+    return;
+  }
+  const kind = state.d1BrowseKind || "name";
+  const title = d1BrowseTitle(kind);
+  const queryInput = view.querySelector("[data-d1-browse-query]");
+  const submitButton = view.querySelector("[data-d1-browse-submit]");
+  const alphabet = view.querySelector("[data-d1-browse-alphabet]");
+  const backButton = view.querySelector("[data-d1-browse-back]");
+  const current = view.querySelector("[data-d1-browse-current]");
+  const tagGrid = view.querySelector("[data-d1-browse-tags]");
+  const results = view.querySelector("[data-d1-browse-results]");
+  const message = view.querySelector("[data-d1-browse-message]");
+
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.d1BrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.d1BrowseLoading;
+  }
+  if (alphabet) {
+    alphabet.innerHTML = "";
+    D1_BROWSE_LETTERS.forEach((letter) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tag-letter-button";
+      button.dataset.letter = letter;
+      button.textContent = letter;
+      button.classList.toggle("active", state.d1BrowseLetter === letter);
+      button.disabled = state.d1BrowseLoading;
+      alphabet.appendChild(button);
+    });
+  }
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.classList.toggle("hidden", !state.d1BrowseLetter);
+    backButton.disabled = state.d1BrowseLoading;
+  }
+
+  const tags = mergeD1BrowseTags(state.d1BrowseData?.tags);
+  const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
+  if (current) {
+    const parts = [title];
+    if (state.d1BrowseLetter) {
+      parts.push(state.d1BrowseLetter);
+    }
+    if (state.d1BrowseTag) {
+      parts.push(state.d1BrowseTag);
+    }
+    current.textContent = parts.join(" / ");
+  }
+  if (tagGrid) {
+    tagGrid.innerHTML = "";
+    tagGrid.classList.toggle("hidden", Boolean(state.d1BrowseTag));
+    if (!state.d1BrowseTag) {
+      if (state.d1BrowseLoading) {
+        const loading = document.createElement("div");
+        loading.className = "search-empty";
+        loading.textContent = t("search.browseLoading");
+        tagGrid.appendChild(loading);
+      } else if (!state.d1BrowseLetter) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = d1BrowsePickLetterText(kind);
+        tagGrid.appendChild(empty);
+      } else if (!tags.length) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = t("search.browseNoTags");
+        tagGrid.appendChild(empty);
+      } else {
+        tags.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tag-browser-tag";
+          button.dataset.tag = String(entry.tag || "");
+          button.dataset.locale = String(entry.locale || "");
+          button.dataset.aliases = JSON.stringify(entry.aliases || []);
+          const name = document.createElement("span");
+          name.className = "tag-browser-tag-name";
+          name.textContent = String(entry.tag || "");
+          const count = document.createElement("span");
+          count.className = "tag-browser-tag-count";
+          count.textContent = t("search.browseTagCount", { count: Number(entry.count || 0) });
+          button.append(name, count);
+          tagGrid.appendChild(button);
+        });
+      }
+    }
+  }
+  if (results) {
+    if (state.d1BrowseTag) {
+      renderSearchResultItems(results, items, t("search.larkNoResults"));
+    } else {
+      results.innerHTML = "";
+      results.classList.add("hidden");
+    }
+  }
+  if (message) {
+    let text = "";
+    if (state.d1BrowseTag && !state.d1BrowseLoading) {
+      text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
+    } else if (!state.d1BrowseTag && tags.length) {
+      text = t("search.browseTagsFound", { count: tags.length });
+    }
+    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
+    message.classList.toggle("is-error", false);
+  }
+}
+
+async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "", aliases = [] } = {}) {
+  const searchSeq = state.d1BrowseSeq + 1;
+  state.d1BrowseSeq = searchSeq;
+  state.d1BrowseKind = kind === "artist" ? "artist" : "name";
+  state.d1BrowseLetter = String(letter || "").trim().toUpperCase();
+  state.d1BrowseQuery = String(query || "").trim();
+  state.d1BrowseTag = String(tag || "").trim();
+  state.d1BrowseLocale = String(locale || "").trim();
+  state.d1BrowseAliases = state.d1BrowseTag ? uniqueD1BrowseAliases(aliases, state.d1BrowseTag, state.d1BrowseLocale) : [];
+  state.d1BrowseLoading = true;
+  renderD1BrowseView();
+  try {
+    const requestAliases = state.d1BrowseTag ? state.d1BrowseAliases : [];
+    const requestAliasKey = requestAliases.length ? d1BrowseAliasKey(requestAliases, {
+      kind: state.d1BrowseKind,
+      query: state.d1BrowseQuery,
+    }) : "";
+    if (requestAliasKey && state.d1BrowseItemCache.has(requestAliasKey)) {
+      const items = state.d1BrowseItemCache.get(requestAliasKey) || [];
+      state.d1BrowseData = { kind: state.d1BrowseKind, letter: state.d1BrowseLetter, query: state.d1BrowseQuery, tag: state.d1BrowseTag, locale: state.d1BrowseLocale, tags: [], items };
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      return;
+    }
+    const payloads = requestAliases.length > 1
+      ? await Promise.all(requestAliases.map((alias) => fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: alias.tag,
+        locale: alias.locale,
+        limit: D1_BROWSE_ITEM_LIMIT,
+      })))
+      : [await fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: state.d1BrowseTag,
+        locale: state.d1BrowseLocale,
+        limit: state.d1BrowseTag ? D1_BROWSE_ITEM_LIMIT : D1_BROWSE_TAG_LIMIT,
+      })];
+    if (state.d1BrowseSeq !== searchSeq) {
+      return;
+    }
+    const data = payloads[0] || {};
+    if (!state.d1BrowseTag) {
+      const mergedTags = mergeD1BrowseTags(data.tags);
+      await resolveD1BrowseMergedTagCounts(mergedTags, {
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: "",
+      });
+      if (state.d1BrowseSeq !== searchSeq) {
+        return;
+      }
+    }
+    state.d1BrowseData = requestAliases.length > 1 ? { ...data, items: mergeD1BrowseItemPayloads(payloads) } : data;
+    if (requestAliasKey) {
+      const items = Array.isArray(state.d1BrowseData.items) ? state.d1BrowseData.items : [];
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      state.d1BrowseItemCache.set(requestAliasKey, items);
+    }
+  } catch (error) {
+    const view = ensureD1BrowseView();
+    const message = view?.querySelector("[data-d1-browse-message]");
+    if (message) {
+      message.textContent = error.message;
+      message.classList.add("is-error");
+    }
+  } finally {
+    if (state.d1BrowseSeq === searchSeq) {
+      state.d1BrowseLoading = false;
+      renderD1BrowseView();
+    }
+  }
+}
+
+function ensureCategoryBrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("search-modal-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-category-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "category-browser";
+  view.dataset.categoryBrowseView = "1";
+  view.innerHTML = `
+    <div class="category-browser-home" data-category-browser-home>
+      <div class="category-browser-grid" data-category-browser-grid></div>
+    </div>
+    <div class="category-browser-detail hidden" data-category-browser-detail>
+      <form class="tag-browser-search category-browser-search" data-category-browse-search>
+        <input type="text" autocomplete="off" data-category-browse-query>
+        <button type="submit" class="next-button" data-category-browse-submit></button>
+      </form>
+      <div class="category-browser-tabs" data-category-browser-tabs></div>
+      <div class="tag-browser-nav">
+        <button type="button" class="tag-browser-back" data-category-browse-back></button>
+        <div class="tag-browser-current" data-category-browse-current></div>
+      </div>
+      <div class="search-results category-browser-results" data-category-browse-results></div>
+      <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
+    </div>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function createCategoryBrowseCard(category, { compact = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = compact ? "category-browser-tab" : "category-browser-card";
+  button.dataset.categoryId = category.id;
+  const media = document.createElement("span");
+  media.className = compact ? "category-browser-tab-media" : "category-browser-card-media";
+  if (category.coverUrl) {
+    media.style.backgroundImage = `linear-gradient(135deg, rgba(0, 210, 255, 0.18), rgba(255, 102, 51, 0.14)), url("${category.coverUrl}")`;
+  }
+  const name = document.createElement("span");
+  name.className = compact ? "category-browser-tab-name" : "category-browser-card-name";
+  name.textContent = category.name;
+  button.append(media, name);
+  return button;
+}
+
+function renderCategoryBrowseView() {
+  const view = ensureCategoryBrowseView();
+  if (!view) {
+    return;
+  }
+  const categories = categoryBrowseDefinitions();
+  const selected = selectedCategoryBrowseDefinition();
+  const home = view.querySelector("[data-category-browser-home]");
+  const detail = view.querySelector("[data-category-browser-detail]");
+  const grid = view.querySelector("[data-category-browser-grid]");
+  const tabs = view.querySelector("[data-category-browser-tabs]");
+  const queryInput = view.querySelector("[data-category-browse-query]");
+  const submitButton = view.querySelector("[data-category-browse-submit]");
+  const backButton = view.querySelector("[data-category-browse-back]");
+  const current = view.querySelector("[data-category-browse-current]");
+  const results = view.querySelector("[data-category-browse-results]");
+  const message = view.querySelector("[data-category-browse-message]");
+
+  home?.classList.toggle("hidden", Boolean(selected));
+  detail?.classList.toggle("hidden", !selected);
+  if (grid && !selected) {
+    grid.innerHTML = "";
+    categories.forEach((category) => {
+      grid.appendChild(createCategoryBrowseCard(category));
+    });
+  }
+  if (!selected) {
+    return;
+  }
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.categoryBrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = t("search.browseItemPlaceholder");
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.categoryBrowseLoading;
+  }
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.disabled = state.categoryBrowseLoading;
+  }
+  if (current) {
+    current.textContent = "";
+    current.classList.add("hidden");
+  }
+  if (tabs) {
+    tabs.innerHTML = "";
+    categories.forEach((category) => {
+      const tab = createCategoryBrowseCard(category, { compact: true });
+      tab.classList.toggle("active", category.id === selected.id);
+      tab.disabled = state.categoryBrowseLoading && category.id === selected.id;
+      tabs.appendChild(tab);
+    });
+  }
+  if (results) {
+    renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
+  }
+  if (message) {
+    let text = "";
+    if (state.categoryBrowseError) {
+      text = state.categoryBrowseError;
+    } else if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
+      text = t("search.browseLoading");
+    } else if (state.categoryBrowseItems.length) {
+      text = state.categoryBrowseHasMore
+        ? t("search.categoryLoadedMore", { count: state.categoryBrowseItems.length })
+        : t("search.categoryLoadedAll", { count: state.categoryBrowseItems.length });
+    } else if (!state.categoryBrowseLoading) {
+      text = t("search.larkNoResults");
+    }
+    message.textContent = text;
+    message.classList.toggle("is-error", Boolean(state.categoryBrowseError));
+  }
+}
+
+async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId, query = state.categoryBrowseQuery, append = false } = {}) {
+  const category = categoryBrowseDefinitions().find((entry) => entry.id === categoryId);
+  if (!category) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    renderCategoryBrowseView();
+    return;
+  }
+  const searchSeq = state.categoryBrowseSeq + 1;
+  state.categoryBrowseSeq = searchSeq;
+  state.categoryBrowseSelectedId = category.id;
+  state.categoryBrowseQuery = String(query || "").trim();
+  state.categoryBrowseError = "";
+  if (!append) {
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = true;
+  }
+  state.categoryBrowseLoading = true;
+  renderCategoryBrowseView();
+  try {
+    const data = await fetchD1CategoryBrowse({
+      tags: category.tags,
+      query: state.categoryBrowseQuery,
+      offset: append ? state.categoryBrowseOffset : 0,
+      limit: CATEGORY_BROWSE_PAGE_SIZE,
+    });
+    if (state.categoryBrowseSeq !== searchSeq) {
+      return;
+    }
+    const nextItems = Array.isArray(data.items) ? data.items : [];
+    state.categoryBrowseItems = append ? mergeCategoryBrowseItems(state.categoryBrowseItems, nextItems) : mergeCategoryBrowseItems([], nextItems);
+    state.categoryBrowseHasMore = Boolean(data.has_more);
+    state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
+  } catch (error) {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseError = error.message;
+    }
+  } finally {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseLoading = false;
+      renderCategoryBrowseView();
+    }
+  }
+}
+
+function maybeLoadMoreCategoryBrowse(scrollContainer) {
+  if (
+    !state.categoryBrowseSelectedId
+    || state.categoryBrowseLoading
+    || !state.categoryBrowseHasMore
+    || !scrollContainer
+  ) {
+    return;
+  }
+  const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+  if (remaining <= 160) {
+    loadCategoryBrowse({ append: true });
+  }
 }
 
 function selectedFollowOwner() {
@@ -1459,6 +3188,17 @@ function renderFollowBrowse() {
         count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
+
+        if (owner.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar";
+          avatar.src = owner.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
         elements.followUpGrid.appendChild(button);
       });
     }
@@ -1467,6 +3207,15 @@ function renderFollowBrowse() {
   }
 
   const owner = selectedFollowOwner();
+  if (elements.followBrowseAvatar) {
+    const avatarUrl = String(owner?.avatar_url || "").trim();
+    elements.followBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.followBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.followBrowseAvatar.removeAttribute("src");
+    }
+  }
   if (elements.followBrowseTitle) {
     elements.followBrowseTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
   }
@@ -1508,13 +3257,243 @@ async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
   await loadFollowBrowse({ uid: nextUid, query: "", keepQuery: false });
 }
 
+function selectedFavlistFolder() {
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  return folders.find((folder) => String(folder.id || "") === state.favlistBrowseSelectedFolderId) || null;
+}
+
+function renderFavlistBrowse() {
+  if (!elements.favlistGrid || !elements.favlistSongResults) {
+    return;
+  }
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  const signature = JSON.stringify({
+    loading: state.favlistBrowseLoading,
+    selected: state.favlistBrowseSelectedFolderId,
+    folders,
+    items,
+    language: state.language,
+  });
+  if (signature === state.favlistBrowseRenderSignature) {
+    return;
+  }
+  state.favlistBrowseRenderSignature = signature;
+
+  const hasSelectedFolder = Boolean(state.favlistBrowseSelectedFolderId);
+  elements.favlistListView?.classList.toggle("hidden", hasSelectedFolder);
+  elements.favlistItemsView?.classList.toggle("hidden", !hasSelectedFolder);
+
+  if (!hasSelectedFolder) {
+    elements.favlistGrid.innerHTML = "";
+    if (!folders.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
+      elements.favlistGrid.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const folderId = String(folder.id || "").trim();
+        const title = String(folder.title || folderId || t("favlist.folder")).trim();
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button favlist-browse-button";
+        button.dataset.folderId = folderId;
+        button.title = title;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name favlist-browse-name";
+        name.textContent = title;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count favlist-browse-count";
+        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
+
+        button.append(name, count);
+
+        if (folder.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar favlist-browse-avatar";
+          avatar.src = folder.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
+        elements.favlistGrid.appendChild(button);
+      });
+    }
+    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    return;
+  }
+
+  const folder = selectedFavlistFolder();
+  if (elements.favlistBrowseAvatar) {
+    const avatarUrl = String(folder?.avatar_url || "").trim();
+    elements.favlistBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.favlistBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.favlistBrowseAvatar.removeAttribute("src");
+    }
+  }
+  if (elements.favlistBrowseTitle) {
+    elements.favlistBrowseTitle.textContent = String(folder?.title || state.favlistBrowseSelectedFolderId || t("favlist.folder"));
+  }
+  if (elements.favlistBrowseCount) {
+    const totalCount = Number(folder?.media_count || folder?.count || items.length || 0);
+    elements.favlistBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.favlistSongResults,
+    items,
+    state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
+  );
+  setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+}
+
+async function loadFavlistBrowse({
+  folderId = state.favlistBrowseSelectedFolderId,
+  query = "",
+  keepQuery = false,
+} = {}) {
+  state.favlistBrowseLoading = true;
+  state.favlistBrowseSelectedFolderId = String(folderId || "").trim();
+  renderFavlistBrowse();
+  let caughtError = null;
+  try {
+    const nextData = await fetchGatchaFavlistBrowse(state.favlistBrowseSelectedFolderId, query);
+    state.favlistBrowseData = nextData;
+    state.favlistBrowseSelectedFolderId = String(
+      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+    );
+    if (!keepQuery && elements.favlistSearchQuery) {
+      elements.favlistSearchQuery.value = String(nextData.query || "");
+    }
+  } catch (error) {
+    caughtError = error;
+  } finally {
+    state.favlistBrowseLoading = false;
+    renderFavlistBrowse();
+    if (caughtError) {
+      setFavlistBrowseMessage(caughtError.message, true);
+    }
+  }
+}
+
+async function refreshFavlistBrowseAfterPull() {
+  if (!state.favlistBrowseData) {
+    return;
+  }
+  state.favlistBrowseRenderSignature = "";
+  await loadFavlistBrowse({
+    folderId: state.favlistBrowseSelectedFolderId,
+    query: String(elements.favlistSearchQuery?.value || "").trim(),
+    keepQuery: true,
+  });
+}
+
+function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
+  const previousUpdatedAt = Number(previousSnapshot?.gatcha_favlist_updated_at || 0);
+  const nextUpdatedAt = Number(nextSnapshot?.gatcha_favlist_updated_at || 0);
+  if (!state.favlistBrowseData || state.favlistBrowseLoading || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
+    return;
+  }
+  if (state.favlistBrowseReloadTimer) {
+    window.clearTimeout(state.favlistBrowseReloadTimer);
+  }
+  state.favlistBrowseReloadTimer = window.setTimeout(() => {
+    state.favlistBrowseReloadTimer = null;
+    if (!state.favlistBrowseData || state.favlistBrowseLoading) {
+      return;
+    }
+    refreshFavlistBrowseAfterPull();
+  }, 0);
+}
+
+async function previewGatchaUidAddFromInput(input, {
+  messageTarget = "gatcha",
+  anchor = elements.addGatchaUidButton,
+  event = null,
+} = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.checkingUid"));
+  try {
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
+    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
+    const point = anchorPointForEvent(event || {}, anchor || input);
+    openConfirm({
+      type: "gatcha-uid-add",
+      uid: preview?.uid || uid,
+      name: ownerName,
+      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
+      messageTarget,
+      clearInputId: input?.id || "",
+      ...point,
+    });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
+async function previewGatchaFavlistFromInput(input, {
+  messageTarget = "gatcha",
+  modalSource = "gatcha",
+} = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.readingFavlists"));
+  try {
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistModal(result?.uid || uid, result, { messageTarget: modalSource });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.chooseFavlists"));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
 async function handleGatchaDraw() {
   setGatchaMessage(t("gatcha.drawing"));
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.error || t("gatcha.drawFailed"));
+      throw new Error(localizedApiMessage(payload.error) || t("gatcha.drawFailed"));
     }
 
     state.gatchaCandidate = payload.data;
@@ -1545,12 +3524,55 @@ function setFollowBrowseMessage(message, isError = false) {
   elements.followBrowseMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function setFavlistBrowseMessage(message, isError = false) {
+  if (!elements.favlistBrowseMessage) {
+    return;
+  }
+  elements.favlistBrowseMessage.textContent = message || "";
+  elements.favlistBrowseMessage.classList.toggle("is-error", Boolean(isError));
+}
+
 function setLarkSearchMessage(message, isError = false) {
   if (!elements.larkSearchMessage) {
     return;
   }
   elements.larkSearchMessage.textContent = message || "";
   elements.larkSearchMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function localizedCacheMessage(message, cacheStatus = "") {
+  const raw = String(message || "").trim();
+  const status = String(cacheStatus || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "已缓存" || raw === "缓存已完成" || raw.includes("缓存完成")) {
+    return t("cache.ready");
+  }
+  if (raw === "等待缓存" || raw === "等待缓存队列" || raw.includes("等待优先缓存")) {
+    return t("status.pendingCache");
+  }
+  if (raw === "正在校验缓存") {
+    return t("status.checking");
+  }
+  const progressMatch = raw.match(/^缓存中\s*([0-9.]+)%$/);
+  if (progressMatch) {
+    return `${t("status.caching")} ${progressMatch[1]}%`;
+  }
+  if (raw.startsWith("缓存失败:")) {
+    const detail = raw.slice("缓存失败:".length).trim();
+    return detail ? `${t("cache.failed")}: ${detail}` : t("cache.failed");
+  }
+  if (raw.includes("开始缓存视频") || raw.includes("正在缓存")) {
+    return t("cache.caching");
+  }
+  if (status === "ready") {
+    return t("cache.ready");
+  }
+  if (status === "failed" && raw === "缓存失败") {
+    return t("cache.failed");
+  }
+  return raw;
 }
 
 function syncLarkSearchInputs(value, source = "") {
@@ -1575,12 +3597,63 @@ function setGatchaUidMessage(message, isError = false) {
   elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function setGatchaUidFlowMessage(target, message, isError = false) {
+  if (target === "follow-modal") {
+    setFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (target === "favlist-modal") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  setGatchaUidMessage(message, isError);
+}
+
+function clearGatchaUidFlowInput(inputId) {
+  const input = inputId ? document.getElementById(inputId) : null;
+  if (input instanceof HTMLInputElement) {
+    input.value = "";
+  }
+}
+
 function gatchaTaskBusy() {
   return Boolean(state.data?.gatcha?.busy);
 }
 
+function localizedGatchaTaskMessage(message, status = "") {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    if (status === "success") {
+      return t("gatcha.refreshDone");
+    }
+    if (status === "partial") {
+      return t("gatcha.refreshPartial");
+    }
+    if (status === "failed") {
+      return t("gatcha.refreshFailed");
+    }
+    return "";
+  }
+  if (raw.includes("拉取任务执行中")) {
+    return t("gatcha.busyFallback");
+  }
+  if (raw.includes("部分更新")) {
+    return t("gatcha.refreshPartial");
+  }
+  if (raw.includes("更新完成") || raw.includes("重建完成")) {
+    return t("gatcha.refreshDone");
+  }
+  if (raw.includes("更新失败")) {
+    return t("gatcha.refreshFailed");
+  }
+  if (raw.includes("正在重建") || raw.includes("更新中")) {
+    return t("gatcha.refreshingBackground");
+  }
+  return raw;
+}
+
 function gatchaTaskBusyMessage() {
-  return state.data?.gatcha?.message || t("gatcha.busyFallback");
+  return localizedGatchaTaskMessage(state.data?.gatcha?.message, "running") || t("gatcha.busyFallback");
 }
 
 function syncGatchaTaskTerminalMessage() {
@@ -1612,7 +3685,8 @@ function syncGatchaTaskTerminalMessage() {
       : status === "partial"
         ? t("gatcha.refreshPartial")
         : t("gatcha.refreshFailed");
-  const detail = task.last_error ? `${task.last_message || fallback} ${task.last_error}` : task.last_message || fallback;
+  const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+  const detail = task.last_error ? `${message} ${task.last_error}` : message;
   setGatchaUidMessage(detail, status !== "success");
 }
 
@@ -1749,9 +3823,19 @@ function renderGatchaUidFace() {
   if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
     elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
+  if (elements.modalFollowUidInput) {
+    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
+  }
+  if (elements.modalFavlistUidInput) {
+    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
+  }
   if (elements.addGatchaUidButton) {
     elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
     elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
+  }
+  if (elements.modalAddFollowUidButton) {
+    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
+    elements.modalAddFollowUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
   }
   if (elements.refreshGatchaCacheButton) {
     elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
@@ -1761,12 +3845,22 @@ function renderGatchaUidFace() {
     elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
     elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
+  if (elements.modalPullFavlistButton) {
+    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
       elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
     }
     if (elements.pullGatchaFavlistButton) {
       elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
+    }
+    if (elements.modalAddFollowUidButton) {
+      elements.modalAddFollowUidButton.textContent = t("gatcha.globalCooldown");
+    }
+    if (elements.modalPullFavlistButton) {
+      elements.modalPullFavlistButton.textContent = t("gatcha.globalCooldown");
     }
   }
 }
@@ -1831,6 +3925,9 @@ function render() {
   );
   syncListStageView();
   renderSearchCookieFace();
+  if (elements.favlistBrowserView && !elements.favlistBrowserView.classList.contains("hidden")) {
+    renderFavlistBrowse();
+  }
   renderGatchaUidFace();
   renderConfirmPopover();
   flushPendingSongTransitionOverlay();
@@ -2379,17 +4476,29 @@ function updateAdvanceDelaySliderFill(value) {
 }
 
 function renderCachePolicyControls(cachePolicy) {
+  const qualityLabelForValue = (value) => {
+    const normalized = String(value || "").trim();
+    const labels = {
+      "1080P 高码率": t("quality.1080pHighBitrate"),
+      "1080P 高清": t("quality.1080p"),
+      "720P 高清": t("quality.720p"),
+      "480P 清晰": t("quality.480p"),
+      "360P 流畅": t("quality.360p"),
+    };
+    return labels[normalized] || normalized;
+  };
   const rawChoices = Array.isArray(cachePolicy?.video_quality_choices)
     ? cachePolicy.video_quality_choices
     : [];
   const choices = rawChoices.length
     ? rawChoices.map((choice) => {
       if (typeof choice === "string") {
-        return { value: choice, label: choice };
+        return { value: choice, label: qualityLabelForValue(choice) };
       }
+      const value = String(choice?.value || "");
       return {
-        value: String(choice?.value || ""),
-        label: String(choice?.label || choice?.value || ""),
+        value,
+        label: qualityLabelForValue(choice?.label || value),
       };
     }).filter((choice) => choice.value)
     : [
@@ -3225,7 +5334,7 @@ function syncPlayerFrameCacheHint(currentItem) {
   if (!hint || !currentItem) {
     return;
   }
-  setTextContent(hint, currentItem.cache_message || "正在后台缓存");
+  setTextContent(hint, localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback"));
 }
 
 function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
@@ -3776,6 +5885,7 @@ function renderAvSyncControls(playbackMode, playerSettings) {
 }
 
 function renderPlayer(currentItem, playbackMode) {
+  handleRatingCurrentItemChange(currentItem);
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
@@ -3868,7 +5978,9 @@ function renderPlayer(currentItem, playbackMode) {
     elements.playerFrame.innerHTML = `
       <div class="empty-state">
         <p>${escapeHtml(t("player.preparingTracks"))}</p>
-        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
+        <p class="empty-hint">${escapeHtml(
+          localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback"),
+        )}</p>
       </div>
     `;
     return;
@@ -4003,6 +6115,7 @@ function renderPlayer(currentItem, playbackMode) {
     if (!settleSplitPlayerSeek(video, audio)) {
       reportCurrentVideoStatus();
     }
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   });
 
   video.addEventListener("canplay", () => {
@@ -4029,6 +6142,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   video.addEventListener("timeupdate", () => {
     reportPlayerStatusHeartbeat(currentItem.id, video);
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   });
 
   video.addEventListener("ratechange", () => {
@@ -4071,6 +6185,7 @@ function renderPlayer(currentItem, playbackMode) {
     }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
     reportCurrentVideoStatus();
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   }, localPlayerSyncIntervalMs);
 
   window.setTimeout(() => {
@@ -4178,7 +6293,9 @@ function renderPlayer(currentItem, playbackMode) {
     setPlayerFrameContent(`
       <div class="empty-state">
         <p>${escapeHtml(t("player.preparingTracks"))}</p>
-        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
+        <p class="empty-hint">${escapeHtml(
+          localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback"),
+        )}</p>
       </div>
     `);
     return;
@@ -4490,6 +6607,10 @@ function reportPlayerStatus(itemId, video) {
 
   const currentTime = Number(video.currentTime || 0);
   const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
+  const currentItem = state.data?.current_item;
+  if (currentItem && String(currentItem.id || "") === normalizedItemId) {
+    maybeShowRatingPromptForProgress(currentItem, currentTime, duration);
+  }
   const signature = [
     normalizedItemId,
     video.paused ? "paused" : "playing",
@@ -4783,14 +6904,14 @@ function badgeTitleForItem(item) {
     return t("cache.ready");
   }
   if (item.cache_status === "failed") {
-    return item.cache_message || t("cache.failed");
+    return localizedCacheMessage(item.cache_message, item.cache_status) || t("cache.failed");
   }
-  return item.cache_message || t("cache.caching");
+  return localizedCacheMessage(item.cache_message, item.cache_status) || t("cache.caching");
 }
 
 function noteForItem(item) {
   if (item.cache_status === "failed") {
-    return item.cache_message || t("cache.failed");
+    return localizedCacheMessage(item.cache_message, item.cache_status) || t("cache.failed");
   }
   return "";
 }
@@ -5282,7 +7403,7 @@ function openBindingModal(intent, payload) {
       renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage),
     );
     elements.bindingAudioOptions.appendChild(
-      renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage),
+      renderBindingOption("checkbox", "binding-audio-page", entry, false),
     );
   });
   elements.bindingModal.classList.remove("hidden");
@@ -5328,13 +7449,13 @@ function renderGatchaFavlistOption(folder) {
   return label;
 }
 
-function openGatchaFavlistModal(uid, payload) {
+function openGatchaFavlistModal(uid, payload, { messageTarget = "gatcha" } = {}) {
   const folders = Array.isArray(payload?.folders) ? payload.folders : [];
   if (!folders.length) {
-    setGatchaUidMessage(t("favlist.none"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.none"), true);
     return;
   }
-  state.gatchaFavlistIntent = { uid, folders };
+  state.gatchaFavlistIntent = { uid, folders, messageTarget };
   elements.gatchaFavlistModalText.textContent = t("favlist.chooseForUid", {
     uid: payload?.uid || uid,
     count: payload?.public_folder_count || folders.length,
@@ -5351,28 +7472,31 @@ async function confirmGatchaFavlistModal() {
   if (!intent?.uid) {
     return;
   }
+  const messageTarget = intent.messageTarget || "gatcha";
   const folderIds = selectedGatchaFavlistFolderIds();
   if (!folderIds.length) {
-    setGatchaUidMessage(t("favlist.selectAtLeastOne"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
   }
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(t("favlist.pullingSelected"));
+  setGatchaUidFlowMessage(messageTarget, t("favlist.pullingSelected"));
   closeGatchaFavlistModal();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
-    setGatchaUidMessage(
+    setGatchaUidFlowMessage(
+      messageTarget,
       t("favlist.pullResult", { folders: result?.matched_folder_count || 0, items: result?.item_count || 0 }),
     );
+    await refreshFavlistBrowseAfterPull();
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaFavlistSaving = false;
     renderGatchaUidFace();
@@ -5412,7 +7536,9 @@ async function confirmBindingModal() {
       elements.gatchaInitView.classList.remove("hidden");
       setGatchaMessage(t("gatcha.nozomi"));
     }
-    setFormMessage(intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail"));
+    const message = intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail");
+    setFormMessage(message);
+    setAppMessage(message);
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -5519,7 +7645,9 @@ async function handleAddByUrl(url, position, anchorPoint) {
   setFormMessage(t("history.addingFromHistory"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
-    setFormMessage(position === "next" ? t("history.addedNext") : t("history.addedTail"));
+    const message = position === "next" ? t("history.addedNext") : t("history.addedTail");
+    setFormMessage(message);
+    setAppMessage(message);
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -5765,18 +7893,15 @@ async function checkAppUpdate(event) {
       const fallbackMessage = result?.switch_to_release_available
         ? t("service.switchReleasePrompt")
         : t("service.updateFoundPrompt");
-      const message = result?.message
-        ? t("service.openReleaseWithMessage", { message: result.message })
-        : fallbackMessage;
       openConfirm({
         type: "open-release",
         releaseUrl: result.release_url,
-        message,
+        message: fallbackMessage,
         ...point,
       });
       return;
     }
-    setAppMessage(result?.message || t("service.upToDate"));
+    setAppMessage(t("service.upToDate"));
   } catch (error) {
     const message = error?.name === "AbortError"
       ? t("service.updateTimeout")
@@ -6116,25 +8241,53 @@ elements.searchForm.addEventListener("submit", async (event) => {
   }
 });
 
-elements.searchResults.addEventListener("click", async (event) => {
+function searchResultRequestTarget(event, container) {
+  if (event.target.closest("button[data-dev-action]")) {
+    return null;
+  }
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (button && container?.contains(button)) {
+    return {
+      url: String(button.dataset.url || "").trim(),
+      anchor: button,
+      button,
+    };
+  }
+  if (!container?.closest("#search-modal")) {
+    return null;
+  }
+  const card = event.target.closest(".search-result-item[data-url]");
+  if (!card || !container.contains(card)) {
+    return null;
+  }
+  return {
+    url: String(card.dataset.url || "").trim(),
+    anchor: card,
+    button: null,
+  };
+}
+
+elements.searchResults.addEventListener("click", async (event) => {
+  const target = searchResultRequestTarget(event, elements.searchResults);
+  if (!target) {
+    return;
+  }
+  if (!target.url) {
     return;
   }
 
-  const url = String(button.dataset.url || "").trim();
-  if (!url) {
-    return;
+  if (target.button) {
+    target.button.disabled = true;
   }
-
-  button.disabled = true;
   try {
-    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
     hideSearchResults();
     setSearchMessage("");
     elements.searchQuery.value = "";
   } finally {
-    button.disabled = false;
+    if (target.button) {
+      target.button.disabled = false;
+    }
   }
 });
 
@@ -6225,19 +8378,22 @@ elements.larkSearchHitboxQuery?.addEventListener("input", () => {
 });
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-url]");
-  if (!button) {
+  const target = searchResultRequestTarget(event, elements.larkSearchResults);
+  if (!target) {
     return;
   }
-  const url = String(button.dataset.url || "").trim();
-  if (!url) {
+  if (!target.url) {
     return;
   }
-  button.disabled = true;
+  if (target.button) {
+    target.button.disabled = true;
+  }
   try {
-    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
   } finally {
-    button.disabled = false;
+    if (target.button) {
+      target.button.disabled = false;
+    }
   }
 });
 
@@ -6380,9 +8536,10 @@ elements.cacheQualitySelect?.addEventListener("change", async (event) => {
   if (!quality || quality === String(state.data?.cache_policy?.video_quality || "")) {
     return;
   }
+  const selectedLabel = event.target.selectedOptions?.[0]?.textContent || quality;
   await setCachePolicyPreference(
     { video_quality: quality },
-    t("service.qualityUpdated", { quality }),
+    t("service.qualityUpdated", { quality: selectedLabel }),
   );
 });
 
@@ -6793,6 +8950,57 @@ elements.gatchaFavlistModalConfirm?.addEventListener("click", async () => {
   await confirmGatchaFavlistModal();
 });
 
+elements.developerModeTrigger?.addEventListener("click", () => {
+  openBilikaraSecretModal();
+});
+
+elements.developerModeTrigger?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  event.preventDefault();
+  openBilikaraSecretModal();
+});
+
+elements.bilikaraSecretForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await verifyBilikaraSecret();
+});
+
+elements.bilikaraSecretClose?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
+});
+
+elements.bilikaraSecretCancel?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
+});
+
+elements.bilikaraSecretBackdrop?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
+});
+
+document.addEventListener("click", handleDeveloperTagResetButtonClick);
+
+elements.developerTagResetClose?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetCancel?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetBackdrop?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetConfirm?.addEventListener("click", async () => {
+  await confirmDeveloperAction();
+});
+
+elements.developerTagResetDeleteMid?.addEventListener("click", async () => {
+  await confirmDeveloperDeleteMid();
+});
+
 elements.confirmOk.addEventListener("click", async () => {
   const intent = state.confirmIntent;
   if (!intent) {
@@ -6883,6 +9091,7 @@ document.addEventListener("click", (event) => {
       event.target.closest("#update-check-button") ||
       event.target.closest("#add-form") ||
       event.target.closest("#gatcha-uid-form") ||
+      event.target.closest("#modal-follow-uid-form") ||
       event.target.closest("#refresh-gatcha-cache-button") ||
       event.target.closest("#history-list")
     ) {
@@ -7113,6 +9322,304 @@ elements.listStage.addEventListener("wheel", (event) => {
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
+document.addEventListener("click", async (event) => {
+  const root = state.ratingPromptElement;
+  if (!root || !root.contains(event.target)) {
+    return;
+  }
+  const scoreButton = event.target.closest("[data-rating-score]");
+  if (scoreButton) {
+    state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
+    renderRatingStars();
+    return;
+  }
+  const optOutInput = event.target.closest("[data-rating-opt-out]");
+  if (optOutInput) {
+    setRatingOptOut(optOutInput.checked);
+    if (optOutInput.checked) {
+      closeRatingPrompt({ submit: false });
+    }
+    return;
+  }
+  const addUpButton = event.target.closest("[data-rating-add-up]");
+  if (addUpButton) {
+    const promptItem = state.ratingPromptItem;
+    const uid = ratingOwnerUid(promptItem);
+    const message = root.querySelector("[data-rating-message]");
+    if (!uid) {
+      if (message) message.textContent = t("rating.missingUidMessage");
+      return;
+    }
+    addUpButton.disabled = true;
+    if (message) message.textContent = t("rating.addingUp");
+    try {
+      await addGatchaUid(uid);
+      if (message) message.textContent = t("rating.addedUp");
+    } catch (error) {
+      if (message) message.textContent = error.message || t("rating.addFailed");
+    } finally {
+      addUpButton.disabled = false;
+    }
+    return;
+  }
+  if (event.target.closest("[data-rating-close]")) {
+    closeRatingPrompt({ submit: true });
+  }
+});
+
+function handleRatingFullscreenChange() {
+  if (fullscreenElement()) {
+    return;
+  }
+  const currentItem = state.data?.current_item;
+  const video = elements.playerFrame?.querySelector?.('video[data-player-role="video"]');
+  if (currentItem && video) {
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
+  }
+}
+
+document.addEventListener("fullscreenchange", handleRatingFullscreenChange);
+document.addEventListener("webkitfullscreenchange", handleRatingFullscreenChange);
+
+elements.searchExpandButton?.addEventListener("click", () => {
+  if (elements.searchModalPlaceholder && elements.searchCardContent && elements.searchModal) {
+    elements.searchModalPlaceholder.appendChild(elements.searchCardContent);
+    elements.searchModal.classList.remove("hidden");
+    elements.searchModalPlaceholder.classList.remove("hidden");
+    elements.favlistBrowserView?.classList.add("hidden");
+    elements.searchModalOtherView?.classList.add("hidden");
+    elements.searchSidebarItems?.forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.target === "search");
+    });
+    if (elements.searchExpandButton) {
+      elements.searchExpandButton.style.display = "none";
+    }
+  }
+});
+
+elements.searchModalClose?.addEventListener("click", () => {
+  if (elements.searchOriginalContainer && elements.searchCardContent && elements.searchModal) {
+    elements.searchOriginalContainer.appendChild(elements.searchCardContent);
+    elements.searchModal.classList.add("hidden");
+    if (elements.searchExpandButton) {
+      elements.searchExpandButton.style.display = "";
+    }
+  }
+});
+
+elements.searchModalBackdrop?.addEventListener("click", () => {
+  if (elements.searchOriginalContainer && elements.searchCardContent && elements.searchModal) {
+    elements.searchOriginalContainer.appendChild(elements.searchCardContent);
+    elements.searchModal.classList.add("hidden");
+    if (elements.searchExpandButton) {
+      elements.searchExpandButton.style.display = "";
+    }
+  }
+});
+
+elements.searchSidebarItems?.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    elements.searchSidebarItems.forEach((b) => {
+      b.classList.remove("active");
+    });
+    btn.classList.add("active");
+
+    const target = btn.dataset.target;
+    if (target === "search") {
+      elements.searchModalPlaceholder?.classList.remove("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.add("hidden");
+    } else if (target === "favlist") {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.remove("hidden");
+      elements.searchModalOtherView?.classList.add("hidden");
+      if (!state.favlistBrowseData && !state.favlistBrowseLoading) {
+        state.favlistBrowseSelectedFolderId = "";
+        if (elements.favlistSearchQuery) {
+          elements.favlistSearchQuery.value = "";
+        }
+        loadFavlistBrowse({ folderId: "", query: "" });
+      } else {
+        renderFavlistBrowse();
+      }
+    } else if (target === "name" || target === "artist") {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      if (state.d1BrowseKind !== target) {
+        state.d1BrowseData = null;
+        state.d1BrowseLetter = "";
+        state.d1BrowseTag = "";
+        state.d1BrowseLocale = "";
+        state.d1BrowseAliases = [];
+        state.d1BrowseQuery = "";
+      }
+      state.d1BrowseKind = target;
+      renderD1BrowseView();
+    } else if (target === "category") {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      renderCategoryBrowseView();
+    } else {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("search-modal-browser-view");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      if (elements.searchModalOtherView) {
+        elements.searchModalOtherView.textContent = t("search.browseComingSoon");
+      }
+    }
+  });
+});
+
+elements.searchModalOtherView?.addEventListener("submit", (event) => {
+  const categoryForm = event.target.closest("[data-category-browse-search]");
+  if (categoryForm && elements.searchModalOtherView.contains(categoryForm)) {
+    event.preventDefault();
+    const input = categoryForm.querySelector("[data-category-browse-query]");
+    loadCategoryBrowse({
+      query: input?.value || "",
+      append: false,
+    });
+    return;
+  }
+  const form = event.target.closest("[data-d1-browse-search]");
+  if (!form || !elements.searchModalOtherView.contains(form)) {
+    return;
+  }
+  event.preventDefault();
+  const input = form.querySelector("[data-d1-browse-query]");
+  if (!state.d1BrowseLetter) {
+    if (input) {
+      input.value = "";
+    }
+    state.d1BrowseQuery = "";
+    state.d1BrowseTag = "";
+    state.d1BrowseLocale = "";
+    state.d1BrowseAliases = [];
+    state.d1BrowseData = null;
+    renderD1BrowseView();
+    return;
+  }
+  if (state.d1BrowseTag) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: input?.value || "",
+      tag: state.d1BrowseTag,
+      locale: state.d1BrowseLocale,
+      aliases: state.d1BrowseAliases,
+    });
+    return;
+  }
+  loadD1Browse({
+    kind: state.d1BrowseKind || "name",
+    letter: state.d1BrowseLetter,
+    query: input?.value || "",
+    tag: "",
+    locale: "",
+  });
+});
+
+elements.searchModalOtherView?.addEventListener("click", (event) => {
+  const categoryBackButton = event.target.closest("[data-category-browse-back]");
+  if (categoryBackButton && elements.searchModalOtherView.contains(categoryBackButton)) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseQuery = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    state.categoryBrowseError = "";
+    renderCategoryBrowseView();
+    return;
+  }
+  const categoryButton = event.target.closest("[data-category-id]");
+  if (categoryButton && elements.searchModalOtherView.contains(categoryButton)) {
+    loadCategoryBrowse({
+      categoryId: categoryButton.dataset.categoryId || "",
+      query: "",
+      append: false,
+    });
+    return;
+  }
+  const backButton = event.target.closest("[data-d1-browse-back]");
+  if (backButton && elements.searchModalOtherView.contains(backButton)) {
+    if (state.d1BrowseTag) {
+      loadD1Browse({
+        kind: state.d1BrowseKind || "name",
+        letter: state.d1BrowseLetter,
+        query: "",
+        tag: "",
+        locale: "",
+        aliases: [],
+      });
+    } else if (state.d1BrowseLetter) {
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+      state.d1BrowseData = null;
+      renderD1BrowseView();
+    }
+    return;
+  }
+  const letterButton = event.target.closest("[data-letter]");
+  if (letterButton && elements.searchModalOtherView.contains(letterButton)) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: letterButton.dataset.letter || "",
+      query: "",
+      tag: "",
+      locale: "",
+      aliases: [],
+    });
+    return;
+  }
+  const tagButton = event.target.closest("[data-tag]");
+  if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
+    let aliases = [];
+    try {
+      aliases = JSON.parse(tagButton.dataset.aliases || "[]");
+    } catch (error) {
+      aliases = [];
+    }
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: "",
+      tag: tagButton.dataset.tag || "",
+      locale: tagButton.dataset.locale || "",
+      aliases,
+    });
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  const target = searchResultRequestTarget(event, elements.searchModalOtherView);
+  if (!target?.url) {
+    return;
+  }
+  if (target.button) {
+    target.button.disabled = true;
+  }
+  try {
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+  } finally {
+    if (target.button) {
+      target.button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("scroll", (event) => {
+  const target = event.target;
+  if (target instanceof Element && target.matches("[data-category-browse-results]")) {
+    maybeLoadMoreCategoryBrowse(target);
+  }
+}, true);
+
 elements.searchCookieToggle?.addEventListener("click", () => {
   state.searchLarkVisible = false;
   state.searchCookieVisible = !state.searchCookieVisible;
@@ -7168,21 +9675,78 @@ elements.followSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.followSongResults?.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-url]");
+  const target = searchResultRequestTarget(event, elements.followSongResults);
+  if (!target) {
+    return;
+  }
+  if (!target.url) {
+    return;
+  }
+
+  if (target.button) {
+    target.button.disabled = true;
+  }
+  try {
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+  } finally {
+    if (target.button) {
+      target.button.disabled = false;
+    }
+  }
+});
+
+elements.favlistGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-folder-id]");
   if (!button) {
     return;
   }
+  const folderId = String(button.dataset.folderId || "").trim();
+  if (!folderId) {
+    return;
+  }
+  state.favlistBrowseSelectedFolderId = folderId;
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  await loadFavlistBrowse({ folderId, query: "" });
+});
 
-  const url = String(button.dataset.url || "").trim();
-  if (!url) {
+elements.favlistBrowseBack?.addEventListener("click", () => {
+  state.favlistBrowseSelectedFolderId = "";
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  renderFavlistBrowse();
+});
+
+elements.favlistSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.favlistSearchQuery?.value || "").trim();
+  await loadFavlistBrowse({
+    folderId: state.favlistBrowseSelectedFolderId,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.favlistSongResults?.addEventListener("click", async (event) => {
+  const target = searchResultRequestTarget(event, elements.favlistSongResults);
+  if (!target) {
+    return;
+  }
+  if (!target.url) {
     return;
   }
 
-  button.disabled = true;
+  if (target.button) {
+    target.button.disabled = true;
+  }
   try {
-    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
   } finally {
-    button.disabled = false;
+    if (target.button) {
+      target.button.disabled = false;
+    }
   }
 });
 
@@ -7247,41 +9811,20 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
 
 elements.gatchaUidForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
+  await previewGatchaUidAddFromInput(elements.gatchaUidInput, {
+    messageTarget: "gatcha",
+    anchor: elements.addGatchaUidButton,
+    event,
+  });
+});
 
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidFace();
-    return;
-  }
-
-  state.gatchaUidSaving = true;
-  renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.checkingUid"));
-  try {
-    const preview = await previewGatchaUid(uid);
-    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
-    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode"));
-    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
-    const point = anchorPointForEvent(event, elements.addGatchaUidButton);
-    openConfirm({
-      type: "gatcha-uid-add",
-      uid: preview?.uid || uid,
-      name: ownerName,
-      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
-      ...point,
-    });
-    setGatchaUidMessage(t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaUidSaving = false;
-    renderGatchaUidFace();
-  }
+elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaUidAddFromInput(elements.modalFollowUidInput, {
+    messageTarget: "follow-modal",
+    anchor: elements.modalAddFollowUidButton,
+    event,
+  });
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
@@ -7313,31 +9856,18 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
 });
 
 elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
+  await previewGatchaFavlistFromInput(elements.gatchaUidInput, {
+    messageTarget: "gatcha",
+    modalSource: "gatcha",
+  });
+});
 
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidFace();
-    return;
-  }
-
-  state.gatchaFavlistSaving = true;
-  renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.readingFavlists"));
-  try {
-    const result = await previewGatchaFavlist(uid);
-    openGatchaFavlistModal(result?.uid || uid, result);
-    setGatchaUidMessage(t("gatcha.chooseFavlists"));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaFavlistSaving = false;
-    renderGatchaUidFace();
-  }
+elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaFavlistFromInput(elements.modalFavlistUidInput, {
+    messageTarget: "favlist-modal",
+    modalSource: "favlist-modal",
+  });
 });
 
 

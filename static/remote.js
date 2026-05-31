@@ -5,12 +5,152 @@ const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const larkSearchTableCount = 5;
+const d1BrowseItemLimit = 450;
+const d1BrowseTagLimit = 450;
+const d1BrowseMergeMinLength = 5;
+const d1BrowseCountConcurrency = 4;
+const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
+const categoryBrowsePageSize = 100;
+const categoryBrowseDefinitionsRaw = [
+  { key: "hotBlood", tags: ["热血", "战斗"] },
+  { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
+  { key: "yuri", tags: ["百合"] },
+  { key: "vtuberSeries", tags: ["vtuber系列", "Hololive", "Vtuber"] },
+  { key: "idol", tags: ["偶像", "bangdream", "Lovelive系列", "偶像大师系列","SHOW BY ROCK!!","ガールズバンドクライ","22/7","Togenashi Togeari"] },
+  { key: "school", tags: ["校园", "学园","社团"] },
+  { key: "healing", tags: ["治愈", "催泪", "致郁"] },
+  { key: "vocaloid", tags: ["V家", "VOCALOID","DECO*27","Giga"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "detective", tags: ["推理","名探偵コナン","智斗"] },
+  { key: "mecha", tags: ["机战", "高达系列"] },
+  { key: "sliceOfLife", tags: ["日常"] },
+  { key: "moe", tags: ["萌系"] },
+  { key: "sports", tags: ["运动"] },
+  { key: "original", tags: ["原创"] },
+  { key: "mangaAdapted", tags: ["漫画改", "漫改", "动漫改"] },
+  { key: "gameAdapted", tags: ["游戏改", "Galgame", "GALGAME","鳴潮","ウマ娘","Key社","MAGES","Leaf","柚子社","August","游戏","ヘブンバーンズレッド","原神"] },
+  { key: "novelAdapted", tags: ["小说改", "轻改","轻小说改"] },
+  { key: "pjsk", tags: ["pjsk","プロジェクトセカイ"] },
+  { key: "symphogear", tags: ["战姬绝唱","戦姫絶唱シンフォギア"] },
+  { key: "pokemonSeries", tags: ["宝可梦系列"] },
+  { key: "childhood", tags: ["童年", "宝可梦系列"] },
+  { key: "bangDream", tags: ["bangdream","BanG Dream!","バンドリ！"] },
+  { key: "loveLive", tags: ["Lovelive系列","ラブライブ!"] },
+  { key: "idolmaster", tags: ["偶像大师系列","アイドルマスター"] },
+  { key: "isekai", tags: ["异世界", "穿越"] },
+  { key: "kamitsubaki", tags: ["神椿", "KAMITSUBAKI", "神椿工作室", "KAMITSUBAKI STUDIO","V.W.P","ヰ世界情緒","Albemuth","花譜"] },
+  { key: "youth", tags: ["青春","WHITE ALBUM2","HoneyWorks","励志"] },
+  { key: "otome", tags: ["乙女", "逆后宫"] },
+  { key: "kids", tags: ["子供向"] },
+  { key: "comedy", tags: ["搞笑", "喜剧"] },
+  { key: "tokusatsu", tags: ["特摄"] },
+  { key: "dark", tags: ["黑暗", "悬疑", "战争", "心理", "恐怖", "犯罪","扭曲"] },
+  { key: "godsDemons", tags: ["神魔"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "gourmet", tags: ["美食"] },
+  { key: "history", tags: ["历史","架空"] },
+  { key: "touhouProject", tags: ["东方project"] },
+  { key: "macross", tags: ["マクロス", "超时空要塞"] },
+  { key: "gundam", tags: ["高达系列"] },
+  { key: "longRunning", tags: ["名探偵コナン"] },
+];
+const categoryBrowseFullFieldTags = new Set([
+  "Hololive",
+  "Vtuber",
+  "SHOW BY ROCK!!",
+  "ガールズバンドクライ",
+  "22/7",
+  "Togenashi Togeari",
+  "VOCALOID",
+  "DECO*27",
+  "Giga",
+  "名探偵コナン",
+  "Galgame",
+  "GALGAME",
+  "鳴潮",
+  "ウマ娘",
+  "Key社",
+  "MAGES",
+  "Leaf",
+  "柚子社",
+  "August",
+  "游戏",
+  "ヘブンバーンズレッド",
+  "原神",
+  "プロジェクトセカイ",
+  "戦姫絶唱シンフォギア",
+  "BanG Dream!",
+  "バンドリ！",
+  "ラブライブ!",
+  "アイドルマスター",
+  "KAMITSUBAKI",
+  "神椿工作室",
+  "KAMITSUBAKI STUDIO",
+  "V.W.P",
+  "ヰ世界情緒",
+  "Albemuth",
+  "花譜",
+  "WHITE ALBUM2",
+  "HoneyWorks",
+  "超时空要塞",
+].map(categoryBrowseTagKey));
+const categoryBrowseImageUrls = [
+  "/pic/cat_1.png",
+  "/pic/cat_2.png",
+  "/pic/cat_3.png",
+  "/pic/cat_4.png",
+  "/pic/cat_5.png",
+  "/pic/cat_6.png",
+  "/pic/cat_7.jpg",
+  "/pic/cat_8.jpg",
+  "/pic/cat_9.png",
+  "/pic/cat_10.jpg",
+  "/pic/cat_11.jpg",
+  "/pic/cat_12.jpg",
+  "/pic/cat_13.jpg",
+  "/pic/cat_14.png",
+  "/pic/cat_15.png",
+  "/pic/cat_16.jpg",
+  "/pic/cat_17.jpg",
+  "/pic/cat_18.jpg",
+  "/pic/cat_19.jpg",
+  "/pic/cat_20.jpg",
+  "/pic/cat_21.png",
+  "/pic/cat_22.jpg",
+  "/pic/cat_23.jpg",
+  "/pic/cat_24.jpg",
+  "/pic/cat_25.png",
+  "/pic/cat_26.png",
+  "/pic/cat_27.jpg",
+  "/pic/cat_28.jpg",
+  "/pic/cat_29.png",
+  "/pic/cat_30.jpg",
+  "/pic/cat_31.jpg",
+  "/pic/cat_32.jpg",
+  "/pic/cat_33.jpg",
+  "/pic/cat_34.jpg",
+  "/pic/cat_35.jpg",
+  "/pic/cat_36.jpg",
+  "/pic/cat_37.jpg",
+  "/pic/cat_38.jpg",
+  "/pic/cat_39.webp",
+  "/pic/cat_40.png",
+];
 const playerControlStatusRefreshDelaysMs = [180, 520, 1100, 1800];
 const playerControlStatusSyncTimeoutMs = 3200;
+const remoteRatingPromptThreshold = 0.5;
 const storageKeys = {
   language: "bilikara.ui.language",
   layoutMode: "bilikara.remote.layout.mode",
 };
+
+function categoryBrowseTagKey(value) {
+  return String(value || "").normalize("NFKC").trim().toLowerCase();
+}
+
+function categoryBrowseUsesFullFieldSearch(tag) {
+  return categoryBrowseFullFieldTags.has(categoryBrowseTagKey(tag));
+}
 
 const state = {
   language: "zh",
@@ -64,6 +204,10 @@ const state = {
   larkSearchVisible: false,
   larkSearchLoading: false,
   larkSearchSeq: 0,
+  searchModalOpen: false,
+  searchModalView: "search",
+  searchModalLarkLoading: false,
+  searchModalLarkSeq: 0,
   remoteSearchStageView: "",
   remoteSearchStageAngle: 0,
   remoteSearchFlipTimer: null,
@@ -79,6 +223,31 @@ const state = {
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
   followBrowseRenderSignature: "",
+  modalFollowBrowseRenderSignature: "",
+  favlistBrowseData: null,
+  favlistBrowseSelectedFolderId: "",
+  favlistBrowseLoading: false,
+  favlistBrowseRenderSignature: "",
+  favlistBrowseReloadTimer: null,
+  d1BrowseKind: "",
+  d1BrowseLetter: "",
+  d1BrowseTag: "",
+  d1BrowseLocale: "",
+  d1BrowseAliases: [],
+  d1BrowseQuery: "",
+  d1BrowseData: null,
+  d1BrowseLoading: false,
+  d1BrowseSeq: 0,
+  d1BrowseResolvedCounts: new Map(),
+  d1BrowseItemCache: new Map(),
+  categoryBrowseSelectedId: "",
+  categoryBrowseQuery: "",
+  categoryBrowseItems: [],
+  categoryBrowseOffset: 0,
+  categoryBrowseHasMore: false,
+  categoryBrowseLoading: false,
+  categoryBrowseSeq: 0,
+  categoryBrowseError: "",
   requesterSelectRenderSignature: "",
   dataRenderSignature: "",
   currentNowPlayingSignature: "",
@@ -88,6 +257,14 @@ const state = {
   currentPlaybackClockStartedAt: 0,
   currentPlaybackClockPaused: true,
   currentPlaybackClockTimer: null,
+  ratingPromptElement: null,
+  ratingPromptItem: null,
+  ratingPromptItemId: "",
+  ratingPromptBvid: "",
+  ratingPromptScore: 5,
+  ratingPromptSubmitted: false,
+  ratingPromptSeenPlayIds: new Set(),
+  ratingOptOut: false,
   playerControlsRenderSignature: "",
   listHeaderRenderSignature: "",
   queueRenderSignature: "",
@@ -166,6 +343,50 @@ const elements = {
   remoteSearchStageInner: document.getElementById("remote-search-stage-inner"),
   searchTag: document.querySelector(".search-panel .panel-tag"),
   searchTitle: document.querySelector(".search-panel .panel-title"),
+  searchLibraryOpen: document.getElementById("search-library-open"),
+  searchModal: document.getElementById("search-modal"),
+  searchModalBackdrop: document.getElementById("search-modal-backdrop"),
+  searchModalClose: document.getElementById("search-modal-close"),
+  searchModalTabs: document.querySelectorAll(".remote-search-modal-tab"),
+  searchModalSearchView: document.getElementById("search-modal-search-view"),
+  searchModalLarkForm: document.getElementById("search-modal-lark-form"),
+  searchModalLarkQuery: document.getElementById("search-modal-lark-query"),
+  searchModalLarkButton: document.getElementById("search-modal-lark-button"),
+  searchModalLarkMessage: document.getElementById("search-modal-lark-message"),
+  searchModalLarkResults: document.getElementById("search-modal-lark-results"),
+  favlistBrowserView: document.getElementById("favlist-browser-view"),
+  favlistListView: document.getElementById("favlist-list-view"),
+  favlistGrid: document.getElementById("favlist-grid"),
+  favlistItemsView: document.getElementById("favlist-items-view"),
+  favlistBrowseBack: document.getElementById("favlist-browse-back"),
+  favlistBrowseAvatar: document.getElementById("favlist-browse-avatar"),
+  favlistBrowseTitle: document.getElementById("favlist-browse-title"),
+  favlistBrowseCount: document.getElementById("favlist-browse-count"),
+  favlistSearchForm: document.getElementById("favlist-search-form"),
+  favlistSearchQuery: document.getElementById("favlist-search-query"),
+  favlistSearchButton: document.getElementById("favlist-search-button"),
+  favlistSongResults: document.getElementById("favlist-song-results"),
+  favlistBrowseMessage: document.getElementById("favlist-browse-message"),
+  modalFollowBrowserView: document.getElementById("modal-follow-browser-view"),
+  modalFollowUpListView: document.getElementById("modal-follow-up-list-view"),
+  modalFollowUidForm: document.getElementById("modal-follow-uid-form"),
+  modalFollowUidInput: document.getElementById("modal-follow-uid-input"),
+  modalAddFollowUidButton: document.getElementById("modal-add-follow-uid-button"),
+  modalFollowUpGrid: document.getElementById("modal-follow-up-grid"),
+  modalFollowUpItemsView: document.getElementById("modal-follow-up-items-view"),
+  modalFollowBrowseBack: document.getElementById("modal-follow-browse-back"),
+  modalFollowBrowseAvatar: document.getElementById("modal-follow-browse-avatar"),
+  modalFollowBrowseTitle: document.getElementById("modal-follow-browse-title"),
+  modalFollowBrowseCount: document.getElementById("modal-follow-browse-count"),
+  modalFollowSearchForm: document.getElementById("modal-follow-search-form"),
+  modalFollowSearchQuery: document.getElementById("modal-follow-search-query"),
+  modalFollowSearchButton: document.getElementById("modal-follow-search-button"),
+  modalFollowSongResults: document.getElementById("modal-follow-song-results"),
+  modalFollowBrowseMessage: document.getElementById("modal-follow-browse-message"),
+  modalFavlistPullForm: document.getElementById("modal-favlist-pull-form"),
+  modalFavlistUidInput: document.getElementById("modal-favlist-uid-input"),
+  modalPullFavlistButton: document.getElementById("modal-pull-favlist-button"),
+  searchModalOtherView: document.getElementById("search-modal-other-view"),
   larkSearchToggle: document.getElementById("lark-search-toggle"),
   larkSearchView: document.getElementById("lark-search-view"),
   larkSearchForm: document.getElementById("lark-search-form"),
@@ -179,6 +400,7 @@ const elements = {
   followUpGrid: document.getElementById("follow-up-grid"),
   followUpItemsView: document.getElementById("follow-up-items-view"),
   followBrowseBack: document.getElementById("follow-browse-back"),
+  followBrowseAvatar: document.getElementById("follow-browse-avatar"),
   followBrowseTitle: document.getElementById("follow-browse-title"),
   followBrowseCount: document.getElementById("follow-browse-count"),
   followSearchForm: document.getElementById("follow-search-form"),
@@ -237,6 +459,22 @@ function clientHeaders(extraHeaders = {}) {
     "X-Bilikara-Client": state.clientId,
     ...extraHeaders,
   };
+}
+
+function localizedApiMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const gatchaMessage = localizedGatchaTaskMessage(raw);
+  if (gatchaMessage && gatchaMessage !== raw) {
+    return gatchaMessage;
+  }
+  const cacheMessage = localizedCacheMessage(raw);
+  if (cacheMessage && cacheMessage !== raw) {
+    return cacheMessage;
+  }
+  return raw;
 }
 
 function requesterBadgeText(requesterName) {
@@ -371,12 +609,14 @@ function renderLanguageSwitch() {
 function invalidateLanguageSensitiveRenderCache() {
   state.remoteAccessRenderSignature = "";
   state.followBrowseRenderSignature = "";
+  state.modalFollowBrowseRenderSignature = "";
+  state.favlistBrowseRenderSignature = "";
   state.requesterSelectRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
+  state.listHeaderRenderSignature = "";
   state.queueRenderSignature = "";
   state.historyRenderSignature = "";
   state.playerControlsRenderSignature = "";
-  state.listHeaderRenderSignature = "";
   state.currentNowPlayingSignature = "";
 }
 
@@ -393,6 +633,9 @@ function setLanguage(language) {
   renderLanguageSwitch();
   if (state.data) {
     render();
+  }
+  if (state.searchModalOpen) {
+    renderSearchModalView(state.searchModalView);
   }
 }
 
@@ -652,6 +895,26 @@ function setMessageForSource(source, message, isError = false) {
     setLarkSearchMessage(message, isError);
     return;
   }
+  if (source === "modalSearch") {
+    setSearchModalLarkMessage(message, isError);
+    return;
+  }
+  if (source === "modalFavlist") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalFollow") {
+    setModalFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalBrowse") {
+    const messageElement = elements.searchModalOtherView?.querySelector(".tag-browser-message");
+    if (messageElement) {
+      messageElement.textContent = message || "";
+      messageElement.classList.toggle("is-error", Boolean(isError));
+      return;
+    }
+  }
   if (source === "follow") {
     setFollowBrowseMessage(message, isError);
     return;
@@ -661,6 +924,41 @@ function setMessageForSource(source, message, isError = false) {
     return;
   }
   setFormMessage(message, isError);
+}
+
+function localizedCacheMessage(message, cacheStatus = "") {
+  const raw = String(message || "").trim();
+  const status = String(cacheStatus || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "已缓存" || raw === "缓存已完成" || raw.includes("缓存完成")) {
+    return t("cache.ready");
+  }
+  if (raw === "等待缓存" || raw === "等待缓存队列" || raw.includes("等待优先缓存")) {
+    return t("status.pendingCache");
+  }
+  if (raw === "正在校验缓存") {
+    return t("status.checking");
+  }
+  const progressMatch = raw.match(/^缓存中\s*([0-9.]+)%$/);
+  if (progressMatch) {
+    return `${t("status.caching")} ${progressMatch[1]}%`;
+  }
+  if (raw.startsWith("缓存失败:")) {
+    const detail = raw.slice("缓存失败:".length).trim();
+    return detail ? `${t("cache.failed")}: ${detail}` : t("cache.failed");
+  }
+  if (raw.includes("开始缓存视频") || raw.includes("正在缓存")) {
+    return t("cache.caching");
+  }
+  if (status === "ready") {
+    return t("cache.ready");
+  }
+  if (status === "failed" && raw === "缓存失败") {
+    return t("cache.failed");
+  }
+  return raw;
 }
 
 function setRemoteSearchStageView(view) {
@@ -906,13 +1204,178 @@ async function apiPost(url, payload = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || t("error.requestFailed"));
+    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
     throw error;
   }
   return data.data;
+}
+
+function submitSongRating(item, score) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+  const sessionUserName = selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+  if (!bvid) {
+    return null;
+  }
+  const payload = {
+    session_user_name: sessionUserName,
+    play_id: playId,
+    bvid,
+    score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
+  };
+  fetch("/api/rating/submit", {
+    method: "POST",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    console.warn("Rating submit failed:", error);
+  });
+  return true;
+}
+
+function ratingItemUrl(item) {
+  return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
+}
+
+function ratingOwnerUid(item) {
+  const rawMid = item?.owner_mid ?? item?.mid;
+  const uid = String(rawMid || "").trim();
+  return /^\d+$/.test(uid) ? uid : "";
+}
+
+function renderRatingStars() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("[data-rating-score]").forEach((button) => {
+    const score = Number(button.dataset.ratingScore || "0");
+    button.classList.toggle("active", score <= state.ratingPromptScore);
+    button.setAttribute("aria-pressed", score === state.ratingPromptScore ? "true" : "false");
+  });
+}
+
+function setRatingOptOut(enabled) {
+  state.ratingOptOut = Boolean(enabled);
+}
+
+function closeRatingPrompt({ submit = true } = {}) {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const promptItem = state.ratingPromptItem;
+  const bvid = state.ratingPromptBvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  state.ratingPromptSubmitted = true;
+  root.remove();
+  state.ratingPromptElement = null;
+  state.ratingPromptItem = null;
+  state.ratingPromptItemId = "";
+  state.ratingPromptBvid = "";
+
+  if (shouldSubmit) {
+    submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
+  }
+}
+
+function openRatingPrompt(item) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.id || bvid).trim();
+  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+    return;
+  }
+  closeRatingPrompt({ submit: true });
+  state.ratingPromptSeenPlayIds.add(playId);
+  state.ratingPromptItem = item;
+  state.ratingPromptItemId = playId;
+  state.ratingPromptBvid = bvid;
+  state.ratingPromptScore = 5;
+  state.ratingPromptSubmitted = false;
+
+  const ownerName = String(item.owner_name || "").trim() || t("rating.unknownOwner");
+  const coverUrl = String(item.cover_url || "").trim();
+  const url = ratingItemUrl(item) || `https://www.bilibili.com/video/${bvid}`;
+  const ownerUid = ratingOwnerUid(item);
+  const root = document.createElement("div");
+  root.className = "rating-modal";
+  root.innerHTML = `
+    <div class="rating-modal-backdrop" data-rating-close></div>
+    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
+      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
+      <div class="rating-media">
+        ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
+        <div class="rating-copy">
+          <p class="rating-kicker">${htmlT("rating.kicker")}</p>
+          <h2>${htmlT("rating.title")}</h2>
+          <p class="rating-hint">${htmlT("rating.hint")}</p>
+          <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
+          <a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>
+        </div>
+      </div>
+      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
+        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
+      </div>
+      <div class="rating-actions">
+        <button type="button" class="secondary-button" data-rating-add-up ${ownerUid ? "" : "disabled"}>${ownerUid ? htmlT("rating.addUp") : htmlT("rating.missingUid")}</button>
+        <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
+      </div>
+      <label class="rating-opt-out">
+        <input type="checkbox" data-rating-opt-out>
+        <span>${htmlT("rating.optOut")}</span>
+      </label>
+      <p class="rating-message" data-rating-message></p>
+    </section>
+  `;
+  document.body.appendChild(root);
+  state.ratingPromptElement = root;
+  renderRatingStars();
+}
+
+function currentPlaybackClockSeconds() {
+  const durationSeconds = Math.max(0, Number(state.currentPlaybackClockDurationSeconds || 0));
+  if (!(durationSeconds > 0)) {
+    return { currentSeconds: 0, durationSeconds: 0 };
+  }
+  const baseSeconds = Math.max(0, Number(state.currentPlaybackClockBaseSeconds || 0));
+  const elapsedSeconds = state.currentPlaybackClockPaused
+    ? 0
+    : Math.max(0, (Date.now() - Number(state.currentPlaybackClockStartedAt || Date.now())) / 1000);
+  return {
+    currentSeconds: Math.min(durationSeconds, baseSeconds + elapsedSeconds),
+    durationSeconds,
+  };
+}
+
+function maybeUpdateRemoteRatingPrompt(currentItem) {
+  if (!currentItem) {
+    return;
+  }
+  const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
+  if (!(durationSeconds > 0)) {
+    return;
+  }
+  const ratio = currentSeconds / durationSeconds;
+  if (
+    state.ratingPromptElement
+    && state.ratingPromptItemId
+    && state.ratingPromptItemId !== String(currentItem.id || "")
+  ) {
+    if (ratio >= 0.5) {
+      closeRatingPrompt({ submit: true });
+    }
+    return;
+  }
+  if (ratio >= remoteRatingPromptThreshold) {
+    openRatingPrompt(currentItem);
+  }
 }
 
 function filenameFromContentDisposition(headerValue, fallback) {
@@ -1042,7 +1505,7 @@ async function fetchState(options = {}) {
   const response = await fetch("/api/state", { headers: clientHeaders() });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.stateFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
   applyStateSnapshot(payload.data, { forceRender: force || !state.data });
 }
@@ -1113,11 +1576,13 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
       return false;
     }
   }
+  const previousSnapshot = state.data;
   const nextRenderSignature = renderSignatureForSnapshot(snapshot);
   const shouldRender = forceRender
     || !state.data
     || nextRenderSignature !== state.dataRenderSignature;
   state.data = snapshot;
+  scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
   
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
   if (shouldRender) {
@@ -1200,7 +1665,7 @@ async function searchGatchaCache(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.searchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.searchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -1216,7 +1681,7 @@ async function searchLarkPool(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -1233,9 +1698,73 @@ async function searchLarkPoolTable(query, tableIndex) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  params.set("kind", kind === "artist" ? "artist" : "name");
+  params.set("limit", String(limit));
+  const normalizedLetter = String(letter || "").trim().toUpperCase();
+  const normalizedQuery = String(query || "").trim();
+  const normalizedTag = String(tag || "").trim();
+  const normalizedLocale = String(locale || "").trim();
+  if (normalizedLetter) {
+    params.set("letter", normalizedLetter);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  if (normalizedTag) {
+    params.set("tag", normalizedTag);
+  }
+  if (normalizedLocale) {
+    params.set("locale", normalizedLocale);
+  }
+  const response = await fetch(`/api/d1/browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
+}
+
+async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  const normalizedTags = uniqueD1BrowseAliases(
+    (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
+  ).map((entry) => entry.tag);
+  normalizedTags.forEach((tag) => {
+    params.append(categoryBrowseUsesFullFieldSearch(tag) ? "tag" : "tag45", tag);
+  });
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const response = await fetch(`/api/d1/category-browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || {
+    tags: normalizedTags,
+    query: normalizedQuery,
+    offset,
+    limit,
+    items: [],
+    has_more: false,
+    next_offset: offset,
+  };
 }
 
 async function fetchGatchaBrowse(uid = "", query = "") {
@@ -1255,9 +1784,31 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.browseFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
   }
   return payload.data || { owners: [], items: [] };
+}
+
+async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
+  const params = new URLSearchParams();
+  const normalizedFolderId = String(folderId || "").trim();
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedFolderId) {
+    params.set("folder_id", normalizedFolderId);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const queryString = params.toString();
+  const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
+  }
+  return payload.data || { folders: [], items: [] };
 }
 
 async function previewGatchaUid(uid) {
@@ -1287,8 +1838,40 @@ function gatchaTaskBusy() {
   return Boolean(state.data?.gatcha?.busy);
 }
 
+function localizedGatchaTaskMessage(message, status = "") {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    if (status === "success") {
+      return t("gatcha.refreshDone");
+    }
+    if (status === "partial") {
+      return t("gatcha.refreshPartial");
+    }
+    if (status === "failed") {
+      return t("gatcha.refreshFailed");
+    }
+    return "";
+  }
+  if (raw.includes("拉取任务执行中")) {
+    return t("gatcha.busyFallback");
+  }
+  if (raw.includes("部分更新")) {
+    return t("gatcha.refreshPartial");
+  }
+  if (raw.includes("更新完成") || raw.includes("重建完成")) {
+    return t("gatcha.refreshDone");
+  }
+  if (raw.includes("更新失败")) {
+    return t("gatcha.refreshFailed");
+  }
+  if (raw.includes("正在重建") || raw.includes("更新中")) {
+    return t("gatcha.refreshingBackground");
+  }
+  return raw;
+}
+
 function gatchaTaskBusyMessage() {
-  return state.data?.gatcha?.message || t("gatcha.busyFallback");
+  return localizedGatchaTaskMessage(state.data?.gatcha?.message, "running") || t("gatcha.busyFallback");
 }
 
 function syncGatchaTaskTerminalMessage() {
@@ -1320,7 +1903,8 @@ function syncGatchaTaskTerminalMessage() {
       : status === "partial"
         ? t("gatcha.refreshPartial")
         : t("gatcha.refreshFailed");
-  const detail = task.last_error ? `${task.last_message || fallback} ${task.last_error}` : task.last_message || fallback;
+  const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+  const detail = task.last_error ? `${message} ${task.last_error}` : message;
   setGatchaUidMessage(detail, status !== "success");
 }
 
@@ -1357,14 +1941,129 @@ function searchResultOwnerName(item) {
   return String(item?.owner_name || item?.author || "").trim();
 }
 
-function createSearchResultUrlLine(item) {
+function firstSearchResultValue(item, keys) {
+  for (const key of keys) {
+    const value = String(item?.[key] ?? "").trim();
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function searchResultCoverUrl(item) {
+  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  if (coverUrl.startsWith("//")) {
+    coverUrl = `https:${coverUrl}`;
+  }
+  return coverUrl;
+}
+
+function formatCompactCount(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  const numeric = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) {
+    return raw;
+  }
+  if (numeric >= 100000000) {
+    return `${Number((numeric / 100000000).toFixed(numeric >= 1000000000 ? 0 : 1))}亿`;
+  }
+  if (numeric >= 10000) {
+    return `${Number((numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1))}万`;
+  }
+  return String(Math.round(numeric));
+}
+
+function formatSearchDuration(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw.includes(":")) {
+    return raw;
+  }
+  const totalSeconds = Number(raw);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return raw;
+  }
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+  return `${minutes}:${paddedSeconds}`;
+}
+
+function searchResultRatingValue(item) {
+  const raw = firstSearchResultValue(item, ["rank", "rating", "score"]);
+  const value = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(5, value));
+}
+
+function formatSearchRating(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return Number(value.toFixed(1)).toString();
+}
+
+function searchResultRatingText(item) {
+  const rating = searchResultRatingValue(item);
+  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
+}
+
+function createSearchResultRatingStars(item) {
+  const rating = searchResultRatingValue(item);
+  if (rating == null) {
+    return null;
+  }
+  const stars = document.createElement("span");
+  stars.className = "search-result-rating-stars";
+  stars.setAttribute("aria-label", searchResultRatingText(item));
+  stars.style.setProperty("--rating-width", `${(rating / 5) * 100}%`);
+  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
+  return stars;
+}
+
+function searchResultStatusLabel(item) {
+  const localSource = String(item?.local_source || "").trim();
+  if (localSource === "favlist") {
+    return t("search.favorited");
+  }
+  if (localSource === "follow") {
+    return t("search.followed");
+  }
+  const source = String(item?.source || "").trim();
+  if (source === "bilikara" || source === "cloudflare") {
+    return "";
+  }
+  if (source === "favlist") {
+    return t("search.favorited");
+  }
+  if (String(item?.mid || item?.fav_uid || "").trim()) {
+    return t("search.followed");
+  }
+  return "";
+}
+
+function createSearchResultUrlLine(item, { showBvid = true } = {}) {
   const line = document.createElement("div");
   line.className = "search-result-url";
 
-  const bvid = document.createElement("span");
-  bvid.className = "search-result-bvid";
-  bvid.textContent = String(item?.bvid || item?.url || "");
-  line.appendChild(bvid);
+  if (showBvid) {
+    const bvid = document.createElement("span");
+    bvid.className = "search-result-bvid";
+    bvid.textContent = String(item?.bvid || item?.url || "");
+    line.appendChild(bvid);
+  }
 
   const ownerName = searchResultOwnerName(item);
   if (ownerName) {
@@ -1373,6 +2072,10 @@ function createSearchResultUrlLine(item) {
     owner.textContent = t("owner.tooltip", { name: ownerName });
     line.appendChild(owner);
   }
+  const rating = document.createElement("span");
+  rating.className = "search-result-rating-text";
+  rating.textContent = searchResultRatingText(item);
+  line.appendChild(rating);
 
   return line;
 }
@@ -1495,6 +2198,1005 @@ function setFollowBrowseMessage(message, isError = false) {
   elements.followBrowseMessage.classList.toggle("hidden", !message);
 }
 
+function setModalFollowBrowseMessage(message, isError = false) {
+  if (!elements.modalFollowBrowseMessage) {
+    return;
+  }
+  elements.modalFollowBrowseMessage.textContent = message || "";
+  elements.modalFollowBrowseMessage.classList.toggle("is-error", Boolean(isError));
+  elements.modalFollowBrowseMessage.classList.toggle("hidden", !message);
+}
+
+function setSearchModalLarkMessage(message, isError = false) {
+  if (!elements.searchModalLarkMessage) {
+    return;
+  }
+  elements.searchModalLarkMessage.textContent = message || "";
+  elements.searchModalLarkMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setFavlistBrowseMessage(message, isError = false) {
+  if (!elements.favlistBrowseMessage) {
+    return;
+  }
+  elements.favlistBrowseMessage.textContent = message || "";
+  elements.favlistBrowseMessage.classList.toggle("is-error", Boolean(isError));
+  elements.favlistBrowseMessage.classList.toggle("hidden", !message);
+}
+
+function setGatchaUidFlowMessage(target, message, isError = false) {
+  if (target === "follow-modal") {
+    setModalFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (target === "favlist-modal") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  setGatchaUidMessage(message, isError);
+}
+
+function createSearchResultRow(item) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  const itemUrl = String(item?.url || "").trim();
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+
+  const coverUrl = searchResultCoverUrl(item);
+  const cover = document.createElement("div");
+  cover.className = "search-result-cover";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    cover.appendChild(image);
+  } else {
+    const fallback = document.createElement("span");
+    fallback.textContent = String(item?.bvid || "Bili");
+    cover.appendChild(fallback);
+    cover.classList.add("is-empty");
+  }
+
+  const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
+  if (duration) {
+    const durationNode = document.createElement("span");
+    durationNode.className = "search-result-duration";
+    durationNode.textContent = duration;
+    cover.appendChild(durationNode);
+  }
+  const ratingStars = createSearchResultRatingStars(item);
+  if (ratingStars) {
+    cover.appendChild(ratingStars);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "search-result-meta search-result-body";
+  const title = document.createElement("div");
+  title.className = "search-result-title";
+  title.textContent = String(item?.title || "");
+
+  const statusLine = document.createElement("div");
+  statusLine.className = "search-result-status";
+  const statusLabel = searchResultStatusLabel(item);
+  if (statusLabel) {
+    const status = document.createElement("span");
+    status.className = "search-result-follow";
+    status.textContent = statusLabel;
+    statusLine.appendChild(status);
+  }
+  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
+  if (playCount) {
+    const plays = document.createElement("span");
+    plays.className = "search-result-plays";
+    const playLabel = document.createElement("span");
+    playLabel.className = "search-result-play-label";
+    playLabel.textContent = t("search.playCountLabel");
+    const playValue = document.createElement("span");
+    playValue.textContent = playCount;
+    plays.append(playLabel, playValue);
+    statusLine.appendChild(plays);
+  }
+
+  const url = createSearchResultUrlLine(item, { showBvid: false });
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary-button search-result-add";
+  button.dataset.url = itemUrl;
+  button.textContent = t("search.add");
+
+  meta.append(title);
+  if (statusLine.children.length) {
+    meta.appendChild(statusLine);
+  }
+  meta.appendChild(url);
+  row.append(cover, meta, button);
+  return row;
+}
+
+function renderSearchResultItems(container, items, emptyText = "") {
+  if (!container) {
+    return;
+  }
+  const normalizedItems = Array.isArray(items) ? items : [];
+  container.innerHTML = "";
+  container.classList.remove("hidden");
+  if (!normalizedItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = emptyText || t("search.empty");
+    container.appendChild(empty);
+    return;
+  }
+  normalizedItems.forEach((item) => {
+    container.appendChild(createSearchResultRow(item));
+  });
+}
+
+function appendSearchResultItems(container, items) {
+  if (!container || !Array.isArray(items) || !items.length) {
+    return;
+  }
+  const existingEmpty = container.querySelector(".search-empty");
+  if (existingEmpty) {
+    existingEmpty.remove();
+  }
+  container.classList.remove("hidden");
+  items.forEach((item) => {
+    container.appendChild(createSearchResultRow(item));
+  });
+}
+
+function normalizeD1BrowseTagForMerge(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/[\s"'`._!?,:;~\-\/\\|()[\]{}<>]+/g, "")
+    .replace(/[\u2018-\u201f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g, "");
+}
+
+function d1BrowseMergeLength(value) {
+  return Array.from(value || "").length;
+}
+
+function d1BrowseTitle(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.artistBrowse") : t("search.nameBrowse");
+}
+
+function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.browsePickArtistLetter") : t("search.browsePickLetter");
+}
+
+function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
+  return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
+}
+
+function d1BrowseMergeCandidate(entry) {
+  const tag = String(entry?.tag || "").trim();
+  const locale = String(entry?.locale || "").trim();
+  const normalized = normalizeD1BrowseTagForMerge(tag);
+  return {
+    tag,
+    locale,
+    normalized,
+    count: Number(entry?.count || 0),
+    yomi: String(entry?.yomi || ""),
+    letter: String(entry?.letter || ""),
+  };
+}
+
+function isBetterD1BrowseMergeLabel(candidate, current) {
+  const candidateLength = d1BrowseMergeLength(candidate.normalized);
+  const currentLength = d1BrowseMergeLength(current.normalized);
+  if (candidateLength !== currentLength) {
+    return candidateLength < currentLength;
+  }
+  if (candidate.count !== current.count) {
+    return candidate.count > current.count;
+  }
+  return false;
+}
+
+function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
+  const seen = new Set();
+  const results = [];
+  const source = Array.isArray(aliases) && aliases.length ? aliases : [{ tag: fallbackTag, locale: fallbackLocale }];
+  source.forEach((entry) => {
+    const tag = String(entry?.tag || "").trim();
+    const locale = String(entry?.locale || "").trim();
+    if (!tag) {
+      return;
+    }
+    const key = `${locale}\n${tag}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push({ tag, locale });
+  });
+  return results;
+}
+
+function d1BrowseAliasKey(aliases, { kind = state.d1BrowseKind, query = state.d1BrowseQuery } = {}) {
+  const normalizedAliases = uniqueD1BrowseAliases(aliases)
+    .map((entry) => ({ tag: entry.tag, locale: entry.locale }))
+    .sort((left, right) => `${left.locale}\n${left.tag}`.localeCompare(`${right.locale}\n${right.tag}`));
+  return JSON.stringify({
+    kind: kind === "artist" ? "artist" : "name",
+    query: String(query || "").trim(),
+    aliases: normalizedAliases,
+  });
+}
+
+function mergeD1BrowseTags(tags) {
+  const groups = [];
+  (Array.isArray(tags) ? tags : []).forEach((entry) => {
+    const candidate = d1BrowseMergeCandidate(entry);
+    if (!candidate.tag) {
+      return;
+    }
+    const canMerge = d1BrowseMergeLength(candidate.normalized) >= d1BrowseMergeMinLength;
+    let group = null;
+    if (canMerge) {
+      group = groups.find((item) => (
+        item.canMerge
+        && item.normalized
+        && (candidate.normalized.startsWith(item.normalized) || item.normalized.startsWith(candidate.normalized))
+      ));
+    }
+    if (!group) {
+      groups.push({
+        ...candidate,
+        canMerge,
+        aliases: [{ tag: candidate.tag, locale: candidate.locale }],
+      });
+      return;
+    }
+    group.count += candidate.count;
+    group.aliases.push({ tag: candidate.tag, locale: candidate.locale });
+    if (isBetterD1BrowseMergeLabel(candidate, group)) {
+      group.tag = candidate.tag;
+      group.locale = candidate.locale;
+      group.normalized = candidate.normalized;
+      group.yomi = candidate.yomi;
+      group.letter = candidate.letter;
+    }
+  });
+  groups.forEach((group) => {
+    group.aliases = uniqueD1BrowseAliases(group.aliases, group.tag, group.locale);
+    group.aliasKey = d1BrowseAliasKey(group.aliases, { kind: state.d1BrowseKind, query: "" });
+    if (state.d1BrowseResolvedCounts.has(group.aliasKey)) {
+      group.count = state.d1BrowseResolvedCounts.get(group.aliasKey);
+    }
+  });
+  return groups;
+}
+
+function d1BrowseItemKey(item) {
+  return String(item?.bvid || item?.url || item?.id || `${item?.title || ""}\n${searchResultOwnerName(item)}`).trim();
+}
+
+function categoryBrowseIdForName(name) {
+  return encodeURIComponent(String(name || "").trim()).replace(/%/g, "_");
+}
+
+function categoryBrowseDefinitions() {
+  const groups = [];
+  const byKey = new Map();
+  categoryBrowseDefinitionsRaw.forEach((definition) => {
+    const key = String(definition?.key || "").trim();
+    const tags = (Array.isArray(definition?.tags) ? definition.tags : []).map((value) => String(value || "").trim()).filter(Boolean);
+    if (!key || !tags.length) {
+      return;
+    }
+    let group = byKey.get(key);
+    if (!group) {
+      const imageIndex = groups.length;
+      group = {
+        id: categoryBrowseIdForName(key),
+        key,
+        name: t(`search.category.${key}`),
+        coverUrl: categoryBrowseImageUrls[imageIndex] || "",
+        tags: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    tags.forEach((tag) => {
+      if (!group.tags.includes(tag)) {
+        group.tags.push(tag);
+      }
+    });
+  });
+  return groups;
+}
+
+function selectedCategoryBrowseDefinition() {
+  const selectedId = String(state.categoryBrowseSelectedId || "");
+  return categoryBrowseDefinitions().find((entry) => entry.id === selectedId) || null;
+}
+
+function mergeCategoryBrowseItems(existingItems, nextItems) {
+  const seen = new Set();
+  const items = [];
+  [...(Array.isArray(existingItems) ? existingItems : []), ...(Array.isArray(nextItems) ? nextItems : [])].forEach((item) => {
+    const key = d1BrowseItemKey(item);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    items.push(item);
+  });
+  return items;
+}
+
+function mergeD1BrowseItemPayloads(payloads) {
+  const seen = new Set();
+  const items = [];
+  (Array.isArray(payloads) ? payloads : []).forEach((payload) => {
+    (Array.isArray(payload?.items) ? payload.items : []).forEach((item) => {
+      const key = d1BrowseItemKey(item);
+      if (!key || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      items.push(item);
+    });
+  });
+  return items;
+}
+
+async function resolveD1BrowseMergedTagCounts(groups, { kind, letter, query } = {}) {
+  const targets = (Array.isArray(groups) ? groups : []).filter((group) => (
+    Array.isArray(group.aliases)
+    && group.aliases.length > 1
+    && group.aliasKey
+    && !state.d1BrowseResolvedCounts.has(group.aliasKey)
+  ));
+  if (!targets.length) {
+    return;
+  }
+  let targetIndex = 0;
+  const workerCount = Math.min(d1BrowseCountConcurrency, targets.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (targetIndex < targets.length) {
+      const group = targets[targetIndex];
+      targetIndex += 1;
+      try {
+        const payloads = await Promise.all(group.aliases.map((alias) => fetchD1Browse({
+          kind,
+          letter,
+          query,
+          tag: alias.tag,
+          locale: alias.locale,
+          limit: d1BrowseItemLimit,
+        })));
+        const items = mergeD1BrowseItemPayloads(payloads);
+        state.d1BrowseResolvedCounts.set(group.aliasKey, items.length);
+        state.d1BrowseItemCache.set(group.aliasKey, items);
+      } catch {
+        // Keep the aggregate count if exact merged counts fail.
+      }
+    }
+  }));
+}
+
+function ensureD1BrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("remote-search-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-d1-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "tag-browser";
+  view.dataset.d1BrowseView = "1";
+  view.innerHTML = `
+    <form class="tag-browser-search" data-d1-browse-search>
+      <input type="text" autocomplete="off" data-d1-browse-query>
+      <button type="submit" class="primary-button" data-d1-browse-submit></button>
+    </form>
+    <div class="tag-browser-alphabet" data-d1-browse-alphabet></div>
+    <div class="tag-browser-nav">
+      <button type="button" class="secondary-button tag-browser-back hidden" data-d1-browse-back></button>
+      <div class="tag-browser-current" data-d1-browse-current></div>
+    </div>
+    <div class="tag-browser-tags" data-d1-browse-tags></div>
+    <div class="search-results hidden" data-d1-browse-results></div>
+    <p class="gatcha-message tag-browser-message" data-d1-browse-message role="status"></p>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function renderD1BrowseView() {
+  const view = ensureD1BrowseView();
+  if (!view) {
+    return;
+  }
+  const kind = state.d1BrowseKind || "name";
+  const title = d1BrowseTitle(kind);
+  const queryInput = view.querySelector("[data-d1-browse-query]");
+  const submitButton = view.querySelector("[data-d1-browse-submit]");
+  const alphabet = view.querySelector("[data-d1-browse-alphabet]");
+  const backButton = view.querySelector("[data-d1-browse-back]");
+  const current = view.querySelector("[data-d1-browse-current]");
+  const tagGrid = view.querySelector("[data-d1-browse-tags]");
+  const results = view.querySelector("[data-d1-browse-results]");
+  const message = view.querySelector("[data-d1-browse-message]");
+
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.d1BrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.d1BrowseLoading;
+  }
+  if (alphabet) {
+    alphabet.innerHTML = "";
+    alphabet.classList.toggle("hidden", Boolean(state.d1BrowseLetter));
+    d1BrowseLetters.forEach((letter) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tag-letter-button";
+      button.dataset.letter = letter;
+      button.textContent = letter;
+      button.classList.toggle("active", state.d1BrowseLetter === letter);
+      button.disabled = state.d1BrowseLoading;
+      alphabet.appendChild(button);
+    });
+  }
+  view.classList.toggle("has-letter", Boolean(state.d1BrowseLetter));
+  view.classList.toggle("has-tag", Boolean(state.d1BrowseTag));
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.classList.toggle("hidden", !state.d1BrowseLetter);
+    backButton.disabled = state.d1BrowseLoading;
+  }
+
+  const tags = mergeD1BrowseTags(state.d1BrowseData?.tags);
+  const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
+  if (current) {
+    const parts = [title];
+    if (state.d1BrowseLetter) {
+      parts.push(state.d1BrowseLetter);
+    }
+    if (state.d1BrowseTag) {
+      parts.push(state.d1BrowseTag);
+    }
+    current.textContent = parts.join(" / ");
+  }
+  if (tagGrid) {
+    tagGrid.innerHTML = "";
+    tagGrid.classList.toggle("hidden", Boolean(state.d1BrowseTag));
+    if (!state.d1BrowseTag) {
+      if (state.d1BrowseLoading) {
+        const loading = document.createElement("div");
+        loading.className = "search-empty";
+        loading.textContent = t("search.browseLoading");
+        tagGrid.appendChild(loading);
+      } else if (!state.d1BrowseLetter) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = d1BrowsePickLetterText(kind);
+        tagGrid.appendChild(empty);
+      } else if (!tags.length) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = t("search.browseNoTags");
+        tagGrid.appendChild(empty);
+      } else {
+        tags.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tag-browser-tag";
+          button.dataset.tag = String(entry.tag || "");
+          button.dataset.locale = String(entry.locale || "");
+          button.dataset.aliases = JSON.stringify(entry.aliases || []);
+          const name = document.createElement("span");
+          name.className = "tag-browser-tag-name";
+          name.textContent = String(entry.tag || "");
+          const count = document.createElement("span");
+          count.className = "tag-browser-tag-count";
+          count.textContent = t("search.browseTagCount", { count: Number(entry.count || 0) });
+          button.append(name, count);
+          tagGrid.appendChild(button);
+        });
+      }
+    }
+  }
+  if (results) {
+    if (state.d1BrowseTag) {
+      renderSearchResultItems(results, items, t("search.larkNoResults"));
+    } else {
+      results.innerHTML = "";
+      results.classList.add("hidden");
+    }
+  }
+  if (message) {
+    let text = "";
+    if (state.d1BrowseTag && !state.d1BrowseLoading) {
+      text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
+    } else if (!state.d1BrowseTag && tags.length) {
+      text = t("search.browseTagsFound", { count: tags.length });
+    }
+    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
+    message.classList.toggle("is-error", false);
+  }
+}
+
+async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "", aliases = [] } = {}) {
+  const searchSeq = state.d1BrowseSeq + 1;
+  state.d1BrowseSeq = searchSeq;
+  state.d1BrowseKind = kind === "artist" ? "artist" : "name";
+  state.d1BrowseLetter = String(letter || "").trim().toUpperCase();
+  state.d1BrowseQuery = String(query || "").trim();
+  state.d1BrowseTag = String(tag || "").trim();
+  state.d1BrowseLocale = String(locale || "").trim();
+  state.d1BrowseAliases = state.d1BrowseTag ? uniqueD1BrowseAliases(aliases, state.d1BrowseTag, state.d1BrowseLocale) : [];
+  state.d1BrowseLoading = true;
+  renderD1BrowseView();
+  try {
+    const requestAliases = state.d1BrowseTag ? state.d1BrowseAliases : [];
+    const requestAliasKey = requestAliases.length ? d1BrowseAliasKey(requestAliases, {
+      kind: state.d1BrowseKind,
+      query: state.d1BrowseQuery,
+    }) : "";
+    if (requestAliasKey && state.d1BrowseItemCache.has(requestAliasKey)) {
+      const items = state.d1BrowseItemCache.get(requestAliasKey) || [];
+      state.d1BrowseData = { kind: state.d1BrowseKind, letter: state.d1BrowseLetter, query: state.d1BrowseQuery, tag: state.d1BrowseTag, locale: state.d1BrowseLocale, tags: [], items };
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      return;
+    }
+    const payloads = requestAliases.length > 1
+      ? await Promise.all(requestAliases.map((alias) => fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: alias.tag,
+        locale: alias.locale,
+        limit: d1BrowseItemLimit,
+      })))
+      : [await fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: state.d1BrowseTag,
+        locale: state.d1BrowseLocale,
+        limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
+      })];
+    if (state.d1BrowseSeq !== searchSeq) {
+      return;
+    }
+    const data = payloads[0] || {};
+    if (!state.d1BrowseTag) {
+      const mergedTags = mergeD1BrowseTags(data.tags);
+      await resolveD1BrowseMergedTagCounts(mergedTags, {
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: "",
+      });
+      if (state.d1BrowseSeq !== searchSeq) {
+        return;
+      }
+    }
+    state.d1BrowseData = requestAliases.length > 1 ? { ...data, items: mergeD1BrowseItemPayloads(payloads) } : data;
+    if (requestAliasKey) {
+      const items = Array.isArray(state.d1BrowseData.items) ? state.d1BrowseData.items : [];
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      state.d1BrowseItemCache.set(requestAliasKey, items);
+    }
+  } catch (error) {
+    const view = ensureD1BrowseView();
+    const message = view?.querySelector("[data-d1-browse-message]");
+    if (message) {
+      message.textContent = error.message;
+      message.classList.add("is-error");
+    }
+  } finally {
+    if (state.d1BrowseSeq === searchSeq) {
+      state.d1BrowseLoading = false;
+      renderD1BrowseView();
+    }
+  }
+}
+
+function ensureCategoryBrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("remote-search-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-category-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "category-browser";
+  view.dataset.categoryBrowseView = "1";
+  view.innerHTML = `
+    <div class="category-browser-home" data-category-browser-home>
+      <div class="category-browser-grid" data-category-browser-grid></div>
+    </div>
+    <div class="category-browser-detail hidden" data-category-browser-detail>
+      <form class="tag-browser-search category-browser-search" data-category-browse-search>
+        <input type="text" autocomplete="off" data-category-browse-query>
+        <button type="submit" class="primary-button" data-category-browse-submit></button>
+      </form>
+      <div class="category-browser-tabs" data-category-browser-tabs></div>
+      <div class="tag-browser-nav">
+        <button type="button" class="secondary-button tag-browser-back" data-category-browse-back></button>
+        <div class="tag-browser-current hidden" data-category-browse-current></div>
+      </div>
+      <div class="search-results category-browser-results" data-category-browse-results></div>
+      <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
+    </div>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function createCategoryBrowseCard(category, { compact = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = compact ? "category-browser-tab" : "category-browser-card";
+  button.dataset.categoryId = category.id;
+  const media = document.createElement("span");
+  media.className = compact ? "category-browser-tab-media" : "category-browser-card-media";
+  if (category.coverUrl) {
+    const image = document.createElement("img");
+    image.src = category.coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    media.appendChild(image);
+  }
+  const name = document.createElement("span");
+  name.className = compact ? "category-browser-tab-name" : "category-browser-card-name";
+  name.textContent = category.name;
+  button.append(media, name);
+  return button;
+}
+
+function renderCategoryBrowseView() {
+  const view = ensureCategoryBrowseView();
+  if (!view) {
+    return;
+  }
+  const categories = categoryBrowseDefinitions();
+  const selected = selectedCategoryBrowseDefinition();
+  const home = view.querySelector("[data-category-browser-home]");
+  const detail = view.querySelector("[data-category-browser-detail]");
+  const grid = view.querySelector("[data-category-browser-grid]");
+  const tabs = view.querySelector("[data-category-browser-tabs]");
+  const queryInput = view.querySelector("[data-category-browse-query]");
+  const submitButton = view.querySelector("[data-category-browse-submit]");
+  const backButton = view.querySelector("[data-category-browse-back]");
+  const results = view.querySelector("[data-category-browse-results]");
+  const message = view.querySelector("[data-category-browse-message]");
+
+  home?.classList.toggle("hidden", Boolean(selected));
+  detail?.classList.toggle("hidden", !selected);
+  if (grid && !selected) {
+    grid.innerHTML = "";
+    categories.forEach((category) => {
+      grid.appendChild(createCategoryBrowseCard(category));
+    });
+  }
+  if (!selected) {
+    return;
+  }
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.categoryBrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = t("search.browseItemPlaceholder");
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.categoryBrowseLoading;
+  }
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.disabled = state.categoryBrowseLoading;
+  }
+  if (tabs) {
+    tabs.innerHTML = "";
+    categories.forEach((category) => {
+      const tab = createCategoryBrowseCard(category, { compact: true });
+      tab.classList.toggle("active", category.id === selected.id);
+      tab.disabled = state.categoryBrowseLoading && category.id === selected.id;
+      tabs.appendChild(tab);
+    });
+  }
+  if (results) {
+    renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
+  }
+  if (message) {
+    let text = "";
+    if (state.categoryBrowseError) {
+      text = state.categoryBrowseError;
+    } else if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
+      text = t("search.browseLoading");
+    } else if (state.categoryBrowseItems.length) {
+      text = state.categoryBrowseHasMore
+        ? t("search.categoryLoadedMore", { count: state.categoryBrowseItems.length })
+        : t("search.categoryLoadedAll", { count: state.categoryBrowseItems.length });
+    } else if (!state.categoryBrowseLoading) {
+      text = t("search.larkNoResults");
+    }
+    message.textContent = text;
+    message.classList.toggle("is-error", Boolean(state.categoryBrowseError));
+  }
+}
+
+async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId, query = state.categoryBrowseQuery, append = false } = {}) {
+  const category = categoryBrowseDefinitions().find((entry) => entry.id === categoryId);
+  if (!category) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    renderCategoryBrowseView();
+    return;
+  }
+  const searchSeq = state.categoryBrowseSeq + 1;
+  state.categoryBrowseSeq = searchSeq;
+  state.categoryBrowseSelectedId = category.id;
+  state.categoryBrowseQuery = String(query || "").trim();
+  state.categoryBrowseError = "";
+  if (!append) {
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = true;
+  }
+  state.categoryBrowseLoading = true;
+  renderCategoryBrowseView();
+  try {
+    const data = await fetchD1CategoryBrowse({
+      tags: category.tags,
+      query: state.categoryBrowseQuery,
+      offset: append ? state.categoryBrowseOffset : 0,
+      limit: categoryBrowsePageSize,
+    });
+    if (state.categoryBrowseSeq !== searchSeq) {
+      return;
+    }
+    const nextItems = Array.isArray(data.items) ? data.items : [];
+    state.categoryBrowseItems = append ? mergeCategoryBrowseItems(state.categoryBrowseItems, nextItems) : mergeCategoryBrowseItems([], nextItems);
+    state.categoryBrowseHasMore = Boolean(data.has_more);
+    state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
+  } catch (error) {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseError = error.message;
+    }
+  } finally {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseLoading = false;
+      renderCategoryBrowseView();
+    }
+  }
+}
+
+function maybeLoadMoreCategoryBrowse(scrollContainer) {
+  if (
+    !state.categoryBrowseSelectedId
+    || state.categoryBrowseLoading
+    || !state.categoryBrowseHasMore
+    || !scrollContainer
+  ) {
+    return;
+  }
+  const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+  if (remaining <= 160) {
+    loadCategoryBrowse({ append: true });
+  }
+}
+
+function selectedFavlistFolder() {
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  return folders.find((folder) => String(folder.id || "") === state.favlistBrowseSelectedFolderId) || null;
+}
+
+function renderFavlistBrowse() {
+  if (!elements.favlistGrid || !elements.favlistSongResults) {
+    return;
+  }
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  const signature = JSON.stringify({
+    loading: state.favlistBrowseLoading,
+    selected: state.favlistBrowseSelectedFolderId,
+    folders,
+    items,
+    language: state.language,
+  });
+  if (signature === state.favlistBrowseRenderSignature) {
+    return;
+  }
+  state.favlistBrowseRenderSignature = signature;
+
+  const hasSelectedFolder = Boolean(state.favlistBrowseSelectedFolderId);
+  elements.favlistListView?.classList.toggle("hidden", hasSelectedFolder);
+  elements.favlistItemsView?.classList.toggle("hidden", !hasSelectedFolder);
+
+  if (!hasSelectedFolder) {
+    elements.favlistGrid.innerHTML = "";
+    if (!folders.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
+      elements.favlistGrid.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const folderId = String(folder.id || "").trim();
+        const title = String(folder.title || folderId || t("favlist.folder")).trim();
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button favlist-browse-button";
+        button.dataset.folderId = folderId;
+        button.title = title;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name favlist-browse-name";
+        name.textContent = title;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count favlist-browse-count";
+        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
+
+        button.append(name, count);
+
+        if (folder.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar favlist-browse-avatar";
+          avatar.src = folder.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
+        elements.favlistGrid.appendChild(button);
+      });
+    }
+    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    return;
+  }
+
+  const folder = selectedFavlistFolder();
+  if (elements.favlistBrowseAvatar) {
+    const avatarUrl = String(folder?.avatar_url || "").trim();
+    elements.favlistBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.favlistBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.favlistBrowseAvatar.removeAttribute("src");
+    }
+  }
+  if (elements.favlistBrowseTitle) {
+    elements.favlistBrowseTitle.textContent = String(folder?.title || state.favlistBrowseSelectedFolderId || t("favlist.folder"));
+  }
+  if (elements.favlistBrowseCount) {
+    const totalCount = Number(folder?.media_count || folder?.count || items.length || 0);
+    elements.favlistBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.favlistSongResults,
+    items,
+    state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
+  );
+  setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+}
+
+async function loadFavlistBrowse({
+  folderId = state.favlistBrowseSelectedFolderId,
+  query = "",
+  keepQuery = false,
+} = {}) {
+  state.favlistBrowseLoading = true;
+  state.favlistBrowseSelectedFolderId = String(folderId || "").trim();
+  renderFavlistBrowse();
+  let caughtError = null;
+  try {
+    const nextData = await fetchGatchaFavlistBrowse(state.favlistBrowseSelectedFolderId, query);
+    state.favlistBrowseData = nextData;
+    state.favlistBrowseSelectedFolderId = String(
+      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+    );
+    if (!keepQuery && elements.favlistSearchQuery) {
+      elements.favlistSearchQuery.value = String(nextData.query || "");
+    }
+  } catch (error) {
+    caughtError = error;
+  } finally {
+    state.favlistBrowseLoading = false;
+    renderFavlistBrowse();
+    if (caughtError) {
+      setFavlistBrowseMessage(caughtError.message, true);
+    }
+  }
+}
+
+function setSearchModalOpen(open) {
+  state.searchModalOpen = Boolean(open);
+  elements.searchModal?.classList.toggle("hidden", !state.searchModalOpen);
+  document.body.classList.toggle("remote-search-modal-open", state.searchModalOpen);
+  if (state.searchModalOpen) {
+    renderSearchModalView(state.searchModalView || "search");
+    window.setTimeout(() => {
+      if (state.searchModalView === "search") {
+        elements.searchModalLarkQuery?.focus();
+      }
+    }, 0);
+  }
+}
+
+function renderSearchModalView(target = state.searchModalView || "search") {
+  const nextTarget = ["search", "follow", "favlist", "category", "name", "artist"].includes(target) ? target : "search";
+  state.searchModalView = nextTarget;
+  elements.searchModalTabs?.forEach((button) => {
+    button.classList.toggle("active", button.dataset.target === nextTarget);
+  });
+  elements.searchModalSearchView?.classList.toggle("hidden", nextTarget !== "search");
+  elements.modalFollowBrowserView?.classList.toggle("hidden", nextTarget !== "follow");
+  elements.favlistBrowserView?.classList.toggle("hidden", nextTarget !== "favlist");
+  elements.searchModalOtherView?.classList.toggle("hidden", !["category", "name", "artist"].includes(nextTarget));
+
+  if (nextTarget === "follow") {
+    if (!state.followBrowseData && !state.followBrowseLoading) {
+      state.followBrowseSelectedUid = "";
+      if (elements.modalFollowSearchQuery) {
+        elements.modalFollowSearchQuery.value = "";
+      }
+      loadFollowBrowse({ uid: "", query: "" });
+    } else {
+      renderModalFollowBrowse();
+    }
+    return;
+  }
+  if (nextTarget === "favlist") {
+    if (!state.favlistBrowseData && !state.favlistBrowseLoading) {
+      state.favlistBrowseSelectedFolderId = "";
+      if (elements.favlistSearchQuery) {
+        elements.favlistSearchQuery.value = "";
+      }
+      loadFavlistBrowse({ folderId: "", query: "" });
+    } else {
+      renderFavlistBrowse();
+    }
+    return;
+  }
+  if (nextTarget === "category") {
+    renderCategoryBrowseView();
+    return;
+  }
+  if (nextTarget === "name" || nextTarget === "artist") {
+    if (state.d1BrowseKind !== nextTarget) {
+      state.d1BrowseData = null;
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+    }
+    state.d1BrowseKind = nextTarget;
+    renderD1BrowseView();
+  }
+}
+
 function selectedFollowOwner() {
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   return owners.find((owner) => String(owner.uid || "") === state.followBrowseSelectedUid) || null;
@@ -1532,18 +3234,18 @@ function followOwnerDisplayName(owner) {
   return stateOwnerName || ownerName || `UID ${uid}`;
 }
 
-function renderFollowSongResults(items, emptyText) {
-  if (!elements.followSongResults) {
+function renderFollowSongResultsInto(container, items, emptyText) {
+  if (!container) {
     return;
   }
-  elements.followSongResults.innerHTML = "";
-  elements.followSongResults.classList.remove("hidden");
+  container.innerHTML = "";
+  container.classList.remove("hidden");
 
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "search-empty";
     empty.textContent = emptyText;
-    elements.followSongResults.appendChild(empty);
+    container.appendChild(empty);
     return;
   }
 
@@ -1567,8 +3269,35 @@ function renderFollowSongResults(items, emptyText) {
 
     meta.append(title, url);
     row.append(meta, button);
-    elements.followSongResults.appendChild(row);
+    container.appendChild(row);
   });
+}
+
+function renderFollowSongResults(items, emptyText) {
+  renderFollowSongResultsInto(elements.followSongResults, items, emptyText);
+}
+
+function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
+  const previousUpdatedAt = Number(previousSnapshot?.gatcha_favlist_updated_at || 0);
+  const nextUpdatedAt = Number(nextSnapshot?.gatcha_favlist_updated_at || 0);
+  if (!state.favlistBrowseData || state.favlistBrowseLoading || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
+    return;
+  }
+  if (state.favlistBrowseReloadTimer) {
+    window.clearTimeout(state.favlistBrowseReloadTimer);
+  }
+  state.favlistBrowseReloadTimer = window.setTimeout(() => {
+    state.favlistBrowseReloadTimer = null;
+    if (!state.favlistBrowseData || state.favlistBrowseLoading) {
+      return;
+    }
+    state.favlistBrowseRenderSignature = "";
+    loadFavlistBrowse({
+      folderId: state.favlistBrowseSelectedFolderId,
+      query: String(elements.favlistSearchQuery?.value || "").trim(),
+      keepQuery: true,
+    });
+  }, 0);
 }
 
 function renderFollowBrowse() {
@@ -1640,6 +3369,17 @@ function renderFollowBrowse() {
         count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
+
+        if (owner.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar";
+          avatar.src = owner.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
         elements.followUpGrid.appendChild(button);
       });
     }
@@ -1648,6 +3388,15 @@ function renderFollowBrowse() {
   }
 
   const owner = selectedFollowOwner();
+  if (elements.followBrowseAvatar) {
+    const avatarUrl = String(owner?.avatar_url || "").trim();
+    elements.followBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.followBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.followBrowseAvatar.removeAttribute("src");
+    }
+  }
   if (elements.followBrowseTitle) {
     elements.followBrowseTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
   }
@@ -1662,10 +3411,116 @@ function renderFollowBrowse() {
   setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
 }
 
+function renderModalFollowBrowse() {
+  if (!elements.modalFollowBrowserView || !elements.modalFollowUpGrid || !elements.modalFollowSongResults) {
+    return;
+  }
+
+  const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
+  const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
+  const taskBusy = gatchaTaskBusy();
+  const signature = JSON.stringify({
+    loading: state.followBrowseLoading,
+    selected: state.followBrowseSelectedUid,
+    owners,
+    items,
+    uidSaving: state.gatchaUidSaving,
+    taskBusy,
+    language: state.language,
+  });
+  if (signature === state.modalFollowBrowseRenderSignature) {
+    return;
+  }
+  state.modalFollowBrowseRenderSignature = signature;
+
+  const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
+  elements.modalFollowUpListView?.classList.toggle("hidden", hasSelectedUid);
+  elements.modalFollowUpItemsView?.classList.toggle("hidden", !hasSelectedUid);
+  if (elements.modalFollowUidInput) {
+    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
+  }
+  if (elements.modalAddFollowUidButton) {
+    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
+    elements.modalAddFollowUidButton.textContent = taskBusy
+      ? t("gatcha.globalCooldown")
+      : state.gatchaUidSaving
+        ? t("gatcha.adding")
+        : t("gatcha.add");
+  }
+
+  if (!hasSelectedUid) {
+    elements.modalFollowUpGrid.innerHTML = "";
+    if (!owners.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
+      elements.modalFollowUpGrid.appendChild(empty);
+    } else {
+      owners.forEach((owner) => {
+        const displayName = followOwnerDisplayName(owner);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button";
+        button.dataset.uid = String(owner.uid || "");
+        button.title = displayName;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name";
+        name.textContent = displayName;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count";
+        count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
+
+        button.append(name, count);
+
+        if (owner.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar";
+          avatar.src = owner.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
+        elements.modalFollowUpGrid.appendChild(button);
+      });
+    }
+    setModalFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
+    return;
+  }
+
+  const owner = selectedFollowOwner();
+  if (elements.modalFollowBrowseAvatar) {
+    const avatarUrl = String(owner?.avatar_url || "").trim();
+    elements.modalFollowBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.modalFollowBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.modalFollowBrowseAvatar.removeAttribute("src");
+    }
+  }
+  if (elements.modalFollowBrowseTitle) {
+    elements.modalFollowBrowseTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
+  }
+  if (elements.modalFollowBrowseCount) {
+    const totalCount = Number(owner?.count || items.length || 0);
+    elements.modalFollowBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.modalFollowSongResults,
+    items,
+    state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
+  );
+  setModalFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
+}
+
 async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
   state.followBrowseLoading = true;
   state.followBrowseSelectedUid = String(uid || "").trim();
   renderFollowBrowse();
+  renderModalFollowBrowse();
   try {
     const nextData = await fetchGatchaBrowse(state.followBrowseSelectedUid, query);
     state.followBrowseData = nextData;
@@ -1673,19 +3528,102 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
     if (!keepQuery && elements.followSearchQuery) {
       elements.followSearchQuery.value = String(nextData.query || "");
     }
+    if (!keepQuery && elements.modalFollowSearchQuery) {
+      elements.modalFollowSearchQuery.value = String(nextData.query || "");
+    }
   } catch (error) {
     setFollowBrowseMessage(error.message, true);
+    setModalFollowBrowseMessage(error.message, true);
   } finally {
     state.followBrowseLoading = false;
     renderFollowBrowse();
+    renderModalFollowBrowse();
   }
 }
 
 async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
   state.followBrowseRenderSignature = "";
+  state.modalFollowBrowseRenderSignature = "";
   const currentUid = String(state.followBrowseSelectedUid || "").trim();
   const nextUid = currentUid || String(uid || "").trim();
   await loadFollowBrowse({ uid: nextUid, query: "", keepQuery: false });
+}
+
+async function addGatchaUidFromInput(input, { messageTarget = "gatcha" } = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+  if (state.gatchaUidSaving) {
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidView();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.checkingUid"));
+  try {
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
+    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
+
+    if (!window.confirm(t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }))) {
+      setGatchaUidFlowMessage(messageTarget, t("remote.uidAddCancelled"));
+      return;
+    }
+
+    const normalizedUid = preview?.uid || uid;
+    if (gatchaTaskBusy()) {
+      setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+      renderGatchaUidView();
+      return;
+    }
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: ownerName }));
+    const result = await addGatchaUid(normalizedUid);
+    setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, normalizedUid));
+    if (input) {
+      input.value = "";
+    }
+    await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || normalizedUid);
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidView();
+  }
+}
+
+async function previewGatchaFavlistFromInput(input, { messageTarget = "gatcha" } = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
+    return;
+  }
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidView();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.readingFavlists"));
+  try {
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistSheet(result?.uid || uid, result, { messageTarget });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.chooseFavlists"));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidView();
+  }
 }
 
 async function handleGatchaDraw() {
@@ -1696,7 +3634,7 @@ async function handleGatchaDraw() {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.error || t("gatcha.drawFailed"));
+      throw new Error(localizedApiMessage(payload.error) || t("gatcha.drawFailed"));
     }
 
     state.gatchaCandidate = payload.data;
@@ -1775,6 +3713,13 @@ function renderGatchaUidView() {
     elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
     elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
+  if (elements.modalFavlistUidInput) {
+    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
+  }
+  if (elements.modalPullFavlistButton) {
+    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
       elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
@@ -1782,59 +3727,16 @@ function renderGatchaUidView() {
     if (elements.pullGatchaFavlistButton) {
       elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
     }
+    if (elements.modalPullFavlistButton) {
+      elements.modalPullFavlistButton.textContent = t("gatcha.globalCooldown");
+    }
   }
+  renderModalFollowBrowse();
 }
 
 async function handleGatchaUidSubmit(event) {
   event.preventDefault();
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
-  if (state.gatchaUidSaving) {
-    return;
-  }
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
-    return;
-  }
-
-  state.gatchaUidSaving = true;
-  renderGatchaUidView();
-  setGatchaUidMessage(t("gatcha.checkingUid"));
-  try {
-    const preview = await previewGatchaUid(uid);
-    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
-    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode"));
-    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
-    setGatchaUidMessage(t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
-
-    if (!window.confirm(t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }))) {
-      setGatchaUidMessage(t("remote.uidAddCancelled"));
-      return;
-    }
-
-    const normalizedUid = preview?.uid || uid;
-    if (gatchaTaskBusy()) {
-      setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-      renderGatchaUidView();
-      return;
-    }
-    setGatchaUidMessage(t("gatcha.pullingOwnerItems", { name: ownerName }));
-    const result = await addGatchaUid(normalizedUid);
-    setGatchaUidMessage(gatchaUidResultMessage(result, normalizedUid));
-    if (elements.gatchaUidInput) {
-      elements.gatchaUidInput.value = "";
-    }
-    await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || normalizedUid);
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaUidSaving = false;
-    renderGatchaUidView();
-  }
+  await addGatchaUidFromInput(elements.gatchaUidInput, { messageTarget: "gatcha" });
 }
 
 function render() {
@@ -1852,6 +3754,7 @@ function render() {
   renderRemoteVolumeControls(playbackMode, data.player_settings);
   renderRemoteAccess(data.remote_access);
   renderFollowBrowse();
+  renderModalFollowBrowse();
   renderListHeader(data.playlist || [], data.history || []);
   renderQueue(Array.isArray(data.playlist) ? data.playlist : []);
   renderHistory(Array.isArray(data.history) ? data.history : []);
@@ -2287,7 +4190,7 @@ function openBindingSheet(intent, payload) {
   const preferredPage = Number(payload.preferred_page || pages[0]?.page || 1);
   pages.forEach((entry) => {
     elements.bindingSheetVideoOptions.appendChild(renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage));
-    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage));
+    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, false));
   });
   renderBindingAccordion();
 
@@ -2347,13 +4250,13 @@ function renderGatchaFavlistOption(folder) {
   return label;
 }
 
-function openGatchaFavlistSheet(uid, payload) {
+function openGatchaFavlistSheet(uid, payload, { messageTarget = "gatcha" } = {}) {
   const folders = Array.isArray(payload?.folders) ? payload.folders : [];
   if (!folders.length) {
-    setGatchaUidMessage(t("favlist.none"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.none"), true);
     return;
   }
-  state.gatchaFavlistIntent = { uid, folders };
+  state.gatchaFavlistIntent = { uid, folders, messageTarget };
   elements.gatchaFavlistSheetText.textContent = t("favlist.chooseForUid", {
     uid: payload?.uid || uid,
     count: payload?.public_folder_count || folders.length,
@@ -2469,29 +4372,38 @@ async function confirmGatchaFavlistSheet() {
   if (!intent?.uid) {
     return;
   }
+  const messageTarget = intent.messageTarget || "gatcha";
   const folderIds = selectedGatchaFavlistFolderIds();
   if (!folderIds.length) {
-    setGatchaUidMessage(t("favlist.selectAtLeastOne"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidView();
     return;
   }
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidView();
-  setGatchaUidMessage(t("favlist.pullingSelected"));
+  setGatchaUidFlowMessage(messageTarget, t("favlist.pullingSelected"));
+  closeGatchaFavlistSheet();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
-    closeGatchaFavlistSheet();
-    setGatchaUidMessage(t("favlist.pullResult", {
+    setGatchaUidFlowMessage(messageTarget, t("favlist.pullResult", {
       folders: result?.matched_folder_count || 0,
       items: result?.item_count || 0,
     }));
+    if (state.favlistBrowseData) {
+      state.favlistBrowseRenderSignature = "";
+      await loadFavlistBrowse({
+        folderId: state.favlistBrowseSelectedFolderId,
+        query: String(elements.favlistSearchQuery?.value || "").trim(),
+        keepQuery: true,
+      });
+    }
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaFavlistSaving = false;
     renderGatchaUidView();
@@ -2738,6 +4650,26 @@ function currentPlayerStatus(currentItem) {
   return playerStatus;
 }
 
+function durationSecondsForItem(item) {
+  if (!item) {
+    return 0;
+  }
+  const selectedDurations = Array.isArray(item.selected_durations) ? item.selected_durations : [];
+  const selectedPages = Array.isArray(item.selected_pages) ? item.selected_pages : [];
+  const currentPage = Number(item.page || item.video_page || selectedPages[0] || 0);
+  const selectedIndex = selectedPages.findIndex((page) => Number(page) === currentPage);
+  const selectedDuration = Number(selectedDurations[selectedIndex >= 0 ? selectedIndex : 0] || 0);
+  if (selectedDuration > 0) {
+    return Math.round(selectedDuration);
+  }
+
+  const availableDurations = Array.isArray(item.available_durations) ? item.available_durations : [];
+  const availablePages = Array.isArray(item.available_pages) ? item.available_pages : [];
+  const availableIndex = availablePages.findIndex((page) => Number(page) === currentPage);
+  const availableDuration = Number(availableDurations[availableIndex >= 0 ? availableIndex : 0] || 0);
+  return availableDuration > 0 ? Math.round(availableDuration) : 0;
+}
+
 function playerStatusUpdatedAt(playerStatus) {
   const updatedAt = Number(playerStatus?.updated_at || 0);
   return Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0;
@@ -2877,6 +4809,7 @@ function renderPlayerControls(currentItem, playbackMode) {
 function renderListHeader(playlist, history) {
   const isHistoryView = state.listView === "history";
   const signature = JSON.stringify({
+    language: state.language,
     view: state.listView,
     playlistLength: playlist.length,
     historyLength: history.length,
@@ -2906,7 +4839,10 @@ function syncListView() {
 }
 
 function renderQueue(playlist) {
-  const signature = JSON.stringify(playlist || []);
+  const signature = JSON.stringify({
+    language: state.language,
+    playlist: playlist || [],
+  });
   if (signature === state.queueRenderSignature) {
     return;
   }
@@ -2952,10 +4888,11 @@ function queueNoteText(item) {
   if (!message) {
     return "";
   }
-  if (message === "已缓存" || message === "缓存已完成") {
+  const localizedMessage = localizedCacheMessage(message, item.cache_status);
+  if (localizedMessage === t("cache.ready")) {
     return "";
   }
-  return message;
+  return localizedMessage;
 }
 
 function queueStateLabel(item) {
@@ -2979,7 +4916,7 @@ function currentCacheStateLabel(item) {
     return "";
   }
   if (item.cache_status === "downloading") {
-    const message = String(item.cache_message || "").trim();
+    const message = localizedCacheMessage(item.cache_message, item.cache_status);
     if (message) {
       return message;
     }
@@ -3013,15 +4950,10 @@ function clearCurrentPlaybackClock() {
 }
 
 function currentPlaybackClockText() {
-  const durationSeconds = Math.max(0, Number(state.currentPlaybackClockDurationSeconds || 0));
+  const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   if (!(durationSeconds > 0)) {
     return "";
   }
-  const baseSeconds = Math.max(0, Number(state.currentPlaybackClockBaseSeconds || 0));
-  const elapsedSeconds = state.currentPlaybackClockPaused
-    ? 0
-    : Math.max(0, (Date.now() - Number(state.currentPlaybackClockStartedAt || Date.now())) / 1000);
-  const currentSeconds = Math.min(durationSeconds, baseSeconds + elapsedSeconds);
   return `${formatPlaybackClockSeconds(currentSeconds)} / ${formatPlaybackClockSeconds(durationSeconds)}`;
 }
 
@@ -3032,6 +4964,11 @@ function paintCurrentPlaybackClock() {
   }
   if (elements.currentCacheState.textContent !== text) {
     elements.currentCacheState.textContent = text;
+  }
+  try {
+    maybeUpdateRemoteRatingPrompt(state.data?.current_item);
+  } catch (error) {
+    console.warn("Rating prompt update failed:", error);
   }
 }
 
@@ -3051,7 +4988,9 @@ function renderCurrentPlaybackState(current) {
   }
 
   const playerStatus = currentPlayerStatus(current);
-  const durationSeconds = Number(playerStatus?.duration || 0);
+  const itemDurationSeconds = durationSecondsForItem(current);
+  const reportedDurationSeconds = Number(playerStatus?.duration || 0);
+  const durationSeconds = itemDurationSeconds > 0 ? itemDurationSeconds : reportedDurationSeconds;
   const currentSeconds = Math.max(0, Number(playerStatus?.current_time || 0));
   const isPaused = Boolean(playerStatus?.is_paused);
   const waitingForHostStatus = playerControlStatusSyncPending(current, playerStatus);
@@ -3109,6 +5048,7 @@ function formatBytes(value) {
 
 function renderHistory(history) {
   const signature = JSON.stringify({
+    language: state.language,
     history: history || [],
     openHistoryMenuId: state.openHistoryMenuId || "",
   });
@@ -3415,6 +5355,313 @@ elements.searchResults.addEventListener("click", async (event) => {
   await addByUrl(String(button.dataset.url || ""), "tail", "search");
 });
 
+elements.searchLibraryOpen?.addEventListener("click", () => {
+  setSearchModalOpen(true);
+});
+
+elements.searchModalClose?.addEventListener("click", () => {
+  setSearchModalOpen(false);
+});
+
+elements.searchModalBackdrop?.addEventListener("click", () => {
+  setSearchModalOpen(false);
+});
+
+elements.searchModalTabs?.forEach((button) => {
+  button.addEventListener("click", () => {
+    renderSearchModalView(button.dataset.target || "search");
+  });
+});
+
+elements.searchModalLarkForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.searchModalLarkQuery?.value || "").trim();
+  if (!query) {
+    renderSearchResultItems(elements.searchModalLarkResults, [], t("search.keywordRequired"));
+    setSearchModalLarkMessage(t("search.keywordRequired"), true);
+    return;
+  }
+
+  state.searchModalLarkLoading = true;
+  if (elements.searchModalLarkButton) {
+    elements.searchModalLarkButton.disabled = true;
+  }
+  const searchSeq = state.searchModalLarkSeq + 1;
+  state.searchModalLarkSeq = searchSeq;
+  const seenBvids = new Set();
+  const collectedItems = [];
+  if (elements.searchModalLarkResults) {
+    elements.searchModalLarkResults.innerHTML = "";
+    elements.searchModalLarkResults.classList.remove("hidden");
+  }
+  setSearchModalLarkMessage(t("search.larkSearching"));
+  try {
+    const poolItems = await searchLarkPool(query);
+    if (state.searchModalLarkSeq !== searchSeq) {
+      return;
+    }
+    const freshItems = poolItems.filter((item) => {
+      const bvid = String(item?.bvid || "").trim();
+      if (!bvid || seenBvids.has(bvid)) {
+        return false;
+      }
+      seenBvids.add(bvid);
+      return true;
+    });
+    if (freshItems.length) {
+      collectedItems.push(...freshItems);
+      appendSearchResultItems(elements.searchModalLarkResults, freshItems);
+    }
+    if (!collectedItems.length) {
+      renderSearchResultItems(elements.searchModalLarkResults, [], t("search.larkNoResults"));
+    }
+    setSearchModalLarkMessage(
+      collectedItems.length ? t("search.larkFound", { count: collectedItems.length }) : t("search.larkNoResults"),
+    );
+  } catch (error) {
+    renderSearchResultItems(elements.searchModalLarkResults, [], "");
+    setSearchModalLarkMessage(error.message, true);
+  } finally {
+    if (state.searchModalLarkSeq === searchSeq) {
+      state.searchModalLarkLoading = false;
+      if (elements.searchModalLarkButton) {
+        elements.searchModalLarkButton.disabled = false;
+      }
+    }
+  }
+});
+
+elements.searchModalLarkResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.searchModalLarkResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalSearch");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.favlistGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-folder-id]");
+  if (!button) {
+    return;
+  }
+  const folderId = String(button.dataset.folderId || "").trim();
+  if (!folderId) {
+    return;
+  }
+  state.favlistBrowseSelectedFolderId = folderId;
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  await loadFavlistBrowse({ folderId, query: "" });
+});
+
+elements.favlistBrowseBack?.addEventListener("click", () => {
+  state.favlistBrowseSelectedFolderId = "";
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  state.favlistBrowseRenderSignature = "";
+  renderFavlistBrowse();
+});
+
+elements.favlistSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.favlistSearchQuery?.value || "").trim();
+  await loadFavlistBrowse({
+    folderId: state.favlistBrowseSelectedFolderId,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.favlistSongResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.favlistSongResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalFavlist");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("submit", (event) => {
+  const categoryForm = event.target.closest("[data-category-browse-search]");
+  if (categoryForm && elements.searchModalOtherView.contains(categoryForm)) {
+    event.preventDefault();
+    const input = categoryForm.querySelector("[data-category-browse-query]");
+    loadCategoryBrowse({
+      query: input?.value || "",
+      append: false,
+    });
+    return;
+  }
+  const form = event.target.closest("[data-d1-browse-search]");
+  if (!form || !elements.searchModalOtherView.contains(form)) {
+    return;
+  }
+  event.preventDefault();
+  const input = form.querySelector("[data-d1-browse-query]");
+  if (!state.d1BrowseLetter) {
+    if (input) {
+      input.value = "";
+    }
+    state.d1BrowseQuery = "";
+    state.d1BrowseTag = "";
+    state.d1BrowseLocale = "";
+    state.d1BrowseAliases = [];
+    state.d1BrowseData = null;
+    renderD1BrowseView();
+    return;
+  }
+  if (state.d1BrowseTag) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: input?.value || "",
+      tag: state.d1BrowseTag,
+      locale: state.d1BrowseLocale,
+      aliases: state.d1BrowseAliases,
+    });
+    return;
+  }
+  loadD1Browse({
+    kind: state.d1BrowseKind || "name",
+    letter: state.d1BrowseLetter,
+    query: input?.value || "",
+    tag: "",
+    locale: "",
+  });
+});
+
+elements.searchModalOtherView?.addEventListener("click", (event) => {
+  const categoryBackButton = event.target.closest("[data-category-browse-back]");
+  if (categoryBackButton && elements.searchModalOtherView.contains(categoryBackButton)) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseQuery = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    state.categoryBrowseError = "";
+    renderCategoryBrowseView();
+    return;
+  }
+  const categoryButton = event.target.closest("[data-category-id]");
+  if (categoryButton && elements.searchModalOtherView.contains(categoryButton)) {
+    loadCategoryBrowse({
+      categoryId: categoryButton.dataset.categoryId || "",
+      query: "",
+      append: false,
+    });
+    return;
+  }
+  const backButton = event.target.closest("[data-d1-browse-back]");
+  if (backButton && elements.searchModalOtherView.contains(backButton)) {
+    if (state.d1BrowseTag) {
+      loadD1Browse({
+        kind: state.d1BrowseKind || "name",
+        letter: state.d1BrowseLetter,
+        query: "",
+        tag: "",
+        locale: "",
+        aliases: [],
+      });
+    } else if (state.d1BrowseLetter) {
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+      state.d1BrowseData = null;
+      renderD1BrowseView();
+    }
+    return;
+  }
+  const letterButton = event.target.closest("[data-letter]");
+  if (letterButton && elements.searchModalOtherView.contains(letterButton)) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: letterButton.dataset.letter || "",
+      query: "",
+      tag: "",
+      locale: "",
+      aliases: [],
+    });
+    return;
+  }
+  const tagButton = event.target.closest("[data-tag]");
+  if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
+    let aliases = [];
+    try {
+      aliases = JSON.parse(tagButton.dataset.aliases || "[]");
+    } catch {
+      aliases = [];
+    }
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: "",
+      tag: tagButton.dataset.tag || "",
+      locale: tagButton.dataset.locale || "",
+      aliases,
+    });
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.searchModalOtherView.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalBrowse");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("scroll", (event) => {
+  const target = event.target;
+  if (target instanceof Element && target.matches("[data-category-browse-results]")) {
+    maybeLoadMoreCategoryBrowse(target);
+  }
+}, true);
+
 elements.larkSearchToggle?.addEventListener("click", () => {
   state.followBrowseVisible = false;
   state.larkSearchVisible = !state.larkSearchVisible;
@@ -3527,6 +5774,27 @@ elements.followUpGrid?.addEventListener("click", async (event) => {
   await loadFollowBrowse({ uid, query: "" });
 });
 
+elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await addGatchaUidFromInput(elements.modalFollowUidInput, { messageTarget: "follow-modal" });
+});
+
+elements.modalFollowUpGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-uid]");
+  if (!button) {
+    return;
+  }
+  const uid = String(button.dataset.uid || "").trim();
+  if (!uid) {
+    return;
+  }
+  state.followBrowseSelectedUid = uid;
+  if (elements.modalFollowSearchQuery) {
+    elements.modalFollowSearchQuery.value = "";
+  }
+  await loadFollowBrowse({ uid, query: "" });
+});
+
 elements.followBrowseBack?.addEventListener("click", () => {
   state.followBrowseSelectedUid = "";
   if (elements.followSearchQuery) {
@@ -3535,9 +5803,27 @@ elements.followBrowseBack?.addEventListener("click", () => {
   renderFollowBrowse();
 });
 
+elements.modalFollowBrowseBack?.addEventListener("click", () => {
+  state.followBrowseSelectedUid = "";
+  if (elements.modalFollowSearchQuery) {
+    elements.modalFollowSearchQuery.value = "";
+  }
+  renderModalFollowBrowse();
+});
+
 elements.followSearchForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const query = String(elements.followSearchQuery?.value || "").trim();
+  await loadFollowBrowse({
+    uid: state.followBrowseSelectedUid,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.modalFollowSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.modalFollowSearchQuery?.value || "").trim();
   await loadFollowBrowse({
     uid: state.followBrowseSelectedUid,
     query,
@@ -3559,6 +5845,28 @@ elements.followSongResults?.addEventListener("click", async (event) => {
     await addByUrl(url, "tail", "follow");
   } finally {
     button.disabled = false;
+  }
+});
+
+elements.modalFollowSongResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.modalFollowSongResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalFollow");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
   }
 });
 
@@ -3610,6 +5918,9 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (state.searchModalOpen) {
+      setSearchModalOpen(false);
+    }
     setRemoteQrPopoverOpen(false);
   }
 });
@@ -3680,6 +5991,51 @@ elements.gatchaUidToggle?.addEventListener("click", () => {
   renderGatchaUidView();
 });
 
+document.addEventListener("click", async (event) => {
+  const root = state.ratingPromptElement;
+  if (!root || !root.contains(event.target)) {
+    return;
+  }
+  const scoreButton = event.target.closest("[data-rating-score]");
+  if (scoreButton) {
+    state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
+    renderRatingStars();
+    return;
+  }
+  const optOutInput = event.target.closest("[data-rating-opt-out]");
+  if (optOutInput) {
+    setRatingOptOut(optOutInput.checked);
+    if (optOutInput.checked) {
+      closeRatingPrompt({ submit: false });
+    }
+    return;
+  }
+  const addUpButton = event.target.closest("[data-rating-add-up]");
+  if (addUpButton) {
+    const promptItem = state.ratingPromptItem;
+    const uid = ratingOwnerUid(promptItem);
+    const message = root.querySelector("[data-rating-message]");
+    if (!uid) {
+      if (message) message.textContent = t("rating.missingUidMessage");
+      return;
+    }
+    addUpButton.disabled = true;
+    if (message) message.textContent = t("rating.addingUp");
+    try {
+      await addGatchaUid(uid);
+      if (message) message.textContent = t("rating.addedUp");
+    } catch (error) {
+      if (message) message.textContent = error.message || t("rating.addFailed");
+    } finally {
+      addUpButton.disabled = false;
+    }
+    return;
+  }
+  if (event.target.closest("[data-rating-close]")) {
+    closeRatingPrompt({ submit: true });
+  }
+});
+
 elements.gatchaUidForm?.addEventListener("submit", handleGatchaUidSubmit);
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
@@ -3711,29 +6067,12 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
 });
 
 elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
-    return;
-  }
-  state.gatchaFavlistSaving = true;
-  renderGatchaUidView();
-  setGatchaUidMessage(t("gatcha.readingFavlists"));
-  try {
-    const result = await previewGatchaFavlist(uid);
-    openGatchaFavlistSheet(result?.uid || uid, result);
-    setGatchaUidMessage(t("gatcha.chooseFavlists"));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaFavlistSaving = false;
-    renderGatchaUidView();
-  }
+  await previewGatchaFavlistFromInput(elements.gatchaUidInput, { messageTarget: "gatcha" });
+});
+
+elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaFavlistFromInput(elements.modalFavlistUidInput, { messageTarget: "favlist-modal" });
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {

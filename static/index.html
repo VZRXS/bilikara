@@ -23,7 +23,7 @@
         <div>
           <p class="eyebrow" data-i18n="brand.eyebrow">bilikara host</p>
           <h1 data-i18n="brand.name">bilikara</h1>
-          <p class="designer" data-i18n="brand.designer">@VZRXS</p>
+          <p class="designer" id="developer-mode-trigger" role="button" tabindex="0" data-i18n="brand.designer">@VZRXS</p>
         </div>
         <div class="top-controls">
           <div class="mode-control language-control" id="language-control">
@@ -445,11 +445,19 @@
 
             <section class="list-card sub-card search-sub-card" id="search-panel">
               <div class="search-card">
-                <div class="search-sub-card-head">
-                  <div>
-                    <p class="section-tag" id="search-tag" data-i18n="search.localTag">Local Search</p>
-                    <h2 id="search-title" data-i18n="search.title">搜索</h2>
-                  </div>
+                <div id="search-card-content" class="search-card-content">
+                  <div class="search-sub-card-head">
+                    <div class="search-title-row">
+                      <button type="button" id="search-expand-button" class="toolbar-button ghost search-expand-button" title="全屏展开" aria-label="全屏展开">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path>
+                        </svg>
+                      </button>
+                      <div>
+                        <p class="section-tag" id="search-tag" data-i18n="search.localTag">Local Search</p>
+                        <h2 id="search-title" data-i18n="search.title">搜索</h2>
+                      </div>
+                    </div>
                   <div class="search-head-actions">
                     <button type="button" id="search-cookie-toggle" class="toolbar-button ghost search-cookie-toggle" data-i18n="search.followBrowse">
                       关注浏览
@@ -476,11 +484,22 @@
                     <div id="search-cookie-view" class="search-face search-face-back search-cookie-view">
                       <div class="follow-browser" id="follow-browser">
                         <div id="follow-up-list-view" class="follow-up-list-view">
+                          <form id="modal-follow-uid-form" class="follow-search-form modal-uid-form modal-follow-uid-form">
+                            <input
+                              type="text"
+                              id="modal-follow-uid-input"
+                              placeholder="UID 或 UP 主空间链接"
+                              data-i18n-placeholder="gatcha.uidPlaceholder"
+                              autocomplete="off"
+                            >
+                            <button type="submit" id="modal-add-follow-uid-button" class="next-button" data-i18n="gatcha.add">添加</button>
+                          </form>
                           <div id="follow-up-grid" class="follow-up-grid" role="list"></div>
                         </div>
                         <div id="follow-up-items-view" class="follow-up-items-view hidden">
                           <div class="follow-browser-head">
                             <button type="button" id="follow-browse-back" class="toolbar-button ghost" data-i18n="common.back">返回</button>
+                            <img id="follow-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy" referrerpolicy="no-referrer">
                             <div class="follow-browser-title-block">
                               <h3 id="follow-browse-title" data-i18n="follow.ownerItemsTitle">UP 主稿件</h3>
                               <p id="follow-browse-count" class="follow-browser-count" data-i18n="follow.zeroCount">0 首</p>
@@ -518,6 +537,7 @@
                     </div>
                     <button type="submit" id="lark-search-hitbox-button" class="next-button" tabindex="-1" data-i18n="search.submit">搜索</button>
                   </form>
+                </div>
                 </div>
               </div>
             </section>
@@ -812,6 +832,113 @@
         <div class="selection-modal-actions">
           <button type="button" id="gatcha-favlist-modal-cancel" class="toolbar-button" data-i18n="common.cancel">取消</button>
           <button type="button" id="gatcha-favlist-modal-confirm" class="next-button" data-i18n="favlist.confirm">拉取选中收藏夹</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="selection-modal hidden" id="search-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="search-modal-backdrop"></div>
+      <div class="selection-modal-card search-modal-card">
+        <div class="search-modal-sidebar">
+          <h2 data-i18n="search.modalLibrary">搜索库</h2>
+          <button class="search-sidebar-item active" data-target="search" data-i18n="search.modalSearch">搜索</button>
+          <button class="search-sidebar-item" data-target="favlist" data-i18n="search.favlistBrowse">按收藏夹浏览</button>
+          <button class="search-sidebar-item" data-target="category" data-i18n="search.categoryBrowse">按类别浏览</button>
+          <button class="search-sidebar-item" data-target="name" data-i18n="search.nameBrowse">按名称浏览</button>
+          <button class="search-sidebar-item" data-target="artist" data-i18n="search.artistBrowse">按歌手浏览</button>
+        </div>
+        <div class="search-modal-main">
+          <button type="button" id="search-modal-close" class="banner-close search-modal-close" aria-label="关闭">×</button>
+          <div id="search-modal-content-placeholder" class="search-modal-content-placeholder">
+            <!-- search-sub-card-head and search-stage will be moved here -->
+          </div>
+          <div id="favlist-browser-view" class="favlist-browser search-modal-browser-view hidden">
+            <div id="favlist-list-view" class="follow-up-list-view">
+              <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form modal-favlist-pull-form">
+                <input
+                  type="text"
+                  id="modal-favlist-uid-input"
+                  placeholder="UID 或 UP 主空间链接"
+                  data-i18n-placeholder="gatcha.uidPlaceholder"
+                  autocomplete="off"
+                >
+                <button type="submit" id="modal-pull-favlist-button" class="next-button" data-i18n="gatcha.pullFavlist">拉取收藏</button>
+              </form>
+              <div id="favlist-grid" class="follow-up-grid favlist-grid" role="list"></div>
+            </div>
+            <div id="favlist-items-view" class="follow-up-items-view hidden">
+              <div class="follow-browser-head">
+                <button type="button" id="favlist-browse-back" class="toolbar-button ghost" data-i18n="common.back">返回</button>
+                <img id="favlist-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy" referrerpolicy="no-referrer">
+                <div class="follow-browser-title-block">
+                  <h3 id="favlist-browse-title" data-i18n="favlist.browseItemsTitle">收藏夹稿件</h3>
+                  <p id="favlist-browse-count" class="follow-browser-count" data-i18n="follow.zeroCount">0 首</p>
+                </div>
+              </div>
+              <form id="favlist-search-form" class="follow-search-form">
+                <input
+                  type="text"
+                  id="favlist-search-query"
+                  placeholder="在这个收藏夹的缓存稿件里搜索"
+                  data-i18n-placeholder="favlist.searchPlaceholder"
+                  autocomplete="off"
+                >
+                <button type="submit" id="favlist-search-button" class="next-button" data-i18n="search.submit">搜索</button>
+              </form>
+              <div id="favlist-song-results" class="search-results"></div>
+            </div>
+            <p class="gatcha-message" id="favlist-browse-message" role="status"></p>
+          </div>
+          <div id="search-modal-other-view" class="search-modal-other-view hidden">
+            此功能开发中...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="selection-modal hidden" id="bilikara-secret-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="bilikara-secret-backdrop"></div>
+      <div class="selection-modal-card selection-modal-card-single bilikara-secret-card">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag">Access</p>
+            <h2>访问验证</h2>
+          </div>
+          <button type="button" id="bilikara-secret-close" class="banner-close" aria-label="关闭">×</button>
+        </div>
+        <form id="bilikara-secret-form" class="bilikara-secret-form">
+          <label class="input-group" for="bilikara-secret-input">
+            <span>BILIKARA_ADMIN_SECRET</span>
+            <input type="password" id="bilikara-secret-input" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="search-message" id="bilikara-secret-message" role="status"></p>
+          <div class="selection-modal-actions">
+            <button type="button" id="bilikara-secret-cancel" class="toolbar-button">取消</button>
+            <button type="submit" id="bilikara-secret-confirm" class="next-button">确认</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="selection-modal hidden" id="developer-tag-reset-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="developer-tag-reset-backdrop"></div>
+      <div class="selection-modal-card selection-modal-card-single developer-tag-reset-card">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag">Tools</p>
+            <h2 id="developer-tag-reset-title">重置标签字段</h2>
+          </div>
+          <button type="button" id="developer-tag-reset-close" class="banner-close" aria-label="关闭">×</button>
+        </div>
+        <p class="selection-modal-text" id="developer-tag-reset-text"></p>
+        <div class="developer-tag-reset-fields" id="developer-tag-reset-fields"></div>
+        <div class="developer-tag-reset-note" id="developer-tag-reset-note">
+          确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。
+        </div>
+        <div class="selection-modal-actions">
+          <button type="button" id="developer-tag-reset-cancel" class="toolbar-button">取消</button>
+          <button type="button" id="developer-tag-reset-delete-mid" class="toolbar-button danger-button hidden">按 MID 删除</button>
+          <button type="button" id="developer-tag-reset-confirm" class="next-button">确认重置</button>
         </div>
       </div>
     </div>

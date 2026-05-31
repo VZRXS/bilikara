@@ -36,7 +36,17 @@ _ACTIVE_TABLES: list[dict[str, Any]] = []
 _TABLE_PROBED: set[int] = set()
 _FIELD_TYPES_BY_TABLE: dict[tuple[str, str], dict[str, Any]] = {}
 _REQUIRED_FIELD_NAMES = {"mid", "bvid", "title", "url", "owner_name", "owner_url"}
-_OPTIONAL_FIELD_NAMES = {"tag_1", "tag_2", "tag_3", "tag_4", "tag_5", "tag_status"}
+_OPTIONAL_FIELD_NAMES = {
+    "cover_url",
+    "played_count",
+    "preserved_1",
+    "tag_1",
+    "tag_2",
+    "tag_3",
+    "tag_4",
+    "tag_5",
+    "tag_status",
+}
 _WRITE_FIELD_NAMES = _REQUIRED_FIELD_NAMES | _OPTIONAL_FIELD_NAMES
 _REQUIRED_SEARCH_FIELDS = {"bvid", "title", "url"}
 _DEBUG_LOGS = str(os.environ.get("BILIKARA_LARK_DEBUG") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -401,7 +411,7 @@ def _record_to_item(record: dict) -> dict | None:
         url = f"https://www.bilibili.com/video/{bvid}"
     if not bvid or not title or not url:
         return None
-    return {
+    item = {
         "mid": _field_text(fields.get("mid")).strip(),
         "bvid": bvid,
         "title": title,
@@ -410,6 +420,11 @@ def _record_to_item(record: dict) -> dict | None:
         "owner_url": _field_text(fields.get("owner_url")).strip(),
         "source": "bilikara",
     }
+    for key in ("cover_url", "rank", "played_count", "preserved_1"):
+        value = _field_text(fields.get(key)).strip()
+        if value:
+            item[key] = value
+    return item
 
 
 def _search_lark_pool_table(
@@ -482,7 +497,7 @@ def _cloudflare_search_item(raw_item: Any) -> dict | None:
         url = f"https://www.bilibili.com/video/{bvid}"
     if not bvid or not title or not url:
         return None
-    return {
+    item = {
         "mid": _field_text(raw_item.get("mid")).strip(),
         "bvid": bvid,
         "title": title,
@@ -491,6 +506,25 @@ def _cloudflare_search_item(raw_item: Any) -> dict | None:
         "owner_url": _field_text(raw_item.get("owner_url")).strip(),
         "source": "cloudflare",
     }
+    for key in (
+        "cover_url",
+        "rank",
+        "played_count",
+        "preserved_1",
+        "preserved_2",
+        "preserved_3",
+        "preserved_4",
+        "preserved_5",
+        "tag_1",
+        "tag_2",
+        "tag_3",
+        "tag_4",
+        "tag_5",
+    ):
+        value = _field_text(raw_item.get(key)).strip()
+        if value:
+            item[key] = value
+    return item
 
 
 def _cloudflare_search_items(payload: Any) -> list[Any]:
@@ -510,6 +544,18 @@ def _cloudflare_search_items(payload: Any) -> list[Any]:
             items = data.get(key)
             if isinstance(items, list):
                 return items
+    return []
+
+
+def _cloudflare_browse_tags(payload: Any) -> list[Any]:
+    if not isinstance(payload, dict):
+        return []
+    tags = payload.get("tags")
+    if isinstance(tags, list):
+        return tags
+    data = payload.get("data")
+    if isinstance(data, dict) and isinstance(data.get("tags"), list):
+        return data["tags"]
     return []
 
 
@@ -547,6 +593,160 @@ def _search_cloudflare_pool(query: str, *, limit: int = 80) -> list[dict] | None
         },
     )
     return results
+
+
+def browse_d1_pool(
+    kind: str,
+    *,
+    letter: str = "",
+    query: str = "",
+    tag: str = "",
+    locale: str = "",
+    limit: int = 100,
+) -> dict:
+    normalized_kind = "artist" if str(kind or "").strip().lower() == "artist" else "name"
+    params = {
+        "kind": normalized_kind,
+        "limit": str(max(1, int(limit))),
+    }
+    if letter:
+        params["letter"] = str(letter or "").strip().upper()
+    if query:
+        params["q"] = str(query or "").strip()
+    if tag:
+        params["tag"] = str(tag or "").strip()
+    if locale:
+        params["locale"] = str(locale or "").strip().lower()
+    try:
+        payload = _cloudflare_json(
+            "GET",
+            f"/browse?{urllib.parse.urlencode(params)}",
+            timeout=_CLOUDFLARE_SEARCH_TIMEOUT,
+        )
+    except LarkPoolError:
+        return {"kind": normalized_kind, "letter": letter, "query": query, "tag": tag, "locale": locale, "tags": [], "items": []}
+    tags = []
+    for raw_tag in _cloudflare_browse_tags(payload):
+        if not isinstance(raw_tag, dict):
+            continue
+        tag_text = _field_text(raw_tag.get("tag")).strip()
+        if not tag_text:
+            continue
+        tags.append(
+            {
+                "tag": tag_text,
+                "letter": _field_text(raw_tag.get("letter")).strip(),
+                "locale": _field_text(raw_tag.get("locale")).strip(),
+                "yomi": _field_text(raw_tag.get("yomi")).strip(),
+                "count": int(raw_tag.get("count") or 0),
+            }
+        )
+    items: list[dict] = []
+    seen_bvids: set[str] = set()
+    for raw_item in _cloudflare_search_items(payload):
+        item = _cloudflare_search_item(raw_item)
+        if not item or item["bvid"] in seen_bvids:
+            continue
+        seen_bvids.add(item["bvid"])
+        items.append(item)
+    return {
+        "kind": str(payload.get("kind") or normalized_kind) if isinstance(payload, dict) else normalized_kind,
+        "letter": str(payload.get("letter") or letter) if isinstance(payload, dict) else letter,
+        "query": str(payload.get("query") or query) if isinstance(payload, dict) else query,
+        "tag": str(payload.get("tag") or tag) if isinstance(payload, dict) else tag,
+        "locale": str(payload.get("locale") or locale) if isinstance(payload, dict) else locale,
+        "tags": tags,
+        "items": items,
+    }
+
+
+def browse_d1_category_pool(
+    tags: list[str],
+    *,
+    tag45s: list[str] | None = None,
+    query: str = "",
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    normalized_tags: list[str] = []
+    seen_tags: set[str] = set()
+    for tag in tags or []:
+        normalized_tag = str(tag or "").strip()
+        if not normalized_tag or normalized_tag in seen_tags:
+            continue
+        seen_tags.add(normalized_tag)
+        normalized_tags.append(normalized_tag)
+    normalized_tag45s: list[str] = []
+    seen_tag45s: set[str] = set()
+    for tag in tag45s or []:
+        normalized_tag = str(tag or "").strip()
+        if not normalized_tag or normalized_tag in seen_tag45s:
+            continue
+        seen_tag45s.add(normalized_tag)
+        normalized_tag45s.append(normalized_tag)
+    normalized_limit = max(1, min(100, int(limit)))
+    normalized_offset = max(0, int(offset))
+    normalized_query = str(query or "").strip()
+    if not normalized_tags and not normalized_tag45s:
+        return {
+            "query": normalized_query,
+            "tags": [],
+            "tag45s": [],
+            "offset": normalized_offset,
+            "limit": normalized_limit,
+            "items": [],
+            "has_more": False,
+            "next_offset": normalized_offset,
+        }
+    params: list[tuple[str, str]] = [
+        ("limit", str(normalized_limit)),
+        ("offset", str(normalized_offset)),
+    ]
+    if normalized_query:
+        params.append(("q", normalized_query))
+    params.extend(("tag", tag) for tag in normalized_tags)
+    params.extend(("tag45", tag) for tag in normalized_tag45s)
+    try:
+        payload = _cloudflare_json(
+            "GET",
+            f"/browse-category?{urllib.parse.urlencode(params)}",
+            timeout=_CLOUDFLARE_SEARCH_TIMEOUT,
+        )
+    except (LarkPoolError, ValueError):
+        return {
+            "query": normalized_query,
+            "tags": normalized_tags,
+            "tag45s": normalized_tag45s,
+            "offset": normalized_offset,
+            "limit": normalized_limit,
+            "items": [],
+            "has_more": False,
+            "next_offset": normalized_offset,
+        }
+    items: list[dict] = []
+    seen_bvids: set[str] = set()
+    for raw_item in _cloudflare_search_items(payload):
+        item = _cloudflare_search_item(raw_item)
+        if not item or item["bvid"] in seen_bvids:
+            continue
+        seen_bvids.add(item["bvid"])
+        items.append(item)
+    payload_dict = payload if isinstance(payload, dict) else {}
+    has_more = bool(payload_dict.get("has_more")) if isinstance(payload_dict, dict) else len(items) >= normalized_limit
+    try:
+        next_offset = int(payload_dict.get("next_offset"))
+    except (TypeError, ValueError):
+        next_offset = normalized_offset + len(items)
+    return {
+        "query": str(payload_dict.get("query") or normalized_query),
+        "tags": normalized_tags,
+        "tag45s": normalized_tag45s,
+        "offset": normalized_offset,
+        "limit": normalized_limit,
+        "items": items[:normalized_limit],
+        "has_more": has_more,
+        "next_offset": max(normalized_offset, next_offset),
+    }
 
 
 def _search_lark_pool_legacy(query: str, *, limit: int = 80) -> list[dict]:
@@ -605,6 +805,19 @@ def normalize_pool_entry(entry: dict) -> dict | None:
         "owner_name": str(entry.get("owner_name") or entry.get("author") or "").strip(),
         "owner_url": str(entry.get("owner_url") or "").strip(),
     }
+    for key in (
+        "cover_url",
+        "rank",
+        "played_count",
+        "preserved_1",
+        "preserved_2",
+        "preserved_3",
+        "preserved_4",
+        "preserved_5",
+    ):
+        value = entry.get(key)
+        if value is not None:
+            normalized[key] = str(value).strip()
     for key in ("tag_1", "tag_2", "tag_3", "tag_4", "tag_5"):
         value = entry.get(key)
         if value is not None:
@@ -639,6 +852,7 @@ def append_cloudflare_pool_entries(entries: list[dict]) -> dict:
     return {
         "attempted": int(payload.get("attempted") or len(normalized)),
         "added": int(payload.get("added") or 0),
+        "updated_existing": int(payload.get("updated_existing") or 0),
         "skipped_existing": int(payload.get("skipped_existing") or 0),
         "feishu_queued": int(payload.get("feishu_queued") or 0),
     }
@@ -667,6 +881,161 @@ def delete_cloudflare_pool_entry(bvid: str) -> dict:
         "feishu_queued": bool(payload.get("feishu_queued")),
         "error": str(payload.get("error") or ""),
     }
+
+
+def delete_cloudflare_video_entry(bvid: str, secret: str) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "deleted": False, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "deleted": False, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/delete-video",
+            {"bvid": normalized_bvid, "BILIKARA_ADMIN_SECRET": normalized_secret},
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "deleted": False, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "bvid": normalized_bvid,
+            "deleted": False,
+            "error": "Cloudflare returned an invalid payload",
+        }
+    result = dict(payload)
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("deleted", False)
+    result.setdefault("error", "" if result.get("success") else "delete failed")
+    return result
+
+
+def delete_cloudflare_mid_entries(mid: str, secret: str) -> dict:
+    normalized_mid = str(mid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not normalized_mid.isdigit() or int(normalized_mid) <= 0:
+        return {"success": False, "mid": normalized_mid, "deleted": False, "error": "invalid mid"}
+    if not normalized_secret:
+        return {"success": False, "mid": normalized_mid, "deleted": False, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/delete-mid",
+            {"mid": normalized_mid, "BILIKARA_ADMIN_SECRET": normalized_secret},
+            timeout=20,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "mid": normalized_mid, "deleted": False, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "mid": normalized_mid,
+            "deleted": False,
+            "error": "Cloudflare returned an invalid payload",
+        }
+    result = dict(payload)
+    result.setdefault("mid", normalized_mid)
+    result.setdefault("deleted", False)
+    result.setdefault("error", "" if result.get("success") else "delete failed")
+    return result
+
+
+def submit_cloudflare_song_rating(*, session_user_name: str, play_id: str, bvid: str, score: int) -> dict:
+    normalized_user_name = str(session_user_name or "").strip()
+    normalized_play_id = str(play_id or "").strip()
+    normalized_bvid = str(bvid or "").strip()
+    try:
+        normalized_score = int(score)
+    except (TypeError, ValueError):
+        normalized_score = 0
+    if not normalized_user_name:
+        return {"success": False, "error": "missing session_user_name"}
+    if not normalized_play_id:
+        return {"success": False, "error": "missing play_id"}
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "error": "invalid bvid"}
+    if normalized_score < 1 or normalized_score > 5:
+        return {"success": False, "error": "score must be between 1 and 5"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/rate-song",
+            {
+                "session_user_name": normalized_user_name,
+                "play_id": normalized_play_id,
+                "bvid": normalized_bvid,
+                "score": normalized_score,
+            },
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "play_id": normalized_play_id, "bvid": normalized_bvid, "score": normalized_score, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {
+            "success": False,
+            "play_id": normalized_play_id,
+            "bvid": normalized_bvid,
+            "score": normalized_score,
+            "error": "Cloudflare returned an invalid payload",
+        }
+    return dict(payload)
+
+
+def verify_cloudflare_bilikara_secret(secret: str) -> dict:
+    normalized_secret = str(secret or "").strip()
+    if not normalized_secret:
+        return {"success": False, "verified": False, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/verify",
+            {"BILIKARA_ADMIN_SECRET": normalized_secret},
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "verified": False, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "verified": False, "error": "Cloudflare returned an invalid payload"}
+    verified = bool(
+        payload.get("verified")
+        or payload.get("valid")
+        or payload.get("authorized")
+        or payload.get("success")
+        or payload.get("ok")
+    )
+    return {
+        "success": verified,
+        "verified": verified,
+        "error": "" if verified else str(payload.get("error") or payload.get("message") or "invalid secret"),
+    }
+
+
+def reset_cloudflare_video_tags(bvid: str, secret: str) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/reset-tags",
+            {"bvid": normalized_bvid, "BILIKARA_ADMIN_SECRET": normalized_secret},
+            timeout=10,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "bvid": normalized_bvid, "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result["success"] = bool(result.get("success"))
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("error", "" if result["success"] else "reset failed")
+    return result
 
 
 

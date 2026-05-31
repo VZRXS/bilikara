@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import atexit
 from email.utils import formatdate
+import hmac
 import json
 import mimetypes
+import os
 import re
 import socket
 import threading
@@ -19,9 +21,12 @@ from .bilibili import (
     ManualBindingRequiredError,
     MISSING_BILIBILI_COOKIE_MESSAGE,
     add_gatcha_uid,
+    annotate_gatcha_local_status,
     browse_gatcha_cache,
+    browse_gatcha_favlist,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
+    gatcha_favlist_updated_at,
     gatcha_task_snapshot,
     fetch_owner_info,
     fetch_video_item,
@@ -32,7 +37,7 @@ from .bilibili import (
     refresh_gatcha_favlist,
     search_gatcha_cache,
 )
-from .lark_pool_client import delete_cloudflare_pool_entry, search_lark_pool, search_lark_pool_table
+from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_mid_entries, delete_cloudflare_pool_entry, delete_cloudflare_video_entry, reset_cloudflare_video_tags, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating, verify_cloudflare_bilikara_secret
 from .cache import CacheManager
 from .config import (
     APP_RELEASES_URL,
@@ -50,6 +55,10 @@ from .config import (
 from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .store import PlaylistStore
 from .updater import check_for_update
+
+mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("video/mp4", ".m4s")
+mimetypes.add_type("audio/mp4", ".m4a")
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
@@ -126,6 +135,7 @@ class AppContext:
         }
         payload["remote_access"] = self.remote_access_snapshot()
         payload["gatcha"] = gatcha_task_snapshot()
+        payload["gatcha_favlist_updated_at"] = gatcha_favlist_updated_at()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
         payload["app"] = {
@@ -146,7 +156,11 @@ class AppContext:
             if not self._startup_gatcha_refresh_bypass_available:
                 return self.refresh_gatcha_cache_in_background()
             self._startup_gatcha_refresh_bypass_available = False
-        return refresh_gatcha_cache_in_background(use_global_lock=False, upload_default_uids_to_lark=False)
+        return refresh_gatcha_cache_in_background(
+            use_global_lock=False,
+            upload_default_uids_to_lark=False,
+            startup_schema_rebuild=True,
+        )
 
     def add_item(self, item, *, position: str, requester_name: str) -> None:
         self.store.add_item(item, position=position, requester_name=requester_name)
@@ -609,7 +623,58 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     results = search_lark_pool_table(query, int(table_index), limit=limit)
                 else:
                     results = search_lark_pool(query, limit=limit)
+                results = annotate_gatcha_local_status(results)
                 self._write_json({"ok": True, "data": {"items": results}})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/d1/browse":
+            route_query = parse_qs(urlparse(self.path).query)
+            kind = route_query.get("kind", route_query.get("type", ["name"]))[0]
+            letter = route_query.get("letter", [""])[0]
+            search_query = route_query.get("q", [""])[0]
+            tag = route_query.get("tag", [""])[0]
+            locale = route_query.get("locale", [""])[0]
+            try:
+                limit = max(1, min(500, int(route_query.get("limit", ["100"])[0] or "100")))
+            except (TypeError, ValueError):
+                limit = 100
+            try:
+                results = browse_d1_pool(kind, letter=letter, query=search_query, tag=tag, locale=locale, limit=limit)
+                if isinstance(results.get("items"), list):
+                    results["items"] = annotate_gatcha_local_status(results["items"])
+                self._write_json({"ok": True, "data": results})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/d1/category-browse":
+            route_query = parse_qs(urlparse(self.path).query)
+            tags = route_query.get("tag", [])
+            tags.extend(
+                tag
+                for packed in route_query.get("tags", [])
+                for tag in str(packed or "").split(",")
+            )
+            tag45s = route_query.get("tag45", [])
+            tag45s.extend(
+                tag
+                for packed in route_query.get("tag45s", [])
+                for tag in str(packed or "").split(",")
+            )
+            search_query = route_query.get("q", [""])[0]
+            try:
+                limit = max(1, min(100, int(route_query.get("limit", ["100"])[0] or "100")))
+            except (TypeError, ValueError):
+                limit = 100
+            try:
+                offset = max(0, int(route_query.get("offset", ["0"])[0] or "0"))
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                results = browse_d1_category_pool(tags, tag45s=tag45s, query=search_query, limit=limit, offset=offset)
+                if isinstance(results.get("items"), list):
+                    results["items"] = annotate_gatcha_local_status(results["items"])
+                self._write_json({"ok": True, "data": results})
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
@@ -619,6 +684,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             search_query = route_query.get("q", [""])[0]
             try:
                 self._write_json({"ok": True, "data": browse_gatcha_cache(selected_uid, search_query)})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/gatcha/favlist/browse":
+            route_query = parse_qs(urlparse(self.path).query)
+            selected_folder_id = route_query.get("folder_id", [""])[0]
+            search_query = route_query.get("q", [""])[0]
+            try:
+                self._write_json({"ok": True, "data": browse_gatcha_favlist(selected_folder_id, search_query)})
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
@@ -743,6 +817,99 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("index must be an integer")
                 CONTEXT.move_session_user_to_index(name, index)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/bilikara-secret/verify":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    if not bilikara_secret or not hmac.compare_digest(bilikara_secret, configured_bilikara_secret):
+                        self._write_json(
+                            {"ok": False, "error": "invalid secret"},
+                            status=HTTPStatus.FORBIDDEN,
+                        )
+                        return
+                    self._write_json({"ok": True, "data": {"verified": True}})
+                    return
+                result = verify_cloudflare_bilikara_secret(bilikara_secret)
+                if not result.get("verified"):
+                    self._write_json(
+                        {"ok": False, "error": result.get("error") or "invalid secret"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                self._write_json({"ok": True, "data": {"verified": True}})
+                return
+            if route == "/api/admin-tags/reset":
+                result = reset_cloudflare_video_tags(
+                    str(body.get("bvid") or ""),
+                    str(body.get("BILIKARA_ADMIN_SECRET") or ""),
+                )
+                if not result.get("success"):
+                    message = str(result.get("error") or "reset failed")
+                    lowered = message.lower()
+                    if "invalid bvid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-video/delete":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    verified = bool(bilikara_secret) and hmac.compare_digest(
+                        bilikara_secret,
+                        configured_bilikara_secret,
+                    )
+                else:
+                    verified = bool(verify_cloudflare_bilikara_secret(bilikara_secret).get("verified"))
+                if not verified:
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = delete_cloudflare_video_entry(str(body.get("bvid") or ""), bilikara_secret)
+                if not result.get("success"):
+                    message = str(result.get("error") or "delete failed")
+                    lowered = message.lower()
+                    if "invalid bvid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-video/delete-mid":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    verified = bool(bilikara_secret) and hmac.compare_digest(
+                        bilikara_secret,
+                        configured_bilikara_secret,
+                    )
+                else:
+                    verified = bool(verify_cloudflare_bilikara_secret(bilikara_secret).get("verified"))
+                if not verified:
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = delete_cloudflare_mid_entries(str(body.get("mid") or ""), bilikara_secret)
+                if not result.get("success"):
+                    message = str(result.get("error") or "delete failed")
+                    lowered = message.lower()
+                    if "invalid mid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/playlist/move":
                 self._require_id(body)
@@ -916,6 +1083,49 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True})
                 return
+            if route == "/api/rating/submit":
+                session_user_name = str(
+                    body.get("session_user_name")
+                    or body.get("sessionUserName")
+                    or body.get("user_name")
+                    or body.get("userName")
+                    or body.get("session_user_id")
+                    or body.get("user_id")
+                    or ""
+                ).strip()
+                bvid = str(body.get("bvid") or "").strip()
+                play_id = str(
+                    body.get("play_id")
+                    or body.get("playId")
+                    or body.get("item_id")
+                    or body.get("itemId")
+                    or bvid
+                ).strip()
+                try:
+                    score = int(body.get("score") or 0)
+                except (TypeError, ValueError):
+                    score = 0
+                if not session_user_name:
+                    raise ValueError("missing session_user_name")
+                if not play_id:
+                    raise ValueError("missing play_id")
+                if not BVID_IN_TEXT_RE.fullmatch(bvid):
+                    raise ValueError("invalid bvid")
+                if score < 1 or score > 5:
+                    raise ValueError("score must be between 1 and 5")
+                self._submit_rating_in_background(session_user_name, play_id, bvid, score)
+                self._write_json({
+                    "ok": True,
+                    "data": {
+                        "success": True,
+                        "queued": True,
+                        "session_user_name": session_user_name,
+                        "play_id": play_id,
+                        "bvid": bvid,
+                        "score": score,
+                    },
+                })
+                return
             if route == "/api/cache-policy":
                 max_cache_items = body.get("max_cache_items") if "max_cache_items" in body else None
                 video_quality = body.get("video_quality") if "video_quality" in body else None
@@ -1067,6 +1277,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         delete_cloudflare_pool_entry(bvid)
 
     @staticmethod
+    def _submit_rating_in_background(session_user_name: str, play_id: str, bvid: str, score: int) -> None:
+        def worker() -> None:
+            result = submit_cloudflare_song_rating(
+                session_user_name=session_user_name,
+                play_id=play_id,
+                bvid=bvid,
+                score=score,
+            )
+            if not result.get("success"):
+                print(f"[bilikara] rating submit failed: {result.get('error') or 'unknown error'}", flush=True)
+
+        threading.Thread(target=worker, daemon=True, name="bilikara-rating-submit").start()
+
+    @staticmethod
     def _extract_bvid_from_add_body(body: dict) -> str:
         raw_url = str(body.get("url") or "")
         match = BVID_IN_TEXT_RE.search(raw_url)
@@ -1083,10 +1307,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if not str(static_path).startswith(str(STATIC_DIR.resolve())) or not static_path.exists():
             self._write_json({"ok": False, "error": "资源不存在"}, status=HTTPStatus.NOT_FOUND)
             return
-        self._stream_file(static_path, content_type=self._guess_type(static_path))
+        self._stream_file(
+            static_path,
+            content_type=self._guess_type(static_path),
+            cache_control="no-store",
+        )
 
     def _serve_media(self, route: str) -> None:
-        relative = route.removeprefix("/media/")
+        # relative = route.removeprefix("/media/")  # Python 3.9+
+        prefix = "/media/"
+        relative = route[len(prefix):] if route.startswith(prefix) else route
         decoded = unquote(relative)
         media_path = (CACHE_DIR / decoded).resolve()
         if not str(media_path).startswith(str(CACHE_DIR.resolve())) or not media_path.exists():
@@ -1176,6 +1406,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         *,
         content_type: str,
         allow_ranges: bool = False,
+        cache_control: str | None = None,
     ) -> None:
         file_size = file_path.stat().st_size
         range_header = self.headers.get("Range", "")
@@ -1192,6 +1423,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     self.send_header("Accept-Ranges", "bytes")
                     self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                     self.send_header("Content-Length", str(end - start + 1))
+                    if cache_control:
+                        self.send_header("Cache-Control", cache_control)
                     self.end_headers()
                     with file_path.open("rb") as handle:
                         handle.seek(start)
@@ -1210,6 +1443,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(file_size))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         if allow_ranges:
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()

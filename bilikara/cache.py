@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 from datetime import datetime
 import json
 import os
@@ -8,10 +9,12 @@ import platform
 import queue
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import tarfile
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -55,15 +58,15 @@ VIDEO_QUALITY_CHOICES = (
     # "杜比视界",
     # "HDR 真彩",
     # "4K 超清",
-    "1080P 60帧",
-    "1080P 高码率",
+    "1080P 高帧率",
+    # "1080P 高码率",
     "1080P 高清",
-    "720P 60帧",
+    # "720P 60帧",
     "720P 高清",
     "480P 清晰",
     "360P 流畅",
 )
-DEFAULT_VIDEO_QUALITY = "1080P 60帧"
+DEFAULT_VIDEO_QUALITY = "1080P 高帧率"
 DEFAULT_AUDIO_HIRES = True
 
 
@@ -1253,13 +1256,13 @@ class CacheManager:
         preference_args = self._bbdown_stream_preference_args(stream_kind)
 
         command = [
-            str(binary_path),
+            self._tool_arg_path(binary_path),
             page_url,
             "-p",
             str(page),
             *preference_args,
             "--work-dir",
-            str(target_dir),
+            self._tool_arg_path(target_dir),
             "--ffmpeg-path",
             self._bbdown_ffmpeg_path_arg(ffmpeg_path),
             "--file-pattern",
@@ -1383,7 +1386,7 @@ class CacheManager:
             encoding=SUBPROCESS_OUTPUT_ENCODING,
             errors="replace",
             bufsize=1,
-            cwd=str(BB_DOWN_DIR),
+            cwd=self._tool_arg_path(BB_DOWN_DIR),
             env=self._tool_process_env(ffmpeg_path),
             **self._hidden_process_kwargs(),
         )
@@ -1776,14 +1779,14 @@ class CacheManager:
             raise DownloadCommandError(f"缓存校验失败: {label} 文件为空")
 
         command = [
-            str(ffprobe_path),
+            self._tool_arg_path(ffprobe_path),
             "-v",
             "error",
             "-print_format",
             "json",
             "-show_streams",
             "-show_format",
-            str(media_path),
+            self._tool_arg_path(media_path),
         ]
         self._append_log_line(
             log_path,
@@ -1797,7 +1800,7 @@ class CacheManager:
             errors="replace",
             check=False,
             timeout=20,
-            cwd=str(BB_DOWN_DIR),
+            cwd=self._tool_arg_path(BB_DOWN_DIR),
             env=self._tool_process_env(ffmpeg_path),
             **self._hidden_process_kwargs(),
         )
@@ -2112,7 +2115,7 @@ class CacheManager:
 
             asset = self._select_asset(release)
             tmp_archive = BB_DOWN_DIR / asset["name"]
-            urllib.request.urlretrieve(asset["browser_download_url"], tmp_archive)
+            self._download_url(asset["browser_download_url"], tmp_archive)
             self._extract_archive(tmp_archive, BB_DOWN_DIR)
             tmp_archive.unlink(missing_ok=True)
 
@@ -2134,8 +2137,40 @@ class CacheManager:
             BB_DOWN_RELEASE_API,
             headers={"User-Agent": "bilikara"},
         )
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with self._urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _is_ssl_certificate_error(exc: BaseException) -> bool:
+        if isinstance(exc, ssl.SSLCertVerificationError):
+            return True
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return True
+        return "CERTIFICATE_VERIFY_FAILED" in str(exc)
+
+    @classmethod
+    def _urlopen(cls, request: urllib.request.Request | str, *, timeout: float):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.URLError as exc:
+            if not cls._is_ssl_certificate_error(exc):
+                raise
+            try:
+                import certifi  # type: ignore[import-not-found]
+            except Exception as certifi_exc:  # noqa: BLE001
+                raise RuntimeError(
+                    "Python SSL certificate verification failed. "
+                    "Install system certificates or set BB_DOWN_PATH to a manually downloaded BBDown binary."
+                ) from certifi_exc
+            context = ssl.create_default_context(cafile=certifi.where())
+            return urllib.request.urlopen(request, timeout=timeout, context=context)
+
+    @classmethod
+    def _download_url(cls, url: str, target_path: Path) -> None:
+        request = urllib.request.Request(url, headers={"User-Agent": "bilikara"})
+        with cls._urlopen(request, timeout=60) as response:
+            target_path.write_bytes(response.read())
 
     def _select_asset(self, release: dict) -> dict:
         system = platform.system().lower()
@@ -2150,6 +2185,8 @@ class CacheManager:
             token = "osx-arm64"
         elif system == "windows" and machine in {"x86_64", "amd64"}:
             token = "win-x64"
+        elif system == "windows" and machine in {"arm64", "aarch64"}:
+            token = "win-arm64"
         else:
             raise RuntimeError(f"当前平台暂未适配 BBDown 自动下载: {system}/{machine}")
 
@@ -2384,7 +2421,29 @@ class CacheManager:
     @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:
         target = binary_path if binary_path.is_dir() else binary_path.parent
-        return str(target)
+        return CacheManager._tool_arg_path(target)
+
+    @staticmethod
+    def _tool_arg_path(path: Path) -> str:
+        raw = str(path)
+        if os.name != "nt":
+            return raw
+        return CacheManager._windows_short_path(path) or raw
+
+    @staticmethod
+    def _windows_short_path(path: Path) -> str:
+        try:
+            raw = str(path)
+            required = ctypes.windll.kernel32.GetShortPathNameW(raw, None, 0)
+            if required <= 0:
+                return ""
+            buffer = ctypes.create_unicode_buffer(required)
+            written = ctypes.windll.kernel32.GetShortPathNameW(raw, buffer, required)
+            if written <= 0:
+                return ""
+            return buffer.value
+        except Exception:
+            return ""
 
     @staticmethod
     def _bbdown_data_path() -> Path:
@@ -2453,10 +2512,10 @@ class CacheManager:
     def _tool_process_env(binary_path: Path) -> dict[str, str]:
         env = os.environ.copy()
         path_entries = []
-        ffmpeg_dir = str(binary_path if binary_path.is_dir() else binary_path.parent)
+        ffmpeg_dir = CacheManager._tool_arg_path(binary_path if binary_path.is_dir() else binary_path.parent)
         if ffmpeg_dir:
             path_entries.append(ffmpeg_dir)
-        bbdown_dir = str(BB_DOWN_DIR)
+        bbdown_dir = CacheManager._tool_arg_path(BB_DOWN_DIR)
         if bbdown_dir and bbdown_dir not in path_entries:
             path_entries.append(bbdown_dir)
         existing_path = env.get("PATH", "")
@@ -2551,7 +2610,8 @@ class CacheManager:
         path = urllib.parse.unquote(parsed.path or value)
         for prefix in ("/media/", "media/"):
             if path.startswith(prefix):
-                return cls._cache_path_from_relative_path(path.removeprefix(prefix))
+                rel_path = path[len(prefix):]
+                return cls._cache_path_from_relative_path(rel_path)
         return None
 
     def _item_cache_ready(self, item) -> bool:
@@ -2709,7 +2769,7 @@ class CacheManager:
                     self.bbdown_login_message = f"BBDown 不可用: {exc}"
                 return
 
-            command = [str(binary_path), "login"]
+            command = [self._tool_arg_path(binary_path), "login"]
             try:
                 process = subprocess.Popen(
                     command,
@@ -2720,7 +2780,7 @@ class CacheManager:
                     encoding=SUBPROCESS_OUTPUT_ENCODING,
                     errors="replace",
                     bufsize=1,
-                    cwd=str(BB_DOWN_DIR),
+                    cwd=self._tool_arg_path(BB_DOWN_DIR),
                     env=self._tool_process_env(binary_path),
                     **self._hidden_process_kwargs(),
                 )
