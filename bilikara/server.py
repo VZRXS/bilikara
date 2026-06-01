@@ -54,7 +54,7 @@ from .config import (
 )
 from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .store import PlaylistStore
-from .updater import check_for_update
+from .updater import AppUpdateManager, check_for_update
 
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("video/mp4", ".m4s")
@@ -89,6 +89,10 @@ class AppContext:
             self.store,
             max_cache_items=MAX_CACHE_ITEMS,
             on_bbdown_login_success=self.refresh_startup_gatcha_cache_in_background,
+        )
+        self.update_manager = AppUpdateManager(
+            on_status_change=self._notify_state_changed,
+            on_restart_requested=self._request_update_restart,
         )
         self.cache_manager.prepare_session()
         self._closed = False
@@ -142,6 +146,7 @@ class AppContext:
             "version": APP_VERSION,
             "releases_url": APP_RELEASES_URL,
         }
+        payload["app_update"] = self.app_update_snapshot()
         payload["state_revision"] = state_revision
         return payload
 
@@ -150,6 +155,12 @@ class AppContext:
             on_start=self._notify_state_changed,
             on_done=self._notify_state_changed,
         )
+
+    def app_update_snapshot(self) -> dict[str, object]:
+        return self.update_manager.snapshot()
+
+    def start_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
+        return self.update_manager.start(include_preview=include_preview)
 
     def refresh_startup_gatcha_cache_in_background(self) -> bool:
         with self._startup_lock:
@@ -430,6 +441,23 @@ class AppContext:
             self._state_revision += 1
             self._state_change_condition.notify_all()
 
+    def _request_update_restart(self) -> None:
+        with self._client_lock:
+            server = self._server
+            self._shutdown_requested = True
+        if server is None:
+            return
+
+        def shutdown_server() -> None:
+            time.sleep(0.5)
+            server.shutdown()
+
+        threading.Thread(
+            target=shutdown_server,
+            daemon=True,
+            name="bilikara-update-restart",
+        ).start()
+
     def touch_client(self, client_id: str, is_host: bool = True) -> None:
         client_key = str(client_id or "").strip()
         if not client_key:
@@ -579,6 +607,9 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+            return
+        if route == "/api/app/update/status":
+            self._write_json({"ok": True, "data": CONTEXT.app_update_snapshot()})
             return
         if route == "/api/app/update":
             try:
@@ -776,6 +807,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route == "/api/app/update/install":
+                include_preview = str(body.get("include_preview", body.get("includePreview", ""))).lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
+                return
             if route == "/api/playlist/add":
                 self._handle_add(body)
                 return

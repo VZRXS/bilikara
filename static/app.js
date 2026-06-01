@@ -4270,12 +4270,62 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   syncCachePanelVisibility();
 }
 
-function renderUpdatePreviewControl() {
-  if (!elements.updatePreviewCheckbox) {
-    return;
+function appUpdateStatus() {
+  return state.data?.app_update || {};
+}
+
+function isAppUpdateBusy(update = appUpdateStatus()) {
+  return ["checking", "downloading", "installing", "restarting"].includes(String(update?.state || ""));
+}
+
+function appUpdateProgressPercent(update = appUpdateStatus()) {
+  const totalBytes = Number(update?.total_bytes || 0);
+  const downloadedBytes = Number(update?.downloaded_bytes || 0);
+  let percent = Number(update?.progress || 0) * 100;
+  if (totalBytes > 0 && downloadedBytes >= 0) {
+    percent = (downloadedBytes / totalBytes) * 100;
   }
-  elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
-  elements.updatePreviewCheckbox.disabled = state.updateChecking;
+  if (!Number.isFinite(percent)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function appUpdateButtonText(update = appUpdateStatus()) {
+  const stateValue = String(update?.state || "");
+  if (state.updateChecking || stateValue === "checking") {
+    return t("status.checking");
+  }
+  if (stateValue === "downloading") {
+    const percent = appUpdateProgressPercent(update);
+    return percent > 0
+      ? t("service.updateDownloadingPercent", { percent })
+      : t("service.updateDownloading");
+  }
+  if (stateValue === "installing") {
+    return t("service.updateInstalling");
+  }
+  if (stateValue === "restarting") {
+    return t("service.updateRestarting");
+  }
+  return t("service.checkUpdate");
+}
+
+function renderUpdatePreviewControl() {
+  const update = appUpdateStatus();
+  const busy = state.updateChecking || isAppUpdateBusy(update);
+  if (elements.updatePreviewCheckbox) {
+    elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
+    elements.updatePreviewCheckbox.disabled = busy;
+  }
+  if (elements.updateCheckButton) {
+    elements.updateCheckButton.disabled = busy;
+    setTextContent(elements.updateCheckButton, appUpdateButtonText(update));
+    setElementTitle(
+      elements.updateCheckButton,
+      update?.message || update?.error || t("service.checkUpdateTitle"),
+    );
+  }
 }
 
 function renderPlaybackRepairControls(currentItem) {
@@ -7917,18 +7967,37 @@ async function resetPlayerState() {
   }
 }
 
+async function installAppUpdate(includePreview = false) {
+  try {
+    const updateStatus = await apiPost("/api/app/update/install", {
+      include_preview: Boolean(includePreview),
+    });
+    if (state.data) {
+      state.data = {
+        ...state.data,
+        app_update: updateStatus,
+      };
+    }
+    closeConfirm();
+    renderUpdatePreviewControl();
+    const stateValue = String(updateStatus?.state || "");
+    setAppMessage(
+      updateStatus?.message || t("service.updateStarting"),
+      stateValue === "failed" || stateValue === "unsupported",
+    );
+  } catch (error) {
+    setAppMessage(error?.message || t("service.updateFailed"), true);
+  }
+}
+
 async function checkAppUpdate(event) {
-  if (state.updateChecking) {
+  if (state.updateChecking || isAppUpdateBusy()) {
     return;
   }
   const button = elements.updateCheckButton;
   const point = anchorPointForEvent(event, button || elements.cacheSettings);
   state.updateChecking = true;
   renderUpdatePreviewControl();
-  if (button) {
-    button.disabled = true;
-    button.textContent = t("status.checking");
-  }
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timeoutId = controller
     ? window.setTimeout(() => controller.abort(), appUpdateCheckTimeoutMs)
@@ -7940,10 +8009,16 @@ async function checkAppUpdate(event) {
       const fallbackMessage = result?.switch_to_release_available
         ? t("service.switchReleasePrompt")
         : t("service.updateFoundPrompt");
+      const updateMessage = result?.message || fallbackMessage;
+      const canAutoInstall = Boolean(result?.auto_update_supported);
       openConfirm({
-        type: "open-release",
+        type: canAutoInstall ? "install-app-update" : "open-release",
+        includePreview: state.updatePreviewEnabled,
         releaseUrl: result.release_url,
-        message: fallbackMessage,
+        message: canAutoInstall
+          ? t("service.installUpdatePrompt", { message: updateMessage })
+          : t("service.openReleaseWithMessage", { message: updateMessage }),
+        primaryLabel: canAutoInstall ? t("service.installUpdate") : t("service.openReleases"),
         ...point,
       });
       return;
@@ -7960,10 +8035,6 @@ async function checkAppUpdate(event) {
     }
     state.updateChecking = false;
     renderUpdatePreviewControl();
-    if (button) {
-      button.disabled = false;
-      button.textContent = t("service.checkUpdate");
-    }
   }
 }
 
@@ -9073,6 +9144,10 @@ elements.confirmOk.addEventListener("click", async () => {
     }
     if (intent.type === "reset-player") {
       await resetPlayerState();
+      return;
+    }
+    if (intent.type === "install-app-update") {
+      await installAppUpdate(Boolean(intent.includePreview));
       return;
     }
     if (intent.type === "open-release" && intent.releaseUrl) {

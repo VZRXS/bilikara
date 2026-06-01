@@ -1562,6 +1562,7 @@ function stableSnapshotForRenderSignature(snapshot) {
     return null;
   }
   const {
+    app_update: _appUpdate,
     bbdown: _bbdown,
     cache_policy: _cachePolicy,
     ffmpeg: _ffmpeg,

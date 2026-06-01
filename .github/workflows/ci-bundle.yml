@@ -90,8 +90,9 @@ jobs:
           if [ -z "$safe_ref" ]; then
             safe_ref="local"
           fi
-          archive_name="bilikara-${safe_ref}-${{ matrix.slug }}.zip"
-          artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}"
+          runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else (m or 'unknown'))")"
+          archive_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}.zip"
+          artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}"
           echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
           echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
