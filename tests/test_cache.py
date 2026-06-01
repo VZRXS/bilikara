@@ -54,6 +54,26 @@ class CacheManagerOutputTest(unittest.TestCase):
             "下载视频轨 P1 50% · 32.0 MB / 64.0 MB",
         )
 
+    def test_structured_download_message_starts_with_total_progress(self):
+        tracks = [
+            {
+                "label": "视频轨P1",
+                "order": 0,
+                "current_bytes": 32 * 1024 * 1024,
+                "target_bytes": 64 * 1024 * 1024,
+            },
+            {
+                "label": "音轨P1",
+                "order": 1,
+                "current_bytes": 8 * 1024 * 1024,
+                "target_bytes": 16 * 1024 * 1024,
+            },
+        ]
+        self.assertEqual(
+            CacheManager._structured_download_message(tracks),
+            "总计：40.0 MB / 80.0 MB\n视频轨P1：32.0 MB / 64.0 MB\n音轨P1：8.0 MB / 16.0 MB",
+        )
+
     def test_force_refresh_hint_matches_upgrade_message(self):
         self.assertTrue(CacheManager._should_force_refresh_bbdown("请尝试升级到最新版本后重试!"))
         self.assertFalse(CacheManager._should_force_refresh_bbdown("缓存失败"))

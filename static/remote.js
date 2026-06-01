@@ -1515,10 +1515,11 @@ async function refreshCacheStatusOnly() {
     const response = await fetch("/api/state", { headers: clientHeaders() });
     const payload = await response.json();
     if (response.ok && payload.ok && payload.data) {
+      const previousSnapshot = state.data;
       state.data = payload.data;
       const current = state.data.current_item;
+      renderCacheStatusOnly(previousSnapshot);
       if (current) {
-        renderCurrentPlaybackState(current);
         if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
           state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
           return;
@@ -1535,12 +1536,56 @@ function currentStateRevision(snapshot = state.data) {
   return Number.isFinite(revision) && revision >= 0 ? revision : 0;
 }
 
-function renderSignatureForSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") {
-    return "";
+const CACHE_VOLATILE_ITEM_KEYS = new Set([
+  "cache_activity_at",
+  "cache_download_current_bytes",
+  "cache_download_total_bytes",
+  "cache_download_tracks",
+  "cache_message",
+  "cache_progress",
+  "cache_size_bytes",
+]);
+
+function stableItemForRenderSignature(item) {
+  if (!item || typeof item !== "object") {
+    return item || null;
   }
-  const { player_status: _playerStatus, state_revision: _stateRevision, ...renderedData } = snapshot;
-  return JSON.stringify(renderedData);
+  const stableItem = { ...item };
+  CACHE_VOLATILE_ITEM_KEYS.forEach((key) => {
+    delete stableItem[key];
+  });
+  return stableItem;
+}
+
+function stableSnapshotForRenderSignature(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
+  const {
+    bbdown: _bbdown,
+    cache_policy: _cachePolicy,
+    ffmpeg: _ffmpeg,
+    player_status: _playerStatus,
+    state_revision: _stateRevision,
+    updated_at: _updatedAt,
+    ...renderedData
+  } = snapshot;
+  return {
+    ...renderedData,
+    current_item: stableItemForRenderSignature(renderedData.current_item),
+    playlist: Array.isArray(renderedData.playlist)
+      ? renderedData.playlist.map(stableItemForRenderSignature)
+      : renderedData.playlist,
+  };
+}
+
+function renderSignatureForSnapshot(snapshot) {
+  const stableSnapshot = stableSnapshotForRenderSignature(snapshot);
+  return stableSnapshot ? JSON.stringify(stableSnapshot) : "";
+}
+
+function playerStatusSignature(snapshot) {
+  return JSON.stringify(snapshot?.player_status || null);
 }
 
 function scheduleRender() {
@@ -1560,6 +1605,17 @@ function renderPlaybackStatusOnly() {
   }
   renderCurrentPlaybackState(currentItem);
   renderPlayerControls(currentItem, frontendPlaybackMode(state.data?.playback_mode));
+}
+
+function renderCacheStatusOnly(previousSnapshot = null) {
+  const currentItem = state.data?.current_item;
+  if (currentItem) {
+    renderCurrentPlaybackState(currentItem);
+  }
+  renderQueueCacheStatus(Array.isArray(state.data?.playlist) ? state.data.playlist : []);
+  if (playerStatusSignature(previousSnapshot) !== playerStatusSignature(state.data)) {
+    renderPlayerControls(currentItem, frontendPlaybackMode(state.data?.playback_mode));
+  }
 }
 
 function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
@@ -1589,7 +1645,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     state.dataRenderSignature = nextRenderSignature;
     scheduleRender();
   } else if (!state.renderDebounceTimer) {
-    renderPlaybackStatusOnly();
+    renderCacheStatusOnly(previousSnapshot);
   }
   
   return true;
@@ -4838,43 +4894,81 @@ function syncListView() {
   elements.historyList.classList.toggle("hidden", !isHistoryView);
 }
 
+function queueRenderSignatureForItem(item, index) {
+  return {
+    index,
+    id: String(item?.id || ""),
+    title: String(item?.display_title || ""),
+    requester: String(item?.requester_name || ""),
+    cacheStatus: String(item?.cache_status || ""),
+  };
+}
+
 function renderQueue(playlist) {
+  const items = Array.isArray(playlist) ? playlist : [];
   const signature = JSON.stringify({
     language: state.language,
-    playlist: playlist || [],
+    playlist: items.map(queueRenderSignatureForItem),
   });
   if (signature === state.queueRenderSignature) {
+    renderQueueCacheStatus(items);
     return;
   }
   state.queueRenderSignature = signature;
 
   elements.queueList.innerHTML = "";
-  if (!playlist.length) {
+  if (!items.length) {
     elements.queueList.innerHTML = `<div class="queue-empty">${htmlT("remote.queueEmpty")}</div>`;
     return;
   }
 
-  playlist.forEach((item, index) => {
+  items.forEach((item, index) => {
     const node = elements.queueItemTemplate.content.firstElementChild.cloneNode(true);
     applyStaticI18n(node);
-    node.classList.toggle("ready", item.cache_status === "ready");
+    node.dataset.id = String(item.id || "");
     const orderNode = node.querySelector(".queue-order");
     if (orderNode) {
       orderNode.textContent = String(index + 1);
     }
     node.querySelector(".queue-title").textContent = item.display_title;
-    const noteNode = node.querySelector(".queue-note");
-    const noteText = queueNoteText(item);
-    noteNode.textContent = noteText;
-    noteNode.classList.toggle("hidden", !noteText);
-    node.querySelector(".queue-main").classList.toggle("is-compact", !noteText);
-    node.querySelector(".queue-state").textContent = queueStateLabel(item);
     const requesterNode = node.querySelector(".queue-requester");
     const requesterText = requesterBadgeText(item.requester_name);
     requesterNode.textContent = requesterText;
     requesterNode.classList.toggle("hidden", !requesterText);
+    syncQueueItemCacheStatus(node, item);
     elements.queueList.appendChild(node);
   });
+}
+
+function renderQueueCacheStatus(playlist) {
+  const items = Array.isArray(playlist) ? playlist : [];
+  const itemsById = new Map(items.map((item) => [String(item.id || ""), item]));
+  elements.queueList.querySelectorAll(".queue-item").forEach((node) => {
+    const item = itemsById.get(String(node.dataset.id || ""));
+    if (item) {
+      syncQueueItemCacheStatus(node, item);
+    }
+  });
+}
+
+function syncQueueItemCacheStatus(node, item) {
+  if (!node || !item) {
+    return;
+  }
+  const noteNode = node.querySelector(".queue-note");
+  const noteText = queueNoteText(item);
+  if (noteNode && noteNode.textContent !== noteText) {
+    noteNode.textContent = noteText;
+  }
+  noteNode?.classList.toggle("hidden", !noteText);
+  node.querySelector(".queue-main")?.classList.toggle("is-compact", !noteText);
+
+  const stateNode = node.querySelector(".queue-state");
+  const stateText = queueStateLabel(item);
+  if (stateNode && stateNode.textContent !== stateText) {
+    stateNode.textContent = stateText;
+  }
+  node.classList.toggle("ready", item.cache_status === "ready");
 }
 
 function queueNoteText(item) {
@@ -4883,6 +4977,9 @@ function queueNoteText(item) {
   }
   if (item.cache_status === "ready") {
     return "";
+  }
+  if (item.cache_status === "downloading") {
+    return cacheDownloadTotalSizeLabel(item);
   }
   const message = String(item.cache_message || "").trim();
   if (!message) {
@@ -4900,6 +4997,10 @@ function queueStateLabel(item) {
     return t("status.ready");
   }
   if (item.cache_status === "downloading") {
+    const progressPercent = cacheProgressPercentForItem(item);
+    if (progressPercent !== null) {
+      return `${progressPercent}%`;
+    }
     return t("status.caching");
   }
   if (item.cache_status === "failed") {
@@ -4916,6 +5017,10 @@ function currentCacheStateLabel(item) {
     return "";
   }
   if (item.cache_status === "downloading") {
+    const progressLabel = cacheDownloadTotalProgressLabel(item);
+    if (progressLabel) {
+      return progressLabel;
+    }
     const message = localizedCacheMessage(item.cache_message, item.cache_status);
     if (message) {
       return message;
@@ -4924,6 +5029,46 @@ function currentCacheStateLabel(item) {
     return size > 0 ? t("status.cachingWithSize", { size: formatBytes(size) }) : t("status.caching");
   }
   return queueStateLabel(item);
+}
+
+function cacheProgressPercentForItem(item) {
+  if (!item || item.cache_status !== "downloading") {
+    return null;
+  }
+  const totalBytes = Number(item.cache_download_total_bytes || 0);
+  const currentBytes = Number(item.cache_download_current_bytes || 0);
+  if (totalBytes > 0) {
+    return Math.max(0, Math.min(99, Math.round((currentBytes / totalBytes) * 100)));
+  }
+  const cacheProgress = Number(item.cache_progress || 0);
+  if (cacheProgress > 0 && cacheProgress < 100) {
+    return Math.max(0, Math.min(99, Math.round(cacheProgress)));
+  }
+  return null;
+}
+
+function cacheDownloadTotalSizeLabel(item) {
+  const totalBytes = Number(item?.cache_download_total_bytes || 0);
+  const currentBytes = Number(item?.cache_download_current_bytes || 0);
+  if (totalBytes > 0) {
+    return `${formatBytes(Math.min(currentBytes, totalBytes))} / ${formatBytes(totalBytes)}`;
+  }
+  if (currentBytes > 0) {
+    return t("status.cachingWithSize", { size: formatBytes(currentBytes) });
+  }
+  return "";
+}
+
+function cacheDownloadTotalProgressLabel(item) {
+  const sizeLabel = cacheDownloadTotalSizeLabel(item);
+  const progressPercent = cacheProgressPercentForItem(item);
+  if (sizeLabel && progressPercent !== null) {
+    return `${sizeLabel} · ${progressPercent}%`;
+  }
+  if (progressPercent !== null) {
+    return `${t("status.caching")} ${progressPercent}%`;
+  }
+  return sizeLabel;
 }
 
 function formatPlaybackClockSeconds(seconds) {

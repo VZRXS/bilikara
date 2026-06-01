@@ -4582,6 +4582,10 @@ function renderQueueCurrent(currentItem) {
     label: currentState.label,
     title: currentItem.display_title,
     requesterText,
+    cacheProgress: currentItem.cache_progress,
+    cacheSizeBytes: currentItem.cache_size_bytes,
+    cacheDownloadCurrent: currentItem.cache_download_current_bytes,
+    cacheDownloadTotal: currentItem.cache_download_total_bytes,
     language: state.language,
   });
 
@@ -4601,6 +4605,7 @@ function renderQueueCurrent(currentItem) {
     setClassToggle(elements.queueCurrentProgressBadge, "active", currentState.state === "caching");
     setClassToggle(elements.queueCurrentProgressBadge, "ready", currentState.state === "playing");
     setClassToggle(elements.queueCurrentProgressBadge, "failed", currentState.state === "failed");
+    syncCacheProgressBadge(elements.queueCurrentProgressBadge, currentItem, currentState.state === "caching");
   }
 
   syncRetryButton(elements.queueCurrentRetry, currentItem);
@@ -4615,6 +4620,10 @@ function currentStatusForItem(item) {
   }
   if (item.cache_status === "failed") {
     return { state: "failed", label: t("status.failed") };
+  }
+  const progressPercent = cacheProgressPercentForItem(item);
+  if (progressPercent !== null) {
+    return { state: "caching", label: `${progressPercent}%` };
   }
   const size = Number(item.cache_size_bytes || 0);
   if (size > 0) {
@@ -6725,6 +6734,9 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       sizeText,
       noteText,
       cacheProgress: item.cache_progress,
+      cacheDownloadCurrent: item.cache_download_current_bytes,
+      cacheDownloadTotal: item.cache_download_total_bytes,
+      progressPercent: cacheProgressPercentForItem(item),
       language: state.language,
     });
     if (node.dataset.dynamicSignature !== dynamicSignature) {
@@ -6734,6 +6746,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       setClassToggle(badge, "idle", badgeState === "idle");
       setClassToggle(badge, "ready", item.cache_status === "ready");
       setClassToggle(badge, "failed", item.cache_status === "failed");
+      syncCacheProgressBadge(badge, item, badgeState === "active");
       if (badge.style.getPropertyValue("--badge-delay") !== badgeDelay) {
         badge.style.setProperty("--badge-delay", badgeDelay);
       }
@@ -6974,7 +6987,41 @@ function formatCacheUsage(cachePolicy) {
   return t("service.cacheUsageDetail", { usage, count: cachedItemCount });
 }
 
+function cacheProgressPercentForItem(item) {
+  if (!item || item.cache_status !== "downloading") {
+    return null;
+  }
+  const totalBytes = Number(item.cache_download_total_bytes || 0);
+  const currentBytes = Number(item.cache_download_current_bytes || 0);
+  if (totalBytes > 0) {
+    return Math.max(0, Math.min(99, Math.round((currentBytes / totalBytes) * 100)));
+  }
+  const cacheProgress = Number(item.cache_progress || 0);
+  if (cacheProgress > 0 && cacheProgress < 100) {
+    return Math.max(0, Math.min(99, Math.round(cacheProgress)));
+  }
+  return null;
+}
+
+function syncCacheProgressBadge(badge, item, isActive) {
+  if (!badge) {
+    return;
+  }
+  const progressPercent = isActive ? cacheProgressPercentForItem(item) : null;
+  const hasProgress = progressPercent !== null;
+  setClassToggle(badge, "has-progress", hasProgress);
+  setClassToggle(badge, "indeterminate", Boolean(isActive && !hasProgress));
+  const progressValue = hasProgress ? String(Math.max(0, Math.min(100, progressPercent))) : "0";
+  if (badge.style.getPropertyValue("--badge-progress-value") !== progressValue) {
+    badge.style.setProperty("--badge-progress-value", progressValue);
+  }
+}
+
 function cacheSizeLabelForItem(item) {
+  const progressPercent = cacheProgressPercentForItem(item);
+  if (progressPercent !== null) {
+    return `${progressPercent}%`;
+  }
   const size = Number(item.cache_size_bytes || 0);
   if (size > 0) {
     return formatCompactBytes(size);
