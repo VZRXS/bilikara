@@ -159,8 +159,8 @@ class AppContext:
     def app_update_snapshot(self) -> dict[str, object]:
         return self.update_manager.snapshot()
 
-    def start_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
-        return self.update_manager.start(include_preview=include_preview)
+    def start_app_update(self, *, include_preview: bool = False, restart: bool = True) -> dict[str, object]:
+        return self.update_manager.start(include_preview=include_preview, restart=restart)
 
     def refresh_startup_gatcha_cache_in_background(self) -> bool:
         with self._startup_lock:
@@ -814,7 +814,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "yes",
                     "on",
                 }
-                self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
+                raw_restart = body.get("restart")
+                restart = True
+                if isinstance(raw_restart, bool):
+                    restart = raw_restart
+                elif raw_restart is not None:
+                    restart = str(raw_restart).strip().lower() not in {"0", "false", "no", "off"}
+                self._write_json({
+                    "ok": True,
+                    "data": CONTEXT.start_app_update(include_preview=include_preview, restart=restart),
+                })
                 return
             if route == "/api/playlist/add":
                 self._handle_add(body)

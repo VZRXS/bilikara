@@ -263,8 +263,14 @@ BILIBILI_HEADERS = {
 }
 
 BB_DOWN_RELEASE_API = "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
-APP_RELEASE_API = "https://api.github.com/repos/VZRXS/bilikara/releases/latest"
-APP_RELEASES_URL = "https://github.com/VZRXS/bilikara/releases"
+APP_RELEASE_API = os.getenv(
+    "BILIKARA_APP_RELEASE_API",
+    "https://api.github.com/repos/VZRXS/bilikara/releases/latest",
+).strip() or "https://api.github.com/repos/VZRXS/bilikara/releases/latest"
+APP_RELEASES_URL = os.getenv(
+    "BILIKARA_APP_RELEASES_URL",
+    "https://github.com/VZRXS/bilikara/releases",
+).strip() or "https://github.com/VZRXS/bilikara/releases"
 
 
 def _detect_app_version() -> str:

@@ -551,9 +551,9 @@ class UpdateRouteTest(unittest.TestCase):
         writes: list[dict] = []
         calls: list[dict] = []
 
-        def start_app_update(*, include_preview=False):
-            calls.append({"include_preview": include_preview})
-            return {"state": "checking", "include_preview": include_preview}
+        def start_app_update(*, include_preview=False, restart=True):
+            calls.append({"include_preview": include_preview, "restart": restart})
+            return {"state": "checking", "include_preview": include_preview, "restart": restart}
 
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
@@ -568,8 +568,36 @@ class UpdateRouteTest(unittest.TestCase):
         with patch("bilikara.server.CONTEXT", context):
             handler.do_POST()
 
-        self.assertEqual(calls, [{"include_preview": True}])
-        self.assertEqual(writes[0], {"ok": True, "data": {"state": "checking", "include_preview": True}})
+        self.assertEqual(calls, [{"include_preview": True, "restart": True}])
+        self.assertEqual(
+            writes[0],
+            {"ok": True, "data": {"state": "checking", "include_preview": True, "restart": True}},
+        )
+
+    def test_update_install_route_can_prepare_without_restart(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        calls: list[dict] = []
+
+        def start_app_update(*, include_preview=False, restart=True):
+            calls.append({"include_preview": include_preview, "restart": restart})
+            return {"state": "checking", "restart": restart}
+
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            start_app_update=start_app_update,
+        )
+
+        handler.path = "/api/app/update/install"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"restart": False}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(calls, [{"include_preview": False, "restart": False}])
+        self.assertEqual(writes[0], {"ok": True, "data": {"state": "checking", "restart": False}})
 
 
 class PlayerResetRouteTest(unittest.TestCase):
