@@ -2,6 +2,8 @@ name: CI And Bundles
 
 on:
   push:
+    branches:
+      - "actions-local-update-test"
     tags:
       - "v*"
   pull_request:
@@ -42,7 +44,7 @@ jobs:
   bundle:
     name: Bundle (${{ matrix.label }})
     needs: test
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/actions-local-update-test'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
