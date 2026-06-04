@@ -1523,16 +1523,21 @@ def _serve(
         CONTEXT.refresh_startup_gatcha_cache_in_background()
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
-    print(f"{status_label} running on {url}")
-    print(f"{status_label} mobile remote: {url}/remote")
+    print(f"{status_label} running on {url}", flush=True)
+    print(f"{status_label} mobile remote: {url}/remote", flush=True)
 
     if not auto_open_browser and not shutdown_on_last_client:
-        print(json.dumps({
-            "event": "bilikara.ready",
-            "host": browser_host,
-            "port": actual_port,
-            "baseUrl": url
-        }))
+        print(
+            json.dumps(
+                {
+                    "event": "bilikara.ready",
+                    "host": browser_host,
+                    "port": actual_port,
+                    "baseUrl": url,
+                }
+            ),
+            flush=True,
+        )
 
     if auto_open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()

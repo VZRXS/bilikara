@@ -105,7 +105,12 @@ fn main() {
             ]);
 
             let mut command = Command::new(&cmd);
-            command.args(args).stdout(Stdio::piped());
+            command
+                .args(args)
+                .env("PYTHONUNBUFFERED", "1")
+                .env("BILIKARA_STARTUP_LOG", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
 
             #[cfg(target_os = "windows")]
             command.creation_flags(CREATE_NO_WINDOW);
@@ -113,10 +118,22 @@ fn main() {
             let mut child = command.spawn().expect("Failed to start backend");
 
             let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take();
             let window_clone = window.clone();
             let child_arc = Arc::new(Mutex::new(Some(child)));
 
             app.manage(BackendProcess(child_arc.clone()));
+
+            if let Some(stderr) = stderr {
+                std::thread::spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    for line in reader.lines() {
+                        if let Ok(line) = line {
+                            eprintln!("Backend stderr: {}", line);
+                        }
+                    }
+                });
+            }
 
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
@@ -125,10 +142,14 @@ fn main() {
                     if line.contains("\"event\": \"bilikara.ready\"") {
                         if let Ok(ready) = serde_json::from_str::<ReadyEvent>(&line) {
                             println!("Backend ready at {}", ready.base_url);
-                            window_clone
+                            if let Err(error) = window_clone.show() {
+                                eprintln!("Failed to show window: {}", error);
+                            }
+                            if let Err(error) = window_clone
                                 .eval(&format!("window.location.replace('{}');", ready.base_url))
-                                .unwrap();
-                            window_clone.show().unwrap();
+                            {
+                                eprintln!("Failed to navigate to backend: {}", error);
+                            }
                             break;
                         }
                     }
