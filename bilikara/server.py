@@ -458,6 +458,18 @@ class AppContext:
             name="bilikara-update-restart",
         ).start()
 
+    def request_shutdown(self) -> None:
+        with self._client_lock:
+            server = self._server
+            self._shutdown_requested = True
+        if server is None:
+            return
+        threading.Thread(
+            target=server.shutdown,
+            daemon=True,
+            name="bilikara-api-shutdown",
+        ).start()
+
     def touch_client(self, client_id: str, is_host: bool = True) -> None:
         client_key = str(client_id or "").strip()
         if not client_key:
@@ -810,6 +822,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route == "/api/app/shutdown":
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                CONTEXT.request_shutdown()
+                self._write_json({"ok": True})
+                return
             if route == "/api/app/update/install":
                 include_preview = str(body.get("include_preview", body.get("includePreview", ""))).lower() in {
                     "1",
@@ -1383,6 +1402,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
     def _require_id(self, body: dict) -> None:
         if not str(body.get("item_id") or "").strip():
             raise ValueError("缺少 item_id")
+
+    def _is_local_client(self) -> bool:
+        host = self.client_address[0] if self.client_address else ""
+        return host in {"127.0.0.1", "::1", "localhost"}
 
     def _write_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")

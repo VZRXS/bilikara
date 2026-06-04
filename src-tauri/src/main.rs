@@ -4,8 +4,10 @@
 )]
 
 use serde::Deserialize;
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -29,7 +31,10 @@ struct ReadyEvent {
     base_url: String,
 }
 
-struct BackendProcess(Arc<Mutex<Option<std::process::Child>>>);
+struct BackendProcess {
+    child: Arc<Mutex<Option<Child>>>,
+    base_url: Arc<Mutex<Option<String>>>,
+}
 
 fn resolve_backend_command() -> (String, Vec<String>) {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
@@ -89,6 +94,48 @@ fn is_backend_candidate(path: &PathBuf, current_exe: &PathBuf) -> bool {
     candidate != *current_exe
 }
 
+fn parse_local_http_url(base_url: &str) -> Option<(&str, u16)> {
+    let rest = base_url.strip_prefix("http://")?;
+    let authority = rest.split('/').next()?;
+    let (host, port_text) = authority.rsplit_once(':')?;
+    let port = port_text.parse::<u16>().ok()?;
+    Some((host, port))
+}
+
+fn request_backend_shutdown(base_url: &str) -> bool {
+    let Some((host, port)) = parse_local_http_url(base_url) else {
+        return false;
+    };
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+        return false;
+    }
+    let Ok(mut stream) = TcpStream::connect((host.trim_matches(|c| c == '[' || c == ']'), port)) else {
+        return false;
+    };
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let request = format!(
+        "POST /api/app/shutdown HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+        host, port, "{}"
+    );
+    stream.write_all(request.as_bytes()).is_ok()
+}
+
+fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => return true,
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -121,8 +168,13 @@ fn main() {
             let stderr = child.stderr.take();
             let window_clone = window.clone();
             let child_arc = Arc::new(Mutex::new(Some(child)));
+            let base_url = Arc::new(Mutex::new(None));
+            let base_url_for_reader = base_url.clone();
 
-            app.manage(BackendProcess(child_arc.clone()));
+            app.manage(BackendProcess {
+                child: child_arc.clone(),
+                base_url: base_url.clone(),
+            });
 
             if let Some(stderr) = stderr {
                 std::thread::spawn(move || {
@@ -142,6 +194,9 @@ fn main() {
                     if line.contains("\"event\": \"bilikara.ready\"") {
                         if let Ok(ready) = serde_json::from_str::<ReadyEvent>(&line) {
                             println!("Backend ready at {}", ready.base_url);
+                            if let Ok(mut stored_url) = base_url_for_reader.lock() {
+                                *stored_url = Some(ready.base_url.clone());
+                            }
                             if let Err(error) = window_clone.show() {
                                 eprintln!("Failed to show window: {}", error);
                             }
@@ -161,9 +216,25 @@ fn main() {
         .on_window_event(|event| match event.event() {
             tauri::WindowEvent::Destroyed => {
                 if let Some(state) = event.window().try_state::<BackendProcess>() {
-                    if let Ok(mut child_lock) = state.0.lock() {
+                    let shutdown_url = state
+                        .base_url
+                        .lock()
+                        .ok()
+                        .and_then(|stored_url| stored_url.clone());
+                    let shutdown_requested = shutdown_url
+                        .as_deref()
+                        .map(request_backend_shutdown)
+                        .unwrap_or(false);
+
+                    if let Ok(mut child_lock) = state.child.lock() {
                         if let Some(mut child) = child_lock.take() {
+                            if shutdown_requested
+                                && wait_for_child_exit(&mut child, Duration::from_secs(20))
+                            {
+                                return;
+                            }
                             let _ = child.kill();
+                            let _ = child.wait();
                         }
                     }
                 }

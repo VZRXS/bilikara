@@ -581,7 +581,10 @@ class CacheManager:
                 return
             self.stop_event.set()
             processes = self._active_processes_locked()
-        self._terminate_processes(processes)
+            if self.bbdown_login_process is not None:
+                processes.append(self.bbdown_login_process)
+                self.bbdown_login_process = None
+        self._terminate_processes(processes, wait=True)
         self._clear_cache_root()
         with self.lock:
             self.item_activity_at.clear()
@@ -3065,7 +3068,12 @@ class CacheManager:
             processes = self._active_processes_locked(item_id)
         self._terminate_processes(processes)
 
-    def _terminate_processes(self, processes: Iterable[subprocess.Popen[str] | None]) -> None:
+    def _terminate_processes(
+        self,
+        processes: Iterable[subprocess.Popen[str] | None],
+        *,
+        wait: bool = False,
+    ) -> None:
         seen: set[int] = set()
         for process in processes:
             if process is None:
@@ -3074,14 +3082,23 @@ class CacheManager:
             if process_id in seen:
                 continue
             seen.add(process_id)
-            self._terminate_process(process)
+            self._terminate_process(process, wait=wait)
 
-    def _terminate_process(self, process: subprocess.Popen[str] | None) -> None:
+    def _terminate_process(self, process: subprocess.Popen[str] | None, *, wait: bool = False) -> None:
         if not process or process.poll() is not None:
             return
         process.terminate()
-        # We don't block here to avoid stalling the API thread.
-        # The worker thread will detect the termination via _run_tool_process.
+        if not wait:
+            # We don't block normal API calls; the worker thread will detect termination.
+            return
+        try:
+            process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _bbdown_login_worker(self) -> None:
             try:
