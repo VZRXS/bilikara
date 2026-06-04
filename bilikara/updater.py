@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
 from .config import APP_HOME, APP_RELEASE_API, APP_RELEASES_URL, APP_VERSION
@@ -500,37 +500,74 @@ def _find_macos_payload_app(extract_dir: Path, current_app_name: str) -> Path:
     raise AppUpdateError("更新包里没有找到 macOS App")
 
 
+def _coerce_positive_pid(value: object) -> int | None:
+    try:
+        pid = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _restart_launch_executable_name(executable_path: Path) -> str:
+    if os.getenv("BILIKARA_LAUNCH_MODE", "").strip().lower() == "tauri":
+        desktop_executable = os.getenv("BILIKARA_DESKTOP_EXECUTABLE", "").strip()
+        if desktop_executable:
+            if "\\" in desktop_executable or re.match(r"^[A-Za-z]:", desktop_executable):
+                return PureWindowsPath(desktop_executable).name
+            return Path(desktop_executable).name
+    return executable_path.name or "bilikara.exe"
+
+
+def _restart_wait_pids(primary_pid: int) -> list[int]:
+    pids: list[int] = []
+    for pid in (primary_pid, _coerce_positive_pid(os.getenv("BILIKARA_DESKTOP_PID", ""))):
+        if pid and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
 def _write_windows_restart_script(
     script_path: Path,
     *,
     source_root: Path,
     destination_root: Path,
     executable_name: str,
-    pid: int,
+    launch_executable_name: str | None = None,
+    wait_pids: list[int] | None = None,
+    pid: int | None = None,
 ) -> list[str]:
+    pids = list(wait_pids or ([] if pid is None else [pid]))
+    if not pids:
+        pids = [os.getpid()]
+    pid_list = " ".join(str(item) for item in pids)
+    launch_name = launch_executable_name or executable_name
     script = f"""@echo off
 setlocal
-set "PID={pid}"
+set "PIDS={pid_list}"
 set "SRC={source_root}"
 set "DST={destination_root}"
-set "EXE={executable_name}"
+set "EXE={launch_name}"
 set "LOG=%TEMP%\\bilikara-update.log"
-:wait
-for /f "tokens=2" %%P in ('tasklist /FI "PID eq %PID%" /NH 2^>nul') do (
-  if "%%P"=="%PID%" (
-    timeout /t 1 /nobreak >nul
-    goto wait
-  )
-)
+for %%I in (%PIDS%) do call :waitpid %%I
 robocopy "%SRC%" "%DST%" /MIR /XD runtime data __pycache__ /XF "%~nx0" > "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
 if %RC% GEQ 8 exit /b %RC%
 start "" "%DST%\\%EXE%"
 exit /b 0
+
+:waitpid
+set "WAITPID=%~1"
+:wait
+for /f "tokens=2" %%P in ('tasklist /FI "PID eq %WAITPID%" /NH 2^>nul') do (
+  if "%%P"=="%WAITPID%" (
+    timeout /t 1 /nobreak >nul
+    goto wait
+  )
+)
+exit /b 0
 """
     script_path.write_text(script, encoding="utf-8", newline="\r\n")
     return ["cmd", "/c", str(script_path)]
-
 
 def _write_macos_restart_script(
     script_path: Path,
@@ -794,13 +831,15 @@ class AppUpdateManager:
         script_path = update_dir / f"apply-bilikara-update{script_suffix}"
         if target_platform == "windows":
             executable_name = self.executable_path.name or "bilikara.exe"
+            launch_executable_name = _restart_launch_executable_name(self.executable_path)
             source_root = _find_windows_payload_root(extract_dir, executable_name)
             return _write_windows_restart_script(
                 script_path,
                 source_root=source_root,
                 destination_root=install_root,
                 executable_name=executable_name,
-                pid=pid,
+                launch_executable_name=launch_executable_name,
+                wait_pids=_restart_wait_pids(pid),
             )
         if target_platform == "macos":
             current_app = install_root if install_root.suffix == ".app" else _current_macos_app_path(self.executable_path)

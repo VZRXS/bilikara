@@ -1,9 +1,11 @@
+import os
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
+import bilikara.updater as updater
 from bilikara.updater import AppUpdateManager, check_for_update, fetch_latest_release, is_auto_update_supported, is_newer_version, select_update_asset, version_tuple
 
 
@@ -228,6 +230,41 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertTrue(is_auto_update_supported(target={"platform": "macos", "arch": "arm64"}, frozen=True))
         self.assertFalse(is_auto_update_supported(target={"platform": "windows", "arch": "x64"}, frozen=False))
         self.assertFalse(is_auto_update_supported(target={"platform": "linux", "arch": "x64"}, frozen=True))
+
+
+    def test_restart_launch_executable_uses_tauri_entry(self):
+        with patch.dict(
+            os.environ,
+            {
+                "BILIKARA_LAUNCH_MODE": "tauri",
+                "BILIKARA_DESKTOP_EXECUTABLE": r"C:\bilikara\bilikara-desktop.exe",
+                "BILIKARA_DESKTOP_PID": "1234",
+            },
+        ):
+            self.assertEqual(
+                updater._restart_launch_executable_name(Path(r"C:\bilikara\bilikara.exe")),
+                "bilikara-desktop.exe",
+            )
+            self.assertEqual(updater._restart_wait_pids(42), [42, 1234])
+
+    def test_windows_restart_script_waits_for_shell_and_launches_selected_entry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "apply.cmd"
+            updater._write_windows_restart_script(
+                script_path,
+                source_root=Path(r"C:\update\bilikara"),
+                destination_root=Path(r"C:\bilikara"),
+                executable_name="bilikara.exe",
+                launch_executable_name="bilikara-desktop.exe",
+                wait_pids=[111, 222],
+            )
+
+            script = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('set "PIDS=111 222"', script)
+        self.assertIn('set "EXE=bilikara-desktop.exe"', script)
+        self.assertIn('for %%I in (%PIDS%) do call :waitpid %%I', script)
+        self.assertIn(r'start "" "%DST%\%EXE%"', script)
 
     def test_app_update_manager_reports_unsupported_platform_without_downloading(self):
         calls: list[str] = []

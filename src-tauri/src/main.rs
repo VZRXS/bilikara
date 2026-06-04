@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -34,6 +34,7 @@ struct ReadyEvent {
 struct BackendProcess {
     child: Arc<Mutex<Option<Child>>>,
     base_url: Arc<Mutex<Option<String>>>,
+    shutdown_token: String,
 }
 
 fn resolve_backend_command() -> (String, Vec<String>) {
@@ -94,6 +95,22 @@ fn is_backend_candidate(path: &PathBuf, current_exe: &PathBuf) -> bool {
     candidate != *current_exe
 }
 
+fn current_executable_string() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok().or(Some(path)))
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+fn make_shutdown_token() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{}", std::process::id(), nanos)
+}
+
 fn parse_local_http_url(base_url: &str) -> Option<(&str, u16)> {
     let rest = base_url.strip_prefix("http://")?;
     let authority = rest.split('/').next()?;
@@ -102,20 +119,17 @@ fn parse_local_http_url(base_url: &str) -> Option<(&str, u16)> {
     Some((host, port))
 }
 
-fn request_backend_shutdown(base_url: &str) -> bool {
+fn request_backend_shutdown(base_url: &str, shutdown_token: &str) -> bool {
     let Some((host, port)) = parse_local_http_url(base_url) else {
         return false;
     };
-    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
-        return false;
-    }
     let Ok(mut stream) = TcpStream::connect((host.trim_matches(|c| c == '[' || c == ']'), port)) else {
         return false;
     };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let request = format!(
-        "POST /api/app/shutdown HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
-        host, port, "{}"
+        "POST /api/app/shutdown HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: 2\r\nContent-Type: application/json\r\nX-Bilikara-Shutdown-Token: {}\r\nConnection: close\r\n\r\n{}",
+        host, port, shutdown_token, "{}"
     );
     stream.write_all(request.as_bytes()).is_ok()
 }
@@ -145,17 +159,22 @@ fn main() {
             args.extend(vec![
                 "--no-browser".to_string(),
                 "--headless".to_string(),
-                "--host".to_string(),
-                "127.0.0.1".to_string(),
                 "--port".to_string(),
                 "0".to_string(),
             ]);
+
+            let shutdown_token = make_shutdown_token();
+            let desktop_executable = current_executable_string();
 
             let mut command = Command::new(&cmd);
             command
                 .args(args)
                 .env("PYTHONUNBUFFERED", "1")
                 .env("BILIKARA_STARTUP_LOG", "1")
+                .env("BILIKARA_LAUNCH_MODE", "tauri")
+                .env("BILIKARA_DESKTOP_PID", std::process::id().to_string())
+                .env("BILIKARA_DESKTOP_EXECUTABLE", desktop_executable)
+                .env("BILIKARA_SHUTDOWN_TOKEN", shutdown_token.clone())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
@@ -174,6 +193,33 @@ fn main() {
             app.manage(BackendProcess {
                 child: child_arc.clone(),
                 base_url: base_url.clone(),
+                shutdown_token: shutdown_token.clone(),
+            });
+
+            let app_handle = app.handle();
+            let child_for_monitor = child_arc.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(500));
+                let should_exit = match child_for_monitor.lock() {
+                    Ok(mut child_lock) => {
+                        if let Some(child) = child_lock.as_mut() {
+                            match child.try_wait() {
+                                Ok(Some(_)) | Err(_) => {
+                                    *child_lock = None;
+                                    true
+                                }
+                                Ok(None) => false,
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    Err(_) => true,
+                };
+                if should_exit {
+                    app_handle.exit(0);
+                    break;
+                }
             });
 
             if let Some(stderr) = stderr {
@@ -223,7 +269,7 @@ fn main() {
                         .and_then(|stored_url| stored_url.clone());
                     let shutdown_requested = shutdown_url
                         .as_deref()
-                        .map(request_backend_shutdown)
+                        .map(|url| request_backend_shutdown(url, &state.shutdown_token))
                         .unwrap_or(false);
 
                     if let Ok(mut child_lock) = state.child.lock() {

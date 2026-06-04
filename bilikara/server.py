@@ -823,7 +823,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
             if route == "/api/app/shutdown":
-                if not self._is_local_client():
+                if not self._is_local_client() and not self._has_valid_shutdown_token():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
                 CONTEXT.request_shutdown()
@@ -1406,6 +1406,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
     def _is_local_client(self) -> bool:
         host = self.client_address[0] if self.client_address else ""
         return host in {"127.0.0.1", "::1", "localhost"}
+
+    def _has_valid_shutdown_token(self) -> bool:
+        expected = os.getenv("BILIKARA_SHUTDOWN_TOKEN", "").strip()
+        provided = self.headers.get("X-Bilikara-Shutdown-Token", "").strip()
+        return bool(expected and provided and hmac.compare_digest(expected, provided))
 
     def _write_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
