@@ -3082,7 +3082,10 @@ class CacheManager:
             if process_id in seen:
                 continue
             seen.add(process_id)
-            self._terminate_process(process, wait=wait)
+            if wait:
+                self._terminate_process(process, wait=True)
+            else:
+                self._terminate_process(process)
 
     def _terminate_process(self, process: subprocess.Popen[str] | None, *, wait: bool = False) -> None:
         if not process or process.poll() is not None:
