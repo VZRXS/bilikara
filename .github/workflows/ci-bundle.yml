@@ -81,6 +81,28 @@ jobs:
       - name: Build app bundle
         run: python build_bundle.py
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Tauri App
+        run: |
+          npm install
+          npm run build
+
+      - name: Inject Tauri into Windows Bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item src-tauri/target/release/bilikara.exe -Destination dist/bilikara/bilikara-desktop.exe
+
+      - name: Inject Tauri into macOS Bundle
+        if: runner.os == 'macOS'
+        run: cp -r src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
+
       - name: Resolve bundle archive name
         id: bundle-name
         shell: bash
@@ -104,11 +126,15 @@ jobs:
 
       - name: Archive macOS bundle
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent dist/bilikara.app "$BUNDLE_ARCHIVE"
+        run: |
+          mkdir -p dist_release
+          mv dist/bilikara.app dist_release/
+          mv dist/Bilikara-Desktop.app dist_release/
+          ditto -c -k --sequesterRsrc dist_release "$BUNDLE_ARCHIVE"
 
       - name: Upload Windows bundle artifact
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
           path: dist/bilikara
@@ -116,10 +142,10 @@ jobs:
 
       - name: Upload macOS bundle artifact
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
-          path: dist/bilikara.app
+          path: dist_release
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release

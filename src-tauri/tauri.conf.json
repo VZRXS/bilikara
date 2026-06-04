@@ -1,0 +1,35 @@
+{
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devPath": "http://127.0.0.1:8080",
+    "distDir": "../static"
+  },
+  "package": {
+    "productName": "bilikara",
+    "version": "1.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": true
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.bilikara.app"
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "height": 768,
+        "resizable": true,
+        "title": "bilikara",
+        "width": 1024,
+        "visible": false
+      }
+    ]
+  }
+}

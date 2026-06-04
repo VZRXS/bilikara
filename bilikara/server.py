@@ -602,6 +602,9 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             is_host = False
             
         CONTEXT.touch_client(client_id, is_host=is_host)
+        if route == "/api/health":
+            self._write_json({"ok": True, "status": "ready"})
+            return
         if route == "/api/events":
             self._serve_events(client_id)
             return
@@ -1513,6 +1516,8 @@ def _serve(
 ) -> None:
     actual_port = _find_available_port(host, port) if auto_select_port else port
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
+    bound_host, bound_port = server.server_address[:2]
+    actual_port = bound_port
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
         CONTEXT.refresh_startup_gatcha_cache_in_background()
@@ -1520,6 +1525,14 @@ def _serve(
     url = f"http://{browser_host}:{actual_port}"
     print(f"{status_label} running on {url}")
     print(f"{status_label} mobile remote: {url}/remote")
+
+    if not auto_open_browser and not shutdown_on_last_client:
+        print(json.dumps({
+            "event": "bilikara.ready",
+            "host": browser_host,
+            "port": actual_port,
+            "baseUrl": url
+        }))
 
     if auto_open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
