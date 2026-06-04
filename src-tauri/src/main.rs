@@ -11,6 +11,12 @@ use tauri::Manager;
 
 use std::path::PathBuf;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[derive(Deserialize, Debug)]
 struct ReadyEvent {
     #[allow(dead_code)]
@@ -27,6 +33,7 @@ struct BackendProcess(Arc<Mutex<Option<std::process::Child>>>);
 
 fn resolve_backend_command() -> (String, Vec<String>) {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
     let mut current_dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
 
     // On macOS, the executable is inside Contents/MacOS/, so we go up 3 levels to get next to the .app bundle
@@ -39,23 +46,47 @@ fn resolve_backend_command() -> (String, Vec<String>) {
 
     // Windows packaged path
     let win_path = current_dir.join("bilikara").join("bilikara.exe");
-    if win_path.exists() {
+    if is_backend_candidate(&win_path, &current_exe) {
         return (win_path.to_string_lossy().to_string(), vec![]);
     }
 
     let win_path2 = current_dir.join("bilikara.exe");
-    if win_path2.exists() {
+    if is_backend_candidate(&win_path2, &current_exe) {
         return (win_path2.to_string_lossy().to_string(), vec![]);
     }
 
     // macOS packaged path
     let mac_path = current_dir.join("bilikara.app").join("Contents").join("MacOS").join("bilikara");
-    if mac_path.exists() {
+    if is_backend_candidate(&mac_path, &current_exe) {
         return (mac_path.to_string_lossy().to_string(), vec![]);
+    }
+
+    if let Some(script_path) = find_dev_launcher(current_dir) {
+        return ("python".to_string(), vec![script_path.to_string_lossy().to_string()]);
     }
 
     // Default to Python script for development
     ("python".to_string(), vec!["start_bilikara.py".to_string()])
+}
+
+fn find_dev_launcher(start_dir: &std::path::Path) -> Option<PathBuf> {
+    let mut cursor = Some(start_dir);
+    while let Some(dir) = cursor {
+        let candidate = dir.join("start_bilikara.py");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        cursor = dir.parent();
+    }
+    None
+}
+
+fn is_backend_candidate(path: &PathBuf, current_exe: &PathBuf) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    let candidate = path.canonicalize().unwrap_or_else(|_| path.clone());
+    candidate != *current_exe
 }
 
 fn main() {
@@ -73,11 +104,13 @@ fn main() {
                 "0".to_string(),
             ]);
 
-            let mut child = Command::new(&cmd)
-                .args(args)
-                .stdout(Stdio::piped())
-                .spawn()
-                .expect("Failed to start backend");
+            let mut command = Command::new(&cmd);
+            command.args(args).stdout(Stdio::piped());
+
+            #[cfg(target_os = "windows")]
+            command.creation_flags(CREATE_NO_WINDOW);
+
+            let mut child = command.spawn().expect("Failed to start backend");
 
             let stdout = child.stdout.take().unwrap();
             let window_clone = window.clone();

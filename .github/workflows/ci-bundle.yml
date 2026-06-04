@@ -92,7 +92,7 @@ jobs:
       - name: Build Tauri App
         run: |
           npm install
-          npx tauri icon static/pic/bili.png
+          npx tauri icon static/pic/icon.png
           npm run build
 
       - name: Inject Tauri into Windows Bundle
