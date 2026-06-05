@@ -118,6 +118,8 @@ class AppContext:
         self._startup_lock = threading.RLock()
         self._startup_started = False
         self._startup_gatcha_refresh_bypass_available = True
+        self._rating_submission_lock = threading.RLock()
+        self._rating_submission_keys: set[tuple[str, str]] = set()
 
     def snapshot(self) -> dict:
         self.cache_manager.reconcile_cache_state()
@@ -168,6 +170,16 @@ class AppContext:
 
     def has_session_users(self) -> bool:
         return self.store.has_session_users()
+
+    def register_rating_submission(self, session_user_name: str, play_id: str) -> bool:
+        key = (str(session_user_name or "").strip().casefold(), str(play_id or "").strip())
+        if not key[0] or not key[1]:
+            return False
+        with self._rating_submission_lock:
+            if key in self._rating_submission_keys:
+                return False
+            self._rating_submission_keys.add(key)
+            return True
 
     def advance_to_next(self) -> None:
         self.store.advance_to_next()
@@ -1108,12 +1120,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("invalid bvid")
                 if score < 1 or score > 5:
                     raise ValueError("score must be between 1 and 5")
-                self._submit_rating_in_background(session_user_name, play_id, bvid, score)
+                duplicate = not CONTEXT.register_rating_submission(session_user_name, play_id)
+                if not duplicate:
+                    self._submit_rating_in_background(session_user_name, play_id, bvid, score)
                 self._write_json({
                     "ok": True,
                     "data": {
                         "success": True,
-                        "queued": True,
+                        "queued": not duplicate,
+                        "duplicate": duplicate,
                         "session_user_name": session_user_name,
                         "play_id": play_id,
                         "bvid": bvid,

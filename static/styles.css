@@ -1296,7 +1296,7 @@ h2 {
 }
 
 .player-panel > .panel-head {
-  --player-fullscreen-button-space: clamp(112px, 18ch, 190px);
+  --player-fullscreen-button-space: clamp(220px, 28ch, 300px);
   position: relative;
   display: block;
   min-height: 44px;
@@ -1307,16 +1307,24 @@ h2 {
   min-width: 0;
 }
 
+.player-panel > .panel-head #player-rating-button,
 .player-panel > .panel-head #player-fullscreen-button {
   position: absolute;
   top: 0;
-  right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: max-content;
   min-width: 96px;
   max-width: calc(100% - 8px);
+}
+
+.player-panel > .panel-head #player-rating-button {
+  right: clamp(104px, 15ch, 168px);
+}
+
+.player-panel > .panel-head #player-fullscreen-button {
+  right: 0;
 }
 
 .player-panel:fullscreen,

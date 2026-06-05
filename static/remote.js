@@ -266,6 +266,7 @@ const state = {
   ratingPromptScore: 5,
   ratingPromptSubmitted: false,
   ratingPromptSeenPlayIds: new Set(),
+  ratingSubmittedKeys: new Set(),
   ratingOptOut: false,
   playerControlsRenderSignature: "",
   listHeaderRenderSignature: "",
@@ -297,6 +298,7 @@ const elements = {
   currentOwner: document.getElementById("current-owner"),
   currentCacheState: document.getElementById("current-cache-state"),
   currentMeta: document.getElementById("current-meta"),
+  currentRatingButton: document.getElementById("current-rating-button"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
   playerControlHint: document.getElementById("player-control-hint"),
@@ -1215,14 +1217,17 @@ async function apiPost(url, payload = {}) {
 
 function submitSongRating(item, score) {
   const bvid = String(item?.bvid || "").trim();
-  const playId = String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
-  const sessionUserName = selectedRequesterName()
-    || String(item?.requester_name || "").trim()
-    || String(state.data?.current_item?.requester_name || "").trim()
-    || String(state.data?.session_users?.[0] || "").trim()
-    || "unknown";
-  if (!bvid) {
+  const playId = ratingSubmissionPlayId(item);
+  const sessionUserName = ratingSubmissionUserName(item);
+  const submissionKey = ratingSubmissionKey(item);
+  if (!bvid || !playId) {
     return null;
+  }
+  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    return false;
+  }
+  if (submissionKey) {
+    state.ratingSubmittedKeys.add(submissionKey);
   }
   const payload = {
     session_user_name: sessionUserName,
@@ -1248,6 +1253,32 @@ function ratingOwnerUid(item) {
   const rawMid = item?.owner_mid ?? item?.mid;
   const uid = String(rawMid || "").trim();
   return /^\d+$/.test(uid) ? uid : "";
+}
+
+function ratingSubmissionUserName(item) {
+  return selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+}
+
+function ratingSubmissionPlayId(item) {
+  const bvid = String(item?.bvid || "").trim();
+  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+}
+
+function ratingSubmissionKey(item) {
+  const playId = ratingSubmissionPlayId(item);
+  if (!playId) {
+    return "";
+  }
+  return `${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+}
+
+function hasSubmittedSongRating(item) {
+  const key = ratingSubmissionKey(item);
+  return Boolean(key && state.ratingSubmittedKeys.has(key));
 }
 
 function ratingRequesterMatchesCurrentSelection(item) {
@@ -1387,13 +1418,15 @@ function closeRatingPrompt({ submit = true } = {}) {
 
   if (shouldSubmit) {
     submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
+    renderCurrentRatingButton(state.data?.current_item);
   }
 }
 
-function openRatingPrompt(item) {
+function openRatingPrompt(item, options = {}) {
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
-  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+  const force = Boolean(options.force);
+  if (!item || !bvid || !playId || state.ratingOptOut || (!force && state.ratingPromptSeenPlayIds.has(playId))) {
     return;
   }
   if (!ratingRequesterMatchesCurrentSelection(item)) {
@@ -1470,9 +1503,11 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   ) {
     closeRatingPrompt({ submit: false });
   }
-  if (ratio >= remoteRatingPromptThreshold && !state.ratingPromptSeenPlayIds.has(playId)) {
+  const ratingItem = { ...currentItem, play_id: playId };
+  if (ratio >= remoteRatingPromptThreshold && !hasSubmittedSongRating(ratingItem)) {
     state.ratingPromptSeenPlayIds.add(playId);
-    submitSongRating({ ...currentItem, play_id: playId }, 5);
+    submitSongRating(ratingItem, 5);
+    renderCurrentRatingButton(currentItem);
   }
 }
 
@@ -3907,6 +3942,7 @@ function render() {
 
   renderRequesterSelect(data.session_users || []);
   renderCurrentItem(data.current_item, playbackMode);
+  renderCurrentRatingButton(data.current_item);
   renderAudioVariantBar(data.current_item, playbackMode);
   renderPlayerControls(data.current_item, playbackMode);
   renderRemoteAvSyncControls(playbackMode, data.player_settings);
@@ -4012,6 +4048,18 @@ function renderCurrentItem(current, playbackMode) {
     elements.currentCacheState.classList.remove("ready", "failed");
     elements.currentMeta.textContent = t("remote.noCurrentHint");
   }
+}
+
+function renderCurrentRatingButton(current) {
+  const button = elements.currentRatingButton;
+  if (!button) {
+    return;
+  }
+  const enabled = Boolean(current?.bvid);
+  const submitted = enabled && hasSubmittedSongRating(current);
+  button.disabled = !enabled || submitted;
+  button.textContent = submitted ? t("rating.rated") : t("rating.rate");
+  button.title = submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
 }
 
 function audioVariantsForItem(item) {
@@ -6229,6 +6277,15 @@ elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
     volumePercent: currentRemoteVolumePercent(state.data?.player_settings),
     isMuted: !currentRemoteMuted(state.data?.player_settings),
   });
+});
+
+elements.currentRatingButton?.addEventListener("click", () => {
+  const currentItem = state.data?.current_item;
+  if (!currentItem?.bvid || hasSubmittedSongRating(currentItem)) {
+    renderCurrentRatingButton(currentItem);
+    return;
+  }
+  openRatingPrompt(currentItem, { force: true });
 });
 
 elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);

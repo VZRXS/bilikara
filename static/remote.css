@@ -457,20 +457,28 @@ h1 {
 }
 
 
+.now-playing-panel > .panel-head #current-rating-button,
 .now-playing-panel > .panel-head #refresh-button {
   position: absolute;
   top: 18px;
-  right: 18px;
   white-space: nowrap;
   padding: 10px 12px;
   border-radius: 14px;
+}
+
+.now-playing-panel > .panel-head #current-rating-button {
+  right: 88px;
+}
+
+.now-playing-panel > .panel-head #refresh-button {
+  right: 18px;
 }
 
 
 .now-playing-panel #current-title::before {
   content: "";
   float: right;
-  width: min(32%, 74px);
+  width: min(44%, 160px);
   height: 52px;
 }
 

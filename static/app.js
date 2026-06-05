@@ -219,6 +219,7 @@ const state = {
   ratingPromptScore: 5,
   ratingPromptSubmitted: false,
   ratingPromptSeenPlayIds: new Set(),
+  ratingSubmittedKeys: new Set(),
   ratingOptOut: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
@@ -264,6 +265,7 @@ const elements = {
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
+  playerRatingButton: document.getElementById("player-rating-button"),
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
   fullscreenRequestToast: document.getElementById("fullscreen-request-toast"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
@@ -811,6 +813,19 @@ function renderPlayerFullscreenButton() {
   setElementTitle(button, title);
 }
 
+function renderPlayerRatingButton() {
+  const button = elements.playerRatingButton;
+  if (!button) {
+    return;
+  }
+  const currentItem = state.data?.current_item;
+  const enabled = Boolean(currentItem?.bvid);
+  const submitted = enabled && hasSubmittedSongRating(currentItem);
+  button.disabled = !enabled || submitted;
+  setTextContent(button, submitted ? t("rating.rated") : t("rating.rate"));
+  setElementTitle(button, submitted ? t("rating.ratedTitle") : t("rating.rateTitle"));
+}
+
 function requestElementFullscreen(element) {
   if (!element) {
     return Promise.resolve(false);
@@ -1104,14 +1119,17 @@ async function apiPost(url, payload = {}) {
 
 function submitSongRating(item, score) {
   const bvid = String(item?.bvid || "").trim();
-  const playId = String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
-  const sessionUserName = selectedRequesterName()
-    || String(item?.requester_name || "").trim()
-    || String(state.data?.current_item?.requester_name || "").trim()
-    || String(state.data?.session_users?.[0] || "").trim()
-    || "unknown";
-  if (!bvid) {
+  const playId = ratingSubmissionPlayId(item);
+  const sessionUserName = ratingSubmissionUserName(item);
+  const submissionKey = ratingSubmissionKey(item);
+  if (!bvid || !playId) {
     return null;
+  }
+  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    return false;
+  }
+  if (submissionKey) {
+    state.ratingSubmittedKeys.add(submissionKey);
   }
   const payload = {
     session_user_name: sessionUserName,
@@ -1137,6 +1155,32 @@ function ratingOwnerUid(item) {
   const rawMid = item?.owner_mid ?? item?.mid;
   const uid = String(rawMid || "").trim();
   return /^\d+$/.test(uid) ? uid : "";
+}
+
+function ratingSubmissionUserName(item) {
+  return selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+}
+
+function ratingSubmissionPlayId(item) {
+  const bvid = String(item?.bvid || "").trim();
+  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+}
+
+function ratingSubmissionKey(item) {
+  const playId = ratingSubmissionPlayId(item);
+  if (!playId) {
+    return "";
+  }
+  return `${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+}
+
+function hasSubmittedSongRating(item) {
+  const key = ratingSubmissionKey(item);
+  return Boolean(key && state.ratingSubmittedKeys.has(key));
 }
 
 function ratingRequesterMatchesCurrentSelection(item) {
@@ -1273,6 +1317,7 @@ function closeRatingPrompt({ submit = true } = {}) {
 
   if (shouldSubmit) {
     submitSongRating({ ...(promptItem || item), bvid }, state.ratingPromptScore);
+    renderPlayerRatingButton();
   }
 }
 
@@ -1280,10 +1325,11 @@ function setRatingOptOut(enabled) {
   state.ratingOptOut = Boolean(enabled);
 }
 
-function openRatingPrompt(item) {
+function openRatingPrompt(item, options = {}) {
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
-  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+  const force = Boolean(options.force);
+  if (!item || !bvid || !playId || state.ratingOptOut || (!force && state.ratingPromptSeenPlayIds.has(playId))) {
     return;
   }
   if (fullscreenElement()) {
@@ -3926,6 +3972,7 @@ function render() {
   renderVolumeControls(playbackMode);
   applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, playbackMode);
+  renderPlayerRatingButton();
   renderPlayerFullscreenButton();
   applyRemotePlayerControl(data.player_control_command, currentItem, playbackMode);
   renderQueueCurrent(currentItem);
@@ -8698,6 +8745,15 @@ elements.historyExportButton?.addEventListener("click", (event) => {
 elements.historyToggleButton.addEventListener("click", () => {
   state.listView = state.listView === "history" ? "queue" : "history";
   render();
+});
+
+elements.playerRatingButton?.addEventListener("click", () => {
+  const currentItem = state.data?.current_item;
+  if (!currentItem?.bvid || hasSubmittedSongRating(currentItem)) {
+    renderPlayerRatingButton();
+    return;
+  }
+  openRatingPrompt(currentItem, { force: true });
 });
 
 elements.playerFullscreenButton?.addEventListener("click", async () => {

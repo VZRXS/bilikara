@@ -112,6 +112,22 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertIsNone(context._player_status)
 
 
+class AppContextRatingSubmissionTest(unittest.TestCase):
+    def make_context(self) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._rating_submission_lock = threading.RLock()
+        context._rating_submission_keys = set()
+        return context
+
+    def test_register_rating_submission_dedupes_by_user_and_play_id(self):
+        context = self.make_context()
+
+        self.assertTrue(context.register_rating_submission("VZRXS", "song-a"))
+        self.assertFalse(context.register_rating_submission("vzrxs", "song-a"))
+        self.assertTrue(context.register_rating_submission("Other", "song-a"))
+        self.assertTrue(context.register_rating_submission("VZRXS", "song-b"))
+
+
 class AppContextPlayerStatusTest(unittest.TestCase):
     def make_context(self) -> AppContext:
         context = AppContext.__new__(AppContext)
