@@ -3146,6 +3146,35 @@ select:focus {
   color: #f8fafc;
 }
 
+.rating-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 4px;
+  border: 1px solid rgba(0, 210, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.rating-tabs button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.rating-tabs button.active {
+  background: rgba(0, 210, 255, 0.16);
+  color: #f8fafc;
+}
+
+.rating-tabs button:disabled {
+  opacity: 0.42;
+}
+
 .rating-media {
   display: grid;
   grid-template-columns: 128px 1fr;

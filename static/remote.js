@@ -259,6 +259,8 @@ const state = {
   currentPlaybackClockTimer: null,
   ratingPromptElement: null,
   ratingPromptItem: null,
+  ratingPromptItems: null,
+  ratingPromptActiveTab: "current",
   ratingPromptItemId: "",
   ratingPromptBvid: "",
   ratingPromptScore: 5,
@@ -1249,9 +1251,50 @@ function ratingOwnerUid(item) {
 }
 
 function ratingRequesterMatchesCurrentSelection(item) {
-  const selectedRequester = selectedRequesterName();
-  const itemRequester = String(item?.requester_name || "").trim();
-  return Boolean(selectedRequester && itemRequester && selectedRequester === itemRequester);
+  return Boolean(item);
+}
+
+function normalizeRatingPromptItem(item) {
+  if (!item) {
+    return null;
+  }
+  const id = String(item.id || item.item_id || item.play_id || item.bvid || "").trim();
+  return {
+    ...item,
+    id,
+    play_id: String(item.play_id || item.item_id || id).trim(),
+    bvid: String(item.bvid || "").trim(),
+    cover_url: String(item.cover_url || "").trim(),
+  };
+}
+
+function previousRatingPromptItem(currentItem) {
+  const currentId = String(currentItem?.id || "").trim();
+  const playedItems = Array.isArray(state.data?.session_played) ? state.data.session_played : [];
+  for (let index = playedItems.length - 1; index >= 0; index -= 1) {
+    const entry = playedItems[index];
+    const entryId = String(entry?.item_id || entry?.id || "").trim();
+    if (entryId && entryId !== currentId) {
+      const candidate = normalizeRatingPromptItem({ ...entry, id: entryId, play_id: entryId });
+      return candidate?.bvid ? candidate : null;
+    }
+  }
+  return null;
+}
+
+function ratingPromptItemsForItem(item) {
+  return {
+    previous: previousRatingPromptItem(item),
+    current: normalizeRatingPromptItem(item),
+  };
+}
+
+function activeRatingPromptItem() {
+  return normalizeRatingPromptItem(
+    state.ratingPromptItems?.[state.ratingPromptActiveTab]
+      || state.ratingPromptItems?.current
+      || state.ratingPromptItem,
+  );
 }
 
 function renderRatingStars() {
@@ -1266,6 +1309,61 @@ function renderRatingStars() {
   });
 }
 
+function renderRatingPromptContent() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const activeItem = activeRatingPromptItem();
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
+
+  root.querySelectorAll("[data-rating-tab]").forEach((button) => {
+    const tab = button.dataset.ratingTab;
+    const hasItem = Boolean(state.ratingPromptItems?.[tab]);
+    button.disabled = !hasItem;
+    button.classList.toggle("active", tab === state.ratingPromptActiveTab);
+    button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
+  });
+
+  const content = root.querySelector("[data-rating-content]");
+  if (!content || !activeItem) {
+    return;
+  }
+  const bvid = String(activeItem.bvid || "").trim();
+  const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
+  const coverUrl = String(activeItem.cover_url || "").trim();
+  const url = ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : "");
+  const titleKey = state.ratingPromptActiveTab === "previous" ? "rating.previousTitle" : "rating.title";
+  content.innerHTML = `
+    <div class="rating-media">
+      ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
+      <div class="rating-copy">
+        <p class="rating-kicker">${htmlT("rating.kicker")}</p>
+        <h2>${htmlT(titleKey)}</h2>
+        <p class="rating-hint">${htmlT("rating.hint")}</p>
+        <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
+        ${url ? `<a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>` : ""}
+      </div>
+    </div>
+  `;
+  const addUpButton = root.querySelector("[data-rating-add-up]");
+  if (addUpButton) {
+    const ownerUid = ratingOwnerUid(activeItem);
+    addUpButton.disabled = !ownerUid;
+    addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
+  }
+  renderRatingStars();
+}
+
+function setRatingPromptActiveTab(tab) {
+  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]) {
+    return;
+  }
+  state.ratingPromptActiveTab = tab;
+  renderRatingPromptContent();
+}
+
 function setRatingOptOut(enabled) {
   state.ratingOptOut = Boolean(enabled);
 }
@@ -1275,13 +1373,15 @@ function closeRatingPrompt({ submit = true } = {}) {
   if (!root) {
     return;
   }
-  const promptItem = state.ratingPromptItem;
+  const promptItem = activeRatingPromptItem();
   const bvid = state.ratingPromptBvid;
   const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
   state.ratingPromptSubmitted = true;
   root.remove();
   state.ratingPromptElement = null;
   state.ratingPromptItem = null;
+  state.ratingPromptItems = null;
+  state.ratingPromptActiveTab = "current";
   state.ratingPromptItemId = "";
   state.ratingPromptBvid = "";
 
@@ -1299,51 +1399,45 @@ function openRatingPrompt(item) {
   if (!ratingRequesterMatchesCurrentSelection(item)) {
     return;
   }
+  const promptItems = ratingPromptItemsForItem(item);
   closeRatingPrompt({ submit: true });
   state.ratingPromptSeenPlayIds.add(playId);
-  state.ratingPromptItem = item;
+  state.ratingPromptItems = promptItems;
+  state.ratingPromptActiveTab = "current";
+  state.ratingPromptItem = promptItems.current;
   state.ratingPromptItemId = playId;
   state.ratingPromptBvid = bvid;
   state.ratingPromptScore = 5;
   state.ratingPromptSubmitted = false;
 
-  const ownerName = String(item.owner_name || "").trim() || t("rating.unknownOwner");
-  const coverUrl = String(item.cover_url || "").trim();
-  const url = ratingItemUrl(item) || `https://www.bilibili.com/video/${bvid}`;
-  const ownerUid = ratingOwnerUid(item);
   const root = document.createElement("div");
   root.className = "rating-modal";
   root.innerHTML = `
     <div class="rating-modal-backdrop" data-rating-close></div>
     <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
       <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
-      <div class="rating-media">
-        ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
-        <div class="rating-copy">
-          <p class="rating-kicker">${htmlT("rating.kicker")}</p>
-          <h2>${htmlT("rating.title")}</h2>
-          <p class="rating-hint">${htmlT("rating.hint")}</p>
-          <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
-          <a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>
-        </div>
-      </div>
+      <div data-rating-content></div>
       <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
         ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
       </div>
       <div class="rating-actions">
-        <button type="button" class="secondary-button" data-rating-add-up ${ownerUid ? "" : "disabled"}>${ownerUid ? htmlT("rating.addUp") : htmlT("rating.missingUid")}</button>
+        <button type="button" class="secondary-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
         <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
       </div>
       <label class="rating-opt-out">
         <input type="checkbox" data-rating-opt-out>
         <span>${htmlT("rating.optOut")}</span>
       </label>
+      <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
+        <button type="button" data-rating-tab="previous" role="tab" ${promptItems.previous ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
+        <button type="button" data-rating-tab="current" role="tab">${htmlT("rating.currentTab")}</button>
+      </div>
       <p class="rating-message" data-rating-message></p>
     </section>
   `;
   document.body.appendChild(root);
   state.ratingPromptElement = root;
-  renderRatingStars();
+  renderRatingPromptContent();
 }
 
 function currentPlaybackClockSeconds() {
@@ -1362,17 +1456,10 @@ function currentPlaybackClockSeconds() {
 }
 
 function maybeUpdateRemoteRatingPrompt(currentItem) {
-  if (!currentItem) {
-    return;
-  }
-  if (!ratingRequesterMatchesCurrentSelection(currentItem)) {
-    if (state.ratingPromptElement) {
-      closeRatingPrompt({ submit: false });
-    }
-    return;
-  }
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
-  if (!(durationSeconds > 0)) {
+  const bvid = String(currentItem?.bvid || "").trim();
+  const playId = String(currentItem?.id || bvid).trim();
+  if (!currentItem || !bvid || !playId || !(durationSeconds > 0)) {
     return;
   }
   const ratio = currentSeconds / durationSeconds;
@@ -1381,13 +1468,11 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
     && state.ratingPromptItemId
     && state.ratingPromptItemId !== String(currentItem.id || "")
   ) {
-    if (ratio >= 0.5) {
-      closeRatingPrompt({ submit: true });
-    }
-    return;
+    closeRatingPrompt({ submit: false });
   }
-  if (ratio >= remoteRatingPromptThreshold) {
-    openRatingPrompt(currentItem);
+  if (ratio >= remoteRatingPromptThreshold && !state.ratingPromptSeenPlayIds.has(playId)) {
+    state.ratingPromptSeenPlayIds.add(playId);
+    submitSongRating({ ...currentItem, play_id: playId }, 5);
   }
 }
 
@@ -6161,6 +6246,11 @@ document.addEventListener("click", async (event) => {
   if (!root || !root.contains(event.target)) {
     return;
   }
+  const tabButton = event.target.closest("[data-rating-tab]");
+  if (tabButton) {
+    setRatingPromptActiveTab(tabButton.dataset.ratingTab || "current");
+    return;
+  }
   const scoreButton = event.target.closest("[data-rating-score]");
   if (scoreButton) {
     state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
@@ -6177,7 +6267,7 @@ document.addEventListener("click", async (event) => {
   }
   const addUpButton = event.target.closest("[data-rating-add-up]");
   if (addUpButton) {
-    const promptItem = state.ratingPromptItem;
+    const promptItem = activeRatingPromptItem();
     const uid = ratingOwnerUid(promptItem);
     const message = root.querySelector("[data-rating-message]");
     if (!uid) {

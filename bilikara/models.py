@@ -130,6 +130,7 @@ class SessionPlayedEntry:
     owner_name: str = ""
     owner_url: str = ""
     requester_name: str = ""
+    cover_url: str = ""
 
     def serialize(self) -> dict[str, Any]:
         return asdict(self)

@@ -356,19 +356,27 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertIsNone(restored_store.session_request_for_item(self.make_item("z", song_key="song-a")))
 
     def test_session_played_archive_tracks_items_that_become_current(self):
-        self.add_item("a", requester_name="A", song_key="song-a")
-        self.add_item("b", requester_name="B", song_key="song-b")
+        item_a = self.make_item("a", song_key="song-a")
+        item_a.cover_url = "https://example.com/a.jpg"
+        self.store.add_item(item_a, requester_name="A")
+        item_b = self.make_item("b", song_key="song-b")
+        item_b.cover_url = "https://example.com/b.jpg"
+        self.store.add_item(item_b, requester_name="B")
 
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertRegex(self.store.session_played_file.name, r"^played-\d{4}-\d{2}-\d{2}_")
         self.assertEqual(self.store.session_played_file.parent, self.session_archive_dir)
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a"])
+        self.assertEqual(payload["items"][0]["cover_url"], "https://example.com/a.jpg")
 
         self.store.advance_to_next()
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
         self.assertEqual(payload["items"][1]["display_title"], "title-b - P1")
         self.assertEqual(payload["items"][1]["requester_name"], "B")
+        self.assertEqual(payload["items"][1]["cover_url"], "https://example.com/b.jpg")
+        exported = self.store.session_played_snapshot()
+        self.assertEqual(exported[-1]["cover_url"], "https://example.com/b.jpg")
 
     def test_session_played_archive_does_not_restore_into_new_run(self):
         self.add_item("a", requester_name="A", song_key="song-a")

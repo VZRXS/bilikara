@@ -1019,6 +1019,7 @@ class PlaylistStore:
                 owner_name=item.owner_name,
                 owner_url=item.owner_url,
                 requester_name=item.requester_name,
+                cover_url=item.cover_url,
             )
         )
 

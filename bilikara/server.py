@@ -124,6 +124,7 @@ class AppContext:
         with self._state_change_condition:
             state_revision = self._state_revision
         payload = self.store.snapshot()
+        payload["session_played"] = self.store.session_played_snapshot()[-2:]
         metrics = self.cache_manager.cache_metrics()
         self.cache_manager.enrich_snapshot(payload, metrics)
         payload["bbdown"] = self.cache_manager.status(metrics)
