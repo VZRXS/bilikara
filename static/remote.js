@@ -1248,6 +1248,12 @@ function ratingOwnerUid(item) {
   return /^\d+$/.test(uid) ? uid : "";
 }
 
+function ratingRequesterMatchesCurrentSelection(item) {
+  const selectedRequester = selectedRequesterName();
+  const itemRequester = String(item?.requester_name || "").trim();
+  return Boolean(selectedRequester && itemRequester && selectedRequester === itemRequester);
+}
+
 function renderRatingStars() {
   const root = state.ratingPromptElement;
   if (!root) {
@@ -1288,6 +1294,9 @@ function openRatingPrompt(item) {
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
   if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+    return;
+  }
+  if (!ratingRequesterMatchesCurrentSelection(item)) {
     return;
   }
   closeRatingPrompt({ submit: true });
@@ -1356,6 +1365,12 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   if (!currentItem) {
     return;
   }
+  if (!ratingRequesterMatchesCurrentSelection(currentItem)) {
+    if (state.ratingPromptElement) {
+      closeRatingPrompt({ submit: false });
+    }
+    return;
+  }
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   if (!(durationSeconds > 0)) {
     return;
@@ -1374,6 +1389,11 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   if (ratio >= remoteRatingPromptThreshold) {
     openRatingPrompt(currentItem);
   }
+}
+
+function handleRequesterSelectionChange() {
+  maybeUpdateRemoteRatingPrompt(state.data?.current_item);
+  render();
 }
 
 function filenameFromContentDisposition(headerValue, fallback) {
@@ -6125,6 +6145,8 @@ elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
     isMuted: !currentRemoteMuted(state.data?.player_settings),
   });
 });
+
+elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
