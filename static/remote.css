@@ -476,9 +476,37 @@ h1 {
 
 .requester-line,
 .current-owner-line {
-  margin-top: 4px;
   font-size: 13px;
   line-height: 1.4;
+}
+
+.current-meta-row {
+  display: block;
+  position: relative;
+  margin-top: 4px;
+  min-height: 38px;
+}
+
+.current-meta-text {
+  padding-right: 74px;
+}
+
+.now-playing-panel #open-rating-button {
+  position: absolute;
+  right: -2px;
+  bottom: 0;
+  white-space: nowrap;
+  padding: 10px 12px;
+  border-radius: 14px;
+  margin: 0;
+}
+
+.now-playing-panel #open-rating-button:disabled {
+  cursor: not-allowed;
+  background: rgba(109, 98, 88, 0.16);
+  color: var(--muted);
+  opacity: 0.52;
+  pointer-events: auto;
 }
 
 .requester-line {
@@ -486,6 +514,7 @@ h1 {
 }
 
 .current-owner-line {
+  margin-top: 4px;
   color: var(--muted);
 }
 
@@ -493,13 +522,6 @@ h1 {
 #current-meta {
   margin-top: 10px;
   line-height: 1.5;
-}
-
-.requester-line {
-  margin-top: 4px;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--accent-deep);
 }
 
 .current-cache-state {
@@ -2882,9 +2904,9 @@ body.remote-search-modal-open {
   gap: 6px;
   margin: 14px 0 0;
   padding: 4px;
-  border: 1px solid rgba(0, 210, 255, 0.18);
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(2, 6, 23, 0.34);
+  background: rgba(67, 53, 41, 0.05);
 }
 
 .rating-tabs button {
@@ -2892,17 +2914,20 @@ body.remote-search-modal-open {
   border: 0;
   border-radius: 9px;
   background: transparent;
-  color: #94a3b8;
+  color: var(--muted);
   font-weight: 700;
 }
 
 .rating-tabs button.active {
-  background: rgba(0, 210, 255, 0.16);
-  color: #f8fafc;
+  background: var(--accent-soft);
+  color: var(--accent-deep);
 }
 
 .rating-tabs button:disabled {
-  opacity: 0.42;
+  opacity: 0.38;
+  cursor: not-allowed;
+  pointer-events: none;
+  color: var(--muted);
 }
 
 .rating-media {

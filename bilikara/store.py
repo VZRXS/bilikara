@@ -530,6 +530,18 @@ class PlaylistStore:
             self.current_item_started = True
             return True
 
+    def mark_session_played_threshold_reached(self, item_id: str) -> bool:
+        with self.lock:
+            changed = False
+            for entry in self.session_played:
+                if entry.item_id == item_id:
+                    if not entry.threshold_reached:
+                        entry.threshold_reached = True
+                        changed = True
+            if changed:
+                self._touch(persist_backup=True)
+            return changed
+
     def _find_index(self, item_id: str) -> int | None:
         for index, item in enumerate(self.playlist):
             if item.id == item_id:

@@ -413,6 +413,7 @@ const elements = {
   addNextButton: document.getElementById("add-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
+  openRatingButton: document.getElementById("open-rating-button"),
   gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
@@ -1291,6 +1292,29 @@ function ratingPromptItemsForItem(item) {
   };
 }
 
+function isItemRateable(item, isCurrent = false) {
+  const bvid = String(item?.bvid || "").trim();
+  if (!item || !bvid) {
+    return false;
+  }
+  if (!ratingRequesterMatchesCurrentSelection(item)) {
+    return false;
+  }
+  if (isCurrent) {
+    const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
+    if (!(durationSeconds > 0)) return false;
+    const ratio = currentSeconds / durationSeconds;
+    if (ratio < remoteRatingPromptThreshold) return false;
+  } else {
+    // Previous items must have actually played past the threshold
+    // during their playback to be rateable.
+    if (!item.threshold_reached) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function activeRatingPromptItem() {
   return normalizeRatingPromptItem(
     state.ratingPromptItems?.[state.ratingPromptActiveTab]
@@ -1322,8 +1346,8 @@ function renderRatingPromptContent() {
 
   root.querySelectorAll("[data-rating-tab]").forEach((button) => {
     const tab = button.dataset.ratingTab;
-    const hasItem = Boolean(state.ratingPromptItems?.[tab]);
-    button.disabled = !hasItem;
+    const isRateable = tab === "current" ? state.ratingPromptCurrentRateable : state.ratingPromptPreviousRateable;
+    button.disabled = !isRateable;
     button.classList.toggle("active", tab === state.ratingPromptActiveTab);
     button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
   });
@@ -1363,6 +1387,8 @@ function setRatingPromptActiveTab(tab) {
     return;
   }
   state.ratingPromptActiveTab = tab;
+  const activeItem = state.ratingPromptItems[tab];
+  state.ratingPromptItemId = String(activeItem?.id || activeItem?.bvid || "").trim();
   renderRatingPromptContent();
 }
 
@@ -1392,25 +1418,40 @@ function closeRatingPrompt({ submit = true } = {}) {
   }
 }
 
-function openRatingPrompt(item) {
+function openRatingPrompt(item, { manual = false } = {}) {
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
-  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+  if (!item || !bvid || !playId || (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)))) {
     return;
   }
-  if (!ratingRequesterMatchesCurrentSelection(item)) {
-    return;
-  }
+
   const promptItems = ratingPromptItemsForItem(item);
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+
+  if (!currentRateable && !previousRateable) {
+    return;
+  }
+
   closeRatingPrompt({ submit: true });
-  state.ratingPromptSeenPlayIds.add(playId);
+
+  const defaultTab = currentRateable ? "current" : "previous";
+  const activeItem = promptItems[defaultTab];
+  const activePlayId = String(activeItem?.id || activeItem?.bvid || "").trim();
+
+  if (activePlayId) {
+    state.ratingPromptSeenPlayIds.add(activePlayId);
+  }
+
   state.ratingPromptItems = promptItems;
-  state.ratingPromptActiveTab = "current";
-  state.ratingPromptItem = promptItems.current;
-  state.ratingPromptItemId = playId;
-  state.ratingPromptBvid = bvid;
+  state.ratingPromptActiveTab = defaultTab;
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptItemId = activePlayId;
+  state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
   state.ratingPromptScore = 5;
   state.ratingPromptSubmitted = false;
+  state.ratingPromptCurrentRateable = currentRateable;
+  state.ratingPromptPreviousRateable = previousRateable;
 
   const root = document.createElement("div");
   root.className = "rating-modal";
@@ -1431,8 +1472,8 @@ function openRatingPrompt(item) {
         <span>${htmlT("rating.optOut")}</span>
       </label>
       <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
-        <button type="button" data-rating-tab="previous" role="tab" ${promptItems.previous ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
-        <button type="button" data-rating-tab="current" role="tab">${htmlT("rating.currentTab")}</button>
+        <button type="button" data-rating-tab="previous" role="tab" ${previousRateable ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
+        <button type="button" data-rating-tab="current" role="tab" ${currentRateable ? "" : "disabled"}>${htmlT("rating.currentTab")}</button>
       </div>
       <p class="rating-message" data-rating-message></p>
     </section>
@@ -1458,6 +1499,49 @@ function currentPlaybackClockSeconds() {
 }
 
 function maybeUpdateRemoteRatingPrompt(currentItem) {
+  const promptItems = ratingPromptItemsForItem(currentItem);
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+
+  if (elements.openRatingButton) {
+    elements.openRatingButton.disabled = !currentRateable && !previousRateable;
+  }
+
+  // Handle live-update, tab switching, and auto-closing of an already-open rating modal.
+  if (state.ratingPromptElement && state.ratingPromptItemId) {
+    const currentPromptId = String(promptItems.current?.id || promptItems.current?.bvid || "").trim();
+    const previousPromptId = String(promptItems.previous?.id || promptItems.previous?.bvid || "").trim();
+
+    if (state.ratingPromptItemId === currentPromptId && currentRateable) {
+      // The item being rated is still the current item, and is rateable.
+      const tabsChanged =
+        state.ratingPromptCurrentRateable !== currentRateable
+        || state.ratingPromptPreviousRateable !== previousRateable;
+      state.ratingPromptItems = promptItems;
+      state.ratingPromptCurrentRateable = currentRateable;
+      state.ratingPromptPreviousRateable = previousRateable;
+      if (tabsChanged) {
+        renderRatingPromptContent();
+      }
+    } else if (state.ratingPromptItemId === previousPromptId && previousRateable) {
+      // The item being rated is the previous item, and is rateable.
+      const needsTabTransition = state.ratingPromptActiveTab !== "previous";
+      const tabsChanged =
+        state.ratingPromptCurrentRateable !== currentRateable
+        || state.ratingPromptPreviousRateable !== previousRateable;
+      state.ratingPromptItems = promptItems;
+      state.ratingPromptActiveTab = "previous";
+      state.ratingPromptCurrentRateable = currentRateable;
+      state.ratingPromptPreviousRateable = previousRateable;
+      if (needsTabTransition || tabsChanged) {
+        renderRatingPromptContent();
+      }
+    } else {
+      // The item being rated is no longer rateable (neither current nor previous, or not rateable).
+      closeRatingPrompt({ submit: false });
+    }
+  }
+
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   const bvid = String(currentItem?.bvid || "").trim();
   const playId = String(currentItem?.id || bvid).trim();
@@ -1465,16 +1549,13 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
     return;
   }
   const ratio = currentSeconds / durationSeconds;
-  if (
-    state.ratingPromptElement
-    && state.ratingPromptItemId
-    && state.ratingPromptItemId !== String(currentItem.id || "")
-  ) {
-    closeRatingPrompt({ submit: false });
-  }
-  if (ratio >= remoteRatingPromptThreshold && !state.ratingPromptSeenPlayIds.has(playId)) {
-    state.ratingPromptSeenPlayIds.add(playId);
-    submitSongRating({ ...currentItem, play_id: playId }, 5);
+  if (ratio >= remoteRatingPromptThreshold) {
+    // Skip auto-submit when the rating modal is already open so the user
+    // can choose their own score instead of the default 5.
+    if (!state.ratingPromptSeenPlayIds.has(playId) && !state.ratingPromptElement) {
+      state.ratingPromptSeenPlayIds.add(playId);
+      submitSongRating({ ...currentItem, play_id: playId }, 5);
+    }
   }
 }
 
@@ -1544,6 +1625,12 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
+
+elements.openRatingButton?.addEventListener("click", () => {
+  if (state.data?.current_item) {
+    openRatingPrompt(state.data.current_item, { manual: true });
+  }
+});
 
 async function exportHistory(format) {
   const source = selectedHistoryExportSource();
@@ -3979,10 +4066,18 @@ function renderCurrentItem(current, playbackMode) {
       elements.currentRequester.classList.toggle("hidden", !requesterText);
       elements.currentOwner.textContent = ownerText;
       elements.currentOwner.classList.toggle("hidden", !ownerText);
+      if (elements.openRatingButton) {
+        elements.openRatingButton.classList.toggle("hidden", !current.bvid);
+      }
       elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     }
     
     renderCurrentPlaybackState(current);
+    try {
+      maybeUpdateRemoteRatingPrompt(current);
+    } catch (error) {
+      console.warn("Rating prompt update failed in renderCurrentItem:", error);
+    }
     elements.currentCacheState.classList.remove("hidden");
     
     if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
@@ -4006,6 +4101,9 @@ function renderCurrentItem(current, playbackMode) {
     elements.currentTitle.textContent = t("remote.noCurrentSong");
     elements.currentRequester.textContent = "";
     elements.currentRequester.classList.add("hidden");
+    if (elements.openRatingButton) {
+      elements.openRatingButton.classList.add("hidden");
+    }
     if (elements.currentOwner) {
       elements.currentOwner.textContent = "";
       elements.currentOwner.classList.add("hidden");

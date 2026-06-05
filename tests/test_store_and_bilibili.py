@@ -378,6 +378,22 @@ class PlaylistStoreTest(unittest.TestCase):
         exported = self.store.session_played_snapshot()
         self.assertEqual(exported[-1]["cover_url"], "https://example.com/b.jpg")
 
+    def test_session_played_threshold_reached_persists_and_exports(self):
+        self.add_item("a", requester_name="A")
+
+        exported = self.store.session_played_snapshot()
+        self.assertEqual(len(exported), 1)
+        self.assertFalse(exported[0]["threshold_reached"])
+        self.assertFalse(self.store.mark_session_played_threshold_reached("missing"))
+
+        self.assertTrue(self.store.mark_session_played_threshold_reached("a"))
+        self.assertFalse(self.store.mark_session_played_threshold_reached("a"))
+
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertTrue(payload["items"][0]["threshold_reached"])
+        exported = self.store.session_played_snapshot()
+        self.assertTrue(exported[0]["threshold_reached"])
+
     def test_session_played_archive_does_not_restore_into_new_run(self):
         self.add_item("a", requester_name="A", song_key="song-a")
 

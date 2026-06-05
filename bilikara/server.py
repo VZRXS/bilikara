@@ -63,6 +63,7 @@ mimetypes.add_type("audio/mp4", ".m4a")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
+RATING_PROMPT_THRESHOLD = 0.5
 
 
 class DuplicateSessionRequestError(ValueError):
@@ -355,6 +356,13 @@ class AppContext:
             self._player_status = next_status
         if (not is_paused) or float(current_time or 0.0) > 0:
             self.store.mark_item_playback_started(normalized_item_id)
+
+        reported_duration = next_status.get("duration")
+        if isinstance(reported_duration, (int, float)) and reported_duration > 0:
+            ratio = float(current_time or 0.0) / float(reported_duration)
+            if ratio >= RATING_PROMPT_THRESHOLD:
+                self.store.mark_session_played_threshold_reached(normalized_item_id)
+
         self._notify_state_changed()
 
     def player_status_snapshot(self, current_item_payload: object) -> dict[str, object] | None:
