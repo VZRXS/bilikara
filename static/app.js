@@ -279,7 +279,9 @@ const elements = {
   appToast: document.getElementById("app-toast"),
   sessionUserForm: document.getElementById("session-user-form"),
   sessionUserInput: document.getElementById("session-user-input"),
+  sessionUsersPanel: document.getElementById("session-users-panel"),
   sessionUserList: document.getElementById("session-user-list"),
+  sessionUserTrash: document.getElementById("session-user-trash"),
   backupBanner: document.getElementById("backup-banner"),
   backupText: document.getElementById("backup-text"),
   discardBackupButton: document.getElementById("discard-backup-button"),
@@ -4031,18 +4033,14 @@ function renderSessionUsers(sessionUsers) {
   }
 
   users.forEach((userName, index) => {
-    const item = document.createElement("article");
-    item.className = "session-user-item";
+    const item = document.createElement("div");
+    item.className = "session-user-badge";
+    item.draggable = true;
+    item.dataset.index = index;
+    item.dataset.name = userName;
     item.innerHTML = `
-      <div class="session-user-main">
-        <span class="session-user-order">${index + 1}</span>
-        <strong class="session-user-name">${escapeHtml(userName)}</strong>
-      </div>
-      <div class="session-user-actions">
-        <button type="button" data-action="move-up" data-name="${escapeHtml(userName)}" ${index === 0 ? "disabled" : ""}>${htmlT("common.moveUp")}</button>
-        <button type="button" data-action="move-down" data-name="${escapeHtml(userName)}" ${index === users.length - 1 ? "disabled" : ""}>${htmlT("common.moveDown")}</button>
-        <button type="button" data-action="remove" data-name="${escapeHtml(userName)}" class="danger">${htmlT("common.delete")}</button>
-      </div>
+      <span class="session-user-order-number">${index + 1}</span>
+      <span class="session-user-name">${escapeHtml(userName)}</span>
     `;
     elements.sessionUserList.appendChild(item);
   });
@@ -8524,31 +8522,113 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
   await addSessionUser();
 });
 
-elements.sessionUserList.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-action]");
-  if (!button || !state.data?.session_users?.length) {
-    return;
+let draggedSessionUser = null;
+
+elements.sessionUserList.addEventListener("dragstart", (e) => {
+  const badge = e.target.closest(".session-user-badge");
+  if (!badge) return;
+  draggedSessionUser = badge;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", badge.dataset.name);
+  setTimeout(() => {
+    badge.classList.add("dragging");
+    elements.sessionUsersPanel?.classList.add("is-dragging");
+  }, 0);
+});
+
+elements.sessionUserList.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  if (!draggedSessionUser) return;
+  e.dataTransfer.dropEffect = "move";
+  
+  const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
+  draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
+
+  let afterElement = null;
+  for (const child of draggableElements) {
+    const box = child.getBoundingClientRect();
+    if (e.clientY < box.bottom && e.clientY > box.top) {
+      if (e.clientX < box.left + box.width / 2) {
+        afterElement = child;
+        break;
+      }
+    } else if (e.clientY < box.top) {
+      afterElement = child;
+      break;
+    }
   }
 
-  const name = String(button.dataset.name || "");
-  const users = state.data.session_users;
-  const index = users.indexOf(name);
-  if (!name || index === -1) {
-    return;
-  }
+  state.sessionUserDragTarget = afterElement;
+  state.sessionUserDragAfter = afterElement == null;
 
-  if (button.dataset.action === "move-up") {
-    await moveSessionUser(name, Math.max(0, index - 1));
-    return;
-  }
-  if (button.dataset.action === "move-down") {
-    await moveSessionUser(name, Math.min(users.length - 1, index + 1));
-    return;
-  }
-  if (button.dataset.action === "remove") {
-    await removeSessionUser(name);
+  if (afterElement == null) {
+    if (draggableElements.length > 0) {
+      draggableElements[draggableElements.length - 1].classList.add("drop-after");
+    }
+  } else {
+    afterElement.classList.add("drop-before");
   }
 });
+
+document.addEventListener("dragend", async (e) => {
+  if (draggedSessionUser) {
+    draggedSessionUser.classList.remove("dragging");
+    elements.sessionUsersPanel?.classList.remove("is-dragging");
+    
+    const allBadges = elements.sessionUserList.querySelectorAll(".session-user-badge");
+    allBadges.forEach(el => el.classList.remove("drop-before", "drop-after"));
+    
+    if (!draggedSessionUser.dataset.deleted) {
+      if (state.sessionUserDragTarget) {
+        elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
+      } else if (state.sessionUserDragAfter) {
+        elements.sessionUserList.appendChild(draggedSessionUser);
+      }
+      
+      const name = draggedSessionUser.dataset.name;
+      const newElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
+      const newIndex = newElements.indexOf(draggedSessionUser);
+      const oldIndex = parseInt(draggedSessionUser.dataset.index, 10);
+      
+      if (newIndex !== -1 && newIndex !== oldIndex) {
+        await moveSessionUser(name, newIndex);
+      }
+    }
+    draggedSessionUser = null;
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+  }
+});
+
+if (elements.sessionUserTrash) {
+  elements.sessionUserTrash.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    elements.sessionUserTrash.classList.add("drag-over");
+  });
+
+  elements.sessionUserTrash.addEventListener("dragleave", (e) => {
+    elements.sessionUserTrash.classList.remove("drag-over");
+  });
+
+  elements.sessionUserTrash.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    // Clear indicators from list so they don't show when hovering trash
+    elements.sessionUserList.querySelectorAll(".session-user-badge").forEach(el => el.classList.remove("drop-before", "drop-after"));
+  });
+
+  elements.sessionUserTrash.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    elements.sessionUserTrash.classList.remove("drag-over");
+    elements.sessionUsersPanel?.classList.remove("is-dragging");
+    if (draggedSessionUser) {
+      const name = draggedSessionUser.dataset.name;
+      draggedSessionUser.dataset.deleted = "true";
+      draggedSessionUser.style.display = "none";
+      await removeSessionUser(name);
+    }
+  });
+}
 
 elements.queueNextButton.addEventListener("click", async (event) => {
   const point = anchorPointForEvent(event, elements.queueNextButton);
