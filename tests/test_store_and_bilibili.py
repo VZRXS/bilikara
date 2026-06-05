@@ -1946,7 +1946,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.available_parts, ["on_vocal", "off_vocal"])
 
     @patch("bilikara.bilibili.request_json")
-    def test_fetch_video_item_keeps_both_keyword_matched_pages_when_durations_differ(self, mock_request_json):
+    def test_fetch_video_item_requires_manual_binding_when_durations_differ(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
             "data": {
@@ -1965,13 +1965,11 @@ class BilibiliParserTest(unittest.TestCase):
             },
         }
 
-        item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+        with self.assertRaises(ManualBindingRequiredError) as raised:
+            fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
 
-        self.assertFalse(item.manual_selection)
-        self.assertEqual(item.video_page, 2)
-        self.assertEqual(item.selected_pages, [1, 2])
-        self.assertEqual(item.selected_durations, [300, 309])
-        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
+        self.assertEqual(raised.exception.preferred_page, 2)
+        self.assertEqual([page.page for page in raised.exception.pages], [1, 2])
 
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item_skips_manual_binding_when_one_dual_audio_keyword_matches(self, mock_request_json):
