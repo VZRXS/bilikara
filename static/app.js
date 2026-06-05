@@ -1139,6 +1139,12 @@ function ratingOwnerUid(item) {
   return /^\d+$/.test(uid) ? uid : "";
 }
 
+function ratingRequesterMatchesCurrentSelection(item) {
+  const selectedRequester = selectedRequesterName();
+  const itemRequester = String(item?.requester_name || "").trim();
+  return Boolean(selectedRequester && itemRequester && selectedRequester === itemRequester);
+}
+
 function renderRatingStars() {
   const root = state.ratingPromptElement;
   if (!root) {
@@ -1183,6 +1189,9 @@ function openRatingPrompt(item) {
     return;
   }
   if (fullscreenElement()) {
+    return;
+  }
+  if (!ratingRequesterMatchesCurrentSelection(item)) {
     return;
   }
   closeRatingPrompt({ submit: true });
@@ -1249,6 +1258,22 @@ function handleRatingCurrentItemChange(currentItem) {
   const currentId = String(currentItem?.id || "");
   if (!currentId || currentId !== state.ratingPromptItemId) {
     closeRatingPrompt({ submit: true });
+    return;
+  }
+  if (!ratingRequesterMatchesCurrentSelection(currentItem)) {
+    closeRatingPrompt({ submit: false });
+  }
+}
+
+function handleRequesterSelectionChange() {
+  const currentItem = state.data?.current_item;
+  if (state.ratingPromptElement && !ratingRequesterMatchesCurrentSelection(currentItem)) {
+    closeRatingPrompt({ submit: false });
+  }
+  render();
+  const video = elements.playerFrame?.querySelector?.('video[data-player-role="video"]');
+  if (currentItem && video) {
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   }
 }
 
@@ -9590,6 +9615,8 @@ function handleRatingFullscreenChange() {
 
 document.addEventListener("fullscreenchange", handleRatingFullscreenChange);
 document.addEventListener("webkitfullscreenchange", handleRatingFullscreenChange);
+
+elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
 
 elements.searchExpandButton?.addEventListener("click", () => {
   if (elements.searchModalPlaceholder && elements.searchCardContent && elements.searchModal) {
