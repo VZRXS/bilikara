@@ -1996,6 +1996,34 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_audio_variant_id, "p2_track_2")
 
     @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_defaults_to_p2_when_only_p2_has_dual_audio_keyword(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "example video",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "main track", "duration": 300},
+                    {"cid": 789, "page": 2, "part": "off vocal", "duration": 301},
+                ],
+            },
+        }
+
+        item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
+
+        self.assertFalse(item.manual_selection)
+        self.assertEqual(item.page, 2)
+        self.assertEqual(item.cid, 789)
+        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.selected_pages, [1, 2])
+        self.assertEqual(item.selected_cids, [456, 789])
+        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
+        self.assertEqual(item.display_title, "example video - off vocal")
+
+    @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item_requires_manual_binding_for_ambiguous_multipart_video(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,

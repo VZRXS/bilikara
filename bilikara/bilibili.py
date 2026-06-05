@@ -2488,6 +2488,20 @@ def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
     return True
 
 
+def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+    if len(pages) != 2:
+        return None
+    first_page, second_page = sorted(pages, key=lambda page: page.page)
+    if (
+        first_page.page == 1
+        and second_page.page == 2
+        and not _part_keyword_match(first_page.part)
+        and _part_keyword_match(second_page.part)
+    ):
+        return second_page.page
+    return None
+
+
 def _requires_manual_binding(pages: list[VideoPage]) -> bool:
     if len(pages) > 2:
         return True
@@ -2560,6 +2574,7 @@ def fetch_video_item(
     available_page_numbers = [page.page for page in pages]
     available_pages_by_number = {page.page: page for page in pages}
     normalized_audio_pages = _normalize_selected_pages(selected_audio_pages)
+    auto_video_page = None
     if manual_selection:
         video_page = int(selected_video_page or preferred_page)
         if video_page not in available_pages_by_number:
@@ -2573,6 +2588,7 @@ def fetch_video_item(
     else:
         if _is_auto_dual_audio_pair(pages):
             selected_pages = list(pages)
+            auto_video_page = _auto_dual_audio_video_page(pages)
         else:
             selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
         if selected_video_page is not None or normalized_audio_pages:
@@ -2584,7 +2600,7 @@ def fetch_video_item(
     if manual_selection:
         video_page = int(selected_video_page or selected_page_numbers[0])
     else:
-        video_page = preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0]
+        video_page = auto_video_page or (preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0])
     video_page_info = available_pages_by_number[video_page]
     aid = int(data["aid"])
     bvid = str(data["bvid"])

@@ -398,6 +398,32 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_ensure_item_cached_preserves_selected_audio_variant_while_requeueing(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                item.page = 2
+                item.video_page = 2
+                item.selected_pages = [1, 2]
+                item.selected_parts = ["main track", "off vocal"]
+                item.selected_audio_variant_id = "p2_off_vocal"
+                self.store.add_item(item, requester_name="cache-test-user")
+
+                manager._ensure_item_cached(item)
+
+                updated = self.store.get_item("song-a")
+                self.assertIsNotNone(updated)
+                self.assertEqual(updated.cache_status, "pending")
+                self.assertEqual(updated.audio_variants, [])
+                self.assertEqual(updated.selected_audio_variant_id, "p2_off_vocal")
+            finally:
+                manager.shutdown()
+
     def test_reconcile_cache_state_requeues_ready_item_when_files_are_missing(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,
@@ -1203,6 +1229,48 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(result["audio_variants"][0]["id"], "p2_track_1")
         self.assertEqual(result["audio_variants"][0]["page"], 2)
         self.assertEqual(result["selected_audio_variant_id"], "p2_track_1")
+
+    def test_download_selected_streams_preserves_p2_default_when_p1_audio_is_also_bound(self):
+        item_dir = self.cache_dir / "song-a"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        video_file = item_dir / "video-p2" / "video.mp4"
+        audio_p1_file = item_dir / "audio-p1" / "audio.m4a"
+        audio_p2_file = item_dir / "audio-p2" / "audio.m4a"
+        log_path = Path(self.temp_dir.name) / "logs" / "song-a.log"
+        for file_path in (video_file, audio_p1_file, audio_p2_file):
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_bytes(b"track")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                item.page = 2
+                item.cid = 789
+                item.part_title = "off vocal"
+                item.display_title = "title-song-a - off vocal"
+                item.selected_pages = [1, 2]
+                item.selected_parts = ["main track", "off vocal"]
+                item.available_pages = [1, 2]
+                item.available_parts = ["main track", "off vocal"]
+                item.selected_audio_variant_id = "p2_off_vocal"
+                item.video_page = 2
+                manager.desired_ids.add(item.id)
+                with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_p1_file, audio_p2_file]):
+                    result = manager._download_selected_streams(
+                        item,
+                        Path("/tools/BBDown"),
+                        Path("/tools/ffmpeg"),
+                        item_dir,
+                        log_path,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(Path(result["video_relative_path"]).as_posix(), "song-a/video-p2/video.mp4")
+        self.assertEqual([variant["id"] for variant in result["audio_variants"]], ["p1_main_track", "p2_off_vocal"])
+        self.assertEqual([variant["page"] for variant in result["audio_variants"]], [1, 2])
+        self.assertEqual(result["selected_audio_variant_id"], "p2_off_vocal")
 
     def test_start_bbdown_login_removes_stale_qr_image(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"

@@ -409,7 +409,6 @@ class CacheManager:
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
-                selected_audio_variant_id="",
                 persist_backup=False,
             )
             self._record_item_activity(item.id)
@@ -566,7 +565,6 @@ class CacheManager:
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
-                selected_audio_variant_id="",
                 persist_backup=False,
             )
             self._record_item_activity(item.id)
@@ -601,7 +599,6 @@ class CacheManager:
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
-                selected_audio_variant_id="",
                 persist_backup=False,
             )
             self._record_item_activity(item.id)
@@ -661,7 +658,6 @@ class CacheManager:
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
-            selected_audio_variant_id="",
             persist_backup=False,
         )
         self._record_item_activity(item_id)
@@ -2940,7 +2936,6 @@ class CacheManager:
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
-            selected_audio_variant_id="",
             persist_backup=False,
         )
         self._record_item_activity(item.id)
@@ -2957,7 +2952,6 @@ class CacheManager:
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
-            selected_audio_variant_id="",
             persist_backup=False,
         )
         self._record_item_activity(item_id)
