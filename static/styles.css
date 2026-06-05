@@ -5654,6 +5654,37 @@ select:disabled {
   cursor: pointer;
 }
 
+.rating-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.32);
+}
+
+.rating-tabs button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #94a3b8;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rating-tabs button.active {
+  background: rgba(125, 211, 252, 0.18);
+  color: #f8fafc;
+}
+
+.rating-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .rating-media {
   display: grid;
   grid-template-columns: 150px 1fr;
