@@ -116,6 +116,7 @@
       "service.openedReleases": "已打开 GitHub Releases。",
 
       "quality.1080pHighBitrate": "1080P 高码率",
+      "quality.1080p60": "1080P 高帧率",
       "quality.1080p": "1080P 高清",
       "quality.720p": "720P 高清",
       "quality.480p": "480P 清晰",
@@ -629,6 +630,7 @@
       "service.updateFailed": "Failed to check for updates, please try again later.",
       "service.openedReleases": "GitHub Releases opened.",
       "quality.1080pHighBitrate": "1080P High Bitrate",
+      "quality.1080p60": "1080P HFR",
       "quality.1080p": "1080P HD",
       "quality.720p": "720P HD",
       "quality.480p": "480P Clear",
@@ -1126,6 +1128,7 @@
       "service.updateFailed": "更新のチェックに失敗しました。後でもう一度お試しください。",
       "service.openedReleases": "GitHub Releases を開きました。",
       "quality.1080pHighBitrate": "1080P 高ビットレート",
+      "quality.1080p60": "1080P HFR",
       "quality.1080p": "1080P HD",
       "quality.720p": "720P HD",
       "quality.480p": "480P 標準画質",

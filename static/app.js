@@ -4228,7 +4228,8 @@ function renderListHeader(playlist, history) {
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   const serviceState = aggregateToolStatusState(bbdown, ffmpeg);
-  const playbackModeText = formatPlaybackMode(state.data?.playback_mode);
+  const currentQuality = String(cachePolicy?.video_quality || "1080P 高码率");
+  const playbackModeText = formatQualityLabel(currentQuality);
   const cacheChipMeta = formatCacheChipMeta(cachePolicy);
   const cacheUsageDetail = formatCacheUsage(cachePolicy);
   const bbdownTitle = `BBDown ${formatBBDownHint(bbdown)}`;
@@ -4452,6 +4453,19 @@ function frontendPlaybackMode(_mode) {
   return "local";
 }
 
+function formatQualityLabel(value) {
+  const normalized = String(value || "").trim();
+  const labels = {
+    "1080P 高码率": t("quality.1080pHighBitrate"),
+    "1080P 高帧率": t("quality.1080p60"),
+    "1080P 高清": t("quality.1080p"),
+    "720P 高清": t("quality.720p"),
+    "480P 清晰": t("quality.480p"),
+    "360P 流畅": t("quality.360p"),
+  };
+  return labels[normalized] || normalized;
+}
+
 function formatPlaybackMode(_mode) {
   return t("service.localPlayback");
 }
@@ -4526,33 +4540,23 @@ function updateAdvanceDelaySliderFill(value) {
 }
 
 function renderCachePolicyControls(cachePolicy) {
-  const qualityLabelForValue = (value) => {
-    const normalized = String(value || "").trim();
-    const labels = {
-      "1080P 高码率": t("quality.1080pHighBitrate"),
-      "1080P 高清": t("quality.1080p"),
-      "720P 高清": t("quality.720p"),
-      "480P 清晰": t("quality.480p"),
-      "360P 流畅": t("quality.360p"),
-    };
-    return labels[normalized] || normalized;
-  };
   const rawChoices = Array.isArray(cachePolicy?.video_quality_choices)
     ? cachePolicy.video_quality_choices
     : [];
   const choices = rawChoices.length
     ? rawChoices.map((choice) => {
       if (typeof choice === "string") {
-        return { value: choice, label: qualityLabelForValue(choice) };
+        return { value: choice, label: formatQualityLabel(choice) };
       }
       const value = String(choice?.value || "");
       return {
         value,
-        label: qualityLabelForValue(choice?.label || value),
+        label: formatQualityLabel(choice?.label || value),
       };
     }).filter((choice) => choice.value)
     : [
       { value: "1080P 高码率", label: t("quality.1080pHighBitrate") },
+      { value: "1080P 高帧率", label: t("quality.1080p60") },
       { value: "1080P 高清", label: t("quality.1080p") },
       { value: "720P 高清", label: t("quality.720p") },
       { value: "480P 清晰", label: t("quality.480p") },
@@ -9288,13 +9292,17 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function handleFullscreenChange() {
-  if (!isPlayerPanelFullscreen()) {
+  const isFullscreen = isPlayerPanelFullscreen();
+  if (!isFullscreen) {
     hideFullscreenRequestToast();
     if (hasLocalAdvanceDelayOverlay()) {
       updateLocalAdvanceDelayOverlay();
     } else {
       hidePlayerDelayOverlay();
     }
+  }
+  if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.appWindow) {
+    window.__TAURI__.window.appWindow.setFullscreen(isFullscreen).catch(() => {});
   }
   renderPlayerFullscreenButton();
 }
