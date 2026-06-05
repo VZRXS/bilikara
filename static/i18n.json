@@ -7,13 +7,11 @@
       "brand.eyebrow": "bilikara host",
       "brand.name": "bilikara",
       "brand.designer": "VZRXS/bilikara",
-
       "top.language": "语言",
       "top.mobileRemote": "手机点歌",
       "top.layout": "切换布局",
       "layout.basic": "基础",
       "layout.full": "完整",
-
       "common.back": "返回",
       "common.cancel": "取消",
       "common.clear": "清空",
@@ -28,7 +26,6 @@
       "common.resetShort": "复位",
       "common.search": "搜索",
       "common.switch": "切换",
-
       "status.caching": "缓存中",
       "status.checking": "检查中",
       "status.error": "异常",
@@ -42,14 +39,12 @@
       "status.unknown": "未知",
       "status.waiting": "等待中",
       "status.cachingWithSize": "缓存中 · {size}",
-
       "backup.tag": "Auto Restore",
       "backup.detected": "检测到上次未完成的点歌列表",
       "backup.clear": "清空备份",
       "backup.cleared": "已清空本地备份。",
       "backup.restored": "已自动恢复上次歌单，共 {count} 首。",
       "backup.localDetected": "检测到本地备份，共 {count} 首。",
-
       "service.title": "服务设置",
       "service.localPlayback": "本地缓存",
       "service.cacheUsageZero": "缓存占用 0 MB",
@@ -114,14 +109,12 @@
       "service.updateTimeout": "连接 GitHub Releases 超时，请稍后重试。",
       "service.updateFailed": "检查更新失败，请稍后重试。",
       "service.openedReleases": "已打开 GitHub Releases。",
-
       "quality.1080pHighBitrate": "1080P 高码率",
       "quality.1080p60": "1080P 高帧率",
       "quality.1080p": "1080P 高清",
       "quality.720p": "720P 高清",
       "quality.480p": "480P 清晰",
       "quality.360p": "360P 流畅",
-
       "player.tag": "Now Playing",
       "player.noSong": "还没有歌曲",
       "player.fullscreen": "全屏显示",
@@ -137,7 +130,10 @@
       "player.avSyncTag": "音画延迟",
       "player.avSyncHint": "正数表示画面提前，负数表示画面延后。",
       "player.ms": "ms",
+      "player.keyUnit": "key",
       "player.volumeTag": "播放音量",
+      "player.keyShiftTag": "音调调整",
+      "player.keyShiftHint": "调整歌曲的音调，切歌时自动复位。",
       "player.volumeHint": "直接控制服务端当前本地播放的音量。",
       "player.mute": "静音",
       "player.unmute": "取消静音",
@@ -157,9 +153,7 @@
       "player.collapseParts": "收起分P列表",
       "player.partAddedToCache": "已将分P加入缓存任务",
       "player.switchedPart": "已切换到 {part}",
-
       "toast.incomingRequest": "新点歌",
-
       "remote.tag": "Mobile Remote",
       "remote.heroTag": "Mobile Request",
       "remote.heroTitle": "bilikara 点歌台",
@@ -223,7 +217,6 @@
       "remote.queueOrderConfirm": "确认移动",
       "remote.queueOrderMessage": "确认将《{title}》移动到第 {index} 首吗？",
       "remote.queueOrderMoving": "移动中",
-
       "request.tag": "Song Request",
       "request.title": "点歌",
       "request.resort": "重新排序",
@@ -245,7 +238,6 @@
       "request.confirmedNext": "已确认插队到下一首",
       "request.confirmedTail": "已确认加入点歌列表",
       "request.success": "点歌成功。",
-
       "session.tag": "Singer Order",
       "session.title": "本场用户",
       "session.namePlaceholder": "输入用户名",
@@ -260,7 +252,6 @@
       "session.added": "已将 {name} 加入本场 KTV 用户列表。",
       "session.orderUpdated": "已更新用户顺序。",
       "session.removed": "已移除 {name}。",
-
       "search.title": "搜索",
       "search.localTag": "Local Search",
       "search.followTag": "Follow Browse",
@@ -346,7 +337,6 @@
       "search.categoryLoadedMore": "已显示 {count} 条，向下滚动继续加载。",
       "search.categoryLoadedAll": "已显示全部 {count} 条。",
       "search.browseComingSoon": "这个浏览页还在开发中。",
-
       "follow.title": "关注列表",
       "follow.ownerItemsTitle": "UP 主稿件",
       "follow.loadingOwners": "正在读取关注缓存...",
@@ -356,11 +346,9 @@
       "follow.zeroCount": "0 首",
       "follow.countSongs": "{count} 首",
       "follow.itemCount": "{shown}/{total} 首",
-
       "owner.upOwner": "UP 主 {name}",
       "owner.uid": "UID {uid}",
       "owner.tooltip": "UP 主: {name}",
-
       "gatcha.tag": "gatcha Draw",
       "gatcha.uidTag": "Follow UID",
       "gatcha.title": "试试运气",
@@ -426,7 +414,6 @@
       "rating.addFailed": "添加失败",
       "rating.submitFailed": "评分提交失败",
       "rating.unknownOwner": "未知UP",
-
       "list.tag": "Requests",
       "list.title": "点歌列表",
       "list.count": "({count}首)",
@@ -441,7 +428,6 @@
       "list.removeConfirm": "确定从点歌列表移除这首歌吗？",
       "list.removedSong": "已移除这首歌。",
       "list.resorted": "已按本场用户座次重新排序点歌列表。",
-
       "history.tag": "History",
       "history.title": "历史记录",
       "history.count": "({count}首)",
@@ -475,16 +461,13 @@
       "history.exportPageSize60": "图片每页 60 首",
       "history.exportPageSize50": "图片每页 50 首",
       "history.exportPageSizeNote": "仅影响图片分页；CSV 会导出完整列表。",
-
       "cache.retryDownload": "重新下载缓存",
       "cache.retryClick": "点击重新下载",
       "cache.retryStarted": "已重新开始缓存。",
       "cache.ready": "缓存已完成",
       "cache.failed": "缓存失败",
       "cache.caching": "正在缓存",
-
       "confirm.default": "确定执行这个操作吗？",
-
       "binding.tag": "Part Binding",
       "binding.title": "选择分P绑定",
       "binding.text": "请选择要下载的视频分P和音频分P。",
@@ -498,7 +481,6 @@
       "binding.selectAudioPart": "请至少选择一个音频分P",
       "binding.addedNext": "已按绑定关系顶歌到下一首",
       "binding.addedTail": "已按绑定关系加入点歌列表",
-
       "favlist.tag": "Favlist Pull",
       "favlist.title": "选择收藏夹",
       "favlist.text": "请选择要拉取的公开收藏夹。",
@@ -518,7 +500,6 @@
       "favlist.selectAtLeastOne": "请选择至少一个收藏夹",
       "favlist.pullingSelected": "正在拉取选中的公开收藏夹...（稿件较多时可能需要较长时间）",
       "favlist.pullResult": "已拉取 {folders} 个收藏夹，加入 {items} 个稿件。",
-
       "error.requestFailed": "请求失败",
       "error.stateFailed": "获取状态失败",
       "error.searchFailed": "搜索失败",
@@ -654,7 +635,10 @@
       "player.avSyncTag": "A/V Sync Delay",
       "player.avSyncHint": "Positive values mean video is ahead, negative means video is delayed.",
       "player.ms": "ms",
+      "player.keyUnit": "key",
       "player.volumeTag": "Playback Volume",
+      "player.keyShiftTag": "Key Shift",
+      "player.keyShiftHint": "Adjusts the pitch of the song, automatically resets when skipping songs.",
       "player.volumeHint": "Directly controls the server's current local playback volume.",
       "player.mute": "Mute",
       "player.unmute": "Unmute",
@@ -1156,7 +1140,10 @@
       "player.avSyncTag": "音ズレ遅延",
       "player.avSyncHint": "正の値は映像が早いこと、負の値は映像が遅いことを示します。",
       "player.ms": "ms",
+      "player.keyUnit": "key",
       "player.volumeTag": "再生音量",
+      "player.keyShiftTag": "キー調整",
+      "player.keyShiftHint": "曲のピッチを調整します。曲を切り替えると自動的にリセットされます。",
       "player.volumeHint": "サーバーの現在のローカル再生音量を直接制御します。",
       "player.mute": "ミュート",
       "player.unmute": "ミュート解除",

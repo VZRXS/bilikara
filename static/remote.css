@@ -380,7 +380,7 @@ h1 {
   flex-wrap: wrap;
 }
 
-.search-panel .panel-head > div:first-child {
+.search-panel .panel-head>div:first-child {
   flex: 1 1 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -395,7 +395,7 @@ h1 {
   align-items: stretch;
 }
 
-.search-panel .panel-head .panel-head-actions > button {
+.search-panel .panel-head .panel-head-actions>button {
   flex: 1 1 0;
   height: 40px;
   min-width: 0;
@@ -427,12 +427,12 @@ h1 {
   position: relative;
 }
 
-.now-playing-panel > .panel-head {
+.now-playing-panel>.panel-head {
   display: block;
   margin-bottom: 6px;
 }
 
-.now-playing-panel > .panel-head #refresh-button {
+.now-playing-panel>.panel-head #refresh-button {
   position: absolute;
   top: 18px;
   right: 18px;
@@ -704,13 +704,11 @@ h1 {
   height: 8px;
   border-radius: 999px;
   background:
-    linear-gradient(
-      to right,
+    linear-gradient(to right,
       var(--accent) 0,
       var(--accent) var(--range-fill-percent),
       rgba(109, 98, 88, 0.22) var(--range-fill-percent),
-      rgba(109, 98, 88, 0.22) 100%
-    );
+      rgba(109, 98, 88, 0.22) 100%);
 }
 
 .remote-volume-slider::-webkit-slider-thumb {
@@ -789,6 +787,50 @@ h1 {
   grid-column: 2 / -1;
   width: 100%;
   justify-content: center;
+}
+
+#remote-key-shift-panel .remote-setting-controls {
+  display: grid;
+  grid-template-columns: 1fr 0.6fr 1.5fr 0.6fr;
+  gap: 10px;
+  align-items: center;
+}
+
+#remote-key-shift-panel .remote-step-button,
+#remote-key-shift-panel .remote-reset-button {
+  width: 100%;
+  min-width: 0;
+  padding-inline: 8px;
+  border: 1px solid rgba(67, 53, 41, 0.08);
+}
+
+#remote-key-shift-panel .remote-input-wrap {
+  width: 100%;
+  justify-content: flex-end;
+  padding: 0 12px;
+  gap: 4px;
+}
+
+#remote-key-shift-panel .remote-input-wrap input[type="number"] {
+  width: 44px;
+  padding: 0;
+  margin: 0;
+  text-align: right;
+}
+
+.remote-key-shift-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  border-radius: 14px;
+  border: 1px solid rgba(67, 53, 41, 0.08);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--ink);
+  font-weight: normal;
+  width: 100%;
+  text-align: center;
+  font-size: 14px;
 }
 
 #remote-volume-panel .remote-setting-controls {
@@ -1415,7 +1457,7 @@ select:disabled {
   border: 1px solid rgba(67, 53, 41, 0.08);
 }
 
-.search-result-item > div,
+.search-result-item>div,
 .search-result-meta {
   grid-column: 1;
   grid-row: 1;
@@ -2795,6 +2837,35 @@ body.remote-search-modal-open {
   #remote-av-sync-panel .remote-input-wrap input[type="number"] {
     width: min(120px, 100%);
     font-size: 18px;
+  }
+
+  #remote-key-shift-panel .remote-setting-controls {
+    grid-template-columns: 1fr 0.6fr 1.5fr 0.6fr;
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  #remote-key-shift-panel .remote-step-button,
+  #remote-key-shift-panel .remote-reset-button {
+    width: 100%;
+    min-height: 42px;
+    padding-inline: 12px;
+  }
+
+  #remote-key-shift-panel .remote-input-wrap {
+    width: 100%;
+    min-height: 42px;
+    justify-content: flex-end;
+    padding: 0 12px;
+    gap: 4px;
+  }
+
+  #remote-key-shift-panel .remote-input-wrap input[type="number"] {
+    width: 44px;
+    padding: 0;
+    margin: 0;
+    font-size: 18px;
+    text-align: right;
   }
 
   #remote-volume-panel .remote-setting-controls {

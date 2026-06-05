@@ -177,6 +177,9 @@ const state = {
   remoteLocalVolumePercent: null,
   remoteLocalMuted: null,
   remoteVolumeCommitTimer: null,
+  remoteLocalKeyShift: null,
+  remoteKeyShiftEchoSuppressUntil: 0,
+  remoteKeyShiftSaveSeq: 0,
   audioVariantBarExpanded: false,
   audioVariantBarItemId: "",
   bindingSheetOpen: false,
@@ -307,6 +310,11 @@ const elements = {
   remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
   remoteVolumeSlider: document.getElementById("remote-volume-slider"),
   remoteVolumeValue: document.getElementById("remote-volume-value"),
+  remoteKeyShiftPanel: document.getElementById("remote-key-shift-panel"),
+  remoteKeyShiftResetButton: document.getElementById("remote-key-shift-reset-button"),
+  remoteKeyShiftDecButton: document.getElementById("remote-key-shift-dec-button"),
+  remoteKeyShiftInput: document.getElementById("remote-key-shift-input"),
+  remoteKeyShiftIncButton: document.getElementById("remote-key-shift-inc-button"),
   bindingSheet: document.getElementById("binding-sheet"),
   bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
   bindingSheetText: document.getElementById("binding-sheet-text"),
@@ -4004,6 +4012,7 @@ function render() {
   renderPlayerControls(data.current_item, playbackMode);
   renderRemoteAvSyncControls(playbackMode, data.player_settings);
   renderRemoteVolumeControls(playbackMode, data.player_settings);
+  renderRemoteKeyShiftControls(playbackMode, data.player_settings);
   renderRemoteAccess(data.remote_access);
   renderFollowBrowse();
   renderModalFollowBrowse();
@@ -4346,6 +4355,52 @@ function currentRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
   return serverRemoteAvOffsetMs(playerSettings);
 }
 
+function serverRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  return Math.max(-6, Math.min(6, Number(playerSettings?.key_shift ?? 0)));
+}
+
+function currentRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  if (state.remoteLocalKeyShift !== null && Date.now() < state.remoteKeyShiftEchoSuppressUntil) {
+    return state.remoteLocalKeyShift;
+  }
+  state.remoteLocalKeyShift = null;
+  return serverRemoteKeyShift(playerSettings);
+}
+
+function markRemoteKeyShiftWrite(keyShift) {
+  state.remoteLocalKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  state.remoteKeyShiftEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.remoteKeyShiftSaveSeq += 1;
+  return state.remoteKeyShiftSaveSeq;
+}
+
+async function setRemoteKeyShift(keyShift) {
+  const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  const currentValue = currentRemoteKeyShift();
+  if (boundedKeyShift === currentValue) {
+    markRemoteKeyShiftWrite(boundedKeyShift);
+    return;
+  }
+
+  const requestSeq = markRemoteKeyShiftWrite(boundedKeyShift);
+  renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  try {
+    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    applyStateSnapshot(nextData);
+  } catch (error) {
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    state.remoteLocalKeyShift = null;
+    state.remoteKeyShiftEchoSuppressUntil = 0;
+    setFormMessage(error.message, true);
+    renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  }
+}
+
 function serverRemoteVolumePercent(playerSettings = state.data?.player_settings) {
   return Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
 }
@@ -4432,6 +4487,21 @@ function renderRemoteVolumeControls(playbackMode, playerSettings) {
   elements.remoteVolumeMuteButton.setAttribute("aria-label", muteLabel);
   elements.remoteVolumeMuteButton.setAttribute("title", muteLabel);
   elements.remoteVolumeMuteButton.classList.toggle("is-muted", isMuted);
+}
+
+function renderRemoteKeyShiftControls(playbackMode, playerSettings) {
+  if (!elements.remoteKeyShiftPanel || !elements.remoteKeyShiftInput) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  elements.remoteKeyShiftPanel.classList.toggle("hidden", !isLocalMode);
+  const keyShift = currentRemoteKeyShift(playerSettings);
+  if (document.activeElement !== elements.remoteKeyShiftInput) {
+    elements.remoteKeyShiftInput.value = String(keyShift);
+  }
+  if (elements.remoteKeyShiftResetButton) {
+    elements.remoteKeyShiftResetButton.disabled = keyShift === 0;
+  }
 }
 
 function openBindingSheet(intent, payload) {
@@ -6333,6 +6403,33 @@ elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
     volumePercent: currentRemoteVolumePercent(state.data?.player_settings),
     isMuted: !currentRemoteMuted(state.data?.player_settings),
   });
+});
+
+elements.remoteKeyShiftPanel?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
+  if (!button) {
+    return;
+  }
+  const currentKey = currentRemoteKeyShift(state.data?.player_settings);
+  if (button.id === "remote-key-shift-reset-button") {
+    await setRemoteKeyShift(0);
+  } else if (button.id === "remote-key-shift-dec-button") {
+    await setRemoteKeyShift(currentKey - 1);
+  } else if (button.id === "remote-key-shift-inc-button") {
+    await setRemoteKeyShift(currentKey + 1);
+  }
+});
+
+elements.remoteKeyShiftInput?.addEventListener("change", async (event) => {
+  await setRemoteKeyShift(event.target.value);
+});
+
+elements.remoteKeyShiftInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setRemoteKeyShift(event.target.value);
 });
 
 elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
