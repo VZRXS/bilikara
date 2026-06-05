@@ -2392,6 +2392,11 @@ def parse_video_pages(data: dict) -> list[VideoPage]:
         duration = int(payload.get("duration") or 0)
         part = str(payload.get("part") or f"P{page_number}").strip() or f"P{page_number}"
         pages.append(VideoPage(page=page_number, cid=cid, duration=duration, part=part))
+        
+    valid_pages = [p for p in pages if p.duration >= 10]
+    if valid_pages and len(valid_pages) < len(pages):
+        return valid_pages
+        
     return pages
 
 
@@ -2474,7 +2479,13 @@ def _part_keyword_match(part: str) -> bool:
 
 
 def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
-    return len(pages) == 2 and any(_part_keyword_match(page.part) for page in pages)
+    if len(pages) != 2:
+        return False
+    if not any(_part_keyword_match(page.part) for page in pages):
+        return False
+    if abs(pages[0].duration - pages[1].duration) > DURATION_TOLERANCE_SECONDS:
+        return False
+    return True
 
 
 def _requires_manual_binding(pages: list[VideoPage]) -> bool:

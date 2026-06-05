@@ -371,7 +371,6 @@ p {
 .status-chip-toggle,
 .song-actions button,
 .session-user-form button,
-.session-user-actions button,
 .history-actions button,
 .icon-button,
 .mode-button,
@@ -437,7 +436,6 @@ p {
 .song-actions button:hover,
 .history-actions button:hover,
 .session-user-form button:hover,
-.session-user-actions button:hover,
 .compact-form button:hover,
 .mode-button:hover {
   transform: translateY(-1px);
@@ -2309,12 +2307,20 @@ select:disabled {
   gap: 10px;
 }
 
+.session-user-stage {
+  position: relative;
+  min-height: 120px;
+}
+
 .session-user-list {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
   gap: 10px;
   max-height: 340px;
   overflow-y: auto;
   padding-right: 6px;
+  padding-bottom: 50px;
   overscroll-behavior: contain;
 }
 
@@ -2322,68 +2328,112 @@ select:disabled {
   padding: 18px;
 }
 
-.session-user-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 12px 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(91, 66, 47, 0.1);
-  background: rgba(255, 255, 255, 0.74);
-}
-
-.session-user-main {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.session-user-order {
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
+.session-user-badge {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: fit-content;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
   background: rgba(208, 90, 63, 0.1);
   color: var(--accent-deep);
-  font-weight: 700;
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: grab;
+  user-select: none;
+  transition: opacity 0.2s, transform 0.2s;
 }
 
-.session-user-name {
-  min-width: 0;
-  font-size: 15px;
-  line-height: 1.25;
+.session-user-badge:active {
+  cursor: grabbing;
 }
 
-.session-user-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.session-user-badge.dragging {
+  opacity: 0.5;
 }
 
-.session-user-actions button {
-  border: none;
-  min-height: 34px;
-  padding: 0 12px;
+.session-user-badge.drop-before::before,
+.session-user-badge.drop-after::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 4px;
+  background: var(--accent);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  color: var(--ink);
-  cursor: pointer;
+  z-index: 2;
 }
 
-.session-user-actions button.danger {
-  color: var(--red);
+.session-user-badge.drop-before::before {
+  left: -7px;
+}
+
+.session-user-badge.drop-after::after {
+  right: -7px;
+}
+
+.session-user-order-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  margin-right: 6px;
+  margin-left: -10px;
+}
+
+.session-user-trash {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: rgba(177, 69, 69, 0.12);
+  color: var(--red);
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.8);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 10;
 }
 
-.session-user-actions button:disabled {
-  opacity: 0.42;
-  cursor: not-allowed;
+.session-user-trash::before {
+  content: "";
+  position: absolute;
+  inset: -32px;
+  border-radius: 50%;
+}
+
+.session-user-trash svg {
+  width: 24px;
+  height: 24px;
+}
+
+.is-dragging .session-user-trash {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+.session-user-trash.drag-over {
+  background: var(--red);
+  color: white;
+  transform: scale(1.15);
 }
 
 .remote-panel {
@@ -4343,9 +4393,7 @@ select:disabled {
     grid-template-columns: 1fr;
   }
 
-  .session-user-form,
-  .session-user-item,
-  .session-user-actions {
+  .session-user-form {
     grid-template-columns: 1fr;
   }
 

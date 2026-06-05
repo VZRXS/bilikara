@@ -3,11 +3,12 @@
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
     "devPath": "http://127.0.0.1:8080",
-    "distDir": "../static"
+    "distDir": "../static",
+    "withGlobalTauri": true
   },
   "package": {
     "productName": "bilikara",
-    "version": "1.0.0"
+    "version": "0.6.0"
   },
   "tauri": {
     "allowlist": {
