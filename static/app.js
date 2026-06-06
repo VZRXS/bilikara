@@ -9619,8 +9619,11 @@ function handleFullscreenChange() {
       hidePlayerDelayOverlay();
     }
   }
-  if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.appWindow) {
-    window.__TAURI__.window.appWindow.setFullscreen(isFullscreen).catch(() => {});
+  if (window.__TAURI__ && window.__TAURI__.window) {
+    const appWindow = window.__TAURI__.window.appWindow || (typeof window.__TAURI__.window.getCurrent === "function" ? window.__TAURI__.window.getCurrent() : null);
+    if (appWindow) {
+      appWindow.setFullscreen(isFullscreen).catch(() => {});
+    }
   }
   renderPlayerFullscreenButton();
 }

@@ -315,6 +315,11 @@ const elements = {
   remoteKeyShiftDecButton: document.getElementById("remote-key-shift-dec-button"),
   remoteKeyShiftInput: document.getElementById("remote-key-shift-input"),
   remoteKeyShiftIncButton: document.getElementById("remote-key-shift-inc-button"),
+  floatingControlTrigger: document.getElementById("floating-control-trigger"),
+  floatingControlOverlay: document.getElementById("floating-control-overlay"),
+  floatingControlBackdrop: document.getElementById("floating-control-backdrop"),
+  floatingControlCard: document.getElementById("floating-control-card"),
+  floatingControlClose: document.getElementById("floating-control-close"),
   bindingSheet: document.getElementById("binding-sheet"),
   bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
   bindingSheetText: document.getElementById("binding-sheet-text"),
@@ -1416,13 +1421,19 @@ function closeRatingPrompt({ submit = true } = {}) {
   const bvid = state.ratingPromptBvid;
   const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
   state.ratingPromptSubmitted = true;
-  root.remove();
+
+  root.classList.add("closing");
+
   state.ratingPromptElement = null;
   state.ratingPromptItem = null;
   state.ratingPromptItems = null;
   state.ratingPromptActiveTab = "current";
   state.ratingPromptItemId = "";
   state.ratingPromptBvid = "";
+
+  setTimeout(() => {
+    root.remove();
+  }, 250);
 
   if (shouldSubmit) {
     submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
@@ -1477,11 +1488,8 @@ function openRatingPrompt(item, { manual = false } = {}) {
       <div class="rating-actions">
         <button type="button" class="secondary-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
         <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
+        <button type="button" class="secondary-button" data-rating-opt-out-btn>${htmlT("rating.optOutBtn")}</button>
       </div>
-      <label class="rating-opt-out">
-        <input type="checkbox" data-rating-opt-out>
-        <span>${htmlT("rating.optOut")}</span>
-      </label>
       <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
         <button type="button" data-rating-tab="previous" role="tab" ${previousRateable ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
         <button type="button" data-rating-tab="current" role="tab" ${currentRateable ? "" : "disabled"}>${htmlT("rating.currentTab")}</button>
@@ -4022,6 +4030,7 @@ function render() {
   syncListView();
   renderLayoutMode();
   renderGatchaUidView();
+  renderFloatingControlTrigger(data.current_item, playbackMode);
 }
 
 function frontendPlaybackMode(_mode) {
@@ -6329,6 +6338,29 @@ elements.remoteQrPopoverClose?.addEventListener("click", () => {
 });
 
 document.addEventListener("click", (event) => {
+  // Toggle info tooltip popovers
+  const infoBtn = event.target.closest(".remote-info-button");
+  if (infoBtn) {
+    const wrap = infoBtn.closest(".info-trigger-wrap");
+    if (wrap) {
+      const isShown = wrap.classList.contains("show-tooltip");
+      // Close all tooltips first
+      document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+        el.classList.remove("show-tooltip");
+      });
+      // Toggle current
+      if (!isShown) {
+        wrap.classList.add("show-tooltip");
+      }
+      event.stopPropagation();
+    }
+  } else {
+    // Clicked outside, close all tooltips
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
+  }
+
   if (!state.remoteQrPopoverOpen) {
     return;
   }
@@ -6344,6 +6376,9 @@ document.addEventListener("keydown", (event) => {
       setSearchModalOpen(false);
     }
     setRemoteQrPopoverOpen(false);
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
   }
 });
 
@@ -6458,12 +6493,10 @@ document.addEventListener("click", async (event) => {
     renderRatingStars();
     return;
   }
-  const optOutInput = event.target.closest("[data-rating-opt-out]");
-  if (optOutInput) {
-    setRatingOptOut(optOutInput.checked);
-    if (optOutInput.checked) {
-      closeRatingPrompt({ submit: false });
-    }
+  const optOutBtn = event.target.closest("[data-rating-opt-out-btn]");
+  if (optOutBtn) {
+    setRatingOptOut(true);
+    closeRatingPrompt({ submit: false });
     return;
   }
   const addUpButton = event.target.closest("[data-rating-add-up]");
@@ -6759,6 +6792,9 @@ document.addEventListener("keydown", (event) => {
   if (state.reorderConfirmSheetOpen) {
     closeReorderConfirmSheet();
   }
+  if (elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
+  }
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -6795,9 +6831,186 @@ window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
+function makeElementDraggable(element, onClick) {
+  let startX = 0;
+  let startY = 0;
+  let initialLeft = 0;
+  let initialTop = 0;
+  let isDragging = false;
+  let moved = false;
+
+  const dragStart = (e) => {
+    if (e.type === "mousedown" && e.button !== 0) {
+      return;
+    }
+
+    const rect = element.getBoundingClientRect();
+    initialLeft = rect.left;
+    initialTop = rect.top;
+
+    if (e.type === "touchstart") {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    } else {
+      startX = e.clientX;
+      startY = e.clientY;
+    }
+
+    isDragging = true;
+    moved = false;
+
+    if (e.type === "touchstart") {
+      document.addEventListener("touchmove", dragMove, { passive: false });
+      document.addEventListener("touchend", dragEnd);
+    } else {
+      document.addEventListener("mousemove", dragMove);
+      document.addEventListener("mouseup", dragEnd);
+    }
+  };
+
+  const dragMove = (e) => {
+    if (!isDragging) return;
+
+    let currentX = 0;
+    let currentY = 0;
+
+    if (e.type === "touchmove") {
+      currentX = e.touches[0].clientX;
+      currentY = e.touches[0].clientY;
+    } else {
+      currentX = e.clientX;
+      currentY = e.clientY;
+    }
+
+    const deltaX = currentX - startX;
+    const deltaY = currentY - startY;
+
+    if (!moved && Math.hypot(deltaX, deltaY) > 5) {
+      moved = true;
+      element.classList.add("dragging");
+    }
+
+    if (moved) {
+      let newLeft = initialLeft + deltaX;
+      let newTop = initialTop + deltaY;
+
+      const maxLeft = window.innerWidth - element.offsetWidth;
+      const maxTop = window.innerHeight - element.offsetHeight;
+
+      newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+      newTop = Math.max(0, Math.min(newTop, maxTop));
+
+      element.style.left = `${newLeft}px`;
+      element.style.top = `${newTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  };
+
+  const dragEnd = (e) => {
+    isDragging = false;
+    element.classList.remove("dragging");
+
+    if (e.type === "touchend") {
+      document.removeEventListener("touchmove", dragMove);
+      document.removeEventListener("touchend", dragEnd);
+    } else {
+      document.removeEventListener("mousemove", dragMove);
+      document.removeEventListener("mouseup", dragEnd);
+    }
+
+    if (!moved) {
+      if (typeof onClick === "function") {
+        onClick();
+      }
+    }
+  };
+
+  element.addEventListener("mousedown", dragStart);
+  element.addEventListener("touchstart", dragStart);
+
+  window.addEventListener("resize", () => {
+    const rect = element.getBoundingClientRect();
+    let currentLeft = rect.left;
+    let currentTop = rect.top;
+
+    const maxLeft = window.innerWidth - element.offsetWidth;
+    const maxTop = window.innerHeight - element.offsetHeight;
+
+    if (currentLeft > maxLeft || currentTop > maxTop) {
+      const nextLeft = Math.max(0, Math.min(currentLeft, maxLeft));
+      const nextTop = Math.max(0, Math.min(currentTop, maxTop));
+      element.style.left = `${nextLeft}px`;
+      element.style.top = `${nextTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  });
+}
+
+function showFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  elements.floatingControlOverlay.classList.remove("closing");
+  elements.floatingControlOverlay.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+
+  if (elements.floatingControlTrigger && elements.floatingControlCard) {
+    const triggerRect = elements.floatingControlTrigger.getBoundingClientRect();
+    const cardRect = elements.floatingControlCard.getBoundingClientRect();
+    const originX = (triggerRect.left + triggerRect.width / 2) - cardRect.left;
+    const originY = (triggerRect.top + triggerRect.height / 2) - cardRect.top;
+    elements.floatingControlCard.style.transformOrigin = `${originX}px ${originY}px`;
+  }
+}
+
+function hideFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  if (elements.floatingControlOverlay.classList.contains("hidden")) return;
+
+  elements.floatingControlOverlay.classList.add("closing");
+
+  setTimeout(() => {
+    if (elements.floatingControlOverlay.classList.contains("closing")) {
+      elements.floatingControlOverlay.classList.add("hidden");
+      elements.floatingControlOverlay.classList.remove("closing");
+      document.body.style.overflow = "";
+    }
+  }, 250);
+}
+
+function initFloatingControlConsole() {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  makeElementDraggable(elements.floatingControlTrigger, () => {
+    showFloatingControlOverlay();
+  });
+  elements.floatingControlClose?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+  elements.floatingControlBackdrop?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+}
+
+function renderFloatingControlTrigger(currentItem, playbackMode) {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  const hasCurrentItem = Boolean(currentItem);
+  const visible = isLocalMode && hasCurrentItem;
+  elements.floatingControlTrigger.classList.toggle("hidden", !visible);
+  
+  if (!visible && elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
+  }
+}
+
 async function startRemoteSession() {
   setupRemoteFlipStages();
   hydrateLocalPreferences();
+  initFloatingControlConsole();
   await loadTranslations();
   renderLayoutMode();
   try {
