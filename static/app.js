@@ -101,6 +101,7 @@ const state = {
   listFlipTimer: null,
   listFlipFrame: null,
   cacheSettingsOpen: false,
+  displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
   avOffsetSaving: false,
@@ -307,6 +308,10 @@ const elements = {
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
+  displaySettings: document.getElementById("display-settings"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-panel"),
+  displayLayoutSummary: document.getElementById("display-layout-summary"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
   nextButton: document.getElementById("next-button"),
@@ -1021,6 +1026,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, t(layoutKey));
 }
 
 function setLayoutMode(mode) {
@@ -4721,6 +4728,14 @@ function syncCachePanelVisibility(options = {}) {
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
   });
+}
+
+function syncDisplayPanelVisibility() {
+  const expanded = String(state.displaySettingsOpen);
+  if (elements.displaySettingsToggle && elements.displaySettingsToggle.getAttribute("aria-expanded") !== expanded) {
+    elements.displaySettingsToggle.setAttribute("aria-expanded", expanded);
+  }
+  setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
 }
 
 function renderQueueCurrent(currentItem) {
@@ -8891,7 +8906,20 @@ elements.dismissBackupButton.addEventListener("blur", () => {
 
 elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
+  if (state.cacheSettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
+});
+
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  state.displaySettingsOpen = !state.displaySettingsOpen;
+  if (state.displaySettingsOpen) {
+    state.cacheSettingsOpen = false;
+    syncCachePanelVisibility();
+  }
+  syncDisplayPanelVisibility();
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {
@@ -9548,6 +9576,11 @@ document.addEventListener("click", (event) => {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
   }
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-settings")) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
 });
 
 document.addEventListener("click", (event) => {
@@ -9589,6 +9622,10 @@ document.addEventListener("keydown", (event) => {
   if (state.cacheSettingsOpen) {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
+  }
+  if (state.displaySettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
   }
 });
 

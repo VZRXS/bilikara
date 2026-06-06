@@ -745,6 +745,51 @@ h2 {
   z-index: 120;
 }
 
+#display-settings-panel {
+  left: 0;
+  right: auto;
+}
+
+#display-settings-panel .mode-switch {
+  background: #ffffff;
+  padding: 3px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(87, 63, 43, 0.08);
+  display: flex;
+  gap: 0;
+}
+
+#display-settings-panel .mode-button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 6px 14px;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 13px;
+  border-radius: 999px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+#display-settings-panel .language-switch .mode-button {
+  aspect-ratio: auto;
+  flex: 0 0 auto;
+  width: auto;
+}
+
+#display-settings-panel .mode-button:hover {
+  transform: translateY(-1px);
+  color: var(--ink);
+}
+
+#display-settings-panel .mode-button.active {
+  color: #ffffff;
+  font-weight: 700;
+  background: var(--accent);
+  box-shadow: 0 2px 6px rgba(208, 90, 63, 0.2);
+}
+
 .cache-panel-row {
   display: flex;
   justify-content: space-between;
