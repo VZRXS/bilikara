@@ -275,6 +275,7 @@ const state = {
   queueRenderSignature: "",
   historyRenderSignature: "",
   layoutMode: "full",
+  displaySettingsOpen: false,
   remoteAccessRenderSignature: "",
   viewportScaleResetTimers: [],
   renderDebounceTimer: null,
@@ -284,6 +285,10 @@ const elements = {
   viewportMeta: document.getElementById("viewport-meta"),
   remoteShell: document.getElementById("remote-shell"),
   languageSwitch: document.getElementById("language-switch"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-popover"),
+  displayLayoutSummary: document.getElementById("remote-layout-summary"),
+  displayPopoverClose: document.getElementById("display-popover-close"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   remoteQrControl: document.getElementById("remote-qr-control"),
   remoteQrToggle: document.getElementById("remote-qr-toggle"),
@@ -775,6 +780,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, layoutKey);
 }
 
 function setLayoutMode(mode) {
@@ -790,8 +797,20 @@ function setLayoutMode(mode) {
 
 function setRemoteQrPopoverOpen(open) {
   state.remoteQrPopoverOpen = Boolean(open);
+  if (state.remoteQrPopoverOpen) {
+    setDisplaySettingsOpen(false);
+  }
   elements.remoteQrPopover?.classList.toggle("hidden", !state.remoteQrPopoverOpen);
   elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrPopoverOpen));
+}
+
+function setDisplaySettingsOpen(open) {
+  state.displaySettingsOpen = Boolean(open);
+  if (state.displaySettingsOpen) {
+    setRemoteQrPopoverOpen(false);
+  }
+  elements.displaySettingsPanel?.classList.toggle("hidden", !state.displaySettingsOpen);
+  elements.displaySettingsToggle?.setAttribute("aria-expanded", String(state.displaySettingsOpen));
 }
 
 function renderRemoteAccess(remoteAccess) {
@@ -6337,6 +6356,14 @@ elements.remoteQrPopoverClose?.addEventListener("click", () => {
   setRemoteQrPopoverOpen(false);
 });
 
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  setDisplaySettingsOpen(!state.displaySettingsOpen);
+});
+
+elements.displayPopoverClose?.addEventListener("click", () => {
+  setDisplaySettingsOpen(false);
+});
+
 document.addEventListener("click", (event) => {
   // Toggle info tooltip popovers
   const infoBtn = event.target.closest(".remote-info-button");
@@ -6361,13 +6388,13 @@ document.addEventListener("click", (event) => {
     });
   }
 
-  if (!state.remoteQrPopoverOpen) {
-    return;
+  if (state.remoteQrPopoverOpen && !event.target.closest("#remote-qr-control")) {
+    setRemoteQrPopoverOpen(false);
   }
-  if (event.target.closest("#remote-qr-control")) {
-    return;
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-control")) {
+    setDisplaySettingsOpen(false);
   }
-  setRemoteQrPopoverOpen(false);
 });
 
 document.addEventListener("keydown", (event) => {
@@ -6376,6 +6403,7 @@ document.addEventListener("keydown", (event) => {
       setSearchModalOpen(false);
     }
     setRemoteQrPopoverOpen(false);
+    setDisplaySettingsOpen(false);
     document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
       el.classList.remove("show-tooltip");
     });

@@ -18,19 +18,49 @@
         <h1 data-i18n="remote.heroTitle">bilikara 点歌台</h1>
         <p class="hero-copy" data-i18n="remote.heroCopy">在同一个局域网里，用手机查看当前点歌列表、继续点歌，也可以远程控制正在播放的视频。</p>
         <div class="hero-controls">
-          <div class="mode-control language-control">
-            <span class="panel-tag" data-i18n="top.language">语言</span>
-            <div class="mode-switch language-switch" id="language-switch">
-              <button type="button" class="mode-button" data-language="en">EN</button>
-              <button type="button" class="mode-button" data-language="ja">JA</button>
-              <button type="button" class="mode-button active" data-language="zh">ZH</button>
-            </div>
-          </div>
-          <div class="mode-control layout-control">
-            <span class="panel-tag" data-i18n="top.layout">切换布局</span>
-            <div class="mode-switch" id="layout-mode-switch">
-              <button type="button" class="mode-button" data-layout-mode="basic" data-i18n="layout.basic">基础</button>
-              <button type="button" class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
+          <div class="mode-control display-control" id="display-control">
+            <button
+              type="button"
+              id="display-settings-toggle"
+              class="remote-display-settings-toggle"
+              aria-expanded="false"
+              aria-controls="display-settings-popover"
+            >
+              <span class="panel-tag" data-i18n="top.displaySettings">界面设置</span>
+              <span id="remote-layout-summary" class="summary-layout-text" data-i18n="layout.fullLayout">完整布局</span>
+              <span class="display-chip-meta">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="globe-icon">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="2" y1="12" x2="22" y2="12"></line>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                </svg>
+                <span>Language</span>
+              </span>
+            </button>
+            <div id="display-settings-popover" class="remote-qr-popover display-popover hidden">
+              <div class="remote-qr-popover-card">
+                <div class="popover-row">
+                  <div>
+                    <p class="popover-label" data-i18n="top.language">语言</p>
+                    <p class="popover-hint" data-i18n="display.languageHint">切换界面显示语言</p>
+                  </div>
+                  <div class="mode-switch language-switch" id="language-switch">
+                    <button type="button" class="mode-button" data-language="en">EN</button>
+                    <button type="button" class="mode-button" data-language="ja">JA</button>
+                    <button type="button" class="mode-button active" data-language="zh">ZH</button>
+                  </div>
+                </div>
+                <div class="popover-row">
+                  <div>
+                    <p class="popover-label" data-i18n="top.layout">切换布局</p>
+                    <p class="popover-hint" data-i18n="display.layoutHint">基础或完整界面布局</p>
+                  </div>
+                  <div class="mode-switch" id="layout-mode-switch">
+                    <button type="button" class="mode-button" data-layout-mode="basic" data-i18n="layout.basic">基础</button>
+                    <button type="button" class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           <div class="mode-control remote-qr-control" id="remote-qr-control">
