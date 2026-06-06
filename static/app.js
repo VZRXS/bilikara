@@ -63,6 +63,7 @@ const storageKeys = {
   layoutMode: "bilikara.layout.mode",
   language: "bilikara.ui.language",
   updatePreview: "bilikara.update.preview",
+  theme: "bilikara.ui.theme",
 };
 
 const state = {
@@ -228,6 +229,7 @@ const state = {
   language: "zh",
   translations: {},
   translationsLoaded: false,
+  theme: "light",
 };
 
 const elements = {
@@ -314,6 +316,7 @@ const elements = {
   displayLayoutSummary: document.getElementById("display-layout-summary"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
+  themeSwitch: document.getElementById("theme-switch"),
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
@@ -707,6 +710,24 @@ function setLanguage(language) {
   render();
 }
 
+function applyTheme(theme) {
+  const nextTheme = normalizeTheme(theme);
+  state.theme = nextTheme;
+  document.documentElement.setAttribute("data-theme", nextTheme);
+  writeLocalPreference(storageKeys.theme, nextTheme);
+  renderThemeSwitch();
+}
+
+function normalizeTheme(theme) {
+  return theme === "dark" ? "dark" : "light";
+}
+
+function renderThemeSwitch() {
+  elements.themeSwitch?.querySelectorAll("button[data-theme]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === state.theme);
+  });
+}
+
 async function loadTranslations() {
   state.language = normalizeLanguage(readLocalString(storageKeys.language, state.language));
   try {
@@ -1010,6 +1031,10 @@ function hydrateLocalPreferences() {
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
   state.updatePreviewEnabled = readLocalBoolean(storageKeys.updatePreview, state.updatePreviewEnabled);
+  
+  // Hydrate and apply theme
+  state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
+  applyTheme(state.theme);
 }
 
 function normalizeLayoutMode(value) {
@@ -9182,6 +9207,14 @@ elements.languageSwitch?.addEventListener("click", (event) => {
     return;
   }
   setLanguage(button.dataset.language);
+});
+
+elements.themeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-theme]");
+  if (!button) {
+    return;
+  }
+  applyTheme(button.dataset.theme);
 });
 
 elements.dataResetButton?.addEventListener("click", (event) => {

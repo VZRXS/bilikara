@@ -142,6 +142,7 @@ const remoteRatingPromptThreshold = 0.5;
 const storageKeys = {
   language: "bilikara.ui.language",
   layoutMode: "bilikara.remote.layout.mode",
+  theme: "bilikara.ui.theme",
 };
 
 function categoryBrowseTagKey(value) {
@@ -279,12 +280,14 @@ const state = {
   remoteAccessRenderSignature: "",
   viewportScaleResetTimers: [],
   renderDebounceTimer: null,
+  theme: "light",
 };
 
 const elements = {
   viewportMeta: document.getElementById("viewport-meta"),
   remoteShell: document.getElementById("remote-shell"),
   languageSwitch: document.getElementById("language-switch"),
+  themeSwitch: document.getElementById("theme-switch"),
   displaySettingsToggle: document.getElementById("display-settings-toggle"),
   displaySettingsPanel: document.getElementById("display-settings-popover"),
   displayLayoutSummary: document.getElementById("remote-layout-summary"),
@@ -660,6 +663,24 @@ function setLanguage(language) {
   }
 }
 
+function applyTheme(theme) {
+  const nextTheme = normalizeTheme(theme);
+  state.theme = nextTheme;
+  document.documentElement.setAttribute("data-theme", nextTheme);
+  writeLocalPreference(storageKeys.theme, nextTheme);
+  renderThemeSwitch();
+}
+
+function normalizeTheme(theme) {
+  return theme === "dark" ? "dark" : "light";
+}
+
+function renderThemeSwitch() {
+  elements.themeSwitch?.querySelectorAll("button[data-theme]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === state.theme);
+  });
+}
+
 async function loadTranslations() {
   state.language = normalizeLanguage(readLocalString(storageKeys.language, state.language));
   try {
@@ -771,6 +792,10 @@ function normalizeLayoutMode(value) {
 
 function hydrateLocalPreferences() {
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
+  
+  // Hydrate and apply theme
+  state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
+  applyTheme(state.theme);
 }
 
 function renderLayoutMode() {
@@ -6346,6 +6371,14 @@ elements.languageSwitch?.addEventListener("click", (event) => {
     return;
   }
   setLanguage(button.dataset.language);
+});
+
+elements.themeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-theme]");
+  if (!button) {
+    return;
+  }
+  applyTheme(button.dataset.theme);
 });
 
 elements.remoteQrToggle?.addEventListener("click", () => {
