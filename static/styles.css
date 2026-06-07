@@ -5058,6 +5058,14 @@ select:focus {
   font-weight: 700;
 }
 
+.developer-only {
+  display: none;
+}
+
+.developer-mode .developer-only {
+  display: block;
+}
+
 .search-modal-main {
   position: relative;
   flex: 1;
@@ -5214,6 +5222,50 @@ select:focus {
 .tag-browser-tag-count {
   color: var(--muted);
   font-size: 12px;
+}
+
+.pending-review-browser {
+  width: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 14px;
+}
+
+.pending-review-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 46px;
+}
+
+.pending-review-title-block {
+  min-width: 0;
+}
+
+.pending-review-title-block h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.pending-review-results {
+  min-height: 0;
+}
+
+.pending-review-message {
+  margin: 0;
+  min-height: 20px;
+}
+
+.pending-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .category-browser {

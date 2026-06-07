@@ -133,6 +133,39 @@ def _cloudflare_json(method: str, path: str, payload: dict[str, Any] | None = No
         raise LarkPoolError(f"Cloudflare request failed: {exc}") from exc
 
 
+def _cloudflare_admin_get_json(path: str, secret: str, *, timeout: float = 60.0) -> Any:
+    normalized_secret = str(secret or "").strip()
+    if not normalized_secret:
+        raise LarkPoolError("missing secret")
+    url = f"{_CLOUDFLARE_API_URL}{path}"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {normalized_secret}",
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+        "User-Agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
+    }
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    _log_lark_debug("cloudflare admin request", {"url": url, "timeout": timeout})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw_body = response.read().decode("utf-8")
+            return json.loads(raw_body)
+    except urllib.error.HTTPError as exc:
+        try:
+            error_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            error_body = ""
+        _log_lark_debug(
+            "cloudflare admin request failed",
+            {"url": url, "status": exc.code, "error": str(exc), "body": error_body[:1000]},
+        )
+        raise LarkPoolError(f"Cloudflare request failed: {exc}") from exc
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        _log_lark_debug("cloudflare admin request failed", {"url": url, "error": str(exc)})
+        raise LarkPoolError(f"Cloudflare request failed: {exc}") from exc
+
+
 def _require_success(payload: dict, label: str) -> dict:
     if payload.get("code") != 0:
         if _DEBUG_LOGS:
@@ -856,6 +889,122 @@ def append_cloudflare_pool_entries(entries: list[dict]) -> dict:
         "skipped_existing": int(payload.get("skipped_existing") or 0),
         "feishu_queued": int(payload.get("feishu_queued") or 0),
     }
+
+
+def export_cloudflare_pool_records(secret: str, *, limit: int = 5000, timeout: float = 120.0) -> list[dict]:
+    try:
+        normalized_limit = max(1, min(50000, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 5000
+    query = urllib.parse.urlencode(
+        {
+            "all": "1",
+            "limit": str(normalized_limit),
+            "_": str(int(time.time() * 1000)),
+        }
+    )
+    payload = _cloudflare_admin_get_json(f"/export?{query}", secret, timeout=timeout)
+    if isinstance(payload, list):
+        records = payload
+    elif isinstance(payload, dict):
+        records = _cloudflare_search_items(payload)
+    else:
+        records = []
+    return [record for record in records if isinstance(record, dict)]
+
+
+def _gatcha_keyword_matched(title: str) -> bool:
+    normalized_title = str(title or "").lower()
+    if not normalized_title:
+        return False
+    for keyword in getattr(cfg, "GATCHA_KEYWORDS", ()):
+        normalized_keyword = str(keyword or "").strip().lower()
+        if normalized_keyword and normalized_keyword in normalized_title:
+            return True
+    return False
+
+
+def _is_pending_review_record(raw_item: dict) -> bool:
+    item = _cloudflare_search_item(raw_item)
+    if not item or _gatcha_keyword_matched(item.get("title", "")):
+        return False
+    preserved = _field_text(raw_item.get("preserved_3")).strip()
+    return preserved in {"", "0", "0.0"}
+
+
+def _pending_cloudflare_review_payload(records: list[dict], *, limit: int = 20) -> dict:
+    try:
+        normalized_limit = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 20
+    pending_items: list[dict] = []
+    seen_bvids: set[str] = set()
+    for record in records:
+        if not _is_pending_review_record(record):
+            continue
+        item = _cloudflare_search_item(record)
+        if not item:
+            continue
+        bvid = str(item.get("bvid") or "").strip()
+        if not bvid or bvid in seen_bvids:
+            continue
+        seen_bvids.add(bvid)
+        pending_items.append(item)
+    return {
+        "items": pending_items[:normalized_limit],
+        "total_pending": len(pending_items),
+        "export_count": len(records),
+    }
+
+
+def pending_cloudflare_review_items(secret: str, *, limit: int = 20, export_limit: int = 5000) -> dict:
+    records = export_cloudflare_pool_records(secret, limit=export_limit)
+    return _pending_cloudflare_review_payload(records, limit=limit)
+
+
+def approve_cloudflare_review_items(
+    bvids: list[str],
+    secret: str,
+    *,
+    limit: int = 20,
+    export_limit: int = 5000,
+) -> dict:
+    requested: list[str] = []
+    seen_requested: set[str] = set()
+    for raw_bvid in bvids if isinstance(bvids, list) else []:
+        bvid = str(raw_bvid or "").strip()
+        if _VALID_BVID_RE.match(bvid) and bvid not in seen_requested:
+            requested.append(bvid)
+            seen_requested.add(bvid)
+    records = export_cloudflare_pool_records(secret, limit=export_limit)
+    current_items: dict[str, dict] = {}
+    for record in records:
+        item = _cloudflare_search_item(record)
+        bvid = str(item.get("bvid") or "").strip() if item else ""
+        if bvid in seen_requested:
+            current_items[bvid] = item
+    updates: list[dict] = []
+    for bvid in requested:
+        item = current_items.get(bvid)
+        if not item:
+            continue
+        update = dict(item)
+        update["preserved_3"] = "1"
+        updates.append(update)
+    upload = append_cloudflare_pool_entries(updates) if updates else {"attempted": 0, "added": 0}
+    if upload.get("error"):
+        raise LarkPoolError(str(upload.get("error") or "approval update failed"))
+    refreshed_records = export_cloudflare_pool_records(secret, limit=export_limit)
+    payload = _pending_cloudflare_review_payload(refreshed_records, limit=limit)
+    payload.update(
+        {
+            "requested": len(requested),
+            "approved": len(updates),
+            "skipped_missing": max(0, len(requested) - len(updates)),
+            "upload": upload,
+        }
+    )
+    return payload
 
 
 def delete_cloudflare_pool_entry(bvid: str) -> dict:
