@@ -1168,6 +1168,10 @@ function submitSongRating(item, score) {
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   }).catch((error) => {
+    if (submissionKey) {
+      state.ratingSubmittedKeys.delete(submissionKey);
+      renderPlayerRatingButton();
+    }
     console.warn("Rating submit failed:", error);
   });
   return true;
@@ -1220,10 +1224,6 @@ function ratingSubmissionKey(item) {
 function hasSubmittedSongRating(item) {
   const key = ratingSubmissionKey(item);
   return Boolean(key && state.ratingSubmittedKeys.has(key));
-}
-
-function ratingRequesterMatchesCurrentSelection(item) {
-  return Boolean(item);
 }
 
 function normalizeRatingPromptItem(item) {
@@ -1400,9 +1400,6 @@ function openRatingPrompt(item, options = {}) {
     return;
   }
   if (fullscreenElement()) {
-    return;
-  }
-  if (!ratingRequesterMatchesCurrentSelection(item)) {
     return;
   }
   const promptItems = ratingPromptItemsForItem(item);

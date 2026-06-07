@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+from collections import deque
 from email.utils import formatdate
 import hmac
 import json
@@ -78,6 +79,7 @@ from .updater import check_for_update
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
+RATING_SUBMISSION_KEY_LIMIT = 2000
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 
 
@@ -137,6 +139,7 @@ class AppContext:
         self._startup_gatcha_refresh_bypass_available = True
         self._rating_submission_lock = threading.RLock()
         self._rating_submission_keys: set[tuple[str, str]] = set()
+        self._rating_submission_key_order: deque[tuple[str, str]] = deque()
 
     def snapshot(self) -> dict:
         self.cache_manager.reconcile_cache_state()
@@ -197,6 +200,14 @@ class AppContext:
             if key in self._rating_submission_keys:
                 return False
             self._rating_submission_keys.add(key)
+            key_order = getattr(self, "_rating_submission_key_order", None)
+            if key_order is None:
+                key_order = deque()
+                self._rating_submission_key_order = key_order
+            key_order.append(key)
+            while len(key_order) > RATING_SUBMISSION_KEY_LIMIT:
+                old_key = key_order.popleft()
+                self._rating_submission_keys.discard(old_key)
             return True
 
     def advance_to_next(self) -> None:

@@ -995,11 +995,38 @@ def approve_cloudflare_review_items(
     if upload.get("error"):
         raise LarkPoolError(str(upload.get("error") or "approval update failed"))
     refreshed_records = export_cloudflare_pool_records(secret, limit=export_limit)
+    still_pending = {
+        str(item.get("bvid") or "").strip()
+        for item in (_cloudflare_search_item(record) for record in refreshed_records if _is_pending_review_record(record))
+        if item
+    }
+    fallback_updates = [update for update in updates if str(update.get("bvid") or "").strip() in still_pending]
+    fallback_deleted = 0
+    if fallback_updates:
+        for update in fallback_updates:
+            delete_result = delete_cloudflare_video_entry(str(update.get("bvid") or ""), secret)
+            if not delete_result.get("success"):
+                raise LarkPoolError(str(delete_result.get("error") or "approval delete fallback failed"))
+            fallback_deleted += 1
+        fallback_upload = append_cloudflare_pool_entries(fallback_updates)
+        if fallback_upload.get("error"):
+            raise LarkPoolError(str(fallback_upload.get("error") or "approval fallback update failed"))
+        upload["fallback_attempted"] = len(fallback_updates)
+        upload["fallback_deleted"] = fallback_deleted
+        upload["fallback_added"] = int(fallback_upload.get("added") or 0)
+        upload["fallback_updated_existing"] = int(fallback_upload.get("updated_existing") or 0)
+        refreshed_records = export_cloudflare_pool_records(secret, limit=export_limit)
     payload = _pending_cloudflare_review_payload(refreshed_records, limit=limit)
+    remaining_pending = {
+        str(item.get("bvid") or "").strip()
+        for item in (_cloudflare_search_item(record) for record in refreshed_records if _is_pending_review_record(record))
+        if item
+    }
+    actual_approved = sum(1 for bvid in requested if bvid in current_items and bvid not in remaining_pending)
     payload.update(
         {
             "requested": len(requested),
-            "approved": len(updates),
+            "approved": actual_approved,
             "skipped_missing": max(0, len(requested) - len(updates)),
             "upload": upload,
         }
