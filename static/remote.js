@@ -183,6 +183,9 @@ const state = {
   bindingIntent: null,
   gatchaFavlistSheetOpen: false,
   gatchaFavlistIntent: null,
+  poolConfigSheetOpen: false,
+  poolConfigData: null,
+  poolConfigSaving: false,
   reorderConfirmSheetOpen: false,
   reorderConfirmIntent: null,
   reorderConfirmSaving: false,
@@ -328,6 +331,21 @@ const elements = {
   gatchaFavlistSheetClose: document.getElementById("gatcha-favlist-sheet-close"),
   gatchaFavlistSheetCancel: document.getElementById("gatcha-favlist-sheet-cancel"),
   gatchaFavlistSheetConfirm: document.getElementById("gatcha-favlist-sheet-confirm"),
+  poolConfigSheet: document.getElementById("gatcha-pool-config-sheet"),
+  poolConfigSheetBackdrop: document.getElementById("gatcha-pool-config-sheet-backdrop"),
+  poolConfigSheetClose: document.getElementById("gatcha-pool-config-sheet-close"),
+  poolConfigSheetCancel: document.getElementById("gatcha-pool-config-sheet-cancel"),
+  poolConfigSheetReset: document.getElementById("gatcha-pool-config-sheet-reset"),
+  poolConfigSheetSave: document.getElementById("gatcha-pool-config-sheet-save"),
+  poolConfigWeightSlider: document.getElementById("gatcha-pool-weight-slider"),
+  poolConfigWeightLabel: document.getElementById("gatcha-pool-weight-label"),
+  poolConfigUidOptions: document.getElementById("gatcha-pool-uid-options"),
+  poolConfigFavlistOptions: document.getElementById("gatcha-pool-favlist-options"),
+  poolConfigUidSelectAll: document.getElementById("gatcha-pool-uid-select-all"),
+  poolConfigUidSelectNone: document.getElementById("gatcha-pool-uid-select-none"),
+  poolConfigFavlistSelectAll: document.getElementById("gatcha-pool-favlist-select-all"),
+  poolConfigFavlistSelectNone: document.getElementById("gatcha-pool-favlist-select-none"),
+  poolConfigMessage: document.getElementById("gatcha-pool-config-message"),
   reorderConfirmSheet: document.getElementById("reorder-confirm-sheet"),
   reorderConfirmSheetBackdrop: document.getElementById("reorder-confirm-sheet-backdrop"),
   reorderConfirmSheetText: document.getElementById("reorder-confirm-sheet-text"),
@@ -415,6 +433,7 @@ const elements = {
   addNextButton: document.getElementById("add-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
+  gatchaPoolConfigToggle: document.getElementById("gatcha-pool-config-toggle"),
   gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
@@ -2044,6 +2063,22 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
     throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
   }
   return payload.data || { folders: [], items: [] };
+}
+
+async function fetchPoolConfig() {
+  const response = await fetch("/api/gatcha/pool-config", {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("gatcha.poolLoadFailed"));
+  }
+  return payload.data || {};
+}
+
+async function savePoolConfig(payload) {
+  return apiPost("/api/gatcha/pool-config", payload);
 }
 
 async function previewGatchaUid(uid) {
@@ -4538,6 +4573,232 @@ function closeGatchaFavlistSheet() {
   }, 280);
 }
 
+function poolConfigFolderId(folder) {
+  return String(folder?.id || folder?.folder_id || "").trim();
+}
+
+function poolConfigSetMessage(message, isError = false) {
+  if (!elements.poolConfigMessage) {
+    return;
+  }
+  elements.poolConfigMessage.textContent = message || "";
+  elements.poolConfigMessage.classList.toggle("is-error", Boolean(isError));
+  elements.poolConfigMessage.classList.toggle("hidden", !message);
+}
+
+function updatePoolConfigWeightLabel() {
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const favlistWeight = 100 - uidWeight;
+  if (elements.poolConfigWeightLabel) {
+    elements.poolConfigWeightLabel.textContent = t("gatcha.poolWeightValue", {
+      uid: uidWeight,
+      favlist: favlistWeight,
+    });
+  }
+}
+
+function renderPoolConfigOption({ type, id, title, meta, checked }) {
+  const label = document.createElement("label");
+  label.className = "binding-option pool-config-option";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = type === "uid" ? "gatcha-pool-uid" : "gatcha-pool-favlist";
+  input.value = String(id || "");
+  input.checked = Boolean(checked);
+
+  const copy = document.createElement("div");
+  const titleEl = document.createElement("div");
+  titleEl.className = "binding-option-title";
+  titleEl.textContent = title || id;
+  const metaEl = document.createElement("div");
+  metaEl.className = "binding-option-meta";
+  metaEl.textContent = meta || "";
+  copy.append(titleEl, metaEl);
+  label.append(input, copy);
+  return label;
+}
+
+function renderPoolConfigSheet() {
+  const data = state.poolConfigData || {};
+  const excludedUids = new Set((Array.isArray(data.excluded_uids) ? data.excluded_uids : []).map(String));
+  const excludedFolders = new Set((Array.isArray(data.excluded_favlist_folders) ? data.excluded_favlist_folders : []).map(String));
+  const uidWeight = Math.max(0, Math.min(100, Number(data.uid_weight ?? 50)));
+
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = String(uidWeight);
+    elements.poolConfigWeightSlider.disabled = state.poolConfigSaving;
+  }
+  updatePoolConfigWeightLabel();
+
+  if (elements.poolConfigUidOptions) {
+    elements.poolConfigUidOptions.innerHTML = "";
+    const uids = Array.isArray(data.uid_options) ? data.uid_options : [];
+    if (!uids.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyUid");
+      elements.poolConfigUidOptions.appendChild(empty);
+    } else {
+      uids.forEach((owner) => {
+        const uid = String(owner.uid || "").trim();
+        elements.poolConfigUidOptions.appendChild(renderPoolConfigOption({
+          type: "uid",
+          id: uid,
+          title: owner.name || `UID ${uid}`,
+          meta: t("gatcha.poolOptionCount", { count: Number(owner.count || 0) }),
+          checked: uid && !excludedUids.has(uid),
+        }));
+      });
+    }
+  }
+
+  if (elements.poolConfigFavlistOptions) {
+    elements.poolConfigFavlistOptions.innerHTML = "";
+    const folders = Array.isArray(data.favlist_folder_options) ? data.favlist_folder_options : [];
+    if (!folders.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyFavlist");
+      elements.poolConfigFavlistOptions.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const id = poolConfigFolderId(folder);
+        const title = folder.title || t("favlist.folderWithId", { id });
+        const meta = folder.uid
+          ? t("gatcha.poolFavlistMeta", { uid: folder.uid, count: Number(folder.count || folder.media_count || 0) })
+          : t("gatcha.poolOptionCount", { count: Number(folder.count || folder.media_count || 0) });
+        elements.poolConfigFavlistOptions.appendChild(renderPoolConfigOption({
+          type: "favlist",
+          id,
+          title,
+          meta,
+          checked: id && !excludedFolders.has(id),
+        }));
+      });
+    }
+  }
+
+  const hasUidOptions = Boolean(elements.poolConfigUidOptions?.querySelector('input[name="gatcha-pool-uid"]'));
+  const hasFavlistOptions = Boolean(elements.poolConfigFavlistOptions?.querySelector('input[name="gatcha-pool-favlist"]'));
+  [elements.poolConfigUidSelectAll, elements.poolConfigUidSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasUidOptions;
+  });
+  [elements.poolConfigFavlistSelectAll, elements.poolConfigFavlistSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasFavlistOptions;
+  });
+  if (elements.poolConfigSheetReset) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigSheetReset.disabled = state.poolConfigSaving || !detailLoaded;
+  }
+  if (elements.poolConfigSheetSave) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigSheetSave.disabled = state.poolConfigSaving || !detailLoaded;
+    elements.poolConfigSheetSave.textContent = state.poolConfigSaving ? t("gatcha.poolSaving") : t("gatcha.poolSave");
+  }
+}
+
+async function openPoolConfigSheet() {
+  if (!elements.poolConfigSheet || state.poolConfigSheetOpen) {
+    return;
+  }
+  state.poolConfigSheetOpen = true;
+  state.poolConfigSaving = false;
+  state.poolConfigData = state.data?.gatcha_pool_config || {};
+  elements.poolConfigSheet.classList.remove("hidden");
+  elements.poolConfigSheet.setAttribute("aria-hidden", "false");
+  renderPoolConfigSheet();
+  poolConfigSetMessage(t("gatcha.poolLoading"));
+  requestAnimationFrame(() => {
+    elements.poolConfigSheet.classList.add("is-open");
+  });
+  try {
+    state.poolConfigData = await fetchPoolConfig();
+    poolConfigSetMessage("");
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  }
+  renderPoolConfigSheet();
+}
+
+function closePoolConfigSheet() {
+  state.poolConfigSheetOpen = false;
+  state.poolConfigSaving = false;
+  elements.poolConfigSheet?.classList.remove("is-open");
+  elements.poolConfigSheet?.setAttribute("aria-hidden", "true");
+  window.setTimeout(() => {
+    if (state.poolConfigSheetOpen) {
+      return;
+    }
+    elements.poolConfigSheet?.classList.add("hidden");
+    state.poolConfigData = null;
+    poolConfigSetMessage("");
+  }, 280);
+}
+
+function setPoolConfigChecked(name, checked) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.checked = Boolean(checked);
+  });
+}
+
+function resetPoolConfigControls() {
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = "50";
+  }
+  updatePoolConfigWeightLabel();
+  setPoolConfigChecked("gatcha-pool-uid", true);
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+  poolConfigSetMessage("");
+}
+
+function poolConfigExcludedValues(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]`)]
+    .filter((input) => !input.checked)
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+async function submitPoolConfigSheet() {
+  if (state.poolConfigSaving) {
+    return;
+  }
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const payload = {
+    uid_weight: uidWeight,
+    favlist_weight: 100 - uidWeight,
+    excluded_uids: poolConfigExcludedValues("gatcha-pool-uid"),
+    excluded_favlist_folders: poolConfigExcludedValues("gatcha-pool-favlist"),
+  };
+  state.poolConfigData = {
+    ...(state.poolConfigData || {}),
+    ...payload,
+  };
+  state.poolConfigSaving = true;
+  renderPoolConfigSheet();
+  poolConfigSetMessage(t("gatcha.poolSaving"));
+  try {
+    state.poolConfigData = await savePoolConfig(payload);
+    if (state.data) {
+      state.data.gatcha_pool_config = {
+        uid_weight: state.poolConfigData.uid_weight,
+        favlist_weight: state.poolConfigData.favlist_weight,
+        excluded_uids: state.poolConfigData.excluded_uids || [],
+        excluded_favlist_folders: state.poolConfigData.excluded_favlist_folders || [],
+        updated_at: state.poolConfigData.updated_at || 0,
+      };
+    }
+    closePoolConfigSheet();
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  } finally {
+    state.poolConfigSaving = false;
+    if (state.poolConfigSheetOpen) {
+      renderPoolConfigSheet();
+    }
+  }
+}
+
 function openReorderConfirmSheet(intent) {
   if (!intent?.itemId || !Number.isInteger(intent.targetIndex) || !elements.reorderConfirmSheet) {
     return;
@@ -6355,6 +6616,10 @@ elements.gatchaUidToggle?.addEventListener("click", () => {
   renderGatchaUidView();
 });
 
+elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
+  await openPoolConfigSheet();
+});
+
 document.addEventListener("click", async (event) => {
   const root = state.ratingPromptElement;
   if (!root || !root.contains(event.target)) {
@@ -6481,6 +6746,46 @@ elements.gatchaFavlistSheetBackdrop?.addEventListener("click", () => {
 
 elements.gatchaFavlistSheetConfirm?.addEventListener("click", async () => {
   await confirmGatchaFavlistSheet();
+});
+
+elements.poolConfigSheetClose?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigSheetCancel?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigSheetBackdrop?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigWeightSlider?.addEventListener("input", () => {
+  updatePoolConfigWeightLabel();
+});
+
+elements.poolConfigSheetReset?.addEventListener("click", () => {
+  resetPoolConfigControls();
+});
+
+elements.poolConfigUidSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", true);
+});
+
+elements.poolConfigUidSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", false);
+});
+
+elements.poolConfigFavlistSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+});
+
+elements.poolConfigFavlistSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", false);
+});
+
+elements.poolConfigSheetSave?.addEventListener("click", async () => {
+  await submitPoolConfigSheet();
 });
 
 elements.reorderConfirmSheetClose?.addEventListener("click", () => {
@@ -6668,6 +6973,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (state.gatchaFavlistSheetOpen) {
     closeGatchaFavlistSheet();
+  }
+  if (state.poolConfigSheetOpen) {
+    closePoolConfigSheet();
   }
   if (state.reorderConfirmSheetOpen) {
     closeReorderConfirmSheet();

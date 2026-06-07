@@ -29,6 +29,8 @@ from .bilibili import (
     browse_gatcha_favlist,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
+    gatcha_pool_config_detail,
+    gatcha_pool_config_snapshot,
     gatcha_favlist_updated_at,
     gatcha_task_snapshot,
     fetch_owner_info,
@@ -39,6 +41,7 @@ from .bilibili import (
     refresh_gatcha_cache_in_background,
     refresh_gatcha_favlist,
     search_gatcha_cache,
+    update_gatcha_pool_config,
 )
 from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_mid_entries, delete_cloudflare_pool_entry, delete_cloudflare_video_entry, reset_cloudflare_video_tags, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating, verify_cloudflare_bilikara_secret
 from .cache import CacheManager
@@ -137,6 +140,7 @@ class AppContext:
         }
         payload["remote_access"] = self.remote_access_snapshot()
         payload["gatcha"] = gatcha_task_snapshot()
+        payload["gatcha_pool_config"] = gatcha_pool_config_snapshot()
         payload["gatcha_favlist_updated_at"] = gatcha_favlist_updated_at()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
@@ -609,6 +613,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/gatcha/pool-config":
+            try:
+                self._write_json({"ok": True, "data": gatcha_pool_config_detail()})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
         if route == "/api/gatcha/search":
             query = parse_qs(urlparse(self.path).query).get("q", [""])[0]
             try:
@@ -991,6 +1001,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     force = True
                 CONTEXT.retry_cache_item(body["item_id"], force=force)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/gatcha/pool-config":
+                result = update_gatcha_pool_config(
+                    uid_weight=body.get("uid_weight"),
+                    favlist_weight=body.get("favlist_weight"),
+                    excluded_uids=body.get("excluded_uids"),
+                    excluded_favlist_folders=body.get("excluded_favlist_folders"),
+                )
+                CONTEXT._notify_state_changed()
+                self._write_json({"ok": True, "data": {**gatcha_pool_config_detail(), **result}})
                 return
             if route == "/api/gatcha/uids/add":
                 result = add_gatcha_uid(

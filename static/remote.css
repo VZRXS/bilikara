@@ -1055,12 +1055,88 @@ h1 {
 }
 
 
-#gatcha-favlist-sheet .binding-sheet-section {
+#gatcha-favlist-sheet .binding-sheet-section,
+.pool-config-sheet .binding-sheet-section {
   flex: 1 1 auto;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding-right: 4px;
+}
+
+.pool-config-sheet .binding-sheet-panel {
+  max-height: min(88vh, 820px);
+}
+
+.pool-config-section {
+  flex: 0 0 auto;
+}
+
+.pool-config-section .pool-config-option-list {
+  max-height: clamp(130px, 22vh, 230px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.pool-config-weight-head,
+.pool-config-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pool-config-weight-head span,
+.pool-config-list-head h3 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.pool-config-weight-head strong {
+  font-size: 14px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+#gatcha-pool-weight-slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.pool-config-bulk-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pool-config-bulk-actions .ghost-button {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.pool-config-empty {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(30, 41, 59, 0.56);
+}
+
+.pool-config-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pool-config-head-actions .ghost-button {
+  min-height: 34px;
+  padding: 7px 12px;
+  font-size: 12px;
 }
 
 
@@ -1628,6 +1704,24 @@ select:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+#gatcha-result-view {
+  align-content: stretch;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.gatcha-result-copy {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+#gatcha-result-view .gatcha-actions {
+  align-self: end;
+}
+
 
 .gatcha-stage {
   position: relative;
@@ -1709,7 +1803,15 @@ select:disabled {
 }
 
 
-.gatcha-uid-toggle {
+.gatcha-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.gatcha-uid-toggle,
+.gatcha-pool-config-toggle {
   min-height: 40px;
   padding-inline: 12px;
   white-space: nowrap;
