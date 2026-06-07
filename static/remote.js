@@ -1249,6 +1249,19 @@ function ratingItemUrl(item) {
   return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
 }
 
+function safeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const url = new URL(raw, window.location.href);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 function ratingOwnerUid(item) {
   const rawMid = item?.owner_mid ?? item?.mid;
   const uid = String(rawMid || "").trim();
@@ -1363,21 +1376,49 @@ function renderRatingPromptContent() {
   }
   const bvid = String(activeItem.bvid || "").trim();
   const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
-  const coverUrl = String(activeItem.cover_url || "").trim();
-  const url = ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : "");
+  const coverUrl = safeHttpUrl(activeItem.cover_url);
+  const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
   const titleKey = state.ratingPromptActiveTab === "previous" ? "rating.previousTitle" : "rating.title";
-  content.innerHTML = `
-    <div class="rating-media">
-      ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
-      <div class="rating-copy">
-        <p class="rating-kicker">${htmlT("rating.kicker")}</p>
-        <h2>${htmlT(titleKey)}</h2>
-        <p class="rating-hint">${htmlT("rating.hint")}</p>
-        <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
-        ${url ? `<a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>` : ""}
-      </div>
-    </div>
-  `;
+  const media = document.createElement("div");
+  media.className = "rating-media";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.className = "rating-cover";
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    media.appendChild(image);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "rating-cover rating-cover-empty";
+    media.appendChild(placeholder);
+  }
+  const copy = document.createElement("div");
+  copy.className = "rating-copy";
+  const kicker = document.createElement("p");
+  kicker.className = "rating-kicker";
+  kicker.textContent = t("rating.kicker");
+  const title = document.createElement("h2");
+  title.textContent = t(titleKey);
+  const hint = document.createElement("p");
+  hint.className = "rating-hint";
+  hint.textContent = t("rating.hint");
+  const owner = document.createElement("p");
+  owner.className = "rating-owner";
+  owner.textContent = t("rating.owner", { owner: ownerName });
+  copy.append(kicker, title, hint, owner);
+  if (url) {
+    const link = document.createElement("a");
+    link.className = "rating-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = url;
+    copy.appendChild(link);
+  }
+  media.appendChild(copy);
+  content.replaceChildren(media);
   const addUpButton = root.querySelector("[data-rating-add-up]");
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
@@ -4193,7 +4234,7 @@ function scheduleAudioVariantSwitchUnlock() {
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
-    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.replaceChildren();
     elements.audioVariantBar.classList.add("hidden");
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = "";
@@ -4202,7 +4243,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
-    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.replaceChildren();
     elements.audioVariantBar.classList.add("hidden");
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = currentItem.id;
@@ -4216,7 +4257,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
-  elements.audioVariantBar.innerHTML = "";
+  elements.audioVariantBar.replaceChildren();
   const list = document.createElement("div");
   list.className = "audio-variant-list";
   variants.forEach((variant) => {
@@ -4240,7 +4281,10 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   toggleButton.dataset.action = "toggle-audio-variants";
   toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
   toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"));
-  toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
+  const toggleIcon = document.createElement("span");
+  toggleIcon.setAttribute("aria-hidden", "true");
+  toggleIcon.textContent = "▾";
+  toggleButton.appendChild(toggleIcon);
 
   elements.audioVariantBar.append(list, toggleButton);
   elements.audioVariantBar.classList.remove("hidden");
@@ -5055,6 +5099,13 @@ function queueRenderSignatureForItem(item, index) {
   };
 }
 
+function createQueueEmptyNode(message) {
+  const node = document.createElement("div");
+  node.className = "queue-empty";
+  node.textContent = message;
+  return node;
+}
+
 function renderQueue(playlist) {
   const items = Array.isArray(playlist) ? playlist : [];
   const signature = JSON.stringify({
@@ -5067,9 +5118,9 @@ function renderQueue(playlist) {
   }
   state.queueRenderSignature = signature;
 
-  elements.queueList.innerHTML = "";
+  elements.queueList.replaceChildren();
   if (!items.length) {
-    elements.queueList.innerHTML = `<div class="queue-empty">${htmlT("remote.queueEmpty")}</div>`;
+    elements.queueList.appendChild(createQueueEmptyNode(t("remote.queueEmpty")));
     return;
   }
 
@@ -5353,11 +5404,17 @@ function renderHistory(history) {
   }
   state.historyRenderSignature = signature;
 
-  elements.historyList.innerHTML = "";
+  elements.historyList.replaceChildren();
 
   if (!history.length) {
-    elements.historyList.innerHTML =
-      `<div class="queue-empty"><p>${htmlT("history.emptyTitle")}</p><p>${htmlT("history.emptyHint")}</p></div>`;
+    const emptyNode = document.createElement("div");
+    emptyNode.className = "queue-empty";
+    const title = document.createElement("p");
+    title.textContent = t("history.emptyTitle");
+    const hint = document.createElement("p");
+    hint.textContent = t("history.emptyHint");
+    emptyNode.append(title, hint);
+    elements.historyList.appendChild(emptyNode);
     return;
   }
 

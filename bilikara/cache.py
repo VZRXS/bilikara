@@ -1376,6 +1376,7 @@ class CacheManager:
 
         process = subprocess.Popen(
             command,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1779,6 +1780,7 @@ class CacheManager:
         )
         process = subprocess.run(
             command,
+            shell=False,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -2525,6 +2527,7 @@ class CacheManager:
         try:
             process = subprocess.run(
                 [str(binary_path), "-version"],
+                shell=False,
                 capture_output=True,
                 text=True,
                 errors="replace",
@@ -2954,6 +2957,7 @@ class CacheManager:
             try:
                 process = subprocess.Popen(
                     command,
+                    shell=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
