@@ -1,3 +1,16 @@
+:root {
+  --queue-order-bg: rgba(255, 255, 255, 0.96);
+  --queue-order-border: 1.4px solid rgba(109, 98, 88, 0.18);
+  --queue-order-color: rgba(91, 78, 69, 0.92);
+
+  --queue-btn-secondary-bg: rgba(99, 76, 60, 0.08);
+  --queue-btn-secondary-color: #5f4e42;
+
+  --queue-drop-bg: rgba(255, 255, 255, 0.9);
+
+  --menu-toggle-bg: rgba(99, 76, 60, 0.05);
+}
+
 .queue-item {
   position: relative;
   gap: 10px;
@@ -33,9 +46,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1.4px solid rgba(109, 98, 88, 0.18);
-  color: rgba(91, 78, 69, 0.92);
+  background: var(--queue-order-bg);
+  border: var(--queue-order-border);
+  color: var(--queue-order-color);
   font-size: 14px;
   font-weight: 700;
   line-height: 1;
@@ -215,11 +228,11 @@
 .queue-actions .ghost-button,
 .menu-content .secondary-button,
 .menu-content .ghost-button {
-  background: rgba(99, 76, 60, 0.08);
+  background: var(--queue-btn-secondary-bg);
 }
 
 .queue-actions .secondary-button {
-  color: #5f4e42;
+  color: var(--queue-btn-secondary-color);
 }
 
 .queue-actions .danger-button,
@@ -249,7 +262,7 @@
   box-shadow:
     0 0 0 2px rgba(202, 91, 60, 0.1),
     0 14px 30px rgba(79, 56, 39, 0.1);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--queue-drop-bg);
 }
 
 .queue-item.drop-before::before,
@@ -368,7 +381,7 @@
   height: 32px;
   border-radius: 50%;
   border: none;
-  background: rgba(99, 76, 60, 0.05);
+  background: var(--menu-toggle-bg);
   color: var(--muted);
   font-size: 20px;
   display: flex;
@@ -413,3 +426,18 @@
 .menu-content.hidden {
   display: none;
 }
+
+/* --- DARK COCOA THEME OVERRIDES --- */
+:root[data-theme="dark"] {
+  --queue-order-bg: rgba(30, 26, 23, 0.96);
+  --queue-order-border: 1.4px solid rgba(246, 241, 235, 0.15);
+  --queue-order-color: var(--ink);
+
+  --queue-btn-secondary-bg: rgba(246, 241, 235, 0.08);
+  --queue-btn-secondary-color: var(--ink);
+
+  --queue-drop-bg: rgba(30, 26, 23, 0.9);
+
+  --menu-toggle-bg: rgba(246, 241, 235, 0.05);
+}
+

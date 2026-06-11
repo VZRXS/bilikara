@@ -7492,10 +7492,21 @@ function closeConfirm() {
   renderConfirmPopover();
 }
 
+function confirmPopoverAnchorElement(intent) {
+  const anchorElementId = String(intent?.anchorElementId || "").trim();
+  return anchorElementId ? document.getElementById(anchorElementId) : null;
+}
+
+function confirmPopoverAnchorRect(intent) {
+  const anchorElement = confirmPopoverAnchorElement(intent);
+  return anchorElement ? anchorElement.getBoundingClientRect() : null;
+}
+
 function confirmPopoverRenderSignature(intent) {
   if (!intent) {
     return "";
   }
+  const anchorRect = confirmPopoverAnchorRect(intent);
   return JSON.stringify({
     type: intent.type || "",
     message: intent.message || "",
@@ -7508,9 +7519,57 @@ function confirmPopoverRenderSignature(intent) {
     pageSize: selectedConfirmHistoryExportPageSize(intent),
     x: Math.round(Number(intent.x || 0)),
     y: Math.round(Number(intent.y || 0)),
+    anchorElementId: String(intent.anchorElementId || ""),
+    anchorAlign: String(intent.anchorAlign || ""),
+    anchorGap: Math.round(Number(intent.anchorGap || 0)),
+    anchorLeft: anchorRect ? Math.round(anchorRect.left) : 0,
+    anchorTop: anchorRect ? Math.round(anchorRect.top) : 0,
+    anchorRight: anchorRect ? Math.round(anchorRect.right) : 0,
+    anchorBottom: anchorRect ? Math.round(anchorRect.bottom) : 0,
     width: window.innerWidth,
     height: window.innerHeight,
   });
+}
+
+function confirmPopoverPlacement(intent, width, popoverHeight) {
+  const margin = 12;
+  const anchorRect = confirmPopoverAnchorRect(intent);
+  const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+  const maxTop = Math.max(margin, window.innerHeight - popoverHeight - margin);
+  const anchorGap = Number.isFinite(Number(intent.anchorGap)) ? Number(intent.anchorGap) : 10;
+  let rawLeft = Number(intent.x || 0);
+  let rawTop = Number(intent.y || 0);
+
+  if (anchorRect) {
+    const align = String(intent.anchorAlign || "end");
+    rawTop = anchorRect.bottom + anchorGap;
+    if (align === "start") {
+      rawLeft = anchorRect.left;
+    } else if (align === "center") {
+      rawLeft = anchorRect.left + ((anchorRect.width - width) / 2);
+    } else {
+      rawLeft = anchorRect.right - width;
+    }
+
+    const aboveTop = anchorRect.top - popoverHeight - anchorGap;
+    if (rawTop + popoverHeight > window.innerHeight - margin && aboveTop >= margin) {
+      rawTop = aboveTop;
+    }
+  }
+
+  const left = Math.min(Math.max(rawLeft, margin), maxLeft);
+  if (!anchorRect) {
+    return {
+      left,
+      top: Math.min(Math.max(rawTop, margin), maxTop),
+    };
+  }
+
+  const anchorOutsideViewport = anchorRect.bottom < margin || anchorRect.top > window.innerHeight - margin;
+  return {
+    left,
+    top: anchorOutsideViewport ? rawTop : Math.min(Math.max(rawTop, margin), maxTop),
+  };
 }
 
 function renderConfirmPopover() {
@@ -7538,15 +7597,7 @@ function renderConfirmPopover() {
   const popoverHeight = (hasSecondaryAction ? 126 : 112)
     + (hasSourceSelect || hasPageSizeSelect ? 76 : 0)
     - (hideMessage ? 34 : 0);
-  const margin = 12;
-  const left = Math.min(
-    Math.max(intent.x, margin),
-    window.innerWidth - width - margin,
-  );
-  const top = Math.min(
-    Math.max(intent.y, margin),
-    window.innerHeight - popoverHeight - margin,
-  );
+  const { left, top } = confirmPopoverPlacement(intent, width, popoverHeight);
 
   elements.confirmText.textContent = intent.message || "";
   elements.confirmText.classList.toggle("hidden", hideMessage);
@@ -7603,6 +7654,22 @@ function anchorPointForEvent(event, fallbackElement) {
     x: rect.right - 20,
     y: rect.bottom + 8,
   };
+}
+
+let confirmPopoverPositionFrame = 0;
+
+function scheduleConfirmPopoverPositionSync() {
+  if (!state.confirmIntent || confirmPopoverPositionFrame) {
+    return;
+  }
+  confirmPopoverPositionFrame = window.requestAnimationFrame(() => {
+    confirmPopoverPositionFrame = 0;
+    if (!state.confirmIntent) {
+      return;
+    }
+    state.confirmPopoverRenderSignature = "";
+    renderConfirmPopover();
+  });
 }
 
 function clearDropIndicators() {
@@ -8268,6 +8335,9 @@ async function checkAppUpdate(event) {
           : t("service.openReleaseWithMessage", { message: updateMessage }),
         primaryLabel: canAutoInstall ? t("service.installUpdate") : t("service.openReleases"),
         ...point,
+        anchorElementId: button?.id || "update-check-button",
+        anchorAlign: "end",
+        anchorGap: 8,
       });
       return;
     }
@@ -10421,6 +10491,9 @@ async function startPolling() {
     }
   }, pollIntervalMs);
 }
+
+window.addEventListener("resize", scheduleConfirmPopoverPositionSync);
+window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 
 window.addEventListener("pagehide", () => {
   teardownMountedPlayer();
