@@ -318,6 +318,7 @@ const elements = {
   queueCurrentTag: document.getElementById("queue-current-tag"),
   queueCurrentTitle: document.getElementById("queue-current-title"),
   queueCurrentRequester: document.getElementById("queue-current-requester"),
+  queueCurrentCacheDetail: document.getElementById("queue-current-cache-detail"),
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
@@ -4119,6 +4120,19 @@ function localizedCacheMessage(message, cacheStatus = "") {
   return raw;
 }
 
+function localizedCacheMessageLines(message, cacheStatus = "") {
+  const lines = String(message || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    return "";
+  }
+  return lines
+    .map((line) => localizedCacheMessage(line, cacheStatus) || line)
+    .join("\n");
+}
+
 function syncLarkSearchInputs(value, source = "") {
   const nextValue = String(value || "");
   if (source !== "main" && elements.larkSearchQuery && elements.larkSearchQuery.value !== nextValue) {
@@ -5172,6 +5186,9 @@ function renderQueueCurrent(currentItem) {
     setTextContent(elements.queueCurrentTag, t("status.playing"));
     setTextContent(elements.queueCurrentTitle, t("player.noSong"));
     setElementTitle(elements.queueCurrentTitle, "");
+    setTextContent(elements.queueCurrentCacheDetail, "");
+    setClassToggle(elements.queueCurrentCacheDetail, "hidden", true);
+    setElementTitle(elements.queueCurrentCacheDetail, "");
     setClassToggle(elements.queueCurrentRetry, "hidden", true);
     elements.queueCurrentRetry.removeAttribute("data-id");
     return;
@@ -5179,16 +5196,19 @@ function renderQueueCurrent(currentItem) {
 
   const currentState = currentStatusForItem(currentItem);
   const requesterText = requesterBadgeText(currentItem.requester_name);
+  const cacheDetailText = queueCurrentCacheDetailForItem(currentItem, currentState.state);
   const signature = JSON.stringify({
     id: currentItem.id,
     state: currentState.state,
     label: currentState.label,
     title: currentItem.display_title,
     requesterText,
+    cacheDetailText,
     cacheProgress: currentItem.cache_progress,
     cacheSizeBytes: currentItem.cache_size_bytes,
     cacheDownloadCurrent: currentItem.cache_download_current_bytes,
     cacheDownloadTotal: currentItem.cache_download_total_bytes,
+    cacheDownloadTracks: currentItem.cache_download_tracks || [],
     language: state.language,
   });
 
@@ -5203,6 +5223,9 @@ function renderQueueCurrent(currentItem) {
     setElementTitle(elements.queueCurrentTitle, ownerTooltipForEntry(currentItem));
     setTextContent(elements.queueCurrentRequester, requesterText);
     setClassToggle(elements.queueCurrentRequester, "hidden", !requesterText);
+    setTextContent(elements.queueCurrentCacheDetail, cacheDetailText);
+    setClassToggle(elements.queueCurrentCacheDetail, "hidden", !cacheDetailText);
+    setElementTitle(elements.queueCurrentCacheDetail, cacheDetailText);
 
     setClassToggle(elements.queueCurrentProgressBadge, "idle", currentState.state === "pending");
     setClassToggle(elements.queueCurrentProgressBadge, "active", currentState.state === "caching");
@@ -5236,6 +5259,81 @@ function currentStatusForItem(item) {
     return { state: "caching", label: t("status.caching") };
   }
   return { state: "pending", label: t("status.pendingCache") };
+}
+
+function normalizedCacheDownloadTracks(item) {
+  if (!Array.isArray(item?.cache_download_tracks)) {
+    return [];
+  }
+  return item.cache_download_tracks
+    .filter((track) => track && typeof track === "object")
+    .map((track) => ({ ...track }))
+    .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+}
+
+function cacheProgressBytesLabel(currentBytes, targetBytes) {
+  const current = Math.max(0, Number(currentBytes || 0));
+  const target = Math.max(0, Number(targetBytes || 0));
+  if (target > 0) {
+    return `${formatBytes(Math.min(current, target))} / ${formatBytes(target)}`;
+  }
+  return `${formatBytes(current)} / ${t("cache.estimating")}`;
+}
+
+function cacheTrackDetailTextForItem(item) {
+  const tracks = normalizedCacheDownloadTracks(item);
+  if (!tracks.length) {
+    return "";
+  }
+
+  let totalCurrent = 0;
+  let totalTarget = 0;
+  let allTargetsKnown = true;
+  tracks.forEach((track) => {
+    const current = Math.max(0, Number(track.current_bytes || 0));
+    const target = Math.max(0, Number(track.target_bytes || 0));
+    if (target > 0) {
+      totalCurrent += Math.min(current, target);
+      totalTarget += target;
+    } else {
+      totalCurrent += current;
+      allTargetsKnown = false;
+    }
+  });
+
+  const lines = [
+    `${t("cache.total")}：${allTargetsKnown && totalTarget > 0
+      ? `${formatBytes(totalCurrent)} / ${formatBytes(totalTarget)}`
+      : `${formatBytes(totalCurrent)} / ${t("cache.estimating")}`}`,
+  ];
+  tracks.forEach((track, index) => {
+    const label = String(track.label || `Track ${index + 1}`).trim() || `Track ${index + 1}`;
+    lines.push(`${label}：${cacheProgressBytesLabel(track.current_bytes, track.target_bytes)}`);
+  });
+  return lines.join("\n");
+}
+
+function hostCacheDetailTextForItem(item) {
+  if (!item) {
+    return "";
+  }
+  if (item.cache_status === "ready") {
+    return "";
+  }
+  if (item.cache_status === "downloading") {
+    return cacheTrackDetailTextForItem(item)
+      || localizedCacheMessageLines(item.cache_message, item.cache_status)
+      || t("status.caching");
+  }
+  return localizedCacheMessageLines(item.cache_message, item.cache_status)
+    || (item.cache_status === "failed" ? t("cache.failed") : t("status.pendingCache"));
+}
+
+function queueCurrentCacheDetailForItem(item, currentState) {
+  if (!item || currentState === "playing") {
+    return "";
+  }
+  return hostCacheDetailTextForItem(item);
 }
 
 function audioVariantsForItem(item) {
@@ -5946,7 +6044,7 @@ function syncPlayerFrameCacheHint(currentItem) {
   if (!hint || !currentItem) {
     return;
   }
-  setTextContent(hint, localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback"));
+  setTextContent(hint, hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback"));
 }
 
 function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
@@ -6592,6 +6690,7 @@ function renderPlayer(currentItem, playbackMode) {
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
 
   const signature = [
     currentItem ? currentItem.id : "none",
@@ -6599,6 +6698,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    playerCacheDetailText,
     state.language,
   ].join("|");
 
@@ -6688,7 +6788,7 @@ function renderPlayer(currentItem, playbackMode) {
     text.textContent = t("player.preparingTracks");
     const hint = document.createElement("p");
     hint.className = "empty-hint";
-    hint.textContent = localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback");
+    hint.textContent = hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback");
     empty.append(text, hint);
     elements.playerFrame.replaceChildren(empty);
     return;
@@ -6911,6 +7011,7 @@ function renderPlayer(currentItem, playbackMode) {
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
 
   const signature = [
     currentItem ? currentItem.id : "none",
@@ -6918,6 +7019,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    playerCacheDetailText,
     state.language,
   ].join("|");
 
@@ -7001,7 +7103,7 @@ function renderPlayer(currentItem, playbackMode) {
       <div class="empty-state">
         <p>${escapeHtml(t("player.preparingTracks"))}</p>
         <p class="empty-hint">${escapeHtml(
-          localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback"),
+          hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback"),
         )}</p>
       </div>
     `);

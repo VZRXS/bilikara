@@ -3228,6 +3228,18 @@ select:disabled {
   border: none;
 }
 
+.queue-current-cache-detail {
+  margin: 0;
+  max-width: min(100%, 520px);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
 .queue-current-next {
   position: absolute;
   right: 14px;
@@ -6349,6 +6361,10 @@ select:disabled {
   --toast-bg: rgba(30, 26, 23, 0.94);
   --toast-border: 1px solid rgba(246, 241, 235, 0.15);
   --toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
+  --fullscreen-toast-bg: rgba(30, 26, 23, 0.88);
+  --fullscreen-toast-border: 1px solid rgba(224, 108, 83, 0.22);
+  --fullscreen-toast-label-bg: rgba(224, 108, 83, 0.18);
+  --fullscreen-toast-label-color: var(--accent);
   --dark-surface-bg: rgba(30, 26, 23, 0.74);
   --dark-surface-strong-bg: rgba(30, 26, 23, 0.96);
   --dark-control-bg: rgba(48, 41, 37, 0.82);
