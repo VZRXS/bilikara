@@ -816,6 +816,80 @@ function canTogglePlayerFullscreen() {
   return supportsPlayerFullscreen() && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
 }
 
+function tauriAppWindow() {
+  const tauriWebviewWindow = window.__TAURI__?.webviewWindow;
+  if (tauriWebviewWindow) {
+    if (typeof tauriWebviewWindow.getCurrentWebviewWindow === "function") {
+      try {
+        return tauriWebviewWindow.getCurrentWebviewWindow();
+      } catch {
+        return null;
+      }
+    }
+    if (typeof tauriWebviewWindow.getCurrent === "function") {
+      try {
+        return tauriWebviewWindow.getCurrent();
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  const tauriWindow = window.__TAURI__?.window;
+  if (!tauriWindow) {
+    return null;
+  }
+  if (tauriWindow.appWindow) {
+    return tauriWindow.appWindow;
+  }
+  if (typeof tauriWindow.getCurrentWindow === "function") {
+    try {
+      return tauriWindow.getCurrentWindow();
+    } catch {
+      return null;
+    }
+  }
+  if (typeof tauriWindow.getCurrent === "function") {
+    try {
+      return tauriWindow.getCurrent();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function tauriInvoke() {
+  return window.__TAURI__?.tauri?.invoke
+    || window.__TAURI__?.core?.invoke
+    || window.__TAURI__?.invoke
+    || null;
+}
+
+async function setTauriWindowFullscreen(enabled) {
+  const fullscreen = Boolean(enabled);
+  const appWindow = tauriAppWindow();
+  if (appWindow && typeof appWindow.setFullscreen === "function") {
+    try {
+      await appWindow.setFullscreen(fullscreen);
+      return true;
+    } catch {
+      // Fall through to the command path below; some Tauri builds expose invoke more reliably.
+    }
+  }
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return false;
+  }
+  try {
+    await invoke("set_window_fullscreen", { fullscreen });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function renderPlayerFullscreenButton() {
   const button = elements.playerFullscreenButton;
   if (!button) {
@@ -874,7 +948,10 @@ async function togglePlayerFullscreen() {
     return;
   }
   if (isPlayerPanelFullscreen()) {
-    await exitDocumentFullscreen();
+    const exitFullscreenPromise = exitDocumentFullscreen();
+    const tauriFullscreenPromise = setTauriWindowFullscreen(false);
+    await exitFullscreenPromise;
+    await tauriFullscreenPromise;
     return;
   }
   if (!state.data?.current_item) {
@@ -883,8 +960,15 @@ async function togglePlayerFullscreen() {
   const activeFullscreen = fullscreenElement();
   if (activeFullscreen && activeFullscreen !== elements.playerPanel) {
     await exitDocumentFullscreen();
+    await setTauriWindowFullscreen(false);
   }
-  await requestElementFullscreen(elements.playerPanel);
+  const elementFullscreenPromise = requestElementFullscreen(elements.playerPanel);
+  const tauriFullscreenPromise = setTauriWindowFullscreen(true);
+  const elementFullscreenStarted = await elementFullscreenPromise;
+  const tauriFullscreenStarted = await tauriFullscreenPromise;
+  if (!elementFullscreenStarted && tauriFullscreenStarted) {
+    await setTauriWindowFullscreen(false);
+  }
 }
 
 function clearPlayerFrameClickTimer() {
@@ -9759,12 +9843,7 @@ function handleFullscreenChange() {
       hidePlayerDelayOverlay();
     }
   }
-  if (window.__TAURI__ && window.__TAURI__.window) {
-    const appWindow = window.__TAURI__.window.appWindow || (typeof window.__TAURI__.window.getCurrent === "function" ? window.__TAURI__.window.getCurrent() : null);
-    if (appWindow) {
-      appWindow.setFullscreen(isFullscreen).catch(() => {});
-    }
-  }
+  setTauriWindowFullscreen(isFullscreen).catch(() => {});
   renderPlayerFullscreenButton();
 }
 
