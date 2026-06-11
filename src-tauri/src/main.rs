@@ -205,7 +205,7 @@ fn main() {
                 shutdown_token: shutdown_token.clone(),
             });
 
-            let app_handle = app.handle();
+            let app_handle = app.handle().clone();
             let child_for_monitor = child_arc.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(500));

@@ -5194,10 +5194,12 @@ async function confirmBindingSheet() {
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
     setMessageForSource(source, t("binding.selectVideoPart"), true);
+    setAppMessage(t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
     setMessageForSource(source, t("binding.selectAudioPart"), true);
+    setAppMessage(t("binding.selectAudioPart"), true);
     return;
   }
 
@@ -5246,6 +5248,7 @@ async function confirmBindingSheet() {
       return;
     }
     setMessageForSource(source, error.message, true);
+    setAppMessage(error.message, true);
   } finally {
     state.submitting = false;
   }
