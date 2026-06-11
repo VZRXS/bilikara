@@ -9,6 +9,11 @@
   --queue-drop-bg: rgba(255, 255, 255, 0.9);
 
   --menu-toggle-bg: rgba(99, 76, 60, 0.05);
+
+  --queue-accent-glow: rgba(202, 91, 60, 0.38);
+  --queue-accent-glow-shadow: rgba(202, 91, 60, 0.16);
+  --queue-drop-border: rgba(202, 91, 60, 0.28);
+  --queue-drop-shadow: rgba(202, 91, 60, 0.1);
 }
 
 .queue-item {
@@ -95,7 +100,7 @@
   min-height: 24px;
   padding: 0 9px;
   border-radius: 999px;
-  background: rgba(202, 91, 60, 0.1);
+  background: var(--accent-soft);
   color: var(--accent-deep);
   font-size: 12px;
   line-height: 1;
@@ -106,7 +111,7 @@
   margin-top: 0;
   font-size: 12px;
   line-height: 1.35;
-  color: rgba(115, 101, 90, 0.92);
+  color: var(--muted);
   display: -webkit-box;
   overflow: hidden;
   line-clamp: 1;
@@ -126,7 +131,8 @@
   height: 30px;
   padding: 0;
   background: transparent;
-  color: rgba(115, 101, 90, 0.82);
+  color: var(--muted);
+  opacity: 0.82;
   cursor: grab;
   touch-action: none;
 }
@@ -151,7 +157,7 @@
   padding: 0;
   border-radius: 0;
   background: transparent;
-  color: rgba(115, 101, 90, 0.92);
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.1;
   text-align: center;
@@ -174,7 +180,7 @@
 
 .queue-item.ready .queue-state {
   background: transparent;
-  color: rgba(115, 101, 90, 0.92);
+  color: var(--muted);
 }
 
 .queue-actions {
@@ -221,7 +227,7 @@
 
 .queue-actions .primary-button,
 .menu-content .primary-button {
-  background: #d5643d;
+  background: var(--accent);
 }
 
 .queue-actions .secondary-button,
@@ -258,9 +264,9 @@
 
 .queue-item.drop-before,
 .queue-item.drop-after {
-  border-color: rgba(202, 91, 60, 0.28);
+  border-color: var(--queue-drop-border);
   box-shadow:
-    0 0 0 2px rgba(202, 91, 60, 0.1),
+    0 0 0 2px var(--queue-drop-shadow),
     0 14px 30px rgba(79, 56, 39, 0.1);
   background: var(--queue-drop-bg);
 }
@@ -273,8 +279,8 @@
   right: 14px;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent), rgba(202, 91, 60, 0.38));
-  box-shadow: 0 6px 16px rgba(202, 91, 60, 0.16);
+  background: linear-gradient(90deg, var(--accent), var(--queue-accent-glow));
+  box-shadow: 0 6px 16px var(--queue-accent-glow-shadow);
 }
 
 .queue-item.drop-before::after,
@@ -439,5 +445,29 @@
   --queue-drop-bg: rgba(30, 26, 23, 0.9);
 
   --menu-toggle-bg: rgba(246, 241, 235, 0.05);
+
+  --queue-accent-glow: rgba(224, 108, 83, 0.38);
+  --queue-accent-glow-shadow: rgba(224, 108, 83, 0.16);
+  --queue-drop-border: rgba(224, 108, 83, 0.28);
+  --queue-drop-shadow: rgba(224, 108, 83, 0.1);
+}
+
+/* --- BLUE BLACK THEME OVERRIDES --- */
+:root[data-theme="blue"] {
+  --queue-order-bg: rgba(8, 18, 32, 0.96);
+  --queue-order-border: 1.4px solid rgba(148, 202, 233, 0.18);
+  --queue-order-color: var(--ink);
+
+  --queue-btn-secondary-bg: rgba(148, 202, 233, 0.08);
+  --queue-btn-secondary-color: var(--ink);
+
+  --queue-drop-bg: rgba(8, 18, 32, 0.9);
+
+  --menu-toggle-bg: rgba(148, 202, 233, 0.05);
+
+  --queue-accent-glow: rgba(56, 189, 248, 0.38);
+  --queue-accent-glow-shadow: rgba(56, 189, 248, 0.16);
+  --queue-drop-border: rgba(56, 189, 248, 0.28);
+  --queue-drop-shadow: rgba(56, 189, 248, 0.14);
 }
 
