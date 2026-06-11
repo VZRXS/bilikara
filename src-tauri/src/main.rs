@@ -40,6 +40,7 @@ struct BackendProcess {
 fn resolve_backend_command() -> (String, Vec<String>) {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
+    #[allow(unused_mut)]
     let mut current_dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
 
     // On macOS, the executable is inside Contents/MacOS/, so we go up 3 levels to get next to the .app bundle
@@ -267,9 +268,9 @@ fn main() {
 
             Ok(())
         })
-        .on_window_event(|event| match event.event() {
+        .on_window_event(|window, event| match event {
             tauri::WindowEvent::Destroyed => {
-                if let Some(state) = event.window().try_state::<BackendProcess>() {
+                if let Some(state) = window.try_state::<BackendProcess>() {
                     let shutdown_url = state
                         .base_url
                         .lock()
