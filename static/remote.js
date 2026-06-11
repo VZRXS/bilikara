@@ -187,6 +187,9 @@ const state = {
   bindingIntent: null,
   gatchaFavlistSheetOpen: false,
   gatchaFavlistIntent: null,
+  poolConfigSheetOpen: false,
+  poolConfigData: null,
+  poolConfigSaving: false,
   reorderConfirmSheetOpen: false,
   reorderConfirmIntent: null,
   reorderConfirmSaving: false,
@@ -270,6 +273,7 @@ const state = {
   ratingPromptScore: 5,
   ratingPromptSubmitted: false,
   ratingPromptSeenPlayIds: new Set(),
+  ratingSubmittedKeys: new Set(),
   ratingOptOut: false,
   playerControlsRenderSignature: "",
   listHeaderRenderSignature: "",
@@ -347,6 +351,21 @@ const elements = {
   gatchaFavlistSheetClose: document.getElementById("gatcha-favlist-sheet-close"),
   gatchaFavlistSheetCancel: document.getElementById("gatcha-favlist-sheet-cancel"),
   gatchaFavlistSheetConfirm: document.getElementById("gatcha-favlist-sheet-confirm"),
+  poolConfigSheet: document.getElementById("gatcha-pool-config-sheet"),
+  poolConfigSheetBackdrop: document.getElementById("gatcha-pool-config-sheet-backdrop"),
+  poolConfigSheetClose: document.getElementById("gatcha-pool-config-sheet-close"),
+  poolConfigSheetCancel: document.getElementById("gatcha-pool-config-sheet-cancel"),
+  poolConfigSheetReset: document.getElementById("gatcha-pool-config-sheet-reset"),
+  poolConfigSheetSave: document.getElementById("gatcha-pool-config-sheet-save"),
+  poolConfigWeightSlider: document.getElementById("gatcha-pool-weight-slider"),
+  poolConfigWeightLabel: document.getElementById("gatcha-pool-weight-label"),
+  poolConfigUidOptions: document.getElementById("gatcha-pool-uid-options"),
+  poolConfigFavlistOptions: document.getElementById("gatcha-pool-favlist-options"),
+  poolConfigUidSelectAll: document.getElementById("gatcha-pool-uid-select-all"),
+  poolConfigUidSelectNone: document.getElementById("gatcha-pool-uid-select-none"),
+  poolConfigFavlistSelectAll: document.getElementById("gatcha-pool-favlist-select-all"),
+  poolConfigFavlistSelectNone: document.getElementById("gatcha-pool-favlist-select-none"),
+  poolConfigMessage: document.getElementById("gatcha-pool-config-message"),
   reorderConfirmSheet: document.getElementById("reorder-confirm-sheet"),
   reorderConfirmSheetBackdrop: document.getElementById("reorder-confirm-sheet-backdrop"),
   reorderConfirmSheetText: document.getElementById("reorder-confirm-sheet-text"),
@@ -435,6 +454,7 @@ const elements = {
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
   openRatingButton: document.getElementById("open-rating-button"),
+  gatchaPoolConfigToggle: document.getElementById("gatcha-pool-config-toggle"),
   gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
@@ -672,7 +692,7 @@ function applyTheme(theme) {
 }
 
 function normalizeTheme(theme) {
-  return theme === "dark" ? "dark" : "light";
+  return theme === "dark" || theme === "blue" ? theme : "light";
 }
 
 function renderThemeSwitch() {
@@ -1278,14 +1298,17 @@ async function apiPost(url, payload = {}) {
 
 function submitSongRating(item, score) {
   const bvid = String(item?.bvid || "").trim();
-  const playId = String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
-  const sessionUserName = selectedRequesterName()
-    || String(item?.requester_name || "").trim()
-    || String(state.data?.current_item?.requester_name || "").trim()
-    || String(state.data?.session_users?.[0] || "").trim()
-    || "unknown";
+  const playId = ratingSubmissionPlayId(item);
+  const sessionUserName = ratingSubmissionUserName(item);
   if (!bvid) {
     return null;
+  }
+  const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
+  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    return false;
+  }
+  if (submissionKey) {
+    state.ratingSubmittedKeys.add(submissionKey);
   }
   const payload = {
     session_user_name: sessionUserName,
@@ -1298,6 +1321,10 @@ function submitSongRating(item, score) {
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   }).catch((error) => {
+    if (submissionKey) {
+      state.ratingSubmittedKeys.delete(submissionKey);
+      renderCurrentRatingButton(state.data?.current_item);
+    }
     console.warn("Rating submit failed:", error);
   });
   return true;
@@ -1307,14 +1334,49 @@ function ratingItemUrl(item) {
   return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
 }
 
+function safeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const url = new URL(raw, window.location.href);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 function ratingOwnerUid(item) {
   const rawMid = item?.owner_mid ?? item?.mid;
   const uid = String(rawMid || "").trim();
   return /^\d+$/.test(uid) ? uid : "";
 }
 
-function ratingRequesterMatchesCurrentSelection(item) {
-  return Boolean(item);
+function ratingSubmissionUserName(item) {
+  return selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+}
+
+function ratingSubmissionPlayId(item) {
+  const bvid = String(item?.bvid || "").trim();
+  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+}
+
+function ratingSubmissionKey(item) {
+  const playId = ratingSubmissionPlayId(item);
+  if (!playId) {
+    return "";
+  }
+  return `${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+}
+
+function hasSubmittedSongRating(item) {
+  const key = ratingSubmissionKey(item);
+  return Boolean(key && state.ratingSubmittedKeys.has(key));
 }
 
 function normalizeRatingPromptItem(item) {
@@ -1355,9 +1417,6 @@ function ratingPromptItemsForItem(item) {
 function isItemRateable(item, isCurrent = false) {
   const bvid = String(item?.bvid || "").trim();
   if (!item || !bvid) {
-    return false;
-  }
-  if (!ratingRequesterMatchesCurrentSelection(item)) {
     return false;
   }
   if (isCurrent) {
@@ -1418,21 +1477,49 @@ function renderRatingPromptContent() {
   }
   const bvid = String(activeItem.bvid || "").trim();
   const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
-  const coverUrl = String(activeItem.cover_url || "").trim();
-  const url = ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : "");
+  const coverUrl = safeHttpUrl(activeItem.cover_url);
+  const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
   const titleKey = state.ratingPromptActiveTab === "previous" ? "rating.previousTitle" : "rating.title";
-  content.innerHTML = `
-    <div class="rating-media">
-      ${coverUrl ? `<img class="rating-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="rating-cover rating-cover-empty"></div>`}
-      <div class="rating-copy">
-        <p class="rating-kicker">${htmlT("rating.kicker")}</p>
-        <h2>${htmlT(titleKey)}</h2>
-        <p class="rating-hint">${htmlT("rating.hint")}</p>
-        <p class="rating-owner">${htmlT("rating.owner", { owner: ownerName })}</p>
-        ${url ? `<a class="rating-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>` : ""}
-      </div>
-    </div>
-  `;
+  const media = document.createElement("div");
+  media.className = "rating-media";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.className = "rating-cover";
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    media.appendChild(image);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "rating-cover rating-cover-empty";
+    media.appendChild(placeholder);
+  }
+  const copy = document.createElement("div");
+  copy.className = "rating-copy";
+  const kicker = document.createElement("p");
+  kicker.className = "rating-kicker";
+  kicker.textContent = t("rating.kicker");
+  const title = document.createElement("h2");
+  title.textContent = t(titleKey);
+  const hint = document.createElement("p");
+  hint.className = "rating-hint";
+  hint.textContent = t("rating.hint");
+  const owner = document.createElement("p");
+  owner.className = "rating-owner";
+  owner.textContent = t("rating.owner", { owner: ownerName });
+  copy.append(kicker, title, hint, owner);
+  if (url) {
+    const link = document.createElement("a");
+    link.className = "rating-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = url;
+    copy.appendChild(link);
+  }
+  media.appendChild(copy);
+  content.replaceChildren(media);
   const addUpButton = root.querySelector("[data-rating-add-up]");
   if (addUpButton) {
     const ownerUid = ratingOwnerUid(activeItem);
@@ -2121,6 +2208,22 @@ async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
     throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
   }
   return payload.data || { folders: [], items: [] };
+}
+
+async function fetchPoolConfig() {
+  const response = await fetch("/api/gatcha/pool-config", {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("gatcha.poolLoadFailed"));
+  }
+  return payload.data || {};
+}
+
+async function savePoolConfig(payload) {
+  return apiPost("/api/gatcha/pool-config", payload);
 }
 
 async function previewGatchaUid(uid) {
@@ -4311,7 +4414,7 @@ function scheduleAudioVariantSwitchUnlock() {
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
-    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.replaceChildren();
     elements.audioVariantBar.classList.add("hidden");
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = "";
@@ -4320,7 +4423,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
-    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.replaceChildren();
     elements.audioVariantBar.classList.add("hidden");
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = currentItem.id;
@@ -4334,7 +4437,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
-  elements.audioVariantBar.innerHTML = "";
+  elements.audioVariantBar.replaceChildren();
   const list = document.createElement("div");
   list.className = "audio-variant-list";
   variants.forEach((variant) => {
@@ -4358,7 +4461,10 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   toggleButton.dataset.action = "toggle-audio-variants";
   toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
   toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"));
-  toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
+  const toggleIcon = document.createElement("span");
+  toggleIcon.setAttribute("aria-hidden", "true");
+  toggleIcon.textContent = "▾";
+  toggleButton.appendChild(toggleIcon);
 
   elements.audioVariantBar.append(list, toggleButton);
   elements.audioVariantBar.classList.remove("hidden");
@@ -4671,6 +4777,232 @@ function closeGatchaFavlistSheet() {
     elements.gatchaFavlistSheet.classList.add("hidden");
     elements.gatchaFavlistSheetOptions.innerHTML = "";
   }, 280);
+}
+
+function poolConfigFolderId(folder) {
+  return String(folder?.id || folder?.folder_id || "").trim();
+}
+
+function poolConfigSetMessage(message, isError = false) {
+  if (!elements.poolConfigMessage) {
+    return;
+  }
+  elements.poolConfigMessage.textContent = message || "";
+  elements.poolConfigMessage.classList.toggle("is-error", Boolean(isError));
+  elements.poolConfigMessage.classList.toggle("hidden", !message);
+}
+
+function updatePoolConfigWeightLabel() {
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const favlistWeight = 100 - uidWeight;
+  if (elements.poolConfigWeightLabel) {
+    elements.poolConfigWeightLabel.textContent = t("gatcha.poolWeightValue", {
+      uid: uidWeight,
+      favlist: favlistWeight,
+    });
+  }
+}
+
+function renderPoolConfigOption({ type, id, title, meta, checked }) {
+  const label = document.createElement("label");
+  label.className = "binding-option pool-config-option";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = type === "uid" ? "gatcha-pool-uid" : "gatcha-pool-favlist";
+  input.value = String(id || "");
+  input.checked = Boolean(checked);
+
+  const copy = document.createElement("div");
+  const titleEl = document.createElement("div");
+  titleEl.className = "binding-option-title";
+  titleEl.textContent = title || id;
+  const metaEl = document.createElement("div");
+  metaEl.className = "binding-option-meta";
+  metaEl.textContent = meta || "";
+  copy.append(titleEl, metaEl);
+  label.append(input, copy);
+  return label;
+}
+
+function renderPoolConfigSheet() {
+  const data = state.poolConfigData || {};
+  const excludedUids = new Set((Array.isArray(data.excluded_uids) ? data.excluded_uids : []).map(String));
+  const excludedFolders = new Set((Array.isArray(data.excluded_favlist_folders) ? data.excluded_favlist_folders : []).map(String));
+  const uidWeight = Math.max(0, Math.min(100, Number(data.uid_weight ?? 50)));
+
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = String(uidWeight);
+    elements.poolConfigWeightSlider.disabled = state.poolConfigSaving;
+  }
+  updatePoolConfigWeightLabel();
+
+  if (elements.poolConfigUidOptions) {
+    elements.poolConfigUidOptions.innerHTML = "";
+    const uids = Array.isArray(data.uid_options) ? data.uid_options : [];
+    if (!uids.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyUid");
+      elements.poolConfigUidOptions.appendChild(empty);
+    } else {
+      uids.forEach((owner) => {
+        const uid = String(owner.uid || "").trim();
+        elements.poolConfigUidOptions.appendChild(renderPoolConfigOption({
+          type: "uid",
+          id: uid,
+          title: owner.name || `UID ${uid}`,
+          meta: t("gatcha.poolOptionCount", { count: Number(owner.count || 0) }),
+          checked: uid && !excludedUids.has(uid),
+        }));
+      });
+    }
+  }
+
+  if (elements.poolConfigFavlistOptions) {
+    elements.poolConfigFavlistOptions.innerHTML = "";
+    const folders = Array.isArray(data.favlist_folder_options) ? data.favlist_folder_options : [];
+    if (!folders.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyFavlist");
+      elements.poolConfigFavlistOptions.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const id = poolConfigFolderId(folder);
+        const title = folder.title || t("favlist.folderWithId", { id });
+        const meta = folder.uid
+          ? t("gatcha.poolFavlistMeta", { uid: folder.uid, count: Number(folder.count || folder.media_count || 0) })
+          : t("gatcha.poolOptionCount", { count: Number(folder.count || folder.media_count || 0) });
+        elements.poolConfigFavlistOptions.appendChild(renderPoolConfigOption({
+          type: "favlist",
+          id,
+          title,
+          meta,
+          checked: id && !excludedFolders.has(id),
+        }));
+      });
+    }
+  }
+
+  const hasUidOptions = Boolean(elements.poolConfigUidOptions?.querySelector('input[name="gatcha-pool-uid"]'));
+  const hasFavlistOptions = Boolean(elements.poolConfigFavlistOptions?.querySelector('input[name="gatcha-pool-favlist"]'));
+  [elements.poolConfigUidSelectAll, elements.poolConfigUidSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasUidOptions;
+  });
+  [elements.poolConfigFavlistSelectAll, elements.poolConfigFavlistSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasFavlistOptions;
+  });
+  if (elements.poolConfigSheetReset) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigSheetReset.disabled = state.poolConfigSaving || !detailLoaded;
+  }
+  if (elements.poolConfigSheetSave) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigSheetSave.disabled = state.poolConfigSaving || !detailLoaded;
+    elements.poolConfigSheetSave.textContent = state.poolConfigSaving ? t("gatcha.poolSaving") : t("gatcha.poolSave");
+  }
+}
+
+async function openPoolConfigSheet() {
+  if (!elements.poolConfigSheet || state.poolConfigSheetOpen) {
+    return;
+  }
+  state.poolConfigSheetOpen = true;
+  state.poolConfigSaving = false;
+  state.poolConfigData = state.data?.gatcha_pool_config || {};
+  elements.poolConfigSheet.classList.remove("hidden");
+  elements.poolConfigSheet.setAttribute("aria-hidden", "false");
+  renderPoolConfigSheet();
+  poolConfigSetMessage(t("gatcha.poolLoading"));
+  requestAnimationFrame(() => {
+    elements.poolConfigSheet.classList.add("is-open");
+  });
+  try {
+    state.poolConfigData = await fetchPoolConfig();
+    poolConfigSetMessage("");
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  }
+  renderPoolConfigSheet();
+}
+
+function closePoolConfigSheet() {
+  state.poolConfigSheetOpen = false;
+  state.poolConfigSaving = false;
+  elements.poolConfigSheet?.classList.remove("is-open");
+  elements.poolConfigSheet?.setAttribute("aria-hidden", "true");
+  window.setTimeout(() => {
+    if (state.poolConfigSheetOpen) {
+      return;
+    }
+    elements.poolConfigSheet?.classList.add("hidden");
+    state.poolConfigData = null;
+    poolConfigSetMessage("");
+  }, 280);
+}
+
+function setPoolConfigChecked(name, checked) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.checked = Boolean(checked);
+  });
+}
+
+function resetPoolConfigControls() {
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = "50";
+  }
+  updatePoolConfigWeightLabel();
+  setPoolConfigChecked("gatcha-pool-uid", true);
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+  poolConfigSetMessage("");
+}
+
+function poolConfigExcludedValues(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]`)]
+    .filter((input) => !input.checked)
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+async function submitPoolConfigSheet() {
+  if (state.poolConfigSaving) {
+    return;
+  }
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const payload = {
+    uid_weight: uidWeight,
+    favlist_weight: 100 - uidWeight,
+    excluded_uids: poolConfigExcludedValues("gatcha-pool-uid"),
+    excluded_favlist_folders: poolConfigExcludedValues("gatcha-pool-favlist"),
+  };
+  state.poolConfigData = {
+    ...(state.poolConfigData || {}),
+    ...payload,
+  };
+  state.poolConfigSaving = true;
+  renderPoolConfigSheet();
+  poolConfigSetMessage(t("gatcha.poolSaving"));
+  try {
+    state.poolConfigData = await savePoolConfig(payload);
+    if (state.data) {
+      state.data.gatcha_pool_config = {
+        uid_weight: state.poolConfigData.uid_weight,
+        favlist_weight: state.poolConfigData.favlist_weight,
+        excluded_uids: state.poolConfigData.excluded_uids || [],
+        excluded_favlist_folders: state.poolConfigData.excluded_favlist_folders || [],
+        updated_at: state.poolConfigData.updated_at || 0,
+      };
+    }
+    closePoolConfigSheet();
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  } finally {
+    state.poolConfigSaving = false;
+    if (state.poolConfigSheetOpen) {
+      renderPoolConfigSheet();
+    }
+  }
 }
 
 function openReorderConfirmSheet(intent) {
@@ -5234,6 +5566,13 @@ function queueRenderSignatureForItem(item, index) {
   };
 }
 
+function createQueueEmptyNode(message) {
+  const node = document.createElement("div");
+  node.className = "queue-empty";
+  node.textContent = message;
+  return node;
+}
+
 function renderQueue(playlist) {
   const items = Array.isArray(playlist) ? playlist : [];
   const signature = JSON.stringify({
@@ -5246,9 +5585,9 @@ function renderQueue(playlist) {
   }
   state.queueRenderSignature = signature;
 
-  elements.queueList.innerHTML = "";
+  elements.queueList.replaceChildren();
   if (!items.length) {
-    elements.queueList.innerHTML = `<div class="queue-empty">${htmlT("remote.queueEmpty")}</div>`;
+    elements.queueList.appendChild(createQueueEmptyNode(t("remote.queueEmpty")));
     return;
   }
 
@@ -5532,11 +5871,17 @@ function renderHistory(history) {
   }
   state.historyRenderSignature = signature;
 
-  elements.historyList.innerHTML = "";
+  elements.historyList.replaceChildren();
 
   if (!history.length) {
-    elements.historyList.innerHTML =
-      `<div class="queue-empty"><p>${htmlT("history.emptyTitle")}</p><p>${htmlT("history.emptyHint")}</p></div>`;
+    const emptyNode = document.createElement("div");
+    emptyNode.className = "queue-empty";
+    const title = document.createElement("p");
+    title.textContent = t("history.emptyTitle");
+    const hint = document.createElement("p");
+    hint.textContent = t("history.emptyHint");
+    emptyNode.append(title, hint);
+    elements.historyList.appendChild(emptyNode);
     return;
   }
 
@@ -6538,6 +6883,10 @@ elements.gatchaUidToggle?.addEventListener("click", () => {
   renderGatchaUidView();
 });
 
+elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
+  await openPoolConfigSheet();
+});
+
 document.addEventListener("click", async (event) => {
   const root = state.ratingPromptElement;
   if (!root || !root.contains(event.target)) {
@@ -6662,6 +7011,46 @@ elements.gatchaFavlistSheetBackdrop?.addEventListener("click", () => {
 
 elements.gatchaFavlistSheetConfirm?.addEventListener("click", async () => {
   await confirmGatchaFavlistSheet();
+});
+
+elements.poolConfigSheetClose?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigSheetCancel?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigSheetBackdrop?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigWeightSlider?.addEventListener("input", () => {
+  updatePoolConfigWeightLabel();
+});
+
+elements.poolConfigSheetReset?.addEventListener("click", () => {
+  resetPoolConfigControls();
+});
+
+elements.poolConfigUidSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", true);
+});
+
+elements.poolConfigUidSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", false);
+});
+
+elements.poolConfigFavlistSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+});
+
+elements.poolConfigFavlistSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", false);
+});
+
+elements.poolConfigSheetSave?.addEventListener("click", async () => {
+  await submitPoolConfigSheet();
 });
 
 elements.reorderConfirmSheetClose?.addEventListener("click", () => {
@@ -6849,6 +7238,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (state.gatchaFavlistSheetOpen) {
     closeGatchaFavlistSheet();
+  }
+  if (state.poolConfigSheetOpen) {
+    closePoolConfigSheet();
   }
   if (state.reorderConfirmSheetOpen) {
     closeReorderConfirmSheet();

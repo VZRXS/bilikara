@@ -48,7 +48,7 @@ def main() -> None:
     if platform.system() == "Darwin":
         command.extend(["--osx-bundle-identifier", "com.bilikara.app"])
 
-    subprocess.run(command, check=True, cwd=ROOT_DIR)
+    subprocess.run(command, shell=False, check=True, cwd=ROOT_DIR)
     _write_release_compliance_files()
     print()
     print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")

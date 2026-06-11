@@ -117,6 +117,9 @@
                   <button class="mode-button" data-theme="dark" aria-label="暗黑可可">
                     <span class="theme-preview-pill dark-preview"></span>
                   </button>
+                  <button class="mode-button" data-theme="blue" aria-label="蓝黑霓虹">
+                    <span class="theme-preview-pill blue-preview"></span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -610,9 +613,14 @@
                  <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">gatcha Draw</p>
                  <h2 id="gatcha-title" data-i18n="gatcha.title">试试运气</h2>
                 </div>
-                <button type="button" id="gatcha-uid-toggle" class="toolbar-button ghost gatcha-uid-toggle" data-i18n="gatcha.addUid">
-                  添加 UID
-                </button>
+                <div class="gatcha-head-actions">
+                  <button type="button" id="gatcha-pool-config-toggle" class="toolbar-button ghost gatcha-pool-config-toggle" data-i18n="gatcha.poolConfig">
+                    自定义卡池
+                  </button>
+                  <button type="button" id="gatcha-uid-toggle" class="toolbar-button ghost gatcha-uid-toggle" data-i18n="gatcha.addUid">
+                    添加 UID
+                  </button>
+                </div>
               </div>
       
               <div id="gatcha-stage" class="gatcha-stage">
@@ -626,8 +634,10 @@
                     </div>
 
                     <div id="gatcha-result-view" class="gatcha-content hidden">
-                      <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
-                      <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
+                      <div class="gatcha-result-copy">
+                        <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
+                        <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
+                      </div>
                       <div class="gatcha-actions">
                         <button type="button" id="gatcha-confirm-button" class="next-button" data-i18n="gatcha.confirm">确定点歌</button>
                         <button type="button" id="gatcha-retry-button" class="toolbar-button" data-i18n="gatcha.retry">重新再来</button>
@@ -898,6 +908,54 @@
       </div>
     </div>
 
+    <div class="selection-modal hidden" id="gatcha-pool-config-modal" role="dialog" aria-modal="true">
+      <div class="selection-modal-backdrop" id="gatcha-pool-config-modal-backdrop"></div>
+      <div class="selection-modal-card gatcha-pool-config-card">
+        <div class="selection-modal-head">
+          <div>
+            <p class="section-tag" data-i18n="gatcha.poolConfig">自定义卡池</p>
+            <h2 data-i18n="gatcha.poolConfigTitle">卡池设置</h2>
+          </div>
+          <div class="pool-config-head-actions">
+            <button type="button" id="gatcha-pool-config-modal-reset" class="toolbar-button ghost" data-i18n="common.reset">重置</button>
+            <button type="button" id="gatcha-pool-config-modal-close" class="banner-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
+          </div>
+        </div>
+        <div class="pool-config-weight-row">
+          <span data-i18n="gatcha.poolWeight">抽取概率</span>
+          <strong id="gatcha-pool-weight-label">UID 50% | 收藏夹 50%</strong>
+          <input type="range" id="gatcha-pool-weight-slider" min="0" max="100" step="1" value="50" />
+        </div>
+        <div class="selection-modal-grid">
+          <section class="selection-modal-column pool-config-column">
+            <div class="pool-config-list-head">
+              <h3 data-i18n="gatcha.uidPool">关注 UID 池</h3>
+              <div class="pool-config-bulk-actions">
+                <button type="button" id="gatcha-pool-uid-select-all" class="toolbar-button ghost" data-i18n="gatcha.poolSelectAll">全选</button>
+                <button type="button" id="gatcha-pool-uid-select-none" class="toolbar-button ghost" data-i18n="gatcha.poolSelectNone">全不选</button>
+              </div>
+            </div>
+            <div id="gatcha-pool-uid-options" class="selection-option-list"></div>
+          </section>
+          <section class="selection-modal-column pool-config-column">
+            <div class="pool-config-list-head">
+              <h3 data-i18n="gatcha.favlistPool">收藏夹池</h3>
+              <div class="pool-config-bulk-actions">
+                <button type="button" id="gatcha-pool-favlist-select-all" class="toolbar-button ghost" data-i18n="gatcha.poolSelectAll">全选</button>
+                <button type="button" id="gatcha-pool-favlist-select-none" class="toolbar-button ghost" data-i18n="gatcha.poolSelectNone">全不选</button>
+              </div>
+            </div>
+            <div id="gatcha-pool-favlist-options" class="selection-option-list"></div>
+          </section>
+        </div>
+        <p class="gatcha-message" id="gatcha-pool-config-message" role="status"></p>
+        <div class="selection-modal-actions">
+          <button type="button" id="gatcha-pool-config-modal-cancel" class="toolbar-button" data-i18n="common.cancel">取消</button>
+          <button type="button" id="gatcha-pool-config-modal-save" class="next-button" data-i18n="gatcha.poolSave">保存</button>
+        </div>
+      </div>
+    </div>
+
     <div class="selection-modal hidden" id="search-modal" role="dialog" aria-modal="true">
       <div class="selection-modal-backdrop" id="search-modal-backdrop"></div>
       <div class="selection-modal-card search-modal-card">
@@ -908,6 +966,7 @@
           <button class="search-sidebar-item" data-target="category" data-i18n="search.categoryBrowse">按类别浏览</button>
           <button class="search-sidebar-item" data-target="name" data-i18n="search.nameBrowse">按名称浏览</button>
           <button class="search-sidebar-item" data-target="artist" data-i18n="search.artistBrowse">按歌手浏览</button>
+          <button class="search-sidebar-item developer-only" data-target="review" data-i18n="search.reviewPending">待审核稿件</button>
         </div>
         <div class="search-modal-main">
           <button type="button" id="search-modal-close" class="banner-close search-modal-close" aria-label="关闭">×</button>

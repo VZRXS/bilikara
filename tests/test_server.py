@@ -1,5 +1,6 @@
 import csv
 import io
+from collections import deque
 import threading
 import unittest
 from types import SimpleNamespace
@@ -110,6 +111,43 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertEqual(context._player_control_ack_seq, 7)
         self.assertIsNone(context._player_control_command)
         self.assertIsNone(context._player_status)
+
+
+class AppContextRatingSubmissionTest(unittest.TestCase):
+    def make_context(self) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._rating_submission_lock = threading.RLock()
+        context._rating_submission_keys = set()
+        context._rating_submission_key_order = deque()
+        return context
+
+    def test_register_rating_submission_dedupes_by_user_and_play_id(self):
+        context = self.make_context()
+
+        self.assertTrue(context.register_rating_submission("VZRXS", "song-a"))
+        self.assertFalse(context.register_rating_submission("vzrxs", "song-a"))
+        self.assertTrue(context.register_rating_submission("Other", "song-a"))
+        self.assertTrue(context.register_rating_submission("VZRXS", "song-b"))
+
+    def test_register_rating_submission_rejects_empty_keys(self):
+        context = self.make_context()
+
+        self.assertFalse(context.register_rating_submission("", "song-a"))
+        self.assertFalse(context.register_rating_submission("   ", "song-a"))
+        self.assertFalse(context.register_rating_submission("VZRXS", ""))
+        self.assertFalse(context.register_rating_submission("VZRXS", "   "))
+
+    def test_register_rating_submission_drops_old_keys_over_limit(self):
+        context = self.make_context()
+
+        with patch.object(server_module, "RATING_SUBMISSION_KEY_LIMIT", 2):
+            self.assertTrue(context.register_rating_submission("VZRXS", "song-a"))
+            self.assertTrue(context.register_rating_submission("VZRXS", "song-b"))
+            self.assertTrue(context.register_rating_submission("VZRXS", "song-c"))
+
+        self.assertNotIn(("vzrxs", "song-a"), context._rating_submission_keys)
+        self.assertIn(("vzrxs", "song-b"), context._rating_submission_keys)
+        self.assertIn(("vzrxs", "song-c"), context._rating_submission_keys)
 
 
 class AppContextPlayerStatusTest(unittest.TestCase):
