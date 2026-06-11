@@ -1336,7 +1336,9 @@ button[data-control-action="next-track"] {
   margin: 0;
   padding: 12px 14px;
   border-radius: 18px;
-  background: rgba(30, 41, 59, 0.56);
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(67, 53, 41, 0.08);
+  color: var(--muted);
 }
 
 .pool-config-head-actions {
@@ -4046,6 +4048,7 @@ body.remote-search-modal-open {
 :root:is([data-theme="dark"], [data-theme="blue"]) .audio-variant-button,
 :root:is([data-theme="dark"], [data-theme="blue"]) .binding-accordion-toggle,
 :root:is([data-theme="dark"], [data-theme="blue"]) .binding-option,
+:root:is([data-theme="dark"], [data-theme="blue"]) .pool-config-empty,
 :root:is([data-theme="dark"], [data-theme="blue"]) .remote-search-modal-tab,
 :root:is([data-theme="dark"], [data-theme="blue"]) .tag-letter-button,
 :root:is([data-theme="dark"], [data-theme="blue"]) .tag-browser-tag,

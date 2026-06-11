@@ -472,7 +472,8 @@ p {
   padding: 12px 14px;
   border-radius: 16px;
   color: var(--muted);
-  background: rgba(15, 23, 42, 0.46);
+  background: var(--modal-option-bg);
+  border: var(--modal-option-border);
 }
 
 .pool-config-head-actions {
