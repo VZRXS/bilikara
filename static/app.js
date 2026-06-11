@@ -254,6 +254,7 @@ const elements = {
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
+  cachePanelVersion: document.getElementById("cache-panel-version"),
   bbdownStatusRow: document.getElementById("bbdown-status-row"),
   bbdownLoginButton: document.getElementById("bbdown-login-button"),
   bbdownLoginPanel: document.getElementById("bbdown-login-panel"),
@@ -4823,6 +4824,13 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   renderAdvanceDelaySlider(state.data?.player_settings);
   renderCachePolicyControls(cachePolicy);
   renderUpdatePreviewControl();
+  if (elements.cachePanelVersion) {
+    const version = state.data?.app?.version || "";
+    const versionText = version ? `bilikara v${version}` : "bilikara";
+    if (elements.cachePanelVersion.textContent !== versionText) {
+      elements.cachePanelVersion.textContent = versionText;
+    }
+  }
   syncCachePanelVisibility();
 }
 
