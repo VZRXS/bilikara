@@ -101,6 +101,7 @@ const state = {
   listFlipTimer: null,
   listFlipFrame: null,
   cacheSettingsOpen: false,
+  displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
   avOffsetSaving: false,
@@ -274,6 +275,11 @@ const elements = {
   volumeMuteButton: document.getElementById("volume-mute-button"),
   volumeSlider: document.getElementById("volume-slider"),
   volumeValue: document.getElementById("volume-value"),
+  keyShiftPanel: document.getElementById("key-shift-panel"),
+  keyShiftInput: document.getElementById("key-shift-input"),
+  keyShiftDecButton: document.getElementById("key-shift-dec-button"),
+  keyShiftIncButton: document.getElementById("key-shift-inc-button"),
+  keyShiftResetButton: document.getElementById("key-shift-reset-button"),
   addForm: document.getElementById("add-form"),
   requesterSelect: document.getElementById("requester-select"),
   urlInput: document.getElementById("url-input"),
@@ -302,6 +308,10 @@ const elements = {
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
+  displaySettings: document.getElementById("display-settings"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-panel"),
+  displayLayoutSummary: document.getElementById("display-layout-summary"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
   nextButton: document.getElementById("next-button"),
@@ -1016,6 +1026,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, t(layoutKey));
 }
 
 function setLayoutMode(mode) {
@@ -1049,6 +1061,11 @@ function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
   state.localPlayerVolume = volumePercent / 100;
   state.localPlayerMuted = Boolean(playerSettings?.is_muted);
   persistLocalVolumePreferences();
+
+  const { audio } = activeLocalPlayerElements();
+  if (audio) {
+    applyKeyShiftToAudio(audio);
+  }
 }
 
 function markLocalVolumeWrite() {
@@ -3645,7 +3662,10 @@ function setLarkSearchMessage(message, isError = false) {
 }
 
 function localizedCacheMessage(message, cacheStatus = "") {
-  const raw = String(message || "").trim();
+  let raw = String(message || "").trim();
+  if (raw.includes("\n")) {
+    raw = raw.split("\n")[0].trim();
+  }
   const status = String(cacheStatus || "").trim();
   if (!raw) {
     return "";
@@ -4012,6 +4032,7 @@ function render() {
   renderAudioVariantBar(currentItem, playbackMode);
   renderAvSyncControls(playbackMode, data.player_settings);
   renderVolumeControls(playbackMode);
+  renderKeyShiftControls(playbackMode);
   applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, playbackMode);
   renderPlayerFullscreenButton();
@@ -4707,6 +4728,14 @@ function syncCachePanelVisibility(options = {}) {
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
   });
+}
+
+function syncDisplayPanelVisibility() {
+  const expanded = String(state.displaySettingsOpen);
+  if (elements.displaySettingsToggle && elements.displaySettingsToggle.getAttribute("aria-expanded") !== expanded) {
+    elements.displaySettingsToggle.setAttribute("aria-expanded", expanded);
+  }
+  setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
 }
 
 function renderQueueCurrent(currentItem) {
@@ -5824,6 +5853,94 @@ function renderVolumeControls(playbackMode) {
   setClassToggle(elements.volumeMuteButton, "is-muted", state.localPlayerMuted);
 }
 
+function renderKeyShiftControls(playbackMode) {
+  if (!elements.keyShiftPanel || !elements.keyShiftInput) {
+    return;
+  }
+
+  const isLocalMode = playbackMode === "local";
+  setClassToggle(elements.keyShiftPanel, "hidden", !isLocalMode);
+
+  const keyShift = Number(state.data?.player_settings?.key_shift ?? 0);
+  if (document.activeElement !== elements.keyShiftInput) {
+    elements.keyShiftInput.value = String(keyShift);
+  }
+
+  if (elements.keyShiftResetButton) {
+    elements.keyShiftResetButton.disabled = keyShift === 0;
+  }
+}
+
+async function setLocalPlayerKeyShift(keyShift) {
+  const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  const requestSeq = markLocalVolumeWrite();
+
+  const { audio } = activeLocalPlayerElements();
+  if (audio) {
+    applyKeyShiftToAudio(audio, boundedKeyShift);
+  }
+
+  if (state.data && state.data.player_settings) {
+    state.data.player_settings.key_shift = boundedKeyShift;
+  }
+  renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+
+  try {
+    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (requestSeq !== state.volumeSaveSeq) {
+      return;
+    }
+    state.data = nextData;
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+  } catch (error) {
+    // Ignore or handle errors gracefully
+  }
+}
+
+function setupAudioPitchShifter(audio) {
+  if (!audio) {
+    return;
+  }
+  if (!window.AudioContext && !window.webkitAudioContext) {
+    return;
+  }
+
+  if (!state.audioContext) {
+    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  const resumeContext = () => {
+    if (state.audioContext && state.audioContext.state === "suspended") {
+      state.audioContext.resume().catch(() => {});
+    }
+  };
+  audio.addEventListener("play", resumeContext);
+
+  try {
+    const source = state.audioContext.createMediaElementSource(audio);
+    const jungle = new Jungle(state.audioContext);
+
+    source.connect(jungle.input);
+    jungle.output.connect(state.audioContext.destination);
+
+    audio.jungle = jungle;
+    applyKeyShiftToAudio(audio);
+  } catch (e) {
+    console.error("Failed to setup Web Audio pitch shifter:", e);
+  }
+}
+
+function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
+  if (!audio || !audio.jungle) {
+    return;
+  }
+  const keyShift = overrideKeyShift !== null ? overrideKeyShift : Number(state.data?.player_settings?.key_shift ?? 0);
+  const ratio = Math.pow(2, keyShift / 12);
+  const mult = ratio - 1;
+  audio.jungle.setPitchOffset(mult);
+}
+
 function persistLocalVolumePreferences() {
   writeLocalPreference(storageKeys.playerVolume, state.localPlayerVolume);
   writeLocalPreference(storageKeys.playerMuted, state.localPlayerMuted);
@@ -6179,6 +6296,7 @@ function renderPlayer(currentItem, playbackMode) {
   }
 
   applyStoredVolumeToSplitPlayer(video, audio);
+  setupAudioPitchShifter(audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -6494,6 +6612,7 @@ function renderPlayer(currentItem, playbackMode) {
   }
 
   applyStoredVolumeToSplitPlayer(video, audio);
+  setupAudioPitchShifter(audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -8787,7 +8906,20 @@ elements.dismissBackupButton.addEventListener("blur", () => {
 
 elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
+  if (state.cacheSettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
+});
+
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  state.displaySettingsOpen = !state.displaySettingsOpen;
+  if (state.displaySettingsOpen) {
+    state.cacheSettingsOpen = false;
+    syncCachePanelVisibility();
+  }
+  syncDisplayPanelVisibility();
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {
@@ -8902,6 +9034,38 @@ elements.volumeSlider?.addEventListener("input", (event) => {
 
 elements.volumeMuteButton?.addEventListener("click", () => {
   toggleLocalPlayerMute();
+});
+
+elements.keyShiftDecButton?.addEventListener("click", () => {
+  const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
+  setLocalPlayerKeyShift(currentKey - 1);
+});
+
+elements.keyShiftIncButton?.addEventListener("click", () => {
+  const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
+  setLocalPlayerKeyShift(currentKey + 1);
+});
+
+elements.keyShiftResetButton?.addEventListener("click", () => {
+  setLocalPlayerKeyShift(0);
+});
+
+elements.keyShiftInput?.addEventListener("change", async (event) => {
+  await setLocalPlayerKeyShift(event.target.value);
+});
+
+elements.keyShiftInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setLocalPlayerKeyShift(event.target.value);
+});
+
+document.addEventListener("click", () => {
+  if (state.audioContext && state.audioContext.state === "suspended") {
+    state.audioContext.resume().catch(() => {});
+  }
 });
 
 elements.clearPlaylistButton.addEventListener("click", (event) => {
@@ -9412,6 +9576,11 @@ document.addEventListener("click", (event) => {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
   }
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-settings")) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
 });
 
 document.addEventListener("click", (event) => {
@@ -9454,6 +9623,10 @@ document.addEventListener("keydown", (event) => {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
   }
+  if (state.displaySettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -9483,8 +9656,11 @@ function handleFullscreenChange() {
       hidePlayerDelayOverlay();
     }
   }
-  if (window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.appWindow) {
-    window.__TAURI__.window.appWindow.setFullscreen(isFullscreen).catch(() => {});
+  if (window.__TAURI__ && window.__TAURI__.window) {
+    const appWindow = window.__TAURI__.window.appWindow || (typeof window.__TAURI__.window.getCurrent === "function" ? window.__TAURI__.window.getCurrent() : null);
+    if (appWindow) {
+      appWindow.setFullscreen(isFullscreen).catch(() => {});
+    }
   }
   renderPlayerFullscreenButton();
 }

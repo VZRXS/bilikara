@@ -177,6 +177,9 @@ const state = {
   remoteLocalVolumePercent: null,
   remoteLocalMuted: null,
   remoteVolumeCommitTimer: null,
+  remoteLocalKeyShift: null,
+  remoteKeyShiftEchoSuppressUntil: 0,
+  remoteKeyShiftSaveSeq: 0,
   audioVariantBarExpanded: false,
   audioVariantBarItemId: "",
   bindingSheetOpen: false,
@@ -272,6 +275,7 @@ const state = {
   queueRenderSignature: "",
   historyRenderSignature: "",
   layoutMode: "full",
+  displaySettingsOpen: false,
   remoteAccessRenderSignature: "",
   viewportScaleResetTimers: [],
   renderDebounceTimer: null,
@@ -281,6 +285,10 @@ const elements = {
   viewportMeta: document.getElementById("viewport-meta"),
   remoteShell: document.getElementById("remote-shell"),
   languageSwitch: document.getElementById("language-switch"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-popover"),
+  displayLayoutSummary: document.getElementById("remote-layout-summary"),
+  displayPopoverClose: document.getElementById("display-popover-close"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   remoteQrControl: document.getElementById("remote-qr-control"),
   remoteQrToggle: document.getElementById("remote-qr-toggle"),
@@ -307,6 +315,16 @@ const elements = {
   remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
   remoteVolumeSlider: document.getElementById("remote-volume-slider"),
   remoteVolumeValue: document.getElementById("remote-volume-value"),
+  remoteKeyShiftPanel: document.getElementById("remote-key-shift-panel"),
+  remoteKeyShiftResetButton: document.getElementById("remote-key-shift-reset-button"),
+  remoteKeyShiftDecButton: document.getElementById("remote-key-shift-dec-button"),
+  remoteKeyShiftInput: document.getElementById("remote-key-shift-input"),
+  remoteKeyShiftIncButton: document.getElementById("remote-key-shift-inc-button"),
+  floatingControlTrigger: document.getElementById("floating-control-trigger"),
+  floatingControlOverlay: document.getElementById("floating-control-overlay"),
+  floatingControlBackdrop: document.getElementById("floating-control-backdrop"),
+  floatingControlCard: document.getElementById("floating-control-card"),
+  floatingControlClose: document.getElementById("floating-control-close"),
   bindingSheet: document.getElementById("binding-sheet"),
   bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
   bindingSheetText: document.getElementById("binding-sheet-text"),
@@ -762,6 +780,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, layoutKey);
 }
 
 function setLayoutMode(mode) {
@@ -777,8 +797,20 @@ function setLayoutMode(mode) {
 
 function setRemoteQrPopoverOpen(open) {
   state.remoteQrPopoverOpen = Boolean(open);
+  if (state.remoteQrPopoverOpen) {
+    setDisplaySettingsOpen(false);
+  }
   elements.remoteQrPopover?.classList.toggle("hidden", !state.remoteQrPopoverOpen);
   elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrPopoverOpen));
+}
+
+function setDisplaySettingsOpen(open) {
+  state.displaySettingsOpen = Boolean(open);
+  if (state.displaySettingsOpen) {
+    setRemoteQrPopoverOpen(false);
+  }
+  elements.displaySettingsPanel?.classList.toggle("hidden", !state.displaySettingsOpen);
+  elements.displaySettingsToggle?.setAttribute("aria-expanded", String(state.displaySettingsOpen));
 }
 
 function renderRemoteAccess(remoteAccess) {
@@ -930,7 +962,10 @@ function setMessageForSource(source, message, isError = false) {
 }
 
 function localizedCacheMessage(message, cacheStatus = "") {
-  const raw = String(message || "").trim();
+  let raw = String(message || "").trim();
+  if (raw.includes("\n")) {
+    raw = raw.split("\n")[0].trim();
+  }
   const status = String(cacheStatus || "").trim();
   if (!raw) {
     return "";
@@ -1405,13 +1440,19 @@ function closeRatingPrompt({ submit = true } = {}) {
   const bvid = state.ratingPromptBvid;
   const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
   state.ratingPromptSubmitted = true;
-  root.remove();
+
+  root.classList.add("closing");
+
   state.ratingPromptElement = null;
   state.ratingPromptItem = null;
   state.ratingPromptItems = null;
   state.ratingPromptActiveTab = "current";
   state.ratingPromptItemId = "";
   state.ratingPromptBvid = "";
+
+  setTimeout(() => {
+    root.remove();
+  }, 250);
 
   if (shouldSubmit) {
     submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
@@ -1466,11 +1507,8 @@ function openRatingPrompt(item, { manual = false } = {}) {
       <div class="rating-actions">
         <button type="button" class="secondary-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
         <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
+        <button type="button" class="secondary-button" data-rating-opt-out-btn>${htmlT("rating.optOutBtn")}</button>
       </div>
-      <label class="rating-opt-out">
-        <input type="checkbox" data-rating-opt-out>
-        <span>${htmlT("rating.optOut")}</span>
-      </label>
       <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
         <button type="button" data-rating-tab="previous" role="tab" ${previousRateable ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
         <button type="button" data-rating-tab="current" role="tab" ${currentRateable ? "" : "disabled"}>${htmlT("rating.currentTab")}</button>
@@ -4001,6 +4039,7 @@ function render() {
   renderPlayerControls(data.current_item, playbackMode);
   renderRemoteAvSyncControls(playbackMode, data.player_settings);
   renderRemoteVolumeControls(playbackMode, data.player_settings);
+  renderRemoteKeyShiftControls(playbackMode, data.player_settings);
   renderRemoteAccess(data.remote_access);
   renderFollowBrowse();
   renderModalFollowBrowse();
@@ -4010,6 +4049,7 @@ function render() {
   syncListView();
   renderLayoutMode();
   renderGatchaUidView();
+  renderFloatingControlTrigger(data.current_item, playbackMode);
 }
 
 function frontendPlaybackMode(_mode) {
@@ -4343,6 +4383,52 @@ function currentRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
   return serverRemoteAvOffsetMs(playerSettings);
 }
 
+function serverRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  return Math.max(-6, Math.min(6, Number(playerSettings?.key_shift ?? 0)));
+}
+
+function currentRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  if (state.remoteLocalKeyShift !== null && Date.now() < state.remoteKeyShiftEchoSuppressUntil) {
+    return state.remoteLocalKeyShift;
+  }
+  state.remoteLocalKeyShift = null;
+  return serverRemoteKeyShift(playerSettings);
+}
+
+function markRemoteKeyShiftWrite(keyShift) {
+  state.remoteLocalKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  state.remoteKeyShiftEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.remoteKeyShiftSaveSeq += 1;
+  return state.remoteKeyShiftSaveSeq;
+}
+
+async function setRemoteKeyShift(keyShift) {
+  const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  const currentValue = currentRemoteKeyShift();
+  if (boundedKeyShift === currentValue) {
+    markRemoteKeyShiftWrite(boundedKeyShift);
+    return;
+  }
+
+  const requestSeq = markRemoteKeyShiftWrite(boundedKeyShift);
+  renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  try {
+    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    applyStateSnapshot(nextData);
+  } catch (error) {
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    state.remoteLocalKeyShift = null;
+    state.remoteKeyShiftEchoSuppressUntil = 0;
+    setFormMessage(error.message, true);
+    renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  }
+}
+
 function serverRemoteVolumePercent(playerSettings = state.data?.player_settings) {
   return Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
 }
@@ -4429,6 +4515,21 @@ function renderRemoteVolumeControls(playbackMode, playerSettings) {
   elements.remoteVolumeMuteButton.setAttribute("aria-label", muteLabel);
   elements.remoteVolumeMuteButton.setAttribute("title", muteLabel);
   elements.remoteVolumeMuteButton.classList.toggle("is-muted", isMuted);
+}
+
+function renderRemoteKeyShiftControls(playbackMode, playerSettings) {
+  if (!elements.remoteKeyShiftPanel || !elements.remoteKeyShiftInput) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  elements.remoteKeyShiftPanel.classList.toggle("hidden", !isLocalMode);
+  const keyShift = currentRemoteKeyShift(playerSettings);
+  if (document.activeElement !== elements.remoteKeyShiftInput) {
+    elements.remoteKeyShiftInput.value = String(keyShift);
+  }
+  if (elements.remoteKeyShiftResetButton) {
+    elements.remoteKeyShiftResetButton.disabled = keyShift === 0;
+  }
 }
 
 function openBindingSheet(intent, payload) {
@@ -6255,14 +6356,45 @@ elements.remoteQrPopoverClose?.addEventListener("click", () => {
   setRemoteQrPopoverOpen(false);
 });
 
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  setDisplaySettingsOpen(!state.displaySettingsOpen);
+});
+
+elements.displayPopoverClose?.addEventListener("click", () => {
+  setDisplaySettingsOpen(false);
+});
+
 document.addEventListener("click", (event) => {
-  if (!state.remoteQrPopoverOpen) {
-    return;
+  // Toggle info tooltip popovers
+  const infoBtn = event.target.closest(".remote-info-button");
+  if (infoBtn) {
+    const wrap = infoBtn.closest(".info-trigger-wrap");
+    if (wrap) {
+      const isShown = wrap.classList.contains("show-tooltip");
+      // Close all tooltips first
+      document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+        el.classList.remove("show-tooltip");
+      });
+      // Toggle current
+      if (!isShown) {
+        wrap.classList.add("show-tooltip");
+      }
+      event.stopPropagation();
+    }
+  } else {
+    // Clicked outside, close all tooltips
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
   }
-  if (event.target.closest("#remote-qr-control")) {
-    return;
+
+  if (state.remoteQrPopoverOpen && !event.target.closest("#remote-qr-control")) {
+    setRemoteQrPopoverOpen(false);
   }
-  setRemoteQrPopoverOpen(false);
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-control")) {
+    setDisplaySettingsOpen(false);
+  }
 });
 
 document.addEventListener("keydown", (event) => {
@@ -6271,6 +6403,10 @@ document.addEventListener("keydown", (event) => {
       setSearchModalOpen(false);
     }
     setRemoteQrPopoverOpen(false);
+    setDisplaySettingsOpen(false);
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
   }
 });
 
@@ -6332,6 +6468,33 @@ elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
   });
 });
 
+elements.remoteKeyShiftPanel?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
+  if (!button) {
+    return;
+  }
+  const currentKey = currentRemoteKeyShift(state.data?.player_settings);
+  if (button.id === "remote-key-shift-reset-button") {
+    await setRemoteKeyShift(0);
+  } else if (button.id === "remote-key-shift-dec-button") {
+    await setRemoteKeyShift(currentKey - 1);
+  } else if (button.id === "remote-key-shift-inc-button") {
+    await setRemoteKeyShift(currentKey + 1);
+  }
+});
+
+elements.remoteKeyShiftInput?.addEventListener("change", async (event) => {
+  await setRemoteKeyShift(event.target.value);
+});
+
+elements.remoteKeyShiftInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setRemoteKeyShift(event.target.value);
+});
+
 elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
@@ -6358,12 +6521,10 @@ document.addEventListener("click", async (event) => {
     renderRatingStars();
     return;
   }
-  const optOutInput = event.target.closest("[data-rating-opt-out]");
-  if (optOutInput) {
-    setRatingOptOut(optOutInput.checked);
-    if (optOutInput.checked) {
-      closeRatingPrompt({ submit: false });
-    }
+  const optOutBtn = event.target.closest("[data-rating-opt-out-btn]");
+  if (optOutBtn) {
+    setRatingOptOut(true);
+    closeRatingPrompt({ submit: false });
     return;
   }
   const addUpButton = event.target.closest("[data-rating-add-up]");
@@ -6659,6 +6820,9 @@ document.addEventListener("keydown", (event) => {
   if (state.reorderConfirmSheetOpen) {
     closeReorderConfirmSheet();
   }
+  if (elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
+  }
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -6695,9 +6859,186 @@ window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
+function makeElementDraggable(element, onClick) {
+  let startX = 0;
+  let startY = 0;
+  let initialLeft = 0;
+  let initialTop = 0;
+  let isDragging = false;
+  let moved = false;
+
+  const dragStart = (e) => {
+    if (e.type === "mousedown" && e.button !== 0) {
+      return;
+    }
+
+    const rect = element.getBoundingClientRect();
+    initialLeft = rect.left;
+    initialTop = rect.top;
+
+    if (e.type === "touchstart") {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    } else {
+      startX = e.clientX;
+      startY = e.clientY;
+    }
+
+    isDragging = true;
+    moved = false;
+
+    if (e.type === "touchstart") {
+      document.addEventListener("touchmove", dragMove, { passive: false });
+      document.addEventListener("touchend", dragEnd);
+    } else {
+      document.addEventListener("mousemove", dragMove);
+      document.addEventListener("mouseup", dragEnd);
+    }
+  };
+
+  const dragMove = (e) => {
+    if (!isDragging) return;
+
+    let currentX = 0;
+    let currentY = 0;
+
+    if (e.type === "touchmove") {
+      currentX = e.touches[0].clientX;
+      currentY = e.touches[0].clientY;
+    } else {
+      currentX = e.clientX;
+      currentY = e.clientY;
+    }
+
+    const deltaX = currentX - startX;
+    const deltaY = currentY - startY;
+
+    if (!moved && Math.hypot(deltaX, deltaY) > 5) {
+      moved = true;
+      element.classList.add("dragging");
+    }
+
+    if (moved) {
+      let newLeft = initialLeft + deltaX;
+      let newTop = initialTop + deltaY;
+
+      const maxLeft = window.innerWidth - element.offsetWidth;
+      const maxTop = window.innerHeight - element.offsetHeight;
+
+      newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+      newTop = Math.max(0, Math.min(newTop, maxTop));
+
+      element.style.left = `${newLeft}px`;
+      element.style.top = `${newTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  };
+
+  const dragEnd = (e) => {
+    isDragging = false;
+    element.classList.remove("dragging");
+
+    if (e.type === "touchend") {
+      document.removeEventListener("touchmove", dragMove);
+      document.removeEventListener("touchend", dragEnd);
+    } else {
+      document.removeEventListener("mousemove", dragMove);
+      document.removeEventListener("mouseup", dragEnd);
+    }
+
+    if (!moved) {
+      if (typeof onClick === "function") {
+        onClick();
+      }
+    }
+  };
+
+  element.addEventListener("mousedown", dragStart);
+  element.addEventListener("touchstart", dragStart);
+
+  window.addEventListener("resize", () => {
+    const rect = element.getBoundingClientRect();
+    let currentLeft = rect.left;
+    let currentTop = rect.top;
+
+    const maxLeft = window.innerWidth - element.offsetWidth;
+    const maxTop = window.innerHeight - element.offsetHeight;
+
+    if (currentLeft > maxLeft || currentTop > maxTop) {
+      const nextLeft = Math.max(0, Math.min(currentLeft, maxLeft));
+      const nextTop = Math.max(0, Math.min(currentTop, maxTop));
+      element.style.left = `${nextLeft}px`;
+      element.style.top = `${nextTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  });
+}
+
+function showFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  elements.floatingControlOverlay.classList.remove("closing");
+  elements.floatingControlOverlay.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+
+  if (elements.floatingControlTrigger && elements.floatingControlCard) {
+    const triggerRect = elements.floatingControlTrigger.getBoundingClientRect();
+    const cardRect = elements.floatingControlCard.getBoundingClientRect();
+    const originX = (triggerRect.left + triggerRect.width / 2) - cardRect.left;
+    const originY = (triggerRect.top + triggerRect.height / 2) - cardRect.top;
+    elements.floatingControlCard.style.transformOrigin = `${originX}px ${originY}px`;
+  }
+}
+
+function hideFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  if (elements.floatingControlOverlay.classList.contains("hidden")) return;
+
+  elements.floatingControlOverlay.classList.add("closing");
+
+  setTimeout(() => {
+    if (elements.floatingControlOverlay.classList.contains("closing")) {
+      elements.floatingControlOverlay.classList.add("hidden");
+      elements.floatingControlOverlay.classList.remove("closing");
+      document.body.style.overflow = "";
+    }
+  }, 250);
+}
+
+function initFloatingControlConsole() {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  makeElementDraggable(elements.floatingControlTrigger, () => {
+    showFloatingControlOverlay();
+  });
+  elements.floatingControlClose?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+  elements.floatingControlBackdrop?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+}
+
+function renderFloatingControlTrigger(currentItem, playbackMode) {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  const hasCurrentItem = Boolean(currentItem);
+  const visible = isLocalMode && hasCurrentItem;
+  elements.floatingControlTrigger.classList.toggle("hidden", !visible);
+  
+  if (!visible && elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
+  }
+}
+
 async function startRemoteSession() {
   setupRemoteFlipStages();
   hydrateLocalPreferences();
+  initFloatingControlConsole();
   await loadTranslations();
   renderLayoutMode();
   try {

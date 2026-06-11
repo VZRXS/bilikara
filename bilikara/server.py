@@ -239,6 +239,9 @@ class AppContext:
     def set_song_advance_delay_seconds(self, delay_seconds: int) -> int:
         return self.store.set_song_advance_delay_seconds(delay_seconds)
 
+    def set_key_shift(self, key_shift: int) -> int:
+        return self.store.set_key_shift(key_shift)
+
     def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
         return self.store.set_audio_variant(item_id, variant_id)
 
@@ -1031,6 +1034,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not isinstance(delay_seconds, int):
                     raise ValueError("delay_seconds must be an integer")
                 CONTEXT.set_song_advance_delay_seconds(delay_seconds)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/player/key-shift":
+                key_shift = body.get("key_shift")
+                if not isinstance(key_shift, int):
+                    raise ValueError("key_shift must be an integer")
+                CONTEXT.set_key_shift(key_shift)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/player/volume":

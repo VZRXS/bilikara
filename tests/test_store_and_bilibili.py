@@ -97,12 +97,42 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(snapshot["song_advance_delay_seconds"], 8)
         self.assertEqual(restored_store.song_advance_delay_seconds, 8)
 
+    def test_key_shift_persists_in_player_state_file(self):
+        self.store.set_key_shift(3)
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+
+        snapshot = self.store.snapshot()["player_settings"]
+        self.assertEqual(snapshot["key_shift"], 3)
+        self.assertEqual(restored_store.key_shift, 3)
+
+    def test_key_shift_bounds(self):
+        self.store.set_key_shift(10)
+        self.assertEqual(self.store.key_shift, 6)
+
+        self.store.set_key_shift(-10)
+        self.assertEqual(self.store.key_shift, -6)
+
+    def test_key_shift_resets_on_advance(self):
+        self.add_item("a", requester_name="A")
+        self.add_item("b", requester_name="B")
+        self.store.set_key_shift(4)
+        self.assertEqual(self.store.key_shift, 4)
+
+        self.store.advance_to_next()
+        self.assertEqual(self.store.key_shift, 0)
+
     def test_reset_player_state_keeps_queue_and_runtime_data(self):
         self.store.set_mode("online")
         self.store.set_av_offset_ms(230)
         self.store.set_volume_percent(35)
         self.store.set_muted(True)
         self.store.set_song_advance_delay_seconds(8)
+        self.store.set_key_shift(4)
         self.add_item("a", requester_name="A")
         self.add_item("b", requester_name="B")
         self.mark_started("a")
@@ -118,6 +148,7 @@ class PlaylistStoreTest(unittest.TestCase):
             snapshot["player_settings"]["song_advance_delay_seconds"],
             DEFAULT_SONG_ADVANCE_DELAY_SECONDS,
         )
+        self.assertEqual(snapshot["player_settings"]["key_shift"], 0)
         self.assertEqual(snapshot["current_item"]["id"], "a")
         self.assertEqual([item["id"] for item in snapshot["playlist"]], ["b"])
         self.assertEqual(snapshot["session_users"], ["A", "B", "C", "D"])

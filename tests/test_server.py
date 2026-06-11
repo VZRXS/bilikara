@@ -718,5 +718,27 @@ class PlaylistResortRouteTest(unittest.TestCase):
         self.assertEqual(writes[1], {"ok": True, "data": {"playlist": ["b", "c", "a"]}})
 
 
+class PlayerKeyShiftRouteTest(unittest.TestCase):
+    def test_key_shift_route_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            set_key_shift=lambda key_shift: writes.append({"set_key_shift": key_shift}),
+            snapshot=lambda: {"player_settings": {"key_shift": 3}},
+        )
+
+        handler.path = "/api/player/key-shift"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"key_shift": 3}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes[0], {"set_key_shift": 3})
+        self.assertEqual(writes[1], {"ok": True, "data": {"player_settings": {"key_shift": 3}}})
+
+
 if __name__ == "__main__":
     unittest.main()

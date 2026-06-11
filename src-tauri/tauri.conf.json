@@ -20,7 +20,19 @@
       "identifier": "com.bilikara.app"
     },
     "security": {
-      "csp": null
+      "csp": null,
+      "dangerousRemoteDomainIpcAccess": [
+        {
+          "domain": "127.0.0.1",
+          "windows": ["main"],
+          "enableTauriAPI": true
+        },
+        {
+          "domain": "localhost",
+          "windows": ["main"],
+          "enableTauriAPI": true
+        }
+      ]
     },
     "windows": [
       {

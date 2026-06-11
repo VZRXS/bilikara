@@ -1559,12 +1559,12 @@ class CacheManager:
                 target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
                 if target_bytes:
                     target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
-                self._update_download_track_progress(
-                    item_id,
-                    track_key=track_key,
-                    target_dir=target_dir,
-                    target_bytes=target_bytes_state["value"],
-                )
+                    self._update_download_track_progress(
+                        item_id,
+                        track_key=track_key,
+                        target_dir=target_dir,
+                        target_bytes=target_bytes_state["value"],
+                    )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
                     raise CacheCancelledError("缓存已停止")
