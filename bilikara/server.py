@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+from collections import deque
 from email.utils import formatdate
 import hmac
 import json
@@ -26,6 +27,8 @@ from .bilibili import (
     browse_gatcha_favlist,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
+    gatcha_pool_config_detail,
+    gatcha_pool_config_snapshot,
     gatcha_favlist_updated_at,
     gatcha_task_snapshot,
     fetch_owner_info,
@@ -36,8 +39,23 @@ from .bilibili import (
     refresh_gatcha_cache_in_background,
     refresh_gatcha_favlist,
     search_gatcha_cache,
+    update_gatcha_pool_config,
 )
-from .lark_pool_client import browse_d1_category_pool, browse_d1_pool, delete_cloudflare_mid_entries, delete_cloudflare_pool_entry, delete_cloudflare_video_entry, reset_cloudflare_video_tags, search_lark_pool, search_lark_pool_table, submit_cloudflare_song_rating, verify_cloudflare_bilikara_secret
+from .lark_pool_client import (
+    LarkPoolError,
+    approve_cloudflare_review_items,
+    browse_d1_category_pool,
+    browse_d1_pool,
+    delete_cloudflare_mid_entries,
+    delete_cloudflare_pool_entry,
+    delete_cloudflare_video_entry,
+    pending_cloudflare_review_items,
+    reset_cloudflare_video_tags,
+    search_lark_pool,
+    search_lark_pool_table,
+    submit_cloudflare_song_rating,
+    verify_cloudflare_bilikara_secret,
+)
 from .cache import CacheManager
 from .config import (
     APP_RELEASES_URL,
@@ -62,6 +80,7 @@ mimetypes.add_type("audio/mp4", ".m4a")
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
+RATING_SUBMISSION_KEY_LIMIT = 2000
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
 
@@ -124,6 +143,9 @@ class AppContext:
         self._startup_lock = threading.RLock()
         self._startup_started = False
         self._startup_gatcha_refresh_bypass_available = True
+        self._rating_submission_lock = threading.RLock()
+        self._rating_submission_keys: set[tuple[str, str]] = set()
+        self._rating_submission_key_order: deque[tuple[str, str]] = deque()
 
     def snapshot(self) -> dict:
         self.cache_manager.reconcile_cache_state()
@@ -141,6 +163,7 @@ class AppContext:
         }
         payload["remote_access"] = self.remote_access_snapshot()
         payload["gatcha"] = gatcha_task_snapshot()
+        payload["gatcha_pool_config"] = gatcha_pool_config_snapshot()
         payload["gatcha_favlist_updated_at"] = gatcha_favlist_updated_at()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
@@ -181,6 +204,24 @@ class AppContext:
 
     def has_session_users(self) -> bool:
         return self.store.has_session_users()
+
+    def register_rating_submission(self, session_user_name: str, play_id: str) -> bool:
+        key = (str(session_user_name or "").strip().casefold(), str(play_id or "").strip())
+        if not key[0] or not key[1]:
+            return False
+        with self._rating_submission_lock:
+            if key in self._rating_submission_keys:
+                return False
+            self._rating_submission_keys.add(key)
+            key_order = getattr(self, "_rating_submission_key_order", None)
+            if key_order is None:
+                key_order = deque()
+                self._rating_submission_key_order = key_order
+            key_order.append(key)
+            while len(key_order) > RATING_SUBMISSION_KEY_LIMIT:
+                old_key = key_order.popleft()
+                self._rating_submission_keys.discard(old_key)
+            return True
 
     def advance_to_next(self) -> None:
         self.store.advance_to_next()
@@ -660,6 +701,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/gatcha/pool-config":
+            try:
+                self._write_json({"ok": True, "data": gatcha_pool_config_detail()})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
         if route == "/api/gatcha/search":
             query = parse_qs(urlparse(self.path).query).get("q", [""])[0]
             try:
@@ -913,6 +960,41 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     return
                 self._write_json({"ok": True, "data": {"verified": True}})
                 return
+            if route == "/api/admin-review/pending":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                try:
+                    limit = max(1, min(20, int(body.get("limit") or 20)))
+                except (TypeError, ValueError):
+                    limit = 20
+                try:
+                    result = pending_cloudflare_review_items(bilikara_secret, limit=limit)
+                except LarkPoolError as exc:
+                    self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-review/approve":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                bvids = body.get("bvids")
+                if not isinstance(bvids, list):
+                    raise ValueError("bvids must be a list")
+                try:
+                    limit = max(1, min(20, int(body.get("limit") or 20)))
+                except (TypeError, ValueError):
+                    limit = 20
+                try:
+                    result = approve_cloudflare_review_items(bvids, bilikara_secret, limit=limit)
+                except LarkPoolError as exc:
+                    self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
             if route == "/api/admin-tags/reset":
                 result = reset_cloudflare_video_tags(
                     str(body.get("bvid") or ""),
@@ -1065,6 +1147,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     force = True
                 CONTEXT.retry_cache_item(body["item_id"], force=force)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/gatcha/pool-config":
+                result = update_gatcha_pool_config(
+                    uid_weight=body.get("uid_weight"),
+                    favlist_weight=body.get("favlist_weight"),
+                    excluded_uids=body.get("excluded_uids"),
+                    excluded_favlist_folders=body.get("excluded_favlist_folders"),
+                )
+                CONTEXT._notify_state_changed()
+                self._write_json({"ok": True, "data": {**gatcha_pool_config_detail(), **result}})
                 return
             if route == "/api/gatcha/uids/add":
                 result = add_gatcha_uid(
@@ -1430,6 +1522,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         expected = os.getenv("BILIKARA_SHUTDOWN_TOKEN", "").strip()
         provided = self.headers.get("X-Bilikara-Shutdown-Token", "").strip()
         return bool(expected and provided and hmac.compare_digest(expected, provided))
+
+    def _verified_bilikara_secret(self, bilikara_secret: str) -> bool:
+        normalized_secret = str(bilikara_secret or "").strip()
+        configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+        if configured_bilikara_secret:
+            return bool(normalized_secret) and hmac.compare_digest(normalized_secret, configured_bilikara_secret)
+        return bool(verify_cloudflare_bilikara_secret(normalized_secret).get("verified"))
 
     def _write_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")

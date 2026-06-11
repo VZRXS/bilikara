@@ -278,6 +278,47 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertEqual(timeout, 20)
         self.assertEqual(payload["records"][0]["bvid"], "BV1NEW000001")
 
+    def test_approve_cloudflare_review_items_falls_back_when_existing_bvid_is_skipped(self):
+        pending_record = {
+            "mid": "25773716",
+            "bvid": "BV15kCRBsE4Q",
+            "title": "☆酵哐★弗左仿市",
+            "url": "https://www.bilibili.com/video/BV15kCRBsE4Q",
+            "owner_name": "ilu渼",
+            "preserved_3": "0",
+        }
+        approved_record = {**pending_record, "preserved_3": "1"}
+        export_payloads = [[pending_record], [pending_record], [approved_record]]
+        posts = []
+
+        def fake_export(secret, *, limit=5000, timeout=120.0):
+            self.assertEqual(secret, "secret")
+            return export_payloads.pop(0)
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            posts.append((method, path, payload))
+            if path == "/batch-add" and len(posts) == 1:
+                return {"attempted": 1, "added": 0, "updated_existing": 0, "skipped_existing": 1}
+            if path == "/admin/delete-video":
+                return {"success": True, "bvid": "BV15kCRBsE4Q", "deleted": True}
+            if path == "/batch-add":
+                return {"attempted": 1, "added": 1, "updated_existing": 0, "skipped_existing": 0}
+            return {"success": False, "error": "unexpected call"}
+
+        with (
+            patch.object(lark_pool, "export_cloudflare_pool_records", side_effect=fake_export),
+            patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare),
+        ):
+            result = lark_pool.approve_cloudflare_review_items(["BV15kCRBsE4Q"], "secret")
+
+        self.assertEqual(result["approved"], 1)
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["upload"]["fallback_attempted"], 1)
+        self.assertEqual(posts[0][1], "/batch-add")
+        self.assertEqual(posts[1][1], "/admin/delete-video")
+        self.assertEqual(posts[2][1], "/batch-add")
+        self.assertEqual(posts[2][2]["records"][0]["preserved_3"], "1")
+
     def test_delete_cloudflare_pool_entry_posts_single_bvid(self):
         requests = []
 

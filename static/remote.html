@@ -60,6 +60,23 @@
                     <button type="button" class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
                   </div>
                 </div>
+                <div class="popover-row">
+                  <div>
+                    <p class="popover-label" data-i18n="top.theme">切换主题</p>
+                    <p class="popover-hint" data-i18n="display.themeHint">切换界面色彩主题</p>
+                  </div>
+                  <div class="mode-switch theme-switch" id="theme-switch">
+                    <button type="button" class="mode-button active" data-theme="light" aria-label="奶茶暖橘">
+                      <span class="theme-preview-pill light-preview"></span>
+                    </button>
+                    <button type="button" class="mode-button" data-theme="dark" aria-label="暗黑可可">
+                      <span class="theme-preview-pill dark-preview"></span>
+                    </button>
+                    <button type="button" class="mode-button" data-theme="blue" aria-label="蓝黑霓虹">
+                      <span class="theme-preview-pill blue-preview"></span>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -394,9 +411,14 @@
             <p class="panel-tag" id="gatcha-tag" data-i18n="gatcha.tag">Gatcha Draw</p>
             <h2 class="panel-title" id="gatcha-title" data-i18n="gatcha.title">试试运气</h2>
           </div>
-          <button type="button" id="gatcha-uid-toggle" class="secondary-button gatcha-uid-toggle" aria-pressed="false" data-i18n="gatcha.addUid">
-            添加 UID
-          </button>
+          <div class="gatcha-head-actions">
+            <button type="button" id="gatcha-pool-config-toggle" class="secondary-button gatcha-pool-config-toggle" data-i18n="gatcha.poolConfig">
+              自定义卡池
+            </button>
+            <button type="button" id="gatcha-uid-toggle" class="secondary-button gatcha-uid-toggle" aria-pressed="false" data-i18n="gatcha.addUid">
+              添加 UID
+            </button>
+          </div>
         </div>
         <div id="gatcha-init-view" class="gatcha-content">
           <div class="gatcha-icon">🎲</div>
@@ -405,8 +427,10 @@
           <p class="gatcha-message" id="gatcha-message" role="status"></p>
         </div>
         <div id="gatcha-result-view" class="gatcha-content hidden">
-          <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
-          <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
+          <div class="gatcha-result-copy">
+            <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
+            <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
+          </div>
           <div class="action-row gatcha-actions">
             <button type="button" id="gatcha-confirm-button" class="primary-button" data-i18n="gatcha.confirm">确认点歌</button>
             <button type="button" id="gatcha-retry-button" class="secondary-button" data-i18n="gatcha.retry">重新再来</button>
@@ -503,6 +527,54 @@
           <div class="binding-sheet-actions">
             <button type="button" id="gatcha-favlist-sheet-cancel" class="ghost-button" data-i18n="common.cancel">取消</button>
             <button type="button" id="gatcha-favlist-sheet-confirm" class="primary-button" data-i18n="favlist.confirm">拉取选中收藏夹</button>
+          </div>
+        </div>
+      </div>
+      <div id="gatcha-pool-config-sheet" class="binding-sheet pool-config-sheet hidden" aria-hidden="true">
+        <div id="gatcha-pool-config-sheet-backdrop" class="binding-sheet-backdrop"></div>
+        <div class="binding-sheet-panel">
+          <div class="binding-sheet-handle" aria-hidden="true"></div>
+          <div class="binding-sheet-head">
+            <div>
+              <p class="panel-tag" data-i18n="gatcha.poolConfig">自定义卡池</p>
+              <h2 data-i18n="gatcha.poolConfigTitle">卡池设置</h2>
+            </div>
+            <div class="pool-config-head-actions">
+              <button type="button" id="gatcha-pool-config-sheet-reset" class="ghost-button" data-i18n="common.reset">重置</button>
+              <button type="button" id="gatcha-pool-config-sheet-close" class="ghost-button binding-sheet-close" data-i18n="common.close">关闭</button>
+            </div>
+          </div>
+          <section class="binding-sheet-section pool-config-section">
+            <div class="pool-config-weight-head">
+              <span data-i18n="gatcha.poolWeight">抽取概率</span>
+              <strong id="gatcha-pool-weight-label">UID 50% | 收藏夹 50%</strong>
+            </div>
+            <input type="range" id="gatcha-pool-weight-slider" min="0" max="100" step="1" value="50" />
+          </section>
+          <section class="binding-sheet-section pool-config-section">
+            <div class="pool-config-list-head">
+              <h3 data-i18n="gatcha.uidPool">关注 UID 池</h3>
+              <div class="pool-config-bulk-actions">
+                <button type="button" id="gatcha-pool-uid-select-all" class="ghost-button" data-i18n="gatcha.poolSelectAll">全选</button>
+                <button type="button" id="gatcha-pool-uid-select-none" class="ghost-button" data-i18n="gatcha.poolSelectNone">全不选</button>
+              </div>
+            </div>
+            <div id="gatcha-pool-uid-options" class="binding-option-list pool-config-option-list"></div>
+          </section>
+          <section class="binding-sheet-section pool-config-section">
+            <div class="pool-config-list-head">
+              <h3 data-i18n="gatcha.favlistPool">收藏夹池</h3>
+              <div class="pool-config-bulk-actions">
+                <button type="button" id="gatcha-pool-favlist-select-all" class="ghost-button" data-i18n="gatcha.poolSelectAll">全选</button>
+                <button type="button" id="gatcha-pool-favlist-select-none" class="ghost-button" data-i18n="gatcha.poolSelectNone">全不选</button>
+              </div>
+            </div>
+            <div id="gatcha-pool-favlist-options" class="binding-option-list pool-config-option-list"></div>
+          </section>
+          <p class="gatcha-message" id="gatcha-pool-config-message" role="status"></p>
+          <div class="binding-sheet-actions">
+            <button type="button" id="gatcha-pool-config-sheet-cancel" class="ghost-button" data-i18n="common.cancel">取消</button>
+            <button type="button" id="gatcha-pool-config-sheet-save" class="primary-button" data-i18n="gatcha.poolSave">保存</button>
           </div>
         </div>
       </div>

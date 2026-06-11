@@ -40,6 +40,7 @@ struct BackendProcess {
 fn resolve_backend_command() -> (String, Vec<String>) {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
+    #[allow(unused_mut)]
     let mut current_dir = current_exe.parent().unwrap_or_else(|| std::path::Path::new("."));
 
     // On macOS, the executable is inside Contents/MacOS/, so we go up 3 levels to get next to the .app bundle
@@ -119,6 +120,13 @@ fn parse_local_http_url(base_url: &str) -> Option<(&str, u16)> {
     Some((host, port))
 }
 
+#[tauri::command]
+fn set_window_fullscreen(window: tauri::WebviewWindow, fullscreen: bool) -> Result<(), String> {
+    window
+        .set_fullscreen(fullscreen)
+        .map_err(|error| error.to_string())
+}
+
 fn request_backend_shutdown(base_url: &str, shutdown_token: &str) -> bool {
     let Some((host, port)) = parse_local_http_url(base_url) else {
         return false;
@@ -152,8 +160,9 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
 
 fn main() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![set_window_fullscreen])
         .setup(|app| {
-            let window = app.get_window("main").unwrap();
+            let window = app.get_webview_window("main").unwrap();
 
             let (cmd, mut args) = resolve_backend_command();
             args.extend(vec![
@@ -196,7 +205,7 @@ fn main() {
                 shutdown_token: shutdown_token.clone(),
             });
 
-            let app_handle = app.handle();
+            let app_handle = app.handle().clone();
             let child_for_monitor = child_arc.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(500));
@@ -259,9 +268,9 @@ fn main() {
 
             Ok(())
         })
-        .on_window_event(|event| match event.event() {
+        .on_window_event(|window, event| match event {
             tauri::WindowEvent::Destroyed => {
-                if let Some(state) = event.window().try_state::<BackendProcess>() {
+                if let Some(state) = window.try_state::<BackendProcess>() {
                     let shutdown_url = state
                         .base_url
                         .lock()

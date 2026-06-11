@@ -59,6 +59,9 @@ _GATCHA_FAVLIST_LOCK = threading.Lock()
 _GATCHA_FAVLIST_REQUEST_LOCK = threading.Lock()
 _GATCHA_FAVLIST_LAST_REQUEST_AT = 0.0
 _GATCHA_FAVLIST_TITLE_KEYWORDS = ("🎤", "卡拉", "k")
+_GATCHA_POOL_CONFIG_FILE = cfg.DATA_DIR / "gatcha_pool_config.json"
+_GATCHA_POOL_CONFIG_LOCK = threading.RLock()
+_GATCHA_POOL_CONFIG_SCHEMA_VERSION = 1
 GATCHA_RETRY_DELAY_SECONDS = 5
 GATCHA_FAVLIST_RETRY_DELAY_SECONDS = 3
 GATCHA_PROFILE_CACHE_TTL_SECONDS = 300
@@ -384,6 +387,112 @@ def gatcha_uid_snapshot() -> dict:
 
 def _configured_gatcha_uids() -> list[str]:
     return gatcha_uid_snapshot()["uids"]
+
+
+def _default_gatcha_pool_config() -> dict:
+    return {
+        "schema_version": _GATCHA_POOL_CONFIG_SCHEMA_VERSION,
+        "uid_weight": 50,
+        "favlist_weight": 50,
+        "excluded_uids": [],
+        "excluded_favlist_folders": [],
+        "updated_at": 0.0,
+    }
+
+
+def _load_gatcha_pool_config() -> dict:
+    if not _GATCHA_POOL_CONFIG_FILE.exists():
+        return _default_gatcha_pool_config()
+    payload = _read_json_file(_GATCHA_POOL_CONFIG_FILE)
+    if not isinstance(payload, dict):
+        return _default_gatcha_pool_config()
+    uid_weight = payload.get("uid_weight")
+    favlist_weight = payload.get("favlist_weight")
+    try:
+        uid_weight = max(0, min(100, int(uid_weight)))
+    except (TypeError, ValueError):
+        uid_weight = 50
+    try:
+        favlist_weight = max(0, min(100, int(favlist_weight)))
+    except (TypeError, ValueError):
+        favlist_weight = 50
+    excluded_uids = payload.get("excluded_uids")
+    if not isinstance(excluded_uids, list):
+        excluded_uids = []
+    excluded_uids = [str(uid).strip() for uid in excluded_uids if str(uid).strip()]
+    excluded_favlist_folders = payload.get("excluded_favlist_folders")
+    if not isinstance(excluded_favlist_folders, list):
+        excluded_favlist_folders = []
+    excluded_favlist_folders = [str(fid).strip() for fid in excluded_favlist_folders if str(fid).strip()]
+    return {
+        "schema_version": _GATCHA_POOL_CONFIG_SCHEMA_VERSION,
+        "uid_weight": uid_weight,
+        "favlist_weight": favlist_weight,
+        "excluded_uids": excluded_uids,
+        "excluded_favlist_folders": excluded_favlist_folders,
+        "updated_at": float(payload.get("updated_at") or 0),
+    }
+
+
+def _save_gatcha_pool_config(config: dict) -> None:
+    config["schema_version"] = _GATCHA_POOL_CONFIG_SCHEMA_VERSION
+    _write_json_file(_GATCHA_POOL_CONFIG_FILE, config)
+
+
+def gatcha_pool_config_snapshot() -> dict:
+    with _GATCHA_POOL_CONFIG_LOCK:
+        config = _load_gatcha_pool_config()
+    return {
+        "uid_weight": config.get("uid_weight", 50),
+        "favlist_weight": config.get("favlist_weight", 50),
+        "excluded_uids": list(config.get("excluded_uids") or []),
+        "excluded_favlist_folders": list(config.get("excluded_favlist_folders") or []),
+        "updated_at": float(config.get("updated_at") or 0),
+    }
+
+
+def gatcha_pool_config_detail() -> dict:
+    config = gatcha_pool_config_snapshot()
+    try:
+        uid_options = browse_gatcha_cache().get("owners") or []
+    except Exception:  # noqa: BLE001
+        uid_options = []
+    try:
+        favlist_options = browse_gatcha_favlist().get("folders") or []
+    except Exception:  # noqa: BLE001
+        favlist_options = []
+    return {
+        **config,
+        "uid_options": uid_options if isinstance(uid_options, list) else [],
+        "favlist_folder_options": favlist_options if isinstance(favlist_options, list) else [],
+    }
+
+
+def update_gatcha_pool_config(
+    *,
+    uid_weight: int | None = None,
+    favlist_weight: int | None = None,
+    excluded_uids: list[str] | None = None,
+    excluded_favlist_folders: list[str] | None = None,
+) -> dict:
+    with _GATCHA_POOL_CONFIG_LOCK:
+        config = _load_gatcha_pool_config()
+        if uid_weight is not None:
+            config["uid_weight"] = max(0, min(100, int(uid_weight)))
+        if favlist_weight is not None:
+            config["favlist_weight"] = max(0, min(100, int(favlist_weight)))
+        if excluded_uids is not None:
+            if not isinstance(excluded_uids, list):
+                raise ValueError("excluded_uids must be a list")
+            config["excluded_uids"] = [str(uid).strip() for uid in excluded_uids if str(uid).strip()]
+        if excluded_favlist_folders is not None:
+            if not isinstance(excluded_favlist_folders, list):
+                raise ValueError("excluded_favlist_folders must be a list")
+            config["excluded_favlist_folders"] = [str(fid).strip() for fid in excluded_favlist_folders if str(fid).strip()]
+        config["updated_at"] = time.time()
+        _save_gatcha_pool_config(config)
+        return gatcha_pool_config_snapshot()
+
 
 @dataclass
 class VideoReference:
@@ -2746,19 +2855,55 @@ def get_cached_wbi_keys():
     return keys
 
 def fetch_gatcha_candidate() -> dict | None:
+    pool_config = gatcha_pool_config_snapshot()
+    excluded_uid_set = set(pool_config.get("excluded_uids") or [])
+    excluded_folder_set = set(pool_config.get("excluded_favlist_folders") or [])
+    uid_weight = int(pool_config.get("uid_weight", 50))
+    favlist_weight = int(pool_config.get("favlist_weight", 50))
+
     raw_candidates_by_uid = _local_gatcha_candidates_by_uid()
     candidates_by_uid: dict[str, list[dict]] = {}
-    for mid, entries in raw_candidates_by_uid.items():
-        valid_entries = [entry for entry in entries if isinstance(entry, dict) and not _is_expired_gatcha_entry(entry)]
-        if valid_entries:
-            candidates_by_uid[mid] = valid_entries
-    favlist_candidates = [entry for entry in _local_gatcha_favlist_candidates() if not _is_expired_gatcha_entry(entry)]
+    if uid_weight > 0:
+        for mid, entries in raw_candidates_by_uid.items():
+            if mid in excluded_uid_set:
+                continue
+            valid_entries = [entry for entry in entries if isinstance(entry, dict) and not _is_expired_gatcha_entry(entry)]
+            if valid_entries:
+                candidates_by_uid[mid] = valid_entries
+
+    all_favlist_candidates = _local_gatcha_favlist_candidates()
+    favlist_candidates: list[dict] = []
+    if favlist_weight > 0:
+        for entry in all_favlist_candidates:
+            if _is_expired_gatcha_entry(entry):
+                continue
+            entry_fav_uid = str(entry.get("fav_uid") or "").strip()
+            entry_folder_id = str(entry.get("fav_folder_id") or "").strip()
+            folder_key = f"{entry_fav_uid}:{entry_folder_id}" if entry_fav_uid else entry_folder_id
+            if folder_key in excluded_folder_set or entry_folder_id in excluded_folder_set:
+                continue
+            favlist_candidates.append(entry)
+
     if not candidates_by_uid and not favlist_candidates:
         if not effective_bilibili_cookie():
             raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
         raise BilibiliError("本地稿件缓存还没准备好，请稍后再试")
 
-    if favlist_candidates and (not candidates_by_uid or random.random() < 0.5):
+    total_weight = uid_weight + favlist_weight
+    if total_weight <= 0:
+        total_weight = 100
+        uid_weight = 50
+        favlist_weight = 50
+
+    pick_favlist = False
+    if favlist_candidates and not candidates_by_uid:
+        pick_favlist = True
+    elif candidates_by_uid and not favlist_candidates:
+        pick_favlist = False
+    elif favlist_candidates and candidates_by_uid:
+        pick_favlist = random.random() < (favlist_weight / total_weight)
+
+    if pick_favlist:
         chosen = random.choice(favlist_candidates)
         payload = {
             "mid": str(chosen.get("mid") or ""),
