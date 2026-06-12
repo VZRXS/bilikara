@@ -23,7 +23,12 @@
         <div>
           <p class="eyebrow" data-i18n="brand.eyebrow">bilikara host</p>
           <h1 data-i18n="brand.name">bilikara</h1>
-          <p class="designer" id="developer-mode-trigger" role="button" tabindex="0" data-i18n="brand.designer">@VZRXS</p>
+          <p class="project-link" id="developer-mode-trigger" role="button" tabindex="0">
+            <svg class="project-link-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 .5A11.5 11.5 0 0 0 8.36 22.9c.58.1.79-.25.79-.56v-2c-3.22.7-3.9-1.38-3.9-1.38-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.17.08 1.78 1.2 1.78 1.2 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.57-.29-5.27-1.28-5.27-5.72 0-1.26.45-2.3 1.2-3.1-.12-.3-.52-1.47.11-3.06 0 0 .98-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.18-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.76.11 3.06.75.8 1.2 1.84 1.2 3.1 0 4.45-2.7 5.43-5.28 5.72.42.36.78 1.06.78 2.15v3.02c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z" />
+            </svg>
+            <span data-i18n="brand.projectLink">VZRXS/bilikara</span>
+          </p>
         </div>
         <div class="top-controls">
           <div class="mode-control remote-mini-control" id="remote-mini-control">
@@ -328,6 +333,9 @@
                     <span data-i18n="service.checkUpdate">检查更新</span>
                   </button>
                 </div>
+              </div>
+              <div class="cache-panel-footer">
+                <span class="cache-panel-version" id="cache-panel-version">bilikara</span>
               </div>
             </div>
           </div>
@@ -825,6 +833,14 @@
           <div class="history-actions menu-content hidden">
             <button type="button" data-action="history-tail" class="primary-button" data-i18n="request.submit">点歌</button>
             <button type="button" data-action="history-next" class="secondary-button" data-i18n="request.moveNext">顶歌</button>
+            <button type="button" data-action="history-remove" class="icon-button danger-button" title="移除" aria-label="移除" data-i18n-title="common.remove" data-i18n-aria-label="common.remove">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-1 6h2v8H8V9Zm6 0h2v8h-2V9ZM7 7h10l-.8 12.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-1.99-1.8L7 7Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </button>
           </div>
           <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作" data-i18n-aria-label="common.moreActions">
             <svg viewBox="0 0 24 24" fill="currentColor">

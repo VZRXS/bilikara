@@ -2,7 +2,7 @@
 name = "bilikara"
 version = "1.0.0"
 description = "Bilikara Tauri MVP"
-authors = ["you"]
+authors = ["VZRXS"]
 edition = "2021"
 
 [build-dependencies]

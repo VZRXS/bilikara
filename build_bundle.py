@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 APP_NAME = "bilikara"
+APP_PUBLISHER = "VZRXS"
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
 REQUIRED_TOOL_BINARIES = ("ffmpeg",)
@@ -20,7 +22,8 @@ def main() -> None:
     data_separator = ";" if platform.system() == "Windows" else ":"
     static_arg = f"{ROOT_DIR / 'static'}{data_separator}static"
     version_arg = f"{VERSION_FILE}{data_separator}."
-    VERSION_FILE.write_text(_bundle_version(), encoding="utf-8")
+    bundle_version = _bundle_version()
+    VERSION_FILE.write_text(bundle_version, encoding="utf-8")
     spec_dir = ROOT_DIR / "build"
     spec_dir.mkdir(exist_ok=True)
 
@@ -45,6 +48,10 @@ def main() -> None:
     command.extend(_python_certifi_args(data_separator, verbose=True))
     command.extend(_bundled_binary_args(data_separator, verbose=True, validate=True))
 
+    if platform.system() == "Windows":
+        version_info_file = _write_windows_version_info(bundle_version, spec_dir)
+        command.extend(["--version-file", str(version_info_file)])
+
     if platform.system() == "Darwin":
         command.extend(["--osx-bundle-identifier", "com.bilikara.app"])
 
@@ -52,6 +59,61 @@ def main() -> None:
     _write_release_compliance_files()
     print()
     print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")
+
+
+def _write_windows_version_info(bundle_version: str, spec_dir: Path) -> Path:
+    version_tuple = _windows_version_tuple(bundle_version)
+    version_text = bundle_version or "dev"
+    version_file = spec_dir / "bilikara_version_info.txt"
+    version_file.write_text(
+        """# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={version_tuple!r},
+    prodvers={version_tuple!r},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [
+          StringStruct('CompanyName', {publisher!r}),
+          StringStruct('FileDescription', 'bilikara backend launcher'),
+          StringStruct('FileVersion', {version_text!r}),
+          StringStruct('InternalName', {app_name!r}),
+          StringStruct('LegalCopyright', 'Copyright (c) VZRXS'),
+          StringStruct('OriginalFilename', {original_filename!r}),
+          StringStruct('ProductName', {app_name!r}),
+          StringStruct('ProductVersion', {version_text!r})
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+""".format(
+            version_tuple=version_tuple,
+            publisher=APP_PUBLISHER,
+            version_text=version_text,
+            app_name=APP_NAME,
+            original_filename=f"{APP_NAME}.exe",
+        ),
+        encoding="utf-8",
+    )
+    return version_file
+
+
+def _windows_version_tuple(version: str) -> tuple[int, int, int, int]:
+    parts = [min(int(part), 65535) for part in re.findall(r"\d+", version)[:4]]
+    while len(parts) < 4:
+        parts.append(0)
+    return tuple(parts)
 
 
 def _bundle_version() -> str:

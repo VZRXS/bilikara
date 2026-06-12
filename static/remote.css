@@ -10,6 +10,10 @@
   --accent-soft: rgba(202, 91, 60, 0.12);
   --green: #2d7c61;
   --red: #b14545;
+  --danger-btn-color: var(--accent-deep);
+  --danger-btn-bg: rgba(177, 69, 69, 0.12);
+  --danger-btn-hover-bg: rgba(177, 69, 69, 0.18);
+  --toast-error-border: rgba(177, 69, 69, 0.22);
   --shadow: 0 18px 40px rgba(79, 56, 39, 0.12);
   --font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --bg-glow: rgba(255, 255, 255, 0.9);
@@ -467,16 +471,19 @@ h1 {
   position: absolute;
   top: 10px;
   right: 10px;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: none;
-  border-radius: 999px;
+  border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: var(--qr-popover-close-bg);
   color: var(--muted);
   cursor: pointer;
+  font-size: 20px;
+  line-height: 0;
+  padding: 0 0 2px 1px;
 }
 
 .remote-qr-popover-image-wrap {
@@ -1141,12 +1148,12 @@ button[data-control-action="next-track"] {
 
 .player-control-row .primary-button.is-playing {
   background: var(--player-playing-bg);
-  color: var(--player-playing-color);
+  color: var(--player-playing-color) !important;
 }
 
 .player-control-row .primary-button.is-paused {
   background: var(--player-paused-bg);
-  color: var(--player-paused-color);
+  color: var(--player-paused-color) !important;
   box-shadow: var(--player-paused-shadow);
 }
 
@@ -1596,7 +1603,7 @@ select:disabled {
 }
 
 .message.error {
-  color: var(--accent-deep);
+  color: var(--red);
 }
 
 .app-toast {
@@ -1619,8 +1626,8 @@ select:disabled {
 }
 
 .app-toast.is-error {
-  border-color: rgba(177, 69, 69, 0.22);
-  color: var(--accent-deep);
+  border-color: var(--toast-error-border, rgba(177, 69, 69, 0.22));
+  color: var(--red);
 }
 
 .count-chip,
@@ -3338,18 +3345,13 @@ body.remote-search-modal-open {
   justify-content: center;
   font-size: 20px;
   cursor: pointer;
-  transition: background 0.2s ease, transform 0.2s ease;
-  line-height: 1;
-  padding: 0;
+  transition: background 0.2s ease;
+  line-height: 0;
+  padding: 0 0 2px 1px;
 }
 
 .rating-close:hover {
   background: var(--rating-close-hover-bg);
-  transform: rotate(90deg);
-}
-
-.rating-close:active {
-  transform: scale(0.95);
 }
 
 .rating-tabs {
@@ -3731,20 +3733,24 @@ body.remote-search-modal-open {
   justify-content: center;
   font-size: 20px;
   cursor: pointer;
-  transition: background 0.2s ease, transform 0.2s ease;
-  padding: 0;
-  line-height: 1;
+  transition: background 0.2s ease;
+  line-height: 0;
+  padding: 0 0 2px 1px;
 }
 
 .floating-control-close:hover {
   background: var(--floating-close-hover-bg);
-  transform: rotate(90deg);
 }
 
 .floating-control-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.floating-control-body .player-control-panel {
+  margin-top: 0;
+  margin-bottom: 4px;
 }
 
 .floating-control-body .remote-setting-panel {
@@ -3833,6 +3839,10 @@ body.remote-search-modal-open {
   --accent-deep: #b24733;
   --accent-soft: rgba(224, 108, 83, 0.15);
   --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+  --danger-btn-color: var(--accent-deep);
+  --danger-btn-bg: rgba(177, 69, 69, 0.18);
+  --danger-btn-hover-bg: rgba(177, 69, 69, 0.24);
+  --toast-error-border: rgba(177, 69, 69, 0.26);
   --bg-glow: rgba(30, 26, 23, 0.9);
   --bg-top: #1c1815;
   --bg-bottom: #13110f;
@@ -3932,6 +3942,10 @@ body.remote-search-modal-open {
   --green: #34d399;
   --red: #fb7185;
   --shadow: 0 18px 48px rgba(2, 8, 23, 0.58);
+  --danger-btn-color: var(--accent-deep);
+  --danger-btn-bg: rgba(56, 189, 248, 0.14);
+  --danger-btn-hover-bg: rgba(56, 189, 248, 0.22);
+  --toast-error-border: rgba(251, 113, 133, 0.24);
   --bg-glow: rgba(56, 189, 248, 0.18);
   --bg-top: #06111f;
   --bg-bottom: #020617;
@@ -3965,7 +3979,7 @@ body.remote-search-modal-open {
   --player-btn-hover-bg: rgba(20, 42, 70, 0.96);
   --player-btn-hover-border: rgba(56, 189, 248, 0.32);
   --player-paused-bg: rgba(15, 30, 50, 0.9);
-  --player-paused-color: var(--accent);
+  --player-paused-color: #ffffff;
   --player-paused-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.28), 0 0 18px rgba(56, 189, 248, 0.12);
   --variant-toggle-bg: rgba(15, 30, 50, 0.84);
   --variant-toggle-color: var(--accent);
@@ -3991,11 +4005,11 @@ body.remote-search-modal-open {
   --rating-star-bg: rgba(56, 189, 248, 0.1);
   --rating-star-color: rgba(125, 211, 252, 0.34);
   --rating-star-active-bg: rgba(56, 189, 248, 0.2);
-  --floating-control-trigger-bg: radial-gradient(circle at 30% 20%, rgba(125, 211, 252, 0.95), transparent 32%), linear-gradient(135deg, #0ea5e9, #075985);
-  --floating-control-trigger-shadow: 0 6px 22px rgba(2, 8, 23, 0.36), 0 0 24px rgba(56, 189, 248, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.34);
-  --floating-control-trigger-hover-shadow: 0 8px 28px rgba(2, 8, 23, 0.42), 0 0 32px rgba(56, 189, 248, 0.34);
-  --floating-control-trigger-active-shadow: 0 3px 12px rgba(2, 8, 23, 0.38), 0 0 18px rgba(56, 189, 248, 0.24);
-  --floating-control-trigger-drag-shadow: 0 10px 32px rgba(2, 8, 23, 0.45), 0 0 34px rgba(56, 189, 248, 0.34);
+  --floating-control-trigger-bg: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  --floating-control-trigger-shadow: 0 4px 16px rgba(2, 8, 23, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  --floating-control-trigger-hover-shadow: 0 6px 20px rgba(2, 8, 23, 0.42);
+  --floating-control-trigger-active-shadow: 0 2px 8px rgba(2, 8, 23, 0.3);
+  --floating-control-trigger-drag-shadow: 0 8px 24px rgba(2, 8, 23, 0.45);
   --floating-control-card-shadow: 0 24px 90px rgba(2, 8, 23, 0.72), 0 0 34px rgba(56, 189, 248, 0.12);
   --floating-close-bg: rgba(148, 202, 233, 0.14);
   --floating-close-hover-bg: rgba(148, 202, 233, 0.24);
@@ -4022,7 +4036,7 @@ body.remote-search-modal-open {
   --remote-muted-border-color: rgba(56, 189, 248, 0.42);
   --player-pending-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16);
   --player-playing-bg: linear-gradient(180deg, #38bdf8 0%, #0ea5e9 100%);
-  --player-playing-color: #03111f;
+  --player-playing-color: var(--on-accent);
   --player-next-track-border: 1.5px solid rgba(56, 189, 248, 0.46);
   --player-next-track-bg: rgba(56, 189, 248, 0.12);
   --player-next-track-color: var(--accent);
@@ -4034,9 +4048,10 @@ body.remote-search-modal-open {
   --toast-shadow: 0 16px 42px rgba(2, 8, 23, 0.58);
 }
 
+
 /* Dark theme extracted surface fixes. */
 :root:is([data-theme="dark"], [data-theme="blue"]) .display-popover .mode-switch,
-:root:is([data-theme="dark"], [data-theme="blue"]) .theme-switch .mode-button {
+:root:is([data-theme="dark"], [data-theme="blue"]) .theme-switch .mode-button:not(.active) {
   background: var(--theme-switch-button-bg);
   border-color: var(--dark-surface-border-color);
   box-shadow: var(--dark-control-rail-shadow);
@@ -4103,7 +4118,6 @@ body.remote-search-modal-open {
 }
 
 /* Dark theme active surface fixes. */
-:root:is([data-theme="dark"], [data-theme="blue"]) .theme-switch .mode-button.active,
 :root:is([data-theme="dark"], [data-theme="blue"]) .audio-variant-button.active,
 :root:is([data-theme="dark"], [data-theme="blue"]) .remote-mute-button.is-muted {
   background: var(--accent);

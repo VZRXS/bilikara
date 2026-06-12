@@ -476,6 +476,27 @@ class PlaylistExportRouteTest(unittest.TestCase):
         self.assertEqual(writes[0], {"cleared": True})
         self.assertEqual(writes[1], {"ok": True, "data": {"history": []}})
 
+    def test_history_remove_route_removes_key_and_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        removed_keys: list[str] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            remove_history_entry=lambda key: removed_keys.append(key),
+            snapshot=lambda: {"history": [], "session_played": []},
+        )
+
+        handler.path = "/api/history/remove"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"key": "BVSONG:p1"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(removed_keys, ["BVSONG:p1"])
+        self.assertEqual(writes[0], {"ok": True, "data": {"history": [], "session_played": []}})
+
 
 class UpdateRouteTest(unittest.TestCase):
     def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):

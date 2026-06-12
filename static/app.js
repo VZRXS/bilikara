@@ -22,7 +22,7 @@ const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
-const developerProfileUrl = "https://github.com/VZRXS/bilikara";
+const projectUrl = "https://github.com/VZRXS/bilikara";
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -254,6 +254,7 @@ const elements = {
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
+  cachePanelVersion: document.getElementById("cache-panel-version"),
   bbdownStatusRow: document.getElementById("bbdown-status-row"),
   bbdownLoginButton: document.getElementById("bbdown-login-button"),
   bbdownLoginPanel: document.getElementById("bbdown-login-panel"),
@@ -2027,7 +2028,7 @@ function openBilikaraSecretModal() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = developerProfileUrl;
+    window.location.href = projectUrl;
     return;
   }
   if (elements.bilikaraSecretInput) {
@@ -2060,7 +2061,7 @@ async function verifyBilikaraSecret() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = developerProfileUrl;
+    window.location.href = projectUrl;
     return;
   }
   const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();
@@ -4599,6 +4600,7 @@ function renderSessionUsers(sessionUsers) {
       <span class="session-user-order-number">${index + 1}</span>
       <span class="session-user-name">${escapeHtml(userName)}</span>
     `;
+
     elements.sessionUserList.appendChild(item);
   });
 }
@@ -4823,6 +4825,13 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   renderAdvanceDelaySlider(state.data?.player_settings);
   renderCachePolicyControls(cachePolicy);
   renderUpdatePreviewControl();
+  if (elements.cachePanelVersion) {
+    const version = state.data?.app?.version || "";
+    const versionText = version ? `bilikara ${version}` : "bilikara";
+    if (elements.cachePanelVersion.textContent !== versionText) {
+      elements.cachePanelVersion.textContent = versionText;
+    }
+  }
   syncCachePanelVisibility();
 }
 
@@ -5330,10 +5339,7 @@ function hostCacheDetailTextForItem(item) {
 }
 
 function queueCurrentCacheDetailForItem(item, currentState) {
-  if (!item || currentState === "playing") {
-    return "";
-  }
-  return hostCacheDetailTextForItem(item);
+  return "";
 }
 
 function audioVariantsForItem(item) {
@@ -7719,6 +7725,7 @@ function renderHistory(history) {
     node.querySelector(".history-count").textContent = t("history.requestCount", { count: entry.request_count });
     node.querySelectorAll("button[data-action]").forEach((button) => {
       button.dataset.url = entry.resolved_url || entry.original_url;
+      button.dataset.key = entry.key || "";
     });
     elements.historyList.appendChild(node);
   });
@@ -7754,11 +7761,16 @@ function formatHistoryTime(timestamp) {
 }
 
 function ownerTooltipForEntry(entry) {
+  const fullTitle = String(entry?.title || entry?.display_title || "").trim();
   const ownerName = String(entry?.owner_name || "").trim();
-  if (!ownerName) {
-    return "";
+  const lines = [];
+  if (fullTitle) {
+    lines.push(fullTitle);
   }
-  return t("owner.tooltip", { name: ownerName });
+  if (ownerName) {
+    lines.push(t("owner.tooltip", { name: ownerName }));
+  }
+  return lines.join("\n");
 }
 
 function formatBBDownHint(bbdown) {
@@ -9567,18 +9579,82 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
 
 let draggedSessionUser = null;
 
+function clearSessionUserDropIndicators() {
+  elements.sessionUserList
+    ?.querySelectorAll(".session-user-badge")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+}
+
+async function removeDraggedSessionUser() {
+  if (!draggedSessionUser || draggedSessionUser.dataset.deleted === "true") {
+    return;
+  }
+  const name = draggedSessionUser.dataset.name;
+  draggedSessionUser.dataset.deleted = "true";
+  draggedSessionUser.style.display = "none";
+  await removeSessionUser(name);
+}
+
+function finishSessionUserDragUi() {
+  draggedSessionUser?.classList.remove("dragging");
+  elements.sessionUsersPanel?.classList.remove("is-dragging");
+  elements.sessionUserTrash?.classList.remove("drag-over");
+  clearSessionUserDropIndicators();
+}
+
+// 1. Prevent default on document dragenter to remove the forbidden icon in WebView/WebKit.
+document.addEventListener("dragenter", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
+  }
+});
+
+// 2. Prevent default on document dragover to permit drop anywhere.
+document.addEventListener("dragover", (e) => {
+  if (!draggedSessionUser) {
+    return;
+  }
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = "move";
+  }
+  // If we drag outside the list and we are not natively over the trash, clear drop indicators.
+  const target = e.target instanceof Element ? e.target : null;
+  if (target && !elements.sessionUserList.contains(target) && target !== elements.sessionUserTrash && !elements.sessionUserTrash.contains(target)) {
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+    clearSessionUserDropIndicators();
+  }
+});
+
+document.addEventListener("drop", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
+  }
+});
+
+// 3. Handle drag start for badge items.
 elements.sessionUserList.addEventListener("dragstart", (e) => {
   const badge = e.target.closest(".session-user-badge");
   if (!badge) return;
   draggedSessionUser = badge;
   e.dataTransfer.effectAllowed = "move";
   e.dataTransfer.setData("text/plain", badge.dataset.name);
+  if (typeof e.dataTransfer.setDragImage === "function") {
+    const rect = badge.getBoundingClientRect();
+    e.dataTransfer.setDragImage(
+      badge,
+      Math.max(0, e.clientX - rect.left),
+      Math.max(0, e.clientY - rect.top),
+    );
+  }
   setTimeout(() => {
     badge.classList.add("dragging");
     elements.sessionUsersPanel?.classList.add("is-dragging");
   }, 0);
 });
 
+// 4. Handle dragover for reordering.
 elements.sessionUserList.addEventListener("dragover", (e) => {
   e.preventDefault();
   if (!draggedSessionUser) return;
@@ -9613,14 +9689,11 @@ elements.sessionUserList.addEventListener("dragover", (e) => {
   }
 });
 
+// 5. Handle drag end.
 document.addEventListener("dragend", async (e) => {
   if (draggedSessionUser) {
-    draggedSessionUser.classList.remove("dragging");
-    elements.sessionUsersPanel?.classList.remove("is-dragging");
-    
-    const allBadges = elements.sessionUserList.querySelectorAll(".session-user-badge");
-    allBadges.forEach(el => el.classList.remove("drop-before", "drop-after"));
-    
+    finishSessionUserDragUi();
+
     if (!draggedSessionUser.dataset.deleted) {
       if (state.sessionUserDragTarget) {
         elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
@@ -9643,10 +9716,13 @@ document.addEventListener("dragend", async (e) => {
   }
 });
 
+// 6. Handle trash can events natively.
 if (elements.sessionUserTrash) {
   elements.sessionUserTrash.addEventListener("dragenter", (e) => {
     e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
     elements.sessionUserTrash.classList.add("drag-over");
+    clearSessionUserDropIndicators();
   });
 
   elements.sessionUserTrash.addEventListener("dragleave", (e) => {
@@ -9656,22 +9732,17 @@ if (elements.sessionUserTrash) {
   elements.sessionUserTrash.addEventListener("dragover", (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    // Clear indicators from list so they don't show when hovering trash
-    elements.sessionUserList.querySelectorAll(".session-user-badge").forEach(el => el.classList.remove("drop-before", "drop-after"));
+    elements.sessionUserTrash.classList.add("drag-over");
+    clearSessionUserDropIndicators();
   });
 
   elements.sessionUserTrash.addEventListener("drop", async (e) => {
     e.preventDefault();
-    elements.sessionUserTrash.classList.remove("drag-over");
-    elements.sessionUsersPanel?.classList.remove("is-dragging");
-    if (draggedSessionUser) {
-      const name = draggedSessionUser.dataset.name;
-      draggedSessionUser.dataset.deleted = "true";
-      draggedSessionUser.style.display = "none";
-      await removeSessionUser(name);
-    }
+    finishSessionUserDragUi();
+    await removeDraggedSessionUser();
   });
 }
+
 
 elements.queueNextButton.addEventListener("click", async (event) => {
   const point = anchorPointForEvent(event, elements.queueNextButton);
@@ -10184,12 +10255,28 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!button || button.dataset.action === "toggle-menu") {
     return;
   }
+  const action = button.dataset.action;
+  const point = anchorPointForEvent(event, button);
+  if (action === "history-remove") {
+    const key = button.dataset.key || "";
+    if (!key) {
+      return;
+    }
+    closeOpenMenus();
+    openConfirm({
+      type: "remove-history",
+      key,
+      message: t("history.removeConfirm"),
+      x: point.x,
+      y: point.y,
+    });
+    return;
+  }
   const url = button.dataset.url;
   if (!url) {
     return;
   }
-  const point = anchorPointForEvent(event, button);
-  await handleAddByUrl(url, button.dataset.action === "history-next" ? "next" : "tail", point);
+  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point);
   closeOpenMenus();
 });
 
@@ -10380,6 +10467,13 @@ elements.confirmOk.addEventListener("click", async () => {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
       setAppMessage(t("list.removedSong"));
+      render();
+      return;
+    }
+    if (intent.type === "remove-history" && intent.key) {
+      state.data = await apiPost("/api/history/remove", { key: intent.key });
+      closeConfirm();
+      setAppMessage(t("history.removed"));
       render();
       return;
     }

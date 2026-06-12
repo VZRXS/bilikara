@@ -12,6 +12,13 @@
   --on-accent: #ffffff;
   --green: #2b7b60;
   --red: #b14545;
+  --danger-btn-color: var(--red);
+  --danger-btn-bg: rgba(177, 69, 69, 0.08);
+  --danger-btn-hover-bg: rgba(177, 69, 69, 0.14);
+  --danger-icon-bg: rgba(177, 69, 69, 0.12);
+  --danger-btn-strong-bg: rgba(177, 69, 69, 0.9);
+  --toast-error-border: rgba(177, 69, 69, 0.22);
+  --status-failed-bg: rgba(177, 69, 69, 0.14);
   --shadow: 0 24px 60px rgba(88, 56, 30, 0.14);
   --action-button-width: 96px;
   --top-controls-width: 628px;
@@ -266,7 +273,7 @@ p {
 
 .app-toast.is-error {
   color: var(--red);
-  border-color: rgba(177, 69, 69, 0.22);
+  border-color: var(--toast-error-border, rgba(177, 69, 69, 0.22));
 }
 
 .backup-banner.hidden {
@@ -559,7 +566,7 @@ p {
 .control-label,
 .queue-current-tag,
 .host-id,
-.designer {
+.project-link {
   margin: 0;
 }
 
@@ -576,23 +583,34 @@ p {
 }
 
 .host-id,
-.designer {
+.project-link {
   margin-top: 10px;
   font-size: 13px;
   color: var(--accent-deep);
 }
 
-.designer {
+.project-link {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   user-select: none;
 }
 
-.designer.active {
+.project-link-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: currentColor;
+}
+
+.project-link.active {
   color: var(--accent);
   text-shadow: var(--accent-glow-shadow);
 }
 
-.designer:focus-visible {
+.project-link:focus-visible {
   outline: var(--accent-focus-outline);
   outline-offset: 3px;
   border-radius: 6px;
@@ -923,7 +941,7 @@ h2 {
 }
 
 .tool-status-indicator.is-failed {
-  background: rgba(177, 69, 69, 0.14);
+  background: var(--status-failed-bg, rgba(177, 69, 69, 0.14));
   color: var(--red);
 }
 
@@ -999,6 +1017,21 @@ h2 {
   gap: 14px;
 }
 
+.cache-panel-footer {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: center;
+}
+
+.cache-panel-version {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
 .cache-panel-side {
   min-width: 132px;
   text-align: right;
@@ -1053,7 +1086,7 @@ h2 {
 
 .bbdown-login-badge.is-logged:hover,
 .bbdown-login-badge.is-logged:focus-visible {
-  background: rgba(177, 69, 69, 0.14);
+  background: var(--status-failed-bg, rgba(177, 69, 69, 0.14));
   color: var(--red);
 }
 
@@ -1293,14 +1326,14 @@ h2 {
 
 .cache-data-reset-button {
   flex: 0 0 auto;
-  color: var(--red);
-  background: rgba(177, 69, 69, 0.08);
+  color: var(--danger-btn-color, var(--red));
+  background: var(--danger-btn-bg, rgba(177, 69, 69, 0.08));
 }
 
 .cache-data-reset-button:hover,
 .cache-data-reset-button:focus-visible {
-  background: rgba(177, 69, 69, 0.14);
-  color: var(--red);
+  background: var(--danger-btn-hover-bg, rgba(177, 69, 69, 0.14));
+  color: var(--danger-btn-color, var(--red));
 }
 
 .cache-panel-value {
@@ -2675,7 +2708,6 @@ select:disabled {
   margin-right: 6px;
   margin-left: -10px;
 }
-
 .session-user-trash {
   position: absolute;
   bottom: 0;
@@ -2686,8 +2718,8 @@ select:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(177, 69, 69, 0.12);
-  color: var(--red);
+  background: var(--danger-icon-bg, rgba(177, 69, 69, 0.12));
+  color: var(--danger-btn-color, var(--red));
   opacity: 0;
   pointer-events: none;
   transform: scale(0.8);
@@ -2881,12 +2913,11 @@ select:disabled {
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
-  contain: paint;
+  overflow: visible;
   isolation: isolate;
 }
 
 .queue-toolbar .toolbar-button {
-  contain: paint;
   backface-visibility: hidden;
   transform: translateZ(0);
   will-change: transform;
@@ -2986,8 +3017,8 @@ select:disabled {
 /* 状态：出错 (红色) */
 .song-progress-badge.failed::before,
 .queue-current-progress-badge.failed::before {
-  border-color: rgba(177, 69, 69, 0.8) !important;
-  box-shadow: 0 0 0 4px rgba(177, 69, 69, 0.1);
+  border-color: var(--danger-btn-color, var(--red)) !important;
+  box-shadow: 0 0 0 4px var(--danger-btn-bg, rgba(177, 69, 69, 0.1));
 }
 
 /* 下载中：使用真实缓存百分比填充圆环；总大小未知时保留一小段静态提示。 */
@@ -3022,7 +3053,7 @@ select:disabled {
 }
 
 .path-fancy {
-  stroke: #6d6258;
+  stroke: var(--muted);
   stroke-opacity: 0.68;
   stroke-dasharray: var(--badge-progress-value) 100;
   stroke-dashoffset: 0;
@@ -3220,11 +3251,11 @@ select:disabled {
   min-height: 32px;
   padding: 0 14px;
   border-radius: 999px;
-  background: rgba(208, 90, 63, 0.1);
+  background: var(--session-user-badge-bg, rgba(208, 90, 63, 0.1));
   font-size: 13px;
   font-weight: 500;
   line-height: 1;
-  color: var(--accent-deep);
+  color: var(--session-user-badge-color, var(--accent-deep));
   border: none;
 }
 
@@ -3263,6 +3294,7 @@ select:disabled {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding-top: 2px;
   padding-right: 4px;
 }
 
@@ -3501,8 +3533,8 @@ select:disabled {
 }
 
 .icon-button.danger {
-  color: var(--red);
-  background: rgba(177, 69, 69, 0.12);
+  color: var(--danger-btn-color, var(--red));
+  background: var(--danger-icon-bg, rgba(177, 69, 69, 0.12));
   flex-shrink: 0;
 }
 
@@ -3563,8 +3595,8 @@ select:disabled {
 }
 
 .song-actions .action-danger {
-  color: var(--red);
-  background: rgba(177, 69, 69, 0.12);
+  color: var(--danger-btn-color, var(--red));
+  background: var(--danger-icon-bg, rgba(177, 69, 69, 0.12));
 }
 
 .song-actions .action-danger svg {
@@ -4330,8 +4362,8 @@ select:disabled {
   border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
-  color: var(--accent-deep);
-  background: rgba(202, 91, 60, 0.1);
+  color: var(--session-user-badge-color, var(--accent-deep));
+  background: var(--session-user-badge-bg, rgba(202, 91, 60, 0.1));
   border: none;
   white-space: nowrap;
   width: fit-content;
@@ -4431,8 +4463,8 @@ select:disabled {
 }
 
 .menu-content .danger-button {
-  background: rgba(177, 69, 69, 0.12);
-  color: var(--accent-deep);
+  background: var(--danger-icon-bg, rgba(177, 69, 69, 0.12));
+  color: var(--danger-btn-color, var(--accent-deep));
 }
 
 .menu-content .icon-button {
@@ -5152,20 +5184,20 @@ select:disabled {
 
 .developer-mode #search-modal .search-result-cover .developer-delete-entry-button {
   right: 60px;
-  background: rgba(177, 69, 69, 0.9);
+  background: var(--danger-btn-strong-bg, rgba(177, 69, 69, 0.9));
 }
 
 .developer-mode #search-modal .search-result-cover .developer-reset-tag-button:hover {
-  background: rgba(177, 69, 69, 0.92);
+  background: var(--danger-btn-strong-bg, rgba(177, 69, 69, 0.92));
 }
 
 .developer-mode #search-modal .search-result-cover .developer-delete-entry-button:hover {
-  background: rgba(143, 49, 29, 0.92);
+  background: var(--danger-btn-strong-bg, rgba(143, 49, 29, 0.92));
 }
 
 .developer-tag-reset-card .danger-button {
-  background: rgba(177, 69, 69, 0.9);
-  box-shadow: 0 10px 22px rgba(177, 69, 69, 0.18);
+  background: var(--danger-btn-strong-bg, rgba(177, 69, 69, 0.9));
+  box-shadow: 0 10px 22px var(--danger-btn-bg, rgba(177, 69, 69, 0.18));
 }
 
 .developer-tag-reset-card {
@@ -6261,6 +6293,13 @@ select:disabled {
   --accent-deep: #b24733;
   --accent-soft: rgba(224, 108, 83, 0.15);
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --danger-btn-color: var(--red);
+  --danger-btn-bg: rgba(177, 69, 69, 0.14);
+  --danger-btn-hover-bg: rgba(177, 69, 69, 0.22);
+  --danger-icon-bg: rgba(177, 69, 69, 0.18);
+  --danger-btn-strong-bg: rgba(177, 69, 69, 0.92);
+  --toast-error-border: rgba(177, 69, 69, 0.26);
+  --status-failed-bg: rgba(177, 69, 69, 0.18);
 
   /* Component variables - dark values */
   --chip-bg: rgba(30, 26, 23, 0.6);
@@ -6543,6 +6582,13 @@ select:disabled {
   --focus-border-color: rgba(56, 189, 248, 0.5);
   --focus-ring-shadow: 0 0 0 4px rgba(56, 189, 248, 0.14);
   --accent-glow-shadow: 0 0 16px rgba(56, 189, 248, 0.32);
+  --danger-btn-color: var(--accent);
+  --danger-btn-bg: rgba(56, 189, 248, 0.12);
+  --danger-btn-hover-bg: rgba(56, 189, 248, 0.2);
+  --danger-icon-bg: rgba(56, 189, 248, 0.16);
+  --danger-btn-strong-bg: var(--accent-deep);
+  --toast-error-border: rgba(251, 113, 133, 0.24);
+  --status-failed-bg: rgba(251, 113, 133, 0.14);
   --accent-focus-outline: 2px solid rgba(56, 189, 248, 0.6);
   --player-panel-glow-bg: radial-gradient(circle, rgba(56, 189, 248, 0.2), transparent 70%);
   --player-frame-bg: linear-gradient(145deg, rgba(2, 6, 23, 0.98), rgba(8, 18, 32, 0.94));

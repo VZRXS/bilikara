@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import io
 import re
+import struct
 import zipfile
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ from .title_cleanup import clean_display_title
 PLAYLIST_IMAGE_PAGE_SIZE = 80
 PROJECT_URL = "https://github.com/VZRXS/bilikara"
 QR_QUIET_MODULES = 2
+
 
 _BV_RE = re.compile(r"(BV[0-9A-Za-z]+)", re.IGNORECASE)
 _AV_RE = re.compile(r"(av\d+)", re.IGNORECASE)
@@ -145,9 +148,9 @@ def _render_playlist_page(
     row_font = _load_font(font_module, 24)
     footer_font = _load_font(font_module, 22)
 
-    draw.text((84, 94), title, fill="#1F1A16", font=title_font)
+    _draw_text_with_fallback(draw, (84, 94), title, fill="#1F1A16", fonts=title_font)
     subtitle = f"共 {total_count} 首 · 第 {page_number}/{page_count} 页 · {time_range}"
-    draw.text((88, 188), subtitle, fill="#77695E", font=subtitle_font)
+    _draw_text_with_fallback(draw, (88, 188), subtitle, fill="#77695E", fonts=subtitle_font)
 
     table_x = 70
     table_w = width - table_x * 2
@@ -166,7 +169,7 @@ def _render_playlist_page(
     _rounded_rectangle(draw, (table_x + 18, table_y + 18, table_x + table_w - 18, table_y + header_h + 10), 24, "#F5E7DA")
     cursor_x = table_x + 24
     for label, col_w in columns:
-        draw.text((cursor_x, table_y + 30), label, fill="#8F3E2B", font=header_font)
+        _draw_text_with_fallback(draw, (cursor_x, table_y + 30), label, fill="#8F3E2B", fonts=header_font)
         cursor_x += col_w
 
     for row_index, entry in enumerate(entries):
@@ -190,7 +193,7 @@ def _render_playlist_page(
             lines = _wrap_text(draw, value, row_font, col_w - 18, max_lines=3)
             line_y = top + 17
             for line in lines:
-                draw.text((cursor_x, line_y), line, fill=fill, font=row_font)
+                _draw_text_with_fallback(draw, (cursor_x, line_y), line, fill=fill, fonts=row_font)
                 line_y += 29
             cursor_x += col_w
 
@@ -204,9 +207,9 @@ def _render_playlist_page(
 
     link_x = qr_x + 190
     text_offset_y = qr_quiet_px // 2
-    draw.text((link_x, qr_y + 58 - text_offset_y), "项目地址", fill="#8F3E2B", font=header_font)
-    draw.text((link_x, qr_y + 100 - text_offset_y), PROJECT_URL, fill="#8B7B6D", font=footer_font)
-    draw.text((link_x, qr_y + 132 - text_offset_y), f"版本 {APP_VERSION}", fill="#A99B8E", font=footer_font)
+    _draw_text_with_fallback(draw, (link_x, qr_y + 58 - text_offset_y), "项目地址", fill="#8F3E2B", fonts=header_font)
+    _draw_text_with_fallback(draw, (link_x, qr_y + 100 - text_offset_y), PROJECT_URL, fill="#8B7B6D", fonts=footer_font)
+    _draw_text_with_fallback(draw, (link_x, qr_y + 132 - text_offset_y), f"版本 {APP_VERSION}", fill="#A99B8E", fonts=footer_font)
     return image
 
 
@@ -300,24 +303,372 @@ def _find_system_font(*, bold: bool = False) -> str | None:
     return None
 
 
-def _load_font(font_module: Any, size: int, *, bold: bool = False) -> Any:
+def _font_supports_char(font: Any, char: str) -> bool | None:
+    if not char:
+        return True
+    if hasattr(font, "getindex"):
+        try:
+            return bool(font.getindex(char))
+        except Exception:
+            pass
+
+    codepoints = _font_codepoints(font)
+    if codepoints is not None:
+        return ord(char) in codepoints
+    return None
+
+
+def _select_font_for_char(fonts: list[Any], char: str) -> Any | None:
+    unknown_font = None
+    for font in fonts:
+        supported = _font_supports_char(font, char)
+        if supported is True:
+            return font
+        if supported is None and unknown_font is None:
+            unknown_font = font
+    return unknown_font or (fonts[0] if fonts else None)
+
+
+def _font_codepoints(font: Any) -> frozenset[int] | None:
+    font_path = getattr(font, "path", None)
+    if not font_path:
+        return None
+    try:
+        path = Path(font_path)
+        stat = path.stat()
+        face_index = int(getattr(font, "index", 0) or 0)
+        return _font_codepoints_for_path(str(path.resolve()), face_index, stat.st_mtime_ns, stat.st_size)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+@lru_cache(maxsize=64)
+def _font_codepoints_for_path(path: str, face_index: int, mtime_ns: int, size: int) -> frozenset[int] | None:
+    del mtime_ns, size
+    try:
+        data = Path(path).read_bytes()
+        codepoints = _parse_font_codepoints(data, face_index)
+    except (OSError, struct.error, ValueError):
+        return None
+    return frozenset(codepoints) if codepoints is not None else None
+
+
+def _parse_font_codepoints(data: bytes, face_index: int) -> set[int] | None:
+    sfnt_offset = _sfnt_offset(data, face_index)
+    if sfnt_offset is None:
+        return None
+    cmap_table = _font_table(data, sfnt_offset, b"cmap")
+    if cmap_table is None:
+        return None
+    cmap_offset, cmap_length = cmap_table
+    return _parse_cmap_table(data, cmap_offset, cmap_length)
+
+
+def _sfnt_offset(data: bytes, face_index: int) -> int | None:
+    if len(data) < 12:
+        return None
+    if data[:4] != b"ttcf":
+        return 0
+    font_count = _u32(data, 8)
+    if face_index < 0 or face_index >= font_count:
+        return None
+    offset = _u32(data, 12 + face_index * 4)
+    return offset if 0 <= offset <= len(data) - 12 else None
+
+
+def _font_table(data: bytes, sfnt_offset: int, tag: bytes) -> tuple[int, int] | None:
+    table_count = _u16(data, sfnt_offset + 4)
+    records_offset = sfnt_offset + 12
+    for index in range(table_count):
+        record_offset = records_offset + index * 16
+        if record_offset + 16 > len(data):
+            return None
+        if data[record_offset : record_offset + 4] != tag:
+            continue
+        table_offset = _u32(data, record_offset + 8)
+        table_length = _u32(data, record_offset + 12)
+        if table_offset < 0 or table_length < 0 or table_offset + table_length > len(data):
+            return None
+        return table_offset, table_length
+    return None
+
+
+def _parse_cmap_table(data: bytes, cmap_offset: int, cmap_length: int) -> set[int]:
+    cmap_end = min(len(data), cmap_offset + cmap_length)
+    if cmap_offset + 4 > cmap_end:
+        return set()
+    record_count = _u16(data, cmap_offset + 2)
+    unicode_subtables: list[int] = []
+    fallback_subtables: list[int] = []
+    for index in range(record_count):
+        record_offset = cmap_offset + 4 + index * 8
+        if record_offset + 8 > cmap_end:
+            break
+        platform_id = _u16(data, record_offset)
+        encoding_id = _u16(data, record_offset + 2)
+        subtable_offset = cmap_offset + _u32(data, record_offset + 4)
+        if subtable_offset < cmap_offset or subtable_offset + 2 > cmap_end:
+            continue
+        fallback_subtables.append(subtable_offset)
+        if platform_id == 0 or (platform_id == 3 and encoding_id in {0, 1, 10}):
+            unicode_subtables.append(subtable_offset)
+
+    codepoints: set[int] = set()
+    seen_subtables: set[int] = set()
+    for subtable_offset in unicode_subtables or fallback_subtables:
+        if subtable_offset in seen_subtables:
+            continue
+        seen_subtables.add(subtable_offset)
+        codepoints.update(_parse_cmap_subtable(data, subtable_offset, cmap_end))
+    return codepoints
+
+
+def _parse_cmap_subtable(data: bytes, offset: int, cmap_end: int) -> set[int]:
+    format_id = _u16(data, offset)
+    if format_id == 0:
+        return _parse_cmap_format_0(data, offset, cmap_end)
+    if format_id == 4:
+        return _parse_cmap_format_4(data, offset, cmap_end)
+    if format_id == 6:
+        return _parse_cmap_format_6(data, offset, cmap_end)
+    if format_id in {12, 13}:
+        return _parse_cmap_format_12_or_13(data, offset, cmap_end)
+    return set()
+
+
+def _parse_cmap_format_0(data: bytes, offset: int, cmap_end: int) -> set[int]:
+    table_length = min(_u16(data, offset + 2), cmap_end - offset)
+    glyphs_offset = offset + 6
+    glyphs_end = min(offset + table_length, glyphs_offset + 256)
+    return {index for index, glyph in enumerate(data[glyphs_offset:glyphs_end]) if glyph}
+
+
+def _parse_cmap_format_4(data: bytes, offset: int, cmap_end: int) -> set[int]:
+    table_length = min(_u16(data, offset + 2), cmap_end - offset)
+    table_end = offset + table_length
+    seg_count = _u16(data, offset + 6) // 2
+    if seg_count <= 0:
+        return set()
+
+    end_codes_offset = offset + 14
+    start_codes_offset = end_codes_offset + seg_count * 2 + 2
+    id_deltas_offset = start_codes_offset + seg_count * 2
+    id_range_offsets_offset = id_deltas_offset + seg_count * 2
+    if id_range_offsets_offset + seg_count * 2 > table_end:
+        return set()
+
+    codepoints: set[int] = set()
+    for index in range(seg_count):
+        end_code = _u16(data, end_codes_offset + index * 2)
+        start_code = _u16(data, start_codes_offset + index * 2)
+        if start_code == 0xFFFF and end_code == 0xFFFF:
+            continue
+        if end_code < start_code:
+            continue
+        delta = _u16(data, id_deltas_offset + index * 2)
+        range_offset_position = id_range_offsets_offset + index * 2
+        range_offset = _u16(data, range_offset_position)
+        for codepoint in range(start_code, end_code + 1):
+            if codepoint > 0x10FFFF:
+                continue
+            if range_offset == 0:
+                glyph_id = (codepoint + delta) & 0xFFFF
+            else:
+                glyph_offset = range_offset_position + range_offset + (codepoint - start_code) * 2
+                if glyph_offset + 2 > table_end:
+                    continue
+                glyph_id = _u16(data, glyph_offset)
+                if glyph_id:
+                    glyph_id = (glyph_id + delta) & 0xFFFF
+            if glyph_id:
+                codepoints.add(codepoint)
+    return codepoints
+
+
+def _parse_cmap_format_6(data: bytes, offset: int, cmap_end: int) -> set[int]:
+    table_length = min(_u16(data, offset + 2), cmap_end - offset)
+    table_end = offset + table_length
+    first_code = _u16(data, offset + 6)
+    entry_count = _u16(data, offset + 8)
+    glyphs_offset = offset + 10
+    codepoints: set[int] = set()
+    for index in range(entry_count):
+        glyph_offset = glyphs_offset + index * 2
+        if glyph_offset + 2 > table_end:
+            break
+        if _u16(data, glyph_offset):
+            codepoints.add(first_code + index)
+    return codepoints
+
+
+def _parse_cmap_format_12_or_13(data: bytes, offset: int, cmap_end: int) -> set[int]:
+    table_length = min(_u32(data, offset + 4), cmap_end - offset)
+    table_end = offset + table_length
+    group_count = _u32(data, offset + 12)
+    groups_offset = offset + 16
+    codepoints: set[int] = set()
+    for index in range(group_count):
+        group_offset = groups_offset + index * 12
+        if group_offset + 12 > table_end:
+            break
+        start_code = _u32(data, group_offset)
+        end_code = _u32(data, group_offset + 4)
+        glyph_id = _u32(data, group_offset + 8)
+        if not glyph_id or end_code < start_code:
+            continue
+        _add_codepoint_range(codepoints, start_code, end_code)
+    return codepoints
+
+
+def _add_codepoint_range(codepoints: set[int], start_code: int, end_code: int) -> None:
+    start = max(0, start_code)
+    end = min(0x10FFFF, end_code)
+    if end >= start:
+        codepoints.update(range(start, end + 1))
+
+
+def _u16(data: bytes, offset: int) -> int:
+    if offset < 0 or offset + 2 > len(data):
+        raise ValueError("font table is truncated")
+    return struct.unpack_from(">H", data, offset)[0]
+
+
+def _u32(data: bytes, offset: int) -> int:
+    if offset < 0 or offset + 4 > len(data):
+        raise ValueError("font table is truncated")
+    return struct.unpack_from(">I", data, offset)[0]
+
+
+def _measure_text_run(draw: Any, text: str, font: Any | None) -> float:
+    if font is not None and hasattr(font, "getlength"):
+        try:
+            return font.getlength(text)
+        except Exception:
+            pass
+    return draw.textlength(text, font=font) if font is not None else draw.textlength(text)
+
+
+def _draw_text_run(draw: Any, xy: tuple[float, int], text: str, fill: str, font: Any | None, **kwargs) -> None:
+    draw_kwargs = dict(kwargs)
+    draw_kwargs.setdefault("embedded_color", True)
+    try:
+        if font is None:
+            draw.text(xy, text, fill=fill, **draw_kwargs)
+        else:
+            draw.text(xy, text, fill=fill, font=font, **draw_kwargs)
+    except TypeError:
+        draw_kwargs.pop("embedded_color", None)
+        if font is None:
+            draw.text(xy, text, fill=fill, **draw_kwargs)
+        else:
+            draw.text(xy, text, fill=fill, font=font, **draw_kwargs)
+
+
+def _measure_text_with_fallback(draw: Any, text: str, fonts: list[Any]) -> float:
+    if not fonts:
+        return draw.textlength(text)
+    if len(fonts) == 1:
+        return draw.textlength(text, font=fonts[0])
+
+    total_length = 0.0
+    current_run: list[str] = []
+    current_font = None
+
+    for char in text:
+        selected_font = _select_font_for_char(fonts, char)
+        if selected_font != current_font:
+            if current_run:
+                total_length += _measure_text_run(draw, "".join(current_run), current_font)
+            current_run = [char]
+            current_font = selected_font
+        else:
+            current_run.append(char)
+
+    if current_run:
+        total_length += _measure_text_run(draw, "".join(current_run), current_font)
+
+    return total_length
+
+
+def _draw_text_with_fallback(draw: Any, xy: tuple[int, int], text: str, fill: str, fonts: list[Any], **kwargs) -> None:
+    x, y = xy
+    if not fonts:
+        _draw_text_run(draw, (x, y), text, fill, None, **kwargs)
+        return
+    if len(fonts) == 1:
+        _draw_text_run(draw, (x, y), text, fill, fonts[0], **kwargs)
+        return
+
+    runs: list[tuple[str, Any | None]] = []
+    current_run: list[str] = []
+    current_font = None
+
+    for char in text:
+        selected_font = _select_font_for_char(fonts, char)
+        if selected_font != current_font:
+            if current_run:
+                runs.append(("".join(current_run), current_font))
+            current_run = [char]
+            current_font = selected_font
+        else:
+            current_run.append(char)
+
+    if current_run:
+        runs.append(("".join(current_run), current_font))
+
+    for run_text, font in runs:
+        _draw_text_run(draw, (x, y), run_text, fill, font, **kwargs)
+        x += _measure_text_run(draw, run_text, font)
+
+
+def _load_font(font_module: Any, size: int, *, bold: bool = False) -> list[Any]:
     candidates = [
         "static/fonts/SourceHanSans-VF.ttf",
+        # Windows Fonts
         "C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/msjhbd.ttc" if bold else "C:/Windows/Fonts/msjh.ttc",
         "C:/Windows/Fonts/Dengb.ttf" if bold else "C:/Windows/Fonts/Deng.ttf",
         "C:/Windows/Fonts/simhei.ttf",
         "C:/Windows/Fonts/simsun.ttc",
+        ("C:/Windows/Fonts/cambria.ttc", 1),
+        "C:/Windows/Fonts/cambria.ttc",
+        "C:/Windows/Fonts/seguisym.ttf",
+        "C:/Windows/Fonts/seguiemj.ttf",
         "C:/Windows/Fonts/ARIALUNI.TTF",
+        # macOS Fonts
         "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Supplemental/STIXGeneral.otf",
+        "/System/Library/Fonts/Supplemental/STIXGeneral.ttf",
+        "/System/Library/Fonts/Supplemental/STIXTwoMath-Regular.otf",
+        "/System/Library/Fonts/Supplemental/STIX Two Math.otf",
+        "/Library/Fonts/STIXGeneral.otf",
+        "/Library/Fonts/STIXGeneral.ttf",
+        "/Library/Fonts/STIXTwoMath-Regular.otf",
+        "/Library/Fonts/STIX Two Math.otf",
+        "/System/Library/Fonts/Apple Symbols.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+        "/System/Library/Fonts/Apple Color Emoji.ttf",
+        "/System/Library/Fonts/AppleColorEmoji.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Supplemental/Songti.ttc",
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/Library/Fonts/Arial Unicode.ttf",
+        # Linux Fonts
+        "/usr/share/fonts/truetype/dejavu/DejaVuMathTeXGyre.ttf",
+        "/usr/share/fonts/opentype/stix/STIXGeneral.otf",
+        "/usr/share/fonts/opentype/stix-word/STIXGeneral.otf",
+        "/usr/share/fonts/opentype/stix/STIXTwoMath-Regular.otf",
+        "/usr/share/fonts/truetype/stix/STIXGeneral.ttf",
+        "/usr/share/fonts/truetype/stix/STIXTwoMath-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansMath-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc" if bold else "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/truetype/emoji/NotoColorEmoji.ttf",
         "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Bold.otf" if bold else "/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
@@ -327,25 +678,43 @@ def _load_font(font_module: Any, size: int, *, bold: bool = False) -> Any:
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         _find_system_font(bold=bold),
     ]
+    loaded_fonts = []
+    seen_paths = set()
     for candidate in candidates:
+        if not candidate:
+            continue
+        if isinstance(candidate, tuple):
+            candidate_path = candidate[0]
+            font_index = int(candidate[1])
+        else:
+            candidate_path = candidate
+            font_index = 0
         try:
-            if candidate:
-                font = font_module.truetype(candidate, size)
-                # 针对思源黑体 VF 等可变字体，主动设置字重轴
-                # 默认值通常太细 (250)，需要调整到 Regular (400-500) 或 Bold (700+)
-                if hasattr(font, "set_variation_by_axes"):
-                    try:
-                        axes = font.get_variation_axes()
-                        if axes and any(ax.get("name") in (b"Weight", b"wght") for ax in axes):
-                            weight = 800 if bold else 450
-                            font.set_variation_by_axes([weight])
-                    except Exception:
-                        pass
-                return font
+            resolved_path = str(Path(candidate_path).resolve())
+        except OSError:
+            resolved_path = str(candidate_path)
+        seen_key = (resolved_path, font_index)
+        if seen_key in seen_paths:
+            continue
+
+        try:
+            font = font_module.truetype(candidate_path, size, index=font_index)
+            if hasattr(font, "set_variation_by_axes"):
+                try:
+                    axes = font.get_variation_axes()
+                    if axes and any(ax.get("name") in (b"Weight", b"wght") for ax in axes):
+                        weight = 800 if bold else 450
+                        font.set_variation_by_axes([weight])
+                except Exception:
+                    pass
+            loaded_fonts.append(font)
+            seen_paths.add(seen_key)
         except OSError:
             continue
-    return font_module.load_default()
 
+    if not loaded_fonts:
+        loaded_fonts.append(font_module.load_default())
+    return loaded_fonts
 
 
 def _calculate_time_range(items: list[dict[str, Any]]) -> str:
@@ -359,19 +728,19 @@ def _calculate_time_range(items: list[dict[str, Any]]) -> str:
     return f"{start_dt.strftime('%Y-%m-%d %H:%M')} ~ {end_dt.strftime('%Y-%m-%d %H:%M')}"
 
 
-def _fit_text(draw: Any, text: str, font: Any, max_width: int) -> str:
+def _fit_text(draw: Any, text: str, font: list[Any], max_width: int) -> str:
     value = _text(text)
     if not value:
         return ""
-    if draw.textlength(value, font=font) <= max_width:
+    if _measure_text_with_fallback(draw, value, font) <= max_width:
         return value
     ellipsis = "..."
-    while value and draw.textlength(value + ellipsis, font=font) > max_width:
+    while value and _measure_text_with_fallback(draw, value + ellipsis, font) > max_width:
         value = value[:-1]
     return value + ellipsis if value else ellipsis
 
 
-def _wrap_text(draw: Any, text: str, font: Any, max_width: int, *, max_lines: int) -> list[str]:
+def _wrap_text(draw: Any, text: str, font: list[Any], max_width: int, *, max_lines: int) -> list[str]:
     value = _text(text)
     if not value:
         return [""]
@@ -380,7 +749,7 @@ def _wrap_text(draw: Any, text: str, font: Any, max_width: int, *, max_lines: in
     current = ""
     for char in value:
         candidate = current + char
-        if current and draw.textlength(candidate, font=font) > max_width:
+        if current and _measure_text_with_fallback(draw, candidate, font) > max_width:
             lines.append(current)
             current = char
             if len(lines) >= max_lines:
@@ -398,7 +767,7 @@ def _wrap_text(draw: Any, text: str, font: Any, max_width: int, *, max_lines: in
     if len(consumed) < len(value) and lines:
         ellipsis = "..."
         last_line = lines[-1].rstrip()
-        while last_line and draw.textlength(last_line + ellipsis, font=font) > max_width:
+        while last_line and _measure_text_with_fallback(draw, last_line + ellipsis, font) > max_width:
             last_line = last_line[:-1]
         lines[-1] = f"{last_line}{ellipsis}" if last_line else ellipsis
 

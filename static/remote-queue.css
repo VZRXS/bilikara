@@ -14,7 +14,13 @@
   --queue-accent-glow-shadow: rgba(202, 91, 60, 0.16);
   --queue-drop-border: rgba(202, 91, 60, 0.28);
   --queue-drop-shadow: rgba(202, 91, 60, 0.1);
+  --queue-order-shadow: 0 8px 18px rgba(88, 56, 30, 0.05);
+  --queue-ready-border-color: rgba(43, 123, 96, 0.4);
+  --queue-ready-shadow: 0 0 0 3px rgba(43, 123, 96, 0.07);
+  --queue-drop-elevation-shadow: 0 14px 30px rgba(79, 56, 39, 0.1);
+  --queue-menu-shadow: 0 8px 24px rgba(79, 56, 39, 0.15);
 }
+
 
 .queue-item {
   position: relative;
@@ -58,7 +64,7 @@
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 8px 18px rgba(88, 56, 30, 0.05);
+  box-shadow: var(--queue-order-shadow);
 }
 
 .queue-main {
@@ -171,11 +177,11 @@
 }
 
 .queue-item.ready .queue-order {
-  border-color: rgba(43, 123, 96, 0.4);
+  border-color: var(--queue-ready-border-color);
   color: var(--green);
   box-shadow:
-    0 8px 18px rgba(88, 56, 30, 0.05),
-    0 0 0 3px rgba(43, 123, 96, 0.07);
+    var(--queue-order-shadow),
+    var(--queue-ready-shadow);
 }
 
 .queue-item.ready .queue-state {
@@ -243,13 +249,13 @@
 
 .queue-actions .danger-button,
 .menu-content .danger-button {
-  color: var(--accent-deep);
-  background: rgba(177, 69, 69, 0.12);
+  color: var(--danger-btn-color, var(--accent-deep));
+  background: var(--danger-btn-bg);
 }
 
 .queue-actions .danger-button:hover,
 .queue-actions .danger-button:focus-visible {
-  background: rgba(177, 69, 69, 0.18);
+  background: var(--danger-btn-hover-bg);
 }
 
 .queue-list.drag-active,
@@ -267,7 +273,7 @@
   border-color: var(--queue-drop-border);
   box-shadow:
     0 0 0 2px var(--queue-drop-shadow),
-    0 14px 30px rgba(79, 56, 39, 0.1);
+    var(--queue-drop-elevation-shadow);
   background: var(--queue-drop-bg);
 }
 
@@ -406,7 +412,7 @@
   border: 1px solid var(--line);
   border-radius: 22px;
   padding: 6px;
-  box-shadow: 0 8px 24px rgba(79, 56, 39, 0.15);
+  box-shadow: var(--queue-menu-shadow);
   backdrop-filter: blur(12px);
   z-index: 100;
   display: flex;
@@ -450,7 +456,13 @@
   --queue-accent-glow-shadow: rgba(224, 108, 83, 0.16);
   --queue-drop-border: rgba(224, 108, 83, 0.28);
   --queue-drop-shadow: rgba(224, 108, 83, 0.1);
+  --queue-order-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  --queue-ready-border-color: rgba(45, 212, 191, 0.36);
+  --queue-ready-shadow: 0 0 0 3px rgba(45, 212, 191, 0.1);
+  --queue-drop-elevation-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+  --queue-menu-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
+
 
 /* --- BLUE BLACK THEME OVERRIDES --- */
 :root[data-theme="blue"] {
@@ -469,5 +481,11 @@
   --queue-accent-glow-shadow: rgba(56, 189, 248, 0.16);
   --queue-drop-border: rgba(56, 189, 248, 0.28);
   --queue-drop-shadow: rgba(56, 189, 248, 0.14);
+  --queue-order-shadow: 0 8px 18px rgba(2, 8, 23, 0.28);
+  --queue-ready-border-color: rgba(52, 211, 153, 0.42);
+  --queue-ready-shadow: 0 0 0 3px rgba(52, 211, 153, 0.1);
+  --queue-drop-elevation-shadow: 0 14px 30px rgba(2, 8, 23, 0.34);
+  --queue-menu-shadow: 0 10px 30px rgba(2, 8, 23, 0.42);
 }
+
 

@@ -19,7 +19,8 @@
         "resizable": true,
         "title": "bilikara",
         "width": 1024,
-        "visible": false
+        "visible": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {
@@ -38,6 +39,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "VZRXS"
   }
 }

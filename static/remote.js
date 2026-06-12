@@ -314,6 +314,7 @@ const elements = {
   currentMeta: document.getElementById("current-meta"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
+  floatingPlayerControlPanel: document.getElementById("floating-player-control-panel"),
   playerControlHint: document.getElementById("player-control-hint"),
   remoteAvSyncPanel: document.getElementById("remote-av-sync-panel"),
   remoteAvOffsetInput: document.getElementById("remote-av-offset-input"),
@@ -5475,6 +5476,9 @@ function renderPlayerControls(currentItem, playbackMode) {
   if (!currentItem) {
     state.playerControlsRenderSignature = "__empty__";
     elements.playerControlPanel.classList.add("hidden");
+    if (elements.floatingPlayerControlPanel) {
+      elements.floatingPlayerControlPanel.classList.add("hidden");
+    }
     elements.playerControlHint.textContent = "";
     return;
   }
@@ -5496,23 +5500,38 @@ function renderPlayerControls(currentItem, playbackMode) {
   state.playerControlsRenderSignature = controlSignature;
 
   const toggleButton = elements.playerControlPanel.querySelector('[data-control-action="toggle-play"]');
+  const floatingToggleButton = elements.floatingPlayerControlPanel?.querySelector('[data-control-action="toggle-play"]');
+
   elements.playerControlPanel.classList.remove("hidden");
-
-  elements.playerControlPanel.querySelectorAll("button[data-control-action]").forEach((button) => {
-    const action = button.dataset.controlAction || "";
-    const isPending = action === state.playerControlPendingAction;
-    const disabled = action === "next-track"
-      ? Boolean(state.playerControlPendingAction)
-      : !canControl || Boolean(state.playerControlPendingAction);
-    button.disabled = disabled;
-    button.classList.toggle("is-pending", isPending);
-  });
-
-  if (toggleButton) {
-    toggleButton.textContent = isPaused ? t("remote.play") : t("remote.pause");
-    toggleButton.classList.toggle("is-paused", isPaused);
-    toggleButton.classList.toggle("is-playing", !isPaused);
+  if (elements.floatingPlayerControlPanel) {
+    elements.floatingPlayerControlPanel.classList.remove("hidden");
   }
+
+  const updateButtons = (panel) => {
+    if (!panel) return;
+    panel.querySelectorAll("button[data-control-action]").forEach((button) => {
+      const action = button.dataset.controlAction || "";
+      const isPending = action === state.playerControlPendingAction;
+      const disabled = action === "next-track"
+        ? Boolean(state.playerControlPendingAction)
+        : !canControl || Boolean(state.playerControlPendingAction);
+      button.disabled = disabled;
+      button.classList.toggle("is-pending", isPending);
+    });
+  };
+
+  updateButtons(elements.playerControlPanel);
+  updateButtons(elements.floatingPlayerControlPanel);
+
+  const updateToggleState = (btn) => {
+    if (!btn) return;
+    btn.textContent = isPaused ? t("remote.play") : t("remote.pause");
+    btn.classList.toggle("is-paused", isPaused);
+    btn.classList.toggle("is-playing", !isPaused);
+  };
+
+  updateToggleState(toggleButton);
+  updateToggleState(floatingToggleButton);
 
   if (playbackMode !== "local") {
     elements.playerControlHint.textContent = t("remote.controlUnsupported");
@@ -7178,6 +7197,22 @@ elements.playerControlPanel.addEventListener("click", async (event) => {
   const deltaSeconds = Number(button.dataset.delta || "0");
   await sendPlayerControl(action, deltaSeconds);
 });
+
+if (elements.floatingPlayerControlPanel) {
+  elements.floatingPlayerControlPanel.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-control-action]");
+    if (!button) {
+      return;
+    }
+    const action = button.dataset.controlAction || "";
+    if (action === "next-track") {
+      await sendPlayerNext();
+      return;
+    }
+    const deltaSeconds = Number(button.dataset.delta || "0");
+    await sendPlayerControl(action, deltaSeconds);
+  });
+}
 
 elements.queueViewButton.addEventListener("click", () => {
   state.listView = "queue";

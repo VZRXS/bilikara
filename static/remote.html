@@ -690,6 +690,14 @@
           <button type="button" id="floating-control-close" class="ghost-button floating-control-close" aria-label="关闭" data-i18n-aria-label="common.close">×</button>
         </div>
         <div class="floating-control-body">
+          <div id="floating-player-control-panel" class="player-control-panel hidden">
+            <div class="player-control-row">
+              <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="-15" data-i18n="remote.seekBack15">后退 15 秒</button>
+              <button type="button" class="primary-button" data-control-action="toggle-play" data-i18n="remote.playPause">播放 / 暂停</button>
+              <button type="button" class="ghost-button" data-control-action="seek-relative" data-delta="15" data-i18n="remote.seekForward15">快进 15 秒</button>
+              <button type="button" class="secondary-button" data-control-action="next-track" data-i18n="player.nextSong">切歌</button>
+            </div>
+          </div>
           <section id="remote-av-sync-panel" class="remote-setting-panel">
             <div class="remote-setting-copy">
               <div class="remote-setting-header">
