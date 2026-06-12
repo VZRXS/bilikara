@@ -156,6 +156,32 @@ class PlaylistStore:
             self.history = []
             self._touch(persist_backup=False)
 
+    def remove_history_entry(self, key: str) -> bool:
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            return False
+        with self.lock:
+            history_count = len(self.history)
+            session_history_count = len(self.session_history)
+            session_played_count = len(self.session_played)
+            self.history = [
+                entry for entry in self.history if entry.key != normalized_key
+            ]
+            self.session_history = [
+                entry for entry in self.session_history if entry.key != normalized_key
+            ]
+            self.session_played = [
+                entry for entry in self.session_played if entry.key != normalized_key
+            ]
+            changed = (
+                len(self.history) != history_count
+                or len(self.session_history) != session_history_count
+                or len(self.session_played) != session_played_count
+            )
+            if changed:
+                self._touch(persist_backup=True)
+            return changed
+
     def advance_to_next(self) -> bool:
         with self.lock:
             if not self.current_item and not self.playlist:

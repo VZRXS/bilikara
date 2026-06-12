@@ -563,6 +563,24 @@ class PlaylistStoreTest(unittest.TestCase):
         )
         self.assertEqual(restored_store.history, [])
 
+    def test_remove_history_entry_removes_history_and_session_records(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        self.add_item("b", requester_name="B", song_key="song-b")
+        self.mark_started("a")
+        self.store.advance_to_next()
+        key = self.store.history[0].key
+        self.assertEqual([entry.item_id for entry in self.store.session_played], ["a", "b"])
+        self.assertEqual(len(self.store.session_history), 1)
+
+        self.assertTrue(self.store.remove_history_entry(key))
+
+        self.assertEqual(self.store.history, [])
+        self.assertEqual(self.store.session_history, [])
+        self.assertEqual([entry.item_id for entry in self.store.session_played], ["b"])
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertEqual([entry["item_id"] for entry in payload["items"]], ["b"])
+        self.assertFalse(self.store.remove_history_entry(key))
+
     def test_restore_from_backup(self):
         item = self.make_item("a")
         item.cache_status = "ready"

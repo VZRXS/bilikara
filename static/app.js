@@ -4600,6 +4600,7 @@ function renderSessionUsers(sessionUsers) {
       <span class="session-user-order-number">${index + 1}</span>
       <span class="session-user-name">${escapeHtml(userName)}</span>
     `;
+
     elements.sessionUserList.appendChild(item);
   });
 }
@@ -4826,7 +4827,8 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   renderUpdatePreviewControl();
   if (elements.cachePanelVersion) {
     const version = state.data?.app?.version || "";
-    const versionText = version ? `bilikara v${version}` : "bilikara";
+    const cleanVersion = version.startsWith("v") ? version : `v${version}`;
+    const versionText = version ? `bilikara ${cleanVersion}` : "bilikara";
     if (elements.cachePanelVersion.textContent !== versionText) {
       elements.cachePanelVersion.textContent = versionText;
     }
@@ -5338,10 +5340,7 @@ function hostCacheDetailTextForItem(item) {
 }
 
 function queueCurrentCacheDetailForItem(item, currentState) {
-  if (!item || currentState === "playing") {
-    return "";
-  }
-  return hostCacheDetailTextForItem(item);
+  return "";
 }
 
 function audioVariantsForItem(item) {
@@ -7727,6 +7726,7 @@ function renderHistory(history) {
     node.querySelector(".history-count").textContent = t("history.requestCount", { count: entry.request_count });
     node.querySelectorAll("button[data-action]").forEach((button) => {
       button.dataset.url = entry.resolved_url || entry.original_url;
+      button.dataset.key = entry.key || "";
     });
     elements.historyList.appendChild(node);
   });
@@ -9574,6 +9574,13 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
 });
 
 let draggedSessionUser = null;
+let lastDragX = 0;
+let lastDragY = 0;
+
+document.addEventListener("dragover", (e) => {
+  lastDragX = e.clientX;
+  lastDragY = e.clientY;
+});
 
 elements.sessionUserList.addEventListener("dragstart", (e) => {
   const badge = e.target.closest(".session-user-badge");
@@ -9625,11 +9632,34 @@ document.addEventListener("dragend", async (e) => {
   if (draggedSessionUser) {
     draggedSessionUser.classList.remove("dragging");
     elements.sessionUsersPanel?.classList.remove("is-dragging");
+    elements.sessionUserTrash?.classList.remove("drag-over");
     
     const allBadges = elements.sessionUserList.querySelectorAll(".session-user-badge");
     allBadges.forEach(el => el.classList.remove("drop-before", "drop-after"));
     
-    if (!draggedSessionUser.dataset.deleted) {
+    // Check if released over trash coordinates as fallback for Tauri/Webviews
+    let droppedInTrash = false;
+    if (elements.sessionUserTrash) {
+      const rect = elements.sessionUserTrash.getBoundingClientRect();
+      const x = e.clientX || lastDragX;
+      const y = e.clientY || lastDragY;
+      const margin = 32; // match the ::before hit area extension in styles.css
+      if (
+        x >= rect.left - margin &&
+        x <= rect.right + margin &&
+        y >= rect.top - margin &&
+        y <= rect.bottom + margin
+      ) {
+        droppedInTrash = true;
+      }
+    }
+
+    if (droppedInTrash) {
+      const name = draggedSessionUser.dataset.name;
+      draggedSessionUser.dataset.deleted = "true";
+      draggedSessionUser.style.display = "none";
+      await removeSessionUser(name);
+    } else if (!draggedSessionUser.dataset.deleted) {
       if (state.sessionUserDragTarget) {
         elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
       } else if (state.sessionUserDragAfter) {
@@ -10192,12 +10222,28 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!button || button.dataset.action === "toggle-menu") {
     return;
   }
+  const action = button.dataset.action;
+  const point = anchorPointForEvent(event, button);
+  if (action === "history-remove") {
+    const key = button.dataset.key || "";
+    if (!key) {
+      return;
+    }
+    closeOpenMenus();
+    openConfirm({
+      type: "remove-history",
+      key,
+      message: t("history.removeConfirm"),
+      x: point.x,
+      y: point.y,
+    });
+    return;
+  }
   const url = button.dataset.url;
   if (!url) {
     return;
   }
-  const point = anchorPointForEvent(event, button);
-  await handleAddByUrl(url, button.dataset.action === "history-next" ? "next" : "tail", point);
+  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point);
   closeOpenMenus();
 });
 
@@ -10388,6 +10434,13 @@ elements.confirmOk.addEventListener("click", async () => {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
       setAppMessage(t("list.removedSong"));
+      render();
+      return;
+    }
+    if (intent.type === "remove-history" && intent.key) {
+      state.data = await apiPost("/api/history/remove", { key: intent.key });
+      closeConfirm();
+      setAppMessage(t("history.removed"));
       render();
       return;
     }

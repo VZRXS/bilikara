@@ -238,6 +238,9 @@ class AppContext:
     def clear_history(self) -> None:
         self.store.clear_history()
 
+    def remove_history_entry(self, key: str) -> None:
+        self.store.remove_history_entry(key)
+
     def history_snapshot(self) -> list[dict]:
         history = self.store.snapshot().get("history") or []
         return list(history) if isinstance(history, list) else []
@@ -915,6 +918,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/history/clear":
                 CONTEXT.clear_history()
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/history/remove":
+                key = str(body.get("key") or "").strip()
+                if not key:
+                    raise ValueError("missing key")
+                CONTEXT.remove_history_entry(key)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/session-users/add":
