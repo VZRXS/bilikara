@@ -21,6 +21,41 @@ const localAdvanceOverlayMaxRows = 5;
 const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
+const developerModeRequesterName = "VZRXS";
+const projectUrl = "https://github.com/VZRXS/bilikara";
+const developerTagResetFieldKeys = [
+  "tag_1",
+  "tag_2",
+  "tag_3",
+  "tag_4",
+  "tag_5",
+  "preserved_2",
+  "preserved_3",
+  "preserved_4",
+  "preserved_5",
+];
+const developerDeletePreferredFieldKeys = [
+  "bvid",
+  "mid",
+  "title",
+  "url",
+  "owner_name",
+  "owner_url",
+  "cover_url",
+  "rank",
+  "played_count",
+  "tag_1",
+  "tag_2",
+  "tag_3",
+  "tag_4",
+  "tag_5",
+  "tag_status",
+  "preserved_1",
+  "preserved_2",
+  "preserved_3",
+  "preserved_4",
+  "preserved_5",
+];
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
@@ -28,6 +63,7 @@ const storageKeys = {
   layoutMode: "bilikara.layout.mode",
   language: "bilikara.ui.language",
   updatePreview: "bilikara.update.preview",
+  theme: "bilikara.ui.theme",
 };
 
 const state = {
@@ -66,6 +102,7 @@ const state = {
   listFlipTimer: null,
   listFlipFrame: null,
   cacheSettingsOpen: false,
+  displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
   avOffsetSaving: false,
@@ -124,10 +161,18 @@ const state = {
   confirmIntent: null,
   bindingIntent: null,
   gatchaFavlistIntent: null,
+  poolConfigData: null,
+  poolConfigSaving: false,
+  developerMode: false,
+  bilikaraSecret: "",
+  bilikaraSecretVerifying: false,
+  developerTagResetItem: null,
+  developerTagResetAction: "",
+  developerTagResetSaving: false,
   retryActivityById: {},
   gatchaCandidate: null,
   searchCookieVisible: false,
-  searchLarkVisible: false,
+  searchLarkVisible: true,
   larkSearchLoading: false,
   larkSearchSeq: 0,
   searchStageView: "",
@@ -138,6 +183,38 @@ const state = {
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
   followBrowseRenderSignature: "",
+  favlistBrowseData: null,
+  favlistBrowseSelectedFolderId: "",
+  favlistBrowseLoading: false,
+  favlistBrowseRenderSignature: "",
+  favlistBrowseReloadTimer: null,
+  d1BrowseKind: "",
+  d1BrowseLetter: "",
+  d1BrowseTag: "",
+  d1BrowseLocale: "",
+  d1BrowseAliases: [],
+  d1BrowseQuery: "",
+  d1BrowseData: null,
+  d1BrowseLoading: false,
+  d1BrowseSeq: 0,
+  d1BrowseResolvedCounts: new Map(),
+  d1BrowseItemCache: new Map(),
+  categoryBrowseSelectedId: "",
+  categoryBrowseQuery: "",
+  categoryBrowseItems: [],
+  categoryBrowseOffset: 0,
+  categoryBrowseHasMore: false,
+  categoryBrowseLoading: false,
+  categoryBrowseSeq: 0,
+  categoryBrowseError: "",
+  pendingReviewItems: [],
+  pendingReviewTotal: 0,
+  pendingReviewExportCount: 0,
+  pendingReviewLoading: false,
+  pendingReviewApproving: false,
+  pendingReviewSeq: 0,
+  pendingReviewMessage: "",
+  pendingReviewError: "",
   gatchaUidVisible: false,
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
@@ -145,6 +222,17 @@ const state = {
   bbdownLoginRequesting: false,
   updateChecking: false,
   updatePreviewEnabled: false,
+  ratingPromptElement: null,
+  ratingPromptItem: null,
+  ratingPromptItems: null,
+  ratingPromptActiveTab: "current",
+  ratingPromptItemId: "",
+  ratingPromptBvid: "",
+  ratingPromptScore: 5,
+  ratingPromptSubmitted: false,
+  ratingPromptSeenPlayIds: new Set(),
+  ratingSubmittedKeys: new Set(),
+  ratingOptOut: false,
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
   fullscreenRequestToastHideTimer: null,
@@ -152,10 +240,12 @@ const state = {
   language: "zh",
   translations: {},
   translationsLoaded: false,
+  theme: "light",
 };
 
 const elements = {
   appShell: document.getElementById("app-shell"),
+  developerModeTrigger: document.getElementById("developer-mode-trigger"),
   serviceStatusIndicator: document.getElementById("service-status-indicator"),
   playbackModeSummary: document.getElementById("playback-mode-summary"),
   playbackModeCurrent: document.getElementById("playback-mode-current"),
@@ -164,6 +254,7 @@ const elements = {
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
+  cachePanelVersion: document.getElementById("cache-panel-version"),
   bbdownStatusRow: document.getElementById("bbdown-status-row"),
   bbdownLoginButton: document.getElementById("bbdown-login-button"),
   bbdownLoginPanel: document.getElementById("bbdown-login-panel"),
@@ -198,6 +289,11 @@ const elements = {
   volumeMuteButton: document.getElementById("volume-mute-button"),
   volumeSlider: document.getElementById("volume-slider"),
   volumeValue: document.getElementById("volume-value"),
+  keyShiftPanel: document.getElementById("key-shift-panel"),
+  keyShiftInput: document.getElementById("key-shift-input"),
+  keyShiftDecButton: document.getElementById("key-shift-dec-button"),
+  keyShiftIncButton: document.getElementById("key-shift-inc-button"),
+  keyShiftResetButton: document.getElementById("key-shift-reset-button"),
   addForm: document.getElementById("add-form"),
   requesterSelect: document.getElementById("requester-select"),
   urlInput: document.getElementById("url-input"),
@@ -205,7 +301,9 @@ const elements = {
   appToast: document.getElementById("app-toast"),
   sessionUserForm: document.getElementById("session-user-form"),
   sessionUserInput: document.getElementById("session-user-input"),
+  sessionUsersPanel: document.getElementById("session-users-panel"),
   sessionUserList: document.getElementById("session-user-list"),
+  sessionUserTrash: document.getElementById("session-user-trash"),
   backupBanner: document.getElementById("backup-banner"),
   backupText: document.getElementById("backup-text"),
   discardBackupButton: document.getElementById("discard-backup-button"),
@@ -221,11 +319,17 @@ const elements = {
   queueCurrentTag: document.getElementById("queue-current-tag"),
   queueCurrentTitle: document.getElementById("queue-current-title"),
   queueCurrentRequester: document.getElementById("queue-current-requester"),
+  queueCurrentCacheDetail: document.getElementById("queue-current-cache-detail"),
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
+  displaySettings: document.getElementById("display-settings"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-panel"),
+  displayLayoutSummary: document.getElementById("display-layout-summary"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
+  themeSwitch: document.getElementById("theme-switch"),
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
@@ -258,6 +362,21 @@ const elements = {
   gatchaFavlistModalClose: document.getElementById("gatcha-favlist-modal-close"),
   gatchaFavlistModalCancel: document.getElementById("gatcha-favlist-modal-cancel"),
   gatchaFavlistModalConfirm: document.getElementById("gatcha-favlist-modal-confirm"),
+  poolConfigModal: document.getElementById("gatcha-pool-config-modal"),
+  poolConfigModalBackdrop: document.getElementById("gatcha-pool-config-modal-backdrop"),
+  poolConfigModalClose: document.getElementById("gatcha-pool-config-modal-close"),
+  poolConfigModalCancel: document.getElementById("gatcha-pool-config-modal-cancel"),
+  poolConfigModalReset: document.getElementById("gatcha-pool-config-modal-reset"),
+  poolConfigModalSave: document.getElementById("gatcha-pool-config-modal-save"),
+  poolConfigWeightSlider: document.getElementById("gatcha-pool-weight-slider"),
+  poolConfigWeightLabel: document.getElementById("gatcha-pool-weight-label"),
+  poolConfigUidOptions: document.getElementById("gatcha-pool-uid-options"),
+  poolConfigFavlistOptions: document.getElementById("gatcha-pool-favlist-options"),
+  poolConfigUidSelectAll: document.getElementById("gatcha-pool-uid-select-all"),
+  poolConfigUidSelectNone: document.getElementById("gatcha-pool-uid-select-none"),
+  poolConfigFavlistSelectAll: document.getElementById("gatcha-pool-favlist-select-all"),
+  poolConfigFavlistSelectNone: document.getElementById("gatcha-pool-favlist-select-none"),
+  poolConfigMessage: document.getElementById("gatcha-pool-config-message"),
   copyRemoteUrlButton: document.getElementById("copy-remote-url-button"),
   remoteQrImage: document.getElementById("remote-qr-image"),
   remoteQrPlaceholder: document.getElementById("remote-qr-placeholder"),
@@ -270,6 +389,34 @@ const elements = {
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
   searchPanel: document.getElementById("search-panel"),
+  searchExpandButton: document.getElementById("search-expand-button"),
+  searchCardContent: document.getElementById("search-card-content"),
+  searchModal: document.getElementById("search-modal"),
+  searchModalBackdrop: document.getElementById("search-modal-backdrop"),
+  searchModalClose: document.getElementById("search-modal-close"),
+  searchModalPlaceholder: document.getElementById("search-modal-content-placeholder"),
+  favlistBrowserView: document.getElementById("favlist-browser-view"),
+  searchModalOtherView: document.getElementById("search-modal-other-view"),
+  bilikaraSecretModal: document.getElementById("bilikara-secret-modal"),
+  bilikaraSecretBackdrop: document.getElementById("bilikara-secret-backdrop"),
+  bilikaraSecretClose: document.getElementById("bilikara-secret-close"),
+  bilikaraSecretCancel: document.getElementById("bilikara-secret-cancel"),
+  bilikaraSecretForm: document.getElementById("bilikara-secret-form"),
+  bilikaraSecretInput: document.getElementById("bilikara-secret-input"),
+  bilikaraSecretConfirm: document.getElementById("bilikara-secret-confirm"),
+  bilikaraSecretMessage: document.getElementById("bilikara-secret-message"),
+  developerTagResetModal: document.getElementById("developer-tag-reset-modal"),
+  developerTagResetBackdrop: document.getElementById("developer-tag-reset-backdrop"),
+  developerTagResetClose: document.getElementById("developer-tag-reset-close"),
+  developerTagResetCancel: document.getElementById("developer-tag-reset-cancel"),
+  developerTagResetConfirm: document.getElementById("developer-tag-reset-confirm"),
+  developerTagResetDeleteMid: document.getElementById("developer-tag-reset-delete-mid"),
+  developerTagResetTitle: document.getElementById("developer-tag-reset-title"),
+  developerTagResetText: document.getElementById("developer-tag-reset-text"),
+  developerTagResetFields: document.getElementById("developer-tag-reset-fields"),
+  developerTagResetNote: document.getElementById("developer-tag-reset-note"),
+  searchSidebarItems: document.querySelectorAll(".search-sidebar-item"),
+  searchOriginalContainer: document.querySelector(".search-card"),
   searchTag: document.getElementById("search-tag"),
   searchTitle: document.getElementById("search-title"),
   searchCookieToggle: document.getElementById("search-cookie-toggle"),
@@ -284,6 +431,7 @@ const elements = {
   gatchaTitle: document.getElementById("gatcha-title"),
   gatchaStage: document.getElementById("gatcha-stage"),
   gatchaButton: document.getElementById("gatcha-button"),
+  gatchaPoolConfigToggle: document.getElementById("gatcha-pool-config-toggle"),
   gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaMainView: document.getElementById("gatcha-main-view"),
   gatchaUidView: document.getElementById("gatcha-uid-view"),
@@ -299,9 +447,13 @@ const elements = {
   searchMessage: document.getElementById("search-message"),
   searchResults: document.getElementById("search-results"),
   followUpListView: document.getElementById("follow-up-list-view"),
+  modalFollowUidForm: document.getElementById("modal-follow-uid-form"),
+  modalFollowUidInput: document.getElementById("modal-follow-uid-input"),
+  modalAddFollowUidButton: document.getElementById("modal-add-follow-uid-button"),
   followUpGrid: document.getElementById("follow-up-grid"),
   followUpItemsView: document.getElementById("follow-up-items-view"),
   followBrowseBack: document.getElementById("follow-browse-back"),
+  followBrowseAvatar: document.getElementById("follow-browse-avatar"),
   followBrowseTitle: document.getElementById("follow-browse-title"),
   followBrowseCount: document.getElementById("follow-browse-count"),
   followSearchForm: document.getElementById("follow-search-form"),
@@ -309,6 +461,21 @@ const elements = {
   followSearchButton: document.getElementById("follow-search-button"),
   followSongResults: document.getElementById("follow-song-results"),
   followBrowseMessage: document.getElementById("follow-browse-message"),
+  favlistListView: document.getElementById("favlist-list-view"),
+  modalFavlistPullForm: document.getElementById("modal-favlist-pull-form"),
+  modalFavlistUidInput: document.getElementById("modal-favlist-uid-input"),
+  modalPullFavlistButton: document.getElementById("modal-pull-favlist-button"),
+  favlistGrid: document.getElementById("favlist-grid"),
+  favlistItemsView: document.getElementById("favlist-items-view"),
+  favlistBrowseBack: document.getElementById("favlist-browse-back"),
+  favlistBrowseAvatar: document.getElementById("favlist-browse-avatar"),
+  favlistBrowseTitle: document.getElementById("favlist-browse-title"),
+  favlistBrowseCount: document.getElementById("favlist-browse-count"),
+  favlistSearchForm: document.getElementById("favlist-search-form"),
+  favlistSearchQuery: document.getElementById("favlist-search-query"),
+  favlistSearchButton: document.getElementById("favlist-search-button"),
+  favlistSongResults: document.getElementById("favlist-song-results"),
+  favlistBrowseMessage: document.getElementById("favlist-browse-message"),
   larkSearchForm: document.getElementById("lark-search-form"),
   larkSearchQuery: document.getElementById("lark-search-query"),
   larkSearchButton: document.getElementById("lark-search-button"),
@@ -540,6 +707,7 @@ function invalidateLanguageSensitiveRenderCache() {
   state.sessionUsersRenderSignature = "";
   state.playerFullscreenButtonRenderSignature = "";
   state.followBrowseRenderSignature = "";
+  state.favlistBrowseRenderSignature = "";
   state.searchCookieFaceRenderSignature = "";
   state.gatchaUidFaceRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
@@ -569,6 +737,24 @@ function setLanguage(language) {
   applyStaticI18n();
   renderLanguageSwitch();
   render();
+}
+
+function applyTheme(theme) {
+  const nextTheme = normalizeTheme(theme);
+  state.theme = nextTheme;
+  document.documentElement.setAttribute("data-theme", nextTheme);
+  writeLocalPreference(storageKeys.theme, nextTheme);
+  renderThemeSwitch();
+}
+
+function normalizeTheme(theme) {
+  return theme === "dark" || theme === "blue" ? theme : "light";
+}
+
+function renderThemeSwitch() {
+  elements.themeSwitch?.querySelectorAll("button[data-theme]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === state.theme);
+  });
 }
 
 async function loadTranslations() {
@@ -659,6 +845,80 @@ function canTogglePlayerFullscreen() {
   return supportsPlayerFullscreen() && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
 }
 
+function tauriAppWindow() {
+  const tauriWebviewWindow = window.__TAURI__?.webviewWindow;
+  if (tauriWebviewWindow) {
+    if (typeof tauriWebviewWindow.getCurrentWebviewWindow === "function") {
+      try {
+        return tauriWebviewWindow.getCurrentWebviewWindow();
+      } catch {
+        return null;
+      }
+    }
+    if (typeof tauriWebviewWindow.getCurrent === "function") {
+      try {
+        return tauriWebviewWindow.getCurrent();
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  const tauriWindow = window.__TAURI__?.window;
+  if (!tauriWindow) {
+    return null;
+  }
+  if (tauriWindow.appWindow) {
+    return tauriWindow.appWindow;
+  }
+  if (typeof tauriWindow.getCurrentWindow === "function") {
+    try {
+      return tauriWindow.getCurrentWindow();
+    } catch {
+      return null;
+    }
+  }
+  if (typeof tauriWindow.getCurrent === "function") {
+    try {
+      return tauriWindow.getCurrent();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function tauriInvoke() {
+  return window.__TAURI__?.tauri?.invoke
+    || window.__TAURI__?.core?.invoke
+    || window.__TAURI__?.invoke
+    || null;
+}
+
+async function setTauriWindowFullscreen(enabled) {
+  const fullscreen = Boolean(enabled);
+  const appWindow = tauriAppWindow();
+  if (appWindow && typeof appWindow.setFullscreen === "function") {
+    try {
+      await appWindow.setFullscreen(fullscreen);
+      return true;
+    } catch {
+      // Fall through to the command path below; some Tauri builds expose invoke more reliably.
+    }
+  }
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return false;
+  }
+  try {
+    await invoke("set_window_fullscreen", { fullscreen });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function renderPlayerFullscreenButton() {
   const button = elements.playerFullscreenButton;
   if (!button) {
@@ -717,7 +977,10 @@ async function togglePlayerFullscreen() {
     return;
   }
   if (isPlayerPanelFullscreen()) {
-    await exitDocumentFullscreen();
+    const exitFullscreenPromise = exitDocumentFullscreen();
+    const tauriFullscreenPromise = setTauriWindowFullscreen(false);
+    await exitFullscreenPromise;
+    await tauriFullscreenPromise;
     return;
   }
   if (!state.data?.current_item) {
@@ -726,8 +989,15 @@ async function togglePlayerFullscreen() {
   const activeFullscreen = fullscreenElement();
   if (activeFullscreen && activeFullscreen !== elements.playerPanel) {
     await exitDocumentFullscreen();
+    await setTauriWindowFullscreen(false);
   }
-  await requestElementFullscreen(elements.playerPanel);
+  const elementFullscreenPromise = requestElementFullscreen(elements.playerPanel);
+  const tauriFullscreenPromise = setTauriWindowFullscreen(true);
+  const elementFullscreenStarted = await elementFullscreenPromise;
+  const tauriFullscreenStarted = await tauriFullscreenPromise;
+  if (!elementFullscreenStarted && tauriFullscreenStarted) {
+    await setTauriWindowFullscreen(false);
+  }
 }
 
 function clearPlayerFrameClickTimer() {
@@ -874,6 +1144,10 @@ function hydrateLocalPreferences() {
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
   state.updatePreviewEnabled = readLocalBoolean(storageKeys.updatePreview, state.updatePreviewEnabled);
+  
+  // Hydrate and apply theme
+  state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
+  applyTheme(state.theme);
 }
 
 function normalizeLayoutMode(value) {
@@ -890,6 +1164,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, t(layoutKey));
 }
 
 function setLayoutMode(mode) {
@@ -923,6 +1199,11 @@ function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
   state.localPlayerVolume = volumePercent / 100;
   state.localPlayerMuted = Boolean(playerSettings?.is_muted);
   persistLocalVolumePreferences();
+
+  const { audio } = activeLocalPlayerElements();
+  if (audio) {
+    applyKeyShiftToAudio(audio);
+  }
 }
 
 function markLocalVolumeWrite() {
@@ -945,6 +1226,22 @@ function clientHeaders(extraHeaders = {}) {
   };
 }
 
+function localizedApiMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return "";
+  }
+  const gatchaMessage = localizedGatchaTaskMessage(raw);
+  if (gatchaMessage && gatchaMessage !== raw) {
+    return gatchaMessage;
+  }
+  const cacheMessage = localizedCacheMessage(raw);
+  if (cacheMessage && cacheMessage !== raw) {
+    return cacheMessage;
+  }
+  return raw;
+}
+
 async function apiPost(url, payload = {}) {
   const response = await fetch(url, {
     method: "POST",
@@ -953,13 +1250,330 @@ async function apiPost(url, payload = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || t("error.requestFailed"));
+    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
     throw error;
   }
   return data.data;
+}
+
+function submitSongRating(item, score) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = ratingSubmissionPlayId(item);
+  const sessionUserName = ratingSubmissionUserName(item);
+  if (!bvid) {
+    return null;
+  }
+  const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
+  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    return false;
+  }
+  if (submissionKey) {
+    state.ratingSubmittedKeys.add(submissionKey);
+  }
+  const payload = {
+    session_user_name: sessionUserName,
+    play_id: playId,
+    bvid,
+    score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
+  };
+  fetch("/api/rating/submit", {
+    method: "POST",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    if (submissionKey) {
+      state.ratingSubmittedKeys.delete(submissionKey);
+      renderPlayerRatingButton();
+    }
+    console.warn("Rating submit failed:", error);
+  });
+  return true;
+}
+
+function ratingItemUrl(item) {
+  return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
+}
+
+function safeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const url = new URL(raw, window.location.href);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function ratingOwnerUid(item) {
+  const rawMid = item?.owner_mid ?? item?.mid;
+  const uid = String(rawMid || "").trim();
+  return /^\d+$/.test(uid) ? uid : "";
+}
+
+function ratingSubmissionUserName(item) {
+  return selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+}
+
+function ratingSubmissionPlayId(item) {
+  const bvid = String(item?.bvid || "").trim();
+  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+}
+
+function ratingSubmissionKey(item) {
+  const playId = ratingSubmissionPlayId(item);
+  if (!playId) {
+    return "";
+  }
+  return `${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+}
+
+function hasSubmittedSongRating(item) {
+  const key = ratingSubmissionKey(item);
+  return Boolean(key && state.ratingSubmittedKeys.has(key));
+}
+
+function normalizeRatingPromptItem(item) {
+  if (!item) {
+    return null;
+  }
+  const id = String(item.id || item.item_id || item.play_id || item.bvid || "").trim();
+  return {
+    ...item,
+    id,
+    play_id: String(item.play_id || item.item_id || id).trim(),
+    bvid: String(item.bvid || "").trim(),
+    cover_url: String(item.cover_url || "").trim(),
+  };
+}
+
+function previousRatingPromptItem(currentItem) {
+  const currentId = String(currentItem?.id || "").trim();
+  const playedItems = Array.isArray(state.data?.session_played) ? state.data.session_played : [];
+  for (let index = playedItems.length - 1; index >= 0; index -= 1) {
+    const entry = playedItems[index];
+    const entryId = String(entry?.item_id || entry?.id || "").trim();
+    if (entryId && entryId !== currentId) {
+      const candidate = normalizeRatingPromptItem({ ...entry, id: entryId, play_id: entryId });
+      return candidate?.bvid ? candidate : null;
+    }
+  }
+  return null;
+}
+
+function ratingPromptItemsForItem(item) {
+  return {
+    previous: previousRatingPromptItem(item),
+    current: normalizeRatingPromptItem(item),
+  };
+}
+
+function activeRatingPromptItem() {
+  return normalizeRatingPromptItem(
+    state.ratingPromptItems?.[state.ratingPromptActiveTab]
+      || state.ratingPromptItems?.current
+      || state.ratingPromptItem,
+  );
+}
+
+function renderRatingStars() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("[data-rating-score]").forEach((button) => {
+    const score = Number(button.dataset.ratingScore || "0");
+    button.classList.toggle("active", score <= state.ratingPromptScore);
+    button.setAttribute("aria-pressed", score === state.ratingPromptScore ? "true" : "false");
+  });
+}
+
+function renderRatingPromptContent() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const activeItem = activeRatingPromptItem();
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
+
+  root.querySelectorAll("[data-rating-tab]").forEach((button) => {
+    const tab = button.dataset.ratingTab;
+    const hasItem = Boolean(state.ratingPromptItems?.[tab]);
+    button.disabled = !hasItem;
+    button.classList.toggle("active", tab === state.ratingPromptActiveTab);
+    button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
+  });
+
+  const content = root.querySelector("[data-rating-content]");
+  if (!content || !activeItem) {
+    return;
+  }
+  const bvid = String(activeItem.bvid || "").trim();
+  const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
+  const coverUrl = safeHttpUrl(activeItem.cover_url);
+  const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
+  const titleKey = state.ratingPromptActiveTab === "previous" ? "rating.previousTitle" : "rating.title";
+  const media = document.createElement("div");
+  media.className = "rating-media";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.className = "rating-cover";
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    media.appendChild(image);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "rating-cover rating-cover-empty";
+    media.appendChild(placeholder);
+  }
+  const copy = document.createElement("div");
+  copy.className = "rating-copy";
+  const kicker = document.createElement("p");
+  kicker.className = "rating-kicker";
+  kicker.textContent = t("rating.kicker");
+  const title = document.createElement("h2");
+  title.textContent = t(titleKey);
+  const hint = document.createElement("p");
+  hint.className = "rating-hint";
+  hint.textContent = t("rating.hint");
+  const owner = document.createElement("p");
+  owner.className = "rating-owner";
+  owner.textContent = t("rating.owner", { owner: ownerName });
+  copy.append(kicker, title, hint, owner);
+  if (url) {
+    const link = document.createElement("a");
+    link.className = "rating-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = url;
+    copy.appendChild(link);
+  }
+  media.appendChild(copy);
+  content.replaceChildren(media);
+  const addUpButton = root.querySelector("[data-rating-add-up]");
+  if (addUpButton) {
+    const ownerUid = ratingOwnerUid(activeItem);
+    addUpButton.disabled = !ownerUid;
+    addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
+  }
+  renderRatingStars();
+}
+
+function setRatingPromptActiveTab(tab) {
+  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]) {
+    return;
+  }
+  state.ratingPromptActiveTab = tab;
+  renderRatingPromptContent();
+}
+
+function closeRatingPrompt({ submit = true } = {}) {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const item = state.data?.current_item;
+  const bvid = state.ratingPromptBvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  state.ratingPromptSubmitted = true;
+  const promptItem = activeRatingPromptItem();
+  root.remove();
+  state.ratingPromptElement = null;
+  state.ratingPromptItem = null;
+  state.ratingPromptItems = null;
+  state.ratingPromptActiveTab = "current";
+  state.ratingPromptItemId = "";
+  state.ratingPromptBvid = "";
+
+  if (shouldSubmit) {
+    submitSongRating({ ...(promptItem || item), bvid }, state.ratingPromptScore);
+  }
+}
+
+function setRatingOptOut(enabled) {
+  state.ratingOptOut = Boolean(enabled);
+}
+
+function openRatingPrompt(item) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.id || bvid).trim();
+  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
+    return;
+  }
+  if (fullscreenElement()) {
+    return;
+  }
+  const promptItems = ratingPromptItemsForItem(item);
+  closeRatingPrompt({ submit: true });
+  state.ratingPromptSeenPlayIds.add(playId);
+  state.ratingPromptItemId = playId;
+  state.ratingPromptItems = promptItems;
+  state.ratingPromptActiveTab = "current";
+  state.ratingPromptItem = promptItems.current;
+  state.ratingPromptBvid = bvid;
+  state.ratingPromptScore = 5;
+  state.ratingPromptSubmitted = false;
+
+  const root = document.createElement("div");
+  root.className = "rating-modal";
+  root.innerHTML = `
+    <div class="rating-modal-backdrop" data-rating-close></div>
+    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
+      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
+      <div data-rating-content></div>
+      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
+        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
+      </div>
+      <div class="rating-actions">
+        <button type="button" class="toolbar-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
+        <button type="button" class="next-button" data-rating-close>${htmlT("rating.done")}</button>
+      </div>
+      <label class="rating-opt-out">
+        <input type="checkbox" data-rating-opt-out>
+        <span>${htmlT("rating.optOut")}</span>
+      </label>
+      <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
+        <button type="button" data-rating-tab="previous" role="tab" ${promptItems.previous ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
+        <button type="button" data-rating-tab="current" role="tab">${htmlT("rating.currentTab")}</button>
+      </div>
+      <p class="rating-message" data-rating-message></p>
+    </section>
+  `;
+  document.body.appendChild(root);
+  state.ratingPromptElement = root;
+  renderRatingPromptContent();
+}
+
+function maybeShowRatingPromptForProgress(item, currentTime, duration) {
+  return;
+}
+
+function handleRatingCurrentItemChange(currentItem) {
+  if (!state.ratingPromptElement) {
+    return;
+  }
+  const currentId = String(currentItem?.id || "");
+  if (!currentId || currentId !== state.ratingPromptItemId) {
+    closeRatingPrompt({ submit: true });
+    return;
+  }
+}
+
+function handleRequesterSelectionChange() {
+  render();
 }
 
 async function apiGet(url, options = {}) {
@@ -970,7 +1584,7 @@ async function apiGet(url, options = {}) {
   });
   const data = await response.json();
   if (!response.ok || !data.ok) {
-    const error = new Error(data.error || t("error.requestFailed"));
+    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
     error.status = response.status;
     error.code = data.code || "";
     error.payload = data;
@@ -1073,7 +1687,7 @@ async function fetchState() {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.stateFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
   state.data = payload.data;
   maybeShowIncomingRequestToast(previousData, state.data);
@@ -1103,6 +1717,7 @@ async function fetchState() {
       syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
     }
   }
+  scheduleFavlistBrowseReloadFromState(previousData, state.data);
   const renderSignature = renderSignatureForData(state.data);
   if (renderSignature !== state.lastPollRenderSignature) {
     state.lastPollRenderSignature = renderSignature;
@@ -1141,7 +1756,7 @@ async function searchGatchaCache(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.searchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.searchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -1157,7 +1772,7 @@ async function searchLarkPool(query) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
@@ -1174,9 +1789,88 @@ async function searchLarkPoolTable(query, tableIndex) {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.larkSearchFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
   }
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
+}
+
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  params.set("kind", kind === "artist" ? "artist" : "name");
+  params.set("limit", String(limit));
+  const normalizedLetter = String(letter || "").trim().toUpperCase();
+  const normalizedQuery = String(query || "").trim();
+  const normalizedTag = String(tag || "").trim();
+  const normalizedLocale = String(locale || "").trim();
+  if (normalizedLetter) {
+    params.set("letter", normalizedLetter);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  if (normalizedTag) {
+    params.set("tag", normalizedTag);
+  }
+  if (normalizedLocale) {
+    params.set("locale", normalizedLocale);
+  }
+  const response = await fetch(`/api/d1/browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
+}
+
+async function fetchPendingReviewItems() {
+  return apiPost("/api/admin-review/pending", {
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+    limit: 20,
+  });
+}
+
+async function approvePendingReviewItems(bvids) {
+  return apiPost("/api/admin-review/approve", {
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+    bvids: Array.isArray(bvids) ? bvids : [],
+    limit: 20,
+  });
+}
+
+async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  const normalizedTags = uniqueD1BrowseAliases(
+    (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
+  ).map((entry) => entry.tag);
+  normalizedTags.forEach((tag) => {
+    params.append(categoryBrowseUsesFullFieldSearch(tag) ? "tag" : "tag45", tag);
+  });
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const response = await fetch(`/api/d1/category-browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || {
+    tags: normalizedTags,
+    query: normalizedQuery,
+    offset,
+    limit,
+    items: [],
+    has_more: false,
+    next_offset: offset,
+  };
 }
 
 async function fetchGatchaBrowse(uid = "", query = "") {
@@ -1196,9 +1890,47 @@ async function fetchGatchaBrowse(uid = "", query = "") {
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
-    throw new Error(payload.error || t("error.browseFailed"));
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
   }
   return payload.data || { owners: [], items: [] };
+}
+
+async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
+  const params = new URLSearchParams();
+  const normalizedFolderId = String(folderId || "").trim();
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedFolderId) {
+    params.set("folder_id", normalizedFolderId);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const queryString = params.toString();
+  const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
+  }
+  return payload.data || { folders: [], items: [] };
+}
+
+async function fetchPoolConfig() {
+  const response = await fetch("/api/gatcha/pool-config", {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("gatcha.poolLoadFailed"));
+  }
+  return payload.data || {};
+}
+
+async function savePoolConfig(payload) {
+  return apiPost("/api/gatcha/pool-config", payload);
 }
 
 async function previewGatchaUid(uid) {
@@ -1244,26 +1976,292 @@ function gatchaUidResultMessage(result, fallbackUid = "") {
 
 async function confirmGatchaUidAdd(intent) {
   closeConfirm();
+  const messageTarget = intent.messageTarget || "gatcha";
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
   }
   state.gatchaUidSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: intent.name || intent.uid }));
   try {
     const result = await addGatchaUid(intent.uid);
-    setGatchaUidMessage(gatchaUidResultMessage(result, intent.uid));
-    if (elements.gatchaUidInput) {
-      elements.gatchaUidInput.value = "";
-    }
+    setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, intent.uid));
+    clearGatchaUidFlowInput(intent.clearInputId || "gatcha-uid-input");
     await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || intent.uid);
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaUidSaving = false;
     renderGatchaUidFace();
+  }
+}
+
+function setDeveloperMode(enabled) {
+  state.developerMode = Boolean(enabled);
+  if (!state.developerMode) {
+    state.bilikaraSecret = "";
+    state.pendingReviewItems = [];
+    state.pendingReviewMessage = "";
+    state.pendingReviewError = "";
+    const activeReviewButton = Array.from(elements.searchSidebarItems || []).find(
+      (button) => button.dataset.target === "review" && button.classList.contains("active"),
+    );
+    if (activeReviewButton) {
+      elements.searchSidebarItems?.forEach((button) => {
+        button.classList.toggle("active", button.dataset.target === "search");
+      });
+      elements.searchModalPlaceholder?.classList.remove("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.add("hidden");
+    }
+  }
+  document.body?.classList.toggle("developer-mode", state.developerMode);
+  elements.appShell?.classList.toggle("developer-mode", state.developerMode);
+  elements.developerModeTrigger?.classList.toggle("active", state.developerMode);
+  elements.developerModeTrigger?.setAttribute("aria-pressed", String(state.developerMode));
+}
+
+function openBilikaraSecretModal() {
+  if (state.developerMode) {
+    return;
+  }
+  if (selectedRequesterName() !== developerModeRequesterName) {
+    window.location.href = projectUrl;
+    return;
+  }
+  if (elements.bilikaraSecretInput) {
+    elements.bilikaraSecretInput.value = "";
+  }
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
+  }
+  elements.bilikaraSecretModal?.classList.remove("hidden");
+  window.setTimeout(() => elements.bilikaraSecretInput?.focus(), 0);
+}
+
+function closeBilikaraSecretModal() {
+  if (state.bilikaraSecretVerifying) {
+    return;
+  }
+  elements.bilikaraSecretModal?.classList.add("hidden");
+  if (elements.bilikaraSecretInput) {
+    elements.bilikaraSecretInput.value = "";
+  }
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
+  }
+}
+
+async function verifyBilikaraSecret() {
+  if (state.bilikaraSecretVerifying) {
+    return;
+  }
+  if (selectedRequesterName() !== developerModeRequesterName) {
+    window.location.href = projectUrl;
+    return;
+  }
+  const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();
+  if (!bilikaraSecret) {
+    if (elements.bilikaraSecretMessage) {
+      elements.bilikaraSecretMessage.textContent = "请输入 BILIKARA_ADMIN_SECRET。";
+      elements.bilikaraSecretMessage.classList.add("is-error");
+    }
+    return;
+  }
+  state.bilikaraSecretVerifying = true;
+  if (elements.bilikaraSecretConfirm) {
+    elements.bilikaraSecretConfirm.disabled = true;
+  }
+  if (elements.bilikaraSecretMessage) {
+    elements.bilikaraSecretMessage.textContent = "验证中...";
+    elements.bilikaraSecretMessage.classList.remove("is-error");
+  }
+  try {
+    await apiPost("/api/bilikara-secret/verify", { BILIKARA_ADMIN_SECRET: bilikaraSecret });
+    state.bilikaraSecret = bilikaraSecret;
+    setDeveloperMode(true);
+    state.bilikaraSecretVerifying = false;
+    closeBilikaraSecretModal();
+  } catch {
+    if (elements.bilikaraSecretMessage) {
+      elements.bilikaraSecretMessage.textContent = "验证失败。";
+      elements.bilikaraSecretMessage.classList.add("is-error");
+    }
+  } finally {
+    state.bilikaraSecretVerifying = false;
+    if (elements.bilikaraSecretConfirm) {
+      elements.bilikaraSecretConfirm.disabled = false;
+    }
+  }
+}
+function closeDeveloperTagResetModal() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  state.developerTagResetItem = null;
+  state.developerTagResetAction = "";
+  elements.developerTagResetModal?.classList.add("hidden");
+  if (elements.developerTagResetFields) {
+    elements.developerTagResetFields.innerHTML = "";
+  }
+  elements.developerTagResetDeleteMid?.classList.add("hidden");
+}
+
+function renderDeveloperActionFields(fields) {
+  if (!elements.developerTagResetFields) {
+    return;
+  }
+  elements.developerTagResetFields.innerHTML = "";
+  Object.entries(fields || {}).forEach(([key, rawValue]) => {
+    const row = document.createElement("div");
+    row.className = "developer-tag-reset-field";
+    const name = document.createElement("span");
+    name.className = "developer-tag-reset-field-name";
+    name.textContent = key;
+    const value = document.createElement("span");
+    value.className = "developer-tag-reset-field-value";
+    value.textContent = String(rawValue ?? "") || "空";
+    row.append(name, value);
+    elements.developerTagResetFields.appendChild(row);
+  });
+}
+
+function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
+  if (!state.developerMode || !snapshot?.bvid) {
+    return;
+  }
+  state.developerTagResetItem = snapshot;
+  state.developerTagResetAction = action;
+  const isDelete = action === "delete-entry";
+  if (elements.developerTagResetTitle) {
+    elements.developerTagResetTitle.textContent = isDelete ? "删除 D1 条目" : "重置标签字段";
+  }
+  if (elements.developerTagResetText) {
+    const title = snapshot.title ? `《${snapshot.title}》` : "当前条目";
+    elements.developerTagResetText.textContent = isDelete
+      ? `确认从 D1 删除 ${title} (${snapshot.bvid})？`
+      : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
+  }
+  renderDeveloperActionFields(snapshot.fields);
+  if (elements.developerTagResetNote) {
+    elements.developerTagResetNote.textContent = isDelete
+      ? "确认后将按 bvid 删除 D1 中对应条目；此操作不会删除 B 站视频本体。"
+      : "确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。";
+  }
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = false;
+    elements.developerTagResetConfirm.textContent = isDelete ? "确认删除" : "确认重置";
+    elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete);
+  }
+  if (elements.developerTagResetDeleteMid) {
+    const mid = String(snapshot.fields?.mid || "").trim();
+    elements.developerTagResetDeleteMid.classList.toggle("hidden", !isDelete || !mid);
+    elements.developerTagResetDeleteMid.disabled = false;
+    elements.developerTagResetDeleteMid.textContent = mid ? `按 MID 删除 ${mid}` : "按 MID 删除";
+  }
+  elements.developerTagResetModal?.classList.remove("hidden");
+}
+
+function parseDeveloperActionButton(button) {
+  try {
+    const snapshot = JSON.parse(String(button?.dataset?.item || "{}"));
+    if (!snapshot || typeof snapshot !== "object") {
+      return null;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function handleDeveloperTagResetButtonClick(event) {
+  const button = event.target.closest('button[data-dev-action="reset-tags"], button[data-dev-action="delete-entry"]');
+  if (!button || !elements.searchModal?.contains(button)) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const snapshot = parseDeveloperActionButton(button);
+  if (snapshot) {
+    openDeveloperTagResetModal(snapshot, String(button.dataset.devAction || "reset-tags"));
+  }
+}
+
+async function deleteDeveloperD1Entry(snapshot) {
+  await apiPost("/api/admin-video/delete", {
+    bvid: snapshot.bvid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  removePendingReviewItem(snapshot.bvid);
+  setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
+}
+
+async function deleteDeveloperD1EntriesByMid(snapshot) {
+  const mid = String(snapshot.fields?.mid || "").trim();
+  if (!mid) {
+    throw new Error("缺少 MID，无法按 MID 删除。");
+  }
+  const result = await apiPost("/api/admin-video/delete-mid", {
+    mid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  if (Array.isArray(state.pendingReviewItems) && mid) {
+    state.pendingReviewItems = state.pendingReviewItems.filter((item) => String(item?.mid || "").trim() !== mid);
+    if (elements.searchModalOtherView?.querySelector("[data-pending-review-view]")) {
+      renderPendingReviewView();
+    }
+  }
+  const deleted = Number(result?.deleted_count ?? result?.changed ?? 0);
+  setAppMessage(`已按 MID ${mid} 删除 ${deleted} 条 D1 条目。`);
+}
+
+async function resetDeveloperTagFields(snapshot) {
+  await apiPost("/api/admin-tags/reset", {
+    bvid: snapshot.bvid,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  setAppMessage(`已重置 ${snapshot.bvid} 的标签字段。`);
+}
+
+async function confirmDeveloperAction() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  const snapshot = state.developerTagResetItem;
+  const action = state.developerTagResetAction || "reset-tags";
+  if (!state.developerMode || !state.bilikaraSecret || !snapshot?.bvid) {
+    closeDeveloperTagResetModal();
+    return;
+  }
+  state.developerTagResetSaving = true;
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = true;
+  }
+  if (elements.developerTagResetDeleteMid) {
+    elements.developerTagResetDeleteMid.disabled = true;
+  }
+  try {
+    if (action === "delete-entry") {
+      await deleteDeveloperD1Entry(snapshot);
+    } else {
+      await resetDeveloperTagFields(snapshot);
+    }
+    state.developerTagResetSaving = false;
+    closeDeveloperTagResetModal();
+  } catch (error) {
+    setAppMessage(error?.message || (action === "delete-entry" ? "删除失败。" : "重置失败。"), true);
+  } finally {
+    state.developerTagResetSaving = false;
+    if (elements.developerTagResetConfirm) {
+      elements.developerTagResetConfirm.disabled = false;
+    }
+    if (elements.developerTagResetDeleteMid) {
+      elements.developerTagResetDeleteMid.disabled = false;
+    }
   }
 }
 
@@ -1274,6 +2272,244 @@ function hideSearchResults() {
 
 function searchResultOwnerName(item) {
   return String(item?.owner_name || item?.author || "").trim();
+}
+
+function firstSearchResultValue(item, keys) {
+  for (const key of keys) {
+    const value = String(item?.[key] ?? "").trim();
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function searchResultBvid(item) {
+  const direct = String(item?.bvid || "").trim();
+  if (direct) {
+    return direct;
+  }
+  const source = String(item?.url || item?.resolved_url || item?.original_url || "").trim();
+  const match = source.match(/BV[0-9A-Za-z]{10}/);
+  return match ? match[0] : "";
+}
+
+function developerTagResetSnapshot(item) {
+  const snapshot = {
+    bvid: searchResultBvid(item),
+    title: String(item?.title || "").trim(),
+    fields: {},
+  };
+  developerTagResetFieldKeys.forEach((key) => {
+    snapshot.fields[key] = String(item?.[key] ?? "").trim();
+  });
+  return snapshot;
+}
+
+async function confirmDeveloperDeleteMid() {
+  if (state.developerTagResetSaving) {
+    return;
+  }
+  const snapshot = state.developerTagResetItem;
+  if (!state.developerMode || !state.bilikaraSecret || !snapshot?.fields?.mid) {
+    closeDeveloperTagResetModal();
+    return;
+  }
+  state.developerTagResetSaving = true;
+  if (elements.developerTagResetConfirm) {
+    elements.developerTagResetConfirm.disabled = true;
+  }
+  if (elements.developerTagResetDeleteMid) {
+    elements.developerTagResetDeleteMid.disabled = true;
+  }
+  try {
+    await deleteDeveloperD1EntriesByMid(snapshot);
+    state.developerTagResetSaving = false;
+    closeDeveloperTagResetModal();
+  } catch (error) {
+    setAppMessage(error?.message || "按 MID 删除失败。", true);
+  } finally {
+    state.developerTagResetSaving = false;
+    if (elements.developerTagResetConfirm) {
+      elements.developerTagResetConfirm.disabled = false;
+    }
+    if (elements.developerTagResetDeleteMid) {
+      elements.developerTagResetDeleteMid.disabled = false;
+    }
+  }
+}
+
+function developerFieldValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value).trim();
+}
+
+function developerDeleteSnapshot(item) {
+  const snapshot = {
+    bvid: searchResultBvid(item),
+    title: String(item?.title || "").trim(),
+    fields: {},
+  };
+  if (snapshot.bvid) {
+    snapshot.fields.bvid = snapshot.bvid;
+  }
+  const itemKeys = Object.keys(item || {});
+  const orderedKeys = [
+    ...developerDeletePreferredFieldKeys,
+    ...itemKeys.filter((key) => !developerDeletePreferredFieldKeys.includes(key)).sort(),
+  ];
+  orderedKeys.forEach((key) => {
+    if (key === "bvid" && snapshot.fields.bvid) {
+      return;
+    }
+    if (key in (item || {})) {
+      snapshot.fields[key] = developerFieldValue(item[key]);
+    }
+  });
+  return snapshot;
+}
+
+function createDeveloperTagResetButton(item) {
+  const snapshot = developerTagResetSnapshot(item);
+  if (!snapshot.bvid) {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "toolbar-button developer-reset-tag-button";
+  button.dataset.devAction = "reset-tags";
+  button.dataset.item = JSON.stringify(snapshot);
+  button.textContent = "重置";
+  button.title = "重置标签字段";
+  return button;
+}
+
+function createDeveloperDeleteButton(item) {
+  const snapshot = developerDeleteSnapshot(item);
+  if (!snapshot.bvid) {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "toolbar-button developer-delete-entry-button";
+  button.dataset.devAction = "delete-entry";
+  button.dataset.item = JSON.stringify(snapshot);
+  button.textContent = "删除";
+  button.title = "删除 D1 条目";
+  return button;
+}
+
+function searchResultCoverUrl(item) {
+  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  if (coverUrl.startsWith("//")) {
+    coverUrl = `https:${coverUrl}`;
+  }
+  return coverUrl;
+}
+
+function formatCompactCount(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  const numeric = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) {
+    return raw;
+  }
+  if (numeric >= 100000000) {
+    return `${Number((numeric / 100000000).toFixed(numeric >= 1000000000 ? 0 : 1))}亿`;
+  }
+  if (numeric >= 10000) {
+    return `${Number((numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1))}万`;
+  }
+  return String(Math.round(numeric));
+}
+
+function formatSearchDuration(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw.includes(":")) {
+    return raw;
+  }
+  const totalSeconds = Number(raw);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return raw;
+  }
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+  return `${minutes}:${paddedSeconds}`;
+}
+
+function searchResultRatingValue(item) {
+  const raw = firstSearchResultValue(item, ["rank", "rating", "score"]);
+  const value = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(5, value));
+}
+
+function formatSearchRating(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return Number(value.toFixed(1)).toString();
+}
+
+function searchResultRatingText(item) {
+  const rating = searchResultRatingValue(item);
+  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
+}
+
+function createSearchResultRatingStars(item) {
+  const rating = searchResultRatingValue(item);
+  if (rating == null) {
+    return null;
+  }
+  const stars = document.createElement("span");
+  stars.className = "search-result-rating-stars";
+  stars.setAttribute("aria-label", searchResultRatingText(item));
+  stars.style.setProperty("--rating-width", `${(rating / 5) * 100}%`);
+  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
+  return stars;
+}
+
+function searchResultStatusLabel(item) {
+  const localSource = String(item?.local_source || "").trim();
+  if (localSource === "favlist") {
+    return t("search.favorited");
+  }
+  if (localSource === "follow") {
+    return t("search.followed");
+  }
+
+  const source = String(item?.source || "").trim();
+  if (source === "bilikara" || source === "cloudflare") {
+    return "";
+  }
+  if (source === "favlist") {
+    return t("search.favorited");
+  }
+  if (String(item?.mid || item?.fav_uid || "").trim()) {
+    return t("search.followed");
+  }
+  return "";
 }
 
 function createSearchResultUrlLine(item) {
@@ -1292,8 +2528,107 @@ function createSearchResultUrlLine(item) {
     owner.textContent = t("owner.tooltip", { name: ownerName });
     line.appendChild(owner);
   }
+  const rating = document.createElement("span");
+  rating.className = "search-result-rating-text";
+  rating.textContent = searchResultRatingText(item);
+  line.appendChild(rating);
 
   return line;
+}
+
+function createSearchResultItem(item) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  const itemUrl = String(item?.url || "").trim();
+  const bvid = searchResultBvid(item);
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+  if (bvid) {
+    row.dataset.bvid = bvid;
+  }
+
+  const coverUrl = searchResultCoverUrl(item);
+  const cover = document.createElement("div");
+  cover.className = "search-result-cover";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    cover.appendChild(image);
+  } else {
+    const fallback = document.createElement("span");
+    fallback.textContent = String(item?.bvid || "Bili");
+    cover.appendChild(fallback);
+    cover.classList.add("is-empty");
+  }
+
+  const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
+  if (duration) {
+    const durationNode = document.createElement("span");
+    durationNode.className = "search-result-duration";
+    durationNode.textContent = duration;
+    cover.appendChild(durationNode);
+  }
+  const ratingStars = createSearchResultRatingStars(item);
+  if (ratingStars) {
+    cover.appendChild(ratingStars);
+  }
+  const developerDeleteButton = createDeveloperDeleteButton(item);
+  if (developerDeleteButton) {
+    cover.appendChild(developerDeleteButton);
+  }
+  const developerResetButton = createDeveloperTagResetButton(item);
+  if (developerResetButton) {
+    cover.appendChild(developerResetButton);
+  }
+
+  const body = document.createElement("div");
+  body.className = "search-result-meta search-result-body";
+
+  const title = document.createElement("div");
+  title.className = "search-result-title";
+  title.textContent = String(item.title || "");
+
+  const statusLine = document.createElement("div");
+  statusLine.className = "search-result-status";
+  const statusLabel = searchResultStatusLabel(item);
+  if (statusLabel) {
+    const status = document.createElement("span");
+    status.className = "search-result-follow";
+    status.textContent = statusLabel;
+    statusLine.appendChild(status);
+  }
+  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
+  if (playCount) {
+    const plays = document.createElement("span");
+    plays.className = "search-result-plays";
+    const playLabel = document.createElement("span");
+    playLabel.className = "search-result-play-label";
+    playLabel.textContent = t("search.playCountLabel");
+    const playValue = document.createElement("span");
+    playValue.textContent = playCount;
+    plays.append(playLabel, playValue);
+    statusLine.appendChild(plays);
+  }
+
+  const url = createSearchResultUrlLine(item);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "next-button search-result-add";
+  button.dataset.url = itemUrl;
+  button.textContent = t("search.add");
+
+  body.append(title);
+  if (statusLine.children.length) {
+    body.appendChild(statusLine);
+  }
+  body.appendChild(url);
+  row.append(cover, body, button);
+  return row;
 }
 
 function renderSearchResultItems(container, items, emptyText = t("search.empty")) {
@@ -1312,27 +2647,7 @@ function renderSearchResultItems(container, items, emptyText = t("search.empty")
   }
 
   items.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "search-result-item";
-
-    const meta = document.createElement("div");
-    meta.className = "search-result-meta";
-
-    const title = document.createElement("div");
-    title.className = "search-result-title";
-    title.textContent = String(item.title || "");
-
-    const url = createSearchResultUrlLine(item);
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "next-button";
-    button.dataset.url = String(item.url || "");
-    button.textContent = t("search.add");
-
-    meta.append(title, url);
-    row.append(meta, button);
-    container.appendChild(row);
+    container.appendChild(createSearchResultItem(item));
   });
 }
 
@@ -1347,32 +2662,989 @@ function appendSearchResultItems(container, items) {
   container.classList.remove("hidden");
 
   items.forEach((item) => {
-    const row = document.createElement("div");
-    row.className = "search-result-item";
-
-    const meta = document.createElement("div");
-    meta.className = "search-result-meta";
-
-    const title = document.createElement("div");
-    title.className = "search-result-title";
-    title.textContent = String(item.title || "");
-
-    const url = createSearchResultUrlLine(item);
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "next-button";
-    button.dataset.url = String(item.url || "");
-    button.textContent = t("search.add");
-
-    meta.append(title, url);
-    row.append(meta, button);
-    container.appendChild(row);
+    container.appendChild(createSearchResultItem(item));
   });
 }
 
 function renderSearchResults(items) {
   renderSearchResultItems(elements.searchResults, items);
+}
+
+function d1BrowseTitle(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.artistBrowse") : t("search.nameBrowse");
+}
+
+function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.browsePickArtistLetter") : t("search.browsePickLetter");
+}
+
+function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
+  return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
+}
+
+const D1_BROWSE_ITEM_LIMIT = 450;
+const D1_BROWSE_TAG_LIMIT = 450;
+const D1_BROWSE_MERGE_MIN_LENGTH = 5;
+const D1_BROWSE_COUNT_CONCURRENCY = 4;
+const D1_BROWSE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
+const CATEGORY_BROWSE_PAGE_SIZE = 100;
+const CATEGORY_BROWSE_DEFINITIONS = [
+  { key: "hotBlood", tags: ["热血", "战斗"] },
+  { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
+  { key: "yuri", tags: ["百合"] },
+  { key: "vtuberSeries", tags: ["vtuber系列", "Hololive", "Vtuber"] },
+  { key: "idol", tags: ["偶像", "bangdream", "Lovelive系列", "偶像大师系列","SHOW BY ROCK!!","ガールズバンドクライ","22/7","Togenashi Togeari"] },
+  { key: "school", tags: ["校园", "学园","社团"] },
+  { key: "healing", tags: ["治愈", "催泪", "致郁"] },
+  { key: "vocaloid", tags: ["V家", "VOCALOID","DECO*27","Giga"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "detective", tags: ["推理","名探偵コナン","智斗"] },
+  { key: "mecha", tags: ["机战", "高达系列"] },
+  { key: "sliceOfLife", tags: ["日常"] },
+  { key: "moe", tags: ["萌系"] },
+  { key: "sports", tags: ["运动"] },
+  { key: "original", tags: ["原创"] },
+  { key: "mangaAdapted", tags: ["漫画改", "漫改", "动漫改"] },
+  { key: "gameAdapted", tags: ["游戏改", "Galgame", "GALGAME","鳴潮","ウマ娘","Key社","MAGES","Leaf","柚子社","August","游戏","ヘブンバーンズレッド","原神"] },
+  { key: "novelAdapted", tags: ["小说改", "轻改","轻小说改"] },
+  { key: "pjsk", tags: ["pjsk","プロジェクトセカイ"] },
+  { key: "symphogear", tags: ["战姬绝唱","戦姫絶唱シンフォギア"] },
+  { key: "pokemonSeries", tags: ["宝可梦系列"] },
+  { key: "childhood", tags: ["童年", "宝可梦系列"] },
+  { key: "bangDream", tags: ["bangdream","BanG Dream!","バンドリ！"] },
+  { key: "loveLive", tags: ["Lovelive系列","ラブライブ!"] },
+  { key: "idolmaster", tags: ["偶像大师系列","アイドルマスター"] },
+  { key: "isekai", tags: ["异世界", "穿越"] },
+  { key: "kamitsubaki", tags: ["神椿", "KAMITSUBAKI", "神椿工作室", "KAMITSUBAKI STUDIO","V.W.P","ヰ世界情緒","Albemuth","花譜"] },
+  { key: "youth", tags: ["青春","WHITE ALBUM2","HoneyWorks","励志"] },
+  { key: "otome", tags: ["乙女", "逆后宫"] },
+  { key: "kids", tags: ["子供向"] },
+  { key: "comedy", tags: ["搞笑", "喜剧"] },
+  { key: "tokusatsu", tags: ["特摄"] },
+  { key: "dark", tags: ["黑暗", "悬疑", "战争", "心理", "恐怖", "犯罪","扭曲"] },
+  { key: "godsDemons", tags: ["神魔"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "gourmet", tags: ["美食"] },
+  { key: "history", tags: ["历史","架空"] },
+  { key: "touhouProject", tags: ["东方project"] },
+  { key: "macross", tags: ["マクロス", "超时空要塞"] },
+  { key: "gundam", tags: ["高达系列"] },
+  { key: "longRunning", tags: ["名探偵コナン","NARUTO","ナルト","BLEACH","ONE PIECE","火影忍者","海贼王","銀魂","银魂","家庭教師ヒットマンREBORN!","家庭教师","鬼滅の刃","鬼灭之刃","呪術廻戦","咒术回战","ジョジョの奇妙な冒険","ドラゴンボール","聖闘士星矢","幽☆遊☆白書","THE FIRST SLAM DUNK","FAIRY TAIL"] },
+];
+const CATEGORY_BROWSE_FULL_FIELD_TAGS = new Set([
+  "Hololive",
+  "Vtuber",
+  "SHOW BY ROCK!!",
+  "ガールズバンドクライ",
+  "22/7",
+  "Togenashi Togeari",
+  "VOCALOID",
+  "DECO*27",
+  "Giga",
+  "名探偵コナン",
+  "Galgame",
+  "GALGAME",
+  "鳴潮",
+  "ウマ娘",
+  "Key社",
+  "MAGES",
+  "Leaf",
+  "柚子社",
+  "August",
+  "游戏",
+  "ヘブンバーンズレッド",
+  "原神",
+  "プロジェクトセカイ",
+  "戦姫絶唱シンフォギア",
+  "BanG Dream!",
+  "バンドリ！",
+  "ラブライブ!",
+  "アイドルマスター",
+  "KAMITSUBAKI",
+  "神椿工作室",
+  "KAMITSUBAKI STUDIO",
+  "V.W.P",
+  "ヰ世界情緒",
+  "Albemuth",
+  "花譜",
+  "WHITE ALBUM2",
+  "HoneyWorks",
+  "超时空要塞",
+  "东方project",
+  "マクロス",
+  "NARUTO",
+  "ナルト",
+  "BLEACH",
+  "ONE PIECE",
+  "火影忍者",
+  "海贼王",
+  "銀魂",
+  "银魂",
+  "家庭教師ヒットマンREBORN!",
+  "家庭教师",
+  "鬼滅の刃",
+  "鬼灭之刃",
+  "呪術廻戦",
+  "咒术回战",
+  "ジョジョの奇妙な冒険",
+  "ドラゴンボール",
+  "聖闘士星矢",
+  "幽☆遊☆白書",
+  "THE FIRST SLAM DUNK",
+  "FAIRY TAIL",
+].map(categoryBrowseTagKey));
+const CATEGORY_BROWSE_IMAGE_URLS = [
+  "/pic/cat_1.png",
+  "/pic/cat_2.png",
+  "/pic/cat_3.png",
+  "/pic/cat_4.png",
+  "/pic/cat_5.png",
+  "/pic/cat_6.png",
+  "/pic/cat_7.jpg",
+  "/pic/cat_8.jpg",
+  "/pic/cat_9.png",
+  "/pic/cat_10.jpg",
+  "/pic/cat_11.jpg",
+  "/pic/cat_12.jpg",
+  "/pic/cat_13.jpg",
+  "/pic/cat_14.png",
+  "/pic/cat_15.png",
+  "/pic/cat_16.jpg",
+  "/pic/cat_17.jpg",
+  "/pic/cat_18.jpg",
+  "/pic/cat_19.jpg",
+  "/pic/cat_20.jpg",
+  "/pic/cat_21.png",
+  "/pic/cat_22.jpg",
+  "/pic/cat_23.jpg",
+  "/pic/cat_24.jpg",
+  "/pic/cat_25.png",
+  "/pic/cat_26.png",
+  "/pic/cat_27.jpg",
+  "/pic/cat_28.jpg",
+  "/pic/cat_29.png",
+  "/pic/cat_30.jpg",
+  "/pic/cat_31.jpg",
+  "/pic/cat_32.jpg",
+  "/pic/cat_33.jpg",
+  "/pic/cat_34.jpg",
+  "/pic/cat_35.jpg",
+  "/pic/cat_36.jpg",
+  "/pic/cat_37.jpg",
+  "/pic/cat_38.jpg",
+  "/pic/cat_39.webp",
+  "/pic/cat_40.png",
+];
+
+function categoryBrowseTagKey(value) {
+  return String(value || "").normalize("NFKC").trim().toLowerCase();
+}
+
+function categoryBrowseUsesFullFieldSearch(tag) {
+  return CATEGORY_BROWSE_FULL_FIELD_TAGS.has(categoryBrowseTagKey(tag));
+}
+
+function normalizeD1BrowseTagForMerge(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/[\s"'`._!?,:;~\-\/\\|()[\]{}<>]+/g, "")
+    .replace(/[\u2018-\u201f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g, "");
+}
+
+function d1BrowseMergeLength(value) {
+  return Array.from(value || "").length;
+}
+
+function d1BrowseMergeCandidate(entry) {
+  const tag = String(entry?.tag || "").trim();
+  const locale = String(entry?.locale || "").trim();
+  const normalized = normalizeD1BrowseTagForMerge(tag);
+  return {
+    tag,
+    locale,
+    normalized,
+    count: Number(entry?.count || 0),
+    yomi: String(entry?.yomi || ""),
+    letter: String(entry?.letter || ""),
+  };
+}
+
+function isBetterD1BrowseMergeLabel(candidate, current) {
+  const candidateLength = d1BrowseMergeLength(candidate.normalized);
+  const currentLength = d1BrowseMergeLength(current.normalized);
+  if (candidateLength !== currentLength) {
+    return candidateLength < currentLength;
+  }
+  if (candidate.count !== current.count) {
+    return candidate.count > current.count;
+  }
+  return false;
+}
+
+function mergeD1BrowseTags(tags) {
+  const groups = [];
+  (Array.isArray(tags) ? tags : []).forEach((entry) => {
+    const candidate = d1BrowseMergeCandidate(entry);
+    if (!candidate.tag) {
+      return;
+    }
+    const canMerge = d1BrowseMergeLength(candidate.normalized) >= D1_BROWSE_MERGE_MIN_LENGTH;
+    let group = null;
+    if (canMerge) {
+      group = groups.find((item) => (
+        item.canMerge
+        && item.normalized
+        && (candidate.normalized.startsWith(item.normalized) || item.normalized.startsWith(candidate.normalized))
+      ));
+    }
+    if (!group) {
+      groups.push({
+        ...candidate,
+        canMerge,
+        aliases: [{ tag: candidate.tag, locale: candidate.locale }],
+      });
+      return;
+    }
+    group.count += candidate.count;
+    group.aliases.push({ tag: candidate.tag, locale: candidate.locale });
+    if (isBetterD1BrowseMergeLabel(candidate, group)) {
+      group.tag = candidate.tag;
+      group.locale = candidate.locale;
+      group.normalized = candidate.normalized;
+      group.yomi = candidate.yomi;
+      group.letter = candidate.letter;
+    }
+  });
+  groups.forEach((group) => {
+    group.aliases = uniqueD1BrowseAliases(group.aliases, group.tag, group.locale);
+    group.aliasKey = d1BrowseAliasKey(group.aliases, { kind: state.d1BrowseKind, query: "" });
+    if (state.d1BrowseResolvedCounts.has(group.aliasKey)) {
+      group.count = state.d1BrowseResolvedCounts.get(group.aliasKey);
+    }
+  });
+  return groups;
+}
+
+function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
+  const seen = new Set();
+  const results = [];
+  const source = Array.isArray(aliases) && aliases.length ? aliases : [{ tag: fallbackTag, locale: fallbackLocale }];
+  source.forEach((entry) => {
+    const tag = String(entry?.tag || "").trim();
+    const locale = String(entry?.locale || "").trim();
+    if (!tag) {
+      return;
+    }
+    const key = `${locale}\n${tag}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push({ tag, locale });
+  });
+  return results;
+}
+
+function d1BrowseAliasKey(aliases, { kind = state.d1BrowseKind, query = state.d1BrowseQuery } = {}) {
+  const normalizedAliases = uniqueD1BrowseAliases(aliases)
+    .map((entry) => ({ tag: entry.tag, locale: entry.locale }))
+    .sort((left, right) => `${left.locale}\n${left.tag}`.localeCompare(`${right.locale}\n${right.tag}`));
+  return JSON.stringify({
+    kind: kind === "artist" ? "artist" : "name",
+    query: String(query || "").trim(),
+    aliases: normalizedAliases,
+  });
+}
+
+function d1BrowseItemKey(item) {
+  return String(item?.bvid || item?.url || item?.id || `${item?.title || ""}\n${searchResultOwnerName(item)}`).trim();
+}
+
+function categoryBrowseIdForName(name) {
+  return encodeURIComponent(String(name || "").trim()).replace(/%/g, "_");
+}
+
+function categoryBrowseDefinitions() {
+  const groups = [];
+  const byKey = new Map();
+  CATEGORY_BROWSE_DEFINITIONS.forEach((definition) => {
+    const key = String(definition?.key || "").trim();
+    const tags = (Array.isArray(definition?.tags) ? definition.tags : []).map((value) => String(value || "").trim()).filter(Boolean);
+    if (!key || !tags.length) {
+      return;
+    }
+    let group = byKey.get(key);
+    if (!group) {
+      const imageIndex = groups.length;
+      group = {
+        id: categoryBrowseIdForName(key),
+        key,
+        name: t(`search.category.${key}`),
+        coverUrl: CATEGORY_BROWSE_IMAGE_URLS[imageIndex] || "",
+        tags: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    tags.forEach((tag) => {
+      if (!group.tags.includes(tag)) {
+        group.tags.push(tag);
+      }
+    });
+  });
+  return groups;
+}
+
+function selectedCategoryBrowseDefinition() {
+  const selectedId = String(state.categoryBrowseSelectedId || "");
+  return categoryBrowseDefinitions().find((entry) => entry.id === selectedId) || null;
+}
+
+function mergeCategoryBrowseItems(existingItems, nextItems) {
+  const seen = new Set();
+  const items = [];
+  [...(Array.isArray(existingItems) ? existingItems : []), ...(Array.isArray(nextItems) ? nextItems : [])].forEach((item) => {
+    const key = d1BrowseItemKey(item);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    items.push(item);
+  });
+  return items;
+}
+
+function mergeD1BrowseItemPayloads(payloads) {
+  const seen = new Set();
+  const items = [];
+  (Array.isArray(payloads) ? payloads : []).forEach((payload) => {
+    (Array.isArray(payload?.items) ? payload.items : []).forEach((item) => {
+      const key = d1BrowseItemKey(item);
+      if (!key || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      items.push(item);
+    });
+  });
+  return items;
+}
+
+async function resolveD1BrowseMergedTagCounts(groups, { kind, letter, query } = {}) {
+  const targets = (Array.isArray(groups) ? groups : []).filter((group) => (
+    Array.isArray(group.aliases)
+    && group.aliases.length > 1
+    && group.aliasKey
+    && !state.d1BrowseResolvedCounts.has(group.aliasKey)
+  ));
+  if (!targets.length) {
+    return;
+  }
+  let targetIndex = 0;
+  const workerCount = Math.min(D1_BROWSE_COUNT_CONCURRENCY, targets.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (targetIndex < targets.length) {
+      const group = targets[targetIndex];
+      targetIndex += 1;
+      try {
+        const payloads = await Promise.all(group.aliases.map((alias) => fetchD1Browse({
+          kind,
+          letter,
+          query,
+          tag: alias.tag,
+          locale: alias.locale,
+          limit: D1_BROWSE_ITEM_LIMIT,
+        })));
+        const items = mergeD1BrowseItemPayloads(payloads);
+        state.d1BrowseResolvedCounts.set(group.aliasKey, items.length);
+        state.d1BrowseItemCache.set(group.aliasKey, items);
+      } catch (error) {
+        // Keep the optimistic aggregate count if the exact count fails.
+      }
+    }
+  }));
+}
+
+function ensureD1BrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("search-modal-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-d1-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "tag-browser";
+  view.dataset.d1BrowseView = "1";
+  view.innerHTML = `
+    <form class="tag-browser-search" data-d1-browse-search>
+      <input type="text" autocomplete="off" data-d1-browse-query>
+      <button type="submit" class="next-button" data-d1-browse-submit></button>
+    </form>
+    <div class="tag-browser-alphabet" data-d1-browse-alphabet></div>
+    <div class="tag-browser-nav">
+      <button type="button" class="tag-browser-back hidden" data-d1-browse-back></button>
+      <div class="tag-browser-current" data-d1-browse-current></div>
+    </div>
+    <div class="tag-browser-tags" data-d1-browse-tags></div>
+    <div class="search-results hidden" data-d1-browse-results></div>
+    <p class="gatcha-message tag-browser-message" data-d1-browse-message role="status"></p>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function renderD1BrowseView() {
+  const view = ensureD1BrowseView();
+  if (!view) {
+    return;
+  }
+  const kind = state.d1BrowseKind || "name";
+  const title = d1BrowseTitle(kind);
+  const queryInput = view.querySelector("[data-d1-browse-query]");
+  const submitButton = view.querySelector("[data-d1-browse-submit]");
+  const alphabet = view.querySelector("[data-d1-browse-alphabet]");
+  const backButton = view.querySelector("[data-d1-browse-back]");
+  const current = view.querySelector("[data-d1-browse-current]");
+  const tagGrid = view.querySelector("[data-d1-browse-tags]");
+  const results = view.querySelector("[data-d1-browse-results]");
+  const message = view.querySelector("[data-d1-browse-message]");
+
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.d1BrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.d1BrowseLoading;
+  }
+  if (alphabet) {
+    alphabet.innerHTML = "";
+    D1_BROWSE_LETTERS.forEach((letter) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tag-letter-button";
+      button.dataset.letter = letter;
+      button.textContent = letter;
+      button.classList.toggle("active", state.d1BrowseLetter === letter);
+      button.disabled = state.d1BrowseLoading;
+      alphabet.appendChild(button);
+    });
+  }
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.classList.toggle("hidden", !state.d1BrowseLetter);
+    backButton.disabled = state.d1BrowseLoading;
+  }
+
+  const tags = mergeD1BrowseTags(state.d1BrowseData?.tags);
+  const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
+  if (current) {
+    const parts = [title];
+    if (state.d1BrowseLetter) {
+      parts.push(state.d1BrowseLetter);
+    }
+    if (state.d1BrowseTag) {
+      parts.push(state.d1BrowseTag);
+    }
+    current.textContent = parts.join(" / ");
+  }
+  if (tagGrid) {
+    tagGrid.innerHTML = "";
+    tagGrid.classList.toggle("hidden", Boolean(state.d1BrowseTag));
+    if (!state.d1BrowseTag) {
+      if (state.d1BrowseLoading) {
+        const loading = document.createElement("div");
+        loading.className = "search-empty";
+        loading.textContent = t("search.browseLoading");
+        tagGrid.appendChild(loading);
+      } else if (!state.d1BrowseLetter) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = d1BrowsePickLetterText(kind);
+        tagGrid.appendChild(empty);
+      } else if (!tags.length) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = t("search.browseNoTags");
+        tagGrid.appendChild(empty);
+      } else {
+        tags.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tag-browser-tag";
+          button.dataset.tag = String(entry.tag || "");
+          button.dataset.locale = String(entry.locale || "");
+          button.dataset.aliases = JSON.stringify(entry.aliases || []);
+          const name = document.createElement("span");
+          name.className = "tag-browser-tag-name";
+          name.textContent = String(entry.tag || "");
+          const count = document.createElement("span");
+          count.className = "tag-browser-tag-count";
+          count.textContent = t("search.browseTagCount", { count: Number(entry.count || 0) });
+          button.append(name, count);
+          tagGrid.appendChild(button);
+        });
+      }
+    }
+  }
+  if (results) {
+    if (state.d1BrowseTag) {
+      renderSearchResultItems(results, items, t("search.larkNoResults"));
+    } else {
+      results.innerHTML = "";
+      results.classList.add("hidden");
+    }
+  }
+  if (message) {
+    let text = "";
+    if (state.d1BrowseTag && !state.d1BrowseLoading) {
+      text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
+    } else if (!state.d1BrowseTag && tags.length) {
+      text = t("search.browseTagsFound", { count: tags.length });
+    }
+    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
+    message.classList.toggle("is-error", false);
+  }
+}
+
+async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "", aliases = [] } = {}) {
+  const searchSeq = state.d1BrowseSeq + 1;
+  state.d1BrowseSeq = searchSeq;
+  state.d1BrowseKind = kind === "artist" ? "artist" : "name";
+  state.d1BrowseLetter = String(letter || "").trim().toUpperCase();
+  state.d1BrowseQuery = String(query || "").trim();
+  state.d1BrowseTag = String(tag || "").trim();
+  state.d1BrowseLocale = String(locale || "").trim();
+  state.d1BrowseAliases = state.d1BrowseTag ? uniqueD1BrowseAliases(aliases, state.d1BrowseTag, state.d1BrowseLocale) : [];
+  state.d1BrowseLoading = true;
+  renderD1BrowseView();
+  try {
+    const requestAliases = state.d1BrowseTag ? state.d1BrowseAliases : [];
+    const requestAliasKey = requestAliases.length ? d1BrowseAliasKey(requestAliases, {
+      kind: state.d1BrowseKind,
+      query: state.d1BrowseQuery,
+    }) : "";
+    if (requestAliasKey && state.d1BrowseItemCache.has(requestAliasKey)) {
+      const items = state.d1BrowseItemCache.get(requestAliasKey) || [];
+      state.d1BrowseData = { kind: state.d1BrowseKind, letter: state.d1BrowseLetter, query: state.d1BrowseQuery, tag: state.d1BrowseTag, locale: state.d1BrowseLocale, tags: [], items };
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      return;
+    }
+    const payloads = requestAliases.length > 1
+      ? await Promise.all(requestAliases.map((alias) => fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: alias.tag,
+        locale: alias.locale,
+        limit: D1_BROWSE_ITEM_LIMIT,
+      })))
+      : [await fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: state.d1BrowseTag,
+        locale: state.d1BrowseLocale,
+        limit: state.d1BrowseTag ? D1_BROWSE_ITEM_LIMIT : D1_BROWSE_TAG_LIMIT,
+      })];
+    if (state.d1BrowseSeq !== searchSeq) {
+      return;
+    }
+    const data = payloads[0] || {};
+    if (!state.d1BrowseTag) {
+      const mergedTags = mergeD1BrowseTags(data.tags);
+      await resolveD1BrowseMergedTagCounts(mergedTags, {
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: "",
+      });
+      if (state.d1BrowseSeq !== searchSeq) {
+        return;
+      }
+    }
+    state.d1BrowseData = requestAliases.length > 1 ? { ...data, items: mergeD1BrowseItemPayloads(payloads) } : data;
+    if (requestAliasKey) {
+      const items = Array.isArray(state.d1BrowseData.items) ? state.d1BrowseData.items : [];
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      state.d1BrowseItemCache.set(requestAliasKey, items);
+    }
+  } catch (error) {
+    const view = ensureD1BrowseView();
+    const message = view?.querySelector("[data-d1-browse-message]");
+    if (message) {
+      message.textContent = error.message;
+      message.classList.add("is-error");
+    }
+  } finally {
+    if (state.d1BrowseSeq === searchSeq) {
+      state.d1BrowseLoading = false;
+      renderD1BrowseView();
+    }
+  }
+}
+
+function ensurePendingReviewView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("search-modal-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-pending-review-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "pending-review-browser";
+  view.dataset.pendingReviewView = "1";
+  view.innerHTML = `
+    <div class="pending-review-head">
+      <div class="pending-review-title-block">
+        <p class="section-tag" data-pending-review-eyebrow></p>
+        <h2 data-pending-review-title></h2>
+      </div>
+      <button type="button" class="toolbar-button" data-pending-review-refresh></button>
+    </div>
+    <div class="search-results pending-review-results hidden" data-pending-review-results></div>
+    <p class="gatcha-message pending-review-message" data-pending-review-message role="status"></p>
+    <div class="pending-review-actions">
+      <button type="button" class="next-button" data-pending-review-approve></button>
+    </div>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function renderPendingReviewView() {
+  const view = ensurePendingReviewView();
+  if (!view) {
+    return;
+  }
+  const eyebrow = view.querySelector("[data-pending-review-eyebrow]");
+  const title = view.querySelector("[data-pending-review-title]");
+  const refreshButton = view.querySelector("[data-pending-review-refresh]");
+  const results = view.querySelector("[data-pending-review-results]");
+  const message = view.querySelector("[data-pending-review-message]");
+  const approveButton = view.querySelector("[data-pending-review-approve]");
+  const items = Array.isArray(state.pendingReviewItems) ? state.pendingReviewItems : [];
+
+  if (eyebrow) {
+    eyebrow.textContent = "D1 REVIEW";
+  }
+  if (title) {
+    title.textContent = t("search.reviewPending");
+  }
+  if (refreshButton) {
+    refreshButton.textContent = t("search.reviewRefresh");
+    refreshButton.disabled = state.pendingReviewLoading || state.pendingReviewApproving;
+  }
+  if (results) {
+    renderSearchResultItems(
+      results,
+      items,
+      state.pendingReviewLoading ? t("search.reviewLoading") : t("search.reviewEmpty"),
+    );
+  }
+  if (message) {
+    let text = state.pendingReviewMessage || "";
+    if (state.pendingReviewError) {
+      text = state.pendingReviewError;
+    } else if (state.pendingReviewLoading) {
+      text = t("search.reviewLoading");
+    } else if (!text && items.length) {
+      text = t("search.reviewFound", {
+        count: items.length,
+        total: state.pendingReviewTotal,
+        exportCount: state.pendingReviewExportCount,
+      });
+    }
+    message.textContent = text;
+    message.classList.toggle("is-error", Boolean(state.pendingReviewError));
+  }
+  if (approveButton) {
+    approveButton.textContent = state.pendingReviewApproving ? t("search.reviewApproving") : t("search.reviewApprove");
+    approveButton.disabled = state.pendingReviewLoading || state.pendingReviewApproving || !items.length;
+  }
+}
+
+async function loadPendingReviewItems() {
+  if (!state.developerMode || !state.bilikaraSecret) {
+    state.pendingReviewItems = [];
+    state.pendingReviewMessage = "";
+    state.pendingReviewError = t("search.reviewNeedDeveloper");
+    renderPendingReviewView();
+    return;
+  }
+  const reviewSeq = state.pendingReviewSeq + 1;
+  state.pendingReviewSeq = reviewSeq;
+  state.pendingReviewLoading = true;
+  state.pendingReviewMessage = "";
+  state.pendingReviewError = "";
+  renderPendingReviewView();
+  try {
+    const payload = await fetchPendingReviewItems();
+    if (state.pendingReviewSeq !== reviewSeq) {
+      return;
+    }
+    state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
+    state.pendingReviewTotal = Number(payload?.total_pending || 0);
+    state.pendingReviewExportCount = Number(payload?.export_count || 0);
+  } catch (error) {
+    if (state.pendingReviewSeq === reviewSeq) {
+      state.pendingReviewItems = [];
+      state.pendingReviewError = error?.message || t("error.requestFailed");
+    }
+  } finally {
+    if (state.pendingReviewSeq === reviewSeq) {
+      state.pendingReviewLoading = false;
+      renderPendingReviewView();
+    }
+  }
+}
+
+function removePendingReviewItem(bvid) {
+  const normalizedBvid = String(bvid || "").trim();
+  if (!normalizedBvid || !Array.isArray(state.pendingReviewItems)) {
+    return;
+  }
+  const nextItems = state.pendingReviewItems.filter((item) => searchResultBvid(item) !== normalizedBvid);
+  if (nextItems.length === state.pendingReviewItems.length) {
+    return;
+  }
+  state.pendingReviewItems = nextItems;
+  state.pendingReviewTotal = Math.max(0, Number(state.pendingReviewTotal || 0) - 1);
+  if (elements.searchModalOtherView?.querySelector("[data-pending-review-view]")) {
+    renderPendingReviewView();
+  }
+}
+
+async function approvePendingReviewVisibleItems() {
+  if (state.pendingReviewLoading || state.pendingReviewApproving) {
+    return;
+  }
+  const bvids = (Array.isArray(state.pendingReviewItems) ? state.pendingReviewItems : [])
+    .map((item) => searchResultBvid(item))
+    .filter(Boolean);
+  if (!bvids.length) {
+    return;
+  }
+  state.pendingReviewApproving = true;
+  state.pendingReviewMessage = "";
+  state.pendingReviewError = "";
+  renderPendingReviewView();
+  try {
+    const payload = await approvePendingReviewItems(bvids);
+    state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
+    state.pendingReviewTotal = Number(payload?.total_pending || 0);
+    state.pendingReviewExportCount = Number(payload?.export_count || 0);
+    state.pendingReviewMessage = t("search.reviewApproved", {
+      count: Number(payload?.approved || 0),
+      skipped: Number(payload?.skipped_missing || 0),
+    });
+  } catch (error) {
+    state.pendingReviewError = error?.message || t("error.requestFailed");
+  } finally {
+    state.pendingReviewApproving = false;
+    renderPendingReviewView();
+  }
+}
+
+function ensureCategoryBrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("search-modal-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-category-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "category-browser";
+  view.dataset.categoryBrowseView = "1";
+  view.innerHTML = `
+    <div class="category-browser-home" data-category-browser-home>
+      <div class="category-browser-grid" data-category-browser-grid></div>
+    </div>
+    <div class="category-browser-detail hidden" data-category-browser-detail>
+      <form class="tag-browser-search category-browser-search" data-category-browse-search>
+        <input type="text" autocomplete="off" data-category-browse-query>
+        <button type="submit" class="next-button" data-category-browse-submit></button>
+      </form>
+      <div class="category-browser-tabs" data-category-browser-tabs></div>
+      <div class="tag-browser-nav">
+        <button type="button" class="tag-browser-back" data-category-browse-back></button>
+        <div class="tag-browser-current" data-category-browse-current></div>
+      </div>
+      <div class="search-results category-browser-results" data-category-browse-results></div>
+      <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
+    </div>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function createCategoryBrowseCard(category, { compact = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = compact ? "category-browser-tab" : "category-browser-card";
+  button.dataset.categoryId = category.id;
+  const media = document.createElement("span");
+  media.className = compact ? "category-browser-tab-media" : "category-browser-card-media";
+  if (category.coverUrl) {
+    media.style.backgroundImage = `linear-gradient(135deg, rgba(0, 210, 255, 0.18), rgba(255, 102, 51, 0.14)), url("${category.coverUrl}")`;
+  }
+  const name = document.createElement("span");
+  name.className = compact ? "category-browser-tab-name" : "category-browser-card-name";
+  name.textContent = category.name;
+  button.append(media, name);
+  return button;
+}
+
+function renderCategoryBrowseView() {
+  const view = ensureCategoryBrowseView();
+  if (!view) {
+    return;
+  }
+  const categories = categoryBrowseDefinitions();
+  const selected = selectedCategoryBrowseDefinition();
+  const home = view.querySelector("[data-category-browser-home]");
+  const detail = view.querySelector("[data-category-browser-detail]");
+  const grid = view.querySelector("[data-category-browser-grid]");
+  const tabs = view.querySelector("[data-category-browser-tabs]");
+  const queryInput = view.querySelector("[data-category-browse-query]");
+  const submitButton = view.querySelector("[data-category-browse-submit]");
+  const backButton = view.querySelector("[data-category-browse-back]");
+  const current = view.querySelector("[data-category-browse-current]");
+  const results = view.querySelector("[data-category-browse-results]");
+  const message = view.querySelector("[data-category-browse-message]");
+
+  home?.classList.toggle("hidden", Boolean(selected));
+  detail?.classList.toggle("hidden", !selected);
+  if (grid && !selected) {
+    grid.innerHTML = "";
+    categories.forEach((category) => {
+      grid.appendChild(createCategoryBrowseCard(category));
+    });
+  }
+  if (!selected) {
+    return;
+  }
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.categoryBrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = t("search.browseItemPlaceholder");
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.categoryBrowseLoading;
+  }
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.disabled = state.categoryBrowseLoading;
+  }
+  if (current) {
+    current.textContent = "";
+    current.classList.add("hidden");
+  }
+  if (tabs) {
+    tabs.innerHTML = "";
+    categories.forEach((category) => {
+      const tab = createCategoryBrowseCard(category, { compact: true });
+      tab.classList.toggle("active", category.id === selected.id);
+      tab.disabled = state.categoryBrowseLoading && category.id === selected.id;
+      tabs.appendChild(tab);
+    });
+  }
+  if (results) {
+    renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
+  }
+  if (message) {
+    let text = "";
+    if (state.categoryBrowseError) {
+      text = state.categoryBrowseError;
+    } else if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
+      text = t("search.browseLoading");
+    } else if (state.categoryBrowseItems.length) {
+      text = state.categoryBrowseHasMore
+        ? t("search.categoryLoadedMore", { count: state.categoryBrowseItems.length })
+        : t("search.categoryLoadedAll", { count: state.categoryBrowseItems.length });
+    } else if (!state.categoryBrowseLoading) {
+      text = t("search.larkNoResults");
+    }
+    message.textContent = text;
+    message.classList.toggle("is-error", Boolean(state.categoryBrowseError));
+  }
+}
+
+async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId, query = state.categoryBrowseQuery, append = false } = {}) {
+  const category = categoryBrowseDefinitions().find((entry) => entry.id === categoryId);
+  if (!category) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    renderCategoryBrowseView();
+    return;
+  }
+  const searchSeq = state.categoryBrowseSeq + 1;
+  state.categoryBrowseSeq = searchSeq;
+  state.categoryBrowseSelectedId = category.id;
+  state.categoryBrowseQuery = String(query || "").trim();
+  state.categoryBrowseError = "";
+  if (!append) {
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = true;
+  }
+  state.categoryBrowseLoading = true;
+  renderCategoryBrowseView();
+  try {
+    const data = await fetchD1CategoryBrowse({
+      tags: category.tags,
+      query: state.categoryBrowseQuery,
+      offset: append ? state.categoryBrowseOffset : 0,
+      limit: CATEGORY_BROWSE_PAGE_SIZE,
+    });
+    if (state.categoryBrowseSeq !== searchSeq) {
+      return;
+    }
+    const nextItems = Array.isArray(data.items) ? data.items : [];
+    state.categoryBrowseItems = append ? mergeCategoryBrowseItems(state.categoryBrowseItems, nextItems) : mergeCategoryBrowseItems([], nextItems);
+    state.categoryBrowseHasMore = Boolean(data.has_more);
+    state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
+  } catch (error) {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseError = error.message;
+    }
+  } finally {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseLoading = false;
+      renderCategoryBrowseView();
+    }
+  }
+}
+
+function maybeLoadMoreCategoryBrowse(scrollContainer) {
+  if (
+    !state.categoryBrowseSelectedId
+    || state.categoryBrowseLoading
+    || !state.categoryBrowseHasMore
+    || !scrollContainer
+  ) {
+    return;
+  }
+  const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+  if (remaining <= 160) {
+    loadCategoryBrowse({ append: true });
+  }
 }
 
 function selectedFollowOwner() {
@@ -1459,6 +3731,17 @@ function renderFollowBrowse() {
         count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
 
         button.append(name, count);
+
+        if (owner.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar";
+          avatar.src = owner.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
         elements.followUpGrid.appendChild(button);
       });
     }
@@ -1467,6 +3750,15 @@ function renderFollowBrowse() {
   }
 
   const owner = selectedFollowOwner();
+  if (elements.followBrowseAvatar) {
+    const avatarUrl = String(owner?.avatar_url || "").trim();
+    elements.followBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.followBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.followBrowseAvatar.removeAttribute("src");
+    }
+  }
   if (elements.followBrowseTitle) {
     elements.followBrowseTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
   }
@@ -1508,13 +3800,243 @@ async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
   await loadFollowBrowse({ uid: nextUid, query: "", keepQuery: false });
 }
 
+function selectedFavlistFolder() {
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  return folders.find((folder) => String(folder.id || "") === state.favlistBrowseSelectedFolderId) || null;
+}
+
+function renderFavlistBrowse() {
+  if (!elements.favlistGrid || !elements.favlistSongResults) {
+    return;
+  }
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  const signature = JSON.stringify({
+    loading: state.favlistBrowseLoading,
+    selected: state.favlistBrowseSelectedFolderId,
+    folders,
+    items,
+    language: state.language,
+  });
+  if (signature === state.favlistBrowseRenderSignature) {
+    return;
+  }
+  state.favlistBrowseRenderSignature = signature;
+
+  const hasSelectedFolder = Boolean(state.favlistBrowseSelectedFolderId);
+  elements.favlistListView?.classList.toggle("hidden", hasSelectedFolder);
+  elements.favlistItemsView?.classList.toggle("hidden", !hasSelectedFolder);
+
+  if (!hasSelectedFolder) {
+    elements.favlistGrid.innerHTML = "";
+    if (!folders.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
+      elements.favlistGrid.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const folderId = String(folder.id || "").trim();
+        const title = String(folder.title || folderId || t("favlist.folder")).trim();
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button favlist-browse-button";
+        button.dataset.folderId = folderId;
+        button.title = title;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name favlist-browse-name";
+        name.textContent = title;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count favlist-browse-count";
+        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
+
+        button.append(name, count);
+
+        if (folder.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar favlist-browse-avatar";
+          avatar.src = folder.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
+        elements.favlistGrid.appendChild(button);
+      });
+    }
+    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    return;
+  }
+
+  const folder = selectedFavlistFolder();
+  if (elements.favlistBrowseAvatar) {
+    const avatarUrl = String(folder?.avatar_url || "").trim();
+    elements.favlistBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.favlistBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.favlistBrowseAvatar.removeAttribute("src");
+    }
+  }
+  if (elements.favlistBrowseTitle) {
+    elements.favlistBrowseTitle.textContent = String(folder?.title || state.favlistBrowseSelectedFolderId || t("favlist.folder"));
+  }
+  if (elements.favlistBrowseCount) {
+    const totalCount = Number(folder?.media_count || folder?.count || items.length || 0);
+    elements.favlistBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.favlistSongResults,
+    items,
+    state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
+  );
+  setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+}
+
+async function loadFavlistBrowse({
+  folderId = state.favlistBrowseSelectedFolderId,
+  query = "",
+  keepQuery = false,
+} = {}) {
+  state.favlistBrowseLoading = true;
+  state.favlistBrowseSelectedFolderId = String(folderId || "").trim();
+  renderFavlistBrowse();
+  let caughtError = null;
+  try {
+    const nextData = await fetchGatchaFavlistBrowse(state.favlistBrowseSelectedFolderId, query);
+    state.favlistBrowseData = nextData;
+    state.favlistBrowseSelectedFolderId = String(
+      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+    );
+    if (!keepQuery && elements.favlistSearchQuery) {
+      elements.favlistSearchQuery.value = String(nextData.query || "");
+    }
+  } catch (error) {
+    caughtError = error;
+  } finally {
+    state.favlistBrowseLoading = false;
+    renderFavlistBrowse();
+    if (caughtError) {
+      setFavlistBrowseMessage(caughtError.message, true);
+    }
+  }
+}
+
+async function refreshFavlistBrowseAfterPull() {
+  if (!state.favlistBrowseData) {
+    return;
+  }
+  state.favlistBrowseRenderSignature = "";
+  await loadFavlistBrowse({
+    folderId: state.favlistBrowseSelectedFolderId,
+    query: String(elements.favlistSearchQuery?.value || "").trim(),
+    keepQuery: true,
+  });
+}
+
+function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
+  const previousUpdatedAt = Number(previousSnapshot?.gatcha_favlist_updated_at || 0);
+  const nextUpdatedAt = Number(nextSnapshot?.gatcha_favlist_updated_at || 0);
+  if (!state.favlistBrowseData || state.favlistBrowseLoading || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
+    return;
+  }
+  if (state.favlistBrowseReloadTimer) {
+    window.clearTimeout(state.favlistBrowseReloadTimer);
+  }
+  state.favlistBrowseReloadTimer = window.setTimeout(() => {
+    state.favlistBrowseReloadTimer = null;
+    if (!state.favlistBrowseData || state.favlistBrowseLoading) {
+      return;
+    }
+    refreshFavlistBrowseAfterPull();
+  }, 0);
+}
+
+async function previewGatchaUidAddFromInput(input, {
+  messageTarget = "gatcha",
+  anchor = elements.addGatchaUidButton,
+  event = null,
+} = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.checkingUid"));
+  try {
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
+    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
+    const point = anchorPointForEvent(event || {}, anchor || input);
+    openConfirm({
+      type: "gatcha-uid-add",
+      uid: preview?.uid || uid,
+      name: ownerName,
+      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
+      messageTarget,
+      clearInputId: input?.id || "",
+      ...point,
+    });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
+async function previewGatchaFavlistFromInput(input, {
+  messageTarget = "gatcha",
+  modalSource = "gatcha",
+} = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidFace();
+    return;
+  }
+
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidFace();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.readingFavlists"));
+  try {
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistModal(result?.uid || uid, result, { messageTarget: modalSource });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.chooseFavlists"));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidFace();
+  }
+}
+
 async function handleGatchaDraw() {
   setGatchaMessage(t("gatcha.drawing"));
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
-      throw new Error(payload.error || t("gatcha.drawFailed"));
+      throw new Error(localizedApiMessage(payload.error) || t("gatcha.drawFailed"));
     }
 
     state.gatchaCandidate = payload.data;
@@ -1545,12 +4067,71 @@ function setFollowBrowseMessage(message, isError = false) {
   elements.followBrowseMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function setFavlistBrowseMessage(message, isError = false) {
+  if (!elements.favlistBrowseMessage) {
+    return;
+  }
+  elements.favlistBrowseMessage.textContent = message || "";
+  elements.favlistBrowseMessage.classList.toggle("is-error", Boolean(isError));
+}
+
 function setLarkSearchMessage(message, isError = false) {
   if (!elements.larkSearchMessage) {
     return;
   }
   elements.larkSearchMessage.textContent = message || "";
   elements.larkSearchMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function localizedCacheMessage(message, cacheStatus = "") {
+  let raw = String(message || "").trim();
+  if (raw.includes("\n")) {
+    raw = raw.split("\n")[0].trim();
+  }
+  const status = String(cacheStatus || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "已缓存" || raw === "缓存已完成" || raw.includes("缓存完成")) {
+    return t("cache.ready");
+  }
+  if (raw === "等待缓存" || raw === "等待缓存队列" || raw.includes("等待优先缓存")) {
+    return t("status.pendingCache");
+  }
+  if (raw === "正在校验缓存") {
+    return t("status.checking");
+  }
+  const progressMatch = raw.match(/^缓存中\s*([0-9.]+)%$/);
+  if (progressMatch) {
+    return `${t("status.caching")} ${progressMatch[1]}%`;
+  }
+  if (raw.startsWith("缓存失败:")) {
+    const detail = raw.slice("缓存失败:".length).trim();
+    return detail ? `${t("cache.failed")}: ${detail}` : t("cache.failed");
+  }
+  if (raw.includes("开始缓存视频") || raw.includes("正在缓存")) {
+    return t("cache.caching");
+  }
+  if (status === "ready") {
+    return t("cache.ready");
+  }
+  if (status === "failed" && raw === "缓存失败") {
+    return t("cache.failed");
+  }
+  return raw;
+}
+
+function localizedCacheMessageLines(message, cacheStatus = "") {
+  const lines = String(message || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    return "";
+  }
+  return lines
+    .map((line) => localizedCacheMessage(line, cacheStatus) || line)
+    .join("\n");
 }
 
 function syncLarkSearchInputs(value, source = "") {
@@ -1575,12 +4156,63 @@ function setGatchaUidMessage(message, isError = false) {
   elements.gatchaUidMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function setGatchaUidFlowMessage(target, message, isError = false) {
+  if (target === "follow-modal") {
+    setFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (target === "favlist-modal") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  setGatchaUidMessage(message, isError);
+}
+
+function clearGatchaUidFlowInput(inputId) {
+  const input = inputId ? document.getElementById(inputId) : null;
+  if (input instanceof HTMLInputElement) {
+    input.value = "";
+  }
+}
+
 function gatchaTaskBusy() {
   return Boolean(state.data?.gatcha?.busy);
 }
 
+function localizedGatchaTaskMessage(message, status = "") {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    if (status === "success") {
+      return t("gatcha.refreshDone");
+    }
+    if (status === "partial") {
+      return t("gatcha.refreshPartial");
+    }
+    if (status === "failed") {
+      return t("gatcha.refreshFailed");
+    }
+    return "";
+  }
+  if (raw.includes("拉取任务执行中")) {
+    return t("gatcha.busyFallback");
+  }
+  if (raw.includes("部分更新")) {
+    return t("gatcha.refreshPartial");
+  }
+  if (raw.includes("更新完成") || raw.includes("重建完成")) {
+    return t("gatcha.refreshDone");
+  }
+  if (raw.includes("更新失败")) {
+    return t("gatcha.refreshFailed");
+  }
+  if (raw.includes("正在重建") || raw.includes("更新中")) {
+    return t("gatcha.refreshingBackground");
+  }
+  return raw;
+}
+
 function gatchaTaskBusyMessage() {
-  return state.data?.gatcha?.message || t("gatcha.busyFallback");
+  return localizedGatchaTaskMessage(state.data?.gatcha?.message, "running") || t("gatcha.busyFallback");
 }
 
 function syncGatchaTaskTerminalMessage() {
@@ -1612,7 +4244,8 @@ function syncGatchaTaskTerminalMessage() {
       : status === "partial"
         ? t("gatcha.refreshPartial")
         : t("gatcha.refreshFailed");
-  const detail = task.last_error ? `${task.last_message || fallback} ${task.last_error}` : task.last_message || fallback;
+  const message = localizedGatchaTaskMessage(task.last_message, status) || fallback;
+  const detail = task.last_error ? `${message} ${task.last_error}` : message;
   setGatchaUidMessage(detail, status !== "success");
 }
 
@@ -1749,9 +4382,19 @@ function renderGatchaUidFace() {
   if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
     elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
+  if (elements.modalFollowUidInput) {
+    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
+  }
+  if (elements.modalFavlistUidInput) {
+    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
+  }
   if (elements.addGatchaUidButton) {
     elements.addGatchaUidButton.disabled = state.gatchaUidSaving || taskBusy;
     elements.addGatchaUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
+  }
+  if (elements.modalAddFollowUidButton) {
+    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
+    elements.modalAddFollowUidButton.textContent = state.gatchaUidSaving ? t("gatcha.adding") : t("gatcha.add");
   }
   if (elements.refreshGatchaCacheButton) {
     elements.refreshGatchaCacheButton.disabled = state.gatchaRefreshSaving || taskBusy;
@@ -1761,12 +4404,22 @@ function renderGatchaUidFace() {
     elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
     elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
+  if (elements.modalPullFavlistButton) {
+    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
       elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
     }
     if (elements.pullGatchaFavlistButton) {
       elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
+    }
+    if (elements.modalAddFollowUidButton) {
+      elements.modalAddFollowUidButton.textContent = t("gatcha.globalCooldown");
+    }
+    if (elements.modalPullFavlistButton) {
+      elements.modalPullFavlistButton.textContent = t("gatcha.globalCooldown");
     }
   }
 }
@@ -1814,6 +4467,7 @@ function render() {
   renderAudioVariantBar(currentItem, playbackMode);
   renderAvSyncControls(playbackMode, data.player_settings);
   renderVolumeControls(playbackMode);
+  renderKeyShiftControls(playbackMode);
   applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, playbackMode);
   renderPlayerFullscreenButton();
@@ -1831,6 +4485,9 @@ function render() {
   );
   syncListStageView();
   renderSearchCookieFace();
+  if (elements.favlistBrowserView && !elements.favlistBrowserView.classList.contains("hidden")) {
+    renderFavlistBrowse();
+  }
   renderGatchaUidFace();
   renderConfirmPopover();
   flushPendingSongTransitionOverlay();
@@ -1934,19 +4591,16 @@ function renderSessionUsers(sessionUsers) {
   }
 
   users.forEach((userName, index) => {
-    const item = document.createElement("article");
-    item.className = "session-user-item";
+    const item = document.createElement("div");
+    item.className = "session-user-badge";
+    item.draggable = true;
+    item.dataset.index = index;
+    item.dataset.name = userName;
     item.innerHTML = `
-      <div class="session-user-main">
-        <span class="session-user-order">${index + 1}</span>
-        <strong class="session-user-name">${escapeHtml(userName)}</strong>
-      </div>
-      <div class="session-user-actions">
-        <button type="button" data-action="move-up" data-name="${escapeHtml(userName)}" ${index === 0 ? "disabled" : ""}>${htmlT("common.moveUp")}</button>
-        <button type="button" data-action="move-down" data-name="${escapeHtml(userName)}" ${index === users.length - 1 ? "disabled" : ""}>${htmlT("common.moveDown")}</button>
-        <button type="button" data-action="remove" data-name="${escapeHtml(userName)}" class="danger">${htmlT("common.delete")}</button>
-      </div>
+      <span class="session-user-order-number">${index + 1}</span>
+      <span class="session-user-name">${escapeHtml(userName)}</span>
     `;
+
     elements.sessionUserList.appendChild(item);
   });
 }
@@ -2131,7 +4785,8 @@ function renderListHeader(playlist, history) {
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   const serviceState = aggregateToolStatusState(bbdown, ffmpeg);
-  const playbackModeText = formatPlaybackMode(state.data?.playback_mode);
+  const currentQuality = String(cachePolicy?.video_quality || "1080P 高码率");
+  const playbackModeText = formatQualityLabel(currentQuality);
   const cacheChipMeta = formatCacheChipMeta(cachePolicy);
   const cacheUsageDetail = formatCacheUsage(cachePolicy);
   const bbdownTitle = `BBDown ${formatBBDownHint(bbdown)}`;
@@ -2170,15 +4825,72 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   renderAdvanceDelaySlider(state.data?.player_settings);
   renderCachePolicyControls(cachePolicy);
   renderUpdatePreviewControl();
+  if (elements.cachePanelVersion) {
+    const version = state.data?.app?.version || "";
+    const versionText = version ? `bilikara ${version}` : "bilikara";
+    if (elements.cachePanelVersion.textContent !== versionText) {
+      elements.cachePanelVersion.textContent = versionText;
+    }
+  }
   syncCachePanelVisibility();
 }
 
-function renderUpdatePreviewControl() {
-  if (!elements.updatePreviewCheckbox) {
-    return;
+function appUpdateStatus() {
+  return state.data?.app_update || {};
+}
+
+function isAppUpdateBusy(update = appUpdateStatus()) {
+  return ["checking", "downloading", "installing", "restarting"].includes(String(update?.state || ""));
+}
+
+function appUpdateProgressPercent(update = appUpdateStatus()) {
+  const totalBytes = Number(update?.total_bytes || 0);
+  const downloadedBytes = Number(update?.downloaded_bytes || 0);
+  let percent = Number(update?.progress || 0) * 100;
+  if (totalBytes > 0 && downloadedBytes >= 0) {
+    percent = (downloadedBytes / totalBytes) * 100;
   }
-  elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
-  elements.updatePreviewCheckbox.disabled = state.updateChecking;
+  if (!Number.isFinite(percent)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function appUpdateButtonText(update = appUpdateStatus()) {
+  const stateValue = String(update?.state || "");
+  if (state.updateChecking || stateValue === "checking") {
+    return t("status.checking");
+  }
+  if (stateValue === "downloading") {
+    const percent = appUpdateProgressPercent(update);
+    return percent > 0
+      ? t("service.updateDownloadingPercent", { percent })
+      : t("service.updateDownloading");
+  }
+  if (stateValue === "installing") {
+    return t("service.updateInstalling");
+  }
+  if (stateValue === "restarting") {
+    return t("service.updateRestarting");
+  }
+  return t("service.checkUpdate");
+}
+
+function renderUpdatePreviewControl() {
+  const update = appUpdateStatus();
+  const busy = state.updateChecking || isAppUpdateBusy(update);
+  if (elements.updatePreviewCheckbox) {
+    elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
+    elements.updatePreviewCheckbox.disabled = busy;
+  }
+  if (elements.updateCheckButton) {
+    elements.updateCheckButton.disabled = busy;
+    setTextContent(elements.updateCheckButton, appUpdateButtonText(update));
+    setElementTitle(
+      elements.updateCheckButton,
+      update?.message || update?.error || t("service.checkUpdateTitle"),
+    );
+  }
 }
 
 function renderPlaybackRepairControls(currentItem) {
@@ -2305,6 +5017,19 @@ function frontendPlaybackMode(_mode) {
   return "local";
 }
 
+function formatQualityLabel(value) {
+  const normalized = String(value || "").trim();
+  const labels = {
+    "1080P 高码率": t("quality.1080pHighBitrate"),
+    "1080P 高帧率": t("quality.1080p60"),
+    "1080P 高清": t("quality.1080p"),
+    "720P 高清": t("quality.720p"),
+    "480P 清晰": t("quality.480p"),
+    "360P 流畅": t("quality.360p"),
+  };
+  return labels[normalized] || normalized;
+}
+
 function formatPlaybackMode(_mode) {
   return t("service.localPlayback");
 }
@@ -2385,15 +5110,17 @@ function renderCachePolicyControls(cachePolicy) {
   const choices = rawChoices.length
     ? rawChoices.map((choice) => {
       if (typeof choice === "string") {
-        return { value: choice, label: choice };
+        return { value: choice, label: formatQualityLabel(choice) };
       }
+      const value = String(choice?.value || "");
       return {
-        value: String(choice?.value || ""),
-        label: String(choice?.label || choice?.value || ""),
+        value,
+        label: formatQualityLabel(choice?.label || value),
       };
     }).filter((choice) => choice.value)
     : [
       { value: "1080P 高码率", label: t("quality.1080pHighBitrate") },
+      { value: "1080P 高帧率", label: t("quality.1080p60") },
       { value: "1080P 高清", label: t("quality.1080p") },
       { value: "720P 高清", label: t("quality.720p") },
       { value: "480P 清晰", label: t("quality.480p") },
@@ -2446,6 +5173,14 @@ function syncCachePanelVisibility(options = {}) {
   });
 }
 
+function syncDisplayPanelVisibility() {
+  const expanded = String(state.displaySettingsOpen);
+  if (elements.displaySettingsToggle && elements.displaySettingsToggle.getAttribute("aria-expanded") !== expanded) {
+    elements.displaySettingsToggle.setAttribute("aria-expanded", expanded);
+  }
+  setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
+}
+
 function renderQueueCurrent(currentItem) {
   if (!currentItem) {
     const signature = `empty|${state.language}`;
@@ -2460,6 +5195,9 @@ function renderQueueCurrent(currentItem) {
     setTextContent(elements.queueCurrentTag, t("status.playing"));
     setTextContent(elements.queueCurrentTitle, t("player.noSong"));
     setElementTitle(elements.queueCurrentTitle, "");
+    setTextContent(elements.queueCurrentCacheDetail, "");
+    setClassToggle(elements.queueCurrentCacheDetail, "hidden", true);
+    setElementTitle(elements.queueCurrentCacheDetail, "");
     setClassToggle(elements.queueCurrentRetry, "hidden", true);
     elements.queueCurrentRetry.removeAttribute("data-id");
     return;
@@ -2467,12 +5205,19 @@ function renderQueueCurrent(currentItem) {
 
   const currentState = currentStatusForItem(currentItem);
   const requesterText = requesterBadgeText(currentItem.requester_name);
+  const cacheDetailText = queueCurrentCacheDetailForItem(currentItem, currentState.state);
   const signature = JSON.stringify({
     id: currentItem.id,
     state: currentState.state,
     label: currentState.label,
     title: currentItem.display_title,
     requesterText,
+    cacheDetailText,
+    cacheProgress: currentItem.cache_progress,
+    cacheSizeBytes: currentItem.cache_size_bytes,
+    cacheDownloadCurrent: currentItem.cache_download_current_bytes,
+    cacheDownloadTotal: currentItem.cache_download_total_bytes,
+    cacheDownloadTracks: currentItem.cache_download_tracks || [],
     language: state.language,
   });
 
@@ -2487,11 +5232,15 @@ function renderQueueCurrent(currentItem) {
     setElementTitle(elements.queueCurrentTitle, ownerTooltipForEntry(currentItem));
     setTextContent(elements.queueCurrentRequester, requesterText);
     setClassToggle(elements.queueCurrentRequester, "hidden", !requesterText);
+    setTextContent(elements.queueCurrentCacheDetail, cacheDetailText);
+    setClassToggle(elements.queueCurrentCacheDetail, "hidden", !cacheDetailText);
+    setElementTitle(elements.queueCurrentCacheDetail, cacheDetailText);
 
     setClassToggle(elements.queueCurrentProgressBadge, "idle", currentState.state === "pending");
     setClassToggle(elements.queueCurrentProgressBadge, "active", currentState.state === "caching");
     setClassToggle(elements.queueCurrentProgressBadge, "ready", currentState.state === "playing");
     setClassToggle(elements.queueCurrentProgressBadge, "failed", currentState.state === "failed");
+    syncCacheProgressBadge(elements.queueCurrentProgressBadge, currentItem, currentState.state === "caching");
   }
 
   syncRetryButton(elements.queueCurrentRetry, currentItem);
@@ -2507,6 +5256,10 @@ function currentStatusForItem(item) {
   if (item.cache_status === "failed") {
     return { state: "failed", label: t("status.failed") };
   }
+  const progressPercent = cacheProgressPercentForItem(item);
+  if (progressPercent !== null) {
+    return { state: "caching", label: `${progressPercent}%` };
+  }
   const size = Number(item.cache_size_bytes || 0);
   if (size > 0) {
     return { state: "caching", label: formatCompactBytes(size) };
@@ -2515,6 +5268,78 @@ function currentStatusForItem(item) {
     return { state: "caching", label: t("status.caching") };
   }
   return { state: "pending", label: t("status.pendingCache") };
+}
+
+function normalizedCacheDownloadTracks(item) {
+  if (!Array.isArray(item?.cache_download_tracks)) {
+    return [];
+  }
+  return item.cache_download_tracks
+    .filter((track) => track && typeof track === "object")
+    .map((track) => ({ ...track }))
+    .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+}
+
+function cacheProgressBytesLabel(currentBytes, targetBytes) {
+  const current = Math.max(0, Number(currentBytes || 0));
+  const target = Math.max(0, Number(targetBytes || 0));
+  if (target > 0) {
+    return `${formatBytes(Math.min(current, target))} / ${formatBytes(target)}`;
+  }
+  return `${formatBytes(current)} / ${t("cache.estimating")}`;
+}
+
+function cacheTrackDetailTextForItem(item) {
+  const tracks = normalizedCacheDownloadTracks(item);
+  if (!tracks.length) {
+    return "";
+  }
+
+  let totalCurrent = 0;
+  let totalTarget = 0;
+  let allTargetsKnown = true;
+  tracks.forEach((track) => {
+    const current = Math.max(0, Number(track.current_bytes || 0));
+    const target = Math.max(0, Number(track.target_bytes || 0));
+    if (target > 0) {
+      totalCurrent += Math.min(current, target);
+      totalTarget += target;
+    } else {
+      totalCurrent += current;
+      allTargetsKnown = false;
+    }
+  });
+
+  const lines = [
+    `${t("cache.total")}：${allTargetsKnown && totalTarget > 0
+      ? `${formatBytes(totalCurrent)} / ${formatBytes(totalTarget)}`
+      : `${formatBytes(totalCurrent)} / ${t("cache.estimating")}`}`,
+  ];
+  tracks.forEach((track, index) => {
+    const label = String(track.label || `Track ${index + 1}`).trim() || `Track ${index + 1}`;
+    lines.push(`${label}：${cacheProgressBytesLabel(track.current_bytes, track.target_bytes)}`);
+  });
+  return lines.join("\n");
+}
+
+function hostCacheDetailTextForItem(item) {
+  if (!item) {
+    return "";
+  }
+  if (item.cache_status === "ready") {
+    return "";
+  }
+  if (item.cache_status === "downloading") {
+    return cacheTrackDetailTextForItem(item)
+      || localizedCacheMessageLines(item.cache_message, item.cache_status)
+      || t("status.caching");
+  }
+  return localizedCacheMessageLines(item.cache_message, item.cache_status)
+    || (item.cache_status === "failed" ? t("cache.failed") : t("status.pendingCache"));
+}
+
+function queueCurrentCacheDetailForItem(item, currentState) {
+  return "";
 }
 
 function audioVariantsForItem(item) {
@@ -3225,7 +6050,7 @@ function syncPlayerFrameCacheHint(currentItem) {
   if (!hint || !currentItem) {
     return;
   }
-  setTextContent(hint, currentItem.cache_message || "正在后台缓存");
+  setTextContent(hint, hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback"));
 }
 
 function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
@@ -3552,6 +6377,94 @@ function renderVolumeControls(playbackMode) {
   setClassToggle(elements.volumeMuteButton, "is-muted", state.localPlayerMuted);
 }
 
+function renderKeyShiftControls(playbackMode) {
+  if (!elements.keyShiftPanel || !elements.keyShiftInput) {
+    return;
+  }
+
+  const isLocalMode = playbackMode === "local";
+  setClassToggle(elements.keyShiftPanel, "hidden", !isLocalMode);
+
+  const keyShift = Number(state.data?.player_settings?.key_shift ?? 0);
+  if (document.activeElement !== elements.keyShiftInput) {
+    elements.keyShiftInput.value = String(keyShift);
+  }
+
+  if (elements.keyShiftResetButton) {
+    elements.keyShiftResetButton.disabled = keyShift === 0;
+  }
+}
+
+async function setLocalPlayerKeyShift(keyShift) {
+  const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  const requestSeq = markLocalVolumeWrite();
+
+  const { audio } = activeLocalPlayerElements();
+  if (audio) {
+    applyKeyShiftToAudio(audio, boundedKeyShift);
+  }
+
+  if (state.data && state.data.player_settings) {
+    state.data.player_settings.key_shift = boundedKeyShift;
+  }
+  renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+
+  try {
+    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (requestSeq !== state.volumeSaveSeq) {
+      return;
+    }
+    state.data = nextData;
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+  } catch (error) {
+    // Ignore or handle errors gracefully
+  }
+}
+
+function setupAudioPitchShifter(audio) {
+  if (!audio) {
+    return;
+  }
+  if (!window.AudioContext && !window.webkitAudioContext) {
+    return;
+  }
+
+  if (!state.audioContext) {
+    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  const resumeContext = () => {
+    if (state.audioContext && state.audioContext.state === "suspended") {
+      state.audioContext.resume().catch(() => {});
+    }
+  };
+  audio.addEventListener("play", resumeContext);
+
+  try {
+    const source = state.audioContext.createMediaElementSource(audio);
+    const jungle = new Jungle(state.audioContext);
+
+    source.connect(jungle.input);
+    jungle.output.connect(state.audioContext.destination);
+
+    audio.jungle = jungle;
+    applyKeyShiftToAudio(audio);
+  } catch (e) {
+    console.error("Failed to setup Web Audio pitch shifter:", e);
+  }
+}
+
+function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
+  if (!audio || !audio.jungle) {
+    return;
+  }
+  const keyShift = overrideKeyShift !== null ? overrideKeyShift : Number(state.data?.player_settings?.key_shift ?? 0);
+  const ratio = Math.pow(2, keyShift / 12);
+  const mult = ratio - 1;
+  audio.jungle.setPitchOffset(mult);
+}
+
 function persistLocalVolumePreferences() {
   writeLocalPreference(storageKeys.playerVolume, state.localPlayerVolume);
   writeLocalPreference(storageKeys.playerMuted, state.localPlayerMuted);
@@ -3650,7 +6563,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     }
     state.audioVariantBarRenderSignature = signature;
     if (elements.audioVariantBar.childElementCount) {
-      elements.audioVariantBar.innerHTML = "";
+      elements.audioVariantBar.replaceChildren();
     }
     setClassToggle(elements.audioVariantBar, "hidden", true);
     state.audioVariantBarExpanded = false;
@@ -3672,7 +6585,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
     }
     state.audioVariantBarRenderSignature = signature;
     if (elements.audioVariantBar.childElementCount) {
-      elements.audioVariantBar.innerHTML = "";
+      elements.audioVariantBar.replaceChildren();
     }
     setClassToggle(elements.audioVariantBar, "hidden", true);
     state.audioVariantBarExpanded = false;
@@ -3706,7 +6619,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   }
   state.audioVariantBarRenderSignature = signature;
 
-  elements.audioVariantBar.innerHTML = "";
+  elements.audioVariantBar.replaceChildren();
   const list = document.createElement("div");
   list.className = "audio-variant-list";
   variants.forEach((variant) => {
@@ -3730,7 +6643,10 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   toggleButton.dataset.action = "toggle-audio-variants";
   toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"));
   toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
-  toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
+  const toggleIcon = document.createElement("span");
+  toggleIcon.setAttribute("aria-hidden", "true");
+  toggleIcon.textContent = "▾";
+  toggleButton.appendChild(toggleIcon);
 
   elements.audioVariantBar.append(list, toggleButton);
   elements.audioVariantBar.classList.remove("is-collapsed", "is-expanded");
@@ -3776,9 +6692,11 @@ function renderAvSyncControls(playbackMode, playerSettings) {
 }
 
 function renderPlayer(currentItem, playbackMode) {
+  handleRatingCurrentItemChange(currentItem);
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
 
   const signature = [
     currentItem ? currentItem.id : "none",
@@ -3786,6 +6704,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    playerCacheDetailText,
     state.language,
   ].join("|");
 
@@ -3844,57 +6763,62 @@ function renderPlayer(currentItem, playbackMode) {
   teardownMountedPlayer({ preserveAdvanceDelayOverlay });
 
   if (!currentItem) {
-    elements.playerFrame.innerHTML = `<div class="empty-state"><p>${escapeHtml(t("player.emptyShort"))}</p></div>`;
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    const text = document.createElement("p");
+    text.textContent = t("player.emptyShort");
+    empty.appendChild(text);
+    elements.playerFrame.replaceChildren(empty);
     return;
   }
 
   // LEGACY: online embed playback is kept for reference, but normal frontend
   // rendering now passes only the local mode.
   if (playbackMode === "online") {
-    elements.playerFrame.innerHTML = `
-      <iframe
-        src="${escapeHtml(currentItem.embed_url)}"
-        allow="autoplay; fullscreen"
-        allowfullscreen="true"
-        referrerpolicy="origin"
-        sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox"
-        title="${escapeHtml(currentItem.display_title)}"
-      ></iframe>
-    `;
+    const iframeSrc = safeHttpUrl(currentItem.embed_url);
+    const iframe = document.createElement("iframe");
+    iframe.src = iframeSrc || "about:blank";
+    iframe.allow = "autoplay; fullscreen";
+    iframe.allowFullscreen = true;
+    iframe.referrerPolicy = "origin";
+    iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox");
+    iframe.title = String(currentItem.display_title || "");
+    elements.playerFrame.replaceChildren(iframe);
     return;
   }
 
   if (!hasSplitPlayback) {
-    elements.playerFrame.innerHTML = `
-      <div class="empty-state">
-        <p>${escapeHtml(t("player.preparingTracks"))}</p>
-        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
-      </div>
-    `;
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    const text = document.createElement("p");
+    text.textContent = t("player.preparingTracks");
+    const hint = document.createElement("p");
+    hint.className = "empty-hint";
+    hint.textContent = hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback");
+    empty.append(text, hint);
+    elements.playerFrame.replaceChildren(empty);
     return;
   }
 
   const willShowOverlay = hasPendingSongTransitionOverlayForItem(currentItem);
   const isDelaying = state.localAdvanceDelayDeadline > 0 && Date.now() < state.localAdvanceDelayDeadline;
   const shouldAutoplay = !(willShowOverlay || isDelaying);
-  const autoplayAttr = shouldAutoplay ? "autoplay" : "";
 
-  elements.playerFrame.innerHTML = `
-    <video
-      data-player-role="video"
-      controls
-      controlsList="nofullscreen"
-      ${autoplayAttr}
-      playsinline
-      preload="metadata"
-      src="${escapeHtml(selectedVideoUrl)}"
-    ></video>
-    <audio
-      data-player-role="audio"
-      preload="auto"
-      src="${escapeHtml(selectedAudioUrl)}"
-    ></audio>
-  `;
+  const videoElement = document.createElement("video");
+  videoElement.dataset.playerRole = "video";
+  videoElement.controls = true;
+  videoElement.setAttribute("controlsList", "nofullscreen");
+  if (shouldAutoplay) {
+    videoElement.autoplay = true;
+  }
+  videoElement.playsInline = true;
+  videoElement.preload = "metadata";
+  videoElement.src = selectedVideoUrl;
+  const audioElement = document.createElement("audio");
+  audioElement.dataset.playerRole = "audio";
+  audioElement.preload = "auto";
+  audioElement.src = selectedAudioUrl;
+  elements.playerFrame.replaceChildren(videoElement, audioElement);
 
   const video = elements.playerFrame.querySelector('video[data-player-role="video"]');
   const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
@@ -3904,6 +6828,7 @@ function renderPlayer(currentItem, playbackMode) {
   }
 
   applyStoredVolumeToSplitPlayer(video, audio);
+  setupAudioPitchShifter(audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -4003,6 +6928,7 @@ function renderPlayer(currentItem, playbackMode) {
     if (!settleSplitPlayerSeek(video, audio)) {
       reportCurrentVideoStatus();
     }
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   });
 
   video.addEventListener("canplay", () => {
@@ -4029,6 +6955,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   video.addEventListener("timeupdate", () => {
     reportPlayerStatusHeartbeat(currentItem.id, video);
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   });
 
   video.addEventListener("ratechange", () => {
@@ -4071,6 +6998,7 @@ function renderPlayer(currentItem, playbackMode) {
     }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
     reportCurrentVideoStatus();
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
   }, localPlayerSyncIntervalMs);
 
   window.setTimeout(() => {
@@ -4089,6 +7017,7 @@ function renderPlayer(currentItem, playbackMode) {
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
 
   const signature = [
     currentItem ? currentItem.id : "none",
@@ -4096,6 +7025,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    playerCacheDetailText,
     state.language,
   ].join("|");
 
@@ -4178,7 +7108,9 @@ function renderPlayer(currentItem, playbackMode) {
     setPlayerFrameContent(`
       <div class="empty-state">
         <p>${escapeHtml(t("player.preparingTracks"))}</p>
-        <p class="empty-hint">${escapeHtml(currentItem.cache_message || t("player.cachingFallback"))}</p>
+        <p class="empty-hint">${escapeHtml(
+          hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback"),
+        )}</p>
       </div>
     `);
     return;
@@ -4214,6 +7146,7 @@ function renderPlayer(currentItem, playbackMode) {
   }
 
   applyStoredVolumeToSplitPlayer(video, audio);
+  setupAudioPitchShifter(audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -4490,6 +7423,10 @@ function reportPlayerStatus(itemId, video) {
 
   const currentTime = Number(video.currentTime || 0);
   const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
+  const currentItem = state.data?.current_item;
+  if (currentItem && String(currentItem.id || "") === normalizedItemId) {
+    maybeShowRatingPromptForProgress(currentItem, currentTime, duration);
+  }
   const signature = [
     normalizedItemId,
     video.paused ? "paused" : "playing",
@@ -4529,15 +7466,19 @@ function reportPlayerStatusHeartbeat(itemId, video) {
 
 function renderPlaylist(playlist, currentItem, cachePolicy) {
   if (!playlist.length) {
-    const emptyMessage = state.data?.current_item
-      ? `<div class="queue-empty"><p>${htmlT("list.emptyWithCurrentTitle")}</p><p>${htmlT("list.emptyWithCurrentHint")}</p></div>`
-      : `<div class="queue-empty"><p>${htmlT("list.emptyTitle")}</p><p>${htmlT("list.emptyHint")}</p></div>`;
     const signature = `${state.data?.current_item ? "empty-with-current" : "empty"}|${state.language}`;
     if (signature === state.playlistEmptyRenderSignature) {
       return;
     }
     state.playlistEmptyRenderSignature = signature;
-    elements.playlist.innerHTML = emptyMessage;
+    const emptyNode = document.createElement("div");
+    emptyNode.className = "queue-empty";
+    const title = document.createElement("p");
+    title.textContent = state.data?.current_item ? t("list.emptyWithCurrentTitle") : t("list.emptyTitle");
+    const hint = document.createElement("p");
+    hint.textContent = state.data?.current_item ? t("list.emptyWithCurrentHint") : t("list.emptyHint");
+    emptyNode.append(title, hint);
+    elements.playlist.replaceChildren(emptyNode);
     return;
   }
 
@@ -4604,6 +7545,9 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       sizeText,
       noteText,
       cacheProgress: item.cache_progress,
+      cacheDownloadCurrent: item.cache_download_current_bytes,
+      cacheDownloadTotal: item.cache_download_total_bytes,
+      progressPercent: cacheProgressPercentForItem(item),
       language: state.language,
     });
     if (node.dataset.dynamicSignature !== dynamicSignature) {
@@ -4613,6 +7557,7 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
       setClassToggle(badge, "idle", badgeState === "idle");
       setClassToggle(badge, "ready", item.cache_status === "ready");
       setClassToggle(badge, "failed", item.cache_status === "failed");
+      syncCacheProgressBadge(badge, item, badgeState === "active");
       if (badge.style.getPropertyValue("--badge-delay") !== badgeDelay) {
         badge.style.setProperty("--badge-delay", badgeDelay);
       }
@@ -4750,10 +7695,17 @@ function renderHistory(history) {
     return;
   }
   state.historyRenderSignature = signature;
-  elements.historyList.innerHTML = "";
+  elements.historyList.replaceChildren();
 
   if (!history.length) {
-    elements.historyList.innerHTML = `<div class="queue-empty"><p>${htmlT("history.emptyTitle")}</p><p>${htmlT("history.emptyHint")}</p></div>`;
+    const emptyNode = document.createElement("div");
+    emptyNode.className = "queue-empty";
+    const title = document.createElement("p");
+    title.textContent = t("history.emptyTitle");
+    const hint = document.createElement("p");
+    hint.textContent = t("history.emptyHint");
+    emptyNode.append(title, hint);
+    elements.historyList.appendChild(emptyNode);
     return;
   }
 
@@ -4773,6 +7725,7 @@ function renderHistory(history) {
     node.querySelector(".history-count").textContent = t("history.requestCount", { count: entry.request_count });
     node.querySelectorAll("button[data-action]").forEach((button) => {
       button.dataset.url = entry.resolved_url || entry.original_url;
+      button.dataset.key = entry.key || "";
     });
     elements.historyList.appendChild(node);
   });
@@ -4783,14 +7736,14 @@ function badgeTitleForItem(item) {
     return t("cache.ready");
   }
   if (item.cache_status === "failed") {
-    return item.cache_message || t("cache.failed");
+    return localizedCacheMessage(item.cache_message, item.cache_status) || t("cache.failed");
   }
-  return item.cache_message || t("cache.caching");
+  return localizedCacheMessage(item.cache_message, item.cache_status) || t("cache.caching");
 }
 
 function noteForItem(item) {
   if (item.cache_status === "failed") {
-    return item.cache_message || t("cache.failed");
+    return localizedCacheMessage(item.cache_message, item.cache_status) || t("cache.failed");
   }
   return "";
 }
@@ -4808,11 +7761,16 @@ function formatHistoryTime(timestamp) {
 }
 
 function ownerTooltipForEntry(entry) {
+  const fullTitle = String(entry?.title || entry?.display_title || "").trim();
   const ownerName = String(entry?.owner_name || "").trim();
-  if (!ownerName) {
-    return "";
+  const lines = [];
+  if (fullTitle) {
+    lines.push(fullTitle);
   }
-  return t("owner.tooltip", { name: ownerName });
+  if (ownerName) {
+    lines.push(t("owner.tooltip", { name: ownerName }));
+  }
+  return lines.join("\n");
 }
 
 function formatBBDownHint(bbdown) {
@@ -4853,7 +7811,41 @@ function formatCacheUsage(cachePolicy) {
   return t("service.cacheUsageDetail", { usage, count: cachedItemCount });
 }
 
+function cacheProgressPercentForItem(item) {
+  if (!item || item.cache_status !== "downloading") {
+    return null;
+  }
+  const totalBytes = Number(item.cache_download_total_bytes || 0);
+  const currentBytes = Number(item.cache_download_current_bytes || 0);
+  if (totalBytes > 0) {
+    return Math.max(0, Math.min(99, Math.round((currentBytes / totalBytes) * 100)));
+  }
+  const cacheProgress = Number(item.cache_progress || 0);
+  if (cacheProgress > 0 && cacheProgress < 100) {
+    return Math.max(0, Math.min(99, Math.round(cacheProgress)));
+  }
+  return null;
+}
+
+function syncCacheProgressBadge(badge, item, isActive) {
+  if (!badge) {
+    return;
+  }
+  const progressPercent = isActive ? cacheProgressPercentForItem(item) : null;
+  const hasProgress = progressPercent !== null;
+  setClassToggle(badge, "has-progress", hasProgress);
+  setClassToggle(badge, "indeterminate", Boolean(isActive && !hasProgress));
+  const progressValue = hasProgress ? String(Math.max(0, Math.min(100, progressPercent))) : "0";
+  if (badge.style.getPropertyValue("--badge-progress-value") !== progressValue) {
+    badge.style.setProperty("--badge-progress-value", progressValue);
+  }
+}
+
 function cacheSizeLabelForItem(item) {
+  const progressPercent = cacheProgressPercentForItem(item);
+  if (progressPercent !== null) {
+    return `${progressPercent}%`;
+  }
   const size = Number(item.cache_size_bytes || 0);
   if (size > 0) {
     return formatCompactBytes(size);
@@ -5026,10 +8018,21 @@ function closeConfirm() {
   renderConfirmPopover();
 }
 
+function confirmPopoverAnchorElement(intent) {
+  const anchorElementId = String(intent?.anchorElementId || "").trim();
+  return anchorElementId ? document.getElementById(anchorElementId) : null;
+}
+
+function confirmPopoverAnchorRect(intent) {
+  const anchorElement = confirmPopoverAnchorElement(intent);
+  return anchorElement ? anchorElement.getBoundingClientRect() : null;
+}
+
 function confirmPopoverRenderSignature(intent) {
   if (!intent) {
     return "";
   }
+  const anchorRect = confirmPopoverAnchorRect(intent);
   return JSON.stringify({
     type: intent.type || "",
     message: intent.message || "",
@@ -5042,9 +8045,57 @@ function confirmPopoverRenderSignature(intent) {
     pageSize: selectedConfirmHistoryExportPageSize(intent),
     x: Math.round(Number(intent.x || 0)),
     y: Math.round(Number(intent.y || 0)),
+    anchorElementId: String(intent.anchorElementId || ""),
+    anchorAlign: String(intent.anchorAlign || ""),
+    anchorGap: Math.round(Number(intent.anchorGap || 0)),
+    anchorLeft: anchorRect ? Math.round(anchorRect.left) : 0,
+    anchorTop: anchorRect ? Math.round(anchorRect.top) : 0,
+    anchorRight: anchorRect ? Math.round(anchorRect.right) : 0,
+    anchorBottom: anchorRect ? Math.round(anchorRect.bottom) : 0,
     width: window.innerWidth,
     height: window.innerHeight,
   });
+}
+
+function confirmPopoverPlacement(intent, width, popoverHeight) {
+  const margin = 12;
+  const anchorRect = confirmPopoverAnchorRect(intent);
+  const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+  const maxTop = Math.max(margin, window.innerHeight - popoverHeight - margin);
+  const anchorGap = Number.isFinite(Number(intent.anchorGap)) ? Number(intent.anchorGap) : 10;
+  let rawLeft = Number(intent.x || 0);
+  let rawTop = Number(intent.y || 0);
+
+  if (anchorRect) {
+    const align = String(intent.anchorAlign || "end");
+    rawTop = anchorRect.bottom + anchorGap;
+    if (align === "start") {
+      rawLeft = anchorRect.left;
+    } else if (align === "center") {
+      rawLeft = anchorRect.left + ((anchorRect.width - width) / 2);
+    } else {
+      rawLeft = anchorRect.right - width;
+    }
+
+    const aboveTop = anchorRect.top - popoverHeight - anchorGap;
+    if (rawTop + popoverHeight > window.innerHeight - margin && aboveTop >= margin) {
+      rawTop = aboveTop;
+    }
+  }
+
+  const left = Math.min(Math.max(rawLeft, margin), maxLeft);
+  if (!anchorRect) {
+    return {
+      left,
+      top: Math.min(Math.max(rawTop, margin), maxTop),
+    };
+  }
+
+  const anchorOutsideViewport = anchorRect.bottom < margin || anchorRect.top > window.innerHeight - margin;
+  return {
+    left,
+    top: anchorOutsideViewport ? rawTop : Math.min(Math.max(rawTop, margin), maxTop),
+  };
 }
 
 function renderConfirmPopover() {
@@ -5072,15 +8123,7 @@ function renderConfirmPopover() {
   const popoverHeight = (hasSecondaryAction ? 126 : 112)
     + (hasSourceSelect || hasPageSizeSelect ? 76 : 0)
     - (hideMessage ? 34 : 0);
-  const margin = 12;
-  const left = Math.min(
-    Math.max(intent.x, margin),
-    window.innerWidth - width - margin,
-  );
-  const top = Math.min(
-    Math.max(intent.y, margin),
-    window.innerHeight - popoverHeight - margin,
-  );
+  const { left, top } = confirmPopoverPlacement(intent, width, popoverHeight);
 
   elements.confirmText.textContent = intent.message || "";
   elements.confirmText.classList.toggle("hidden", hideMessage);
@@ -5137,6 +8180,22 @@ function anchorPointForEvent(event, fallbackElement) {
     x: rect.right - 20,
     y: rect.bottom + 8,
   };
+}
+
+let confirmPopoverPositionFrame = 0;
+
+function scheduleConfirmPopoverPositionSync() {
+  if (!state.confirmIntent || confirmPopoverPositionFrame) {
+    return;
+  }
+  confirmPopoverPositionFrame = window.requestAnimationFrame(() => {
+    confirmPopoverPositionFrame = 0;
+    if (!state.confirmIntent) {
+      return;
+    }
+    state.confirmPopoverRenderSignature = "";
+    renderConfirmPopover();
+  });
 }
 
 function clearDropIndicators() {
@@ -5282,7 +8341,7 @@ function openBindingModal(intent, payload) {
       renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage),
     );
     elements.bindingAudioOptions.appendChild(
-      renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage),
+      renderBindingOption("checkbox", "binding-audio-page", entry, false),
     );
   });
   elements.bindingModal.classList.remove("hidden");
@@ -5328,13 +8387,13 @@ function renderGatchaFavlistOption(folder) {
   return label;
 }
 
-function openGatchaFavlistModal(uid, payload) {
+function openGatchaFavlistModal(uid, payload, { messageTarget = "gatcha" } = {}) {
   const folders = Array.isArray(payload?.folders) ? payload.folders : [];
   if (!folders.length) {
-    setGatchaUidMessage(t("favlist.none"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.none"), true);
     return;
   }
-  state.gatchaFavlistIntent = { uid, folders };
+  state.gatchaFavlistIntent = { uid, folders, messageTarget };
   elements.gatchaFavlistModalText.textContent = t("favlist.chooseForUid", {
     uid: payload?.uid || uid,
     count: payload?.public_folder_count || folders.length,
@@ -5351,31 +8410,247 @@ async function confirmGatchaFavlistModal() {
   if (!intent?.uid) {
     return;
   }
+  const messageTarget = intent.messageTarget || "gatcha";
   const folderIds = selectedGatchaFavlistFolderIds();
   if (!folderIds.length) {
-    setGatchaUidMessage(t("favlist.selectAtLeastOne"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidFace();
     return;
   }
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidFace();
-  setGatchaUidMessage(t("favlist.pullingSelected"));
+  setGatchaUidFlowMessage(messageTarget, t("favlist.pullingSelected"));
   closeGatchaFavlistModal();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
-    setGatchaUidMessage(
+    setGatchaUidFlowMessage(
+      messageTarget,
       t("favlist.pullResult", { folders: result?.matched_folder_count || 0, items: result?.item_count || 0 }),
     );
+    await refreshFavlistBrowseAfterPull();
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaFavlistSaving = false;
     renderGatchaUidFace();
+  }
+}
+
+function poolConfigFolderId(folder) {
+  return String(folder?.id || folder?.folder_id || "").trim();
+}
+
+function poolConfigSetMessage(message, isError = false) {
+  if (!elements.poolConfigMessage) {
+    return;
+  }
+  elements.poolConfigMessage.textContent = message || "";
+  elements.poolConfigMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function updatePoolConfigWeightLabel() {
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const favlistWeight = 100 - uidWeight;
+  if (elements.poolConfigWeightLabel) {
+    elements.poolConfigWeightLabel.textContent = t("gatcha.poolWeightValue", {
+      uid: uidWeight,
+      favlist: favlistWeight,
+    });
+  }
+}
+
+function renderPoolConfigOption({ type, id, title, meta, checked }) {
+  const label = document.createElement("label");
+  label.className = "selection-option pool-config-option";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = type === "uid" ? "gatcha-pool-uid" : "gatcha-pool-favlist";
+  input.value = String(id || "");
+  input.checked = Boolean(checked);
+
+  const copy = document.createElement("div");
+  const titleEl = document.createElement("div");
+  titleEl.className = "selection-option-title";
+  titleEl.textContent = title || id;
+  const metaEl = document.createElement("div");
+  metaEl.className = "selection-option-meta";
+  metaEl.textContent = meta || "";
+  copy.append(titleEl, metaEl);
+  label.append(input, copy);
+  return label;
+}
+
+function renderPoolConfigModal() {
+  const data = state.poolConfigData || {};
+  const excludedUids = new Set((Array.isArray(data.excluded_uids) ? data.excluded_uids : []).map(String));
+  const excludedFolders = new Set((Array.isArray(data.excluded_favlist_folders) ? data.excluded_favlist_folders : []).map(String));
+  const uidWeight = Math.max(0, Math.min(100, Number(data.uid_weight ?? 50)));
+
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = String(uidWeight);
+    elements.poolConfigWeightSlider.disabled = state.poolConfigSaving;
+  }
+  updatePoolConfigWeightLabel();
+
+  if (elements.poolConfigUidOptions) {
+    elements.poolConfigUidOptions.innerHTML = "";
+    const uids = Array.isArray(data.uid_options) ? data.uid_options : [];
+    if (!uids.length) {
+      const empty = document.createElement("p");
+      empty.className = "pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyUid");
+      elements.poolConfigUidOptions.appendChild(empty);
+    } else {
+      uids.forEach((owner) => {
+        const uid = String(owner.uid || "").trim();
+        elements.poolConfigUidOptions.appendChild(renderPoolConfigOption({
+          type: "uid",
+          id: uid,
+          title: owner.name || `UID ${uid}`,
+          meta: t("gatcha.poolOptionCount", { count: Number(owner.count || 0) }),
+          checked: uid && !excludedUids.has(uid),
+        }));
+      });
+    }
+  }
+
+  if (elements.poolConfigFavlistOptions) {
+    elements.poolConfigFavlistOptions.innerHTML = "";
+    const folders = Array.isArray(data.favlist_folder_options) ? data.favlist_folder_options : [];
+    if (!folders.length) {
+      const empty = document.createElement("p");
+      empty.className = "pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyFavlist");
+      elements.poolConfigFavlistOptions.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const id = poolConfigFolderId(folder);
+        const title = folder.title || t("favlist.folderWithId", { id });
+        const meta = folder.uid
+          ? t("gatcha.poolFavlistMeta", { uid: folder.uid, count: Number(folder.count || folder.media_count || 0) })
+          : t("gatcha.poolOptionCount", { count: Number(folder.count || folder.media_count || 0) });
+        elements.poolConfigFavlistOptions.appendChild(renderPoolConfigOption({
+          type: "favlist",
+          id,
+          title,
+          meta,
+          checked: id && !excludedFolders.has(id),
+        }));
+      });
+    }
+  }
+
+  const hasUidOptions = Boolean(elements.poolConfigUidOptions?.querySelector('input[name="gatcha-pool-uid"]'));
+  const hasFavlistOptions = Boolean(elements.poolConfigFavlistOptions?.querySelector('input[name="gatcha-pool-favlist"]'));
+  [elements.poolConfigUidSelectAll, elements.poolConfigUidSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasUidOptions;
+  });
+  [elements.poolConfigFavlistSelectAll, elements.poolConfigFavlistSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasFavlistOptions;
+  });
+  if (elements.poolConfigModalReset) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigModalReset.disabled = state.poolConfigSaving || !detailLoaded;
+  }
+  if (elements.poolConfigModalSave) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigModalSave.disabled = state.poolConfigSaving || !detailLoaded;
+    elements.poolConfigModalSave.textContent = state.poolConfigSaving ? t("gatcha.poolSaving") : t("gatcha.poolSave");
+  }
+}
+
+async function openPoolConfigModal() {
+  if (!elements.poolConfigModal || !elements.poolConfigModal.classList.contains("hidden")) {
+    return;
+  }
+  state.poolConfigSaving = false;
+  state.poolConfigData = state.data?.gatcha_pool_config || {};
+  elements.poolConfigModal.classList.remove("hidden");
+  renderPoolConfigModal();
+  poolConfigSetMessage(t("gatcha.poolLoading"));
+  try {
+    state.poolConfigData = await fetchPoolConfig();
+    poolConfigSetMessage("");
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  }
+  renderPoolConfigModal();
+}
+
+function closePoolConfigModal() {
+  state.poolConfigData = null;
+  state.poolConfigSaving = false;
+  elements.poolConfigModal?.classList.add("hidden");
+  poolConfigSetMessage("");
+}
+
+function setPoolConfigChecked(name, checked) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.checked = Boolean(checked);
+  });
+}
+
+function resetPoolConfigControls() {
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = "50";
+  }
+  updatePoolConfigWeightLabel();
+  setPoolConfigChecked("gatcha-pool-uid", true);
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+  poolConfigSetMessage("");
+}
+
+function poolConfigExcludedValues(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]`)]
+    .filter((input) => !input.checked)
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+async function submitPoolConfigModal() {
+  if (state.poolConfigSaving) {
+    return;
+  }
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const payload = {
+    uid_weight: uidWeight,
+    favlist_weight: 100 - uidWeight,
+    excluded_uids: poolConfigExcludedValues("gatcha-pool-uid"),
+    excluded_favlist_folders: poolConfigExcludedValues("gatcha-pool-favlist"),
+  };
+  state.poolConfigData = {
+    ...(state.poolConfigData || {}),
+    ...payload,
+  };
+  state.poolConfigSaving = true;
+  renderPoolConfigModal();
+  poolConfigSetMessage(t("gatcha.poolSaving"));
+  try {
+    state.poolConfigData = await savePoolConfig(payload);
+    if (state.data) {
+      state.data.gatcha_pool_config = {
+        uid_weight: state.poolConfigData.uid_weight,
+        favlist_weight: state.poolConfigData.favlist_weight,
+        excluded_uids: state.poolConfigData.excluded_uids || [],
+        excluded_favlist_folders: state.poolConfigData.excluded_favlist_folders || [],
+        updated_at: state.poolConfigData.updated_at || 0,
+      };
+    }
+    closePoolConfigModal();
+    setAppMessage(t("gatcha.poolSaved"));
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  } finally {
+    state.poolConfigSaving = false;
+    if (elements.poolConfigModal && !elements.poolConfigModal.classList.contains("hidden")) {
+      renderPoolConfigModal();
+    }
   }
 }
 
@@ -5412,7 +8687,9 @@ async function confirmBindingModal() {
       elements.gatchaInitView.classList.remove("hidden");
       setGatchaMessage(t("gatcha.nozomi"));
     }
-    setFormMessage(intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail"));
+    const message = intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail");
+    setFormMessage(message);
+    setAppMessage(message);
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -5519,7 +8796,9 @@ async function handleAddByUrl(url, position, anchorPoint) {
   setFormMessage(t("history.addingFromHistory"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
-    setFormMessage(position === "next" ? t("history.addedNext") : t("history.addedTail"));
+    const message = position === "next" ? t("history.addedNext") : t("history.addedTail");
+    setFormMessage(message);
+    setAppMessage(message);
     render();
   } catch (error) {
     if (error.code === "manual_binding_required") {
@@ -5742,18 +9021,37 @@ async function resetPlayerState() {
   }
 }
 
+async function installAppUpdate(includePreview = false) {
+  try {
+    const updateStatus = await apiPost("/api/app/update/install", {
+      include_preview: Boolean(includePreview),
+    });
+    if (state.data) {
+      state.data = {
+        ...state.data,
+        app_update: updateStatus,
+      };
+    }
+    closeConfirm();
+    renderUpdatePreviewControl();
+    const stateValue = String(updateStatus?.state || "");
+    setAppMessage(
+      updateStatus?.message || t("service.updateStarting"),
+      stateValue === "failed" || stateValue === "unsupported",
+    );
+  } catch (error) {
+    setAppMessage(error?.message || t("service.updateFailed"), true);
+  }
+}
+
 async function checkAppUpdate(event) {
-  if (state.updateChecking) {
+  if (state.updateChecking || isAppUpdateBusy()) {
     return;
   }
   const button = elements.updateCheckButton;
   const point = anchorPointForEvent(event, button || elements.cacheSettings);
   state.updateChecking = true;
   renderUpdatePreviewControl();
-  if (button) {
-    button.disabled = true;
-    button.textContent = t("status.checking");
-  }
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timeoutId = controller
     ? window.setTimeout(() => controller.abort(), appUpdateCheckTimeoutMs)
@@ -5765,18 +9063,24 @@ async function checkAppUpdate(event) {
       const fallbackMessage = result?.switch_to_release_available
         ? t("service.switchReleasePrompt")
         : t("service.updateFoundPrompt");
-      const message = result?.message
-        ? t("service.openReleaseWithMessage", { message: result.message })
-        : fallbackMessage;
+      const updateMessage = result?.message || fallbackMessage;
+      const canAutoInstall = Boolean(result?.auto_update_supported);
       openConfirm({
-        type: "open-release",
+        type: canAutoInstall ? "install-app-update" : "open-release",
+        includePreview: state.updatePreviewEnabled,
         releaseUrl: result.release_url,
-        message,
+        message: canAutoInstall
+          ? t("service.installUpdatePrompt", { message: updateMessage })
+          : t("service.openReleaseWithMessage", { message: updateMessage }),
+        primaryLabel: canAutoInstall ? t("service.installUpdate") : t("service.openReleases"),
         ...point,
+        anchorElementId: button?.id || "update-check-button",
+        anchorAlign: "end",
+        anchorGap: 8,
       });
       return;
     }
-    setAppMessage(result?.message || t("service.upToDate"));
+    setAppMessage(t("service.upToDate"));
   } catch (error) {
     const message = error?.name === "AbortError"
       ? t("service.updateTimeout")
@@ -5788,10 +9092,6 @@ async function checkAppUpdate(event) {
     }
     state.updateChecking = false;
     renderUpdatePreviewControl();
-    if (button) {
-      button.disabled = false;
-      button.textContent = t("service.checkUpdate");
-    }
   }
 }
 
@@ -6116,25 +9416,53 @@ elements.searchForm.addEventListener("submit", async (event) => {
   }
 });
 
-elements.searchResults.addEventListener("click", async (event) => {
+function searchResultRequestTarget(event, container) {
+  if (event.target.closest("button[data-dev-action]")) {
+    return null;
+  }
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (button && container?.contains(button)) {
+    return {
+      url: String(button.dataset.url || "").trim(),
+      anchor: button,
+      button,
+    };
+  }
+  if (!container?.closest("#search-modal")) {
+    return null;
+  }
+  const card = event.target.closest(".search-result-item[data-url]");
+  if (!card || !container.contains(card)) {
+    return null;
+  }
+  return {
+    url: String(card.dataset.url || "").trim(),
+    anchor: card,
+    button: null,
+  };
+}
+
+elements.searchResults.addEventListener("click", async (event) => {
+  const target = searchResultRequestTarget(event, elements.searchResults);
+  if (!target) {
+    return;
+  }
+  if (!target.url) {
     return;
   }
 
-  const url = String(button.dataset.url || "").trim();
-  if (!url) {
-    return;
+  if (target.button) {
+    target.button.disabled = true;
   }
-
-  button.disabled = true;
   try {
-    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
     hideSearchResults();
     setSearchMessage("");
     elements.searchQuery.value = "";
   } finally {
-    button.disabled = false;
+    if (target.button) {
+      target.button.disabled = false;
+    }
   }
 });
 
@@ -6225,19 +9553,22 @@ elements.larkSearchHitboxQuery?.addEventListener("input", () => {
 });
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-url]");
-  if (!button) {
+  const target = searchResultRequestTarget(event, elements.larkSearchResults);
+  if (!target) {
     return;
   }
-  const url = String(button.dataset.url || "").trim();
-  if (!url) {
+  if (!target.url) {
     return;
   }
-  button.disabled = true;
+  if (target.button) {
+    target.button.disabled = true;
+  }
   try {
-    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
   } finally {
-    button.disabled = false;
+    if (target.button) {
+      target.button.disabled = false;
+    }
   }
 });
 
@@ -6246,31 +9577,172 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
   await addSessionUser();
 });
 
-elements.sessionUserList.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-action]");
-  if (!button || !state.data?.session_users?.length) {
-    return;
-  }
+let draggedSessionUser = null;
 
-  const name = String(button.dataset.name || "");
-  const users = state.data.session_users;
-  const index = users.indexOf(name);
-  if (!name || index === -1) {
-    return;
-  }
+function clearSessionUserDropIndicators() {
+  elements.sessionUserList
+    ?.querySelectorAll(".session-user-badge")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+}
 
-  if (button.dataset.action === "move-up") {
-    await moveSessionUser(name, Math.max(0, index - 1));
+async function removeDraggedSessionUser() {
+  if (!draggedSessionUser || draggedSessionUser.dataset.deleted === "true") {
     return;
   }
-  if (button.dataset.action === "move-down") {
-    await moveSessionUser(name, Math.min(users.length - 1, index + 1));
-    return;
-  }
-  if (button.dataset.action === "remove") {
-    await removeSessionUser(name);
+  const name = draggedSessionUser.dataset.name;
+  draggedSessionUser.dataset.deleted = "true";
+  draggedSessionUser.style.display = "none";
+  await removeSessionUser(name);
+}
+
+function finishSessionUserDragUi() {
+  draggedSessionUser?.classList.remove("dragging");
+  elements.sessionUsersPanel?.classList.remove("is-dragging");
+  elements.sessionUserTrash?.classList.remove("drag-over");
+  clearSessionUserDropIndicators();
+}
+
+// 1. Prevent default on document dragenter to remove the forbidden icon in WebView/WebKit.
+document.addEventListener("dragenter", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
   }
 });
+
+// 2. Prevent default on document dragover to permit drop anywhere.
+document.addEventListener("dragover", (e) => {
+  if (!draggedSessionUser) {
+    return;
+  }
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = "move";
+  }
+  // If we drag outside the list and we are not natively over the trash, clear drop indicators.
+  const target = e.target instanceof Element ? e.target : null;
+  if (target && !elements.sessionUserList.contains(target) && target !== elements.sessionUserTrash && !elements.sessionUserTrash.contains(target)) {
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+    clearSessionUserDropIndicators();
+  }
+});
+
+document.addEventListener("drop", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
+  }
+});
+
+// 3. Handle drag start for badge items.
+elements.sessionUserList.addEventListener("dragstart", (e) => {
+  const badge = e.target.closest(".session-user-badge");
+  if (!badge) return;
+  draggedSessionUser = badge;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", badge.dataset.name);
+  if (typeof e.dataTransfer.setDragImage === "function") {
+    const rect = badge.getBoundingClientRect();
+    e.dataTransfer.setDragImage(
+      badge,
+      Math.max(0, e.clientX - rect.left),
+      Math.max(0, e.clientY - rect.top),
+    );
+  }
+  setTimeout(() => {
+    badge.classList.add("dragging");
+    elements.sessionUsersPanel?.classList.add("is-dragging");
+  }, 0);
+});
+
+// 4. Handle dragover for reordering.
+elements.sessionUserList.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  if (!draggedSessionUser) return;
+  e.dataTransfer.dropEffect = "move";
+  
+  const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
+  draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
+
+  let afterElement = null;
+  for (const child of draggableElements) {
+    const box = child.getBoundingClientRect();
+    if (e.clientY < box.bottom && e.clientY > box.top) {
+      if (e.clientX < box.left + box.width / 2) {
+        afterElement = child;
+        break;
+      }
+    } else if (e.clientY < box.top) {
+      afterElement = child;
+      break;
+    }
+  }
+
+  state.sessionUserDragTarget = afterElement;
+  state.sessionUserDragAfter = afterElement == null;
+
+  if (afterElement == null) {
+    if (draggableElements.length > 0) {
+      draggableElements[draggableElements.length - 1].classList.add("drop-after");
+    }
+  } else {
+    afterElement.classList.add("drop-before");
+  }
+});
+
+// 5. Handle drag end.
+document.addEventListener("dragend", async (e) => {
+  if (draggedSessionUser) {
+    finishSessionUserDragUi();
+
+    if (!draggedSessionUser.dataset.deleted) {
+      if (state.sessionUserDragTarget) {
+        elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
+      } else if (state.sessionUserDragAfter) {
+        elements.sessionUserList.appendChild(draggedSessionUser);
+      }
+      
+      const name = draggedSessionUser.dataset.name;
+      const newElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
+      const newIndex = newElements.indexOf(draggedSessionUser);
+      const oldIndex = parseInt(draggedSessionUser.dataset.index, 10);
+      
+      if (newIndex !== -1 && newIndex !== oldIndex) {
+        await moveSessionUser(name, newIndex);
+      }
+    }
+    draggedSessionUser = null;
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+  }
+});
+
+// 6. Handle trash can events natively.
+if (elements.sessionUserTrash) {
+  elements.sessionUserTrash.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    elements.sessionUserTrash.classList.add("drag-over");
+    clearSessionUserDropIndicators();
+  });
+
+  elements.sessionUserTrash.addEventListener("dragleave", (e) => {
+    elements.sessionUserTrash.classList.remove("drag-over");
+  });
+
+  elements.sessionUserTrash.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    elements.sessionUserTrash.classList.add("drag-over");
+    clearSessionUserDropIndicators();
+  });
+
+  elements.sessionUserTrash.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    finishSessionUserDragUi();
+    await removeDraggedSessionUser();
+  });
+}
+
 
 elements.queueNextButton.addEventListener("click", async (event) => {
   const point = anchorPointForEvent(event, elements.queueNextButton);
@@ -6327,7 +9799,20 @@ elements.dismissBackupButton.addEventListener("blur", () => {
 
 elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
+  if (state.cacheSettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
+});
+
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  state.displaySettingsOpen = !state.displaySettingsOpen;
+  if (state.displaySettingsOpen) {
+    state.cacheSettingsOpen = false;
+    syncCachePanelVisibility();
+  }
+  syncDisplayPanelVisibility();
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {
@@ -6380,9 +9865,10 @@ elements.cacheQualitySelect?.addEventListener("change", async (event) => {
   if (!quality || quality === String(state.data?.cache_policy?.video_quality || "")) {
     return;
   }
+  const selectedLabel = event.target.selectedOptions?.[0]?.textContent || quality;
   await setCachePolicyPreference(
     { video_quality: quality },
-    t("service.qualityUpdated", { quality }),
+    t("service.qualityUpdated", { quality: selectedLabel }),
   );
 });
 
@@ -6441,6 +9927,38 @@ elements.volumeSlider?.addEventListener("input", (event) => {
 
 elements.volumeMuteButton?.addEventListener("click", () => {
   toggleLocalPlayerMute();
+});
+
+elements.keyShiftDecButton?.addEventListener("click", () => {
+  const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
+  setLocalPlayerKeyShift(currentKey - 1);
+});
+
+elements.keyShiftIncButton?.addEventListener("click", () => {
+  const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
+  setLocalPlayerKeyShift(currentKey + 1);
+});
+
+elements.keyShiftResetButton?.addEventListener("click", () => {
+  setLocalPlayerKeyShift(0);
+});
+
+elements.keyShiftInput?.addEventListener("change", async (event) => {
+  await setLocalPlayerKeyShift(event.target.value);
+});
+
+elements.keyShiftInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setLocalPlayerKeyShift(event.target.value);
+});
+
+document.addEventListener("click", () => {
+  if (state.audioContext && state.audioContext.state === "suspended") {
+    state.audioContext.resume().catch(() => {});
+  }
 });
 
 elements.clearPlaylistButton.addEventListener("click", (event) => {
@@ -6557,6 +10075,14 @@ elements.languageSwitch?.addEventListener("click", (event) => {
     return;
   }
   setLanguage(button.dataset.language);
+});
+
+elements.themeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-theme]");
+  if (!button) {
+    return;
+  }
+  applyTheme(button.dataset.theme);
 });
 
 elements.dataResetButton?.addEventListener("click", (event) => {
@@ -6729,12 +10255,28 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!button || button.dataset.action === "toggle-menu") {
     return;
   }
+  const action = button.dataset.action;
+  const point = anchorPointForEvent(event, button);
+  if (action === "history-remove") {
+    const key = button.dataset.key || "";
+    if (!key) {
+      return;
+    }
+    closeOpenMenus();
+    openConfirm({
+      type: "remove-history",
+      key,
+      message: t("history.removeConfirm"),
+      x: point.x,
+      y: point.y,
+    });
+    return;
+  }
   const url = button.dataset.url;
   if (!url) {
     return;
   }
-  const point = anchorPointForEvent(event, button);
-  await handleAddByUrl(url, button.dataset.action === "history-next" ? "next" : "tail", point);
+  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point);
   closeOpenMenus();
 });
 
@@ -6793,6 +10335,97 @@ elements.gatchaFavlistModalConfirm?.addEventListener("click", async () => {
   await confirmGatchaFavlistModal();
 });
 
+elements.poolConfigModalClose?.addEventListener("click", () => {
+  closePoolConfigModal();
+});
+
+elements.poolConfigModalCancel?.addEventListener("click", () => {
+  closePoolConfigModal();
+});
+
+elements.poolConfigModalBackdrop?.addEventListener("click", () => {
+  closePoolConfigModal();
+});
+
+elements.poolConfigWeightSlider?.addEventListener("input", () => {
+  updatePoolConfigWeightLabel();
+});
+
+elements.poolConfigModalReset?.addEventListener("click", () => {
+  resetPoolConfigControls();
+});
+
+elements.poolConfigUidSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", true);
+});
+
+elements.poolConfigUidSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", false);
+});
+
+elements.poolConfigFavlistSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+});
+
+elements.poolConfigFavlistSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", false);
+});
+
+elements.poolConfigModalSave?.addEventListener("click", async () => {
+  await submitPoolConfigModal();
+});
+
+elements.developerModeTrigger?.addEventListener("click", () => {
+  openBilikaraSecretModal();
+});
+
+elements.developerModeTrigger?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  event.preventDefault();
+  openBilikaraSecretModal();
+});
+
+elements.bilikaraSecretForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await verifyBilikaraSecret();
+});
+
+elements.bilikaraSecretClose?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
+});
+
+elements.bilikaraSecretCancel?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
+});
+
+elements.bilikaraSecretBackdrop?.addEventListener("click", () => {
+  closeBilikaraSecretModal();
+});
+
+document.addEventListener("click", handleDeveloperTagResetButtonClick);
+
+elements.developerTagResetClose?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetCancel?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetBackdrop?.addEventListener("click", () => {
+  closeDeveloperTagResetModal();
+});
+
+elements.developerTagResetConfirm?.addEventListener("click", async () => {
+  await confirmDeveloperAction();
+});
+
+elements.developerTagResetDeleteMid?.addEventListener("click", async () => {
+  await confirmDeveloperDeleteMid();
+});
+
 elements.confirmOk.addEventListener("click", async () => {
   const intent = state.confirmIntent;
   if (!intent) {
@@ -6820,6 +10453,10 @@ elements.confirmOk.addEventListener("click", async () => {
       await resetPlayerState();
       return;
     }
+    if (intent.type === "install-app-update") {
+      await installAppUpdate(Boolean(intent.includePreview));
+      return;
+    }
     if (intent.type === "open-release" && intent.releaseUrl) {
       window.open(intent.releaseUrl, "_blank", "noopener");
       closeConfirm();
@@ -6830,6 +10467,13 @@ elements.confirmOk.addEventListener("click", async () => {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
       setAppMessage(t("list.removedSong"));
+      render();
+      return;
+    }
+    if (intent.type === "remove-history" && intent.key) {
+      state.data = await apiPost("/api/history/remove", { key: intent.key });
+      closeConfirm();
+      setAppMessage(t("history.removed"));
       render();
       return;
     }
@@ -6883,6 +10527,7 @@ document.addEventListener("click", (event) => {
       event.target.closest("#update-check-button") ||
       event.target.closest("#add-form") ||
       event.target.closest("#gatcha-uid-form") ||
+      event.target.closest("#modal-follow-uid-form") ||
       event.target.closest("#refresh-gatcha-cache-button") ||
       event.target.closest("#history-list")
     ) {
@@ -6894,6 +10539,11 @@ document.addEventListener("click", (event) => {
   if (state.cacheSettingsOpen && !event.target.closest("#cache-settings")) {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
+  }
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-settings")) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
   }
 });
 
@@ -6930,12 +10580,19 @@ document.addEventListener("keydown", (event) => {
   if (state.gatchaFavlistIntent) {
     closeGatchaFavlistModal();
   }
+  if (elements.poolConfigModal && !elements.poolConfigModal.classList.contains("hidden")) {
+    closePoolConfigModal();
+  }
   if (state.confirmIntent) {
     closeConfirm();
   }
   if (state.cacheSettingsOpen) {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
+  }
+  if (state.displaySettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
   }
 });
 
@@ -6957,7 +10614,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function handleFullscreenChange() {
-  if (!isPlayerPanelFullscreen()) {
+  const isFullscreen = isPlayerPanelFullscreen();
+  if (!isFullscreen) {
     hideFullscreenRequestToast();
     if (hasLocalAdvanceDelayOverlay()) {
       updateLocalAdvanceDelayOverlay();
@@ -6965,6 +10623,7 @@ function handleFullscreenChange() {
       hidePlayerDelayOverlay();
     }
   }
+  setTauriWindowFullscreen(isFullscreen).catch(() => {});
   renderPlayerFullscreenButton();
 }
 
@@ -7113,6 +10772,335 @@ elements.listStage.addEventListener("wheel", (event) => {
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
+document.addEventListener("click", async (event) => {
+  const root = state.ratingPromptElement;
+  if (!root || !root.contains(event.target)) {
+    return;
+  }
+  const tabButton = event.target.closest("[data-rating-tab]");
+  if (tabButton) {
+    setRatingPromptActiveTab(tabButton.dataset.ratingTab || "current");
+    return;
+  }
+  const scoreButton = event.target.closest("[data-rating-score]");
+  if (scoreButton) {
+    state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
+    renderRatingStars();
+    return;
+  }
+  const optOutInput = event.target.closest("[data-rating-opt-out]");
+  if (optOutInput) {
+    setRatingOptOut(optOutInput.checked);
+    if (optOutInput.checked) {
+      closeRatingPrompt({ submit: false });
+    }
+    return;
+  }
+  const addUpButton = event.target.closest("[data-rating-add-up]");
+  if (addUpButton) {
+    const promptItem = activeRatingPromptItem();
+    const uid = ratingOwnerUid(promptItem);
+    const message = root.querySelector("[data-rating-message]");
+    if (!uid) {
+      if (message) message.textContent = t("rating.missingUidMessage");
+      return;
+    }
+    addUpButton.disabled = true;
+    if (message) message.textContent = t("rating.addingUp");
+    try {
+      await addGatchaUid(uid);
+      if (message) message.textContent = t("rating.addedUp");
+    } catch (error) {
+      if (message) message.textContent = error.message || t("rating.addFailed");
+    } finally {
+      addUpButton.disabled = false;
+    }
+    return;
+  }
+  if (event.target.closest("[data-rating-close]")) {
+    closeRatingPrompt({ submit: true });
+  }
+});
+
+function handleRatingFullscreenChange() {
+  if (fullscreenElement()) {
+    return;
+  }
+  const currentItem = state.data?.current_item;
+  const video = elements.playerFrame?.querySelector?.('video[data-player-role="video"]');
+  if (currentItem && video) {
+    maybeShowRatingPromptForProgress(currentItem, video.currentTime, video.duration);
+  }
+}
+
+document.addEventListener("fullscreenchange", handleRatingFullscreenChange);
+document.addEventListener("webkitfullscreenchange", handleRatingFullscreenChange);
+
+elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
+
+elements.searchExpandButton?.addEventListener("click", () => {
+  if (elements.searchModalPlaceholder && elements.searchCardContent && elements.searchModal) {
+    elements.searchModalPlaceholder.appendChild(elements.searchCardContent);
+    elements.searchModal.classList.remove("hidden");
+    elements.searchModalPlaceholder.classList.remove("hidden");
+    elements.favlistBrowserView?.classList.add("hidden");
+    elements.searchModalOtherView?.classList.add("hidden");
+    elements.searchSidebarItems?.forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.target === "search");
+    });
+    if (elements.searchExpandButton) {
+      elements.searchExpandButton.style.display = "none";
+    }
+  }
+});
+
+elements.searchModalClose?.addEventListener("click", () => {
+  if (elements.searchOriginalContainer && elements.searchCardContent && elements.searchModal) {
+    elements.searchOriginalContainer.appendChild(elements.searchCardContent);
+    elements.searchModal.classList.add("hidden");
+    if (elements.searchExpandButton) {
+      elements.searchExpandButton.style.display = "";
+    }
+  }
+});
+
+elements.searchModalBackdrop?.addEventListener("click", () => {
+  if (elements.searchOriginalContainer && elements.searchCardContent && elements.searchModal) {
+    elements.searchOriginalContainer.appendChild(elements.searchCardContent);
+    elements.searchModal.classList.add("hidden");
+    if (elements.searchExpandButton) {
+      elements.searchExpandButton.style.display = "";
+    }
+  }
+});
+
+elements.searchSidebarItems?.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    elements.searchSidebarItems.forEach((b) => {
+      b.classList.remove("active");
+    });
+    btn.classList.add("active");
+
+    const target = btn.dataset.target;
+    if (target === "search") {
+      elements.searchModalPlaceholder?.classList.remove("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.add("hidden");
+    } else if (target === "favlist") {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.remove("hidden");
+      elements.searchModalOtherView?.classList.add("hidden");
+      if (!state.favlistBrowseData && !state.favlistBrowseLoading) {
+        state.favlistBrowseSelectedFolderId = "";
+        if (elements.favlistSearchQuery) {
+          elements.favlistSearchQuery.value = "";
+        }
+        loadFavlistBrowse({ folderId: "", query: "" });
+      } else {
+        renderFavlistBrowse();
+      }
+    } else if (target === "name" || target === "artist") {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      if (state.d1BrowseKind !== target) {
+        state.d1BrowseData = null;
+        state.d1BrowseLetter = "";
+        state.d1BrowseTag = "";
+        state.d1BrowseLocale = "";
+        state.d1BrowseAliases = [];
+        state.d1BrowseQuery = "";
+      }
+      state.d1BrowseKind = target;
+      renderD1BrowseView();
+    } else if (target === "category") {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      renderCategoryBrowseView();
+    } else if (target === "review") {
+      if (!state.developerMode) {
+        btn.classList.remove("active");
+        const searchButton = Array.from(elements.searchSidebarItems || []).find((item) => item.dataset.target === "search");
+        searchButton?.classList.add("active");
+        elements.searchModalPlaceholder?.classList.remove("hidden");
+        elements.favlistBrowserView?.classList.add("hidden");
+        elements.searchModalOtherView?.classList.add("hidden");
+        return;
+      }
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      loadPendingReviewItems();
+    } else {
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("search-modal-browser-view");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      if (elements.searchModalOtherView) {
+        elements.searchModalOtherView.textContent = t("search.browseComingSoon");
+      }
+    }
+  });
+});
+
+elements.searchModalOtherView?.addEventListener("submit", (event) => {
+  const categoryForm = event.target.closest("[data-category-browse-search]");
+  if (categoryForm && elements.searchModalOtherView.contains(categoryForm)) {
+    event.preventDefault();
+    const input = categoryForm.querySelector("[data-category-browse-query]");
+    loadCategoryBrowse({
+      query: input?.value || "",
+      append: false,
+    });
+    return;
+  }
+  const form = event.target.closest("[data-d1-browse-search]");
+  if (!form || !elements.searchModalOtherView.contains(form)) {
+    return;
+  }
+  event.preventDefault();
+  const input = form.querySelector("[data-d1-browse-query]");
+  if (!state.d1BrowseLetter) {
+    if (input) {
+      input.value = "";
+    }
+    state.d1BrowseQuery = "";
+    state.d1BrowseTag = "";
+    state.d1BrowseLocale = "";
+    state.d1BrowseAliases = [];
+    state.d1BrowseData = null;
+    renderD1BrowseView();
+    return;
+  }
+  if (state.d1BrowseTag) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: input?.value || "",
+      tag: state.d1BrowseTag,
+      locale: state.d1BrowseLocale,
+      aliases: state.d1BrowseAliases,
+    });
+    return;
+  }
+  loadD1Browse({
+    kind: state.d1BrowseKind || "name",
+    letter: state.d1BrowseLetter,
+    query: input?.value || "",
+    tag: "",
+    locale: "",
+  });
+});
+
+elements.searchModalOtherView?.addEventListener("click", (event) => {
+  const reviewRefreshButton = event.target.closest("[data-pending-review-refresh]");
+  if (reviewRefreshButton && elements.searchModalOtherView.contains(reviewRefreshButton)) {
+    loadPendingReviewItems();
+    return;
+  }
+  const reviewApproveButton = event.target.closest("[data-pending-review-approve]");
+  if (reviewApproveButton && elements.searchModalOtherView.contains(reviewApproveButton)) {
+    approvePendingReviewVisibleItems();
+    return;
+  }
+  const categoryBackButton = event.target.closest("[data-category-browse-back]");
+  if (categoryBackButton && elements.searchModalOtherView.contains(categoryBackButton)) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseQuery = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    state.categoryBrowseError = "";
+    renderCategoryBrowseView();
+    return;
+  }
+  const categoryButton = event.target.closest("[data-category-id]");
+  if (categoryButton && elements.searchModalOtherView.contains(categoryButton)) {
+    loadCategoryBrowse({
+      categoryId: categoryButton.dataset.categoryId || "",
+      query: "",
+      append: false,
+    });
+    return;
+  }
+  const backButton = event.target.closest("[data-d1-browse-back]");
+  if (backButton && elements.searchModalOtherView.contains(backButton)) {
+    if (state.d1BrowseTag) {
+      loadD1Browse({
+        kind: state.d1BrowseKind || "name",
+        letter: state.d1BrowseLetter,
+        query: "",
+        tag: "",
+        locale: "",
+        aliases: [],
+      });
+    } else if (state.d1BrowseLetter) {
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+      state.d1BrowseData = null;
+      renderD1BrowseView();
+    }
+    return;
+  }
+  const letterButton = event.target.closest("[data-letter]");
+  if (letterButton && elements.searchModalOtherView.contains(letterButton)) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: letterButton.dataset.letter || "",
+      query: "",
+      tag: "",
+      locale: "",
+      aliases: [],
+    });
+    return;
+  }
+  const tagButton = event.target.closest("[data-tag]");
+  if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
+    let aliases = [];
+    try {
+      aliases = JSON.parse(tagButton.dataset.aliases || "[]");
+    } catch (error) {
+      aliases = [];
+    }
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: "",
+      tag: tagButton.dataset.tag || "",
+      locale: tagButton.dataset.locale || "",
+      aliases,
+    });
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  const target = searchResultRequestTarget(event, elements.searchModalOtherView);
+  if (!target?.url) {
+    return;
+  }
+  if (target.button) {
+    target.button.disabled = true;
+  }
+  try {
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+  } finally {
+    if (target.button) {
+      target.button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("scroll", (event) => {
+  const target = event.target;
+  if (target instanceof Element && target.matches("[data-category-browse-results]")) {
+    maybeLoadMoreCategoryBrowse(target);
+  }
+}, true);
+
 elements.searchCookieToggle?.addEventListener("click", () => {
   state.searchLarkVisible = false;
   state.searchCookieVisible = !state.searchCookieVisible;
@@ -7168,27 +11156,88 @@ elements.followSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.followSongResults?.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-url]");
+  const target = searchResultRequestTarget(event, elements.followSongResults);
+  if (!target) {
+    return;
+  }
+  if (!target.url) {
+    return;
+  }
+
+  if (target.button) {
+    target.button.disabled = true;
+  }
+  try {
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+  } finally {
+    if (target.button) {
+      target.button.disabled = false;
+    }
+  }
+});
+
+elements.favlistGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-folder-id]");
   if (!button) {
     return;
   }
+  const folderId = String(button.dataset.folderId || "").trim();
+  if (!folderId) {
+    return;
+  }
+  state.favlistBrowseSelectedFolderId = folderId;
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  await loadFavlistBrowse({ folderId, query: "" });
+});
 
-  const url = String(button.dataset.url || "").trim();
-  if (!url) {
+elements.favlistBrowseBack?.addEventListener("click", () => {
+  state.favlistBrowseSelectedFolderId = "";
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  renderFavlistBrowse();
+});
+
+elements.favlistSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.favlistSearchQuery?.value || "").trim();
+  await loadFavlistBrowse({
+    folderId: state.favlistBrowseSelectedFolderId,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.favlistSongResults?.addEventListener("click", async (event) => {
+  const target = searchResultRequestTarget(event, elements.favlistSongResults);
+  if (!target) {
+    return;
+  }
+  if (!target.url) {
     return;
   }
 
-  button.disabled = true;
+  if (target.button) {
+    target.button.disabled = true;
+  }
   try {
-    await handleAddByUrl(url, "tail", anchorPointForEvent(event, button));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
   } finally {
-    button.disabled = false;
+    if (target.button) {
+      target.button.disabled = false;
+    }
   }
 });
 
 elements.gatchaUidToggle?.addEventListener("click", () => {
   state.gatchaUidVisible = !state.gatchaUidVisible;
   renderGatchaUidFace();
+});
+
+elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
+  await openPoolConfigModal();
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
@@ -7247,41 +11296,20 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
 
 elements.gatchaUidForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
+  await previewGatchaUidAddFromInput(elements.gatchaUidInput, {
+    messageTarget: "gatcha",
+    anchor: elements.addGatchaUidButton,
+    event,
+  });
+});
 
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidFace();
-    return;
-  }
-
-  state.gatchaUidSaving = true;
-  renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.checkingUid"));
-  try {
-    const preview = await previewGatchaUid(uid);
-    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
-    const modeLabel = preview?.cache_mode_label || (preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode"));
-    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
-    const point = anchorPointForEvent(event, elements.addGatchaUidButton);
-    openConfirm({
-      type: "gatcha-uid-add",
-      uid: preview?.uid || uid,
-      name: ownerName,
-      message: t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }),
-      ...point,
-    });
-    setGatchaUidMessage(t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaUidSaving = false;
-    renderGatchaUidFace();
-  }
+elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaUidAddFromInput(elements.modalFollowUidInput, {
+    messageTarget: "follow-modal",
+    anchor: elements.modalAddFollowUidButton,
+    event,
+  });
 });
 
 elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
@@ -7313,31 +11341,18 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
 });
 
 elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
+  await previewGatchaFavlistFromInput(elements.gatchaUidInput, {
+    messageTarget: "gatcha",
+    modalSource: "gatcha",
+  });
+});
 
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidFace();
-    return;
-  }
-
-  state.gatchaFavlistSaving = true;
-  renderGatchaUidFace();
-  setGatchaUidMessage(t("gatcha.readingFavlists"));
-  try {
-    const result = await previewGatchaFavlist(uid);
-    openGatchaFavlistModal(result?.uid || uid, result);
-    setGatchaUidMessage(t("gatcha.chooseFavlists"));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaFavlistSaving = false;
-    renderGatchaUidFace();
-  }
+elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaFavlistFromInput(elements.modalFavlistUidInput, {
+    messageTarget: "favlist-modal",
+    modalSource: "favlist-modal",
+  });
 });
 
 
@@ -7363,6 +11378,9 @@ async function startPolling() {
     }
   }, pollIntervalMs);
 }
+
+window.addEventListener("resize", scheduleConfirmPopoverPositionSync);
+window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 
 window.addEventListener("pagehide", () => {
   teardownMountedPlayer();

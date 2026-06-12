@@ -54,6 +54,26 @@ class CacheManagerOutputTest(unittest.TestCase):
             "下载视频轨 P1 50% · 32.0 MB / 64.0 MB",
         )
 
+    def test_structured_download_message_starts_with_total_progress(self):
+        tracks = [
+            {
+                "label": "视频轨P1",
+                "order": 0,
+                "current_bytes": 32 * 1024 * 1024,
+                "target_bytes": 64 * 1024 * 1024,
+            },
+            {
+                "label": "音轨P1",
+                "order": 1,
+                "current_bytes": 8 * 1024 * 1024,
+                "target_bytes": 16 * 1024 * 1024,
+            },
+        ]
+        self.assertEqual(
+            CacheManager._structured_download_message(tracks),
+            "总计：40.0 MB / 80.0 MB\n视频轨P1：32.0 MB / 64.0 MB\n音轨P1：8.0 MB / 16.0 MB",
+        )
+
     def test_force_refresh_hint_matches_upgrade_message(self):
         self.assertTrue(CacheManager._should_force_refresh_bbdown("请尝试升级到最新版本后重试!"))
         self.assertFalse(CacheManager._should_force_refresh_bbdown("缓存失败"))
@@ -209,17 +229,19 @@ class CacheManagerPolicyTest(unittest.TestCase):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
-                manager.set_cache_policy(video_quality=VIDEO_QUALITY_CHOICES[3])
+                max_avc_quality_index = min(2, len(VIDEO_QUALITY_CHOICES) - 2)
+                manual_quality_index = max_avc_quality_index + 1
+                manager.set_cache_policy(video_quality=VIDEO_QUALITY_CHOICES[manual_quality_index])
                 manager.set_client_media_capabilities(
                     {
                         "hevc_supported": False,
                         "avc_supported": True,
-                        "max_avc_quality_index": 2,
+                        "max_avc_quality_index": max_avc_quality_index,
                     }
                 )
                 self.assertEqual(
                     manager._bbdown_stream_preference_args("video"),
-                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[3:]), "-e", "avc"],
+                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[manual_quality_index:]), "-e", "avc"],
                 )
             finally:
                 manager.shutdown()
@@ -373,6 +395,32 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
                 (item_dir / "audio.m4a").write_bytes(b"audio")
                 self.assertTrue(manager._item_cache_ready(item))
+            finally:
+                manager.shutdown()
+
+    def test_ensure_item_cached_preserves_selected_audio_variant_while_requeueing(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                item.page = 2
+                item.video_page = 2
+                item.selected_pages = [1, 2]
+                item.selected_parts = ["main track", "off vocal"]
+                item.selected_audio_variant_id = "p2_off_vocal"
+                self.store.add_item(item, requester_name="cache-test-user")
+
+                manager._ensure_item_cached(item)
+
+                updated = self.store.get_item("song-a")
+                self.assertIsNotNone(updated)
+                self.assertEqual(updated.cache_status, "pending")
+                self.assertEqual(updated.audio_variants, [])
+                self.assertEqual(updated.selected_audio_variant_id, "p2_off_vocal")
             finally:
                 manager.shutdown()
 
@@ -969,6 +1017,28 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_select_asset_uses_windows_arm64_package(self):
+        release = {
+            "assets": [
+                {
+                    "name": "BBDown_1.6.3_20240814_win-x64.zip",
+                    "browser_download_url": "https://example.test/win-x64.zip",
+                },
+                {
+                    "name": "BBDown_1.6.3_20240814_win-arm64.zip",
+                    "browser_download_url": "https://example.test/win-arm64.zip",
+                },
+            ],
+        }
+
+        with patch("bilikara.cache.platform.system", return_value="Windows"), patch(
+            "bilikara.cache.platform.machine",
+            return_value="ARM64",
+        ):
+            selected = CacheManager._select_asset(object(), release)
+
+        self.assertEqual(selected["name"], "BBDown_1.6.3_20240814_win-arm64.zip")
+
     def test_select_asset_uses_macos_arm64_package(self):
         release = {
             "assets": [
@@ -1050,10 +1120,27 @@ class CacheManagerPolicyTest(unittest.TestCase):
         binary_path.parent.mkdir(parents=True, exist_ok=True)
         binary_path.write_bytes(b"ffmpeg-bin")
 
-        self.assertEqual(
-            CacheManager._bbdown_ffmpeg_path_arg(binary_path),
-            str(binary_path.parent),
-        )
+        with patch.object(CacheManager, "_tool_arg_path", return_value="C:\\SHORT\\FFMPEG"):
+            self.assertEqual(CacheManager._bbdown_ffmpeg_path_arg(binary_path), "C:\\SHORT\\FFMPEG")
+
+    def test_tool_arg_path_prefers_windows_short_path(self):
+        path = Path("C:/Users/Test User/AppData/Local/bilikara/runtime/tools/bbdown")
+
+        with patch("bilikara.cache.os.name", "nt"), patch.object(
+            CacheManager,
+            "_windows_short_path",
+            return_value="C:\\Users\\TESTUS~1\\AppData\\Local\\BILIKA~1\\runtime\\tools\\bbdown",
+        ):
+            self.assertEqual(
+                CacheManager._tool_arg_path(path),
+                "C:\\Users\\TESTUS~1\\AppData\\Local\\BILIKA~1\\runtime\\tools\\bbdown",
+            )
+
+    def test_tool_arg_path_falls_back_when_short_path_unavailable(self):
+        path = Path("C:/Users/Test User/AppData/Local/bilikara/runtime/tools/bbdown")
+
+        with patch("bilikara.cache.os.name", "nt"), patch.object(CacheManager, "_windows_short_path", return_value=""):
+            self.assertEqual(CacheManager._tool_arg_path(path), str(path))
 
     def test_tool_process_env_prepends_ffmpeg_and_bbdown_dirs(self):
         suffix = ".exe" if os.name == "nt" else ""
@@ -1061,11 +1148,15 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ffmpeg_path.parent.mkdir(parents=True, exist_ok=True)
         ffmpeg_path.write_bytes(b"ffmpeg-bin")
 
-        with patch("bilikara.cache.BB_DOWN_DIR", ffmpeg_path.parent):
+        with patch("bilikara.cache.BB_DOWN_DIR", ffmpeg_path.parent), patch.object(
+            CacheManager,
+            "_tool_arg_path",
+            side_effect=lambda path: f"short-{Path(path).name}",
+        ):
             env = CacheManager._tool_process_env(ffmpeg_path)
 
         first_path = env["PATH"].split(os.pathsep)[0]
-        self.assertEqual(first_path, str(ffmpeg_path.parent))
+        self.assertEqual(first_path, "short-bbdown")
 
     def test_download_selected_streams_skips_legacy_muxed_variant_outputs(self):
         item_dir = self.cache_dir / "song-a"
@@ -1138,6 +1229,48 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(result["audio_variants"][0]["id"], "p2_track_1")
         self.assertEqual(result["audio_variants"][0]["page"], 2)
         self.assertEqual(result["selected_audio_variant_id"], "p2_track_1")
+
+    def test_download_selected_streams_preserves_p2_default_when_p1_audio_is_also_bound(self):
+        item_dir = self.cache_dir / "song-a"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        video_file = item_dir / "video-p2" / "video.mp4"
+        audio_p1_file = item_dir / "audio-p1" / "audio.m4a"
+        audio_p2_file = item_dir / "audio-p2" / "audio.m4a"
+        log_path = Path(self.temp_dir.name) / "logs" / "song-a.log"
+        for file_path in (video_file, audio_p1_file, audio_p2_file):
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_bytes(b"track")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                item.page = 2
+                item.cid = 789
+                item.part_title = "off vocal"
+                item.display_title = "title-song-a - off vocal"
+                item.selected_pages = [1, 2]
+                item.selected_parts = ["main track", "off vocal"]
+                item.available_pages = [1, 2]
+                item.available_parts = ["main track", "off vocal"]
+                item.selected_audio_variant_id = "p2_off_vocal"
+                item.video_page = 2
+                manager.desired_ids.add(item.id)
+                with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_p1_file, audio_p2_file]):
+                    result = manager._download_selected_streams(
+                        item,
+                        Path("/tools/BBDown"),
+                        Path("/tools/ffmpeg"),
+                        item_dir,
+                        log_path,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(Path(result["video_relative_path"]).as_posix(), "song-a/video-p2/video.mp4")
+        self.assertEqual([variant["id"] for variant in result["audio_variants"]], ["p1_main_track", "p2_off_vocal"])
+        self.assertEqual([variant["page"] for variant in result["audio_variants"]], [1, 2])
+        self.assertEqual(result["selected_audio_variant_id"], "p2_off_vocal")
 
     def test_start_bbdown_login_removes_stale_qr_image(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"

@@ -23,10 +23,16 @@
       return;
     }
 
-    elements.queueList.innerHTML = "";
+    elements.queueList.replaceChildren();
     if (!playlist.length) {
-      elements.queueList.innerHTML =
-        `<div class="queue-empty">${typeof htmlT === "function" ? htmlT("remote.queueEmpty") : "remote.queueEmpty"}</div>`;
+      if (typeof createQueueEmptyNode === "function" && typeof t === "function") {
+        elements.queueList.appendChild(createQueueEmptyNode(t("remote.queueEmpty")));
+      } else {
+        const emptyNode = document.createElement("div");
+        emptyNode.className = "queue-empty";
+        emptyNode.textContent = "remote.queueEmpty";
+        elements.queueList.appendChild(emptyNode);
+      }
       return;
     }
 

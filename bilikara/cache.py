@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+import ctypes
 from datetime import datetime
 import json
 import os
@@ -18,7 +20,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Callable, Iterator, TextIO
+from typing import Any, Callable, Iterable, Iterator, TextIO
 
 from .config import (
     BB_DOWN_DIR,
@@ -47,6 +49,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re.IGNORECASE)
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
 CACHE_RETENTION_BUFFER_ITEMS = 3
+MAX_PARALLEL_TRACK_DOWNLOADS = 4
 CREATE_NO_WINDOW = 0x08000000
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
@@ -109,9 +112,11 @@ class CacheManager:
         self.ffmpeg_message = "等待任务"
         self.ffmpeg_prepare_lock = threading.Lock()
         self.active_process: subprocess.Popen[str] | None = None
+        self.active_processes: set[subprocess.Popen[str]] = set()
         self.active_item_id: str | None = None
         self.item_activity_at: dict[str, float] = {}
         self.item_stage_progress_signatures: dict[str, str] = {}
+        self.item_download_progress: dict[str, dict[str, dict[str, object]]] = {}
         self.retry_requested_ids: set[str] = set()
         self.cache_interrupted_messages: dict[str, str] = {}
         self.log_dir = LOG_DIR / "bbdown"
@@ -325,20 +330,66 @@ class CacheManager:
 
         current_item = payload.get("current_item")
         if isinstance(current_item, dict):
-            current_item["cache_size_bytes"] = int(item_bytes.get(str(current_item.get("id") or ""), 0))
+            current_item_id = str(current_item.get("id") or "")
+            current_item["cache_size_bytes"] = int(item_bytes.get(current_item_id, 0))
             current_item["cache_activity_at"] = float(
-                self.item_activity_at.get(str(current_item.get("id") or ""), 0.0)
+                self.item_activity_at.get(current_item_id, 0.0)
             )
+            current_item.update(self._download_progress_payload_for_item(current_item_id))
 
         playlist = payload.get("playlist")
         if isinstance(playlist, list):
             for item in playlist:
                 if isinstance(item, dict):
-                    item["cache_size_bytes"] = int(item_bytes.get(str(item.get("id") or ""), 0))
+                    item_id = str(item.get("id") or "")
+                    item["cache_size_bytes"] = int(item_bytes.get(item_id, 0))
                     item["cache_activity_at"] = float(
-                        self.item_activity_at.get(str(item.get("id") or ""), 0.0)
+                        self.item_activity_at.get(item_id, 0.0)
                     )
+                    item.update(self._download_progress_payload_for_item(item_id))
         return payload
+
+    def _download_progress_payload_for_item(self, item_id: object) -> dict[str, Any]:
+        normalized_item_id = str(item_id or "").strip()
+        if not normalized_item_id:
+            return {}
+        with self.lock:
+            tracks_by_key = self.item_download_progress.get(normalized_item_id) or {}
+            tracks = [dict(track) for track in tracks_by_key.values()]
+        if not tracks:
+            return {}
+
+        tracks.sort(key=lambda track: int(track.get("order") or 0))
+        track_payloads: list[dict[str, object]] = []
+        total_current = 0
+        total_target = 0
+        all_targets_known = True
+        for track in tracks:
+            current_bytes = max(0, int(track.get("current_bytes") or 0))
+            target_bytes = max(0, int(track.get("target_bytes") or 0))
+            if target_bytes <= 0:
+                all_targets_known = False
+                display_current = current_bytes
+            else:
+                display_current = min(current_bytes, target_bytes)
+                total_target += target_bytes
+            total_current += display_current
+            track_payloads.append(
+                {
+                    "key": str(track.get("key") or ""),
+                    "label": str(track.get("label") or ""),
+                    "current_bytes": display_current,
+                    "target_bytes": target_bytes,
+                    "done": bool(track.get("done")),
+                }
+            )
+
+        estimated_total = total_target if all_targets_known and total_target > 0 else 0
+        return {
+            "cache_download_current_bytes": total_current,
+            "cache_download_total_bytes": estimated_total,
+            "cache_download_tracks": track_payloads,
+        }
 
     def reconcile_cache_state(self) -> None:
         items = self.store.list_items()
@@ -358,7 +409,6 @@ class CacheManager:
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
-                selected_audio_variant_id="",
                 persist_backup=False,
             )
             self._record_item_activity(item.id)
@@ -498,6 +548,8 @@ class CacheManager:
         self._clear_cache_root()
         with self.lock:
             self.item_activity_at.clear()
+            self.item_stage_progress_signatures.clear()
+            self.item_download_progress.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
             self.pending_ids.clear()
@@ -513,7 +565,6 @@ class CacheManager:
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
-                selected_audio_variant_id="",
                 persist_backup=False,
             )
             self._record_item_activity(item.id)
@@ -527,11 +578,16 @@ class CacheManager:
             if self.stop_event.is_set():
                 return
             self.stop_event.set()
-            process = self.active_process
-        self._terminate_process(process)
+            processes = self._active_processes_locked()
+            if self.bbdown_login_process is not None:
+                processes.append(self.bbdown_login_process)
+                self.bbdown_login_process = None
+        self._terminate_processes(processes, wait=True)
         self._clear_cache_root()
         with self.lock:
             self.item_activity_at.clear()
+            self.item_stage_progress_signatures.clear()
+            self.item_download_progress.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
         for item in self.store.list_items():
@@ -543,14 +599,13 @@ class CacheManager:
                 video_relative_path="",
                 video_media_url="",
                 audio_variants=[],
-                selected_audio_variant_id="",
                 persist_backup=False,
             )
             self._record_item_activity(item.id)
 
     def clear_runtime_cache(self) -> None:
         with self.lock:
-            process = self.active_process
+            processes = self._active_processes_locked()
             self.pending_ids.clear()
             self.requeued_active_ids.clear()
             self.desired_ids.clear()
@@ -558,14 +613,17 @@ class CacheManager:
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
             self.item_activity_at.clear()
+            self.item_stage_progress_signatures.clear()
+            self.item_download_progress.clear()
             self.active_process = None
+            self.active_processes.clear()
             self.active_item_id = None
             while True:
                 try:
                     self.tasks.get_nowait()
                 except queue.Empty:
                     break
-        self._terminate_process(process)
+        self._terminate_processes(processes)
         self._clear_cache_root()
 
     def retry_item(self, item_id: str, *, force: bool = False) -> None:
@@ -583,9 +641,9 @@ class CacheManager:
         self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
 
         with self.lock:
-            active_process = self.active_process if self.active_item_id == item_id else None
+            active_processes = self._active_processes_locked(item_id)
             preempted_item_id = self.active_item_id if force and self.active_item_id != item_id else None
-            preempted_process = self.active_process if preempted_item_id else None
+            preempted_processes = self._active_processes_locked(preempted_item_id) if preempted_item_id else []
             in_flight = item_id in self.pending_ids or self.active_item_id == item_id
             if in_flight:
                 self.retry_requested_ids.add(item_id)
@@ -600,14 +658,12 @@ class CacheManager:
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
-            selected_audio_variant_id="",
             persist_backup=False,
         )
         self._record_item_activity(item_id)
 
         if in_flight:
-            if active_process is not None:
-                self._terminate_process(active_process)
+            self._terminate_processes(active_processes)
             return
 
         self._remove_cache_dir(item_id)
@@ -617,7 +673,7 @@ class CacheManager:
                 f"[{self._log_timestamp()}] interrupted by manual retry: {item.display_title}",
             )
             self._enqueue_retry_front(item_id, requeue_after=preempted_item_id)
-            self._terminate_process(preempted_process)
+            self._terminate_processes(preempted_processes)
             return
         self.enqueue(item_id)
 
@@ -754,7 +810,7 @@ class CacheManager:
 
         with self.lock:
             active_item_id = self.active_item_id
-            active_process = self.active_process
+            active_processes = self._active_processes_locked(active_item_id)
         if not active_item_id or active_item_id not in desired_ids:
             return
         if active_item_id == ordered_cache_ids[0]:
@@ -772,7 +828,7 @@ class CacheManager:
                 f"等待优先缓存: {title}" if title else "等待优先缓存"
             )
         self._enqueue_front(next_item_id, requeue_after=active_item_id)
-        self._terminate_process(active_process)
+        self._terminate_processes(active_processes)
 
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -789,6 +845,8 @@ class CacheManager:
                 with self.lock:
                     if self.active_item_id == item_id:
                         self.active_item_id = None
+                        self.active_process = None
+                        self.active_processes.clear()
                     if item_id in self.requeued_active_ids:
                         self.requeued_active_ids.discard(item_id)
                     else:
@@ -811,6 +869,7 @@ class CacheManager:
         return self._cache_item_multi(item_id, item, allow_refresh_retry=allow_refresh_retry)
 
     def _cache_item_multi(self, item_id: str, item, *, allow_refresh_retry: bool) -> bool:
+        self._clear_item_download_progress(item_id)
         self.store.update_item(
             item_id,
             cache_status="queued",
@@ -869,12 +928,14 @@ class CacheManager:
             self._raise_if_priority_shift(item_id)
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
+                self._take_retry_request(item_id)
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
                 self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
                     return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
                 return False
+            self._take_cache_interrupt_message(item_id)
             self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
             self._drop_item_cache(item_id, str(exc))
             return False
@@ -894,6 +955,7 @@ class CacheManager:
                 )
                 try:
                     self._ensure_bbdown(force_refresh=True)
+                    self._clear_item_download_progress(item_id)
                     self._safe_rmtree(item_dir)
                     item_dir.mkdir(parents=True, exist_ok=True)
                     return self._cache_item_multi(item_id, item, allow_refresh_retry=False)
@@ -902,6 +964,7 @@ class CacheManager:
                         log_path,
                         f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
                     )
+            self._clear_item_download_progress(item_id)
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
             self.store.update_item(
                 item_id,
@@ -913,6 +976,7 @@ class CacheManager:
             return False
 
         video_file = cache_result["video_file"]
+        self._clear_item_download_progress(item_id)
         self.store.update_item(
             item_id,
             cache_status="ready",
@@ -1126,36 +1190,83 @@ class CacheManager:
         self._raise_if_priority_shift(item.id)
         selected_pages = self._selected_pages_for_item(item)
         video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
-        download_stage_count = len(selected_pages) + 1
+        video_track = {
+            "key": self._download_track_key("video", video_page),
+            "page": video_page,
+            "stream_kind": "video",
+            "label": self._download_track_label("video", video_page),
+            "order": 0,
+        }
+        audio_tracks = [
+            {
+                "key": self._download_track_key("audio", page),
+                "page": page,
+                "stream_kind": "audio",
+                "label": self._download_track_label("audio", page),
+                "order": index + 1,
+            }
+            for index, page in enumerate(selected_pages)
+        ]
+        download_tracks = [video_track, *audio_tracks]
+        self._begin_download_progress(item.id, download_tracks)
 
-        video_file = self._download_page_stream(
-            item,
-            binary_path,
-            ffmpeg_path,
-            item_dir,
-            log_path,
-            page=video_page,
-            stream_kind="video",
-            stage_index=0,
-            stage_count=download_stage_count,
-        )
+        result_paths: dict[str, Path] = {}
+        max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-cache-track")
+        future_to_track = {
+            executor.submit(
+                self._download_page_stream,
+                item,
+                binary_path,
+                ffmpeg_path,
+                item_dir,
+                log_path,
+                page=int(track["page"]),
+                stream_kind=str(track["stream_kind"]),
+                track_key=str(track["key"]),
+            ): track
+            for track in download_tracks
+        }
+        try:
+            done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
+            exceptions: list[Exception] = []
+            for future in done:
+                if future.cancelled():
+                    continue
+                try:
+                    future.result()
+                except Exception as exc:  # noqa: BLE001
+                    exceptions.append(exc)
 
+            if exceptions:
+                for future in pending:
+                    future.cancel()
+                self._terminate_item_processes(item.id)
+                still_running = [future for future in pending if not future.cancelled()]
+                if still_running:
+                    wait(still_running)
+                    for future in still_running:
+                        if future.cancelled():
+                            continue
+                        try:
+                            future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            exceptions.append(exc)
+                raise self._preferred_download_exception(exceptions)
+
+            for future, track in future_to_track.items():
+                result_paths[str(track["key"])] = future.result()
+        finally:
+            executor.shutdown(wait=True)
+
+        video_file = result_paths[str(video_track["key"])]
         audio_files: list[tuple[int, Path, str]] = []
-        for stage_offset, page in enumerate(selected_pages, start=1):
+        for track in audio_tracks:
+            page = int(track["page"])
             audio_files.append(
                 (
                     page,
-                    self._download_page_stream(
-                        item,
-                        binary_path,
-                        ffmpeg_path,
-                        item_dir,
-                        log_path,
-                        page=page,
-                        stream_kind="audio",
-                        stage_index=stage_offset,
-                        stage_count=download_stage_count,
-                    ),
+                    result_paths[str(track["key"])],
                     self._part_label_for_page(item, page),
                 )
             )
@@ -1236,6 +1347,26 @@ class CacheManager:
             "validation_files": validation_files,
         }
 
+    @staticmethod
+    def _preferred_download_exception(exceptions: list[Exception]) -> Exception:
+        def priority(exc: Exception) -> int:
+            if isinstance(exc, CacheCancelledError) and str(exc) == RETRY_REQUESTED_MESSAGE:
+                return 0
+            if isinstance(exc, CacheCancelledError):
+                return 1
+            return 2
+
+        return sorted(exceptions, key=priority)[0]
+
+    @staticmethod
+    def _download_track_key(stream_kind: str, page: int) -> str:
+        return f"{stream_kind}-p{page}"
+
+    @staticmethod
+    def _download_track_label(stream_kind: str, page: int) -> str:
+        label = "视频轨" if stream_kind == "video" else "音轨"
+        return f"{label}P{page}"
+
     def _download_page_stream(
         self,
         item,
@@ -1246,8 +1377,7 @@ class CacheManager:
         *,
         page: int,
         stream_kind: str,
-        stage_index: int,
-        stage_count: int,
+        track_key: str,
     ) -> Path:
         page_url = self._page_url(item.resolved_url, page)
         target_dir = item_dir / f"{stream_kind}-p{page}"
@@ -1255,13 +1385,13 @@ class CacheManager:
         preference_args = self._bbdown_stream_preference_args(stream_kind)
 
         command = [
-            str(binary_path),
+            self._tool_arg_path(binary_path),
             page_url,
             "-p",
             str(page),
             *preference_args,
             "--work-dir",
-            str(target_dir),
+            self._tool_arg_path(target_dir),
             "--ffmpeg-path",
             self._bbdown_ffmpeg_path_arg(ffmpeg_path),
             "--file-pattern",
@@ -1285,10 +1415,9 @@ class CacheManager:
             ffmpeg_path,
             log_path,
             stage_label=stage_label,
-            stage_index=stage_index,
-            stage_count=stage_count,
             stream_kind=stream_kind,
             target_dir=target_dir,
+            track_key=track_key,
         )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
@@ -1296,6 +1425,17 @@ class CacheManager:
         stream_file = self._find_stream_file(target_dir, allowed_extensions)
         if not stream_file:
             raise DownloadCommandError(f"{stage_label} 完成后未找到输出文件")
+        try:
+            final_size = stream_file.stat().st_size
+        except OSError:
+            final_size = 0
+        self._update_download_track_progress(
+            item.id,
+            track_key=track_key,
+            target_dir=target_dir,
+            target_bytes=final_size,
+            done=True,
+        )
         return stream_file
 
     def _bbdown_stream_preference_args(self, stream_kind: str) -> list[str]:
@@ -1323,7 +1463,7 @@ class CacheManager:
         with self.lock:
             item_ids = set(self.desired_ids)
             active_item_id = self.active_item_id if self.active_item_id in item_ids else None
-            active_process = self.active_process if active_item_id else None
+            active_processes = self._active_processes_locked(active_item_id) if active_item_id else []
             pending_ids = set(self.pending_ids)
             for item_id in item_ids:
                 if item_id == active_item_id or item_id in pending_ids:
@@ -1347,7 +1487,7 @@ class CacheManager:
             self._remove_cache_dir(item_id)
             self.enqueue(item_id)
 
-        self._terminate_process(active_process)
+        self._terminate_processes(active_processes)
 
     @staticmethod
     def _video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
@@ -1366,52 +1506,44 @@ class CacheManager:
         log_path: Path,
         *,
         stage_label: str,
-        stage_index: int,
-        stage_count: int,
         stream_kind: str,
         target_dir: Path,
+        track_key: str,
     ) -> None:
-        progress_start = 94.0 * stage_index / max(stage_count, 1)
-        progress_span = 94.0 / max(stage_count, 1)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
         target_bytes_state = {"value": 0}
         monitor_stop = threading.Event()
 
         process = subprocess.Popen(
             command,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding=SUBPROCESS_OUTPUT_ENCODING,
             errors="replace",
             bufsize=1,
-            cwd=str(BB_DOWN_DIR),
+            cwd=self._tool_arg_path(BB_DOWN_DIR),
             env=self._tool_process_env(ffmpeg_path),
             **self._hidden_process_kwargs(),
         )
         last_message = stage_label
-        with self.lock:
-            self.active_process = process
-            self.active_item_id = item_id
-        self._update_structured_stage_progress(
+        self._register_active_process(item_id, process)
+        self._update_download_track_progress(
             item_id,
-            stage_label=stage_label,
+            track_key=track_key,
             target_dir=target_dir,
             target_bytes=0,
-            progress_start=progress_start,
-            progress_span=progress_span,
         )
         monitor = threading.Thread(
-            target=self._monitor_structured_stage_progress,
+            target=self._monitor_download_track_progress,
             kwargs={
                 "item_id": item_id,
                 "process": process,
                 "stop_event": monitor_stop,
-                "stage_label": stage_label,
+                "track_key": track_key,
                 "target_dir": target_dir,
                 "target_bytes_state": target_bytes_state,
-                "progress_start": progress_start,
-                "progress_span": progress_span,
             },
             daemon=True,
         )
@@ -1427,22 +1559,13 @@ class CacheManager:
                 self._record_item_activity(item_id)
                 target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
                 if target_bytes:
-                    target_bytes_state["value"] = target_bytes
-                progress = self._extract_progress(line)
-                if progress is not None:
-                    self.store.update_item(
+                    target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
+                    self._update_download_track_progress(
                         item_id,
-                        cache_progress=progress_start + (progress / 100.0) * progress_span,
-                        persist_backup=False,
+                        track_key=track_key,
+                        target_dir=target_dir,
+                        target_bytes=target_bytes_state["value"],
                     )
-                self._update_structured_stage_progress(
-                    item_id,
-                    stage_label=stage_label,
-                    target_dir=target_dir,
-                    target_bytes=target_bytes_state["value"],
-                    progress_start=progress_start,
-                    progress_span=progress_span,
-                )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
                     raise CacheCancelledError("缓存已停止")
@@ -1453,26 +1576,30 @@ class CacheManager:
         finally:
             monitor_stop.set()
             monitor.join(timeout=1.0)
-            with self.lock:
-                if self.active_process is process:
-                    self.active_process = None
-                    self.active_item_id = None
+            self._unregister_active_process(process)
 
-        interrupt_message = self._take_cache_interrupt_message(item_id)
+        interrupt_message = self._peek_cache_interrupt_message(item_id)
         if interrupt_message:
             raise CacheCancelledError(interrupt_message)
 
-        if self._take_retry_request(item_id):
+        if self._has_retry_request(item_id):
             raise CacheCancelledError(RETRY_REQUESTED_MESSAGE)
+
+        if self.stop_event.is_set():
+            raise CacheCancelledError("缓存已停止")
+
+        if not self._should_cache(item_id):
+            raise CacheCancelledError(self._outside_window_message())
 
         if return_code != 0:
             raise DownloadCommandError(last_message)
 
-        self.store.update_item(
+        self._update_download_track_progress(
             item_id,
-            cache_progress=progress_start + progress_span,
-            cache_message=f"{stage_label} 完成",
-            persist_backup=False,
+            track_key=track_key,
+            target_dir=target_dir,
+            target_bytes=target_bytes_state["value"],
+            done=True,
         )
         self._record_item_activity(item_id)
         self._raise_if_retry_requested(item_id)
@@ -1778,14 +1905,14 @@ class CacheManager:
             raise DownloadCommandError(f"缓存校验失败: {label} 文件为空")
 
         command = [
-            str(ffprobe_path),
+            self._tool_arg_path(ffprobe_path),
             "-v",
             "error",
             "-print_format",
             "json",
             "-show_streams",
             "-show_format",
-            str(media_path),
+            self._tool_arg_path(media_path),
         ]
         self._append_log_line(
             log_path,
@@ -1793,13 +1920,14 @@ class CacheManager:
         )
         process = subprocess.run(
             command,
+            shell=False,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
             timeout=20,
-            cwd=str(BB_DOWN_DIR),
+            cwd=self._tool_arg_path(BB_DOWN_DIR),
             env=self._tool_process_env(ffmpeg_path),
             **self._hidden_process_kwargs(),
         )
@@ -1995,6 +2123,158 @@ class CacheManager:
             return f"{stage_label} · 已写入 {cls._format_stage_bytes(normalized_current)}"
         return f"{stage_label} 准备中"
 
+    def _begin_download_progress(self, item_id: str, tracks: list[dict[str, object]]) -> None:
+        with self.lock:
+            self.item_stage_progress_signatures.pop(item_id, None)
+            self.item_download_progress[item_id] = {
+                str(track.get("key") or ""): {
+                    "key": str(track.get("key") or ""),
+                    "label": str(track.get("label") or ""),
+                    "order": int(track.get("order") or 0),
+                    "current_bytes": 0,
+                    "target_bytes": 0,
+                    "done": False,
+                }
+                for track in tracks
+                if str(track.get("key") or "")
+            }
+        self._publish_download_progress(item_id)
+
+    def _clear_item_download_progress(self, item_id: str) -> None:
+        with self.lock:
+            self.item_stage_progress_signatures.pop(item_id, None)
+            self.item_download_progress.pop(item_id, None)
+
+    def _update_download_track_progress(
+        self,
+        item_id: str,
+        *,
+        track_key: str,
+        target_dir: Path,
+        target_bytes: int | None = None,
+        done: bool = False,
+    ) -> None:
+        current_bytes = self._path_size(target_dir)
+        with self.lock:
+            tracks = self.item_download_progress.get(item_id)
+            if not tracks or track_key not in tracks:
+                return
+            track = tracks[track_key]
+            track["current_bytes"] = max(0, int(current_bytes or 0))
+            if target_bytes is not None and int(target_bytes or 0) > 0:
+                track["target_bytes"] = max(
+                    int(track.get("target_bytes") or 0),
+                    int(target_bytes or 0),
+                )
+            if done:
+                track["done"] = True
+                if int(track.get("target_bytes") or 0) <= 0:
+                    track["target_bytes"] = int(track.get("current_bytes") or 0)
+                elif int(track.get("current_bytes") or 0) > int(track.get("target_bytes") or 0):
+                    track["target_bytes"] = int(track.get("current_bytes") or 0)
+        self._publish_download_progress(item_id)
+
+    def _publish_download_progress(self, item_id: str) -> None:
+        with self.lock:
+            tracks_by_key = self.item_download_progress.get(item_id) or {}
+            tracks = [dict(track) for track in tracks_by_key.values()]
+        if not tracks:
+            return
+
+        tracks.sort(key=lambda track: int(track.get("order") or 0))
+        message = self._structured_download_message(tracks)
+        total_current, total_target, all_targets_known, all_done = self._download_progress_totals(tracks)
+        changes: dict[str, object] = {"cache_message": message}
+        if all_targets_known and total_target > 0:
+            ratio = max(0.0, min(float(total_current) / float(total_target), 1.0))
+            progress_cap = 99.0 if all_done else 98.0
+            changes["cache_progress"] = min(progress_cap, ratio * progress_cap)
+
+        cache_progress_signature = (
+            round(float(changes["cache_progress"]), 3)
+            if "cache_progress" in changes
+            else None
+        )
+        signature = json.dumps(
+            {
+                "item_id": item_id,
+                "message": message,
+                "cache_progress": cache_progress_signature,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self.lock:
+            if self.item_stage_progress_signatures.get(item_id) == signature:
+                return
+            self.item_stage_progress_signatures[item_id] = signature
+        self.store.update_item(item_id, persist_backup=False, **changes)
+        self._record_item_activity(item_id)
+
+    @classmethod
+    def _download_progress_totals(cls, tracks: list[dict[str, object]]) -> tuple[int, int, bool, bool]:
+        total_current = 0
+        total_target = 0
+        all_targets_known = bool(tracks)
+        all_done = bool(tracks)
+        for track in tracks:
+            current_bytes = max(0, int(track.get("current_bytes") or 0))
+            target_bytes = max(0, int(track.get("target_bytes") or 0))
+            if target_bytes <= 0:
+                all_targets_known = False
+                display_current = current_bytes
+            else:
+                display_current = min(current_bytes, target_bytes)
+                total_target += target_bytes
+            total_current += display_current
+            if not bool(track.get("done")):
+                all_done = False
+        return total_current, total_target, all_targets_known, all_done
+
+    @classmethod
+    def _structured_download_message(cls, tracks: list[dict[str, object]]) -> str:
+        sorted_tracks = sorted(tracks, key=lambda track: int(track.get("order") or 0))
+        total_current, total_target, all_targets_known, _all_done = cls._download_progress_totals(sorted_tracks)
+        if all_targets_known and total_target > 0:
+            lines = [
+                f"总计：{cls._format_stage_bytes(total_current)} / {cls._format_stage_bytes(total_target)}"
+            ]
+        else:
+            lines = [f"总计：{cls._format_stage_bytes(total_current)} / 估算中"]
+
+        for track in sorted_tracks:
+            label = str(track.get("label") or "轨道")
+            current_bytes = max(0, int(track.get("current_bytes") or 0))
+            target_bytes = max(0, int(track.get("target_bytes") or 0))
+            if target_bytes > 0:
+                display_current = min(current_bytes, target_bytes)
+                lines.append(
+                    f"{label}：{cls._format_stage_bytes(display_current)} / {cls._format_stage_bytes(target_bytes)}"
+                )
+            else:
+                lines.append(f"{label}：{cls._format_stage_bytes(current_bytes)} / 估算中")
+        return "\n".join(lines)
+
+    def _monitor_download_track_progress(
+        self,
+        *,
+        item_id: str,
+        process: subprocess.Popen[str],
+        stop_event: threading.Event,
+        track_key: str,
+        target_dir: Path,
+        target_bytes_state: dict[str, int],
+    ) -> None:
+        while not stop_event.wait(1.0):
+            self._update_download_track_progress(
+                item_id,
+                track_key=track_key,
+                target_dir=target_dir,
+                target_bytes=target_bytes_state.get("value", 0),
+            )
+            if process.poll() is not None:
+                return
+
     def _update_structured_stage_progress(
         self,
         item_id: str,
@@ -2184,6 +2464,8 @@ class CacheManager:
             token = "osx-arm64"
         elif system == "windows" and machine in {"x86_64", "amd64"}:
             token = "win-x64"
+        elif system == "windows" and machine in {"arm64", "aarch64"}:
+            token = "win-arm64"
         else:
             raise RuntimeError(f"当前平台暂未适配 BBDown 自动下载: {system}/{machine}")
 
@@ -2385,6 +2667,7 @@ class CacheManager:
         try:
             process = subprocess.run(
                 [str(binary_path), "-version"],
+                shell=False,
                 capture_output=True,
                 text=True,
                 errors="replace",
@@ -2418,7 +2701,29 @@ class CacheManager:
     @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:
         target = binary_path if binary_path.is_dir() else binary_path.parent
-        return str(target)
+        return CacheManager._tool_arg_path(target)
+
+    @staticmethod
+    def _tool_arg_path(path: Path) -> str:
+        raw = str(path)
+        if os.name != "nt":
+            return raw
+        return CacheManager._windows_short_path(path) or raw
+
+    @staticmethod
+    def _windows_short_path(path: Path) -> str:
+        try:
+            raw = str(path)
+            required = ctypes.windll.kernel32.GetShortPathNameW(raw, None, 0)
+            if required <= 0:
+                return ""
+            buffer = ctypes.create_unicode_buffer(required)
+            written = ctypes.windll.kernel32.GetShortPathNameW(raw, buffer, required)
+            if written <= 0:
+                return ""
+            return buffer.value
+        except Exception:
+            return ""
 
     @staticmethod
     def _bbdown_data_path() -> Path:
@@ -2487,10 +2792,10 @@ class CacheManager:
     def _tool_process_env(binary_path: Path) -> dict[str, str]:
         env = os.environ.copy()
         path_entries = []
-        ffmpeg_dir = str(binary_path if binary_path.is_dir() else binary_path.parent)
+        ffmpeg_dir = CacheManager._tool_arg_path(binary_path if binary_path.is_dir() else binary_path.parent)
         if ffmpeg_dir:
             path_entries.append(ffmpeg_dir)
-        bbdown_dir = str(BB_DOWN_DIR)
+        bbdown_dir = CacheManager._tool_arg_path(BB_DOWN_DIR)
         if bbdown_dir and bbdown_dir not in path_entries:
             path_entries.append(bbdown_dir)
         existing_path = env.get("PATH", "")
@@ -2585,8 +2890,8 @@ class CacheManager:
         path = urllib.parse.unquote(parsed.path or value)
         for prefix in ("/media/", "media/"):
             if path.startswith(prefix):
-                # return cls._cache_path_from_relative_path(path.removeprefix(prefix))  # Python
-                return cls._cache_path_from_relative_path(path.removeprefix(prefix))
+                rel_path = path[len(prefix):]
+                return cls._cache_path_from_relative_path(rel_path)
         return None
 
     def _item_cache_ready(self, item) -> bool:
@@ -2634,13 +2939,13 @@ class CacheManager:
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
-            selected_audio_variant_id="",
             persist_backup=False,
         )
         self._record_item_activity(item.id)
         self.enqueue(item.id)
 
     def _drop_item_cache(self, item_id: str, message: str) -> None:
+        self._clear_item_download_progress(item_id)
         self._remove_cache_dir(item_id)
         self.store.update_item(
             item_id,
@@ -2650,12 +2955,12 @@ class CacheManager:
             video_relative_path="",
             video_media_url="",
             audio_variants=[],
-            selected_audio_variant_id="",
             persist_backup=False,
         )
         self._record_item_activity(item_id)
 
     def _remove_cache_dir(self, item_id: str) -> None:
+        self._clear_item_download_progress(item_id)
         self._safe_rmtree(CACHE_DIR / item_id)
         self._remove_item_log(item_id)
 
@@ -2689,12 +2994,20 @@ class CacheManager:
         with self.lock:
             self.item_activity_at[item_id] = datetime.now().timestamp()
 
+    def _has_retry_request(self, item_id: str) -> bool:
+        with self.lock:
+            return item_id in self.retry_requested_ids
+
     def _take_retry_request(self, item_id: str) -> bool:
         with self.lock:
             if item_id not in self.retry_requested_ids:
                 return False
             self.retry_requested_ids.discard(item_id)
             return True
+
+    def _peek_cache_interrupt_message(self, item_id: str) -> str:
+        with self.lock:
+            return self.cache_interrupted_messages.get(item_id, "")
 
     def _take_cache_interrupt_message(self, item_id: str) -> str:
         with self.lock:
@@ -2723,16 +3036,69 @@ class CacheManager:
     def _stop_active_if_not_desired(self, desired_ids: set[str]) -> None:
         with self.lock:
             item_id = self.active_item_id
-            process = self.active_process
+            processes = self._active_processes_locked(item_id)
         if item_id and item_id not in desired_ids:
-            self._terminate_process(process)
+            self._terminate_processes(processes)
 
-    def _terminate_process(self, process: subprocess.Popen[str] | None) -> None:
+    def _active_processes_locked(self, item_id: str | None = None) -> list[subprocess.Popen[str]]:
+        if item_id is not None and self.active_item_id != item_id:
+            return []
+        processes = list(self.active_processes)
+        if not processes and self.active_process is not None:
+            processes = [self.active_process]
+        return processes
+
+    def _register_active_process(self, item_id: str, process: subprocess.Popen[str]) -> None:
+        with self.lock:
+            self.active_item_id = item_id
+            self.active_process = process
+            self.active_processes.add(process)
+
+    def _unregister_active_process(self, process: subprocess.Popen[str]) -> None:
+        with self.lock:
+            self.active_processes.discard(process)
+            if self.active_process is process:
+                self.active_process = next(iter(self.active_processes), None)
+
+    def _terminate_item_processes(self, item_id: str) -> None:
+        with self.lock:
+            processes = self._active_processes_locked(item_id)
+        self._terminate_processes(processes)
+
+    def _terminate_processes(
+        self,
+        processes: Iterable[subprocess.Popen[str] | None],
+        *,
+        wait: bool = False,
+    ) -> None:
+        seen: set[int] = set()
+        for process in processes:
+            if process is None:
+                continue
+            process_id = id(process)
+            if process_id in seen:
+                continue
+            seen.add(process_id)
+            if wait:
+                self._terminate_process(process, wait=True)
+            else:
+                self._terminate_process(process)
+
+    def _terminate_process(self, process: subprocess.Popen[str] | None, *, wait: bool = False) -> None:
         if not process or process.poll() is not None:
             return
         process.terminate()
-        # We don't block here to avoid stalling the API thread.
-        # The worker thread will detect the termination via _run_tool_process.
+        if not wait:
+            # We don't block normal API calls; the worker thread will detect termination.
+            return
+        try:
+            process.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _bbdown_login_worker(self) -> None:
             try:
@@ -2744,10 +3110,11 @@ class CacheManager:
                     self.bbdown_login_message = f"BBDown 不可用: {exc}"
                 return
 
-            command = [str(binary_path), "login"]
+            command = [self._tool_arg_path(binary_path), "login"]
             try:
                 process = subprocess.Popen(
                     command,
+                    shell=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
@@ -2755,7 +3122,7 @@ class CacheManager:
                     encoding=SUBPROCESS_OUTPUT_ENCODING,
                     errors="replace",
                     bufsize=1,
-                    cwd=str(BB_DOWN_DIR),
+                    cwd=self._tool_arg_path(BB_DOWN_DIR),
                     env=self._tool_process_env(binary_path),
                     **self._hidden_process_kwargs(),
                 )

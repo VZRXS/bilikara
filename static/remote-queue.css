@@ -1,3 +1,27 @@
+:root {
+  --queue-order-bg: rgba(255, 255, 255, 0.96);
+  --queue-order-border: 1.4px solid rgba(109, 98, 88, 0.18);
+  --queue-order-color: rgba(91, 78, 69, 0.92);
+
+  --queue-btn-secondary-bg: rgba(99, 76, 60, 0.08);
+  --queue-btn-secondary-color: #5f4e42;
+
+  --queue-drop-bg: rgba(255, 255, 255, 0.9);
+
+  --menu-toggle-bg: rgba(99, 76, 60, 0.05);
+
+  --queue-accent-glow: rgba(202, 91, 60, 0.38);
+  --queue-accent-glow-shadow: rgba(202, 91, 60, 0.16);
+  --queue-drop-border: rgba(202, 91, 60, 0.28);
+  --queue-drop-shadow: rgba(202, 91, 60, 0.1);
+  --queue-order-shadow: 0 8px 18px rgba(88, 56, 30, 0.05);
+  --queue-ready-border-color: rgba(43, 123, 96, 0.4);
+  --queue-ready-shadow: 0 0 0 3px rgba(43, 123, 96, 0.07);
+  --queue-drop-elevation-shadow: 0 14px 30px rgba(79, 56, 39, 0.1);
+  --queue-menu-shadow: 0 8px 24px rgba(79, 56, 39, 0.15);
+}
+
+
 .queue-item {
   position: relative;
   gap: 10px;
@@ -33,14 +57,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1.4px solid rgba(109, 98, 88, 0.18);
-  color: rgba(91, 78, 69, 0.92);
+  background: var(--queue-order-bg);
+  border: var(--queue-order-border);
+  color: var(--queue-order-color);
   font-size: 14px;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 8px 18px rgba(88, 56, 30, 0.05);
+  box-shadow: var(--queue-order-shadow);
 }
 
 .queue-main {
@@ -82,7 +106,7 @@
   min-height: 24px;
   padding: 0 9px;
   border-radius: 999px;
-  background: rgba(202, 91, 60, 0.1);
+  background: var(--accent-soft);
   color: var(--accent-deep);
   font-size: 12px;
   line-height: 1;
@@ -93,7 +117,7 @@
   margin-top: 0;
   font-size: 12px;
   line-height: 1.35;
-  color: rgba(115, 101, 90, 0.92);
+  color: var(--muted);
   display: -webkit-box;
   overflow: hidden;
   line-clamp: 1;
@@ -113,7 +137,8 @@
   height: 30px;
   padding: 0;
   background: transparent;
-  color: rgba(115, 101, 90, 0.82);
+  color: var(--muted);
+  opacity: 0.82;
   cursor: grab;
   touch-action: none;
 }
@@ -138,7 +163,7 @@
   padding: 0;
   border-radius: 0;
   background: transparent;
-  color: rgba(115, 101, 90, 0.92);
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.1;
   text-align: center;
@@ -152,16 +177,16 @@
 }
 
 .queue-item.ready .queue-order {
-  border-color: rgba(43, 123, 96, 0.4);
+  border-color: var(--queue-ready-border-color);
   color: var(--green);
   box-shadow:
-    0 8px 18px rgba(88, 56, 30, 0.05),
-    0 0 0 3px rgba(43, 123, 96, 0.07);
+    var(--queue-order-shadow),
+    var(--queue-ready-shadow);
 }
 
 .queue-item.ready .queue-state {
   background: transparent;
-  color: rgba(115, 101, 90, 0.92);
+  color: var(--muted);
 }
 
 .queue-actions {
@@ -208,29 +233,29 @@
 
 .queue-actions .primary-button,
 .menu-content .primary-button {
-  background: #d5643d;
+  background: var(--accent);
 }
 
 .queue-actions .secondary-button,
 .queue-actions .ghost-button,
 .menu-content .secondary-button,
 .menu-content .ghost-button {
-  background: rgba(99, 76, 60, 0.08);
+  background: var(--queue-btn-secondary-bg);
 }
 
 .queue-actions .secondary-button {
-  color: #5f4e42;
+  color: var(--queue-btn-secondary-color);
 }
 
 .queue-actions .danger-button,
 .menu-content .danger-button {
-  color: var(--accent-deep);
-  background: rgba(177, 69, 69, 0.12);
+  color: var(--danger-btn-color, var(--accent-deep));
+  background: var(--danger-btn-bg);
 }
 
 .queue-actions .danger-button:hover,
 .queue-actions .danger-button:focus-visible {
-  background: rgba(177, 69, 69, 0.18);
+  background: var(--danger-btn-hover-bg);
 }
 
 .queue-list.drag-active,
@@ -245,11 +270,11 @@
 
 .queue-item.drop-before,
 .queue-item.drop-after {
-  border-color: rgba(202, 91, 60, 0.28);
+  border-color: var(--queue-drop-border);
   box-shadow:
-    0 0 0 2px rgba(202, 91, 60, 0.1),
-    0 14px 30px rgba(79, 56, 39, 0.1);
-  background: rgba(255, 255, 255, 0.9);
+    0 0 0 2px var(--queue-drop-shadow),
+    var(--queue-drop-elevation-shadow);
+  background: var(--queue-drop-bg);
 }
 
 .queue-item.drop-before::before,
@@ -260,8 +285,8 @@
   right: 14px;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent), rgba(202, 91, 60, 0.38));
-  box-shadow: 0 6px 16px rgba(202, 91, 60, 0.16);
+  background: linear-gradient(90deg, var(--accent), var(--queue-accent-glow));
+  box-shadow: 0 6px 16px var(--queue-accent-glow-shadow);
 }
 
 .queue-item.drop-before::after,
@@ -368,7 +393,7 @@
   height: 32px;
   border-radius: 50%;
   border: none;
-  background: rgba(99, 76, 60, 0.05);
+  background: var(--menu-toggle-bg);
   color: var(--muted);
   font-size: 20px;
   display: flex;
@@ -387,7 +412,7 @@
   border: 1px solid var(--line);
   border-radius: 22px;
   padding: 6px;
-  box-shadow: 0 8px 24px rgba(79, 56, 39, 0.15);
+  box-shadow: var(--queue-menu-shadow);
   backdrop-filter: blur(12px);
   z-index: 100;
   display: flex;
@@ -413,3 +438,54 @@
 .menu-content.hidden {
   display: none;
 }
+
+/* --- DARK COCOA THEME OVERRIDES --- */
+:root[data-theme="dark"] {
+  --queue-order-bg: rgba(30, 26, 23, 0.96);
+  --queue-order-border: 1.4px solid rgba(246, 241, 235, 0.15);
+  --queue-order-color: var(--ink);
+
+  --queue-btn-secondary-bg: rgba(246, 241, 235, 0.08);
+  --queue-btn-secondary-color: var(--ink);
+
+  --queue-drop-bg: rgba(30, 26, 23, 0.9);
+
+  --menu-toggle-bg: rgba(246, 241, 235, 0.05);
+
+  --queue-accent-glow: rgba(224, 108, 83, 0.38);
+  --queue-accent-glow-shadow: rgba(224, 108, 83, 0.16);
+  --queue-drop-border: rgba(224, 108, 83, 0.28);
+  --queue-drop-shadow: rgba(224, 108, 83, 0.1);
+  --queue-order-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+  --queue-ready-border-color: rgba(45, 212, 191, 0.36);
+  --queue-ready-shadow: 0 0 0 3px rgba(45, 212, 191, 0.1);
+  --queue-drop-elevation-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+  --queue-menu-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+
+/* --- BLUE BLACK THEME OVERRIDES --- */
+:root[data-theme="blue"] {
+  --queue-order-bg: rgba(8, 18, 32, 0.96);
+  --queue-order-border: 1.4px solid rgba(148, 202, 233, 0.18);
+  --queue-order-color: var(--ink);
+
+  --queue-btn-secondary-bg: rgba(148, 202, 233, 0.08);
+  --queue-btn-secondary-color: var(--ink);
+
+  --queue-drop-bg: rgba(8, 18, 32, 0.9);
+
+  --menu-toggle-bg: rgba(148, 202, 233, 0.05);
+
+  --queue-accent-glow: rgba(56, 189, 248, 0.38);
+  --queue-accent-glow-shadow: rgba(56, 189, 248, 0.16);
+  --queue-drop-border: rgba(56, 189, 248, 0.28);
+  --queue-drop-shadow: rgba(56, 189, 248, 0.14);
+  --queue-order-shadow: 0 8px 18px rgba(2, 8, 23, 0.28);
+  --queue-ready-border-color: rgba(52, 211, 153, 0.42);
+  --queue-ready-shadow: 0 0 0 3px rgba(52, 211, 153, 0.1);
+  --queue-drop-elevation-shadow: 0 14px 30px rgba(2, 8, 23, 0.34);
+  --queue-menu-shadow: 0 10px 30px rgba(2, 8, 23, 0.42);
+}
+
+

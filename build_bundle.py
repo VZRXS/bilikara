@@ -2,24 +2,30 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 APP_NAME = "bilikara"
+APP_PUBLISHER = "VZRXS"
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
 REQUIRED_TOOL_BINARIES = ("ffmpeg",)
 OPTIONAL_TOOL_BINARIES = ("ffprobe",)
 LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
+PYTHON_HTTPS_HIDDEN_IMPORTS = ("ssl", "_ssl", "urllib.request", "http.client", "certifi")
 
 
 def main() -> None:
     data_separator = ";" if platform.system() == "Windows" else ":"
     static_arg = f"{ROOT_DIR / 'static'}{data_separator}static"
     version_arg = f"{VERSION_FILE}{data_separator}."
-    VERSION_FILE.write_text(_bundle_version(), encoding="utf-8")
+    bundle_version = _bundle_version()
+    VERSION_FILE.write_text(bundle_version, encoding="utf-8")
+    spec_dir = ROOT_DIR / "build"
+    spec_dir.mkdir(exist_ok=True)
 
     command = [
         sys.executable,
@@ -30,22 +36,84 @@ def main() -> None:
         "--windowed",
         "--name",
         APP_NAME,
+        "--specpath",
+        str(spec_dir),
         "--add-data",
         static_arg,
         "--add-data",
         version_arg,
         str(ROOT_DIR / "start_bilikara.py"),
     ]
+    command.extend(_python_https_args(data_separator, verbose=True))
     command.extend(_python_certifi_args(data_separator, verbose=True))
     command.extend(_bundled_binary_args(data_separator, verbose=True, validate=True))
+
+    if platform.system() == "Windows":
+        version_info_file = _write_windows_version_info(bundle_version, spec_dir)
+        command.extend(["--version-file", str(version_info_file)])
 
     if platform.system() == "Darwin":
         command.extend(["--osx-bundle-identifier", "com.bilikara.app"])
 
-    subprocess.run(command, check=True, cwd=ROOT_DIR)
+    subprocess.run(command, shell=False, check=True, cwd=ROOT_DIR)
     _write_release_compliance_files()
     print()
     print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")
+
+
+def _write_windows_version_info(bundle_version: str, spec_dir: Path) -> Path:
+    version_tuple = _windows_version_tuple(bundle_version)
+    version_text = bundle_version or "dev"
+    version_file = spec_dir / "bilikara_version_info.txt"
+    version_file.write_text(
+        """# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={version_tuple!r},
+    prodvers={version_tuple!r},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [
+          StringStruct('CompanyName', {publisher!r}),
+          StringStruct('FileDescription', 'bilikara backend launcher'),
+          StringStruct('FileVersion', {version_text!r}),
+          StringStruct('InternalName', {app_name!r}),
+          StringStruct('LegalCopyright', 'Copyright (c) VZRXS'),
+          StringStruct('OriginalFilename', {original_filename!r}),
+          StringStruct('ProductName', {app_name!r}),
+          StringStruct('ProductVersion', {version_text!r})
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+""".format(
+            version_tuple=version_tuple,
+            publisher=APP_PUBLISHER,
+            version_text=version_text,
+            app_name=APP_NAME,
+            original_filename=f"{APP_NAME}.exe",
+        ),
+        encoding="utf-8",
+    )
+    return version_file
+
+
+def _windows_version_tuple(version: str) -> tuple[int, int, int, int]:
+    parts = [min(int(part), 65535) for part in re.findall(r"\d+", version)[:4]]
+    while len(parts) < 4:
+        parts.append(0)
+    return tuple(parts)
 
 
 def _bundle_version() -> str:
@@ -61,11 +129,11 @@ def _bundle_version() -> str:
 def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate: bool = False) -> list[str]:
     args: list[str] = []
     bundled_paths, missing_tools = _resolved_bundle_binary_paths()
-    missing = [name for name in missing_tools if name in REQUIRED_TOOL_BINARIES]
+    missing_required = [name for name in missing_tools if name in REQUIRED_TOOL_BINARIES]
     optional_missing = [name for name in missing_tools if name in OPTIONAL_TOOL_BINARIES]
 
-    if missing:
-        missing_text = ", ".join(missing)
+    if missing_required:
+        missing_text = ", ".join(missing_required)
         raise RuntimeError(
             f"Missing required external tools for bundle build: {missing_text}. "
             "Install ffmpeg and ensure it is available on PATH."
@@ -213,6 +281,52 @@ def _tool_version_output(binary_path: Path) -> str:
 
 def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def _python_https_args(data_separator: str, *, verbose: bool = False) -> list[str]:
+    args: list[str] = []
+    for module_name in PYTHON_HTTPS_HIDDEN_IMPORTS:
+        args.extend(["--hidden-import", module_name])
+
+    ssl_binaries = _python_https_binary_paths()
+    for source in ssl_binaries:
+        args.extend(["--add-binary", f"{source.resolve()}{data_separator}."])
+
+    if verbose:
+        print("Bundling Python HTTPS support:")
+        print(f"  - hidden imports: {', '.join(PYTHON_HTTPS_HIDDEN_IMPORTS)}")
+        if ssl_binaries:
+            for source in ssl_binaries:
+                print(f"  - {source}")
+        elif platform.system() == "Windows":
+            print("  - no OpenSSL DLLs found next to this Python installation")
+
+    return args
+
+
+def _python_https_binary_paths() -> list[Path]:
+    if platform.system() != "Windows":
+        return []
+
+    roots = [
+        Path(sys.prefix),
+        Path(sys.base_prefix),
+        Path(sys.exec_prefix),
+        Path(sys.base_exec_prefix),
+    ]
+    search_dirs: list[Path] = []
+    for root in roots:
+        search_dirs.extend([root, root / "DLLs", root / "Library" / "bin"])
+
+    paths: dict[str, Path] = {}
+    for directory in search_dirs:
+        if not directory.exists():
+            continue
+        for pattern in ("libssl*.dll", "libcrypto*.dll"):
+            for candidate in directory.glob(pattern):
+                if candidate.is_file():
+                    paths[str(candidate.resolve()).lower()] = candidate
+    return list(paths.values())
 
 
 def _python_certifi_args(data_separator: str, *, verbose: bool = False) -> list[str]:

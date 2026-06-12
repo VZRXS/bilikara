@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import atexit
+from collections import deque
 from email.utils import formatdate
+import hmac
 import json
 import mimetypes
+import os
 import re
 import socket
 import threading
@@ -19,9 +22,14 @@ from .bilibili import (
     ManualBindingRequiredError,
     MISSING_BILIBILI_COOKIE_MESSAGE,
     add_gatcha_uid,
+    annotate_gatcha_local_status,
     browse_gatcha_cache,
+    browse_gatcha_favlist,
     effective_bilibili_cookie,
     fetch_gatcha_candidate,
+    gatcha_pool_config_detail,
+    gatcha_pool_config_snapshot,
+    gatcha_favlist_updated_at,
     gatcha_task_snapshot,
     fetch_owner_info,
     fetch_video_item,
@@ -31,8 +39,23 @@ from .bilibili import (
     refresh_gatcha_cache_in_background,
     refresh_gatcha_favlist,
     search_gatcha_cache,
+    update_gatcha_pool_config,
 )
-from .lark_pool_client import delete_cloudflare_pool_entry, search_lark_pool, search_lark_pool_table
+from .lark_pool_client import (
+    LarkPoolError,
+    approve_cloudflare_review_items,
+    browse_d1_category_pool,
+    browse_d1_pool,
+    delete_cloudflare_mid_entries,
+    delete_cloudflare_pool_entry,
+    delete_cloudflare_video_entry,
+    pending_cloudflare_review_items,
+    reset_cloudflare_video_tags,
+    search_lark_pool,
+    search_lark_pool_table,
+    submit_cloudflare_song_rating,
+    verify_cloudflare_bilikara_secret,
+)
 from .cache import CacheManager
 from .config import (
     APP_RELEASES_URL,
@@ -49,11 +72,17 @@ from .config import (
 )
 from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .store import PlaylistStore
-from .updater import check_for_update
+from .updater import AppUpdateManager, check_for_update
+
+mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("video/mp4", ".m4s")
+mimetypes.add_type("audio/mp4", ".m4a")
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
+RATING_SUBMISSION_KEY_LIMIT = 2000
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
+RATING_PROMPT_THRESHOLD = 0.5
 
 
 class DuplicateSessionRequestError(ValueError):
@@ -80,6 +109,10 @@ class AppContext:
             self.store,
             max_cache_items=MAX_CACHE_ITEMS,
             on_bbdown_login_success=self.refresh_startup_gatcha_cache_in_background,
+        )
+        self.update_manager = AppUpdateManager(
+            on_status_change=self._notify_state_changed,
+            on_restart_requested=self._request_update_restart,
         )
         self.cache_manager.prepare_session()
         self._closed = False
@@ -110,12 +143,16 @@ class AppContext:
         self._startup_lock = threading.RLock()
         self._startup_started = False
         self._startup_gatcha_refresh_bypass_available = True
+        self._rating_submission_lock = threading.RLock()
+        self._rating_submission_keys: set[tuple[str, str]] = set()
+        self._rating_submission_key_order: deque[tuple[str, str]] = deque()
 
     def snapshot(self) -> dict:
         self.cache_manager.reconcile_cache_state()
         with self._state_change_condition:
             state_revision = self._state_revision
         payload = self.store.snapshot()
+        payload["session_played"] = self.store.session_played_snapshot()[-2:]
         metrics = self.cache_manager.cache_metrics()
         self.cache_manager.enrich_snapshot(payload, metrics)
         payload["bbdown"] = self.cache_manager.status(metrics)
@@ -126,12 +163,15 @@ class AppContext:
         }
         payload["remote_access"] = self.remote_access_snapshot()
         payload["gatcha"] = gatcha_task_snapshot()
+        payload["gatcha_pool_config"] = gatcha_pool_config_snapshot()
+        payload["gatcha_favlist_updated_at"] = gatcha_favlist_updated_at()
         payload["player_control_command"] = self.player_control_command_snapshot()
         payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
         payload["app"] = {
             "version": APP_VERSION,
             "releases_url": APP_RELEASES_URL,
         }
+        payload["app_update"] = self.app_update_snapshot()
         payload["state_revision"] = state_revision
         return payload
 
@@ -141,12 +181,22 @@ class AppContext:
             on_done=self._notify_state_changed,
         )
 
+    def app_update_snapshot(self) -> dict[str, object]:
+        return self.update_manager.snapshot()
+
+    def start_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
+        return self.update_manager.start(include_preview=include_preview)
+
     def refresh_startup_gatcha_cache_in_background(self) -> bool:
         with self._startup_lock:
             if not self._startup_gatcha_refresh_bypass_available:
                 return self.refresh_gatcha_cache_in_background()
             self._startup_gatcha_refresh_bypass_available = False
-        return refresh_gatcha_cache_in_background(use_global_lock=False, upload_default_uids_to_lark=False)
+        return refresh_gatcha_cache_in_background(
+            use_global_lock=False,
+            upload_default_uids_to_lark=False,
+            startup_schema_rebuild=True,
+        )
 
     def add_item(self, item, *, position: str, requester_name: str) -> None:
         self.store.add_item(item, position=position, requester_name=requester_name)
@@ -154,6 +204,24 @@ class AppContext:
 
     def has_session_users(self) -> bool:
         return self.store.has_session_users()
+
+    def register_rating_submission(self, session_user_name: str, play_id: str) -> bool:
+        key = (str(session_user_name or "").strip().casefold(), str(play_id or "").strip())
+        if not key[0] or not key[1]:
+            return False
+        with self._rating_submission_lock:
+            if key in self._rating_submission_keys:
+                return False
+            self._rating_submission_keys.add(key)
+            key_order = getattr(self, "_rating_submission_key_order", None)
+            if key_order is None:
+                key_order = deque()
+                self._rating_submission_key_order = key_order
+            key_order.append(key)
+            while len(key_order) > RATING_SUBMISSION_KEY_LIMIT:
+                old_key = key_order.popleft()
+                self._rating_submission_keys.discard(old_key)
+            return True
 
     def advance_to_next(self) -> None:
         self.store.advance_to_next()
@@ -169,6 +237,9 @@ class AppContext:
 
     def clear_history(self) -> None:
         self.store.clear_history()
+
+    def remove_history_entry(self, key: str) -> None:
+        self.store.remove_history_entry(key)
 
     def history_snapshot(self) -> list[dict]:
         history = self.store.snapshot().get("history") or []
@@ -211,6 +282,9 @@ class AppContext:
 
     def set_song_advance_delay_seconds(self, delay_seconds: int) -> int:
         return self.store.set_song_advance_delay_seconds(delay_seconds)
+
+    def set_key_shift(self, key_shift: int) -> int:
+        return self.store.set_key_shift(key_shift)
 
     def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
         return self.store.set_audio_variant(item_id, variant_id)
@@ -329,6 +403,13 @@ class AppContext:
             self._player_status = next_status
         if (not is_paused) or float(current_time or 0.0) > 0:
             self.store.mark_item_playback_started(normalized_item_id)
+
+        reported_duration = next_status.get("duration")
+        if isinstance(reported_duration, (int, float)) and reported_duration > 0:
+            ratio = float(current_time or 0.0) / float(reported_duration)
+            if ratio >= RATING_PROMPT_THRESHOLD:
+                self.store.mark_session_played_threshold_reached(normalized_item_id)
+
         self._notify_state_changed()
 
     def player_status_snapshot(self, current_item_payload: object) -> dict[str, object] | None:
@@ -415,6 +496,35 @@ class AppContext:
         with self._state_change_condition:
             self._state_revision += 1
             self._state_change_condition.notify_all()
+
+    def _request_update_restart(self) -> None:
+        with self._client_lock:
+            server = self._server
+            self._shutdown_requested = True
+        if server is None:
+            return
+
+        def shutdown_server() -> None:
+            time.sleep(0.5)
+            server.shutdown()
+
+        threading.Thread(
+            target=shutdown_server,
+            daemon=True,
+            name="bilikara-update-restart",
+        ).start()
+
+    def request_shutdown(self) -> None:
+        with self._client_lock:
+            server = self._server
+            self._shutdown_requested = True
+        if server is None:
+            return
+        threading.Thread(
+            target=server.shutdown,
+            daemon=True,
+            name="bilikara-api-shutdown",
+        ).start()
 
     def touch_client(self, client_id: str, is_host: bool = True) -> None:
         client_key = str(client_id or "").strip()
@@ -560,11 +670,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             is_host = False
             
         CONTEXT.touch_client(client_id, is_host=is_host)
+        if route == "/api/health":
+            self._write_json({"ok": True, "status": "ready"})
+            return
         if route == "/api/events":
             self._serve_events(client_id)
             return
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+            return
+        if route == "/api/app/update/status":
+            self._write_json({"ok": True, "data": CONTEXT.app_update_snapshot()})
             return
         if route == "/api/app/update":
             try:
@@ -585,6 +701,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     self._write_json({"ok": False, "error": "没找到符合条件的歌曲，再试一次吧"})
                 else:
                     self._write_json({"ok": True, "data": candidate})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/gatcha/pool-config":
+            try:
+                self._write_json({"ok": True, "data": gatcha_pool_config_detail()})
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
@@ -609,7 +731,58 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     results = search_lark_pool_table(query, int(table_index), limit=limit)
                 else:
                     results = search_lark_pool(query, limit=limit)
+                results = annotate_gatcha_local_status(results)
                 self._write_json({"ok": True, "data": {"items": results}})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/d1/browse":
+            route_query = parse_qs(urlparse(self.path).query)
+            kind = route_query.get("kind", route_query.get("type", ["name"]))[0]
+            letter = route_query.get("letter", [""])[0]
+            search_query = route_query.get("q", [""])[0]
+            tag = route_query.get("tag", [""])[0]
+            locale = route_query.get("locale", [""])[0]
+            try:
+                limit = max(1, min(500, int(route_query.get("limit", ["100"])[0] or "100")))
+            except (TypeError, ValueError):
+                limit = 100
+            try:
+                results = browse_d1_pool(kind, letter=letter, query=search_query, tag=tag, locale=locale, limit=limit)
+                if isinstance(results.get("items"), list):
+                    results["items"] = annotate_gatcha_local_status(results["items"])
+                self._write_json({"ok": True, "data": results})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/d1/category-browse":
+            route_query = parse_qs(urlparse(self.path).query)
+            tags = route_query.get("tag", [])
+            tags.extend(
+                tag
+                for packed in route_query.get("tags", [])
+                for tag in str(packed or "").split(",")
+            )
+            tag45s = route_query.get("tag45", [])
+            tag45s.extend(
+                tag
+                for packed in route_query.get("tag45s", [])
+                for tag in str(packed or "").split(",")
+            )
+            search_query = route_query.get("q", [""])[0]
+            try:
+                limit = max(1, min(100, int(route_query.get("limit", ["100"])[0] or "100")))
+            except (TypeError, ValueError):
+                limit = 100
+            try:
+                offset = max(0, int(route_query.get("offset", ["0"])[0] or "0"))
+            except (TypeError, ValueError):
+                offset = 0
+            try:
+                results = browse_d1_category_pool(tags, tag45s=tag45s, query=search_query, limit=limit, offset=offset)
+                if isinstance(results.get("items"), list):
+                    results["items"] = annotate_gatcha_local_status(results["items"])
+                self._write_json({"ok": True, "data": results})
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
@@ -619,6 +792,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             search_query = route_query.get("q", [""])[0]
             try:
                 self._write_json({"ok": True, "data": browse_gatcha_cache(selected_uid, search_query)})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
+        if route == "/api/gatcha/favlist/browse":
+            route_query = parse_qs(urlparse(self.path).query)
+            selected_folder_id = route_query.get("folder_id", [""])[0]
+            search_query = route_query.get("q", [""])[0]
+            try:
+                self._write_json({"ok": True, "data": browse_gatcha_favlist(selected_folder_id, search_query)})
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
@@ -702,6 +884,22 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route == "/api/app/shutdown":
+                if not self._is_local_client() and not self._has_valid_shutdown_token():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                CONTEXT.request_shutdown()
+                self._write_json({"ok": True})
+                return
+            if route == "/api/app/update/install":
+                include_preview = str(body.get("include_preview", body.get("includePreview", ""))).lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
+                return
             if route == "/api/playlist/add":
                 self._handle_add(body)
                 return
@@ -720,6 +918,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/history/clear":
                 CONTEXT.clear_history()
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/history/remove":
+                key = str(body.get("key") or "").strip()
+                if not key:
+                    raise ValueError("missing key")
+                CONTEXT.remove_history_entry(key)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/session-users/add":
@@ -743,6 +948,134 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("index must be an integer")
                 CONTEXT.move_session_user_to_index(name, index)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/bilikara-secret/verify":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    if not bilikara_secret or not hmac.compare_digest(bilikara_secret, configured_bilikara_secret):
+                        self._write_json(
+                            {"ok": False, "error": "invalid secret"},
+                            status=HTTPStatus.FORBIDDEN,
+                        )
+                        return
+                    self._write_json({"ok": True, "data": {"verified": True}})
+                    return
+                result = verify_cloudflare_bilikara_secret(bilikara_secret)
+                if not result.get("verified"):
+                    self._write_json(
+                        {"ok": False, "error": result.get("error") or "invalid secret"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                self._write_json({"ok": True, "data": {"verified": True}})
+                return
+            if route == "/api/admin-review/pending":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                try:
+                    limit = max(1, min(20, int(body.get("limit") or 20)))
+                except (TypeError, ValueError):
+                    limit = 20
+                try:
+                    result = pending_cloudflare_review_items(bilikara_secret, limit=limit)
+                except LarkPoolError as exc:
+                    self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-review/approve":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                bvids = body.get("bvids")
+                if not isinstance(bvids, list):
+                    raise ValueError("bvids must be a list")
+                try:
+                    limit = max(1, min(20, int(body.get("limit") or 20)))
+                except (TypeError, ValueError):
+                    limit = 20
+                try:
+                    result = approve_cloudflare_review_items(bvids, bilikara_secret, limit=limit)
+                except LarkPoolError as exc:
+                    self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-tags/reset":
+                result = reset_cloudflare_video_tags(
+                    str(body.get("bvid") or ""),
+                    str(body.get("BILIKARA_ADMIN_SECRET") or ""),
+                )
+                if not result.get("success"):
+                    message = str(result.get("error") or "reset failed")
+                    lowered = message.lower()
+                    if "invalid bvid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-video/delete":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    verified = bool(bilikara_secret) and hmac.compare_digest(
+                        bilikara_secret,
+                        configured_bilikara_secret,
+                    )
+                else:
+                    verified = bool(verify_cloudflare_bilikara_secret(bilikara_secret).get("verified"))
+                if not verified:
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = delete_cloudflare_video_entry(str(body.get("bvid") or ""), bilikara_secret)
+                if not result.get("success"):
+                    message = str(result.get("error") or "delete failed")
+                    lowered = message.lower()
+                    if "invalid bvid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-video/delete-mid":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if configured_bilikara_secret:
+                    verified = bool(bilikara_secret) and hmac.compare_digest(
+                        bilikara_secret,
+                        configured_bilikara_secret,
+                    )
+                else:
+                    verified = bool(verify_cloudflare_bilikara_secret(bilikara_secret).get("verified"))
+                if not verified:
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = delete_cloudflare_mid_entries(str(body.get("mid") or ""), bilikara_secret)
+                if not result.get("success"):
+                    message = str(result.get("error") or "delete failed")
+                    lowered = message.lower()
+                    if "invalid mid" in lowered or "missing" in lowered:
+                        status = HTTPStatus.BAD_REQUEST
+                    elif "unauthorized" in lowered or "secret" in lowered:
+                        status = HTTPStatus.FORBIDDEN
+                    else:
+                        status = HTTPStatus.BAD_GATEWAY
+                    self._write_json({"ok": False, "error": message}, status=status)
+                    return
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/playlist/move":
                 self._require_id(body)
@@ -795,6 +1128,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.set_song_advance_delay_seconds(delay_seconds)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
+            if route == "/api/player/key-shift":
+                key_shift = body.get("key_shift")
+                if not isinstance(key_shift, int):
+                    raise ValueError("key_shift must be an integer")
+                CONTEXT.set_key_shift(key_shift)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
             if route == "/api/player/volume":
                 volume_percent = body.get("volume_percent")
                 is_muted = body.get("is_muted")
@@ -817,6 +1157,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     force = True
                 CONTEXT.retry_cache_item(body["item_id"], force=force)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/gatcha/pool-config":
+                result = update_gatcha_pool_config(
+                    uid_weight=body.get("uid_weight"),
+                    favlist_weight=body.get("favlist_weight"),
+                    excluded_uids=body.get("excluded_uids"),
+                    excluded_favlist_folders=body.get("excluded_favlist_folders"),
+                )
+                CONTEXT._notify_state_changed()
+                self._write_json({"ok": True, "data": {**gatcha_pool_config_detail(), **result}})
                 return
             if route == "/api/gatcha/uids/add":
                 result = add_gatcha_uid(
@@ -915,6 +1265,49 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     client_info=body.get("client_info"),
                 )
                 self._write_json({"ok": True})
+                return
+            if route == "/api/rating/submit":
+                session_user_name = str(
+                    body.get("session_user_name")
+                    or body.get("sessionUserName")
+                    or body.get("user_name")
+                    or body.get("userName")
+                    or body.get("session_user_id")
+                    or body.get("user_id")
+                    or ""
+                ).strip()
+                bvid = str(body.get("bvid") or "").strip()
+                play_id = str(
+                    body.get("play_id")
+                    or body.get("playId")
+                    or body.get("item_id")
+                    or body.get("itemId")
+                    or bvid
+                ).strip()
+                try:
+                    score = int(body.get("score") or 0)
+                except (TypeError, ValueError):
+                    score = 0
+                if not session_user_name:
+                    raise ValueError("missing session_user_name")
+                if not play_id:
+                    raise ValueError("missing play_id")
+                if not BVID_IN_TEXT_RE.fullmatch(bvid):
+                    raise ValueError("invalid bvid")
+                if score < 1 or score > 5:
+                    raise ValueError("score must be between 1 and 5")
+                self._submit_rating_in_background(session_user_name, play_id, bvid, score)
+                self._write_json({
+                    "ok": True,
+                    "data": {
+                        "success": True,
+                        "queued": True,
+                        "session_user_name": session_user_name,
+                        "play_id": play_id,
+                        "bvid": bvid,
+                        "score": score,
+                    },
+                })
                 return
             if route == "/api/cache-policy":
                 max_cache_items = body.get("max_cache_items") if "max_cache_items" in body else None
@@ -1067,6 +1460,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         delete_cloudflare_pool_entry(bvid)
 
     @staticmethod
+    def _submit_rating_in_background(session_user_name: str, play_id: str, bvid: str, score: int) -> None:
+        def worker() -> None:
+            result = submit_cloudflare_song_rating(
+                session_user_name=session_user_name,
+                play_id=play_id,
+                bvid=bvid,
+                score=score,
+            )
+            if not result.get("success"):
+                print(f"[bilikara] rating submit failed: {result.get('error') or 'unknown error'}", flush=True)
+
+        threading.Thread(target=worker, daemon=True, name="bilikara-rating-submit").start()
+
+    @staticmethod
     def _extract_bvid_from_add_body(body: dict) -> str:
         raw_url = str(body.get("url") or "")
         match = BVID_IN_TEXT_RE.search(raw_url)
@@ -1083,7 +1490,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if not str(static_path).startswith(str(STATIC_DIR.resolve())) or not static_path.exists():
             self._write_json({"ok": False, "error": "资源不存在"}, status=HTTPStatus.NOT_FOUND)
             return
-        self._stream_file(static_path, content_type=self._guess_type(static_path))
+        self._stream_file(
+            static_path,
+            content_type=self._guess_type(static_path),
+            cache_control="no-store",
+        )
 
     def _serve_media(self, route: str) -> None:
         # relative = route.removeprefix("/media/")  # Python 3.9+
@@ -1112,6 +1523,22 @@ class BilikaraHandler(BaseHTTPRequestHandler):
     def _require_id(self, body: dict) -> None:
         if not str(body.get("item_id") or "").strip():
             raise ValueError("缺少 item_id")
+
+    def _is_local_client(self) -> bool:
+        host = self.client_address[0] if self.client_address else ""
+        return host in {"127.0.0.1", "::1", "localhost"}
+
+    def _has_valid_shutdown_token(self) -> bool:
+        expected = os.getenv("BILIKARA_SHUTDOWN_TOKEN", "").strip()
+        provided = self.headers.get("X-Bilikara-Shutdown-Token", "").strip()
+        return bool(expected and provided and hmac.compare_digest(expected, provided))
+
+    def _verified_bilikara_secret(self, bilikara_secret: str) -> bool:
+        normalized_secret = str(bilikara_secret or "").strip()
+        configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
+        if configured_bilikara_secret:
+            return bool(normalized_secret) and hmac.compare_digest(normalized_secret, configured_bilikara_secret)
+        return bool(verify_cloudflare_bilikara_secret(normalized_secret).get("verified"))
 
     def _write_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1178,6 +1605,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         *,
         content_type: str,
         allow_ranges: bool = False,
+        cache_control: str | None = None,
     ) -> None:
         file_size = file_path.stat().st_size
         range_header = self.headers.get("Range", "")
@@ -1194,6 +1622,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     self.send_header("Accept-Ranges", "bytes")
                     self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
                     self.send_header("Content-Length", str(end - start + 1))
+                    if cache_control:
+                        self.send_header("Cache-Control", cache_control)
                     self.end_headers()
                     with file_path.open("rb") as handle:
                         handle.seek(start)
@@ -1212,6 +1642,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(file_size))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         if allow_ranges:
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
@@ -1240,13 +1672,28 @@ def _serve(
 ) -> None:
     actual_port = _find_available_port(host, port) if auto_select_port else port
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
+    bound_host, bound_port = server.server_address[:2]
+    actual_port = bound_port
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
         CONTEXT.refresh_startup_gatcha_cache_in_background()
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
-    print(f"{status_label} running on {url}")
-    print(f"{status_label} mobile remote: {url}/remote")
+    print(f"{status_label} running on {url}", flush=True)
+    print(f"{status_label} mobile remote: {url}/remote", flush=True)
+
+    if not auto_open_browser and not shutdown_on_last_client:
+        print(
+            json.dumps(
+                {
+                    "event": "bilikara.ready",
+                    "host": browser_host,
+                    "port": actual_port,
+                    "baseUrl": url,
+                }
+            ),
+            flush=True,
+        )
 
     if auto_open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
