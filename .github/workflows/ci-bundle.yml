@@ -54,11 +54,18 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            label: Windows
+            label: Windows x64
+            slug: windows
+          - os: windows-11-arm
+            label: Windows ARM64
             slug: windows
           - os: macos-latest
-            label: macOS
+            label: macOS ARM64
             slug: macos
+          - os: macos-15-intel
+            label: macOS Intel
+            slug: macos
+
 
     steps:
       - name: Checkout
