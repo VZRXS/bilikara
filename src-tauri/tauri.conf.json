@@ -19,7 +19,8 @@
         "resizable": true,
         "title": "bilikara",
         "width": 1024,
-        "visible": false
+        "visible": false,
+        "dragDropEnabled": false
       }
     ],
     "security": {
