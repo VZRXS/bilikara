@@ -4,8 +4,27 @@
 
 `bilikara` 是一个基于 B 站卡拉 OK 视频的点歌平台。主要由 OpenAI Codex 协助设计与实现，并经过人工整理、验证与迭代。
 
-![host](images/host.png "Host 界面")
-![remote](images/remote.png "移动端控制台界面")
+<p align="center">
+  <img src="images/host.png" alt="Host 界面" width="700"><br>
+  <sub>Host 界面</sub>
+</p>
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="33%">
+      <img src="images/remote_top.png" alt="移动端控制台上半部分" width="170"><br>
+      <sub>移动端控制台</sub>
+    </td>
+    <td align="center" valign="top" width="33%">
+      <img src="images/remote_bottom.png" alt="移动端控制台下半部分" width="170"><br>
+      <sub>移动端控制台 (cont.)</sub>
+    </td>
+    <td align="center" valign="top" width="33%">
+      <img src="images/remote_control_panel.png" alt="移动端播放控制面板" width="170"><br>
+      <sub>移动端播放控制面板</sub>
+    </td>
+  </tr>
+</table>
 
 ## 当前版本功能
 
@@ -33,8 +52,10 @@
 - 按场次单独保存“本次已唱”记录（JSON 格式），便于扩展读取接口
 - 设置本场用户，可通过拖拽或列表排序管理点歌人顺序
 
-<!-- TODO: PLACEHOLDER FOR PLAYLIST EXPORT IMAGE -->
-<!-- ![playlist_export](images/playlist_export.png "歌单导出图片") -->
+<p align="center">
+  <img src="images/playlist_export.png" alt="歌单导出图片" width="600"><br>
+  <sub>歌单导出图片</sub>
+</p>
 
 ### 试试运气（Gatcha 自定义卡池）
 
@@ -60,7 +81,10 @@
 - 评分数据提交至远程 D1 数据库并自动同步至 Google Sheets 备份，在云端计算稿件的平均分
 - 在远程搜索和历史结果中展示评分人数与平均分
 
-![rating](images/rating.png "评分界面")
+<p align="center">
+  <img src="images/rating.png" alt="评分界面" width="220"><br>
+  <sub>评分界面</sub>
+</p>
 
 ### 控制、设置与界面体验
 
@@ -83,12 +107,31 @@
   - 语言：中文（zh）/ 英文（en）/ 日文（ja）
   - Host 和 Remote 会分别记忆偏好
 
-![server_settings](images/server_settings.png "服务设置")
-![ui_settings](images/ui_settings.png "界面设置")
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="images/server_settings.png" alt="服务设置" width="240"><br>
+      <sub>服务设置</sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="images/ui_settings.png" alt="界面设置" width="320"><br>
+      <sub>界面设置</sub>
+    </td>
+  </tr>
+</table>
 
-![transition](images/transition.png "切歌过渡画面")
-
-![incoming_request](images/incoming_request.png "新点歌提示")
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="images/transition.png" alt="切歌过渡画面" width="420"><br>
+      <sub>切歌过渡画面</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="images/incoming_request.png" alt="新点歌提示" width="420"><br>
+      <sub>新点歌提示</sub>
+    </td>
+  </tr>
+</table>
 
 ## 启动
 
@@ -162,6 +205,7 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 
 - 打包后的应用会把静态页面资源封装进应用内部
 - 发布包元数据中的发布者 / CompanyName 设置为 `VZRXS`；Windows 安全提示中的“已验证发布者”仍需要代码签名证书
+- Tauri 桌面壳 `bilikara-desktop.exe` 会通过 `scripts/sign_windows.ps1` 签名；CI 可配置 `WINDOWS_SIGN_CERTIFICATE_BASE64` + `WINDOWS_SIGN_CERTIFICATE_PASSWORD`，也可改用 `WINDOWS_SIGN_CERTIFICATE_PATH` 或 `WINDOWS_SIGN_CERTIFICATE_THUMBPRINT`，未配置证书时会跳过签名并继续显示未知发布者
 - 打包后的 `data/`、日志、缓存和工具文件默认都会写到应用目录内的 `runtime/`；如需改到其他位置，可通过 `BILIKARA_HOME` 指定应用数据目录
 - 打包脚本会优先把构建机上的 `ffmpeg` / `ffprobe` 一起打进应用；启动时会把它们同步到 `runtime/tools/bbdown/`，与 `BBDown` 放在一起，缓存时优先使用这份应用内工具
 - Tauri 桌面壳启动后会拉起同目录或相邻目录里的 Python 后端包；开发模式下会回退到 `python start_bilikara.py`

@@ -9580,18 +9580,120 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
 let draggedSessionUser = null;
 let lastDragX = 0;
 let lastDragY = 0;
+const SESSION_USER_TRASH_HIT_MARGIN = 32;
+
+function dragPointFromEvent(event) {
+  const hasClientPoint =
+    Number.isFinite(event.clientX) &&
+    Number.isFinite(event.clientY) &&
+    (event.clientX !== 0 || event.clientY !== 0);
+  return hasClientPoint ? { x: event.clientX, y: event.clientY } : { x: lastDragX, y: lastDragY };
+}
+
+function rememberSessionUserDragPoint(event) {
+  const point = dragPointFromEvent(event);
+  lastDragX = point.x;
+  lastDragY = point.y;
+  return point;
+}
+
+function clearSessionUserDropIndicators() {
+  elements.sessionUserList
+    ?.querySelectorAll(".session-user-badge")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+}
+
+function isPointInSessionUserTrash(point) {
+  if (!elements.sessionUserTrash) {
+    return false;
+  }
+  const rect = elements.sessionUserTrash.getBoundingClientRect();
+  return (
+    point.x >= rect.left - SESSION_USER_TRASH_HIT_MARGIN &&
+    point.x <= rect.right + SESSION_USER_TRASH_HIT_MARGIN &&
+    point.y >= rect.top - SESSION_USER_TRASH_HIT_MARGIN &&
+    point.y <= rect.bottom + SESSION_USER_TRASH_HIT_MARGIN
+  );
+}
+
+function syncSessionUserTrashHover(point) {
+  const inTrash = Boolean(draggedSessionUser && isPointInSessionUserTrash(point));
+  elements.sessionUserTrash?.classList.toggle("drag-over", inTrash);
+  if (inTrash) {
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+    clearSessionUserDropIndicators();
+  }
+  return inTrash;
+}
+
+function clearSessionUserDragTargets() {
+  state.sessionUserDragTarget = null;
+  state.sessionUserDragAfter = false;
+  clearSessionUserDropIndicators();
+}
+
+async function removeDraggedSessionUser() {
+  if (!draggedSessionUser || draggedSessionUser.dataset.deleted === "true") {
+    return;
+  }
+  const name = draggedSessionUser.dataset.name;
+  draggedSessionUser.dataset.deleted = "true";
+  draggedSessionUser.style.display = "none";
+  await removeSessionUser(name);
+}
+
+function finishSessionUserDragUi() {
+  draggedSessionUser?.classList.remove("dragging");
+  elements.sessionUsersPanel?.classList.remove("is-dragging");
+  elements.sessionUserTrash?.classList.remove("drag-over");
+  clearSessionUserDropIndicators();
+}
 
 document.addEventListener("dragover", (e) => {
-  lastDragX = e.clientX;
-  lastDragY = e.clientY;
+  const point = rememberSessionUserDragPoint(e);
+  if (!draggedSessionUser) {
+    return;
+  }
+
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = "move";
+  }
+
+  const inTrash = syncSessionUserTrashHover(point);
+  const target = e.target instanceof Element ? e.target : null;
+  if (!inTrash && target && !elements.sessionUserList.contains(target)) {
+    clearSessionUserDragTargets();
+  }
+});
+
+document.addEventListener("drop", async (e) => {
+  if (!draggedSessionUser) {
+    return;
+  }
+  e.preventDefault();
+  const point = rememberSessionUserDragPoint(e);
+  if (syncSessionUserTrashHover(point)) {
+    await removeDraggedSessionUser();
+  }
 });
 
 elements.sessionUserList.addEventListener("dragstart", (e) => {
   const badge = e.target.closest(".session-user-badge");
   if (!badge) return;
   draggedSessionUser = badge;
+  rememberSessionUserDragPoint(e);
   e.dataTransfer.effectAllowed = "move";
   e.dataTransfer.setData("text/plain", badge.dataset.name);
+  if (typeof e.dataTransfer.setDragImage === "function") {
+    const rect = badge.getBoundingClientRect();
+    e.dataTransfer.setDragImage(
+      badge,
+      Math.max(0, e.clientX - rect.left),
+      Math.max(0, e.clientY - rect.top),
+    );
+  }
   setTimeout(() => {
     badge.classList.add("dragging");
     elements.sessionUsersPanel?.classList.add("is-dragging");
@@ -9601,7 +9703,11 @@ elements.sessionUserList.addEventListener("dragstart", (e) => {
 elements.sessionUserList.addEventListener("dragover", (e) => {
   e.preventDefault();
   if (!draggedSessionUser) return;
+  const point = rememberSessionUserDragPoint(e);
   e.dataTransfer.dropEffect = "move";
+  if (syncSessionUserTrashHover(point)) {
+    return;
+  }
   
   const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
   draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
@@ -9634,35 +9740,13 @@ elements.sessionUserList.addEventListener("dragover", (e) => {
 
 document.addEventListener("dragend", async (e) => {
   if (draggedSessionUser) {
-    draggedSessionUser.classList.remove("dragging");
-    elements.sessionUsersPanel?.classList.remove("is-dragging");
-    elements.sessionUserTrash?.classList.remove("drag-over");
-    
-    const allBadges = elements.sessionUserList.querySelectorAll(".session-user-badge");
-    allBadges.forEach(el => el.classList.remove("drop-before", "drop-after"));
-    
-    // Check if released over trash coordinates as fallback for Tauri/Webviews
-    let droppedInTrash = false;
-    if (elements.sessionUserTrash) {
-      const rect = elements.sessionUserTrash.getBoundingClientRect();
-      const x = e.clientX || lastDragX;
-      const y = e.clientY || lastDragY;
-      const margin = 32; // match the ::before hit area extension in styles.css
-      if (
-        x >= rect.left - margin &&
-        x <= rect.right + margin &&
-        y >= rect.top - margin &&
-        y <= rect.bottom + margin
-      ) {
-        droppedInTrash = true;
-      }
-    }
+    const point = rememberSessionUserDragPoint(e);
+    // Check if released over trash coordinates as fallback for Tauri/Webviews.
+    const droppedInTrash = isPointInSessionUserTrash(point);
+    finishSessionUserDragUi();
 
     if (droppedInTrash) {
-      const name = draggedSessionUser.dataset.name;
-      draggedSessionUser.dataset.deleted = "true";
-      draggedSessionUser.style.display = "none";
-      await removeSessionUser(name);
+      await removeDraggedSessionUser();
     } else if (!draggedSessionUser.dataset.deleted) {
       if (state.sessionUserDragTarget) {
         elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
@@ -9692,26 +9776,26 @@ if (elements.sessionUserTrash) {
   });
 
   elements.sessionUserTrash.addEventListener("dragleave", (e) => {
-    elements.sessionUserTrash.classList.remove("drag-over");
+    const point = rememberSessionUserDragPoint(e);
+    if (!isPointInSessionUserTrash(point)) {
+      elements.sessionUserTrash.classList.remove("drag-over");
+    }
   });
 
   elements.sessionUserTrash.addEventListener("dragover", (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
+    const point = rememberSessionUserDragPoint(e);
+    syncSessionUserTrashHover(point);
     // Clear indicators from list so they don't show when hovering trash
-    elements.sessionUserList.querySelectorAll(".session-user-badge").forEach(el => el.classList.remove("drop-before", "drop-after"));
+    clearSessionUserDropIndicators();
   });
 
   elements.sessionUserTrash.addEventListener("drop", async (e) => {
     e.preventDefault();
-    elements.sessionUserTrash.classList.remove("drag-over");
-    elements.sessionUsersPanel?.classList.remove("is-dragging");
-    if (draggedSessionUser) {
-      const name = draggedSessionUser.dataset.name;
-      draggedSessionUser.dataset.deleted = "true";
-      draggedSessionUser.style.display = "none";
-      await removeSessionUser(name);
-    }
+    rememberSessionUserDragPoint(e);
+    finishSessionUserDragUi();
+    await removeDraggedSessionUser();
   });
 }
 
