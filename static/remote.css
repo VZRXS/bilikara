@@ -4048,7 +4048,7 @@ body.remote-search-modal-open {
 
 /* Dark theme extracted surface fixes. */
 :root:is([data-theme="dark"], [data-theme="blue"]) .display-popover .mode-switch,
-:root:is([data-theme="dark"], [data-theme="blue"]) .theme-switch .mode-button {
+:root:is([data-theme="dark"], [data-theme="blue"]) .theme-switch .mode-button:not(.active) {
   background: var(--theme-switch-button-bg);
   border-color: var(--dark-surface-border-color);
   box-shadow: var(--dark-control-rail-shadow);
@@ -4115,7 +4115,6 @@ body.remote-search-modal-open {
 }
 
 /* Dark theme active surface fixes. */
-:root:is([data-theme="dark"], [data-theme="blue"]) .theme-switch .mode-button.active,
 :root:is([data-theme="dark"], [data-theme="blue"]) .audio-variant-button.active,
 :root:is([data-theme="dark"], [data-theme="blue"]) .remote-mute-button.is-muted {
   background: var(--accent);
