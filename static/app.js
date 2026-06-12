@@ -9578,25 +9578,11 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
 });
 
 let draggedSessionUser = null;
-const SESSION_USER_TRASH_HIT_MARGIN = 32;
 
 function clearSessionUserDropIndicators() {
   elements.sessionUserList
     ?.querySelectorAll(".session-user-badge")
     .forEach((el) => el.classList.remove("drop-before", "drop-after"));
-}
-
-function isPointInSessionUserTrash(x, y) {
-  if (!elements.sessionUserTrash || (x === 0 && y === 0)) {
-    return false;
-  }
-  const rect = elements.sessionUserTrash.getBoundingClientRect();
-  return (
-    x >= rect.left - SESSION_USER_TRASH_HIT_MARGIN &&
-    x <= rect.right + SESSION_USER_TRASH_HIT_MARGIN &&
-    y >= rect.top - SESSION_USER_TRASH_HIT_MARGIN &&
-    y <= rect.bottom + SESSION_USER_TRASH_HIT_MARGIN
-  );
 }
 
 async function removeDraggedSessionUser() {
@@ -9706,13 +9692,9 @@ elements.sessionUserList.addEventListener("dragover", (e) => {
 // 5. Handle drag end.
 document.addEventListener("dragend", async (e) => {
   if (draggedSessionUser) {
-    // Check if released over trash coordinates as fallback.
-    const droppedInTrash = isPointInSessionUserTrash(e.clientX, e.clientY);
     finishSessionUserDragUi();
 
-    if (droppedInTrash) {
-      await removeDraggedSessionUser();
-    } else if (!draggedSessionUser.dataset.deleted) {
+    if (!draggedSessionUser.dataset.deleted) {
       if (state.sessionUserDragTarget) {
         elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
       } else if (state.sessionUserDragAfter) {
