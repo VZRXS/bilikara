@@ -22,7 +22,7 @@ const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
-const developerProfileUrl = "https://github.com/VZRXS/bilikara";
+const projectUrl = "https://github.com/VZRXS/bilikara";
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -2028,7 +2028,7 @@ function openBilikaraSecretModal() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = developerProfileUrl;
+    window.location.href = projectUrl;
     return;
   }
   if (elements.bilikaraSecretInput) {
@@ -2061,7 +2061,7 @@ async function verifyBilikaraSecret() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = developerProfileUrl;
+    window.location.href = projectUrl;
     return;
   }
   const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();

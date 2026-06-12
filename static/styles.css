@@ -566,7 +566,7 @@ p {
 .control-label,
 .queue-current-tag,
 .host-id,
-.designer {
+.project-link {
   margin: 0;
 }
 
@@ -583,23 +583,34 @@ p {
 }
 
 .host-id,
-.designer {
+.project-link {
   margin-top: 10px;
   font-size: 13px;
   color: var(--accent-deep);
 }
 
-.designer {
+.project-link {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   user-select: none;
 }
 
-.designer.active {
+.project-link-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: currentColor;
+}
+
+.project-link.active {
   color: var(--accent);
   text-shadow: var(--accent-glow-shadow);
 }
 
-.designer:focus-visible {
+.project-link:focus-visible {
   outline: var(--accent-focus-outline);
   outline-offset: 3px;
   border-radius: 6px;
