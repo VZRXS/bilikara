@@ -9578,24 +9578,7 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
 });
 
 let draggedSessionUser = null;
-let lastDragX = 0;
-let lastDragY = 0;
 const SESSION_USER_TRASH_HIT_MARGIN = 32;
-
-function dragPointFromEvent(event) {
-  const hasClientPoint =
-    Number.isFinite(event.clientX) &&
-    Number.isFinite(event.clientY) &&
-    (event.clientX !== 0 || event.clientY !== 0);
-  return hasClientPoint ? { x: event.clientX, y: event.clientY } : { x: lastDragX, y: lastDragY };
-}
-
-function rememberSessionUserDragPoint(event) {
-  const point = dragPointFromEvent(event);
-  lastDragX = point.x;
-  lastDragY = point.y;
-  return point;
-}
 
 function clearSessionUserDropIndicators() {
   elements.sessionUserList
@@ -9603,34 +9586,17 @@ function clearSessionUserDropIndicators() {
     .forEach((el) => el.classList.remove("drop-before", "drop-after"));
 }
 
-function isPointInSessionUserTrash(point) {
-  if (!elements.sessionUserTrash) {
+function isPointInSessionUserTrash(x, y) {
+  if (!elements.sessionUserTrash || (x === 0 && y === 0)) {
     return false;
   }
   const rect = elements.sessionUserTrash.getBoundingClientRect();
   return (
-    point.x >= rect.left - SESSION_USER_TRASH_HIT_MARGIN &&
-    point.x <= rect.right + SESSION_USER_TRASH_HIT_MARGIN &&
-    point.y >= rect.top - SESSION_USER_TRASH_HIT_MARGIN &&
-    point.y <= rect.bottom + SESSION_USER_TRASH_HIT_MARGIN
+    x >= rect.left - SESSION_USER_TRASH_HIT_MARGIN &&
+    x <= rect.right + SESSION_USER_TRASH_HIT_MARGIN &&
+    y >= rect.top - SESSION_USER_TRASH_HIT_MARGIN &&
+    y <= rect.bottom + SESSION_USER_TRASH_HIT_MARGIN
   );
-}
-
-function syncSessionUserTrashHover(point) {
-  const inTrash = Boolean(draggedSessionUser && isPointInSessionUserTrash(point));
-  elements.sessionUserTrash?.classList.toggle("drag-over", inTrash);
-  if (inTrash) {
-    state.sessionUserDragTarget = null;
-    state.sessionUserDragAfter = false;
-    clearSessionUserDropIndicators();
-  }
-  return inTrash;
-}
-
-function clearSessionUserDragTargets() {
-  state.sessionUserDragTarget = null;
-  state.sessionUserDragAfter = false;
-  clearSessionUserDropIndicators();
 }
 
 async function removeDraggedSessionUser() {
@@ -9650,40 +9616,42 @@ function finishSessionUserDragUi() {
   clearSessionUserDropIndicators();
 }
 
+// 1. Prevent default on document dragenter to remove the forbidden icon in WebView/WebKit.
+document.addEventListener("dragenter", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
+  }
+});
+
+// 2. Prevent default on document dragover to permit drop anywhere.
 document.addEventListener("dragover", (e) => {
-  const point = rememberSessionUserDragPoint(e);
   if (!draggedSessionUser) {
     return;
   }
-
   e.preventDefault();
   if (e.dataTransfer) {
     e.dataTransfer.dropEffect = "move";
   }
-
-  const inTrash = syncSessionUserTrashHover(point);
+  // If we drag outside the list and we are not natively over the trash, clear drop indicators.
   const target = e.target instanceof Element ? e.target : null;
-  if (!inTrash && target && !elements.sessionUserList.contains(target)) {
-    clearSessionUserDragTargets();
+  if (target && !elements.sessionUserList.contains(target) && target !== elements.sessionUserTrash && !elements.sessionUserTrash.contains(target)) {
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+    clearSessionUserDropIndicators();
   }
 });
 
-document.addEventListener("drop", async (e) => {
-  if (!draggedSessionUser) {
-    return;
-  }
-  e.preventDefault();
-  const point = rememberSessionUserDragPoint(e);
-  if (syncSessionUserTrashHover(point)) {
-    await removeDraggedSessionUser();
+document.addEventListener("drop", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
   }
 });
 
+// 3. Handle drag start for badge items.
 elements.sessionUserList.addEventListener("dragstart", (e) => {
   const badge = e.target.closest(".session-user-badge");
   if (!badge) return;
   draggedSessionUser = badge;
-  rememberSessionUserDragPoint(e);
   e.dataTransfer.effectAllowed = "move";
   e.dataTransfer.setData("text/plain", badge.dataset.name);
   if (typeof e.dataTransfer.setDragImage === "function") {
@@ -9700,14 +9668,11 @@ elements.sessionUserList.addEventListener("dragstart", (e) => {
   }, 0);
 });
 
+// 4. Handle dragover for reordering.
 elements.sessionUserList.addEventListener("dragover", (e) => {
   e.preventDefault();
   if (!draggedSessionUser) return;
-  const point = rememberSessionUserDragPoint(e);
   e.dataTransfer.dropEffect = "move";
-  if (syncSessionUserTrashHover(point)) {
-    return;
-  }
   
   const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
   draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
@@ -9738,11 +9703,11 @@ elements.sessionUserList.addEventListener("dragover", (e) => {
   }
 });
 
+// 5. Handle drag end.
 document.addEventListener("dragend", async (e) => {
   if (draggedSessionUser) {
-    const point = rememberSessionUserDragPoint(e);
-    // Check if released over trash coordinates as fallback for Tauri/Webviews.
-    const droppedInTrash = isPointInSessionUserTrash(point);
+    // Check if released over trash coordinates as fallback.
+    const droppedInTrash = isPointInSessionUserTrash(e.clientX, e.clientY);
     finishSessionUserDragUi();
 
     if (droppedInTrash) {
@@ -9769,35 +9734,33 @@ document.addEventListener("dragend", async (e) => {
   }
 });
 
+// 6. Handle trash can events natively.
 if (elements.sessionUserTrash) {
   elements.sessionUserTrash.addEventListener("dragenter", (e) => {
     e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
     elements.sessionUserTrash.classList.add("drag-over");
+    clearSessionUserDropIndicators();
   });
 
   elements.sessionUserTrash.addEventListener("dragleave", (e) => {
-    const point = rememberSessionUserDragPoint(e);
-    if (!isPointInSessionUserTrash(point)) {
-      elements.sessionUserTrash.classList.remove("drag-over");
-    }
+    elements.sessionUserTrash.classList.remove("drag-over");
   });
 
   elements.sessionUserTrash.addEventListener("dragover", (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
-    const point = rememberSessionUserDragPoint(e);
-    syncSessionUserTrashHover(point);
-    // Clear indicators from list so they don't show when hovering trash
+    elements.sessionUserTrash.classList.add("drag-over");
     clearSessionUserDropIndicators();
   });
 
   elements.sessionUserTrash.addEventListener("drop", async (e) => {
     e.preventDefault();
-    rememberSessionUserDragPoint(e);
     finishSessionUserDragUi();
     await removeDraggedSessionUser();
   });
 }
+
 
 elements.queueNextButton.addEventListener("click", async (event) => {
   const point = anchorPointForEvent(event, elements.queueNextButton);

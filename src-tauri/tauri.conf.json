@@ -39,21 +39,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "VZRXS",
-    "windows": {
-      "digestAlgorithm": "sha256",
-      "timestampUrl": "http://timestamp.digicert.com",
-      "signCommand": {
-        "cmd": "powershell",
-        "args": [
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          "scripts/sign_windows.ps1",
-          "%1"
-        ]
-      }
-    }
+    "publisher": "VZRXS"
   }
 }

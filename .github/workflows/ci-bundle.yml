@@ -112,10 +112,6 @@ jobs:
         shell: pwsh
         run: Copy-Item src-tauri/target/release/bilikara.exe -Destination dist/bilikara/bilikara-desktop.exe
 
-      - name: Sign Tauri desktop launcher
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/sign_windows.ps1 dist/bilikara/bilikara-desktop.exe
 
       - name: Inject Tauri into macOS Bundle
         if: runner.os == 'macOS'
