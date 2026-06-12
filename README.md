@@ -4,10 +4,8 @@
 
 `bilikara` 是一个基于 B 站卡拉 OK 视频的点歌平台。主要由 OpenAI Codex 协助设计与实现，并经过人工整理、验证与迭代。
 
-![demo](demo.png "Host 界面")
-
-<!-- TODO: PLACEHOLDER FOR NEW MOBILE INTERFACE IMAGE -->
-<!-- ![remote_demo](remote_demo.png "移动端控制台界面") -->
+![host](images/host.png "Host 界面")
+![remote](images/remote.png "移动端控制台界面")
 
 ## 当前版本功能
 
@@ -30,13 +28,13 @@
 - 本地保留歌单和播放器设置备份，重新打开后自动恢复，支持手动清空备份
 - 保留点歌历史记录（次数、时间、点歌人），支持从历史记录中快速重新点歌，也可删除单曲在历史记录和本场记录中的条目
 - 维护本次点歌记录：同一首歌在本次已点过时，加入前会弹窗确认
-- 支持导出本场记录或全部历史为 CSV，也可导出分页 PNG 歌单图片；图片每页歌曲数可选 50 ~ 200 首
+- 在历史记录页面可以导出本场记录或全部历史为 CSV 或 PNG 歌单图片；图片每页歌曲数可选 50 ~ 200 首
 - 自动保存对应视频的 UP 主信息，悬停列表或历史记录时可显示完整歌名与 UP 主信息
 - 按场次单独保存“本次已唱”记录（JSON 格式），便于扩展读取接口
 - 设置本场用户，可通过拖拽或列表排序管理点歌人顺序
 
 <!-- TODO: PLACEHOLDER FOR PLAYLIST EXPORT IMAGE -->
-<!-- ![playlist_export_demo](playlist_export_demo.png "歌单导出图片") -->
+<!-- ![playlist_export](images/playlist_export.png "歌单导出图片") -->
 
 ### 试试运气（Gatcha 自定义卡池）
 
@@ -62,8 +60,7 @@
 - 评分数据提交至远程 D1 数据库并自动同步至 Google Sheets 备份，在云端计算稿件的平均分
 - 在远程搜索和历史结果中展示评分人数与平均分
 
-<!-- TODO: PLACEHOLDER FOR RATING POPUP IMAGE -->
-<!-- ![rating_demo](rating_demo.png "评分及评分人数界面") -->
+![rating](images/rating.png "评分界面")
 
 ### 控制、设置与界面体验
 
@@ -86,14 +83,12 @@
   - 语言：中文（zh）/ 英文（en）/ 日文（ja）
   - Host 和 Remote 会分别记忆偏好
 
-<!-- TODO: PLACEHOLDER FOR SETTINGS PANEL IMAGE -->
-<!-- ![settings_demo](settings_demo.png "服务设置和界面设置") -->
+![server_settings](images/server_settings.png "服务设置")
+![ui_settings](images/ui_settings.png "界面设置")
 
-<!-- TODO: PLACEHOLDER FOR TRANSITION OVERLAY IMAGE -->
-<!-- ![transition_demo](transition_demo.png "切歌过渡画面") -->
+![transition](images/transition.png "切歌过渡画面")
 
-<!-- TODO: PLACEHOLDER FOR NEW REQUEST POPUP IMAGE -->
-<!-- ![incoming_request_demo](incoming_request_demo.png "新点歌提示") -->
+![incoming_request](images/incoming_request.png "新点歌提示")
 
 ## 启动
 
