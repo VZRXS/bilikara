@@ -7762,11 +7762,16 @@ function formatHistoryTime(timestamp) {
 }
 
 function ownerTooltipForEntry(entry) {
+  const fullTitle = String(entry?.title || entry?.display_title || "").trim();
   const ownerName = String(entry?.owner_name || "").trim();
-  if (!ownerName) {
-    return "";
+  const lines = [];
+  if (fullTitle) {
+    lines.push(fullTitle);
   }
-  return t("owner.tooltip", { name: ownerName });
+  if (ownerName) {
+    lines.push(t("owner.tooltip", { name: ownerName }));
+  }
+  return lines.join("\n");
 }
 
 function formatBBDownHint(bbdown) {
