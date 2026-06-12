@@ -471,16 +471,19 @@ h1 {
   position: absolute;
   top: 10px;
   right: 10px;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: none;
-  border-radius: 999px;
+  border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: var(--qr-popover-close-bg);
   color: var(--muted);
   cursor: pointer;
+  font-size: 20px;
+  line-height: 0;
+  padding: 0 0 2px 1px;
 }
 
 .remote-qr-popover-image-wrap {
@@ -3343,8 +3346,8 @@ body.remote-search-modal-open {
   font-size: 20px;
   cursor: pointer;
   transition: background 0.2s ease;
-  line-height: 1;
-  padding: 0;
+  line-height: 0;
+  padding: 0 0 2px 1px;
 }
 
 .rating-close:hover {
@@ -3731,8 +3734,8 @@ body.remote-search-modal-open {
   font-size: 20px;
   cursor: pointer;
   transition: background 0.2s ease;
-  padding: 0;
-  line-height: 1;
+  line-height: 0;
+  padding: 0 0 2px 1px;
 }
 
 .floating-control-close:hover {
