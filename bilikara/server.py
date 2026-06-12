@@ -900,6 +900,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 }
                 self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
                 return
+            if route == "/api/app/open-url":
+                url_to_open = str(body.get("url", "")).strip()
+                if url_to_open.startswith(("http://", "https://")):
+                    threading.Thread(
+                        target=lambda: webbrowser.open(url_to_open),
+                        daemon=True
+                    ).start()
+                    self._write_json({"ok": True})
+                else:
+                    self._write_json({"ok": False, "error": "invalid url"}, status=HTTPStatus.BAD_REQUEST)
+                return
             if route == "/api/playlist/add":
                 self._handle_add(body)
                 return
