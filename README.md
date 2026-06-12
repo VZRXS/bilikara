@@ -166,6 +166,7 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 补充说明：
 
 - 打包后的应用会把静态页面资源封装进应用内部
+- 发布包元数据中的发布者 / CompanyName 设置为 `VZRXS`；Windows 安全提示中的“已验证发布者”仍需要代码签名证书
 - 打包后的 `data/`、日志、缓存和工具文件默认都会写到应用目录内的 `runtime/`；如需改到其他位置，可通过 `BILIKARA_HOME` 指定应用数据目录
 - 打包脚本会优先把构建机上的 `ffmpeg` / `ffprobe` 一起打进应用；启动时会把它们同步到 `runtime/tools/bbdown/`，与 `BBDown` 放在一起，缓存时优先使用这份应用内工具
 - Tauri 桌面壳启动后会拉起同目录或相邻目录里的 Python 后端包；开发模式下会回退到 `python start_bilikara.py`
