@@ -4827,8 +4827,7 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   renderUpdatePreviewControl();
   if (elements.cachePanelVersion) {
     const version = state.data?.app?.version || "";
-    const cleanVersion = version.startsWith("v") ? version : `v${version}`;
-    const versionText = version ? `bilikara ${cleanVersion}` : "bilikara";
+    const versionText = version ? `bilikara ${version}` : "bilikara";
     if (elements.cachePanelVersion.textContent !== versionText) {
       elements.cachePanelVersion.textContent = versionText;
     }
