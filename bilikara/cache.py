@@ -23,13 +23,15 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TextIO
 
 from .config import (
+    ARIA2C_DIR,
+    ARIA2C_PATH_OVERRIDE,
     BB_DOWN_DIR,
     BB_DOWN_PATH_OVERRIDE,
     BB_DOWN_RELEASE_API,
     BB_DOWN_VERSION_FILE,
+    BILIBILI_HEADERS,
     CACHE_DIR,
     CACHE_POLICY_FILE,
-    # COOKIE,
     FFMPEG_RUNTIME_PATH,
     FFMPEG_PATH_OVERRIDE,
     FFMPEG_TOOLS_DIR,
@@ -41,7 +43,7 @@ from .config import (
     YTDLP_DIR,
     YTDLP_PATH_OVERRIDE,
 )
-from .bilibili import effective_bilibili_cookie
+from .bilibili import BilibiliError, effective_bilibili_cookie, fetch_dash_playurl
 from .store import PlaylistStore
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
@@ -74,7 +76,8 @@ DEFAULT_VIDEO_QUALITY = "1080P 高帧率"
 DEFAULT_AUDIO_HIRES = True
 DOWNLOAD_SOURCE_BBDOWN = "bbdown"
 DOWNLOAD_SOURCE_YTDLP = "ytdlp"
-DOWNLOAD_SOURCE_CHOICES = (DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_YTDLP)
+DOWNLOAD_SOURCE_DOWNKYI = "downkyi"
+DOWNLOAD_SOURCE_CHOICES = (DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_YTDLP, DOWNLOAD_SOURCE_DOWNKYI)
 DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_BBDOWN
 
 
@@ -251,6 +254,10 @@ class CacheManager:
                     {
                         "value": DOWNLOAD_SOURCE_YTDLP,
                         "label": "yt-dlp",
+                    },
+                    {
+                        "value": DOWNLOAD_SOURCE_DOWNKYI,
+                        "label": "Downkyi (aria2c)",
                     },
                 ],
                 "force_avc": self._should_force_avc_locked(),
@@ -1293,6 +1300,18 @@ class CacheManager:
                     track_key=str(track["key"]),
                     download_source=download_source,
                 )
+        elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            dash_streams = self._resolve_dash_streams(item)
+            result_paths = self._download_dash_streams_with_aria2c(
+                item,
+                binary_path,
+                ffmpeg_path,
+                item_dir,
+                log_path,
+                dash_streams=dash_streams,
+                video_track=video_track,
+                audio_tracks=audio_tracks,
+            )
         else:
             result_paths = {}
             max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
@@ -1531,6 +1550,15 @@ class CacheManager:
                 stream_kind=stream_kind,
                 target_dir=target_dir,
             )
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return self._downkyi_download_command(
+                binary_path,
+                ffmpeg_path,
+                page_url,
+                page=page,
+                stream_kind=stream_kind,
+                target_dir=target_dir,
+            )
         return self._bbdown_download_command(
             binary_path,
             ffmpeg_path,
@@ -1684,6 +1712,364 @@ class CacheManager:
         lines.append("")
         cookie_file.write_text("\n".join(lines), encoding="utf-8")
         return cookie_file
+
+    def _resolve_dash_streams(self, item) -> dict:
+        """Resolve DASH stream URLs from Bilibili API for the given item.
+
+        Returns a dict with keys matching fetch_dash_playurl output:
+          - "video": list of video stream dicts
+          - "audio": list of audio stream dicts
+          - "flac": FLAC stream dict or None
+          - "dolby": Dolby stream dict or None
+        """
+        cookie = effective_bilibili_cookie()
+        if not cookie:
+            raise BilibiliError("Downkyi 模式需要 Bilibili Cookie 才能获取播放地址")
+
+        dash = fetch_dash_playurl(
+            bvid=item.bvid,
+            cid=item.cid,
+            avid=item.aid,
+        )
+
+        if not dash.get("video") and not dash.get("audio"):
+            raise BilibiliError("未获取到任何视频/音频流地址")
+
+        with self.lock:
+            force_avc = self._should_force_avc_locked()
+            avc_quality_cap = self.avc_quality_cap if force_avc else ""
+            video_quality = self.video_quality
+            audio_hires = self.audio_hires
+
+        video_streams = dash.get("video") or []
+        codec_filter = "avc" if force_avc else None
+        max_quality_id = self._dash_max_quality_id(video_quality)
+        filtered_video = self._select_dash_video_stream(
+            video_streams,
+            max_quality_id=max_quality_id,
+            codec_filter=codec_filter,
+            avc_quality_cap=avc_quality_cap,
+        )
+        audio_streams = dash.get("audio") or []
+        selected_audio = self._select_dash_audio_stream(audio_streams, audio_hires=audio_hires)
+        flac_info = dash.get("flac")
+        dolby_info = dash.get("dolby")
+
+        result = {
+            "video": [filtered_video] if filtered_video else [],
+            "audio": [selected_audio] if selected_audio else [],
+            "flac": flac_info if audio_hires and flac_info else None,
+            "dolby": dolby_info if audio_hires and dolby_info else None,
+        }
+
+        if not result["video"]:
+            raise BilibiliError("未找到符合质量要求的视频流")
+        if not result["audio"] and not result["flac"] and not result["dolby"]:
+            raise BilibiliError("未找到符合质量要求的音频流")
+
+        return result
+
+    def _dash_max_quality_id(self, video_quality: str) -> int:
+        quality_id_map = {
+            "360P 流畅": 16,
+            "480P 清晰": 32,
+            "720P 高清": 64,
+            "720P 60帧": 74,
+            "1080P 高清": 80,
+            "1080P 高码率": 112,
+            "1080P 高帧率": 116,
+            "4K 超清": 120,
+            "HDR 真彩": 125,
+            "杜比视界": 126,
+            "8K 超高清": 127,
+        }
+        return quality_id_map.get(video_quality, 80)
+
+    def _select_dash_video_stream(
+        self,
+        video_streams: list[dict],
+        *,
+        max_quality_id: int,
+        codec_filter: str | None = None,
+        avc_quality_cap: str = "",
+    ) -> dict | None:
+        max_avc_quality_id = self._dash_max_quality_id(avc_quality_cap) if avc_quality_cap else 0
+        candidates = []
+        for stream in video_streams:
+            quality_id = stream.get("quality_id", 0)
+            if quality_id > max_quality_id:
+                continue
+            codec_name = stream.get("codec_name", "")
+            if codec_filter and codec_name != codec_filter:
+                continue
+            if codec_filter == "avc" and max_avc_quality_id and quality_id > max_avc_quality_id:
+                continue
+            candidates.append(stream)
+        if not candidates:
+            for stream in video_streams:
+                quality_id = stream.get("quality_id", 0)
+                if quality_id <= max_quality_id:
+                    candidates.append(stream)
+            if not candidates:
+                candidates = list(video_streams)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda s: (-s.get("quality_id", 0), -s.get("bandwidth", 0)))
+        return candidates[0]
+
+    def _select_dash_audio_stream(self, audio_streams: list[dict], *, audio_hires: bool = True) -> dict | None:
+        if not audio_streams:
+            return None
+        candidates = list(audio_streams)
+        quality_order = {
+            30250: 0,   # Dolby Atmos
+            30251: 1,   # Hi-Res FLAC
+            30280: 2,   # High 192K
+            30232: 3,   # Mid 132K
+            30216: 4,   # Low 64K
+        }
+        if not audio_hires:
+            high_quality_ids = {30250, 30251}
+            candidates = [s for s in candidates if s.get("quality_id") not in high_quality_ids]
+            if not candidates:
+                candidates = list(audio_streams)
+        candidates.sort(key=lambda s: quality_order.get(s.get("quality_id", 0), 99))
+        return candidates[0]
+
+    def _download_dash_streams_with_aria2c(
+        self,
+        item,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        item_dir: Path,
+        log_path: Path,
+        *,
+        dash_streams: dict,
+        video_track: dict,
+        audio_tracks: list[dict],
+    ) -> dict[str, Path]:
+        item_id = item.id
+        cookie = effective_bilibili_cookie()
+
+        selected_pages = self._selected_pages_for_item(item)
+        video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
+
+        with self.lock:
+            audio_hires = self.audio_hires
+
+        best_audio = dash_streams.get("audio") or []
+        flac_audio = dash_streams.get("flac")
+        dolby_audio = dash_streams.get("dolby")
+        preferred_audio = best_audio[0] if best_audio else None
+        if flac_audio and audio_hires:
+            preferred_audio = flac_audio
+        if dolby_audio and audio_hires:
+            preferred_audio = dolby_audio
+
+        video_urls = self._dash_stream_urls(dash_streams, "video")
+        if not video_urls:
+            raise DownloadCommandError("未找到视频流下载地址")
+        video_target_dir = item_dir / f"video-p{video_page}"
+        video_target_dir.mkdir(parents=True, exist_ok=True)
+
+        track_args: list[tuple[dict, list[str], str, Path, str, str]] = []
+        track_args.append((
+            video_track,
+            video_urls,
+            f"video-p{video_page}.mp4",
+            video_target_dir,
+            f"下载视频轨 P{video_page}",
+            "video",
+        ))
+
+        for track in audio_tracks:
+            page = int(track["page"])
+            audio_target_dir = item_dir / f"audio-p{page}"
+            audio_target_dir.mkdir(parents=True, exist_ok=True)
+
+            if preferred_audio:
+                audio_urls = [preferred_audio["url"]]
+                audio_urls.extend(preferred_audio.get("backup_urls") or [])
+            else:
+                audio_urls = self._dash_stream_urls(dash_streams, "audio")
+            if not audio_urls:
+                raise DownloadCommandError(f"未找到音频轨 P{page} 的下载地址")
+
+            out_ext = ".flac" if (flac_audio and preferred_audio is flac_audio and audio_hires) else ".m4a"
+            track_args.append((
+                track,
+                audio_urls,
+                f"audio-p{page}{out_ext}",
+                audio_target_dir,
+                f"下载音轨 P{page}",
+                "audio",
+            ))
+
+        result_paths: dict[str, Path] = {}
+        max_workers = max(1, min(len(track_args), MAX_PARALLEL_TRACK_DOWNLOADS))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-downkyi-track")
+
+        def _download_track(args: tuple) -> tuple[str, Path]:
+            track, urls, out_name, target_dir, stage_label, stream_kind = args
+            return str(track["key"]), self._download_stream_with_aria2c(
+                item_id, binary_path, ffmpeg_path, target_dir, log_path,
+                urls=urls,
+                out_name=out_name,
+                cookie=cookie,
+                stage_label=stage_label,
+                track_key=self._download_track_key(stream_kind, int(track["page"])),
+                stream_kind=stream_kind,
+            )
+
+        future_to_track = {
+            executor.submit(_download_track, args): args[0]
+            for args in track_args
+        }
+        try:
+            done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
+            exceptions: list[Exception] = []
+            for future in done:
+                if future.cancelled():
+                    continue
+                try:
+                    key, path = future.result()
+                    result_paths[key] = path
+                except Exception as exc:  # noqa: BLE001
+                    exceptions.append(exc)
+
+            if exceptions:
+                for future in pending:
+                    future.cancel()
+                self._terminate_item_processes(item_id)
+                still_running = [future for future in pending if not future.cancelled()]
+                if still_running:
+                    wait(still_running)
+                    for future in still_running:
+                        if future.cancelled():
+                            continue
+                        try:
+                            future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            exceptions.append(exc)
+                raise self._preferred_download_exception(exceptions)
+
+            for future, track_ref in future_to_track.items():
+                if future not in done:
+                    try:
+                        key, path = future.result()
+                        result_paths[key] = path
+                    except Exception as exc:  # noqa: BLE001
+                        exceptions.append(exc)
+        finally:
+            executor.shutdown(wait=True)
+
+        return result_paths
+
+    @staticmethod
+    def _dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
+        if stream_kind == "video":
+            streams = dash_streams.get("video") or []
+            urls = []
+            for stream in streams:
+                url = str(stream.get("url") or "").strip()
+                if url:
+                    urls.append(url)
+                for backup in stream.get("backup_urls") or []:
+                    backup_url = str(backup).strip()
+                    if backup_url:
+                        urls.append(backup_url)
+            return urls
+        if stream_kind == "audio":
+            streams = dash_streams.get("audio") or []
+            urls = []
+            for stream in streams:
+                url = str(stream.get("url") or "").strip()
+                if url:
+                    urls.append(url)
+                for backup in stream.get("backup_urls") or []:
+                    backup_url = str(backup).strip()
+                    if backup_url:
+                        urls.append(backup_url)
+            return urls
+        return []
+
+    def _download_stream_with_aria2c(
+        self,
+        item_id: str,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        target_dir: Path,
+        log_path: Path,
+        *,
+        urls: list[str],
+        out_name: str,
+        cookie: str,
+        stage_label: str,
+        track_key: str,
+        stream_kind: str,
+    ) -> Path:
+        if not urls:
+            raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
+
+        primary_url = urls[0]
+
+        command = [
+            self._tool_arg_path(binary_path),
+            primary_url,
+            "--dir", self._tool_arg_path(target_dir),
+            "--out", out_name,
+            "--continue=true",
+            "--max-tries=10",
+            "--retry-wait=3",
+            "--split=16",
+            "--min-split-size=1M",
+            "--max-connection-per-server=16",
+            "--file-allocation=falloc",
+            "--summary-interval=5",
+            "--console-log-level=notice",
+        ]
+
+        if cookie:
+            command.extend(["--header", f"Cookie: {cookie}"])
+        command.extend(["--header", "Origin: https://www.bilibili.com"])
+        command.extend(["--header", "Referer: https://www.bilibili.com"])
+        user_agent = BILIBILI_HEADERS.get("User-Agent", "")
+        if user_agent:
+            command.extend(["--header", f"User-Agent: {user_agent}"])
+
+        for backup_url in urls[1:]:
+            command.extend(["--referer", backup_url])
+
+        self._run_item_command(
+            item_id,
+            command,
+            ffmpeg_path,
+            log_path,
+            stage_label=stage_label,
+            stream_kind=stream_kind,
+            target_dir=target_dir,
+            track_key=track_key,
+            tool_dir=binary_path.parent,
+        )
+
+        allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
+        self._raise_if_retry_requested(item_id)
+        stream_file = self._find_stream_file(target_dir, allowed_extensions)
+        if not stream_file:
+            raise DownloadCommandError(f"{stage_label} 完成后未找到输出文件")
+        return stream_file
+
+    def _downkyi_download_command(
+        self,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        raise DownloadCommandError("Downkyi 模式不使用 URL 下载命令，请使用 _download_dash_streams_with_aria2c")
 
     def _bbdown_stream_preference_args(self, stream_kind: str) -> list[str]:
         with self.lock:
@@ -2594,11 +2980,17 @@ class CacheManager:
 
     @staticmethod
     def _download_source_label(download_source: str) -> str:
-        return "yt-dlp" if download_source == DOWNLOAD_SOURCE_YTDLP else "BBDown"
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            return "yt-dlp"
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return "Downkyi"
+        return "BBDown"
 
     def _ensure_downloader(self, download_source: str, *, force_refresh: bool = False) -> Path:
         if download_source == DOWNLOAD_SOURCE_YTDLP:
             return self._ensure_ytdlp()
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return self._ensure_aria2c()
         return self._ensure_bbdown(force_refresh=force_refresh)
 
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
@@ -2700,6 +3092,56 @@ class CacheManager:
                 self.binary_version = version
                 self.binary_message = f"yt-dlp {version} 已就绪"
             return binary_path
+
+    def _ensure_aria2c(self) -> Path:
+        with self.binary_prepare_lock:
+            override = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None
+            if override and override.exists():
+                with self.lock:
+                    self.binary_state = "ready"
+                    version = self._read_aria2c_version(override)
+                    self.binary_version = version
+                    self.binary_message = f"使用外部 aria2c: {override}"
+                return override
+
+            binary_path = self._local_aria2c_binary_path()
+            if not binary_path.exists():
+                raise RuntimeError(
+                    f"未找到 aria2c，可将 aria2c 放入 {ARIA2C_DIR}\n"
+                    f"下载地址: https://github.com/aria2/aria2/releases"
+                )
+            binary_path.chmod(binary_path.stat().st_mode | stat.S_IEXEC)
+            version = self._read_aria2c_version(binary_path)
+            if not version:
+                raise RuntimeError(f"aria2c 不可执行: {binary_path}")
+            with self.lock:
+                self.binary_state = "ready"
+                self.binary_version = version
+                self.binary_message = f"aria2c {version} 已就绪"
+            return binary_path
+
+    @staticmethod
+    def _local_aria2c_binary_path() -> Path:
+        return ARIA2C_DIR / ("aria2c.exe" if os.name == "nt" else "aria2c")
+
+    @staticmethod
+    def _read_aria2c_version(binary_path: Path) -> str:
+        try:
+            process = subprocess.run(
+                [str(binary_path), "--version"],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=10,
+                **CacheManager._hidden_process_kwargs(),
+            )
+            first_line = (process.stdout or "").split("\n")[0].strip()
+            for part in first_line.split():
+                if part[0:1].isdigit() and "." in part:
+                    return part
+            return first_line
+        except (OSError, subprocess.SubprocessError):
+            return ""
 
     def _fetch_latest_release(self) -> dict:
         request = urllib.request.Request(
