@@ -1199,7 +1199,19 @@ class CacheManagerPolicyTest(unittest.TestCase):
         release = {
             "assets": [
                 {
-                    "name": target_path.name,
+                    "name": "yt-dlp.exe",
+                    "browser_download_url": "https://example.test/yt-dlp",
+                },
+                {
+                    "name": "yt-dlp_macos",
+                    "browser_download_url": "https://example.test/yt-dlp",
+                },
+                {
+                    "name": "yt-dlp_linux",
+                    "browser_download_url": "https://example.test/yt-dlp",
+                },
+                {
+                    "name": "yt-dlp",
                     "browser_download_url": "https://example.test/yt-dlp",
                 }
             ],
@@ -1231,7 +1243,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
     def test_ensure_aria2c_downloads_and_extracts_zip_when_missing(self):
         aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
-        target_path = aria2_dir / ("aria2c.exe" if os.name == "nt" else "aria2c")
+        target_path = aria2_dir / "aria2c.exe"
         release = {
             "assets": [
                 {
