@@ -127,6 +127,7 @@
   --toast-bg: rgba(255, 251, 245, 0.94);
   --toast-border: 1px solid rgba(87, 63, 43, 0.12);
   --toast-shadow: 0 16px 42px rgba(88, 56, 30, 0.16);
+  --btn-hover-shadow: transparent;
 }
 
 * {
@@ -1573,6 +1574,11 @@ select:disabled {
 .primary-button {
   background: var(--accent);
   color: white;
+}
+
+.primary-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px var(--btn-hover-shadow);
 }
 
 .secondary-button,
@@ -3957,7 +3963,8 @@ body.remote-search-modal-open {
   --scrollbar-thumb-hover-bg: rgba(224, 108, 83, 0.4);
   --toast-bg: rgba(30, 26, 23, 0.94);
   --toast-border: 1px solid rgba(246, 241, 235, 0.15);
-  --toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
+--toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
+  --btn-hover-shadow: transparent;
 }
 /* --- BLUE BLACK THEME OVERRIDES --- */
 :root[data-theme="blue"] {
@@ -4076,6 +4083,7 @@ body.remote-search-modal-open {
   --toast-bg: rgba(8, 18, 32, 0.94);
   --toast-border: 1px solid rgba(148, 202, 233, 0.18);
   --toast-shadow: 0 16px 42px rgba(2, 8, 23, 0.58);
+  --btn-hover-shadow: rgba(56, 189, 248, 0.22);
 }
 
 
@@ -4167,8 +4175,9 @@ body.remote-search-modal-open {
   --scrollbar-track-bg: rgba(255, 255, 255, 0.05);
   --scrollbar-thumb-bg: rgba(0, 210, 255, 0.28);
   --scrollbar-thumb-hover-bg: rgba(0, 210, 255, 0.42);
-  --toast-bg: rgba(17, 25, 40, 0.94);
+--toast-bg: rgba(17, 25, 40, 0.94);
   --toast-border: 1px solid rgba(255, 255, 255, 0.14);
+  --btn-hover-shadow: rgba(0, 210, 255, 0.22);
 }
 
 /* Dark theme extracted surface fixes. */

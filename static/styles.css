@@ -105,7 +105,7 @@
   --sync-focus-ring: rgba(208, 90, 63, 0.18);
   --sync-button-hover-border: rgba(208, 90, 63, 0.22);
   --audio-variant-active-shadow: rgba(208, 90, 63, 0.18);
-  --search-btn-hover-shadow: rgba(208, 90, 63, 0.22);
+  --search-btn-hover-shadow: transparent;
   --developer-reset-btn-bg: rgba(208, 90, 63, 0.9);
   --drop-border: rgba(208, 90, 63, 0.28);
   --drop-shadow: rgba(208, 90, 63, 0.12);
@@ -4967,6 +4967,7 @@ select:disabled {
 .audio-variant-toggle:hover,
 .cache-update-button:hover {
   transform: translateY(-2px);
+  box-shadow: 0 6px 20px var(--search-btn-hover-shadow);
 }
 
 .player-frame {
@@ -6404,7 +6405,7 @@ select:disabled {
   --sync-focus-ring: rgba(224, 108, 83, 0.18);
   --sync-button-hover-border: rgba(224, 108, 83, 0.22);
   --audio-variant-active-shadow: rgba(224, 108, 83, 0.18);
-  --search-btn-hover-shadow: rgba(224, 108, 83, 0.22);
+  --search-btn-hover-shadow: transparent;
   --developer-reset-btn-bg: rgba(224, 108, 83, 0.9);
   --drop-border: rgba(224, 108, 83, 0.28);
   --drop-shadow: rgba(224, 108, 83, 0.12);
