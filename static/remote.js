@@ -142,6 +142,7 @@ const remoteRatingPromptThreshold = 0.5;
 const storageKeys = {
   language: "bilikara.ui.language",
   layoutMode: "bilikara.remote.layout.mode",
+  theme: "bilikara.ui.theme",
 };
 
 function categoryBrowseTagKey(value) {
@@ -177,6 +178,9 @@ const state = {
   remoteLocalVolumePercent: null,
   remoteLocalMuted: null,
   remoteVolumeCommitTimer: null,
+  remoteLocalKeyShift: null,
+  remoteKeyShiftEchoSuppressUntil: 0,
+  remoteKeyShiftSaveSeq: 0,
   audioVariantBarExpanded: false,
   audioVariantBarItemId: "",
   bindingSheetOpen: false,
@@ -276,15 +280,22 @@ const state = {
   queueRenderSignature: "",
   historyRenderSignature: "",
   layoutMode: "full",
+  displaySettingsOpen: false,
   remoteAccessRenderSignature: "",
   viewportScaleResetTimers: [],
   renderDebounceTimer: null,
+  theme: "light",
 };
 
 const elements = {
   viewportMeta: document.getElementById("viewport-meta"),
   remoteShell: document.getElementById("remote-shell"),
   languageSwitch: document.getElementById("language-switch"),
+  themeSwitch: document.getElementById("theme-switch"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-popover"),
+  displayLayoutSummary: document.getElementById("remote-layout-summary"),
+  displayPopoverClose: document.getElementById("display-popover-close"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   remoteQrControl: document.getElementById("remote-qr-control"),
   remoteQrToggle: document.getElementById("remote-qr-toggle"),
@@ -304,6 +315,7 @@ const elements = {
   currentRatingButton: document.getElementById("current-rating-button"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
+  floatingPlayerControlPanel: document.getElementById("floating-player-control-panel"),
   playerControlHint: document.getElementById("player-control-hint"),
   remoteAvSyncPanel: document.getElementById("remote-av-sync-panel"),
   remoteAvOffsetInput: document.getElementById("remote-av-offset-input"),
@@ -312,6 +324,16 @@ const elements = {
   remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
   remoteVolumeSlider: document.getElementById("remote-volume-slider"),
   remoteVolumeValue: document.getElementById("remote-volume-value"),
+  remoteKeyShiftPanel: document.getElementById("remote-key-shift-panel"),
+  remoteKeyShiftResetButton: document.getElementById("remote-key-shift-reset-button"),
+  remoteKeyShiftDecButton: document.getElementById("remote-key-shift-dec-button"),
+  remoteKeyShiftInput: document.getElementById("remote-key-shift-input"),
+  remoteKeyShiftIncButton: document.getElementById("remote-key-shift-inc-button"),
+  floatingControlTrigger: document.getElementById("floating-control-trigger"),
+  floatingControlOverlay: document.getElementById("floating-control-overlay"),
+  floatingControlBackdrop: document.getElementById("floating-control-backdrop"),
+  floatingControlCard: document.getElementById("floating-control-card"),
+  floatingControlClose: document.getElementById("floating-control-close"),
   bindingSheet: document.getElementById("binding-sheet"),
   bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
   bindingSheetText: document.getElementById("binding-sheet-text"),
@@ -433,6 +455,7 @@ const elements = {
   addNextButton: document.getElementById("add-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
+  openRatingButton: document.getElementById("open-rating-button"),
   gatchaPoolConfigToggle: document.getElementById("gatcha-pool-config-toggle"),
   gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaButton: document.getElementById("gatcha-button"),
@@ -639,6 +662,8 @@ function invalidateLanguageSensitiveRenderCache() {
   state.listHeaderRenderSignature = "";
   state.queueRenderSignature = "";
   state.historyRenderSignature = "";
+  state.playerControlsRenderSignature = "";
+  state.currentNowPlayingSignature = "";
 }
 
 function setLanguage(language) {
@@ -658,6 +683,24 @@ function setLanguage(language) {
   if (state.searchModalOpen) {
     renderSearchModalView(state.searchModalView);
   }
+}
+
+function applyTheme(theme) {
+  const nextTheme = normalizeTheme(theme);
+  state.theme = nextTheme;
+  document.documentElement.setAttribute("data-theme", nextTheme);
+  writeLocalPreference(storageKeys.theme, nextTheme);
+  renderThemeSwitch();
+}
+
+function normalizeTheme(theme) {
+  return theme === "dark" || theme === "blue" ? theme : "light";
+}
+
+function renderThemeSwitch() {
+  elements.themeSwitch?.querySelectorAll("button[data-theme]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === state.theme);
+  });
 }
 
 async function loadTranslations() {
@@ -771,6 +814,10 @@ function normalizeLayoutMode(value) {
 
 function hydrateLocalPreferences() {
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
+
+  // Hydrate and apply theme
+  state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
+  applyTheme(state.theme);
 }
 
 function renderLayoutMode() {
@@ -780,6 +827,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, layoutKey);
 }
 
 function setLayoutMode(mode) {
@@ -795,8 +844,20 @@ function setLayoutMode(mode) {
 
 function setRemoteQrPopoverOpen(open) {
   state.remoteQrPopoverOpen = Boolean(open);
+  if (state.remoteQrPopoverOpen) {
+    setDisplaySettingsOpen(false);
+  }
   elements.remoteQrPopover?.classList.toggle("hidden", !state.remoteQrPopoverOpen);
   elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrPopoverOpen));
+}
+
+function setDisplaySettingsOpen(open) {
+  state.displaySettingsOpen = Boolean(open);
+  if (state.displaySettingsOpen) {
+    setRemoteQrPopoverOpen(false);
+  }
+  elements.displaySettingsPanel?.classList.toggle("hidden", !state.displaySettingsOpen);
+  elements.displaySettingsToggle?.setAttribute("aria-expanded", String(state.displaySettingsOpen));
 }
 
 function renderRemoteAccess(remoteAccess) {
@@ -948,7 +1009,10 @@ function setMessageForSource(source, message, isError = false) {
 }
 
 function localizedCacheMessage(message, cacheStatus = "") {
-  const raw = String(message || "").trim();
+  let raw = String(message || "").trim();
+  if (raw.includes("\n")) {
+    raw = raw.split("\n")[0].trim();
+  }
   const status = String(cacheStatus || "").trim();
   if (!raw) {
     return "";
@@ -1238,10 +1302,10 @@ function submitSongRating(item, score) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
-  const submissionKey = ratingSubmissionKey(item);
-  if (!bvid || !playId) {
+  if (!bvid) {
     return null;
   }
+  const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
   if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
     return false;
   }
@@ -1352,6 +1416,26 @@ function ratingPromptItemsForItem(item) {
   };
 }
 
+function isItemRateable(item, isCurrent = false) {
+  const bvid = String(item?.bvid || "").trim();
+  if (!item || !bvid) {
+    return false;
+  }
+  if (isCurrent) {
+    const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
+    if (!(durationSeconds > 0)) return false;
+    const ratio = currentSeconds / durationSeconds;
+    if (ratio < remoteRatingPromptThreshold) return false;
+  } else {
+    // Previous items must have actually played past the threshold
+    // during their playback to be rateable.
+    if (!item.threshold_reached) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function activeRatingPromptItem() {
   return normalizeRatingPromptItem(
     state.ratingPromptItems?.[state.ratingPromptActiveTab]
@@ -1383,8 +1467,8 @@ function renderRatingPromptContent() {
 
   root.querySelectorAll("[data-rating-tab]").forEach((button) => {
     const tab = button.dataset.ratingTab;
-    const hasItem = Boolean(state.ratingPromptItems?.[tab]);
-    button.disabled = !hasItem;
+    const isRateable = tab === "current" ? state.ratingPromptCurrentRateable : state.ratingPromptPreviousRateable;
+    button.disabled = !isRateable;
     button.classList.toggle("active", tab === state.ratingPromptActiveTab);
     button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
   });
@@ -1452,6 +1536,8 @@ function setRatingPromptActiveTab(tab) {
     return;
   }
   state.ratingPromptActiveTab = tab;
+  const activeItem = state.ratingPromptItems[tab];
+  state.ratingPromptItemId = String(activeItem?.id || activeItem?.bvid || "").trim();
   renderRatingPromptContent();
 }
 
@@ -1468,7 +1554,9 @@ function closeRatingPrompt({ submit = true } = {}) {
   const bvid = state.ratingPromptBvid;
   const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
   state.ratingPromptSubmitted = true;
-  root.remove();
+
+  root.classList.add("closing");
+
   state.ratingPromptElement = null;
   state.ratingPromptItem = null;
   state.ratingPromptItems = null;
@@ -1476,29 +1564,49 @@ function closeRatingPrompt({ submit = true } = {}) {
   state.ratingPromptItemId = "";
   state.ratingPromptBvid = "";
 
+  setTimeout(() => {
+    root.remove();
+  }, 250);
+
   if (shouldSubmit) {
     submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
-    renderCurrentRatingButton(state.data?.current_item);
   }
 }
 
-function openRatingPrompt(item, options = {}) {
+function openRatingPrompt(item, { manual = false } = {}) {
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
-  const force = Boolean(options.force);
-  if (!item || !bvid || !playId || state.ratingOptOut || (!force && state.ratingPromptSeenPlayIds.has(playId))) {
+  if (!item || !bvid || !playId || (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)))) {
     return;
   }
+
   const promptItems = ratingPromptItemsForItem(item);
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+
+  if (!currentRateable && !previousRateable) {
+    return;
+  }
+
   closeRatingPrompt({ submit: true });
-  state.ratingPromptSeenPlayIds.add(playId);
+
+  const defaultTab = currentRateable ? "current" : "previous";
+  const activeItem = promptItems[defaultTab];
+  const activePlayId = String(activeItem?.id || activeItem?.bvid || "").trim();
+
+  if (activePlayId) {
+    state.ratingPromptSeenPlayIds.add(activePlayId);
+  }
+
   state.ratingPromptItems = promptItems;
-  state.ratingPromptActiveTab = "current";
-  state.ratingPromptItem = promptItems.current;
-  state.ratingPromptItemId = playId;
-  state.ratingPromptBvid = bvid;
+  state.ratingPromptActiveTab = defaultTab;
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptItemId = activePlayId;
+  state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
   state.ratingPromptScore = 5;
   state.ratingPromptSubmitted = false;
+  state.ratingPromptCurrentRateable = currentRateable;
+  state.ratingPromptPreviousRateable = previousRateable;
 
   const root = document.createElement("div");
   root.className = "rating-modal";
@@ -1513,14 +1621,11 @@ function openRatingPrompt(item, options = {}) {
       <div class="rating-actions">
         <button type="button" class="secondary-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
         <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
+        <button type="button" class="secondary-button" data-rating-opt-out-btn>${htmlT("rating.optOutBtn")}</button>
       </div>
-      <label class="rating-opt-out">
-        <input type="checkbox" data-rating-opt-out>
-        <span>${htmlT("rating.optOut")}</span>
-      </label>
       <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
-        <button type="button" data-rating-tab="previous" role="tab" ${promptItems.previous ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
-        <button type="button" data-rating-tab="current" role="tab">${htmlT("rating.currentTab")}</button>
+        <button type="button" data-rating-tab="previous" role="tab" ${previousRateable ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
+        <button type="button" data-rating-tab="current" role="tab" ${currentRateable ? "" : "disabled"}>${htmlT("rating.currentTab")}</button>
       </div>
       <p class="rating-message" data-rating-message></p>
     </section>
@@ -1546,6 +1651,49 @@ function currentPlaybackClockSeconds() {
 }
 
 function maybeUpdateRemoteRatingPrompt(currentItem) {
+  const promptItems = ratingPromptItemsForItem(currentItem);
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+
+  if (elements.openRatingButton) {
+    elements.openRatingButton.disabled = !currentRateable && !previousRateable;
+  }
+
+  // Handle live-update, tab switching, and auto-closing of an already-open rating modal.
+  if (state.ratingPromptElement && state.ratingPromptItemId) {
+    const currentPromptId = String(promptItems.current?.id || promptItems.current?.bvid || "").trim();
+    const previousPromptId = String(promptItems.previous?.id || promptItems.previous?.bvid || "").trim();
+
+    if (state.ratingPromptItemId === currentPromptId && currentRateable) {
+      // The item being rated is still the current item, and is rateable.
+      const tabsChanged =
+        state.ratingPromptCurrentRateable !== currentRateable
+        || state.ratingPromptPreviousRateable !== previousRateable;
+      state.ratingPromptItems = promptItems;
+      state.ratingPromptCurrentRateable = currentRateable;
+      state.ratingPromptPreviousRateable = previousRateable;
+      if (tabsChanged) {
+        renderRatingPromptContent();
+      }
+    } else if (state.ratingPromptItemId === previousPromptId && previousRateable) {
+      // The item being rated is the previous item, and is rateable.
+      const needsTabTransition = state.ratingPromptActiveTab !== "previous";
+      const tabsChanged =
+        state.ratingPromptCurrentRateable !== currentRateable
+        || state.ratingPromptPreviousRateable !== previousRateable;
+      state.ratingPromptItems = promptItems;
+      state.ratingPromptActiveTab = "previous";
+      state.ratingPromptCurrentRateable = currentRateable;
+      state.ratingPromptPreviousRateable = previousRateable;
+      if (needsTabTransition || tabsChanged) {
+        renderRatingPromptContent();
+      }
+    } else {
+      // The item being rated is no longer rateable (neither current nor previous, or not rateable).
+      closeRatingPrompt({ submit: false });
+    }
+  }
+
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   const bvid = String(currentItem?.bvid || "").trim();
   const playId = String(currentItem?.id || bvid).trim();
@@ -1553,18 +1701,14 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
     return;
   }
   const ratio = currentSeconds / durationSeconds;
-  if (
-    state.ratingPromptElement
-    && state.ratingPromptItemId
-    && state.ratingPromptItemId !== String(currentItem.id || "")
-  ) {
-    closeRatingPrompt({ submit: false });
-  }
   const ratingItem = { ...currentItem, play_id: playId };
-  if (ratio >= remoteRatingPromptThreshold && !hasSubmittedSongRating(ratingItem)) {
-    state.ratingPromptSeenPlayIds.add(playId);
-    submitSongRating(ratingItem, 5);
-    renderCurrentRatingButton(currentItem);
+  if (ratio >= remoteRatingPromptThreshold) {
+    // Skip auto-submit when the rating modal is already open so the user
+    // can choose their own score instead of the default 5.
+    if (!state.ratingPromptSeenPlayIds.has(playId) && !state.ratingPromptElement) {
+      state.ratingPromptSeenPlayIds.add(playId);
+      submitSongRating(ratingItem, 5);
+    }
   }
 }
 
@@ -1634,6 +1778,12 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
+
+elements.openRatingButton?.addEventListener("click", () => {
+  if (state.data?.current_item) {
+    openRatingPrompt(state.data.current_item, { manual: true });
+  }
+});
 
 async function exportHistory(format) {
   const source = selectedHistoryExportSource();
@@ -1757,6 +1907,7 @@ function stableSnapshotForRenderSignature(snapshot) {
     return null;
   }
   const {
+    app_update: _appUpdate,
     bbdown: _bbdown,
     cache_policy: _cachePolicy,
     ffmpeg: _ffmpeg,
@@ -1834,7 +1985,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     || nextRenderSignature !== state.dataRenderSignature;
   state.data = snapshot;
   scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
-  
+
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
   if (shouldRender) {
     state.dataRenderSignature = nextRenderSignature;
@@ -1842,7 +1993,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   } else if (!state.renderDebounceTimer) {
     renderCacheStatusOnly(previousSnapshot);
   }
-  
+
   return true;
 }
 
@@ -4020,6 +4171,7 @@ function render() {
   renderPlayerControls(data.current_item, playbackMode);
   renderRemoteAvSyncControls(playbackMode, data.player_settings);
   renderRemoteVolumeControls(playbackMode, data.player_settings);
+  renderRemoteKeyShiftControls(playbackMode, data.player_settings);
   renderRemoteAccess(data.remote_access);
   renderFollowBrowse();
   renderModalFollowBrowse();
@@ -4029,6 +4181,7 @@ function render() {
   syncListView();
   renderLayoutMode();
   renderGatchaUidView();
+  renderFloatingControlTrigger(data.current_item, playbackMode);
 }
 
 function frontendPlaybackMode(_mode) {
@@ -4085,12 +4238,20 @@ function renderCurrentItem(current, playbackMode) {
       elements.currentRequester.classList.toggle("hidden", !requesterText);
       elements.currentOwner.textContent = ownerText;
       elements.currentOwner.classList.toggle("hidden", !ownerText);
+      if (elements.openRatingButton) {
+        elements.openRatingButton.classList.toggle("hidden", !current.bvid);
+      }
       elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     }
-    
+
     renderCurrentPlaybackState(current);
+    try {
+      maybeUpdateRemoteRatingPrompt(current);
+    } catch (error) {
+      console.warn("Rating prompt update failed in renderCurrentItem:", error);
+    }
     elements.currentCacheState.classList.remove("hidden");
-    
+
     if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
       if (!state.autoRefreshTimer) {
         state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
@@ -4099,7 +4260,7 @@ function renderCurrentItem(current, playbackMode) {
       clearTimeout(state.autoRefreshTimer);
       state.autoRefreshTimer = null;
     }
-    
+
     elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
     elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
     elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
@@ -4112,6 +4273,9 @@ function renderCurrentItem(current, playbackMode) {
     elements.currentTitle.textContent = t("remote.noCurrentSong");
     elements.currentRequester.textContent = "";
     elements.currentRequester.classList.add("hidden");
+    if (elements.openRatingButton) {
+      elements.openRatingButton.classList.add("hidden");
+    }
     if (elements.currentOwner) {
       elements.currentOwner.textContent = "";
       elements.currentOwner.classList.add("hidden");
@@ -4366,6 +4530,52 @@ function currentRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
   return serverRemoteAvOffsetMs(playerSettings);
 }
 
+function serverRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  return Math.max(-6, Math.min(6, Number(playerSettings?.key_shift ?? 0)));
+}
+
+function currentRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  if (state.remoteLocalKeyShift !== null && Date.now() < state.remoteKeyShiftEchoSuppressUntil) {
+    return state.remoteLocalKeyShift;
+  }
+  state.remoteLocalKeyShift = null;
+  return serverRemoteKeyShift(playerSettings);
+}
+
+function markRemoteKeyShiftWrite(keyShift) {
+  state.remoteLocalKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  state.remoteKeyShiftEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.remoteKeyShiftSaveSeq += 1;
+  return state.remoteKeyShiftSaveSeq;
+}
+
+async function setRemoteKeyShift(keyShift) {
+  const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  const currentValue = currentRemoteKeyShift();
+  if (boundedKeyShift === currentValue) {
+    markRemoteKeyShiftWrite(boundedKeyShift);
+    return;
+  }
+
+  const requestSeq = markRemoteKeyShiftWrite(boundedKeyShift);
+  renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  try {
+    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    applyStateSnapshot(nextData);
+  } catch (error) {
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    state.remoteLocalKeyShift = null;
+    state.remoteKeyShiftEchoSuppressUntil = 0;
+    setFormMessage(error.message, true);
+    renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  }
+}
+
 function serverRemoteVolumePercent(playerSettings = state.data?.player_settings) {
   return Math.max(0, Math.min(100, Number(playerSettings?.volume_percent ?? 100)));
 }
@@ -4452,6 +4662,21 @@ function renderRemoteVolumeControls(playbackMode, playerSettings) {
   elements.remoteVolumeMuteButton.setAttribute("aria-label", muteLabel);
   elements.remoteVolumeMuteButton.setAttribute("title", muteLabel);
   elements.remoteVolumeMuteButton.classList.toggle("is-muted", isMuted);
+}
+
+function renderRemoteKeyShiftControls(playbackMode, playerSettings) {
+  if (!elements.remoteKeyShiftPanel || !elements.remoteKeyShiftInput) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  elements.remoteKeyShiftPanel.classList.toggle("hidden", !isLocalMode);
+  const keyShift = currentRemoteKeyShift(playerSettings);
+  if (document.activeElement !== elements.remoteKeyShiftInput) {
+    elements.remoteKeyShiftInput.value = String(keyShift);
+  }
+  if (elements.remoteKeyShiftResetButton) {
+    elements.remoteKeyShiftResetButton.disabled = keyShift === 0;
+  }
 }
 
 function openBindingSheet(intent, payload) {
@@ -4985,10 +5210,12 @@ async function confirmBindingSheet() {
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
     setMessageForSource(source, t("binding.selectVideoPart"), true);
+    setAppMessage(t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
     setMessageForSource(source, t("binding.selectAudioPart"), true);
+    setAppMessage(t("binding.selectAudioPart"), true);
     return;
   }
 
@@ -5037,6 +5264,7 @@ async function confirmBindingSheet() {
       return;
     }
     setMessageForSource(source, error.message, true);
+    setAppMessage(error.message, true);
   } finally {
     state.submitting = false;
   }
@@ -5263,6 +5491,9 @@ function renderPlayerControls(currentItem, playbackMode) {
   if (!currentItem) {
     state.playerControlsRenderSignature = "__empty__";
     elements.playerControlPanel.classList.add("hidden");
+    if (elements.floatingPlayerControlPanel) {
+      elements.floatingPlayerControlPanel.classList.add("hidden");
+    }
     elements.playerControlHint.textContent = "";
     return;
   }
@@ -5284,23 +5515,38 @@ function renderPlayerControls(currentItem, playbackMode) {
   state.playerControlsRenderSignature = controlSignature;
 
   const toggleButton = elements.playerControlPanel.querySelector('[data-control-action="toggle-play"]');
+  const floatingToggleButton = elements.floatingPlayerControlPanel?.querySelector('[data-control-action="toggle-play"]');
+
   elements.playerControlPanel.classList.remove("hidden");
-
-  elements.playerControlPanel.querySelectorAll("button[data-control-action]").forEach((button) => {
-    const action = button.dataset.controlAction || "";
-    const isPending = action === state.playerControlPendingAction;
-    const disabled = action === "next-track"
-      ? Boolean(state.playerControlPendingAction)
-      : !canControl || Boolean(state.playerControlPendingAction);
-    button.disabled = disabled;
-    button.classList.toggle("is-pending", isPending);
-  });
-
-  if (toggleButton) {
-    toggleButton.textContent = isPaused ? t("remote.play") : t("remote.pause");
-    toggleButton.classList.toggle("is-paused", isPaused);
-    toggleButton.classList.toggle("is-playing", !isPaused);
+  if (elements.floatingPlayerControlPanel) {
+    elements.floatingPlayerControlPanel.classList.remove("hidden");
   }
+
+  const updateButtons = (panel) => {
+    if (!panel) return;
+    panel.querySelectorAll("button[data-control-action]").forEach((button) => {
+      const action = button.dataset.controlAction || "";
+      const isPending = action === state.playerControlPendingAction;
+      const disabled = action === "next-track"
+        ? Boolean(state.playerControlPendingAction)
+        : !canControl || Boolean(state.playerControlPendingAction);
+      button.disabled = disabled;
+      button.classList.toggle("is-pending", isPending);
+    });
+  };
+
+  updateButtons(elements.playerControlPanel);
+  updateButtons(elements.floatingPlayerControlPanel);
+
+  const updateToggleState = (btn) => {
+    if (!btn) return;
+    btn.textContent = isPaused ? t("remote.play") : t("remote.pause");
+    btn.classList.toggle("is-paused", isPaused);
+    btn.classList.toggle("is-playing", !isPaused);
+  };
+
+  updateToggleState(toggleButton);
+  updateToggleState(floatingToggleButton);
 
   if (playbackMode !== "local") {
     elements.playerControlHint.textContent = t("remote.controlUnsupported");
@@ -6509,6 +6755,14 @@ elements.languageSwitch?.addEventListener("click", (event) => {
   setLanguage(button.dataset.language);
 });
 
+elements.themeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-theme]");
+  if (!button) {
+    return;
+  }
+  applyTheme(button.dataset.theme);
+});
+
 elements.remoteQrToggle?.addEventListener("click", () => {
   setRemoteQrPopoverOpen(!state.remoteQrPopoverOpen);
 });
@@ -6517,14 +6771,45 @@ elements.remoteQrPopoverClose?.addEventListener("click", () => {
   setRemoteQrPopoverOpen(false);
 });
 
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  setDisplaySettingsOpen(!state.displaySettingsOpen);
+});
+
+elements.displayPopoverClose?.addEventListener("click", () => {
+  setDisplaySettingsOpen(false);
+});
+
 document.addEventListener("click", (event) => {
-  if (!state.remoteQrPopoverOpen) {
-    return;
+  // Toggle info tooltip popovers
+  const infoBtn = event.target.closest(".remote-info-button");
+  if (infoBtn) {
+    const wrap = infoBtn.closest(".info-trigger-wrap");
+    if (wrap) {
+      const isShown = wrap.classList.contains("show-tooltip");
+      // Close all tooltips first
+      document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+        el.classList.remove("show-tooltip");
+      });
+      // Toggle current
+      if (!isShown) {
+        wrap.classList.add("show-tooltip");
+      }
+      event.stopPropagation();
+    }
+  } else {
+    // Clicked outside, close all tooltips
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
   }
-  if (event.target.closest("#remote-qr-control")) {
-    return;
+
+  if (state.remoteQrPopoverOpen && !event.target.closest("#remote-qr-control")) {
+    setRemoteQrPopoverOpen(false);
   }
-  setRemoteQrPopoverOpen(false);
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-control")) {
+    setDisplaySettingsOpen(false);
+  }
 });
 
 document.addEventListener("keydown", (event) => {
@@ -6533,6 +6818,10 @@ document.addEventListener("keydown", (event) => {
       setSearchModalOpen(false);
     }
     setRemoteQrPopoverOpen(false);
+    setDisplaySettingsOpen(false);
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
   }
 });
 
@@ -6594,13 +6883,31 @@ elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
   });
 });
 
-elements.currentRatingButton?.addEventListener("click", () => {
-  const currentItem = state.data?.current_item;
-  if (!currentItem?.bvid || hasSubmittedSongRating(currentItem)) {
-    renderCurrentRatingButton(currentItem);
+elements.remoteKeyShiftPanel?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
+  if (!button) {
     return;
   }
-  openRatingPrompt(currentItem, { force: true });
+  const currentKey = currentRemoteKeyShift(state.data?.player_settings);
+  if (button.id === "remote-key-shift-reset-button") {
+    await setRemoteKeyShift(0);
+  } else if (button.id === "remote-key-shift-dec-button") {
+    await setRemoteKeyShift(currentKey - 1);
+  } else if (button.id === "remote-key-shift-inc-button") {
+    await setRemoteKeyShift(currentKey + 1);
+  }
+});
+
+elements.remoteKeyShiftInput?.addEventListener("change", async (event) => {
+  await setRemoteKeyShift(event.target.value);
+});
+
+elements.remoteKeyShiftInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setRemoteKeyShift(event.target.value);
 });
 
 elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
@@ -6633,12 +6940,10 @@ document.addEventListener("click", async (event) => {
     renderRatingStars();
     return;
   }
-  const optOutInput = event.target.closest("[data-rating-opt-out]");
-  if (optOutInput) {
-    setRatingOptOut(optOutInput.checked);
-    if (optOutInput.checked) {
-      closeRatingPrompt({ submit: false });
-    }
+  const optOutBtn = event.target.closest("[data-rating-opt-out-btn]");
+  if (optOutBtn) {
+    setRatingOptOut(true);
+    closeRatingPrompt({ submit: false });
     return;
   }
   const addUpButton = event.target.closest("[data-rating-add-up]");
@@ -6908,6 +7213,22 @@ elements.playerControlPanel.addEventListener("click", async (event) => {
   await sendPlayerControl(action, deltaSeconds);
 });
 
+if (elements.floatingPlayerControlPanel) {
+  elements.floatingPlayerControlPanel.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-control-action]");
+    if (!button) {
+      return;
+    }
+    const action = button.dataset.controlAction || "";
+    if (action === "next-track") {
+      await sendPlayerNext();
+      return;
+    }
+    const deltaSeconds = Number(button.dataset.delta || "0");
+    await sendPlayerControl(action, deltaSeconds);
+  });
+}
+
 elements.queueViewButton.addEventListener("click", () => {
   state.listView = "queue";
   render();
@@ -6977,6 +7298,9 @@ document.addEventListener("keydown", (event) => {
   if (state.reorderConfirmSheetOpen) {
     closeReorderConfirmSheet();
   }
+  if (elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
+  }
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -7013,9 +7337,186 @@ window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
+function makeElementDraggable(element, onClick) {
+  let startX = 0;
+  let startY = 0;
+  let initialLeft = 0;
+  let initialTop = 0;
+  let isDragging = false;
+  let moved = false;
+
+  const dragStart = (e) => {
+    if (e.type === "mousedown" && e.button !== 0) {
+      return;
+    }
+
+    const rect = element.getBoundingClientRect();
+    initialLeft = rect.left;
+    initialTop = rect.top;
+
+    if (e.type === "touchstart") {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    } else {
+      startX = e.clientX;
+      startY = e.clientY;
+    }
+
+    isDragging = true;
+    moved = false;
+
+    if (e.type === "touchstart") {
+      document.addEventListener("touchmove", dragMove, { passive: false });
+      document.addEventListener("touchend", dragEnd);
+    } else {
+      document.addEventListener("mousemove", dragMove);
+      document.addEventListener("mouseup", dragEnd);
+    }
+  };
+
+  const dragMove = (e) => {
+    if (!isDragging) return;
+
+    let currentX = 0;
+    let currentY = 0;
+
+    if (e.type === "touchmove") {
+      currentX = e.touches[0].clientX;
+      currentY = e.touches[0].clientY;
+    } else {
+      currentX = e.clientX;
+      currentY = e.clientY;
+    }
+
+    const deltaX = currentX - startX;
+    const deltaY = currentY - startY;
+
+    if (!moved && Math.hypot(deltaX, deltaY) > 5) {
+      moved = true;
+      element.classList.add("dragging");
+    }
+
+    if (moved) {
+      let newLeft = initialLeft + deltaX;
+      let newTop = initialTop + deltaY;
+
+      const maxLeft = window.innerWidth - element.offsetWidth;
+      const maxTop = window.innerHeight - element.offsetHeight;
+
+      newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+      newTop = Math.max(0, Math.min(newTop, maxTop));
+
+      element.style.left = `${newLeft}px`;
+      element.style.top = `${newTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  };
+
+  const dragEnd = (e) => {
+    isDragging = false;
+    element.classList.remove("dragging");
+
+    if (e.type === "touchend") {
+      document.removeEventListener("touchmove", dragMove);
+      document.removeEventListener("touchend", dragEnd);
+    } else {
+      document.removeEventListener("mousemove", dragMove);
+      document.removeEventListener("mouseup", dragEnd);
+    }
+
+    if (!moved) {
+      if (typeof onClick === "function") {
+        onClick();
+      }
+    }
+  };
+
+  element.addEventListener("mousedown", dragStart);
+  element.addEventListener("touchstart", dragStart);
+
+  window.addEventListener("resize", () => {
+    const rect = element.getBoundingClientRect();
+    let currentLeft = rect.left;
+    let currentTop = rect.top;
+
+    const maxLeft = window.innerWidth - element.offsetWidth;
+    const maxTop = window.innerHeight - element.offsetHeight;
+
+    if (currentLeft > maxLeft || currentTop > maxTop) {
+      const nextLeft = Math.max(0, Math.min(currentLeft, maxLeft));
+      const nextTop = Math.max(0, Math.min(currentTop, maxTop));
+      element.style.left = `${nextLeft}px`;
+      element.style.top = `${nextTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  });
+}
+
+function showFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  elements.floatingControlOverlay.classList.remove("closing");
+  elements.floatingControlOverlay.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+
+  if (elements.floatingControlTrigger && elements.floatingControlCard) {
+    const triggerRect = elements.floatingControlTrigger.getBoundingClientRect();
+    const cardRect = elements.floatingControlCard.getBoundingClientRect();
+    const originX = (triggerRect.left + triggerRect.width / 2) - cardRect.left;
+    const originY = (triggerRect.top + triggerRect.height / 2) - cardRect.top;
+    elements.floatingControlCard.style.transformOrigin = `${originX}px ${originY}px`;
+  }
+}
+
+function hideFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  if (elements.floatingControlOverlay.classList.contains("hidden")) return;
+
+  elements.floatingControlOverlay.classList.add("closing");
+
+  setTimeout(() => {
+    if (elements.floatingControlOverlay.classList.contains("closing")) {
+      elements.floatingControlOverlay.classList.add("hidden");
+      elements.floatingControlOverlay.classList.remove("closing");
+      document.body.style.overflow = "";
+    }
+  }, 250);
+}
+
+function initFloatingControlConsole() {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  makeElementDraggable(elements.floatingControlTrigger, () => {
+    showFloatingControlOverlay();
+  });
+  elements.floatingControlClose?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+  elements.floatingControlBackdrop?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+}
+
+function renderFloatingControlTrigger(currentItem, playbackMode) {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  const hasCurrentItem = Boolean(currentItem);
+  const visible = isLocalMode && hasCurrentItem;
+  elements.floatingControlTrigger.classList.toggle("hidden", !visible);
+
+  if (!visible && elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
+  }
+}
+
 async function startRemoteSession() {
   setupRemoteFlipStages();
   hydrateLocalPreferences();
+  initFloatingControlConsole();
   await loadTranslations();
   renderLayoutMode();
   try {

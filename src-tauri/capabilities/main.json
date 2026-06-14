@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "main",
+  "description": "Allow the local Bilikara backend page to use the main window fullscreen API.",
+  "windows": [
+    "main"
+  ],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*/*",
+      "http://localhost:*/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-fullscreen"
+  ]
+}

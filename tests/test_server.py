@@ -476,6 +476,27 @@ class PlaylistExportRouteTest(unittest.TestCase):
         self.assertEqual(writes[0], {"cleared": True})
         self.assertEqual(writes[1], {"ok": True, "data": {"history": []}})
 
+    def test_history_remove_route_removes_key_and_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        removed_keys: list[str] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            remove_history_entry=lambda key: removed_keys.append(key),
+            snapshot=lambda: {"history": [], "session_played": []},
+        )
+
+        handler.path = "/api/history/remove"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"key": "BVSONG:p1"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(removed_keys, ["BVSONG:p1"])
+        self.assertEqual(writes[0], {"ok": True, "data": {"history": [], "session_played": []}})
+
 
 class UpdateRouteTest(unittest.TestCase):
     def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):
@@ -566,6 +587,48 @@ class UpdateRouteTest(unittest.TestCase):
         self.assertEqual(writes[0]["ok"], True)
         self.assertTrue(writes[0]["data"]["include_preview"])
         update_check.assert_called_once_with(include_preview=True)
+
+    def test_update_status_route_returns_update_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            app_update_snapshot=lambda: {"state": "downloading", "progress": 0.5},
+        )
+
+        handler.path = "/api/app/update/status"
+        handler.headers = {}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_GET()
+
+        self.assertEqual(writes[0], {"ok": True, "data": {"state": "downloading", "progress": 0.5}})
+
+    def test_update_install_route_starts_background_update(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        calls: list[dict] = []
+
+        def start_app_update(*, include_preview=False):
+            calls.append({"include_preview": include_preview})
+            return {"state": "checking", "include_preview": include_preview}
+
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            start_app_update=start_app_update,
+        )
+
+        handler.path = "/api/app/update/install"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"include_preview": True}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(calls, [{"include_preview": True}])
+        self.assertEqual(writes[0], {"ok": True, "data": {"state": "checking", "include_preview": True}})
 
 
 class PlayerResetRouteTest(unittest.TestCase):
@@ -712,6 +775,28 @@ class PlaylistResortRouteTest(unittest.TestCase):
 
         self.assertEqual(writes[0], {"resorted": True})
         self.assertEqual(writes[1], {"ok": True, "data": {"playlist": ["b", "c", "a"]}})
+
+
+class PlayerKeyShiftRouteTest(unittest.TestCase):
+    def test_key_shift_route_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            set_key_shift=lambda key_shift: writes.append({"set_key_shift": key_shift}),
+            snapshot=lambda: {"player_settings": {"key_shift": 3}},
+        )
+
+        handler.path = "/api/player/key-shift"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"key_shift": 3}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes[0], {"set_key_shift": 3})
+        self.assertEqual(writes[1], {"ok": True, "data": {"player_settings": {"key_shift": 3}}})
 
 
 if __name__ == "__main__":

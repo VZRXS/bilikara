@@ -17,6 +17,8 @@ MAX_AV_OFFSET_MS = 5000
 MAX_VOLUME_PERCENT = 100
 DEFAULT_SONG_ADVANCE_DELAY_SECONDS = 3
 MAX_SONG_ADVANCE_DELAY_SECONDS = 30
+MIN_KEY_SHIFT = -6
+MAX_KEY_SHIFT = 6
 
 
 class PlaylistStore:
@@ -45,6 +47,7 @@ class PlaylistStore:
         self.volume_percent = 100
         self.is_muted = False
         self.song_advance_delay_seconds = DEFAULT_SONG_ADVANCE_DELAY_SECONDS
+        self.key_shift = 0
         self.current_item: PlaylistItem | None = None
         self.current_item_started = False
         self.playlist: list[PlaylistItem] = []
@@ -69,6 +72,7 @@ class PlaylistStore:
                     "volume_percent": self.volume_percent,
                     "is_muted": self.is_muted,
                     "song_advance_delay_seconds": self.song_advance_delay_seconds,
+                    "key_shift": self.key_shift,
                 },
                 "playlist": [item.to_dict() for item in self.playlist],
                 "current_item": self.current_item.to_dict() if self.current_item else None,
@@ -152,6 +156,32 @@ class PlaylistStore:
             self.history = []
             self._touch(persist_backup=False)
 
+    def remove_history_entry(self, key: str) -> bool:
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            return False
+        with self.lock:
+            history_count = len(self.history)
+            session_history_count = len(self.session_history)
+            session_played_count = len(self.session_played)
+            self.history = [
+                entry for entry in self.history if entry.key != normalized_key
+            ]
+            self.session_history = [
+                entry for entry in self.session_history if entry.key != normalized_key
+            ]
+            self.session_played = [
+                entry for entry in self.session_played if entry.key != normalized_key
+            ]
+            changed = (
+                len(self.history) != history_count
+                or len(self.session_history) != session_history_count
+                or len(self.session_played) != session_played_count
+            )
+            if changed:
+                self._touch(persist_backup=True)
+            return changed
+
     def advance_to_next(self) -> bool:
         with self.lock:
             if not self.current_item and not self.playlist:
@@ -159,6 +189,7 @@ class PlaylistStore:
             self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(0) if self.playlist else None
             self.current_item_started = False
+            self.key_shift = 0
             if self.current_item:
                 self._record_session_played_unlocked(self.current_item)
             self._rebuild_cycle_items_unlocked()
@@ -271,6 +302,15 @@ class PlaylistStore:
             self.is_muted = normalized
             self._touch(persist_backup=True)
             return normalized
+
+    def set_key_shift(self, key_shift: int) -> int:
+        with self.lock:
+            bounded = max(MIN_KEY_SHIFT, min(MAX_KEY_SHIFT, int(key_shift)))
+            if self.key_shift == bounded:
+                return bounded
+            self.key_shift = bounded
+            self._touch(persist_backup=True)
+            return bounded
 
     def set_song_advance_delay_seconds(self, delay_seconds: int) -> int:
         with self.lock:
@@ -404,6 +444,7 @@ class PlaylistStore:
             self.volume_percent = 100
             self.is_muted = False
             self.song_advance_delay_seconds = DEFAULT_SONG_ADVANCE_DELAY_SECONDS
+            self.key_shift = 0
             self.current_item = None
             self.current_item_started = False
             self.playlist = []
@@ -421,6 +462,7 @@ class PlaylistStore:
             self.volume_percent = 100
             self.is_muted = False
             self.song_advance_delay_seconds = DEFAULT_SONG_ADVANCE_DELAY_SECONDS
+            self.key_shift = 0
             self.current_item_started = False
             self._touch(persist_backup=False)
 
@@ -529,6 +571,18 @@ class PlaylistStore:
                 return False
             self.current_item_started = True
             return True
+
+    def mark_session_played_threshold_reached(self, item_id: str) -> bool:
+        with self.lock:
+            changed = False
+            for entry in self.session_played:
+                if entry.item_id == item_id:
+                    if not entry.threshold_reached:
+                        entry.threshold_reached = True
+                        changed = True
+            if changed:
+                self._touch(persist_backup=True)
+            return changed
 
     def _find_index(self, item_id: str) -> int | None:
         for index, item in enumerate(self.playlist):
@@ -654,6 +708,7 @@ class PlaylistStore:
                     "volume_percent": self.volume_percent,
                     "is_muted": self.is_muted,
                     "song_advance_delay_seconds": self.song_advance_delay_seconds,
+                    "key_shift": self.key_shift,
                 },
                 "updated_at": self.updated_at,
             },
@@ -852,6 +907,7 @@ class PlaylistStore:
                 self.volume_percent = self._load_volume_percent(player_payload)
                 self.is_muted = self._load_is_muted(player_payload)
                 self.song_advance_delay_seconds = self._load_song_advance_delay_seconds(player_payload)
+                self.key_shift = self._load_key_shift(player_payload)
 
             users_payload = self._read_json_payload_unlocked(self.session_users_state_file)
             if users_payload:
@@ -929,6 +985,18 @@ class PlaylistStore:
         except (TypeError, ValueError):
             return DEFAULT_SONG_ADVANCE_DELAY_SECONDS
         return max(0, min(MAX_SONG_ADVANCE_DELAY_SECONDS, value))
+
+    @staticmethod
+    def _load_key_shift(payload: dict[str, Any]) -> int:
+        player_settings = payload.get("player_settings")
+        if not isinstance(player_settings, dict):
+            return 0
+        raw_value = player_settings.get("key_shift", 0)
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            return 0
+        return max(MIN_KEY_SHIFT, min(MAX_KEY_SHIFT, value))
 
     @staticmethod
     def _history_key(item: PlaylistItem) -> str:

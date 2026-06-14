@@ -38,6 +38,9 @@
 
     playlist.forEach((item, index) => {
       const node = elements.queueItemTemplate.content.firstElementChild.cloneNode(true);
+      if (typeof applyStaticI18n === "function") {
+        applyStaticI18n(node);
+      }
       node.dataset.id = item.id;
       node.classList.toggle("ready", item.cache_status === "ready");
       const orderNode = node.querySelector(".queue-order");

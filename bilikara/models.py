@@ -131,6 +131,7 @@ class SessionPlayedEntry:
     owner_url: str = ""
     requester_name: str = ""
     cover_url: str = ""
+    threshold_reached: bool = False
 
     def serialize(self) -> dict[str, Any]:
         return asdict(self)

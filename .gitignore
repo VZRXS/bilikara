@@ -8,3 +8,5 @@ dist/
 APP_VERSION
 .tmp/
 bilikara-api/
+src-tauri/target/
+node_modules/

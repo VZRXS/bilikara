@@ -22,7 +22,7 @@ const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
-const developerProfileUrl = "https://github.com/VZRXS/bilikara";
+const projectUrl = "https://github.com/VZRXS/bilikara";
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -63,6 +63,7 @@ const storageKeys = {
   layoutMode: "bilikara.layout.mode",
   language: "bilikara.ui.language",
   updatePreview: "bilikara.update.preview",
+  theme: "bilikara.ui.theme",
 };
 
 const state = {
@@ -101,6 +102,7 @@ const state = {
   listFlipTimer: null,
   listFlipFrame: null,
   cacheSettingsOpen: false,
+  displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
   avOffsetSaving: false,
@@ -238,6 +240,7 @@ const state = {
   language: "zh",
   translations: {},
   translationsLoaded: false,
+  theme: "light",
 };
 
 const elements = {
@@ -251,6 +254,7 @@ const elements = {
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
+  cachePanelVersion: document.getElementById("cache-panel-version"),
   bbdownStatusRow: document.getElementById("bbdown-status-row"),
   bbdownLoginButton: document.getElementById("bbdown-login-button"),
   bbdownLoginPanel: document.getElementById("bbdown-login-panel"),
@@ -275,7 +279,6 @@ const elements = {
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
-  playerRatingButton: document.getElementById("player-rating-button"),
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
   fullscreenRequestToast: document.getElementById("fullscreen-request-toast"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
@@ -286,6 +289,11 @@ const elements = {
   volumeMuteButton: document.getElementById("volume-mute-button"),
   volumeSlider: document.getElementById("volume-slider"),
   volumeValue: document.getElementById("volume-value"),
+  keyShiftPanel: document.getElementById("key-shift-panel"),
+  keyShiftInput: document.getElementById("key-shift-input"),
+  keyShiftDecButton: document.getElementById("key-shift-dec-button"),
+  keyShiftIncButton: document.getElementById("key-shift-inc-button"),
+  keyShiftResetButton: document.getElementById("key-shift-reset-button"),
   addForm: document.getElementById("add-form"),
   requesterSelect: document.getElementById("requester-select"),
   urlInput: document.getElementById("url-input"),
@@ -293,7 +301,9 @@ const elements = {
   appToast: document.getElementById("app-toast"),
   sessionUserForm: document.getElementById("session-user-form"),
   sessionUserInput: document.getElementById("session-user-input"),
+  sessionUsersPanel: document.getElementById("session-users-panel"),
   sessionUserList: document.getElementById("session-user-list"),
+  sessionUserTrash: document.getElementById("session-user-trash"),
   backupBanner: document.getElementById("backup-banner"),
   backupText: document.getElementById("backup-text"),
   discardBackupButton: document.getElementById("discard-backup-button"),
@@ -309,11 +319,17 @@ const elements = {
   queueCurrentTag: document.getElementById("queue-current-tag"),
   queueCurrentTitle: document.getElementById("queue-current-title"),
   queueCurrentRequester: document.getElementById("queue-current-requester"),
+  queueCurrentCacheDetail: document.getElementById("queue-current-cache-detail"),
   queueCurrentRetry: document.getElementById("queue-current-retry"),
   listStage: document.getElementById("list-stage"),
   modeSwitch: document.getElementById("mode-switch"),
+  displaySettings: document.getElementById("display-settings"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-panel"),
+  displayLayoutSummary: document.getElementById("display-layout-summary"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
+  themeSwitch: document.getElementById("theme-switch"),
   nextButton: document.getElementById("next-button"),
   queueNextButton: document.getElementById("queue-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
@@ -723,6 +739,24 @@ function setLanguage(language) {
   render();
 }
 
+function applyTheme(theme) {
+  const nextTheme = normalizeTheme(theme);
+  state.theme = nextTheme;
+  document.documentElement.setAttribute("data-theme", nextTheme);
+  writeLocalPreference(storageKeys.theme, nextTheme);
+  renderThemeSwitch();
+}
+
+function normalizeTheme(theme) {
+  return theme === "dark" || theme === "blue" ? theme : "light";
+}
+
+function renderThemeSwitch() {
+  elements.themeSwitch?.querySelectorAll("button[data-theme]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === state.theme);
+  });
+}
+
 async function loadTranslations() {
   state.language = normalizeLanguage(readLocalString(storageKeys.language, state.language));
   try {
@@ -811,6 +845,80 @@ function canTogglePlayerFullscreen() {
   return supportsPlayerFullscreen() && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
 }
 
+function tauriAppWindow() {
+  const tauriWebviewWindow = window.__TAURI__?.webviewWindow;
+  if (tauriWebviewWindow) {
+    if (typeof tauriWebviewWindow.getCurrentWebviewWindow === "function") {
+      try {
+        return tauriWebviewWindow.getCurrentWebviewWindow();
+      } catch {
+        return null;
+      }
+    }
+    if (typeof tauriWebviewWindow.getCurrent === "function") {
+      try {
+        return tauriWebviewWindow.getCurrent();
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  const tauriWindow = window.__TAURI__?.window;
+  if (!tauriWindow) {
+    return null;
+  }
+  if (tauriWindow.appWindow) {
+    return tauriWindow.appWindow;
+  }
+  if (typeof tauriWindow.getCurrentWindow === "function") {
+    try {
+      return tauriWindow.getCurrentWindow();
+    } catch {
+      return null;
+    }
+  }
+  if (typeof tauriWindow.getCurrent === "function") {
+    try {
+      return tauriWindow.getCurrent();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function tauriInvoke() {
+  return window.__TAURI__?.tauri?.invoke
+    || window.__TAURI__?.core?.invoke
+    || window.__TAURI__?.invoke
+    || null;
+}
+
+async function setTauriWindowFullscreen(enabled) {
+  const fullscreen = Boolean(enabled);
+  const appWindow = tauriAppWindow();
+  if (appWindow && typeof appWindow.setFullscreen === "function") {
+    try {
+      await appWindow.setFullscreen(fullscreen);
+      return true;
+    } catch {
+      // Fall through to the command path below; some Tauri builds expose invoke more reliably.
+    }
+  }
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return false;
+  }
+  try {
+    await invoke("set_window_fullscreen", { fullscreen });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function renderPlayerFullscreenButton() {
   const button = elements.playerFullscreenButton;
   if (!button) {
@@ -837,19 +945,6 @@ function renderPlayerFullscreenButton() {
   setTextContent(button, label);
   setElementAttribute(button, "aria-pressed", String(active));
   setElementTitle(button, title);
-}
-
-function renderPlayerRatingButton() {
-  const button = elements.playerRatingButton;
-  if (!button) {
-    return;
-  }
-  const currentItem = state.data?.current_item;
-  const enabled = Boolean(currentItem?.bvid);
-  const submitted = enabled && hasSubmittedSongRating(currentItem);
-  button.disabled = !enabled || submitted;
-  setTextContent(button, submitted ? t("rating.rated") : t("rating.rate"));
-  setElementTitle(button, submitted ? t("rating.ratedTitle") : t("rating.rateTitle"));
 }
 
 function requestElementFullscreen(element) {
@@ -882,7 +977,10 @@ async function togglePlayerFullscreen() {
     return;
   }
   if (isPlayerPanelFullscreen()) {
-    await exitDocumentFullscreen();
+    const exitFullscreenPromise = exitDocumentFullscreen();
+    const tauriFullscreenPromise = setTauriWindowFullscreen(false);
+    await exitFullscreenPromise;
+    await tauriFullscreenPromise;
     return;
   }
   if (!state.data?.current_item) {
@@ -891,8 +989,15 @@ async function togglePlayerFullscreen() {
   const activeFullscreen = fullscreenElement();
   if (activeFullscreen && activeFullscreen !== elements.playerPanel) {
     await exitDocumentFullscreen();
+    await setTauriWindowFullscreen(false);
   }
-  await requestElementFullscreen(elements.playerPanel);
+  const elementFullscreenPromise = requestElementFullscreen(elements.playerPanel);
+  const tauriFullscreenPromise = setTauriWindowFullscreen(true);
+  const elementFullscreenStarted = await elementFullscreenPromise;
+  const tauriFullscreenStarted = await tauriFullscreenPromise;
+  if (!elementFullscreenStarted && tauriFullscreenStarted) {
+    await setTauriWindowFullscreen(false);
+  }
 }
 
 function clearPlayerFrameClickTimer() {
@@ -1039,6 +1144,10 @@ function hydrateLocalPreferences() {
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
   state.updatePreviewEnabled = readLocalBoolean(storageKeys.updatePreview, state.updatePreviewEnabled);
+
+  // Hydrate and apply theme
+  state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
+  applyTheme(state.theme);
 }
 
 function normalizeLayoutMode(value) {
@@ -1055,6 +1164,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, t(layoutKey));
 }
 
 function setLayoutMode(mode) {
@@ -1088,6 +1199,11 @@ function syncLocalPlayerSettingsFromSnapshot(playerSettings) {
   state.localPlayerVolume = volumePercent / 100;
   state.localPlayerMuted = Boolean(playerSettings?.is_muted);
   persistLocalVolumePreferences();
+
+  const { audio } = activeLocalPlayerElements();
+  if (audio) {
+    applyKeyShiftToAudio(audio);
+  }
 }
 
 function markLocalVolumeWrite() {
@@ -1147,10 +1263,10 @@ function submitSongRating(item, score) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
   const sessionUserName = ratingSubmissionUserName(item);
-  const submissionKey = ratingSubmissionKey(item);
-  if (!bvid || !playId) {
+  if (!bvid) {
     return null;
   }
+  const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
   if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
     return false;
   }
@@ -1170,7 +1286,6 @@ function submitSongRating(item, score) {
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
-      renderPlayerRatingButton();
     }
     console.warn("Rating submit failed:", error);
   });
@@ -1384,7 +1499,6 @@ function closeRatingPrompt({ submit = true } = {}) {
 
   if (shouldSubmit) {
     submitSongRating({ ...(promptItem || item), bvid }, state.ratingPromptScore);
-    renderPlayerRatingButton();
   }
 }
 
@@ -1392,11 +1506,10 @@ function setRatingOptOut(enabled) {
   state.ratingOptOut = Boolean(enabled);
 }
 
-function openRatingPrompt(item, options = {}) {
+function openRatingPrompt(item) {
   const bvid = String(item?.bvid || "").trim();
   const playId = String(item?.id || bvid).trim();
-  const force = Boolean(options.force);
-  if (!item || !bvid || !playId || state.ratingOptOut || (!force && state.ratingPromptSeenPlayIds.has(playId))) {
+  if (!item || !bvid || !playId || state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)) {
     return;
   }
   if (fullscreenElement()) {
@@ -1477,6 +1590,92 @@ async function apiGet(url, options = {}) {
     throw error;
   }
   return data.data;
+}
+
+const hevcCanPlayTypes = [
+  'video/mp4; codecs="hvc1.1.6.L93.B0"',
+  'video/mp4; codecs="hev1.1.6.L93.B0"',
+  'video/mp4; codecs="hvc1"',
+  'video/mp4; codecs="hev1"',
+];
+
+const avcPlaybackLevels = [
+  { name: "High@L5.2", codec: 'video/mp4; codecs="avc1.640034"', maxAvcQualityIndex: 0 },
+  { name: "High@L5.1", codec: 'video/mp4; codecs="avc1.640033"', maxAvcQualityIndex: 0 },
+  { name: "High@L5.0", codec: 'video/mp4; codecs="avc1.640032"', maxAvcQualityIndex: 1 },
+  { name: "High@L4.2", codec: 'video/mp4; codecs="avc1.64002A"', maxAvcQualityIndex: 1 },
+  { name: "High@L4.1", codec: 'video/mp4; codecs="avc1.640029"', maxAvcQualityIndex: 2 },
+  { name: "Main@L4.1", codec: 'video/mp4; codecs="avc1.4D0029"', maxAvcQualityIndex: 2 },
+  { name: "High@L4.0", codec: 'video/mp4; codecs="avc1.640028"', maxAvcQualityIndex: 3 },
+  { name: "Main@L4.0", codec: 'video/mp4; codecs="avc1.4D0028"', maxAvcQualityIndex: 3 },
+  { name: "High@L3.2", codec: 'video/mp4; codecs="avc1.640020"', maxAvcQualityIndex: 3 },
+  { name: "Main@L3.2", codec: 'video/mp4; codecs="avc1.4D0020"', maxAvcQualityIndex: 3 },
+  { name: "High@L3.1", codec: 'video/mp4; codecs="avc1.64001F"', maxAvcQualityIndex: 4 },
+  { name: "Main@L3.1", codec: 'video/mp4; codecs="avc1.4D001F"', maxAvcQualityIndex: 4 },
+  { name: "Main@L3.0", codec: 'video/mp4; codecs="avc1.4D001E"', maxAvcQualityIndex: 5 },
+  { name: "Baseline@L3.0", codec: 'video/mp4; codecs="avc1.42E01E"', maxAvcQualityIndex: 5 },
+  { name: "Main@L2.1", codec: 'video/mp4; codecs="avc1.4D0015"', maxAvcQualityIndex: 6 },
+  { name: "Baseline@L2.1", codec: 'video/mp4; codecs="avc1.42E015"', maxAvcQualityIndex: 6 },
+];
+
+function isSupportedCanPlayTypeResult(result) {
+  return result === "probably" || result === "maybe";
+}
+
+function detectMediaCapabilities() {
+  const video = document.createElement("video");
+  const canPlayType = {};
+  let hevcSupported = false;
+  for (const mimeType of hevcCanPlayTypes) {
+    const result = typeof video.canPlayType === "function"
+      ? video.canPlayType(mimeType)
+      : "";
+    canPlayType[mimeType] = result;
+    if (isSupportedCanPlayTypeResult(result)) {
+      hevcSupported = true;
+    }
+  }
+  let supportedAvcLevel = null;
+  const avcLevels = avcPlaybackLevels.map((level) => {
+    const result = typeof video.canPlayType === "function"
+      ? video.canPlayType(level.codec)
+      : "";
+    canPlayType[level.codec] = result;
+    const supported = isSupportedCanPlayTypeResult(result);
+    if (!supportedAvcLevel && supported) {
+      supportedAvcLevel = level;
+    }
+    return {
+      name: level.name,
+      codec: level.codec,
+      can_play_type: result,
+      max_avc_quality_index: level.maxAvcQualityIndex,
+    };
+  });
+  const assumeHighestAvcLevel = !supportedAvcLevel
+    && avcLevels.length > 0
+    && avcLevels.every((level) => !level.can_play_type);
+  const effectiveAvcLevel = supportedAvcLevel || (assumeHighestAvcLevel ? avcPlaybackLevels[0] : null);
+  return {
+    hevc_supported: hevcSupported,
+    avc_supported: Boolean(effectiveAvcLevel),
+    max_avc_quality_index: effectiveAvcLevel ? effectiveAvcLevel.maxAvcQualityIndex : 6,
+    avc_levels: avcLevels,
+    can_play_type: canPlayType,
+    user_agent: window.navigator?.userAgent || "",
+    platform: window.navigator?.platform || "",
+  };
+}
+
+async function reportMediaCapabilities() {
+  const capabilities = detectMediaCapabilities();
+  const signature = JSON.stringify(capabilities);
+  if (state.mediaCapabilitiesReported && state.mediaCapabilitiesSignature === signature) {
+    return;
+  }
+  await apiPost("/api/client/media-capabilities", capabilities);
+  state.mediaCapabilitiesReported = true;
+  state.mediaCapabilitiesSignature = signature;
 }
 
 async function fetchState() {
@@ -1828,7 +2027,7 @@ function openBilikaraSecretModal() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = developerProfileUrl;
+    window.location.href = projectUrl;
     return;
   }
   if (elements.bilikaraSecretInput) {
@@ -1861,7 +2060,7 @@ async function verifyBilikaraSecret() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = developerProfileUrl;
+    window.location.href = projectUrl;
     return;
   }
   const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();
@@ -3841,7 +4040,7 @@ async function handleGatchaDraw() {
 
     state.gatchaCandidate = payload.data;
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
-    
+
     // 切换界面
     elements.gatchaInitView.classList.add("hidden");
     elements.gatchaResultView.classList.remove("hidden");
@@ -3884,7 +4083,10 @@ function setLarkSearchMessage(message, isError = false) {
 }
 
 function localizedCacheMessage(message, cacheStatus = "") {
-  const raw = String(message || "").trim();
+  let raw = String(message || "").trim();
+  if (raw.includes("\n")) {
+    raw = raw.split("\n")[0].trim();
+  }
   const status = String(cacheStatus || "").trim();
   if (!raw) {
     return "";
@@ -3916,6 +4118,19 @@ function localizedCacheMessage(message, cacheStatus = "") {
     return t("cache.failed");
   }
   return raw;
+}
+
+function localizedCacheMessageLines(message, cacheStatus = "") {
+  const lines = String(message || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) {
+    return "";
+  }
+  return lines
+    .map((line) => localizedCacheMessage(line, cacheStatus) || line)
+    .join("\n");
 }
 
 function syncLarkSearchInputs(value, source = "") {
@@ -4251,9 +4466,9 @@ function render() {
   renderAudioVariantBar(currentItem, playbackMode);
   renderAvSyncControls(playbackMode, data.player_settings);
   renderVolumeControls(playbackMode);
+  renderKeyShiftControls(playbackMode);
   applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, playbackMode);
-  renderPlayerRatingButton();
   renderPlayerFullscreenButton();
   applyRemotePlayerControl(data.player_control_command, currentItem, playbackMode);
   renderQueueCurrent(currentItem);
@@ -4375,19 +4590,16 @@ function renderSessionUsers(sessionUsers) {
   }
 
   users.forEach((userName, index) => {
-    const item = document.createElement("article");
-    item.className = "session-user-item";
+    const item = document.createElement("div");
+    item.className = "session-user-badge";
+    item.draggable = true;
+    item.dataset.index = index;
+    item.dataset.name = userName;
     item.innerHTML = `
-      <div class="session-user-main">
-        <span class="session-user-order">${index + 1}</span>
-        <strong class="session-user-name">${escapeHtml(userName)}</strong>
-      </div>
-      <div class="session-user-actions">
-        <button type="button" data-action="move-up" data-name="${escapeHtml(userName)}" ${index === 0 ? "disabled" : ""}>${htmlT("common.moveUp")}</button>
-        <button type="button" data-action="move-down" data-name="${escapeHtml(userName)}" ${index === users.length - 1 ? "disabled" : ""}>${htmlT("common.moveDown")}</button>
-        <button type="button" data-action="remove" data-name="${escapeHtml(userName)}" class="danger">${htmlT("common.delete")}</button>
-      </div>
+      <span class="session-user-order-number">${index + 1}</span>
+      <span class="session-user-name">${escapeHtml(userName)}</span>
     `;
+
     elements.sessionUserList.appendChild(item);
   });
 }
@@ -4572,7 +4784,8 @@ function renderListHeader(playlist, history) {
 
 function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   const serviceState = aggregateToolStatusState(bbdown, ffmpeg);
-  const playbackModeText = formatPlaybackMode(state.data?.playback_mode);
+  const currentQuality = String(cachePolicy?.video_quality || "1080P 高码率");
+  const playbackModeText = formatQualityLabel(currentQuality);
   const cacheChipMeta = formatCacheChipMeta(cachePolicy);
   const cacheUsageDetail = formatCacheUsage(cachePolicy);
   const bbdownTitle = `BBDown ${formatBBDownHint(bbdown)}`;
@@ -4611,15 +4824,72 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   renderAdvanceDelaySlider(state.data?.player_settings);
   renderCachePolicyControls(cachePolicy);
   renderUpdatePreviewControl();
+  if (elements.cachePanelVersion) {
+    const version = state.data?.app?.version || "";
+    const versionText = version ? `bilikara ${version}` : "bilikara";
+    if (elements.cachePanelVersion.textContent !== versionText) {
+      elements.cachePanelVersion.textContent = versionText;
+    }
+  }
   syncCachePanelVisibility();
 }
 
-function renderUpdatePreviewControl() {
-  if (!elements.updatePreviewCheckbox) {
-    return;
+function appUpdateStatus() {
+  return state.data?.app_update || {};
+}
+
+function isAppUpdateBusy(update = appUpdateStatus()) {
+  return ["checking", "downloading", "installing", "restarting"].includes(String(update?.state || ""));
+}
+
+function appUpdateProgressPercent(update = appUpdateStatus()) {
+  const totalBytes = Number(update?.total_bytes || 0);
+  const downloadedBytes = Number(update?.downloaded_bytes || 0);
+  let percent = Number(update?.progress || 0) * 100;
+  if (totalBytes > 0 && downloadedBytes >= 0) {
+    percent = (downloadedBytes / totalBytes) * 100;
   }
-  elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
-  elements.updatePreviewCheckbox.disabled = state.updateChecking;
+  if (!Number.isFinite(percent)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function appUpdateButtonText(update = appUpdateStatus()) {
+  const stateValue = String(update?.state || "");
+  if (state.updateChecking || stateValue === "checking") {
+    return t("status.checking");
+  }
+  if (stateValue === "downloading") {
+    const percent = appUpdateProgressPercent(update);
+    return percent > 0
+      ? t("service.updateDownloadingPercent", { percent })
+      : t("service.updateDownloading");
+  }
+  if (stateValue === "installing") {
+    return t("service.updateInstalling");
+  }
+  if (stateValue === "restarting") {
+    return t("service.updateRestarting");
+  }
+  return t("service.checkUpdate");
+}
+
+function renderUpdatePreviewControl() {
+  const update = appUpdateStatus();
+  const busy = state.updateChecking || isAppUpdateBusy(update);
+  if (elements.updatePreviewCheckbox) {
+    elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
+    elements.updatePreviewCheckbox.disabled = busy;
+  }
+  if (elements.updateCheckButton) {
+    elements.updateCheckButton.disabled = busy;
+    setTextContent(elements.updateCheckButton, appUpdateButtonText(update));
+    setElementTitle(
+      elements.updateCheckButton,
+      update?.message || update?.error || t("service.checkUpdateTitle"),
+    );
+  }
 }
 
 function renderPlaybackRepairControls(currentItem) {
@@ -4746,6 +5016,19 @@ function frontendPlaybackMode(_mode) {
   return "local";
 }
 
+function formatQualityLabel(value) {
+  const normalized = String(value || "").trim();
+  const labels = {
+    "1080P 高码率": t("quality.1080pHighBitrate"),
+    "1080P 高帧率": t("quality.1080p60"),
+    "1080P 高清": t("quality.1080p"),
+    "720P 高清": t("quality.720p"),
+    "480P 清晰": t("quality.480p"),
+    "360P 流畅": t("quality.360p"),
+  };
+  return labels[normalized] || normalized;
+}
+
 function formatPlaybackMode(_mode) {
   return t("service.localPlayback");
 }
@@ -4820,33 +5103,23 @@ function updateAdvanceDelaySliderFill(value) {
 }
 
 function renderCachePolicyControls(cachePolicy) {
-  const qualityLabelForValue = (value) => {
-    const normalized = String(value || "").trim();
-    const labels = {
-      "1080P 高码率": t("quality.1080pHighBitrate"),
-      "1080P 高清": t("quality.1080p"),
-      "720P 高清": t("quality.720p"),
-      "480P 清晰": t("quality.480p"),
-      "360P 流畅": t("quality.360p"),
-    };
-    return labels[normalized] || normalized;
-  };
   const rawChoices = Array.isArray(cachePolicy?.video_quality_choices)
     ? cachePolicy.video_quality_choices
     : [];
   const choices = rawChoices.length
     ? rawChoices.map((choice) => {
       if (typeof choice === "string") {
-        return { value: choice, label: qualityLabelForValue(choice) };
+        return { value: choice, label: formatQualityLabel(choice) };
       }
       const value = String(choice?.value || "");
       return {
         value,
-        label: qualityLabelForValue(choice?.label || value),
+        label: formatQualityLabel(choice?.label || value),
       };
     }).filter((choice) => choice.value)
     : [
       { value: "1080P 高码率", label: t("quality.1080pHighBitrate") },
+      { value: "1080P 高帧率", label: t("quality.1080p60") },
       { value: "1080P 高清", label: t("quality.1080p") },
       { value: "720P 高清", label: t("quality.720p") },
       { value: "480P 清晰", label: t("quality.480p") },
@@ -4899,6 +5172,14 @@ function syncCachePanelVisibility(options = {}) {
   });
 }
 
+function syncDisplayPanelVisibility() {
+  const expanded = String(state.displaySettingsOpen);
+  if (elements.displaySettingsToggle && elements.displaySettingsToggle.getAttribute("aria-expanded") !== expanded) {
+    elements.displaySettingsToggle.setAttribute("aria-expanded", expanded);
+  }
+  setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
+}
+
 function renderQueueCurrent(currentItem) {
   if (!currentItem) {
     const signature = `empty|${state.language}`;
@@ -4913,6 +5194,9 @@ function renderQueueCurrent(currentItem) {
     setTextContent(elements.queueCurrentTag, t("status.playing"));
     setTextContent(elements.queueCurrentTitle, t("player.noSong"));
     setElementTitle(elements.queueCurrentTitle, "");
+    setTextContent(elements.queueCurrentCacheDetail, "");
+    setClassToggle(elements.queueCurrentCacheDetail, "hidden", true);
+    setElementTitle(elements.queueCurrentCacheDetail, "");
     setClassToggle(elements.queueCurrentRetry, "hidden", true);
     elements.queueCurrentRetry.removeAttribute("data-id");
     return;
@@ -4920,16 +5204,19 @@ function renderQueueCurrent(currentItem) {
 
   const currentState = currentStatusForItem(currentItem);
   const requesterText = requesterBadgeText(currentItem.requester_name);
+  const cacheDetailText = queueCurrentCacheDetailForItem(currentItem, currentState.state);
   const signature = JSON.stringify({
     id: currentItem.id,
     state: currentState.state,
     label: currentState.label,
     title: currentItem.display_title,
     requesterText,
+    cacheDetailText,
     cacheProgress: currentItem.cache_progress,
     cacheSizeBytes: currentItem.cache_size_bytes,
     cacheDownloadCurrent: currentItem.cache_download_current_bytes,
     cacheDownloadTotal: currentItem.cache_download_total_bytes,
+    cacheDownloadTracks: currentItem.cache_download_tracks || [],
     language: state.language,
   });
 
@@ -4944,6 +5231,9 @@ function renderQueueCurrent(currentItem) {
     setElementTitle(elements.queueCurrentTitle, ownerTooltipForEntry(currentItem));
     setTextContent(elements.queueCurrentRequester, requesterText);
     setClassToggle(elements.queueCurrentRequester, "hidden", !requesterText);
+    setTextContent(elements.queueCurrentCacheDetail, cacheDetailText);
+    setClassToggle(elements.queueCurrentCacheDetail, "hidden", !cacheDetailText);
+    setElementTitle(elements.queueCurrentCacheDetail, cacheDetailText);
 
     setClassToggle(elements.queueCurrentProgressBadge, "idle", currentState.state === "pending");
     setClassToggle(elements.queueCurrentProgressBadge, "active", currentState.state === "caching");
@@ -4977,6 +5267,78 @@ function currentStatusForItem(item) {
     return { state: "caching", label: t("status.caching") };
   }
   return { state: "pending", label: t("status.pendingCache") };
+}
+
+function normalizedCacheDownloadTracks(item) {
+  if (!Array.isArray(item?.cache_download_tracks)) {
+    return [];
+  }
+  return item.cache_download_tracks
+    .filter((track) => track && typeof track === "object")
+    .map((track) => ({ ...track }))
+    .sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+}
+
+function cacheProgressBytesLabel(currentBytes, targetBytes) {
+  const current = Math.max(0, Number(currentBytes || 0));
+  const target = Math.max(0, Number(targetBytes || 0));
+  if (target > 0) {
+    return `${formatBytes(Math.min(current, target))} / ${formatBytes(target)}`;
+  }
+  return `${formatBytes(current)} / ${t("cache.estimating")}`;
+}
+
+function cacheTrackDetailTextForItem(item) {
+  const tracks = normalizedCacheDownloadTracks(item);
+  if (!tracks.length) {
+    return "";
+  }
+
+  let totalCurrent = 0;
+  let totalTarget = 0;
+  let allTargetsKnown = true;
+  tracks.forEach((track) => {
+    const current = Math.max(0, Number(track.current_bytes || 0));
+    const target = Math.max(0, Number(track.target_bytes || 0));
+    if (target > 0) {
+      totalCurrent += Math.min(current, target);
+      totalTarget += target;
+    } else {
+      totalCurrent += current;
+      allTargetsKnown = false;
+    }
+  });
+
+  const lines = [
+    `${t("cache.total")}：${allTargetsKnown && totalTarget > 0
+      ? `${formatBytes(totalCurrent)} / ${formatBytes(totalTarget)}`
+      : `${formatBytes(totalCurrent)} / ${t("cache.estimating")}`}`,
+  ];
+  tracks.forEach((track, index) => {
+    const label = String(track.label || `Track ${index + 1}`).trim() || `Track ${index + 1}`;
+    lines.push(`${label}：${cacheProgressBytesLabel(track.current_bytes, track.target_bytes)}`);
+  });
+  return lines.join("\n");
+}
+
+function hostCacheDetailTextForItem(item) {
+  if (!item) {
+    return "";
+  }
+  if (item.cache_status === "ready") {
+    return "";
+  }
+  if (item.cache_status === "downloading") {
+    return cacheTrackDetailTextForItem(item)
+      || localizedCacheMessageLines(item.cache_message, item.cache_status)
+      || t("status.caching");
+  }
+  return localizedCacheMessageLines(item.cache_message, item.cache_status)
+    || (item.cache_status === "failed" ? t("cache.failed") : t("status.pendingCache"));
+}
+
+function queueCurrentCacheDetailForItem(item, currentState) {
+  return "";
 }
 
 function audioVariantsForItem(item) {
@@ -5687,7 +6049,7 @@ function syncPlayerFrameCacheHint(currentItem) {
   if (!hint || !currentItem) {
     return;
   }
-  setTextContent(hint, localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback"));
+  setTextContent(hint, hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback"));
 }
 
 function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
@@ -6014,6 +6376,94 @@ function renderVolumeControls(playbackMode) {
   setClassToggle(elements.volumeMuteButton, "is-muted", state.localPlayerMuted);
 }
 
+function renderKeyShiftControls(playbackMode) {
+  if (!elements.keyShiftPanel || !elements.keyShiftInput) {
+    return;
+  }
+
+  const isLocalMode = playbackMode === "local";
+  setClassToggle(elements.keyShiftPanel, "hidden", !isLocalMode);
+
+  const keyShift = Number(state.data?.player_settings?.key_shift ?? 0);
+  if (document.activeElement !== elements.keyShiftInput) {
+    elements.keyShiftInput.value = String(keyShift);
+  }
+
+  if (elements.keyShiftResetButton) {
+    elements.keyShiftResetButton.disabled = keyShift === 0;
+  }
+}
+
+async function setLocalPlayerKeyShift(keyShift) {
+  const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  const requestSeq = markLocalVolumeWrite();
+
+  const { audio } = activeLocalPlayerElements();
+  if (audio) {
+    applyKeyShiftToAudio(audio, boundedKeyShift);
+  }
+
+  if (state.data && state.data.player_settings) {
+    state.data.player_settings.key_shift = boundedKeyShift;
+  }
+  renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+
+  try {
+    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (requestSeq !== state.volumeSaveSeq) {
+      return;
+    }
+    state.data = nextData;
+    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
+  } catch (error) {
+    // Ignore or handle errors gracefully
+  }
+}
+
+function setupAudioPitchShifter(audio) {
+  if (!audio) {
+    return;
+  }
+  if (!window.AudioContext && !window.webkitAudioContext) {
+    return;
+  }
+
+  if (!state.audioContext) {
+    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  const resumeContext = () => {
+    if (state.audioContext && state.audioContext.state === "suspended") {
+      state.audioContext.resume().catch(() => {});
+    }
+  };
+  audio.addEventListener("play", resumeContext);
+
+  try {
+    const source = state.audioContext.createMediaElementSource(audio);
+    const jungle = new Jungle(state.audioContext);
+
+    source.connect(jungle.input);
+    jungle.output.connect(state.audioContext.destination);
+
+    audio.jungle = jungle;
+    applyKeyShiftToAudio(audio);
+  } catch (e) {
+    console.error("Failed to setup Web Audio pitch shifter:", e);
+  }
+}
+
+function applyKeyShiftToAudio(audio, overrideKeyShift = null) {
+  if (!audio || !audio.jungle) {
+    return;
+  }
+  const keyShift = overrideKeyShift !== null ? overrideKeyShift : Number(state.data?.player_settings?.key_shift ?? 0);
+  const ratio = Math.pow(2, keyShift / 12);
+  const mult = ratio - 1;
+  audio.jungle.setPitchOffset(mult);
+}
+
 function persistLocalVolumePreferences() {
   writeLocalPreference(storageKeys.playerVolume, state.localPlayerVolume);
   writeLocalPreference(storageKeys.playerMuted, state.localPlayerMuted);
@@ -6245,6 +6695,7 @@ function renderPlayer(currentItem, playbackMode) {
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
 
   const signature = [
     currentItem ? currentItem.id : "none",
@@ -6252,6 +6703,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    playerCacheDetailText,
     state.language,
   ].join("|");
 
@@ -6341,7 +6793,7 @@ function renderPlayer(currentItem, playbackMode) {
     text.textContent = t("player.preparingTracks");
     const hint = document.createElement("p");
     hint.className = "empty-hint";
-    hint.textContent = localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback");
+    hint.textContent = hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback");
     empty.append(text, hint);
     elements.playerFrame.replaceChildren(empty);
     return;
@@ -6375,6 +6827,7 @@ function renderPlayer(currentItem, playbackMode) {
   }
 
   applyStoredVolumeToSplitPlayer(video, audio);
+  setupAudioPitchShifter(audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -6563,6 +7016,7 @@ function renderPlayer(currentItem, playbackMode) {
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
+  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
 
   const signature = [
     currentItem ? currentItem.id : "none",
@@ -6570,6 +7024,7 @@ function renderPlayer(currentItem, playbackMode) {
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
+    playerCacheDetailText,
     state.language,
   ].join("|");
 
@@ -6653,7 +7108,7 @@ function renderPlayer(currentItem, playbackMode) {
       <div class="empty-state">
         <p>${escapeHtml(t("player.preparingTracks"))}</p>
         <p class="empty-hint">${escapeHtml(
-          localizedCacheMessage(currentItem.cache_message, currentItem.cache_status) || t("player.cachingFallback"),
+          hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback"),
         )}</p>
       </div>
     `);
@@ -6690,6 +7145,7 @@ function renderPlayer(currentItem, playbackMode) {
   }
 
   applyStoredVolumeToSplitPlayer(video, audio);
+  setupAudioPitchShifter(audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -7035,8 +7491,11 @@ function renderPlaylist(playlist, currentItem, cachePolicy) {
   });
 
   playlist.forEach((item, index) => {
-    const node = existingNodes.get(item.id)
-      || elements.playlistTemplate.content.firstElementChild.cloneNode(true);
+    let node = existingNodes.get(item.id);
+    if (!node) {
+      node = elements.playlistTemplate.content.firstElementChild.cloneNode(true);
+      applyStaticI18n(node);
+    }
     if (node.dataset.id !== item.id) {
       node.dataset.id = item.id;
     }
@@ -7251,6 +7710,7 @@ function renderHistory(history) {
 
   history.forEach((entry) => {
     const node = elements.historyTemplate.content.firstElementChild.cloneNode(true);
+    applyStaticI18n(node);
     const title = node.querySelector(".history-title");
     const requester = node.querySelector(".history-requester");
     title.textContent = entry.display_title;
@@ -7264,6 +7724,7 @@ function renderHistory(history) {
     node.querySelector(".history-count").textContent = t("history.requestCount", { count: entry.request_count });
     node.querySelectorAll("button[data-action]").forEach((button) => {
       button.dataset.url = entry.resolved_url || entry.original_url;
+      button.dataset.key = entry.key || "";
     });
     elements.historyList.appendChild(node);
   });
@@ -7299,11 +7760,16 @@ function formatHistoryTime(timestamp) {
 }
 
 function ownerTooltipForEntry(entry) {
+  const fullTitle = String(entry?.title || entry?.display_title || "").trim();
   const ownerName = String(entry?.owner_name || "").trim();
-  if (!ownerName) {
-    return "";
+  const lines = [];
+  if (fullTitle) {
+    lines.push(fullTitle);
   }
-  return t("owner.tooltip", { name: ownerName });
+  if (ownerName) {
+    lines.push(t("owner.tooltip", { name: ownerName }));
+  }
+  return lines.join("\n");
 }
 
 function formatBBDownHint(bbdown) {
@@ -7551,10 +8017,21 @@ function closeConfirm() {
   renderConfirmPopover();
 }
 
+function confirmPopoverAnchorElement(intent) {
+  const anchorElementId = String(intent?.anchorElementId || "").trim();
+  return anchorElementId ? document.getElementById(anchorElementId) : null;
+}
+
+function confirmPopoverAnchorRect(intent) {
+  const anchorElement = confirmPopoverAnchorElement(intent);
+  return anchorElement ? anchorElement.getBoundingClientRect() : null;
+}
+
 function confirmPopoverRenderSignature(intent) {
   if (!intent) {
     return "";
   }
+  const anchorRect = confirmPopoverAnchorRect(intent);
   return JSON.stringify({
     type: intent.type || "",
     message: intent.message || "",
@@ -7567,9 +8044,57 @@ function confirmPopoverRenderSignature(intent) {
     pageSize: selectedConfirmHistoryExportPageSize(intent),
     x: Math.round(Number(intent.x || 0)),
     y: Math.round(Number(intent.y || 0)),
+    anchorElementId: String(intent.anchorElementId || ""),
+    anchorAlign: String(intent.anchorAlign || ""),
+    anchorGap: Math.round(Number(intent.anchorGap || 0)),
+    anchorLeft: anchorRect ? Math.round(anchorRect.left) : 0,
+    anchorTop: anchorRect ? Math.round(anchorRect.top) : 0,
+    anchorRight: anchorRect ? Math.round(anchorRect.right) : 0,
+    anchorBottom: anchorRect ? Math.round(anchorRect.bottom) : 0,
     width: window.innerWidth,
     height: window.innerHeight,
   });
+}
+
+function confirmPopoverPlacement(intent, width, popoverHeight) {
+  const margin = 12;
+  const anchorRect = confirmPopoverAnchorRect(intent);
+  const maxLeft = Math.max(margin, window.innerWidth - width - margin);
+  const maxTop = Math.max(margin, window.innerHeight - popoverHeight - margin);
+  const anchorGap = Number.isFinite(Number(intent.anchorGap)) ? Number(intent.anchorGap) : 10;
+  let rawLeft = Number(intent.x || 0);
+  let rawTop = Number(intent.y || 0);
+
+  if (anchorRect) {
+    const align = String(intent.anchorAlign || "end");
+    rawTop = anchorRect.bottom + anchorGap;
+    if (align === "start") {
+      rawLeft = anchorRect.left;
+    } else if (align === "center") {
+      rawLeft = anchorRect.left + ((anchorRect.width - width) / 2);
+    } else {
+      rawLeft = anchorRect.right - width;
+    }
+
+    const aboveTop = anchorRect.top - popoverHeight - anchorGap;
+    if (rawTop + popoverHeight > window.innerHeight - margin && aboveTop >= margin) {
+      rawTop = aboveTop;
+    }
+  }
+
+  const left = Math.min(Math.max(rawLeft, margin), maxLeft);
+  if (!anchorRect) {
+    return {
+      left,
+      top: Math.min(Math.max(rawTop, margin), maxTop),
+    };
+  }
+
+  const anchorOutsideViewport = anchorRect.bottom < margin || anchorRect.top > window.innerHeight - margin;
+  return {
+    left,
+    top: anchorOutsideViewport ? rawTop : Math.min(Math.max(rawTop, margin), maxTop),
+  };
 }
 
 function renderConfirmPopover() {
@@ -7597,15 +8122,7 @@ function renderConfirmPopover() {
   const popoverHeight = (hasSecondaryAction ? 126 : 112)
     + (hasSourceSelect || hasPageSizeSelect ? 76 : 0)
     - (hideMessage ? 34 : 0);
-  const margin = 12;
-  const left = Math.min(
-    Math.max(intent.x, margin),
-    window.innerWidth - width - margin,
-  );
-  const top = Math.min(
-    Math.max(intent.y, margin),
-    window.innerHeight - popoverHeight - margin,
-  );
+  const { left, top } = confirmPopoverPlacement(intent, width, popoverHeight);
 
   elements.confirmText.textContent = intent.message || "";
   elements.confirmText.classList.toggle("hidden", hideMessage);
@@ -7662,6 +8179,22 @@ function anchorPointForEvent(event, fallbackElement) {
     x: rect.right - 20,
     y: rect.bottom + 8,
   };
+}
+
+let confirmPopoverPositionFrame = 0;
+
+function scheduleConfirmPopoverPositionSync() {
+  if (!state.confirmIntent || confirmPopoverPositionFrame) {
+    return;
+  }
+  confirmPopoverPositionFrame = window.requestAnimationFrame(() => {
+    confirmPopoverPositionFrame = 0;
+    if (!state.confirmIntent) {
+      return;
+    }
+    state.confirmPopoverRenderSignature = "";
+    renderConfirmPopover();
+  });
 }
 
 function clearDropIndicators() {
@@ -8487,18 +9020,37 @@ async function resetPlayerState() {
   }
 }
 
+async function installAppUpdate(includePreview = false) {
+  try {
+    const updateStatus = await apiPost("/api/app/update/install", {
+      include_preview: Boolean(includePreview),
+    });
+    if (state.data) {
+      state.data = {
+        ...state.data,
+        app_update: updateStatus,
+      };
+    }
+    closeConfirm();
+    renderUpdatePreviewControl();
+    const stateValue = String(updateStatus?.state || "");
+    setAppMessage(
+      updateStatus?.message || t("service.updateStarting"),
+      stateValue === "failed" || stateValue === "unsupported",
+    );
+  } catch (error) {
+    setAppMessage(error?.message || t("service.updateFailed"), true);
+  }
+}
+
 async function checkAppUpdate(event) {
-  if (state.updateChecking) {
+  if (state.updateChecking || isAppUpdateBusy()) {
     return;
   }
   const button = elements.updateCheckButton;
   const point = anchorPointForEvent(event, button || elements.cacheSettings);
   state.updateChecking = true;
   renderUpdatePreviewControl();
-  if (button) {
-    button.disabled = true;
-    button.textContent = t("status.checking");
-  }
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timeoutId = controller
     ? window.setTimeout(() => controller.abort(), appUpdateCheckTimeoutMs)
@@ -8510,11 +9062,20 @@ async function checkAppUpdate(event) {
       const fallbackMessage = result?.switch_to_release_available
         ? t("service.switchReleasePrompt")
         : t("service.updateFoundPrompt");
+      const updateMessage = result?.message || fallbackMessage;
+      const canAutoInstall = Boolean(result?.auto_update_supported);
       openConfirm({
-        type: "open-release",
+        type: canAutoInstall ? "install-app-update" : "open-release",
+        includePreview: state.updatePreviewEnabled,
         releaseUrl: result.release_url,
-        message: fallbackMessage,
+        message: canAutoInstall
+          ? t("service.installUpdatePrompt", { message: updateMessage })
+          : t("service.openReleaseWithMessage", { message: updateMessage }),
+        primaryLabel: canAutoInstall ? t("service.installUpdate") : t("service.openReleases"),
         ...point,
+        anchorElementId: button?.id || "update-check-button",
+        anchorAlign: "end",
+        anchorGap: 8,
       });
       return;
     }
@@ -8530,10 +9091,6 @@ async function checkAppUpdate(event) {
     }
     state.updateChecking = false;
     renderUpdatePreviewControl();
-    if (button) {
-      button.disabled = false;
-      button.textContent = t("service.checkUpdate");
-    }
   }
 }
 
@@ -9019,31 +9576,172 @@ elements.sessionUserForm.addEventListener("submit", async (event) => {
   await addSessionUser();
 });
 
-elements.sessionUserList.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-action]");
-  if (!button || !state.data?.session_users?.length) {
-    return;
-  }
+let draggedSessionUser = null;
 
-  const name = String(button.dataset.name || "");
-  const users = state.data.session_users;
-  const index = users.indexOf(name);
-  if (!name || index === -1) {
-    return;
-  }
+function clearSessionUserDropIndicators() {
+  elements.sessionUserList
+    ?.querySelectorAll(".session-user-badge")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+}
 
-  if (button.dataset.action === "move-up") {
-    await moveSessionUser(name, Math.max(0, index - 1));
+async function removeDraggedSessionUser() {
+  if (!draggedSessionUser || draggedSessionUser.dataset.deleted === "true") {
     return;
   }
-  if (button.dataset.action === "move-down") {
-    await moveSessionUser(name, Math.min(users.length - 1, index + 1));
-    return;
-  }
-  if (button.dataset.action === "remove") {
-    await removeSessionUser(name);
+  const name = draggedSessionUser.dataset.name;
+  draggedSessionUser.dataset.deleted = "true";
+  draggedSessionUser.style.display = "none";
+  await removeSessionUser(name);
+}
+
+function finishSessionUserDragUi() {
+  draggedSessionUser?.classList.remove("dragging");
+  elements.sessionUsersPanel?.classList.remove("is-dragging");
+  elements.sessionUserTrash?.classList.remove("drag-over");
+  clearSessionUserDropIndicators();
+}
+
+// 1. Prevent default on document dragenter to remove the forbidden icon in WebView/WebKit.
+document.addEventListener("dragenter", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
   }
 });
+
+// 2. Prevent default on document dragover to permit drop anywhere.
+document.addEventListener("dragover", (e) => {
+  if (!draggedSessionUser) {
+    return;
+  }
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = "move";
+  }
+  // If we drag outside the list and we are not natively over the trash, clear drop indicators.
+  const target = e.target instanceof Element ? e.target : null;
+  if (target && !elements.sessionUserList.contains(target) && target !== elements.sessionUserTrash && !elements.sessionUserTrash.contains(target)) {
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+    clearSessionUserDropIndicators();
+  }
+});
+
+document.addEventListener("drop", (e) => {
+  if (draggedSessionUser) {
+    e.preventDefault();
+  }
+});
+
+// 3. Handle drag start for badge items.
+elements.sessionUserList.addEventListener("dragstart", (e) => {
+  const badge = e.target.closest(".session-user-badge");
+  if (!badge) return;
+  draggedSessionUser = badge;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", badge.dataset.name);
+  if (typeof e.dataTransfer.setDragImage === "function") {
+    const rect = badge.getBoundingClientRect();
+    e.dataTransfer.setDragImage(
+      badge,
+      Math.max(0, e.clientX - rect.left),
+      Math.max(0, e.clientY - rect.top),
+    );
+  }
+  setTimeout(() => {
+    badge.classList.add("dragging");
+    elements.sessionUsersPanel?.classList.add("is-dragging");
+  }, 0);
+});
+
+// 4. Handle dragover for reordering.
+elements.sessionUserList.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  if (!draggedSessionUser) return;
+  e.dataTransfer.dropEffect = "move";
+
+  const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
+  draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
+
+  let afterElement = null;
+  for (const child of draggableElements) {
+    const box = child.getBoundingClientRect();
+    if (e.clientY < box.bottom && e.clientY > box.top) {
+      if (e.clientX < box.left + box.width / 2) {
+        afterElement = child;
+        break;
+      }
+    } else if (e.clientY < box.top) {
+      afterElement = child;
+      break;
+    }
+  }
+
+  state.sessionUserDragTarget = afterElement;
+  state.sessionUserDragAfter = afterElement == null;
+
+  if (afterElement == null) {
+    if (draggableElements.length > 0) {
+      draggableElements[draggableElements.length - 1].classList.add("drop-after");
+    }
+  } else {
+    afterElement.classList.add("drop-before");
+  }
+});
+
+// 5. Handle drag end.
+document.addEventListener("dragend", async (e) => {
+  if (draggedSessionUser) {
+    finishSessionUserDragUi();
+
+    if (!draggedSessionUser.dataset.deleted) {
+      if (state.sessionUserDragTarget) {
+        elements.sessionUserList.insertBefore(draggedSessionUser, state.sessionUserDragTarget);
+      } else if (state.sessionUserDragAfter) {
+        elements.sessionUserList.appendChild(draggedSessionUser);
+      }
+
+      const name = draggedSessionUser.dataset.name;
+      const newElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
+      const newIndex = newElements.indexOf(draggedSessionUser);
+      const oldIndex = parseInt(draggedSessionUser.dataset.index, 10);
+
+      if (newIndex !== -1 && newIndex !== oldIndex) {
+        await moveSessionUser(name, newIndex);
+      }
+    }
+    draggedSessionUser = null;
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+  }
+});
+
+// 6. Handle trash can events natively.
+if (elements.sessionUserTrash) {
+  elements.sessionUserTrash.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    elements.sessionUserTrash.classList.add("drag-over");
+    clearSessionUserDropIndicators();
+  });
+
+  elements.sessionUserTrash.addEventListener("dragleave", (e) => {
+    elements.sessionUserTrash.classList.remove("drag-over");
+  });
+
+  elements.sessionUserTrash.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    elements.sessionUserTrash.classList.add("drag-over");
+    clearSessionUserDropIndicators();
+  });
+
+  elements.sessionUserTrash.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    finishSessionUserDragUi();
+    await removeDraggedSessionUser();
+  });
+}
+
 
 elements.queueNextButton.addEventListener("click", async (event) => {
   const point = anchorPointForEvent(event, elements.queueNextButton);
@@ -9100,7 +9798,20 @@ elements.dismissBackupButton.addEventListener("blur", () => {
 
 elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
+  if (state.cacheSettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
+});
+
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  state.displaySettingsOpen = !state.displaySettingsOpen;
+  if (state.displaySettingsOpen) {
+    state.cacheSettingsOpen = false;
+    syncCachePanelVisibility();
+  }
+  syncDisplayPanelVisibility();
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {
@@ -9217,6 +9928,38 @@ elements.volumeMuteButton?.addEventListener("click", () => {
   toggleLocalPlayerMute();
 });
 
+elements.keyShiftDecButton?.addEventListener("click", () => {
+  const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
+  setLocalPlayerKeyShift(currentKey - 1);
+});
+
+elements.keyShiftIncButton?.addEventListener("click", () => {
+  const currentKey = Number(state.data?.player_settings?.key_shift ?? 0);
+  setLocalPlayerKeyShift(currentKey + 1);
+});
+
+elements.keyShiftResetButton?.addEventListener("click", () => {
+  setLocalPlayerKeyShift(0);
+});
+
+elements.keyShiftInput?.addEventListener("change", async (event) => {
+  await setLocalPlayerKeyShift(event.target.value);
+});
+
+elements.keyShiftInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setLocalPlayerKeyShift(event.target.value);
+});
+
+document.addEventListener("click", () => {
+  if (state.audioContext && state.audioContext.state === "suspended") {
+    state.audioContext.resume().catch(() => {});
+  }
+});
+
 elements.clearPlaylistButton.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.clearPlaylistButton);
   openConfirm({
@@ -9256,15 +9999,6 @@ elements.historyExportButton?.addEventListener("click", (event) => {
 elements.historyToggleButton.addEventListener("click", () => {
   state.listView = state.listView === "history" ? "queue" : "history";
   render();
-});
-
-elements.playerRatingButton?.addEventListener("click", () => {
-  const currentItem = state.data?.current_item;
-  if (!currentItem?.bvid || hasSubmittedSongRating(currentItem)) {
-    renderPlayerRatingButton();
-    return;
-  }
-  openRatingPrompt(currentItem, { force: true });
 });
 
 elements.playerFullscreenButton?.addEventListener("click", async () => {
@@ -9340,6 +10074,14 @@ elements.languageSwitch?.addEventListener("click", (event) => {
     return;
   }
   setLanguage(button.dataset.language);
+});
+
+elements.themeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-theme]");
+  if (!button) {
+    return;
+  }
+  applyTheme(button.dataset.theme);
 });
 
 elements.dataResetButton?.addEventListener("click", (event) => {
@@ -9512,12 +10254,28 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!button || button.dataset.action === "toggle-menu") {
     return;
   }
+  const action = button.dataset.action;
+  const point = anchorPointForEvent(event, button);
+  if (action === "history-remove") {
+    const key = button.dataset.key || "";
+    if (!key) {
+      return;
+    }
+    closeOpenMenus();
+    openConfirm({
+      type: "remove-history",
+      key,
+      message: t("history.removeConfirm"),
+      x: point.x,
+      y: point.y,
+    });
+    return;
+  }
   const url = button.dataset.url;
   if (!url) {
     return;
   }
-  const point = anchorPointForEvent(event, button);
-  await handleAddByUrl(url, button.dataset.action === "history-next" ? "next" : "tail", point);
+  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point);
   closeOpenMenus();
 });
 
@@ -9694,6 +10452,10 @@ elements.confirmOk.addEventListener("click", async () => {
       await resetPlayerState();
       return;
     }
+    if (intent.type === "install-app-update") {
+      await installAppUpdate(Boolean(intent.includePreview));
+      return;
+    }
     if (intent.type === "open-release" && intent.releaseUrl) {
       window.open(intent.releaseUrl, "_blank", "noopener");
       closeConfirm();
@@ -9704,6 +10466,13 @@ elements.confirmOk.addEventListener("click", async () => {
       state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
       setAppMessage(t("list.removedSong"));
+      render();
+      return;
+    }
+    if (intent.type === "remove-history" && intent.key) {
+      state.data = await apiPost("/api/history/remove", { key: intent.key });
+      closeConfirm();
+      setAppMessage(t("history.removed"));
       render();
       return;
     }
@@ -9770,6 +10539,11 @@ document.addEventListener("click", (event) => {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
   }
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-settings")) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
 });
 
 document.addEventListener("click", (event) => {
@@ -9815,6 +10589,10 @@ document.addEventListener("keydown", (event) => {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
   }
+  if (state.displaySettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+  }
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -9835,7 +10613,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function handleFullscreenChange() {
-  if (!isPlayerPanelFullscreen()) {
+  const isFullscreen = isPlayerPanelFullscreen();
+  if (!isFullscreen) {
     hideFullscreenRequestToast();
     if (hasLocalAdvanceDelayOverlay()) {
       updateLocalAdvanceDelayOverlay();
@@ -9843,6 +10622,7 @@ function handleFullscreenChange() {
       hidePlayerDelayOverlay();
     }
   }
+  setTauriWindowFullscreen(isFullscreen).catch(() => {});
   renderPlayerFullscreenButton();
 }
 
@@ -10471,7 +11251,7 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
   try {
     state.data = await submitAddRequest(url, "tail", { requesterName });
     setFormMessage(t("gatcha.requestSuccess", { title: state.gatchaCandidate.title }));
-    
+
 
     state.gatchaCandidate = null;
     elements.gatchaResultView.classList.add("hidden");
@@ -10580,6 +11360,11 @@ async function startPolling() {
   await loadTranslations();
   renderLayoutMode();
   try {
+    await reportMediaCapabilities();
+  } catch {
+    // Playback capability reporting should not block the host UI from loading.
+  }
+  try {
     await fetchState();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -10592,6 +11377,9 @@ async function startPolling() {
     }
   }, pollIntervalMs);
 }
+
+window.addEventListener("resize", scheduleConfirmPopoverPositionSync);
+window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 
 window.addEventListener("pagehide", () => {
   teardownMountedPlayer();

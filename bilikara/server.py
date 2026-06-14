@@ -6,9 +6,6 @@ from email.utils import formatdate
 import hmac
 import json
 import mimetypes
-mimetypes.add_type("video/mp4", ".mp4")
-mimetypes.add_type("video/mp4", ".m4s")
-mimetypes.add_type("audio/mp4", ".m4a")
 import os
 import re
 import socket
@@ -75,12 +72,17 @@ from .config import (
 )
 from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .store import PlaylistStore
-from .updater import check_for_update
+from .updater import AppUpdateManager, check_for_update
+
+mimetypes.add_type("video/mp4", ".mp4")
+mimetypes.add_type("video/mp4", ".m4s")
+mimetypes.add_type("audio/mp4", ".m4a")
 
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 RATING_SUBMISSION_KEY_LIMIT = 2000
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
+RATING_PROMPT_THRESHOLD = 0.5
 
 
 class DuplicateSessionRequestError(ValueError):
@@ -107,6 +109,10 @@ class AppContext:
             self.store,
             max_cache_items=MAX_CACHE_ITEMS,
             on_bbdown_login_success=self.refresh_startup_gatcha_cache_in_background,
+        )
+        self.update_manager = AppUpdateManager(
+            on_status_change=self._notify_state_changed,
+            on_restart_requested=self._request_update_restart,
         )
         self.cache_manager.prepare_session()
         self._closed = False
@@ -165,6 +171,7 @@ class AppContext:
             "version": APP_VERSION,
             "releases_url": APP_RELEASES_URL,
         }
+        payload["app_update"] = self.app_update_snapshot()
         payload["state_revision"] = state_revision
         return payload
 
@@ -173,6 +180,12 @@ class AppContext:
             on_start=self._notify_state_changed,
             on_done=self._notify_state_changed,
         )
+
+    def app_update_snapshot(self) -> dict[str, object]:
+        return self.update_manager.snapshot()
+
+    def start_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
+        return self.update_manager.start(include_preview=include_preview)
 
     def refresh_startup_gatcha_cache_in_background(self) -> bool:
         with self._startup_lock:
@@ -225,6 +238,9 @@ class AppContext:
     def clear_history(self) -> None:
         self.store.clear_history()
 
+    def remove_history_entry(self, key: str) -> None:
+        self.store.remove_history_entry(key)
+
     def history_snapshot(self) -> list[dict]:
         history = self.store.snapshot().get("history") or []
         return list(history) if isinstance(history, list) else []
@@ -267,6 +283,9 @@ class AppContext:
     def set_song_advance_delay_seconds(self, delay_seconds: int) -> int:
         return self.store.set_song_advance_delay_seconds(delay_seconds)
 
+    def set_key_shift(self, key_shift: int) -> int:
+        return self.store.set_key_shift(key_shift)
+
     def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
         return self.store.set_audio_variant(item_id, variant_id)
 
@@ -292,6 +311,11 @@ class AppContext:
             audio_hires=audio_hires,
         )
         self._notify_state_changed()
+
+    def set_client_media_capabilities(self, payload: dict[str, object]) -> dict[str, object]:
+        result = self.cache_manager.set_client_media_capabilities(payload)
+        self._notify_state_changed()
+        return result
 
     def retry_cache_item(self, item_id: str, *, force: bool = False) -> None:
         self.cache_manager.retry_item(item_id, force=force)
@@ -379,6 +403,13 @@ class AppContext:
             self._player_status = next_status
         if (not is_paused) or float(current_time or 0.0) > 0:
             self.store.mark_item_playback_started(normalized_item_id)
+
+        reported_duration = next_status.get("duration")
+        if isinstance(reported_duration, (int, float)) and reported_duration > 0:
+            ratio = float(current_time or 0.0) / float(reported_duration)
+            if ratio >= RATING_PROMPT_THRESHOLD:
+                self.store.mark_session_played_threshold_reached(normalized_item_id)
+
         self._notify_state_changed()
 
     def player_status_snapshot(self, current_item_payload: object) -> dict[str, object] | None:
@@ -465,6 +496,35 @@ class AppContext:
         with self._state_change_condition:
             self._state_revision += 1
             self._state_change_condition.notify_all()
+
+    def _request_update_restart(self) -> None:
+        with self._client_lock:
+            server = self._server
+            self._shutdown_requested = True
+        if server is None:
+            return
+
+        def shutdown_server() -> None:
+            time.sleep(0.5)
+            server.shutdown()
+
+        threading.Thread(
+            target=shutdown_server,
+            daemon=True,
+            name="bilikara-update-restart",
+        ).start()
+
+    def request_shutdown(self) -> None:
+        with self._client_lock:
+            server = self._server
+            self._shutdown_requested = True
+        if server is None:
+            return
+        threading.Thread(
+            target=server.shutdown,
+            daemon=True,
+            name="bilikara-api-shutdown",
+        ).start()
 
     def touch_client(self, client_id: str, is_host: bool = True) -> None:
         client_key = str(client_id or "").strip()
@@ -610,11 +670,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             is_host = False
             
         CONTEXT.touch_client(client_id, is_host=is_host)
+        if route == "/api/health":
+            self._write_json({"ok": True, "status": "ready"})
+            return
         if route == "/api/events":
             self._serve_events(client_id)
             return
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+            return
+        if route == "/api/app/update/status":
+            self._write_json({"ok": True, "data": CONTEXT.app_update_snapshot()})
             return
         if route == "/api/app/update":
             try:
@@ -818,6 +884,22 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route == "/api/app/shutdown":
+                if not self._is_local_client() and not self._has_valid_shutdown_token():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                CONTEXT.request_shutdown()
+                self._write_json({"ok": True})
+                return
+            if route == "/api/app/update/install":
+                include_preview = str(body.get("include_preview", body.get("includePreview", ""))).lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
+                return
             if route == "/api/playlist/add":
                 self._handle_add(body)
                 return
@@ -836,6 +918,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/history/clear":
                 CONTEXT.clear_history()
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/history/remove":
+                key = str(body.get("key") or "").strip()
+                if not key:
+                    raise ValueError("missing key")
+                CONTEXT.remove_history_entry(key)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/session-users/add":
@@ -1037,6 +1126,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not isinstance(delay_seconds, int):
                     raise ValueError("delay_seconds must be an integer")
                 CONTEXT.set_song_advance_delay_seconds(delay_seconds)
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/player/key-shift":
+                key_shift = body.get("key_shift")
+                if not isinstance(key_shift, int):
+                    raise ValueError("key_shift must be an integer")
+                CONTEXT.set_key_shift(key_shift)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/player/volume":
@@ -1256,6 +1352,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.disconnect_client(str(body.get("client_id") or ""))
                 self._write_json({"ok": True})
                 return
+            if route == "/api/client/media-capabilities":
+                result = CONTEXT.set_client_media_capabilities(body)
+                self._write_json({"ok": True, "data": result})
+                return
             if route == "/api/bbdown/login/start":
                 CONTEXT.cache_manager.start_bbdown_login(force_refresh_qr=bool(body.get("force")))
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
@@ -1427,6 +1527,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if not str(body.get("item_id") or "").strip():
             raise ValueError("缺少 item_id")
 
+    def _is_local_client(self) -> bool:
+        host = self.client_address[0] if self.client_address else ""
+        return host in {"127.0.0.1", "::1", "localhost"}
+
+    def _has_valid_shutdown_token(self) -> bool:
+        expected = os.getenv("BILIKARA_SHUTDOWN_TOKEN", "").strip()
+        provided = self.headers.get("X-Bilikara-Shutdown-Token", "").strip()
+        return bool(expected and provided and hmac.compare_digest(expected, provided))
+
     def _verified_bilikara_secret(self, bilikara_secret: str) -> bool:
         normalized_secret = str(bilikara_secret or "").strip()
         configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
@@ -1566,13 +1675,28 @@ def _serve(
 ) -> None:
     actual_port = _find_available_port(host, port) if auto_select_port else port
     server = ThreadingHTTPServer((host, actual_port), BilikaraHandler)
+    bound_host, bound_port = server.server_address[:2]
+    actual_port = bound_port
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
         CONTEXT.refresh_startup_gatcha_cache_in_background()
     browser_host = "127.0.0.1" if host == "0.0.0.0" else host
     url = f"http://{browser_host}:{actual_port}"
-    print(f"{status_label} running on {url}")
-    print(f"{status_label} mobile remote: {url}/remote")
+    print(f"{status_label} running on {url}", flush=True)
+    print(f"{status_label} mobile remote: {url}/remote", flush=True)
+
+    if not auto_open_browser and not shutdown_on_last_client:
+        print(
+            json.dumps(
+                {
+                    "event": "bilikara.ready",
+                    "host": browser_host,
+                    "port": actual_port,
+                    "baseUrl": url,
+                }
+            ),
+            flush=True,
+        )
 
     if auto_open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
