@@ -220,6 +220,18 @@ def _default_app_home() -> Path:
     return _resource_root()
 
 
+def _split_env_urls(name: str) -> tuple[str, ...]:
+    raw = os.getenv(name, "")
+    if not raw:
+        return ()
+    normalized = raw.replace("\n", ",").replace(";", ",")
+    return tuple(part.strip() for part in normalized.split(",") if part.strip())
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 ROOT_DIR = _resource_root()
 APP_HOME = _default_app_home()
 STATIC_DIR = ROOT_DIR / "static"
@@ -271,6 +283,16 @@ YTDLP_RELEASE_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
 ARIA2_RELEASE_API = "https://api.github.com/repos/aria2/aria2/releases/latest"
 APP_RELEASE_API = "https://api.github.com/repos/VZRXS/bilikara/releases/latest"
 APP_RELEASES_URL = "https://github.com/VZRXS/bilikara/releases"
+APP_RELEASE_API_FALLBACKS = (
+    "https://api.kevinx96.icu/bilikara/releases/latest",
+    *_split_env_urls("BILIKARA_APP_RELEASE_API_FALLBACKS"),
+)
+APP_RELEASES_API_FALLBACKS = (
+    "https://api.kevinx96.icu/bilikara/releases",
+    *_split_env_urls("BILIKARA_APP_RELEASES_API_FALLBACKS"),
+)
+APP_UPDATE_DOWNLOAD_PROXY = os.getenv("BILIKARA_UPDATE_DOWNLOAD_PROXY", "").strip()
+APP_UPDATE_DOWNLOAD_PROXY_FIRST = _env_truthy("BILIKARA_UPDATE_DOWNLOAD_PROXY_FIRST")
 
 
 def _detect_app_version() -> str:

@@ -9,6 +9,20 @@ import bilikara.updater as updater
 from bilikara.updater import AppUpdateManager, check_for_update, fetch_latest_release, is_auto_update_supported, is_newer_version, select_update_asset, version_tuple
 
 
+class FakeHTTPResponse:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self) -> bytes:
+        return self._payload
+
+
 class UpdateCheckTest(unittest.TestCase):
     def test_version_tuple_accepts_release_tags(self):
         self.assertEqual(version_tuple("v0.4.1"), (0, 4, 1))
@@ -50,6 +64,70 @@ class UpdateCheckTest(unittest.TestCase):
         with patch("bilikara.updater.urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
             with self.assertRaisesRegex(RuntimeError, "无法连接 GitHub Releases"):
                 fetch_latest_release()
+
+    def test_fetch_release_json_tries_fallback_urls(self):
+        calls: list[str] = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.full_url)
+            if len(calls) == 1:
+                raise urllib.error.URLError("offline")
+            return FakeHTTPResponse(b'{"tag_name":"v1.2.3"}')
+
+        with patch("bilikara.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+            payload = updater._fetch_release_json([
+                "https://api.github.com/repos/VZRXS/bilikara/releases/latest",
+                "https://mirror.example/releases/latest",
+            ])
+
+        self.assertEqual(payload["tag_name"], "v1.2.3")
+        self.assertEqual(calls, [
+            "https://api.github.com/repos/VZRXS/bilikara/releases/latest",
+            "https://mirror.example/releases/latest",
+        ])
+
+    def test_download_url_candidates_supports_proxy_template(self):
+        with patch("bilikara.updater.APP_UPDATE_DOWNLOAD_PROXY", "https://mirror.example/{url_encoded}"), patch(
+            "bilikara.updater.APP_UPDATE_DOWNLOAD_PROXY_FIRST",
+            True,
+        ):
+            candidates = updater._download_url_candidates("https://github.com/VZRXS/bilikara/releases/download/v1/app.zip")
+
+        self.assertEqual(candidates[0], "https://mirror.example/https%3A%2F%2Fgithub.com%2FVZRXS%2Fbilikara%2Freleases%2Fdownload%2Fv1%2Fapp.zip")
+        self.assertEqual(candidates[1], "https://github.com/VZRXS/bilikara/releases/download/v1/app.zip")
+
+    def test_app_update_manager_retries_download_with_proxy_candidate(self):
+        calls: list[str] = []
+
+        def downloader(url, destination, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                raise RuntimeError("offline")
+            destination.write_bytes(b"update")
+            return 6, 6
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "bilikara.updater.APP_UPDATE_DOWNLOAD_PROXY",
+            "https://mirror.example/{url}",
+        ):
+            manager = AppUpdateManager(
+                app_home=Path(tmpdir),
+                current_version="v0.1.0",
+                downloader=downloader,
+                target={"platform": "windows", "arch": "x64"},
+                frozen=True,
+            )
+            archive_path = Path(tmpdir) / "update.zip"
+            downloaded, total = manager._download_update_archive(
+                "https://github.com/VZRXS/bilikara/releases/download/v1/app.zip",
+                archive_path,
+            )
+
+        self.assertEqual((downloaded, total), (6, 6))
+        self.assertEqual(calls, [
+            "https://github.com/VZRXS/bilikara/releases/download/v1/app.zip",
+            "https://mirror.example/https://github.com/VZRXS/bilikara/releases/download/v1/app.zip",
+        ])
 
     def test_check_for_update_offers_switch_for_non_release_build(self):
         result = check_for_update(

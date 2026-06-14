@@ -168,3 +168,99 @@ jobs:
         with:
           files: ${{ steps.bundle-name.outputs.archive_name }}
           generate_release_notes: true
+
+  mirror-release-r2:
+    name: Mirror Release To R2
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'bilikara-releases' }}
+      RELEASE_DOWNLOAD_BASE_URL: ${{ vars.RELEASE_DOWNLOAD_BASE_URL || 'https://api.kevinx96.icu/bilikara/releases/download' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install AWS CLI
+        run: python -m pip install --upgrade awscli
+
+      - name: Download GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets release-metadata
+          gh release download "$GITHUB_REF_NAME" --dir release-assets --clobber
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+            > release-metadata/current-github.json
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
+            > release-metadata/releases-github.json
+
+      - name: Generate mirrored release metadata
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const tag = process.env.GITHUB_REF_NAME;
+          const baseUrl = String(process.env.RELEASE_DOWNLOAD_BASE_URL || "").replace(/\/+$/, "");
+
+          function assetUrl(assetName, tagName = tag) {
+            return `${baseUrl}/${encodeURIComponent(tagName)}/${encodeURIComponent(assetName)}`;
+          }
+
+          function mirrorRelease(release) {
+            return {
+              ...release,
+              assets: Array.isArray(release.assets)
+                ? release.assets.map((asset) => ({
+                    ...asset,
+                    browser_download_url: assetUrl(asset.name, release.tag_name || tag),
+                  }))
+                : [],
+            };
+          }
+
+          const current = mirrorRelease(JSON.parse(fs.readFileSync("release-metadata/current-github.json", "utf8")));
+          const releases = JSON.parse(fs.readFileSync("release-metadata/releases-github.json", "utf8"))
+            .filter((release) => release && typeof release === "object")
+            .map(mirrorRelease);
+
+          fs.writeFileSync("release-metadata/tag.json", JSON.stringify(current, null, 2));
+          fs.writeFileSync("release-metadata/releases.json", JSON.stringify(releases, null, 2));
+          if (!current.prerelease) {
+            fs.writeFileSync("release-metadata/latest.json", JSON.stringify(current, null, 2));
+          }
+          NODE
+
+      - name: Upload release mirror to R2
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          tag="${GITHUB_REF_NAME}"
+          aws s3 cp release-assets "s3://${R2_BUCKET}/bilikara/releases/download/${tag}/" \
+            --recursive \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --only-show-errors
+          aws s3 cp release-metadata/tag.json "s3://${R2_BUCKET}/bilikara/releases/tags/${tag}.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "public, max-age=300" \
+            --only-show-errors
+          aws s3 cp release-metadata/releases.json "s3://${R2_BUCKET}/bilikara/releases/releases.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "public, max-age=300" \
+            --only-show-errors
+          if [ -f release-metadata/latest.json ]; then
+            aws s3 cp release-metadata/latest.json "s3://${R2_BUCKET}/bilikara/releases/latest.json" \
+              --endpoint-url "$endpoint" \
+              --content-type "application/json; charset=utf-8" \
+              --cache-control "public, max-age=300" \
+              --only-show-errors
+          fi

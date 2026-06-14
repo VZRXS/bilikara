@@ -13,12 +13,22 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
-from .config import APP_HOME, APP_RELEASE_API, APP_RELEASES_URL, APP_VERSION
+from .config import (
+    APP_HOME,
+    APP_RELEASE_API,
+    APP_RELEASE_API_FALLBACKS,
+    APP_RELEASES_API_FALLBACKS,
+    APP_RELEASES_URL,
+    APP_UPDATE_DOWNLOAD_PROXY,
+    APP_UPDATE_DOWNLOAD_PROXY_FIRST,
+    APP_VERSION,
+)
 
 VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:-preview\.(\d+))?$", re.IGNORECASE)
 APP_RELEASES_API = APP_RELEASE_API.rsplit("/", 1)[0] if APP_RELEASE_API.endswith("/latest") else APP_RELEASE_API
@@ -35,6 +45,62 @@ APP_UPDATE_CHUNK_SIZE = 1024 * 256
 
 class AppUpdateError(RuntimeError):
     pass
+
+
+def _dedupe_urls(urls: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        normalized = str(url or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _release_list_api_from_latest(api_url: str) -> str:
+    url = str(api_url or "").strip()
+    if url.endswith("/latest"):
+        return url.rsplit("/", 1)[0]
+    return ""
+
+
+def _latest_release_api_urls() -> list[str]:
+    return _dedupe_urls([APP_RELEASE_API, *APP_RELEASE_API_FALLBACKS])
+
+
+def _release_list_api_urls() -> list[str]:
+    derived_fallbacks = [
+        _release_list_api_from_latest(url)
+        for url in APP_RELEASE_API_FALLBACKS
+    ]
+    return _dedupe_urls([APP_RELEASES_API, *APP_RELEASES_API_FALLBACKS, *derived_fallbacks])
+
+
+def _format_download_proxy_url(proxy: str, url: str) -> str:
+    proxy = str(proxy or "").strip()
+    url = str(url or "").strip()
+    if not proxy or not url:
+        return ""
+    encoded_url = urllib.parse.quote(url, safe="")
+    if "{url_encoded}" in proxy:
+        return proxy.replace("{url_encoded}", encoded_url)
+    if "{url}" in proxy:
+        return proxy.replace("{url}", url)
+    separator = "" if proxy.endswith(("/", "=", "?", "&")) else "/"
+    return f"{proxy}{separator}{url}"
+
+
+def _download_url_candidates(url: str) -> list[str]:
+    url = str(url or "").strip()
+    if not url:
+        return []
+    proxy_url = _format_download_proxy_url(APP_UPDATE_DOWNLOAD_PROXY, url)
+    if not proxy_url or proxy_url == url:
+        return [url]
+    candidates = [proxy_url, url] if APP_UPDATE_DOWNLOAD_PROXY_FIRST else [url, proxy_url]
+    return _dedupe_urls(candidates)
 
 
 def normalize_version_tag(version: object) -> str:
@@ -80,7 +146,7 @@ def is_newer_version(latest_version: object, current_version: object) -> bool:
     return latest_key > current_key
 
 
-def _fetch_release_json(url: str) -> object:
+def _fetch_release_json_once(url: str) -> object:
     request = urllib.request.Request(
         url,
         headers={
@@ -100,15 +166,28 @@ def _fetch_release_json(url: str) -> object:
         raise RuntimeError(APP_UPDATE_NETWORK_ERROR) from exc
 
 
+def _fetch_release_json(urls: str | list[str] | tuple[str, ...]) -> object:
+    candidates = _dedupe_urls([urls] if isinstance(urls, str) else list(urls))
+    last_error: RuntimeError | None = None
+    for url in candidates:
+        try:
+            return _fetch_release_json_once(url)
+        except RuntimeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(APP_UPDATE_NETWORK_ERROR)
+
+
 def fetch_releases() -> list[dict[str, Any]]:
-    payload = _fetch_release_json(APP_RELEASES_API)
+    payload = _fetch_release_json(_release_list_api_urls())
     if not isinstance(payload, list):
         raise RuntimeError("GitHub Release 响应格式不正确")
     return payload
 
 
 def fetch_latest_release() -> dict[str, Any]:
-    payload = _fetch_release_json(APP_RELEASE_API)
+    payload = _fetch_release_json(_latest_release_api_urls())
     if not isinstance(payload, dict):
         raise RuntimeError("GitHub Release 响应格式不正确")
     return payload
@@ -768,7 +847,7 @@ class AppUpdateManager:
                 progress=0.0,
                 include_preview=include_preview,
             )
-            downloaded, total = self.downloader(
+            downloaded, total = self._download_update_archive(
                 asset_url,
                 archive_path,
                 expected_size=expected_size,
@@ -802,6 +881,30 @@ class AppUpdateManager:
                 message=message,
                 error=message,
             )
+
+    def _download_update_archive(
+        self,
+        asset_url: str,
+        archive_path: Path,
+        *,
+        expected_size: int = 0,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[int, int]:
+        last_error: Exception | None = None
+        for candidate_url in _download_url_candidates(asset_url):
+            try:
+                return self.downloader(
+                    candidate_url,
+                    archive_path,
+                    expected_size=expected_size,
+                    on_progress=on_progress,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                archive_path.unlink(missing_ok=True)
+        if last_error is not None:
+            raise last_error
+        raise AppUpdateError(APP_UPDATE_NO_ASSET_ERROR)
 
     def _download_progress(self, downloaded: int, total: int) -> None:
         now = time.monotonic()
