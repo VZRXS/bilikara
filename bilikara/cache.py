@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterable, Iterator, TextIO
 from .config import (
     ARIA2C_DIR,
     ARIA2C_PATH_OVERRIDE,
+    ARIA2_RELEASE_API,
     BB_DOWN_DIR,
     BB_DOWN_PATH_OVERRIDE,
     BB_DOWN_RELEASE_API,
@@ -42,6 +43,7 @@ from .config import (
     VENDOR_DIR,
     YTDLP_DIR,
     YTDLP_PATH_OVERRIDE,
+    YTDLP_RELEASE_API,
 )
 from .bilibili import BilibiliError, effective_bilibili_cookie, fetch_dash_playurl
 from .store import PlaylistStore
@@ -2193,6 +2195,7 @@ class CacheManager:
                 _debug_print(f"[bilikara-cache] [{stage_label}] {line}")
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
                 self._record_item_activity(item_id)
+                progress = self._extract_progress(line)
                 target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
                 if target_bytes:
                     target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
@@ -2201,6 +2204,7 @@ class CacheManager:
                     track_key=track_key,
                     target_dir=target_dir,
                     target_bytes=target_bytes_state["value"],
+                    progress_percent=progress,
                 )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
@@ -2770,6 +2774,7 @@ class CacheManager:
                     "order": int(track.get("order") or 0),
                     "current_bytes": 0,
                     "target_bytes": 0,
+                    "progress_percent": None,
                     "done": False,
                 }
                 for track in tracks
@@ -2789,6 +2794,7 @@ class CacheManager:
         track_key: str,
         target_dir: Path,
         target_bytes: int | None = None,
+        progress_percent: float | None = None,
         done: bool = False,
     ) -> None:
         current_bytes = self._path_size(target_dir)
@@ -2803,8 +2809,18 @@ class CacheManager:
                     int(track.get("target_bytes") or 0),
                     int(target_bytes or 0),
                 )
+            if progress_percent is not None:
+                try:
+                    normalized_progress = float(progress_percent)
+                except (TypeError, ValueError):
+                    normalized_progress = 0.0
+                track["progress_percent"] = max(
+                    float(track.get("progress_percent") or 0.0),
+                    max(0.0, min(normalized_progress, 100.0)),
+                )
             if done:
                 track["done"] = True
+                track["progress_percent"] = 100.0
                 if int(track.get("target_bytes") or 0) <= 0:
                     track["target_bytes"] = int(track.get("current_bytes") or 0)
                 elif int(track.get("current_bytes") or 0) > int(track.get("target_bytes") or 0):
@@ -2826,6 +2842,11 @@ class CacheManager:
             ratio = max(0.0, min(float(total_current) / float(total_target), 1.0))
             progress_cap = 99.0 if all_done else 98.0
             changes["cache_progress"] = min(progress_cap, ratio * progress_cap)
+        else:
+            percent_ratio = self._download_progress_ratio_from_track_percents(tracks)
+            if percent_ratio is not None:
+                progress_cap = 99.0 if all_done else 98.0
+                changes["cache_progress"] = min(progress_cap, percent_ratio * progress_cap)
 
         cache_progress_signature = (
             round(float(changes["cache_progress"]), 3)
@@ -2867,6 +2888,30 @@ class CacheManager:
             if not bool(track.get("done")):
                 all_done = False
         return total_current, total_target, all_targets_known, all_done
+
+    @staticmethod
+    def _download_progress_ratio_from_track_percents(tracks: list[dict[str, object]]) -> float | None:
+        if not tracks:
+            return None
+        total = 0.0
+        saw_progress = False
+        for track in tracks:
+            if bool(track.get("done")):
+                total += 1.0
+                saw_progress = True
+                continue
+            progress = track.get("progress_percent")
+            if progress is None:
+                continue
+            try:
+                percent = float(progress)
+            except (TypeError, ValueError):
+                continue
+            total += max(0.0, min(percent, 100.0)) / 100.0
+            saw_progress = True
+        if not saw_progress:
+            return None
+        return max(0.0, min(total / len(tracks), 1.0))
 
     @classmethod
     def _structured_download_message(cls, tracks: list[dict[str, object]]) -> str:
@@ -3082,6 +3127,11 @@ class CacheManager:
 
             binary_path = self._local_ytdlp_binary_path()
             if not binary_path.exists():
+                with self.lock:
+                    self.binary_state = "installing"
+                    self.binary_message = "正在下载 yt-dlp"
+                self._install_ytdlp(binary_path)
+            if not binary_path.exists():
                 raise RuntimeError(f"未找到 yt-dlp，可将 yt-dlp 放入 {YTDLP_DIR}")
             binary_path.chmod(binary_path.stat().st_mode | stat.S_IEXEC)
             version = self._read_ytdlp_version(binary_path)
@@ -3106,6 +3156,11 @@ class CacheManager:
 
             binary_path = self._local_aria2c_binary_path()
             if not binary_path.exists():
+                with self.lock:
+                    self.binary_state = "installing"
+                    self.binary_message = "正在下载 aria2c"
+                self._install_aria2c(binary_path)
+            if not binary_path.exists():
                 raise RuntimeError(
                     f"未找到 aria2c，可将 aria2c 放入 {ARIA2C_DIR}\n"
                     f"下载地址: https://github.com/aria2/aria2/releases"
@@ -3123,6 +3178,152 @@ class CacheManager:
     @staticmethod
     def _local_aria2c_binary_path() -> Path:
         return ARIA2C_DIR / ("aria2c.exe" if os.name == "nt" else "aria2c")
+
+    def _install_ytdlp(self, target_path: Path) -> None:
+        release = self._fetch_ytdlp_release()
+        asset = self._select_ytdlp_asset(release)
+        YTDLP_DIR.mkdir(parents=True, exist_ok=True)
+        name = str(asset.get("name") or target_path.name)
+        download_url = str(asset.get("browser_download_url") or "")
+        if not download_url:
+            raise RuntimeError("yt-dlp release asset missing download URL")
+        if name.lower().endswith((".zip", ".tar.gz", ".tgz")):
+            archive_path = YTDLP_DIR / name
+            self._download_url(download_url, archive_path)
+            try:
+                self._extract_tool_binary_from_archive(archive_path, YTDLP_DIR, target_path.name)
+            finally:
+                archive_path.unlink(missing_ok=True)
+        else:
+            self._download_url(download_url, target_path)
+
+    def _install_aria2c(self, target_path: Path) -> None:
+        release = self._fetch_aria2_release()
+        asset = self._select_aria2_asset(release)
+        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
+        name = str(asset.get("name") or "aria2c.zip")
+        download_url = str(asset.get("browser_download_url") or "")
+        if not download_url:
+            raise RuntimeError("aria2 release asset missing download URL")
+        archive_path = ARIA2C_DIR / name
+        self._download_url(download_url, archive_path)
+        try:
+            self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+    def _fetch_ytdlp_release(self) -> dict:
+        return self._fetch_release(YTDLP_RELEASE_API)
+
+    def _fetch_aria2_release(self) -> dict:
+        return self._fetch_release(ARIA2_RELEASE_API)
+
+    @classmethod
+    def _fetch_release(cls, api_url: str) -> dict:
+        request = urllib.request.Request(
+            api_url,
+            headers={"User-Agent": "bilikara"},
+        )
+        with cls._urlopen(request, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _current_platform_tokens() -> tuple[str, str]:
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        if machine in {"amd64", "x86_64"}:
+            arch = "x64"
+        elif machine in {"i386", "i686", "x86"}:
+            arch = "x86"
+        elif machine in {"arm64", "aarch64"}:
+            arch = "arm64"
+        elif "armv7" in machine:
+            arch = "armv7"
+        else:
+            arch = machine
+        return system, arch
+
+    def _select_ytdlp_asset(self, release: dict) -> dict:
+        system, arch = self._current_platform_tokens()
+        if system == "windows":
+            if arch == "arm64":
+                preferred_names = ("yt-dlp_arm64.exe", "yt-dlp.exe")
+            elif arch == "x86":
+                preferred_names = ("yt-dlp_x86.exe",)
+            else:
+                preferred_names = ("yt-dlp.exe",)
+        elif system == "darwin":
+            preferred_names = ("yt-dlp_macos",)
+        elif system == "linux":
+            if arch == "arm64":
+                preferred_names = ("yt-dlp_linux_aarch64", "yt-dlp_linux")
+            elif arch == "armv7":
+                preferred_names = ("yt-dlp_linux_armv7l",)
+            elif arch == "x64":
+                preferred_names = ("yt-dlp_linux",)
+            else:
+                preferred_names = ("yt-dlp",)
+        else:
+            preferred_names = ("yt-dlp",)
+        return self._select_asset_by_name(release, preferred_names, "yt-dlp")
+
+    def _select_aria2_asset(self, release: dict) -> dict:
+        system, arch = self._current_platform_tokens()
+        if system != "windows":
+            raise RuntimeError(f"aria2c auto download is currently only available for Windows: {system}/{arch}")
+        if arch == "arm64":
+            preferred_fragments = ("win-64bit",)
+        elif arch == "x86":
+            preferred_fragments = ("win-32bit",)
+        else:
+            preferred_fragments = ("win-64bit",)
+        assets = release.get("assets") or []
+        for fragment in preferred_fragments:
+            for asset in assets:
+                name = str(asset.get("name") or "").lower()
+                if fragment in name and name.endswith(".zip"):
+                    return asset
+        raise RuntimeError(f"no aria2c release asset for {system}/{arch}")
+
+    @staticmethod
+    def _select_asset_by_name(release: dict, preferred_names: Iterable[str], tool_name: str) -> dict:
+        assets = release.get("assets") or []
+        asset_by_name = {
+            str(asset.get("name") or "").lower(): asset
+            for asset in assets
+        }
+        for preferred_name in preferred_names:
+            asset = asset_by_name.get(preferred_name.lower())
+            if asset:
+                return asset
+        raise RuntimeError(f"no {tool_name} release asset for current platform")
+
+    @staticmethod
+    def _extract_tool_binary_from_archive(archive_path: Path, output_dir: Path, binary_name: str) -> Path:
+        extract_dir = output_dir / f".extract-{archive_path.stem}"
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            lower_name = archive_path.name.lower()
+            if lower_name.endswith(".zip"):
+                with zipfile.ZipFile(archive_path) as zf:
+                    zf.extractall(extract_dir)
+            elif lower_name.endswith((".tar.gz", ".tgz")):
+                with tarfile.open(archive_path, "r:gz") as tf:
+                    tf.extractall(extract_dir)
+            else:
+                raise RuntimeError(f"unsupported archive format: {archive_path.name}")
+
+            expected_name = binary_name.lower()
+            for candidate in extract_dir.rglob("*"):
+                if candidate.is_file() and candidate.name.lower() == expected_name:
+                    target_path = output_dir / binary_name
+                    shutil.copy2(candidate, target_path)
+                    return target_path
+            raise RuntimeError(f"{binary_name} not found in {archive_path.name}")
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
 
     @staticmethod
     def _read_aria2c_version(binary_path: Path) -> str:
@@ -3144,12 +3345,7 @@ class CacheManager:
             return ""
 
     def _fetch_latest_release(self) -> dict:
-        request = urllib.request.Request(
-            BB_DOWN_RELEASE_API,
-            headers={"User-Agent": "bilikara"},
-        )
-        with self._urlopen(request, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return self._fetch_release(BB_DOWN_RELEASE_API)
 
     @staticmethod
     def _is_ssl_certificate_error(exc: BaseException) -> bool:
@@ -3232,8 +3428,15 @@ class CacheManager:
             machine = platform.machine().lower()
             if machine in {"arm64", "aarch64"}:
                 arm64_path = YTDLP_DIR / "yt-dlp_arm64.exe"
-                if arm64_path.exists():
+                x64_path = YTDLP_DIR / "yt-dlp.exe"
+                if arm64_path.exists() or not x64_path.exists():
                     return arm64_path
+                return x64_path
+            if machine in {"i386", "i686", "x86"}:
+                x86_path = YTDLP_DIR / "yt-dlp_x86.exe"
+                x64_path = YTDLP_DIR / "yt-dlp.exe"
+                if x86_path.exists() or not x64_path.exists():
+                    return x86_path
             return YTDLP_DIR / "yt-dlp.exe"
         return YTDLP_DIR / "yt-dlp"
 

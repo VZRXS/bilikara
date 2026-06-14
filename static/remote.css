@@ -4248,6 +4248,16 @@ body.remote-search-modal-open {
   color: var(--ink);
 }
 
+:root[data-theme="dark"] .category-browser-card-name,
+:root[data-theme="dark"] .category-browser-tab-name {
+  background: rgba(22, 19, 17, 0.52);
+}
+
+:root[data-theme="blue"] .category-browser-card-name,
+:root[data-theme="blue"] .category-browser-tab-name {
+  background: rgba(5, 8, 16, 0.52);
+}
+
 /* Dark theme active surface fixes. */
 :root:is([data-theme="dark"], [data-theme="blue"]) .audio-variant-button.active,
 :root:is([data-theme="dark"], [data-theme="blue"]) .remote-mute-button.is-muted {

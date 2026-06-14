@@ -6,6 +6,7 @@ import ssl
 import sys
 import unittest
 import urllib.error
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -53,6 +54,17 @@ class CacheManagerOutputTest(unittest.TestCase):
             CacheManager._structured_stage_message("下载视频轨 P1", 32 * 1024 * 1024, 64 * 1024 * 1024),
             "下载视频轨 P1 50% · 32.0 MB / 64.0 MB",
         )
+
+    def test_track_percent_ratio_counts_done_and_pending_tracks(self):
+        tracks = [
+            {"progress_percent": 50.0, "done": False},
+            {"done": True},
+            {"done": False},
+        ]
+        self.assertAlmostEqual(CacheManager._download_progress_ratio_from_track_percents(tracks), 0.5)
+
+    def test_track_percent_ratio_returns_none_without_progress_signal(self):
+        self.assertIsNone(CacheManager._download_progress_ratio_from_track_percents([{"done": False}]))
 
     def test_structured_download_message_starts_with_total_progress(self):
         tracks = [
@@ -1154,6 +1166,113 @@ class CacheManagerPolicyTest(unittest.TestCase):
             selected = CacheManager._select_asset(object(), release)
 
         self.assertEqual(selected["name"], "BBDown_1.6.3_20240814_osx-arm64.zip")
+
+    def test_select_ytdlp_asset_prefers_windows_arm64_binary(self):
+        release = {
+            "assets": [
+                {
+                    "name": "yt-dlp.exe",
+                    "browser_download_url": "https://example.test/yt-dlp.exe",
+                },
+                {
+                    "name": "yt-dlp_arm64.exe",
+                    "browser_download_url": "https://example.test/yt-dlp_arm64.exe",
+                },
+            ],
+        }
+
+        with patch("bilikara.cache.platform.system", return_value="Windows"), patch(
+            "bilikara.cache.platform.machine",
+            return_value="ARM64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                selected = manager._select_ytdlp_asset(release)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(selected["name"], "yt-dlp_arm64.exe")
+
+    def test_ensure_ytdlp_downloads_release_asset_when_missing(self):
+        ytdlp_dir = Path(self.temp_dir.name) / "tools" / "ytdlp"
+        target_path = ytdlp_dir / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp")
+        release = {
+            "assets": [
+                {
+                    "name": target_path.name,
+                    "browser_download_url": "https://example.test/yt-dlp",
+                }
+            ],
+        }
+
+        def fake_download(url: str, path: Path) -> None:
+            self.assertEqual(url, "https://example.test/yt-dlp")
+            path.write_bytes(b"yt-dlp-bin")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.YTDLP_DIR", ytdlp_dir
+        ), patch("bilikara.cache.YTDLP_PATH_OVERRIDE", ""):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_ytdlp_binary_path", return_value=target_path), patch.object(
+                    manager, "_fetch_ytdlp_release", return_value=release
+                ), patch.object(manager, "_download_url", side_effect=fake_download), patch.object(
+                    manager,
+                    "_read_ytdlp_version",
+                    return_value="2026.06.15",
+                ):
+                    path = manager._ensure_ytdlp()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, target_path)
+        self.assertEqual(target_path.read_bytes(), b"yt-dlp-bin")
+        self.assertEqual(manager.binary_version, "2026.06.15")
+
+    def test_ensure_aria2c_downloads_and_extracts_zip_when_missing(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        target_path = aria2_dir / ("aria2c.exe" if os.name == "nt" else "aria2c")
+        release = {
+            "assets": [
+                {
+                    "name": "aria2-1.37.0-win-64bit-build1.zip",
+                    "browser_download_url": "https://example.test/aria2.zip",
+                }
+            ],
+        }
+
+        def fake_download(url: str, path: Path) -> None:
+            self.assertEqual(url, "https://example.test/aria2.zip")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("aria2-1.37.0-win-64bit-build1/aria2c.exe", b"aria2c-bin")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.platform.system",
+            return_value="Windows",
+        ), patch(
+            "bilikara.cache.platform.machine",
+            return_value="AMD64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_aria2c_binary_path", return_value=target_path), patch.object(
+                    manager, "_fetch_aria2_release", return_value=release
+                ), patch.object(manager, "_download_url", side_effect=fake_download), patch.object(
+                    manager,
+                    "_read_aria2c_version",
+                    return_value="1.37.0",
+                ):
+                    path = manager._ensure_aria2c()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, target_path)
+        self.assertEqual(target_path.read_bytes(), b"aria2c-bin")
+        self.assertEqual(manager.binary_version, "1.37.0")
+        self.assertFalse((aria2_dir / "aria2-1.37.0-win-64bit-build1.zip").exists())
 
     def test_urlopen_retries_ssl_certificate_failure_with_certifi(self):
         certificate_error = urllib.error.URLError(
