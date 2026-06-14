@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bilikara.cache import CacheManager, DownloadCommandError, VIDEO_QUALITY_CHOICES
+from bilikara.cache import CacheManager, DOWNLOAD_SOURCE_YTDLP, DownloadCommandError, VIDEO_QUALITY_CHOICES
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 
@@ -188,6 +188,22 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 restored.shutdown()
 
+    def test_cache_policy_persists_download_source(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                snapshot = manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_YTDLP)
+                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_YTDLP)
+            finally:
+                manager.shutdown()
+
+            restored = CacheManager(self.store, max_cache_items=3)
+            try:
+                snapshot = restored.policy_snapshot()
+                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_YTDLP)
+            finally:
+                restored.shutdown()
+
     def test_bbdown_stream_preference_args_use_cache_policy(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -200,6 +216,84 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertEqual(manager._bbdown_stream_preference_args("audio"), ["--audio-ascending"])
             finally:
                 manager.shutdown()
+
+    def test_ytdlp_download_command_uses_policy_and_login_cookie(self):
+        target_dir = self.cache_dir / "song-a" / "video-p2"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.set_cache_policy(video_quality=VIDEO_QUALITY_CHOICES[2], audio_hires=False)
+                with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test-cookie"), patch.object(
+                    CacheManager,
+                    "_tool_arg_path",
+                    side_effect=lambda path: str(path),
+                ):
+                    command = manager._ytdlp_download_command(
+                        Path("/tools/ytdlp/yt-dlp.exe"),
+                        Path("/tools/ffmpeg/ffmpeg.exe"),
+                        "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+                        page=2,
+                        stream_kind="video",
+                        target_dir=target_dir,
+                    )
+                    cookie_file = Path(command[command.index("--cookies") + 1])
+                    self.assertTrue(cookie_file.exists(), f"cookie jar file not found: {cookie_file}")
+                    cookie_content = cookie_file.read_text(encoding="utf-8")
+                    self.assertIn("SESSDATA", cookie_content)
+                    self.assertIn("test-cookie", cookie_content)
+                    for line in cookie_content.splitlines():
+                        if "SESSDATA" in line and not line.startswith("#"):
+                            self.assertIn("\tTRUE\t/\tTRUE\t", line, "SESSDATA should have secure=TRUE")
+                    self.assertNotIn("--add-header", command)
+                    self.assertNotIn("--cookies-from-browser", command)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(command[0], str(Path("/tools/ytdlp/yt-dlp.exe")))
+        self.assertIn("--newline", command)
+        self.assertIn("--no-playlist", command)
+        self.assertIn("--retries", command)
+        self.assertEqual(command[command.index("--retries") + 1], "10")
+        self.assertIn("--fragment-retries", command)
+        self.assertEqual(command[command.index("--fragment-retries") + 1], "10")
+        self.assertIn("--file-access-retries", command)
+        self.assertEqual(command[command.index("--file-access-retries") + 1], "10")
+        self.assertIn("--retry-sleep", command)
+        self.assertEqual(command[command.index("--retry-sleep") + 1], "3")
+        self.assertIn("--throttled-rate", command)
+        self.assertEqual(command[command.index("--throttled-rate") + 1], "100K")
+        self.assertIn("--concurrent-fragments", command)
+        self.assertEqual(command[command.index("--concurrent-fragments") + 1], "1")
+        self.assertIn("height<=720", command[command.index("-f") + 1])
+        self.assertIn("--cookies", command)
+
+    def test_ytdlp_download_command_falls_back_to_browser_cookies(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch("bilikara.cache.effective_bilibili_cookie", return_value=""), patch.dict(
+                    os.environ,
+                    {"YTDLP_COOKIES_FROM_BROWSER": "firefox"},
+                ), patch.object(
+                    CacheManager,
+                    "_tool_arg_path",
+                    side_effect=lambda path: str(path),
+                ):
+                    command = manager._ytdlp_download_command(
+                        Path("/tools/ytdlp/yt-dlp.exe"),
+                        Path("/tools/ffmpeg/ffmpeg.exe"),
+                        "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+                        page=1,
+                        stream_kind="audio",
+                        target_dir=Path("/cache/song-a/audio-p1"),
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(command[command.index("-f") + 1], "ba/bestaudio")
+        self.assertEqual(command[command.index("--cookies-from-browser") + 1], "firefox")
+        self.assertNotIn("--add-header", command)
 
     def test_bbdown_stream_preference_args_force_avc_when_hevc_unsupported(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
@@ -1183,6 +1277,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        download_source="bbdown",
                     )
             finally:
                 manager.shutdown()
@@ -1221,6 +1316,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        download_source="bbdown",
                     )
             finally:
                 manager.shutdown()
@@ -1263,6 +1359,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        download_source="bbdown",
                     )
             finally:
                 manager.shutdown()

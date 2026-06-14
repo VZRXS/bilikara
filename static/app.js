@@ -270,6 +270,7 @@ const elements = {
   advanceDelaySlider: document.getElementById("advance-delay-slider"),
   advanceDelayScale: document.getElementById("advance-delay-scale"),
   cacheQualitySelect: document.getElementById("cache-quality-select"),
+  cacheDownloadSourceSelect: document.getElementById("cache-download-source-select"),
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
@@ -5127,9 +5128,30 @@ function renderCachePolicyControls(cachePolicy) {
     ];
   const currentQuality = String(cachePolicy?.video_quality || choices[0]?.value || "1080P 高码率");
   const audioHires = Boolean(cachePolicy?.audio_hires);
+  const rawSourceChoices = Array.isArray(cachePolicy?.download_source_choices)
+    ? cachePolicy.download_source_choices
+    : [];
+  const sourceChoices = rawSourceChoices.length
+    ? rawSourceChoices.map((choice) => {
+      if (typeof choice === "string") {
+        return { value: choice, label: choice };
+      }
+      const value = String(choice?.value || "");
+      return {
+        value,
+        label: String(choice?.label || value),
+      };
+    }).filter((choice) => choice.value)
+    : [
+      { value: "bbdown", label: "BBDown" },
+      { value: "ytdlp", label: "yt-dlp" },
+    ];
+  const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
   const signature = JSON.stringify({
     choices,
     currentQuality,
+    sourceChoices,
+    currentDownloadSource,
     audioHires,
     saving: state.cachePolicySaving,
   });
@@ -5153,6 +5175,22 @@ function renderCachePolicyControls(cachePolicy) {
     }
     elements.cacheQualitySelect.value = currentQuality;
     elements.cacheQualitySelect.disabled = state.cachePolicySaving;
+  }
+
+  if (elements.cacheDownloadSourceSelect) {
+    const choicesSignature = JSON.stringify(sourceChoices);
+    if (elements.cacheDownloadSourceSelect.dataset.choicesSignature !== choicesSignature) {
+      elements.cacheDownloadSourceSelect.innerHTML = "";
+      sourceChoices.forEach((choice) => {
+        const option = document.createElement("option");
+        option.value = choice.value;
+        option.textContent = choice.label;
+        elements.cacheDownloadSourceSelect.appendChild(option);
+      });
+      elements.cacheDownloadSourceSelect.dataset.choicesSignature = choicesSignature;
+    }
+    elements.cacheDownloadSourceSelect.value = currentDownloadSource;
+    elements.cacheDownloadSourceSelect.disabled = state.cachePolicySaving;
   }
 
   if (elements.cacheHiresCheckbox) {
@@ -9868,6 +9906,18 @@ elements.cacheQualitySelect?.addEventListener("change", async (event) => {
   await setCachePolicyPreference(
     { video_quality: quality },
     t("service.qualityUpdated", { quality: selectedLabel }),
+  );
+});
+
+elements.cacheDownloadSourceSelect?.addEventListener("change", async (event) => {
+  const downloadSource = String(event.target.value || "").trim();
+  if (!downloadSource || downloadSource === String(state.data?.cache_policy?.download_source || "")) {
+    return;
+  }
+  const selectedLabel = event.target.selectedOptions?.[0]?.textContent || downloadSource;
+  await setCachePolicyPreference(
+    { download_source: downloadSource },
+    t("service.downloadSourceUpdated", { source: selectedLabel }),
   );
 });
 

@@ -38,6 +38,8 @@ from .config import (
     LOG_DIR,
     MAX_CACHE_ITEMS,
     VENDOR_DIR,
+    YTDLP_DIR,
+    YTDLP_PATH_OVERRIDE,
 )
 from .bilibili import effective_bilibili_cookie
 from .store import PlaylistStore
@@ -70,6 +72,10 @@ VIDEO_QUALITY_CHOICES = (
 )
 DEFAULT_VIDEO_QUALITY = "1080P 高帧率"
 DEFAULT_AUDIO_HIRES = True
+DOWNLOAD_SOURCE_BBDOWN = "bbdown"
+DOWNLOAD_SOURCE_YTDLP = "ytdlp"
+DOWNLOAD_SOURCE_CHOICES = (DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_YTDLP)
+DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_BBDOWN
 
 
 class CacheCancelledError(RuntimeError):
@@ -78,6 +84,17 @@ class CacheCancelledError(RuntimeError):
 
 class DownloadCommandError(RuntimeError):
     pass
+
+
+def _debug_print(msg: str) -> None:
+    """Print debug message to console, replacing unencodable characters."""
+    import sys
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        encoded = msg.encode(sys.stdout.encoding or "utf-8", errors="replace")
+        sys.stdout.buffer.write(encoded + b"\n")
+        sys.stdout.buffer.flush()
 
 
 class CacheManager:
@@ -92,6 +109,7 @@ class CacheManager:
         self.max_cache_items = self._bounded_cache_items(max_cache_items)
         self.video_quality = DEFAULT_VIDEO_QUALITY
         self.audio_hires = DEFAULT_AUDIO_HIRES
+        self.download_source = DEFAULT_DOWNLOAD_SOURCE
         self.hevc_supported: bool | None = None
         self.avc_quality_cap = ""
         self.client_media_capabilities: dict[str, Any] = {}
@@ -137,6 +155,7 @@ class CacheManager:
                 "state": self.binary_state,
                 "version": self.binary_version,
                 "message": self.binary_message,
+                "download_source": self.download_source,
                 "max_cache_items": self.max_cache_items,
                 "cache_bytes": cache_metrics["total_bytes"],
                 "cached_items": cache_metrics["item_count"],
@@ -223,6 +242,17 @@ class CacheManager:
                     for quality in VIDEO_QUALITY_CHOICES
                 ],
                 "audio_hires": self.audio_hires,
+                "download_source": self.download_source,
+                "download_source_choices": [
+                    {
+                        "value": DOWNLOAD_SOURCE_BBDOWN,
+                        "label": "BBDown",
+                    },
+                    {
+                        "value": DOWNLOAD_SOURCE_YTDLP,
+                        "label": "yt-dlp",
+                    },
+                ],
                 "force_avc": self._should_force_avc_locked(),
                 "avc_quality_cap": self.avc_quality_cap,
                 "media_capabilities": dict(self.client_media_capabilities),
@@ -442,6 +472,7 @@ class CacheManager:
         max_cache_items: int | None = None,
         video_quality: str | None = None,
         audio_hires: bool | None = None,
+        download_source: str | None = None,
     ) -> dict[str, Any]:
         changed = False
         cache_limit_changed = False
@@ -461,6 +492,11 @@ class CacheManager:
                 normalized_hires = bool(audio_hires)
                 if self.audio_hires != normalized_hires:
                     self.audio_hires = normalized_hires
+                    changed = True
+            if download_source is not None:
+                normalized_source = self._normalize_download_source(download_source)
+                if self.download_source != normalized_source:
+                    self.download_source = normalized_source
                     changed = True
 
             if changed:
@@ -484,12 +520,15 @@ class CacheManager:
                 self.video_quality = self._normalize_video_quality(payload["video_quality"])
             if "audio_hires" in payload:
                 self.audio_hires = bool(payload["audio_hires"])
+            if "download_source" in payload:
+                self.download_source = self._normalize_download_source(payload["download_source"])
 
     def _save_cache_policy_locked(self) -> None:
         payload = {
             "max_cache_items": self.max_cache_items,
             "video_quality": self.video_quality,
             "audio_hires": self.audio_hires,
+            "download_source": self.download_source,
         }
         try:
             CACHE_POLICY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -517,6 +556,13 @@ class CacheManager:
         if value in VIDEO_QUALITY_CHOICES:
             return value
         return DEFAULT_VIDEO_QUALITY
+
+    @staticmethod
+    def _normalize_download_source(download_source: object) -> str:
+        value = str(download_source or "").strip().lower()
+        if value in DOWNLOAD_SOURCE_CHOICES:
+            return value
+        return DEFAULT_DOWNLOAD_SOURCE
 
     def cache_metrics(self) -> dict[str, Any]:
         item_bytes: dict[str, int] = {}
@@ -885,13 +931,15 @@ class CacheManager:
         self._append_log_line(log_path, "")
         self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
 
+        download_source = self._current_download_source()
         try:
-            binary_path = self._ensure_bbdown()
+            binary_path = self._ensure_downloader(download_source)
         except Exception as exc:  # noqa: BLE001
+            label = self._download_source_label(download_source)
             self.store.update_item(
                 item_id,
                 cache_status="failed",
-                cache_message=f"BBDown 不可用: {exc}",
+                cache_message=f"{label} 不可用: {exc}",
                 persist_backup=False,
             )
             return False
@@ -920,7 +968,14 @@ class CacheManager:
         self._record_item_activity(item_id)
 
         try:
-            cache_result = self._download_selected_streams(item, binary_path, ffmpeg_path, item_dir, log_path)
+            cache_result = self._download_selected_streams(
+                item,
+                binary_path,
+                ffmpeg_path,
+                item_dir,
+                log_path,
+                download_source=download_source,
+            )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
             self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
@@ -948,7 +1003,15 @@ class CacheManager:
                     return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
                 return False
             last_message = str(exc)
-            if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
+            if (
+                download_source == DOWNLOAD_SOURCE_BBDOWN
+                and allow_refresh_retry
+                and self._should_force_refresh_bbdown(last_message)
+            ):
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
+                )
                 self._append_log_line(
                     log_path,
                     f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
@@ -965,6 +1028,7 @@ class CacheManager:
                         f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
                     )
             self._clear_item_download_progress(item_id)
+            _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
             self.store.update_item(
                 item_id,
@@ -1186,6 +1250,8 @@ class CacheManager:
         ffmpeg_path: Path,
         item_dir: Path,
         log_path: Path,
+        *,
+        download_source: str,
     ) -> dict[str, object]:
         self._raise_if_priority_shift(item.id)
         selected_pages = self._selected_pages_for_item(item)
@@ -1210,54 +1276,73 @@ class CacheManager:
         download_tracks = [video_track, *audio_tracks]
         self._begin_download_progress(item.id, download_tracks)
 
-        result_paths: dict[str, Path] = {}
-        max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
-        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-cache-track")
-        future_to_track = {
-            executor.submit(
-                self._download_page_stream,
-                item,
-                binary_path,
-                ffmpeg_path,
-                item_dir,
-                log_path,
-                page=int(track["page"]),
-                stream_kind=str(track["stream_kind"]),
-                track_key=str(track["key"]),
-            ): track
-            for track in download_tracks
-        }
-        try:
-            done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
-            exceptions: list[Exception] = []
-            for future in done:
-                if future.cancelled():
-                    continue
-                try:
-                    future.result()
-                except Exception as exc:  # noqa: BLE001
-                    exceptions.append(exc)
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            ordered_tracks = [*audio_tracks, video_track]
+            result_paths: dict[str, Path] = {}
+            for track in ordered_tracks:
+                self._raise_if_priority_shift(item.id)
+                self._raise_if_retry_requested(item.id)
+                result_paths[str(track["key"])] = self._download_page_stream(
+                    item,
+                    binary_path,
+                    ffmpeg_path,
+                    item_dir,
+                    log_path,
+                    page=int(track["page"]),
+                    stream_kind=str(track["stream_kind"]),
+                    track_key=str(track["key"]),
+                    download_source=download_source,
+                )
+        else:
+            result_paths = {}
+            max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
+            executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-cache-track")
+            future_to_track = {
+                executor.submit(
+                    self._download_page_stream,
+                    item,
+                    binary_path,
+                    ffmpeg_path,
+                    item_dir,
+                    log_path,
+                    page=int(track["page"]),
+                    stream_kind=str(track["stream_kind"]),
+                    track_key=str(track["key"]),
+                    download_source=download_source,
+                ): track
+                for track in download_tracks
+            }
+            try:
+                done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
+                exceptions: list[Exception] = []
+                for future in done:
+                    if future.cancelled():
+                        continue
+                    try:
+                        future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        exceptions.append(exc)
 
-            if exceptions:
-                for future in pending:
-                    future.cancel()
-                self._terminate_item_processes(item.id)
-                still_running = [future for future in pending if not future.cancelled()]
-                if still_running:
-                    wait(still_running)
-                    for future in still_running:
-                        if future.cancelled():
-                            continue
-                        try:
-                            future.result()
-                        except Exception as exc:  # noqa: BLE001
-                            exceptions.append(exc)
-                raise self._preferred_download_exception(exceptions)
+                if exceptions:
+                    for future in pending:
+                        future.cancel()
+                    self._terminate_item_processes(item.id)
+                    still_running = [future for future in pending if not future.cancelled()]
+                    if still_running:
+                        wait(still_running)
+                        for future in still_running:
+                            if future.cancelled():
+                                continue
+                            try:
+                                future.result()
+                            except Exception as exc:  # noqa: BLE001
+                                exceptions.append(exc)
+                    raise self._preferred_download_exception(exceptions)
 
-            for future, track in future_to_track.items():
-                result_paths[str(track["key"])] = future.result()
-        finally:
-            executor.shutdown(wait=True)
+                for future, track in future_to_track.items():
+                    result_paths[str(track["key"])] = future.result()
+            finally:
+                executor.shutdown(wait=True)
 
         video_file = result_paths[str(video_track["key"])]
         audio_files: list[tuple[int, Path, str]] = []
@@ -1378,33 +1463,20 @@ class CacheManager:
         page: int,
         stream_kind: str,
         track_key: str,
+        download_source: str,
     ) -> Path:
         page_url = self._page_url(item.resolved_url, page)
         target_dir = item_dir / f"{stream_kind}-p{page}"
         target_dir.mkdir(parents=True, exist_ok=True)
-        preference_args = self._bbdown_stream_preference_args(stream_kind)
-
-        command = [
-            self._tool_arg_path(binary_path),
+        command = self._download_command(
+            download_source,
+            binary_path,
+            ffmpeg_path,
             page_url,
-            "-p",
-            str(page),
-            *preference_args,
-            "--work-dir",
-            self._tool_arg_path(target_dir),
-            "--ffmpeg-path",
-            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
-            "--file-pattern",
-            f"{stream_kind}-p{page}",
-            "--skip-mux",
-            "--skip-subtitle",
-            "--skip-cover",
-            "--skip-ai",
-            "--video-only" if stream_kind == "video" else "--audio-only",
-        ]
-        cookie = effective_bilibili_cookie()
-        if cookie:
-            command.extend(["-c", cookie])
+            page=page,
+            stream_kind=stream_kind,
+            target_dir=target_dir,
+        )
 
         label = "视频轨" if stream_kind == "video" else "音轨"
         stage_label = f"下载{label} P{page}"
@@ -1418,6 +1490,7 @@ class CacheManager:
             stream_kind=stream_kind,
             target_dir=target_dir,
             track_key=track_key,
+            tool_dir=binary_path.parent,
         )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
@@ -1437,6 +1510,180 @@ class CacheManager:
             done=True,
         )
         return stream_file
+
+    def _download_command(
+        self,
+        download_source: str,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            return self._ytdlp_download_command(
+                binary_path,
+                ffmpeg_path,
+                page_url,
+                page=page,
+                stream_kind=stream_kind,
+                target_dir=target_dir,
+            )
+        return self._bbdown_download_command(
+            binary_path,
+            ffmpeg_path,
+            page_url,
+            page=page,
+            stream_kind=stream_kind,
+            target_dir=target_dir,
+        )
+
+    def _bbdown_download_command(
+        self,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        command = [
+            self._tool_arg_path(binary_path),
+            page_url,
+            "-p",
+            str(page),
+            *self._bbdown_stream_preference_args(stream_kind),
+            "--work-dir",
+            self._tool_arg_path(target_dir),
+            "--ffmpeg-path",
+            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
+            "--file-pattern",
+            f"{stream_kind}-p{page}",
+            "--skip-mux",
+            "--skip-subtitle",
+            "--skip-cover",
+            "--skip-ai",
+            "--video-only" if stream_kind == "video" else "--audio-only",
+        ]
+        cookie = effective_bilibili_cookie()
+        if cookie:
+            command.extend(["-c", cookie])
+        return command
+
+    def _ytdlp_download_command(
+        self,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        command = [
+            self._tool_arg_path(binary_path),
+            "--newline",
+            "--no-playlist",
+            "--retries",
+            "10",
+            "--fragment-retries",
+            "10",
+            "--file-access-retries",
+            "10",
+            "--retry-sleep",
+            "3",
+            "--throttled-rate",
+            "100K",
+            "--concurrent-fragments",
+            "1",
+            "--ffmpeg-location",
+            self._tool_arg_path(ffmpeg_path),
+            "-f",
+            self._ytdlp_format_selector(stream_kind),
+            "-o",
+            self._tool_arg_path(target_dir / f"{stream_kind}-p{page}.%(ext)s"),
+            page_url,
+        ]
+        cookie = effective_bilibili_cookie()
+        if cookie:
+            cookie_file = self._write_ytdlp_cookie_jar(cookie, target_dir)
+            command.extend(["--cookies", self._tool_arg_path(cookie_file)])
+        else:
+            command.extend(["--cookies-from-browser", self._ytdlp_browser_cookie_source()])
+        return command
+
+    def _ytdlp_format_selector(self, stream_kind: str) -> str:
+        if stream_kind == "audio":
+            with self.lock:
+                audio_hires = self.audio_hires
+            return "ba/bestaudio" if audio_hires else "ba[abr<=320]/ba/bestaudio"
+
+        with self.lock:
+            video_quality = self.video_quality
+            force_avc = self._should_force_avc_locked()
+            avc_quality_cap = self.avc_quality_cap if force_avc else ""
+        max_height = self._ytdlp_max_height(video_quality, avc_quality_cap)
+        codec_filter = "[vcodec^=avc1]" if force_avc else ""
+        height_filter = f"[height<={max_height}]" if max_height else ""
+        return (
+            f"bv*{codec_filter}{height_filter}/"
+            f"bestvideo{codec_filter}{height_filter}/"
+            f"bv*{height_filter}/bestvideo{height_filter}/bv*/bestvideo"
+        )
+
+    @staticmethod
+    def _ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
+        quality = CacheManager._optional_video_quality(quality_cap) or CacheManager._normalize_video_quality(video_quality)
+        if "360" in quality:
+            return 360
+        if "480" in quality:
+            return 480
+        if "720" in quality:
+            return 720
+        if "1080" in quality:
+            return 1080
+        if "4K" in quality:
+            return 2160
+        if "8K" in quality:
+            return 4320
+        return 1080
+
+    @staticmethod
+    def _ytdlp_browser_cookie_source() -> str:
+        return os.getenv("YTDLP_COOKIES_FROM_BROWSER", "chrome").strip() or "chrome"
+
+    @staticmethod
+    def _write_ytdlp_cookie_jar(cookie_header: str, target_dir: Path) -> Path:
+        """Write a Netscape cookie jar file from a cookie header string.
+
+        yt-dlp rejects ``--add-header Cookie:`` values that contain
+        characters like ``*`` (common in Bilibili SESSDATA).  Writing a
+        standard cookie jar file and passing ``--cookies`` avoids this.
+        """
+        cookie_file = target_dir / "cookies.txt"
+        lines = ["# Netscape HTTP Cookie File", "# Generated by bilikara for yt-dlp", ""]
+        secure_names = {
+            name.lower()
+            for name in ("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5")
+        }
+        for pair in cookie_header.split(";"):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            name, _, value = pair.partition("=")
+            name = name.strip()
+            value = value.strip()
+            if not name:
+                continue
+            secure = "TRUE" if name.lower() in secure_names else "FALSE"
+            # domain  include_subdomains  path  secure  expiry  name  value
+            lines.append(f".bilibili.com\tTRUE\t/\t{secure}\t0\t{name}\t{value}")
+        lines.append("")
+        cookie_file.write_text("\n".join(lines), encoding="utf-8")
+        return cookie_file
 
     def _bbdown_stream_preference_args(self, stream_kind: str) -> list[str]:
         with self.lock:
@@ -1509,8 +1756,10 @@ class CacheManager:
         stream_kind: str,
         target_dir: Path,
         track_key: str,
+        tool_dir: Path | None = None,
     ) -> None:
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+        _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(command, ensure_ascii=False)}")
         target_bytes_state = {"value": 0}
         monitor_stop = threading.Event()
 
@@ -1523,8 +1772,8 @@ class CacheManager:
             encoding=SUBPROCESS_OUTPUT_ENCODING,
             errors="replace",
             bufsize=1,
-            cwd=self._tool_arg_path(BB_DOWN_DIR),
-            env=self._tool_process_env(ffmpeg_path),
+            cwd=self._tool_arg_path(tool_dir or BB_DOWN_DIR),
+            env=self._tool_process_env(ffmpeg_path, extra_tool_dirs=[tool_dir] if tool_dir else None),
             **self._hidden_process_kwargs(),
         )
         last_message = stage_label
@@ -1555,6 +1804,7 @@ class CacheManager:
                 if not line:
                     continue
                 last_message = line
+                _debug_print(f"[bilikara-cache] [{stage_label}] {line}")
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
                 self._record_item_activity(item_id)
                 target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
@@ -1592,6 +1842,7 @@ class CacheManager:
             raise CacheCancelledError(self._outside_window_message())
 
         if return_code != 0:
+            _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
             raise DownloadCommandError(last_message)
 
         self._update_download_track_progress(
@@ -2337,6 +2588,19 @@ class CacheManager:
             if process.poll() is not None:
                 return
 
+    def _current_download_source(self) -> str:
+        with self.lock:
+            return self.download_source
+
+    @staticmethod
+    def _download_source_label(download_source: str) -> str:
+        return "yt-dlp" if download_source == DOWNLOAD_SOURCE_YTDLP else "BBDown"
+
+    def _ensure_downloader(self, download_source: str, *, force_refresh: bool = False) -> Path:
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            return self._ensure_ytdlp()
+        return self._ensure_bbdown(force_refresh=force_refresh)
+
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         with self.binary_prepare_lock:
             override = Path(BB_DOWN_PATH_OVERRIDE) if BB_DOWN_PATH_OVERRIDE else None
@@ -2410,6 +2674,32 @@ class CacheManager:
                 self.binary_message = f"BBDown {latest_version} 已更新"
 
             return current_binary
+
+    def _ensure_ytdlp(self) -> Path:
+        with self.binary_prepare_lock:
+            override = Path(YTDLP_PATH_OVERRIDE).expanduser() if YTDLP_PATH_OVERRIDE else None
+            if override and override.exists():
+                version = self._read_ytdlp_version(override)
+                if not version:
+                    raise RuntimeError(f"外部 yt-dlp 不可执行: {override}")
+                with self.lock:
+                    self.binary_state = "ready"
+                    self.binary_version = version
+                    self.binary_message = f"使用外部 yt-dlp: {override}"
+                return override
+
+            binary_path = self._local_ytdlp_binary_path()
+            if not binary_path.exists():
+                raise RuntimeError(f"未找到 yt-dlp，可将 yt-dlp 放入 {YTDLP_DIR}")
+            binary_path.chmod(binary_path.stat().st_mode | stat.S_IEXEC)
+            version = self._read_ytdlp_version(binary_path)
+            if not version:
+                raise RuntimeError(f"yt-dlp 不可执行: {binary_path}")
+            with self.lock:
+                self.binary_state = "ready"
+                self.binary_version = version
+                self.binary_message = f"yt-dlp {version} 已就绪"
+            return binary_path
 
     def _fetch_latest_release(self) -> dict:
         request = urllib.request.Request(
@@ -2494,6 +2784,16 @@ class CacheManager:
 
     def _local_binary_path(self) -> Path:
         return BB_DOWN_DIR / ("BBDown.exe" if os.name == "nt" else "BBDown")
+
+    def _local_ytdlp_binary_path(self) -> Path:
+        if os.name == "nt":
+            machine = platform.machine().lower()
+            if machine in {"arm64", "aarch64"}:
+                arm64_path = YTDLP_DIR / "yt-dlp_arm64.exe"
+                if arm64_path.exists():
+                    return arm64_path
+            return YTDLP_DIR / "yt-dlp.exe"
+        return YTDLP_DIR / "yt-dlp"
 
     def _find_media_file(self, item_dir: Path) -> Path | None:
         return self._largest_media_file(item_dir, MEDIA_EXTENSIONS)
@@ -2699,6 +2999,27 @@ class CacheManager:
         return self._read_tool_version(binary_path, "ffmpeg")
 
     @staticmethod
+    def _read_ytdlp_version(binary_path: Path) -> str:
+        if not binary_path.exists():
+            return ""
+        try:
+            process = subprocess.run(
+                [str(binary_path), "--version"],
+                shell=False,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=10,
+                **CacheManager._hidden_process_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if process.returncode != 0:
+            return ""
+        return (process.stdout or process.stderr or "").splitlines()[0].strip()
+
+    @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:
         target = binary_path if binary_path.is_dir() else binary_path.parent
         return CacheManager._tool_arg_path(target)
@@ -2789,15 +3110,24 @@ class CacheManager:
     #     return f"data:image/svg+xml;base64,{encoded}"
 
     @staticmethod
-    def _tool_process_env(binary_path: Path) -> dict[str, str]:
+    def _tool_process_env(binary_path: Path, extra_tool_dirs: Iterable[Path | None] | None = None) -> dict[str, str]:
         env = os.environ.copy()
         path_entries = []
         ffmpeg_dir = CacheManager._tool_arg_path(binary_path if binary_path.is_dir() else binary_path.parent)
         if ffmpeg_dir:
             path_entries.append(ffmpeg_dir)
+        for extra_dir in extra_tool_dirs or []:
+            if not extra_dir:
+                continue
+            tool_dir = CacheManager._tool_arg_path(extra_dir)
+            if tool_dir and tool_dir not in path_entries:
+                path_entries.append(tool_dir)
         bbdown_dir = CacheManager._tool_arg_path(BB_DOWN_DIR)
         if bbdown_dir and bbdown_dir not in path_entries:
             path_entries.append(bbdown_dir)
+        ytdlp_dir = CacheManager._tool_arg_path(YTDLP_DIR)
+        if ytdlp_dir and ytdlp_dir not in path_entries:
+            path_entries.append(ytdlp_dir)
         existing_path = env.get("PATH", "")
         env["PATH"] = os.pathsep.join([*path_entries, existing_path]) if existing_path else os.pathsep.join(path_entries)
         return env
