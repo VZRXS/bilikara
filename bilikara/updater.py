@@ -664,7 +664,8 @@ for /f "tokens=2" %%P in ('tasklist /FI "PID eq %WAITPID%" /NH 2^>nul') do (
 )
 exit /b 0
 """
-    script_path.write_text(script, encoding="utf-8", newline="\r\n")
+    with script_path.open("w", encoding="utf-8", newline="\r\n") as handle:
+        handle.write(script)
     return ["cmd", "/c", str(script_path)]
 
 def _write_macos_restart_script(
