@@ -1535,7 +1535,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
 
     def _is_local_client(self) -> bool:
         host = self.client_address[0] if self.client_address else ""
-        return host in {"127.0.0.1", "::1", "localhost"}
+        return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
 
     def _has_valid_shutdown_token(self) -> bool:
         expected = os.getenv("BILIKARA_SHUTDOWN_TOKEN", "").strip()
