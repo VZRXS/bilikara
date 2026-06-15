@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 import time
-import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,28 +41,10 @@ APP_UPDATE_NO_ASSET_ERROR = "没有找到适用于当前平台的自动更新包
 APP_UPDATE_BUSY_STATES = {"checking", "downloading", "installing", "restarting"}
 APP_UPDATE_SUPPORTED_PLATFORMS = {"windows", "macos"}
 APP_UPDATE_CHUNK_SIZE = 1024 * 256
-APP_UPDATE_DEBUG_LOG_NAME = "bilikara-update-debug.txt"
 
 
 class AppUpdateError(RuntimeError):
     pass
-
-
-def _append_update_debug_log(log_path: Path | None, event: str, **fields: Any) -> None:
-    if log_path is None:
-        return
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-            "event": event,
-            **fields,
-        }
-        with log_path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, default=str))
-            handle.write("\n")
-    except Exception:
-        return
 
 
 def _dedupe_urls(urls: list[str]) -> list[str]:
@@ -799,44 +780,15 @@ class AppUpdateManager:
         return snapshot
 
     def _run(self, *, include_preview: bool, restart: bool) -> None:
-        debug_log_path = self.app_home / "updates" / APP_UPDATE_DEBUG_LOG_NAME
-        _append_update_debug_log(
-            debug_log_path,
-            "run_start",
-            current_version=self.current_version,
-            include_preview=include_preview,
-            restart=restart,
-            app_home=self.app_home,
-            executable_path=self.executable_path,
-            frozen=self.frozen,
-            target=self.target,
-            sys_executable=sys.executable,
-            sys_frozen=getattr(sys, "frozen", False),
-            cwd=os.getcwd(),
-        )
         try:
             update = self.release_checker(
                 current_version=self.current_version,
                 include_preview=include_preview,
             )
             latest_version = normalize_version_tag(update.get("latest_version"))
-            debug_log_path = self.app_home / "updates" / _safe_version_dir(latest_version or "latest") / APP_UPDATE_DEBUG_LOG_NAME
             release_url = str(update.get("release_url") or APP_RELEASES_URL)
             update_needed = bool(update.get("update_available") or update.get("switch_to_release_available"))
-            _append_update_debug_log(
-                debug_log_path,
-                "release_checked",
-                latest_version=latest_version,
-                release_url=release_url,
-                update_needed=update_needed,
-                update_available=bool(update.get("update_available")),
-                switch_to_release_available=bool(update.get("switch_to_release_available")),
-                target=self.target,
-                frozen=self.frozen,
-                selected_asset=update.get("update_asset"),
-            )
             if not update_needed:
-                _append_update_debug_log(debug_log_path, "no_update_needed", message=update.get("message"))
                 self._set_status(
                     "idle",
                     busy=False,
@@ -848,13 +800,6 @@ class AppUpdateManager:
                 return
 
             if not is_auto_update_supported(target=self.target, frozen=self.frozen):
-                _append_update_debug_log(
-                    debug_log_path,
-                    "unsupported",
-                    target=self.target,
-                    frozen=self.frozen,
-                    supported=is_auto_update_supported(target=self.target, frozen=self.frozen),
-                )
                 self._set_status(
                     "unsupported",
                     busy=False,
@@ -868,7 +813,6 @@ class AppUpdateManager:
 
             asset = update.get("update_asset") if isinstance(update.get("update_asset"), dict) else None
             if not asset:
-                _append_update_debug_log(debug_log_path, "missing_asset", update_keys=sorted(update.keys()))
                 self._set_status(
                     "unsupported",
                     busy=False,
@@ -882,28 +826,15 @@ class AppUpdateManager:
 
             asset_url = str(asset.get("browser_download_url") or "")
             if not asset_url:
-                _append_update_debug_log(debug_log_path, "asset_missing_url", asset=asset)
                 raise AppUpdateError(APP_UPDATE_NO_ASSET_ERROR)
             asset_name = _safe_filename(asset.get("name") or "bilikara-update.zip")
             expected_size = _coerce_asset_size(asset)
             update_dir = self.app_home / "updates" / _safe_version_dir(latest_version or "latest")
             update_dir.mkdir(parents=True, exist_ok=True)
-            debug_log_path = update_dir / APP_UPDATE_DEBUG_LOG_NAME
             archive_path = update_dir / asset_name
             extract_dir = update_dir / "extracted"
             if extract_dir.exists():
-                _append_update_debug_log(debug_log_path, "remove_previous_extract_dir", extract_dir=extract_dir)
                 shutil.rmtree(extract_dir)
-            _append_update_debug_log(
-                debug_log_path,
-                "paths_ready",
-                update_dir=update_dir,
-                archive_path=archive_path,
-                extract_dir=extract_dir,
-                asset_name=asset_name,
-                asset_url=asset_url,
-                expected_size=expected_size,
-            )
 
             self._set_status(
                 "downloading",
@@ -923,15 +854,6 @@ class AppUpdateManager:
                 expected_size=expected_size,
                 on_progress=self._download_progress,
             )
-            _append_update_debug_log(
-                debug_log_path,
-                "download_complete",
-                archive_path=archive_path,
-                archive_exists=archive_path.exists(),
-                archive_size=archive_path.stat().st_size if archive_path.exists() else 0,
-                downloaded=downloaded,
-                total=total,
-            )
             self._set_status(
                 "installing",
                 busy=True,
@@ -941,35 +863,7 @@ class AppUpdateManager:
                 progress=1.0 if (total or expected_size or downloaded) else 0.0,
             )
             _safe_extract_zip(archive_path, extract_dir)
-            extracted_exes = [str(path.relative_to(extract_dir)) for path in sorted(extract_dir.rglob("*.exe"))[:20]]
-            _append_update_debug_log(
-                debug_log_path,
-                "extract_complete",
-                extract_dir=extract_dir,
-                extract_dir_exists=extract_dir.exists(),
-                extracted_exes=extracted_exes,
-            )
-            _append_update_debug_log(
-                debug_log_path,
-                "prepare_restart_helper_start",
-                target=self.target,
-                executable_path=self.executable_path,
-                executable_name=self.executable_path.name,
-            )
             command = self._prepare_restart_helper(update_dir=update_dir, extract_dir=extract_dir)
-            script_path = update_dir / (
-                "apply-bilikara-update.cmd"
-                if str(self.target.get("platform") or "") == "windows"
-                else "apply-bilikara-update.sh"
-            )
-            _append_update_debug_log(
-                debug_log_path,
-                "prepare_restart_helper_done",
-                command=command,
-                script_path=script_path,
-                script_exists=script_path.exists(),
-                script_size=script_path.stat().st_size if script_path.exists() else 0,
-            )
             self._set_status(
                 "restarting" if restart else "idle",
                 busy=bool(restart),
@@ -977,22 +871,11 @@ class AppUpdateManager:
                 progress=1.0,
             )
             if restart:
-                _append_update_debug_log(debug_log_path, "launch_restart_helper_start", command=command)
                 self.restart_helper_launcher(command)
-                _append_update_debug_log(debug_log_path, "launch_restart_helper_done")
                 if self.on_restart_requested:
-                    _append_update_debug_log(debug_log_path, "restart_requested_callback_start")
                     self.on_restart_requested()
-                    _append_update_debug_log(debug_log_path, "restart_requested_callback_done")
         except Exception as exc:  # noqa: BLE001
             message = str(exc) or "自动更新失败"
-            _append_update_debug_log(
-                debug_log_path,
-                "run_failed",
-                error=message,
-                exception_type=type(exc).__name__,
-                traceback=traceback.format_exc(),
-            )
             self._set_status(
                 "failed",
                 busy=False,
