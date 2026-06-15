@@ -1091,7 +1091,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
-        ):
+        ), patch("bilikara.cache.TOOL_ASSET_BASE_URL", ""):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
@@ -1112,7 +1112,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
-        ):
+        ), patch("bilikara.cache.TOOL_ASSET_BASE_URL", ""):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
@@ -1122,6 +1122,87 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         manager._ensure_bbdown()
             finally:
                 manager.shutdown()
+
+    def test_tool_asset_download_retries_bucket_fallback(self):
+        target_path = Path(self.temp_dir.name) / "yt-dlp.exe"
+        calls: list[str] = []
+
+        def fake_download(url: str, path: Path) -> None:
+            calls.append(url)
+            if len(calls) == 1:
+                raise RuntimeError("github offline")
+            path.write_bytes(b"tool-bin")
+
+        manager = CacheManager(self.store, max_cache_items=3)
+        try:
+            with patch("bilikara.cache.TOOL_ASSET_BASE_URL", "https://download.example/bilikara/tools"), patch.object(
+                manager,
+                "_download_url",
+                side_effect=fake_download,
+            ):
+                manager._download_tool_asset(
+                    {
+                        "name": "yt-dlp.exe",
+                        "browser_download_url": "https://github.example/yt-dlp.exe",
+                    },
+                    target_path,
+                )
+        finally:
+            manager.shutdown()
+
+        self.assertEqual(
+            calls,
+            [
+                "https://github.example/yt-dlp.exe",
+                "https://download.example/bilikara/tools/yt-dlp.exe",
+            ],
+        )
+        self.assertEqual(target_path.read_bytes(), b"tool-bin")
+
+    def test_bbdown_uses_bucket_fallback_when_release_check_fails(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        local_binary = bbdown_dir / f"BBDown{suffix}"
+        version_file = bbdown_dir / "VERSION"
+        calls: list[str] = []
+
+        def fake_download(url: str, path: Path) -> None:
+            calls.append(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr(f"BBDown{suffix}", b"bbdown-bin")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR",
+            bbdown_dir,
+        ), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE",
+            version_file,
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL",
+            "https://download.example/bilikara/tools",
+        ), patch(
+            "bilikara.cache.platform.system",
+            return_value="Windows",
+        ), patch(
+            "bilikara.cache.platform.machine",
+            return_value="AMD64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
+                    manager,
+                    "_fetch_latest_release",
+                    side_effect=RuntimeError("offline"),
+                ), patch.object(manager, "_download_url", side_effect=fake_download):
+                    path = manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, local_binary)
+        self.assertEqual(calls, ["https://download.example/bilikara/tools/BBDown_1.6.3_20240814_win-x64.zip"])
+        self.assertEqual(local_binary.read_bytes(), b"bbdown-bin")
+        self.assertEqual(version_file.read_text(encoding="utf-8"), "r2-fallback")
 
     def test_select_asset_uses_windows_arm64_package(self):
         release = {

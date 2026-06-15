@@ -281,6 +281,7 @@ BILIBILI_HEADERS = {
 BB_DOWN_RELEASE_API = "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
 YTDLP_RELEASE_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
 ARIA2_RELEASE_API = "https://api.github.com/repos/aria2/aria2/releases/latest"
+TOOL_ASSET_BASE_URL = os.getenv("BILIKARA_TOOL_ASSET_BASE_URL", "https://download.kevinx96.icu/bilikara/tools").strip().rstrip("/")
 APP_RELEASE_API = "https://api.github.com/repos/VZRXS/bilikara/releases/latest"
 APP_RELEASES_URL = "https://github.com/VZRXS/bilikara/releases"
 APP_RELEASE_API_FALLBACKS = (

@@ -40,6 +40,7 @@ from .config import (
     INTERNAL_VENDOR_DIR,
     LOG_DIR,
     MAX_CACHE_ITEMS,
+    TOOL_ASSET_BASE_URL,
     VENDOR_DIR,
     YTDLP_DIR,
     YTDLP_PATH_OVERRIDE,
@@ -3072,7 +3073,10 @@ class CacheManager:
                         else:
                             self.binary_message = "BBDown 已就绪（未检查更新）"
                     return current_binary
-                raise RuntimeError(f"无法检查 BBDown 最新版本: {release_error}")
+                if not TOOL_ASSET_BASE_URL:
+                    raise RuntimeError(f"无法检查 BBDown 最新版本: {release_error}")
+                release = {"tag_name": "r2-fallback", "assets": [self._bbdown_fallback_asset()]}
+                latest_version = str(release["tag_name"])
 
             version_matches = (
                 not force_refresh
@@ -3095,7 +3099,7 @@ class CacheManager:
 
             asset = self._select_asset(release)
             tmp_archive = BB_DOWN_DIR / asset["name"]
-            self._download_url(asset["browser_download_url"], tmp_archive)
+            self._download_tool_asset(asset, tmp_archive)
             self._extract_archive(tmp_archive, BB_DOWN_DIR)
             tmp_archive.unlink(missing_ok=True)
 
@@ -3180,33 +3184,39 @@ class CacheManager:
         return ARIA2C_DIR / ("aria2c.exe" if os.name == "nt" else "aria2c")
 
     def _install_ytdlp(self, target_path: Path) -> None:
-        release = self._fetch_ytdlp_release()
-        asset = self._select_ytdlp_asset(release)
+        try:
+            release = self._fetch_ytdlp_release()
+            asset = self._select_ytdlp_asset(release)
+        except Exception:
+            asset = self._ytdlp_fallback_asset()
         YTDLP_DIR.mkdir(parents=True, exist_ok=True)
         name = str(asset.get("name") or target_path.name)
         download_url = str(asset.get("browser_download_url") or "")
-        if not download_url:
+        if not download_url and not self._tool_fallback_url(name):
             raise RuntimeError("yt-dlp release asset missing download URL")
         if name.lower().endswith((".zip", ".tar.gz", ".tgz")):
             archive_path = YTDLP_DIR / name
-            self._download_url(download_url, archive_path)
+            self._download_tool_asset(asset, archive_path)
             try:
                 self._extract_tool_binary_from_archive(archive_path, YTDLP_DIR, target_path.name)
             finally:
                 archive_path.unlink(missing_ok=True)
         else:
-            self._download_url(download_url, target_path)
+            self._download_tool_asset(asset, target_path)
 
     def _install_aria2c(self, target_path: Path) -> None:
-        release = self._fetch_aria2_release()
-        asset = self._select_aria2_asset(release)
+        try:
+            release = self._fetch_aria2_release()
+            asset = self._select_aria2_asset(release)
+        except Exception:
+            asset = self._aria2_fallback_asset()
         ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
         name = str(asset.get("name") or "aria2c.zip")
         download_url = str(asset.get("browser_download_url") or "")
-        if not download_url:
+        if not download_url and not self._tool_fallback_url(name):
             raise RuntimeError("aria2 release asset missing download URL")
         archive_path = ARIA2C_DIR / name
-        self._download_url(download_url, archive_path)
+        self._download_tool_asset(asset, archive_path)
         try:
             self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
         finally:
@@ -3228,6 +3238,44 @@ class CacheManager:
             return json.loads(response.read().decode("utf-8"))
 
     @staticmethod
+    def _fallback_tool_asset(name: str) -> dict[str, str]:
+        if not TOOL_ASSET_BASE_URL:
+            raise RuntimeError("tool asset fallback base URL is not configured")
+        return {
+            "name": name,
+            "browser_download_url": f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}",
+        }
+
+    @staticmethod
+    def _tool_fallback_url(name: str) -> str:
+        if not TOOL_ASSET_BASE_URL or not name:
+            return ""
+        return f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}"
+
+    def _download_tool_asset(self, asset: dict, target_path: Path) -> None:
+        name = str(asset.get("name") or target_path.name)
+        primary_url = str(asset.get("browser_download_url") or "")
+        fallback_url = self._tool_fallback_url(name)
+        urls: list[str] = []
+        for url in (primary_url, fallback_url):
+            if url and url not in urls:
+                urls.append(url)
+        if not urls:
+            raise RuntimeError(f"tool asset {name} missing download URL")
+
+        last_error: Exception | None = None
+        for url in urls:
+            try:
+                self._download_url(url, target_path)
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                target_path.unlink(missing_ok=True)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"tool asset {name} download failed")
+
+    @staticmethod
     def _current_platform_tokens() -> tuple[str, str]:
         system = platform.system().lower()
         machine = platform.machine().lower()
@@ -3242,6 +3290,49 @@ class CacheManager:
         else:
             arch = machine
         return system, arch
+
+    def _bbdown_fallback_asset(self) -> dict[str, str]:
+        system, arch = self._current_platform_tokens()
+        asset_names = {
+            ("windows", "x64"): "BBDown_1.6.3_20240814_win-x64.zip",
+            ("windows", "x86"): "BBDown_1.6.3_20240814_win-x64.zip",
+            ("windows", "arm64"): "BBDown_1.6.3_20240814_win-arm64.zip",
+            ("darwin", "x64"): "BBDown_1.6.3_20240814_osx-x64.zip",
+            ("darwin", "arm64"): "BBDown_1.6.3_20240814_osx-arm64.zip",
+            ("linux", "x64"): "BBDown_1.6.3_20240814_linux-x64.zip",
+            ("linux", "arm64"): "BBDown_1.6.3_20240814_linux-arm64.zip",
+        }
+        name = asset_names.get((system, arch))
+        if not name:
+            raise RuntimeError(f"no BBDown tool fallback asset for {system}/{arch}")
+        return self._fallback_tool_asset(name)
+
+    def _ytdlp_fallback_asset(self) -> dict[str, str]:
+        system, arch = self._current_platform_tokens()
+        if system == "windows":
+            if arch == "arm64":
+                name = "yt-dlp_arm64.exe"
+            elif arch == "x86":
+                name = "yt-dlp_x86.exe"
+            else:
+                name = "yt-dlp.exe"
+        elif system == "darwin":
+            name = "yt-dlp_macos"
+        elif system == "linux":
+            name = "yt-dlp_linux"
+        else:
+            name = "yt-dlp"
+        return self._fallback_tool_asset(name)
+
+    def _aria2_fallback_asset(self) -> dict[str, str]:
+        system, arch = self._current_platform_tokens()
+        if system != "windows":
+            raise RuntimeError(f"aria2c auto download is currently only available for Windows: {system}/{arch}")
+        if arch == "x86":
+            name = "aria2-1.37.0-win-32bit-build1.zip"
+        else:
+            name = "aria2-1.37.0-win-64bit-build1.zip"
+        return self._fallback_tool_asset(name)
 
     def _select_ytdlp_asset(self, release: dict) -> dict:
         system, arch = self._current_platform_tokens()
