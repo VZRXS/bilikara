@@ -7322,6 +7322,8 @@ window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
+let floatingControlBackdropIgnoreUntil = 0;
+
 function makeElementDraggable(element, onClick) {
   let startX = 0;
   let startY = 0;
@@ -7329,6 +7331,17 @@ function makeElementDraggable(element, onClick) {
   let initialTop = 0;
   let isDragging = false;
   let moved = false;
+  let suppressClickUntil = 0;
+
+  const invokeClick = () => {
+    if (typeof onClick === "function") {
+      onClick();
+    }
+  };
+
+  const suppressNextClick = () => {
+    suppressClickUntil = Date.now() + 450;
+  };
 
   const dragStart = (e) => {
     if (e.type === "mousedown" && e.button !== 0) {
@@ -7352,7 +7365,8 @@ function makeElementDraggable(element, onClick) {
 
     if (e.type === "touchstart") {
       document.addEventListener("touchmove", dragMove, { passive: false });
-      document.addEventListener("touchend", dragEnd);
+      document.addEventListener("touchend", dragEnd, { passive: false });
+      document.addEventListener("touchcancel", dragCancel);
     } else {
       document.addEventListener("mousemove", dragMove);
       document.addEventListener("mouseup", dragEnd);
@@ -7366,6 +7380,9 @@ function makeElementDraggable(element, onClick) {
     let currentY = 0;
 
     if (e.type === "touchmove") {
+      if (e.cancelable) {
+        e.preventDefault();
+      }
       currentX = e.touches[0].clientX;
       currentY = e.touches[0].clientY;
     } else {
@@ -7398,25 +7415,48 @@ function makeElementDraggable(element, onClick) {
     }
   };
 
+  const clearDragListeners = () => {
+    document.removeEventListener("touchmove", dragMove);
+    document.removeEventListener("touchend", dragEnd);
+    document.removeEventListener("touchcancel", dragCancel);
+    document.removeEventListener("mousemove", dragMove);
+    document.removeEventListener("mouseup", dragEnd);
+  };
+
   const dragEnd = (e) => {
     isDragging = false;
     element.classList.remove("dragging");
+    clearDragListeners();
 
-    if (e.type === "touchend") {
-      document.removeEventListener("touchmove", dragMove);
-      document.removeEventListener("touchend", dragEnd);
-    } else {
-      document.removeEventListener("mousemove", dragMove);
-      document.removeEventListener("mouseup", dragEnd);
+    if (e.type === "touchend" && e.cancelable) {
+      e.preventDefault();
     }
 
-    if (!moved) {
-      if (typeof onClick === "function") {
-        onClick();
-      }
+    if (moved) {
+      suppressNextClick();
+      return;
     }
+
+    invokeClick();
+    suppressNextClick();
   };
 
+  function dragCancel() {
+    isDragging = false;
+    moved = false;
+    element.classList.remove("dragging");
+    clearDragListeners();
+    suppressNextClick();
+  }
+
+  element.addEventListener("click", (event) => {
+    if (Date.now() < suppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    invokeClick();
+  });
   element.addEventListener("mousedown", dragStart);
   element.addEventListener("touchstart", dragStart);
 
@@ -7441,16 +7481,12 @@ function makeElementDraggable(element, onClick) {
 
 function showFloatingControlOverlay() {
   if (!elements.floatingControlOverlay) return;
+  const wasHidden = elements.floatingControlOverlay.classList.contains("hidden");
   elements.floatingControlOverlay.classList.remove("closing");
   elements.floatingControlOverlay.classList.remove("hidden");
   document.body.style.overflow = "hidden";
-
-  if (elements.floatingControlTrigger && elements.floatingControlCard) {
-    const triggerRect = elements.floatingControlTrigger.getBoundingClientRect();
-    const cardRect = elements.floatingControlCard.getBoundingClientRect();
-    const originX = (triggerRect.left + triggerRect.width / 2) - cardRect.left;
-    const originY = (triggerRect.top + triggerRect.height / 2) - cardRect.top;
-    elements.floatingControlCard.style.transformOrigin = `${originX}px ${originY}px`;
+  if (wasHidden) {
+    floatingControlBackdropIgnoreUntil = Date.now() + 450;
   }
 }
 
@@ -7479,7 +7515,18 @@ function initFloatingControlConsole() {
   elements.floatingControlClose?.addEventListener("click", () => {
     hideFloatingControlOverlay();
   });
-  elements.floatingControlBackdrop?.addEventListener("click", () => {
+  elements.floatingControlOverlay?.addEventListener("click", (event) => {
+    if (Date.now() < floatingControlBackdropIgnoreUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+  elements.floatingControlBackdrop?.addEventListener("click", (event) => {
+    if (Date.now() < floatingControlBackdropIgnoreUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     hideFloatingControlOverlay();
   });
 }
