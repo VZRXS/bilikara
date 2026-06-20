@@ -9,7 +9,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
+from bilikara.remote_identity import RemoteIdentityStore
 from bilikara.server import AppContext, BilikaraHandler, run
+from bilikara.store import PlaylistStore
 
 
 class FileServingPathSecurityTest(unittest.TestCase):
@@ -92,6 +94,75 @@ class AppContextRemoteAccessTest(unittest.TestCase):
         self.assertEqual(snapshot["lan_urls"], ["http://192.168.0.8:8080/remote"])
         self.assertEqual(snapshot["preferred_url"], "http://192.168.0.8:8080/remote")
         self.assertEqual(context._state_revision, 1)
+
+
+class AppContextRemoteIdentityTest(unittest.TestCase):
+    def make_context(self, root: Path) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+        context.store = PlaylistStore(
+            root / "state.json",
+            root / "backup.json",
+            root / "played",
+            on_change=context._notify_state_changed,
+        )
+        context.remote_identities = RemoteIdentityStore(root / "remote_identities.json")
+        context._remote_identity_lock = threading.RLock()
+        context._rating_submission_lock = threading.RLock()
+        context._rating_submission_keys = set()
+        context._rating_submission_key_order = deque()
+        return context
+
+    @staticmethod
+    def prepare_reset_state(context: AppContext) -> None:
+        context.cache_manager = SimpleNamespace(clear_runtime_cache=lambda: None)
+        context.auto_restored_backup = False
+        context._player_control_lock = threading.RLock()
+        context._player_control_seq = 0
+        context._player_control_ack_seq = 0
+        context._player_control_command = None
+        context._player_status_lock = threading.RLock()
+        context._player_status = None
+
+    def test_register_rename_and_host_delete_identity(self):
+        with TemporaryDirectory() as tmpdir:
+            context = self.make_context(Path(tmpdir))
+
+            token, registered = context.register_remote_identity("Kevin")
+            renamed = context.rename_remote_identity(token, "VZRXS")
+
+            self.assertEqual(registered["name"], "Kevin")
+            self.assertEqual(renamed["name"], "VZRXS")
+            self.assertEqual(context.store.snapshot()["session_users"], ["VZRXS"])
+            context.remove_session_user("VZRXS")
+            self.assertFalse(context.remote_identity_snapshot(token)["registered"])
+
+    def test_cookie_is_persistent_and_lan_http_compatible(self):
+        cookie = BilikaraHandler._remote_identity_cookie("token")
+
+        self.assertIn("bilikara_remote_token=token", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("Max-Age=31536000", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertNotIn("Secure", cookie)
+
+    def test_clear_data_starts_a_new_remote_session(self):
+        with TemporaryDirectory() as tmpdir:
+            context = self.make_context(Path(tmpdir))
+            self.prepare_reset_state(context)
+            token, identity = context.register_remote_identity("Kevin")
+            context._rating_submission_keys.add(("kevin", "play-1"))
+            context._rating_submission_key_order.append(("kevin", "play-1"))
+
+            context.reset_runtime_data()
+
+            snapshot = context.remote_identity_snapshot(token)
+            self.assertFalse(snapshot["registered"])
+            self.assertNotEqual(snapshot["session_id"], identity["session_id"])
+            self.assertEqual(context.store.snapshot()["session_users"], [])
+            self.assertEqual(context._rating_submission_keys, set())
+            self.assertEqual(context._rating_submission_key_order, deque())
 
 
 class AppContextStateRevisionTest(unittest.TestCase):

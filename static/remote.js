@@ -255,7 +255,15 @@ const state = {
   categoryBrowseLoading: false,
   categoryBrowseSeq: 0,
   categoryBrowseError: "",
-  requesterSelectRenderSignature: "",
+  remoteIdentity: {
+    registered: false,
+    name: "",
+    sessionId: "",
+  },
+  remoteIdentityChecking: true,
+  remoteIdentitySaving: false,
+  remoteIdentityModalMode: "register",
+  remoteIdentityError: "",
   dataRenderSignature: "",
   currentNowPlayingSignature: "",
   currentPlaybackClockSignature: "",
@@ -375,7 +383,16 @@ const elements = {
   reorderConfirmSheetCancel: document.getElementById("reorder-confirm-sheet-cancel"),
   reorderConfirmSheetConfirm: document.getElementById("reorder-confirm-sheet-confirm"),
   requestForm: document.getElementById("request-form"),
-  requesterSelect: document.getElementById("requester-select"),
+  remoteIdentityName: document.getElementById("remote-identity-name"),
+  remoteIdentityRename: document.getElementById("remote-identity-rename"),
+  remoteIdentityModal: document.getElementById("remote-identity-modal"),
+  remoteIdentityForm: document.getElementById("remote-identity-form"),
+  remoteIdentityTitle: document.getElementById("remote-identity-title"),
+  remoteIdentityDescription: document.getElementById("remote-identity-description"),
+  remoteIdentityInput: document.getElementById("remote-identity-input"),
+  remoteIdentityMessage: document.getElementById("remote-identity-message"),
+  remoteIdentityCancel: document.getElementById("remote-identity-cancel"),
+  remoteIdentitySubmit: document.getElementById("remote-identity-submit"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
   searchForm: document.getElementById("search-form"),
@@ -534,7 +551,7 @@ function ownerLineText(ownerName) {
 }
 
 function selectedRequesterName() {
-  return String(elements.requesterSelect?.value || "").trim();
+  return state.remoteIdentity.registered ? String(state.remoteIdentity.name || "").trim() : "";
 }
 
 function readLocalString(key, fallbackValue) {
@@ -657,7 +674,6 @@ function invalidateLanguageSensitiveRenderCache() {
   state.followBrowseRenderSignature = "";
   state.modalFollowBrowseRenderSignature = "";
   state.favlistBrowseRenderSignature = "";
-  state.requesterSelectRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
   state.listHeaderRenderSignature = "";
   state.queueRenderSignature = "";
@@ -1284,6 +1300,7 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
 async function apiPost(url, payload = {}) {
   const response = await fetch(url, {
     method: "POST",
+    credentials: "same-origin",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
@@ -1296,6 +1313,174 @@ async function apiPost(url, payload = {}) {
     throw error;
   }
   return data.data;
+}
+
+function normalizedRemoteIdentity(payload) {
+  return {
+    registered: Boolean(payload?.registered),
+    name: String(payload?.name || "").trim(),
+    sessionId: String(payload?.session_id || "").trim(),
+  };
+}
+
+function renderRemoteIdentity() {
+  const identity = state.remoteIdentity;
+  const registered = Boolean(identity.registered && identity.name);
+  const renameMode = registered && state.remoteIdentityModalMode === "rename";
+  const modalOpen = !registered || renameMode;
+
+  if (elements.remoteIdentityName) {
+    elements.remoteIdentityName.textContent = registered ? identity.name : "—";
+  }
+  if (elements.remoteIdentityRename) {
+    elements.remoteIdentityRename.disabled = !registered || state.remoteIdentitySaving;
+  }
+  elements.remoteIdentityModal?.classList.toggle("hidden", !modalOpen);
+  document.body.classList.toggle("remote-identity-modal-open", modalOpen);
+  if (elements.remoteShell) {
+    elements.remoteShell.inert = modalOpen;
+  }
+  if (elements.remoteIdentityTitle) {
+    elements.remoteIdentityTitle.textContent = t(renameMode ? "remoteIdentity.renameTitle" : "remoteIdentity.registerTitle");
+  }
+  if (elements.remoteIdentityDescription) {
+    elements.remoteIdentityDescription.textContent = t(
+      renameMode ? "remoteIdentity.renameDescription" : "remoteIdentity.registerDescription",
+    );
+  }
+  if (elements.remoteIdentityCancel) {
+    elements.remoteIdentityCancel.classList.toggle("hidden", !renameMode);
+  }
+  if (elements.remoteIdentitySubmit) {
+    elements.remoteIdentitySubmit.textContent = t(
+      state.remoteIdentitySaving
+        ? "remoteIdentity.saving"
+        : renameMode
+          ? "remoteIdentity.renameSubmit"
+          : "remoteIdentity.registerSubmit",
+    );
+    elements.remoteIdentitySubmit.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
+  }
+  if (elements.remoteIdentityInput) {
+    elements.remoteIdentityInput.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
+  }
+  if (elements.remoteIdentityMessage) {
+    elements.remoteIdentityMessage.textContent = state.remoteIdentityChecking
+      ? t("remoteIdentity.checking")
+      : state.remoteIdentityError;
+    elements.remoteIdentityMessage.classList.toggle("is-error", Boolean(state.remoteIdentityError));
+  }
+}
+
+function applyRemoteIdentity(payload) {
+  state.remoteIdentity = normalizedRemoteIdentity(payload);
+  state.remoteIdentityChecking = false;
+  state.remoteIdentitySaving = false;
+  state.remoteIdentityModalMode = "register";
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+}
+
+async function fetchRemoteIdentity({ showExpired = false } = {}) {
+  state.remoteIdentityChecking = true;
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+  try {
+    const response = await fetch("/api/remote-identity", {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: clientHeaders(),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(localizedApiMessage(payload.error) || t("error.requestFailed"));
+    }
+    applyRemoteIdentity(payload.data);
+    if (showExpired && !state.remoteIdentity.registered) {
+      state.remoteIdentityError = t("remoteIdentity.expired");
+      renderRemoteIdentity();
+    }
+  } catch (error) {
+    state.remoteIdentity = normalizedRemoteIdentity(null);
+    state.remoteIdentityChecking = false;
+    state.remoteIdentityError = error?.message || t("error.requestFailed");
+    renderRemoteIdentity();
+  }
+}
+
+function syncRemoteIdentityWithSnapshot(snapshot) {
+  if (!state.remoteIdentity.registered) {
+    renderRemoteIdentity();
+    return;
+  }
+  if (state.remoteIdentitySaving || state.remoteIdentityChecking) {
+    return;
+  }
+  const sessionId = String(snapshot?.remote_session_id || "").trim();
+  const users = Array.isArray(snapshot?.session_users) ? snapshot.session_users : [];
+  const identityIsCurrent = sessionId
+    && sessionId === state.remoteIdentity.sessionId
+    && users.includes(state.remoteIdentity.name);
+  if (identityIsCurrent) {
+    return;
+  }
+  // Re-check only when SSE reveals a session/name mismatch. This keeps other
+  // tabs in sync after rename without adding a polling loop.
+  void fetchRemoteIdentity({ showExpired: true });
+}
+
+function openRemoteIdentityRename() {
+  if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
+    return;
+  }
+  state.remoteIdentityModalMode = "rename";
+  state.remoteIdentityError = "";
+  if (elements.remoteIdentityInput) {
+    elements.remoteIdentityInput.value = state.remoteIdentity.name;
+  }
+  renderRemoteIdentity();
+  elements.remoteIdentityInput?.focus();
+  elements.remoteIdentityInput?.select();
+}
+
+function closeRemoteIdentityRename() {
+  if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
+    return;
+  }
+  state.remoteIdentityModalMode = "register";
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+}
+
+async function submitRemoteIdentity(event) {
+  event.preventDefault();
+  if (state.remoteIdentityChecking || state.remoteIdentitySaving) {
+    return;
+  }
+  const name = String(elements.remoteIdentityInput?.value || "").trim();
+  if (!name) {
+    state.remoteIdentityError = t("remoteIdentity.required");
+    renderRemoteIdentity();
+    return;
+  }
+  const renameMode = state.remoteIdentity.registered && state.remoteIdentityModalMode === "rename";
+  state.remoteIdentitySaving = true;
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+  try {
+    const identity = await apiPost(
+      renameMode ? "/api/remote-identity/rename" : "/api/remote-identity/register",
+      { name },
+    );
+    applyRemoteIdentity(identity);
+    if (elements.remoteIdentityInput) {
+      elements.remoteIdentityInput.value = "";
+    }
+  } catch (error) {
+    state.remoteIdentitySaving = false;
+    state.remoteIdentityError = error?.message || t("error.requestFailed");
+    renderRemoteIdentity();
+  }
 }
 
 function submitSongRating(item, score) {
@@ -1712,11 +1897,6 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   }
 }
 
-function handleRequesterSelectionChange() {
-  maybeUpdateRemoteRatingPrompt(state.data?.current_item);
-  render();
-}
-
 function filenameFromContentDisposition(headerValue, fallback) {
   const value = String(headerValue || "");
   const quotedMatch = value.match(/filename="([^"]+)"/i);
@@ -1984,6 +2164,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     || !state.data
     || nextRenderSignature !== state.dataRenderSignature;
   state.data = snapshot;
+  syncRemoteIdentityWithSnapshot(snapshot);
   scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
 
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
@@ -4164,7 +4345,7 @@ function render() {
   }
   const playbackMode = frontendPlaybackMode(data.playback_mode);
 
-  renderRequesterSelect(data.session_users || []);
+  renderRemoteIdentity();
   renderCurrentItem(data.current_item, playbackMode);
   renderCurrentRatingButton(data.current_item);
   renderAudioVariantBar(data.current_item, playbackMode);
@@ -4186,39 +4367,6 @@ function render() {
 
 function frontendPlaybackMode(_mode) {
   return "local";
-}
-
-function renderRequesterSelect(sessionUsers) {
-  const users = Array.isArray(sessionUsers) ? sessionUsers : [];
-  const signature = JSON.stringify({ language: state.language, users });
-  if (signature === state.requesterSelectRenderSignature) {
-    return;
-  }
-  state.requesterSelectRenderSignature = signature;
-
-  const previousValue = selectedRequesterName();
-  elements.requesterSelect.innerHTML = "";
-
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = users.length ? t("session.selectRequester") : t("remote.addUserFirst");
-  elements.requesterSelect.appendChild(placeholder);
-
-  users.forEach((userName) => {
-    const option = document.createElement("option");
-    option.value = userName;
-    option.textContent = userName;
-    elements.requesterSelect.appendChild(option);
-  });
-
-  if (previousValue && users.includes(previousValue)) {
-    elements.requesterSelect.value = previousValue;
-  } else if (users.length) {
-    elements.requesterSelect.value = users[0];
-  } else {
-    elements.requesterSelect.value = "";
-  }
-  elements.requesterSelect.disabled = users.length === 0;
 }
 
 function renderCurrentItem(current, playbackMode) {
@@ -6910,7 +7058,9 @@ elements.remoteKeyShiftInput?.addEventListener("keydown", async (event) => {
   await setRemoteKeyShift(event.target.value);
 });
 
-elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
+elements.remoteIdentityRename?.addEventListener("click", openRemoteIdentityRename);
+elements.remoteIdentityCancel?.addEventListener("click", closeRemoteIdentityRename);
+elements.remoteIdentityForm?.addEventListener("submit", submitRemoteIdentity);
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
@@ -7519,6 +7669,8 @@ async function startRemoteSession() {
   initFloatingControlConsole();
   await loadTranslations();
   renderLayoutMode();
+  renderRemoteIdentity();
+  await fetchRemoteIdentity();
   try {
     await fetchState();
   } catch (error) {

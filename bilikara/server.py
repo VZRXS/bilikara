@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 import webbrowser
+from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -66,11 +67,13 @@ from .config import (
     MAX_CACHE_ITEMS,
     PLAYED_SESSION_DIR,
     PORT,
+    REMOTE_IDENTITIES_FILE,
     STATE_FILE,
     STATIC_DIR,
     ensure_directories,
 )
 from .playlist_export import playlist_csv_bytes, playlist_image_export
+from .remote_identity import RemoteIdentityStore
 from .store import PlaylistStore
 from .updater import AppUpdateManager, check_for_update
 
@@ -83,6 +86,8 @@ BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 RATING_SUBMISSION_KEY_LIMIT = 2000
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
+REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
+REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 
 
 def _is_path_within(path: Path, root: Path) -> bool:
@@ -112,6 +117,8 @@ class AppContext:
             PLAYED_SESSION_DIR,
             on_change=self._notify_state_changed,
         )
+        self.remote_identities = RemoteIdentityStore(REMOTE_IDENTITIES_FILE)
+        self._remote_identity_lock = threading.RLock()
         self.auto_restored_backup = self.store.restore_backup()
         self.cache_manager = CacheManager(
             self.store,
@@ -169,6 +176,7 @@ class AppContext:
         payload["session_flags"] = {
             "auto_restored_backup": self.auto_restored_backup,
         }
+        payload["remote_session_id"] = self.remote_identities.snapshot_session_id()
         payload["remote_access"] = self.remote_access_snapshot()
         payload["gatcha"] = gatcha_task_snapshot()
         payload["gatcha_pool_config"] = gatcha_pool_config_snapshot()
@@ -301,7 +309,65 @@ class AppContext:
         self.store.add_session_user(name)
 
     def remove_session_user(self, name: str) -> None:
-        self.store.remove_session_user(name)
+        with self._remote_identity_lock:
+            if self.store.remove_session_user(name):
+                self.remote_identities.revoke_name(name)
+
+    def remote_identity_snapshot(self, token: str) -> dict[str, object]:
+        with self._remote_identity_lock:
+            name = self.remote_identities.resolve(token)
+            if name and not self.store.has_session_user(name):
+                self.remote_identities.revoke_token(token)
+                name = ""
+            return {
+                "registered": bool(name),
+                "name": name,
+                "session_id": self.remote_identities.snapshot_session_id(),
+            }
+
+    def register_remote_identity(self, name: str) -> tuple[str, dict[str, object]]:
+        with self._remote_identity_lock:
+            self.store.add_session_user(name)
+            normalized = self.store.normalize_session_user_name(name)
+            try:
+                token = self.remote_identities.issue(normalized)
+            except Exception:
+                self.store.remove_session_user(normalized)
+                raise
+            return token, {
+                "registered": True,
+                "name": normalized,
+                "session_id": self.remote_identities.snapshot_session_id(),
+            }
+
+    def rename_remote_identity(self, token: str, new_name: str) -> dict[str, object]:
+        with self._remote_identity_lock:
+            current_name = self.remote_identities.resolve(token)
+            if not current_name or not self.store.has_session_user(current_name):
+                self.remote_identities.revoke_token(token)
+                raise ValueError("remote identity is no longer valid")
+            renamed = self.store.rename_session_user(current_name, new_name)
+            if not self.remote_identities.rename(token, renamed):
+                raise ValueError("remote identity is no longer valid")
+            self._rename_rating_identity(current_name, renamed)
+            return {
+                "registered": True,
+                "name": renamed,
+                "session_id": self.remote_identities.snapshot_session_id(),
+            }
+
+    def _rename_rating_identity(self, current_name: str, new_name: str) -> None:
+        current_key = str(current_name or "").strip().casefold()
+        new_key = str(new_name or "").strip().casefold()
+        if not current_key or current_key == new_key:
+            return
+        with self._rating_submission_lock:
+            renamed_order = deque(
+                (new_key if user_name == current_key else user_name, play_id)
+                for user_name, play_id in self._rating_submission_key_order
+            )
+            self._rating_submission_key_order = renamed_order
+            self._rating_submission_keys = set(renamed_order)
 
     def move_session_user_to_index(self, name: str, index: int) -> None:
         self.store.move_session_user_to_index(name, index)
@@ -450,7 +516,12 @@ class AppContext:
 
     def reset_runtime_data(self) -> None:
         self.cache_manager.clear_runtime_cache()
-        self.store.reset_runtime_data()
+        with self._remote_identity_lock:
+            self.store.reset_runtime_data()
+            self.remote_identities.rotate_session()
+            with self._rating_submission_lock:
+                self._rating_submission_keys.clear()
+                self._rating_submission_key_order.clear()
         self.auto_restored_backup = False
         with self._player_control_lock:
             self._player_control_ack_seq = self._player_control_seq
@@ -689,6 +760,9 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
             return
+        if route == "/api/remote-identity":
+            self._write_json({"ok": True, "data": CONTEXT.remote_identity_snapshot(self._remote_identity_token())})
+            return
         if route == "/api/app/update/status":
             self._write_json({"ok": True, "data": CONTEXT.app_update_snapshot()})
             return
@@ -894,6 +968,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route == "/api/remote-identity/register":
+                token, identity = CONTEXT.register_remote_identity(str(body.get("name") or ""))
+                self._write_json(
+                    {"ok": True, "data": identity},
+                    headers={"Set-Cookie": self._remote_identity_cookie(token)},
+                )
+                return
+            if route == "/api/remote-identity/rename":
+                identity = CONTEXT.rename_remote_identity(
+                    self._remote_identity_token(),
+                    str(body.get("name") or ""),
+                )
+                self._write_json({"ok": True, "data": identity})
+                return
             if route == "/api/app/shutdown":
                 if not self._is_local_client() and not self._has_valid_shutdown_token():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
@@ -1550,6 +1638,31 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         provided = self.headers.get("X-Bilikara-Shutdown-Token", "").strip()
         return bool(expected and provided and hmac.compare_digest(expected, provided))
 
+    def _remote_identity_token(self) -> str:
+        cookie_header = str(self.headers.get("Cookie") or "")
+        if not cookie_header:
+            return ""
+        cookie = SimpleCookie()
+        try:
+            cookie.load(cookie_header)
+        except Exception:
+            return ""
+        morsel = cookie.get(REMOTE_IDENTITY_COOKIE)
+        return str(morsel.value or "").strip() if morsel else ""
+
+    @staticmethod
+    def _remote_identity_cookie(token: str) -> str:
+        cookie = SimpleCookie()
+        cookie[REMOTE_IDENTITY_COOKIE] = str(token or "")
+        morsel = cookie[REMOTE_IDENTITY_COOKIE]
+        morsel["path"] = "/"
+        morsel["max-age"] = str(REMOTE_IDENTITY_COOKIE_MAX_AGE)
+        morsel["httponly"] = True
+        morsel["samesite"] = "Strict"
+        # LAN deployments currently use plain HTTP, so Secure cannot be set.
+        # Add Secure here when remote access is moved behind HTTPS.
+        return morsel.OutputString()
+
     def _verified_bilikara_secret(self, bilikara_secret: str) -> bool:
         normalized_secret = str(bilikara_secret or "").strip()
         configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
@@ -1557,11 +1670,19 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return bool(normalized_secret) and hmac.compare_digest(normalized_secret, configured_bilikara_secret)
         return bool(verify_cloudflare_bilikara_secret(normalized_secret).get("verified"))
 
-    def _write_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _write_json(
+        self,
+        payload: dict,
+        status: HTTPStatus = HTTPStatus.OK,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
         self.wfile.flush()
