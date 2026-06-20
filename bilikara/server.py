@@ -85,6 +85,14 @@ MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
 
 
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 class DuplicateSessionRequestError(ValueError):
     def __init__(self, item, session_entry=None, active_item=None) -> None:
         self.item = item
@@ -1496,7 +1504,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         else:
             relative = route.lstrip("/")
         static_path = (STATIC_DIR / relative).resolve()
-        if not str(static_path).startswith(str(STATIC_DIR.resolve())) or not static_path.exists():
+        if not _is_path_within(static_path, STATIC_DIR.resolve()) or not static_path.exists():
             self._write_json({"ok": False, "error": "资源不存在"}, status=HTTPStatus.NOT_FOUND)
             return
         self._stream_file(
@@ -1511,7 +1519,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         relative = route[len(prefix):] if route.startswith(prefix) else route
         decoded = unquote(relative)
         media_path = (CACHE_DIR / decoded).resolve()
-        if not str(media_path).startswith(str(CACHE_DIR.resolve())) or not media_path.exists():
+        if not _is_path_within(media_path, CACHE_DIR.resolve()) or not media_path.exists():
             self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
             return
         self._stream_file(
