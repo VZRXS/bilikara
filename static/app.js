@@ -210,6 +210,7 @@ const state = {
   pendingReviewItems: [],
   pendingReviewTotal: 0,
   pendingReviewExportCount: 0,
+  pendingReviewLoaded: false,
   pendingReviewLoading: false,
   pendingReviewApproving: false,
   pendingReviewSeq: 0,
@@ -2003,6 +2004,11 @@ function setDeveloperMode(enabled) {
   if (!state.developerMode) {
     state.bilikaraSecret = "";
     state.pendingReviewItems = [];
+    state.pendingReviewTotal = 0;
+    state.pendingReviewExportCount = 0;
+    state.pendingReviewLoaded = false;
+    state.pendingReviewLoading = false;
+    state.pendingReviewSeq += 1;
     state.pendingReviewMessage = "";
     state.pendingReviewError = "";
     const activeReviewButton = Array.from(elements.searchSidebarItems || []).find(
@@ -2196,7 +2202,10 @@ async function deleteDeveloperD1Entry(snapshot) {
     bvid: snapshot.bvid,
     BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
   });
-  removePendingReviewItem(snapshot.bvid);
+  const reviewCacheExhausted = removePendingReviewItem(snapshot.bvid);
+  if (reviewCacheExhausted) {
+    await loadPendingReviewItems({ force: true });
+  }
   setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
 }
 
@@ -2210,7 +2219,14 @@ async function deleteDeveloperD1EntriesByMid(snapshot) {
     BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
   });
   if (Array.isArray(state.pendingReviewItems) && mid) {
+    const previousCount = state.pendingReviewItems.length;
     state.pendingReviewItems = state.pendingReviewItems.filter((item) => String(item?.mid || "").trim() !== mid);
+    const removedCount = previousCount - state.pendingReviewItems.length;
+    state.pendingReviewTotal = Math.max(0, Number(state.pendingReviewTotal || 0) - removedCount);
+    if (removedCount && state.pendingReviewItems.length === 0) {
+      state.pendingReviewLoaded = false;
+      await loadPendingReviewItems({ force: true });
+    }
     if (elements.searchModalOtherView?.querySelector("[data-pending-review-view]")) {
       renderPendingReviewView();
     }
@@ -3373,11 +3389,16 @@ function renderPendingReviewView() {
   }
 }
 
-async function loadPendingReviewItems() {
+async function loadPendingReviewItems({ force = false } = {}) {
   if (!state.developerMode || !state.bilikaraSecret) {
     state.pendingReviewItems = [];
+    state.pendingReviewLoaded = false;
     state.pendingReviewMessage = "";
     state.pendingReviewError = t("search.reviewNeedDeveloper");
+    renderPendingReviewView();
+    return;
+  }
+  if (!force && (state.pendingReviewLoaded || state.pendingReviewLoading)) {
     renderPendingReviewView();
     return;
   }
@@ -3395,9 +3416,11 @@ async function loadPendingReviewItems() {
     state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
     state.pendingReviewTotal = Number(payload?.total_pending || 0);
     state.pendingReviewExportCount = Number(payload?.export_count || 0);
+    state.pendingReviewLoaded = true;
   } catch (error) {
     if (state.pendingReviewSeq === reviewSeq) {
       state.pendingReviewItems = [];
+      state.pendingReviewLoaded = false;
       state.pendingReviewError = error?.message || t("error.requestFailed");
     }
   } finally {
@@ -3411,17 +3434,22 @@ async function loadPendingReviewItems() {
 function removePendingReviewItem(bvid) {
   const normalizedBvid = String(bvid || "").trim();
   if (!normalizedBvid || !Array.isArray(state.pendingReviewItems)) {
-    return;
+    return false;
   }
   const nextItems = state.pendingReviewItems.filter((item) => searchResultBvid(item) !== normalizedBvid);
   if (nextItems.length === state.pendingReviewItems.length) {
-    return;
+    return false;
   }
   state.pendingReviewItems = nextItems;
   state.pendingReviewTotal = Math.max(0, Number(state.pendingReviewTotal || 0) - 1);
+  const exhausted = nextItems.length === 0;
+  if (exhausted) {
+    state.pendingReviewLoaded = false;
+  }
   if (elements.searchModalOtherView?.querySelector("[data-pending-review-view]")) {
     renderPendingReviewView();
   }
+  return exhausted;
 }
 
 async function approvePendingReviewVisibleItems() {
@@ -3443,6 +3471,7 @@ async function approvePendingReviewVisibleItems() {
     state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
     state.pendingReviewTotal = Number(payload?.total_pending || 0);
     state.pendingReviewExportCount = Number(payload?.export_count || 0);
+    state.pendingReviewLoaded = true;
     state.pendingReviewMessage = t("search.reviewApproved", {
       count: Number(payload?.approved || 0),
       skipped: Number(payload?.skipped_missing || 0),
@@ -10984,7 +11013,11 @@ elements.searchSidebarItems?.forEach((btn) => {
       elements.searchModalPlaceholder?.classList.add("hidden");
       elements.favlistBrowserView?.classList.add("hidden");
       elements.searchModalOtherView?.classList.remove("hidden");
-      loadPendingReviewItems();
+      if (state.pendingReviewLoaded || state.pendingReviewLoading) {
+        renderPendingReviewView();
+      } else {
+        loadPendingReviewItems();
+      }
     } else {
       elements.searchModalPlaceholder?.classList.add("hidden");
       elements.favlistBrowserView?.classList.add("hidden");
@@ -11049,7 +11082,7 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
 elements.searchModalOtherView?.addEventListener("click", (event) => {
   const reviewRefreshButton = event.target.closest("[data-pending-review-refresh]");
   if (reviewRefreshButton && elements.searchModalOtherView.contains(reviewRefreshButton)) {
-    loadPendingReviewItems();
+    loadPendingReviewItems({ force: true });
     return;
   }
   const reviewApproveButton = event.target.closest("[data-pending-review-approve]");
