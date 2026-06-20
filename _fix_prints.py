@@ -1,7 +1,8 @@
 """Replace raw debug prints with encoding-safe _debug_print in cache.py"""
 import pathlib
 
-p = pathlib.Path(r"c:\bilikaradev\bilikara\bilikara\cache.py")
+root = pathlib.Path(__file__).resolve().parent
+p = root / "bilikara" / "cache.py"
 content = p.read_text(encoding="utf-8")
 
 # 1. Add the _debug_print helper function before CacheManager class
@@ -57,8 +58,3 @@ for old, new in replacements:
 
 p.write_text(content, encoding="utf-8")
 print("All replacements done")
-"""
-
-p = pathlib.Path(r"c:\bilikaradev\bilikara\bilikara\cache.py")
-content = p.read_text(encoding="utf-8")
-"""

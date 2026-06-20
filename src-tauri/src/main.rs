@@ -4,8 +4,8 @@
 )]
 
 use serde::Deserialize;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex};
@@ -135,11 +135,18 @@ fn request_backend_shutdown(base_url: &str, shutdown_token: &str) -> bool {
         return false;
     };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let request = format!(
         "POST /api/app/shutdown HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: 2\r\nContent-Type: application/json\r\nX-Bilikara-Shutdown-Token: {}\r\nConnection: close\r\n\r\n{}",
         host, port, shutdown_token, "{}"
     );
-    stream.write_all(request.as_bytes()).is_ok()
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let _ = stream.shutdown(Shutdown::Write);
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response);
+    true
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
@@ -190,7 +197,7 @@ fn main() {
             #[cfg(target_os = "windows")]
             command.creation_flags(CREATE_NO_WINDOW);
 
-            let mut child = command.spawn().expect("Failed to start backend");
+            let mut child = command.spawn()?;
 
             let stdout = child.stdout.take().unwrap();
             let stderr = child.stderr.take();

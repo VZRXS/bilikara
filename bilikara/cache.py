@@ -2014,11 +2014,13 @@ class CacheManager:
         if not urls:
             raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
 
-        primary_url = urls[0]
+        download_urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not download_urls:
+            raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
 
         command = [
             self._tool_arg_path(binary_path),
-            primary_url,
+            *download_urls,
             "--dir", self._tool_arg_path(target_dir),
             "--out", out_name,
             "--continue=true",
@@ -2039,9 +2041,6 @@ class CacheManager:
         user_agent = BILIBILI_HEADERS.get("User-Agent", "")
         if user_agent:
             command.extend(["--header", f"User-Agent: {user_agent}"])
-
-        for backup_url in urls[1:]:
-            command.extend(["--referer", backup_url])
 
         self._run_item_command(
             item_id,

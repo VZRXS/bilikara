@@ -628,7 +628,7 @@ set "DST={destination_root}"
 set "EXE={launch_name}"
 set "LOG=%TEMP%\\bilikara-update.log"
 for %%I in (%PIDS%) do call :waitpid %%I
-robocopy "%SRC%" "%DST%" /MIR /XD runtime data __pycache__ /XF "%~nx0" > "%LOG%" 2>&1
+robocopy "%SRC%" "%DST%" /MIR /XD runtime data updates __pycache__ /XF "%~nx0" > "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
 if %RC% GEQ 8 exit /b %RC%
 start "" "%DST%\\%EXE%"

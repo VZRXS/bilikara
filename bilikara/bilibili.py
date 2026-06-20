@@ -2611,20 +2611,6 @@ def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
     return None
 
 
-def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
-    if len(pages) != 2:
-        return None
-    first_page, second_page = sorted(pages, key=lambda page: page.page)
-    if (
-        first_page.page == 1
-        and second_page.page == 2
-        and not _part_keyword_match(first_page.part)
-        and _part_keyword_match(second_page.part)
-    ):
-        return second_page.page
-    return None
-
-
 def _requires_manual_binding(pages: list[VideoPage]) -> bool:
     if len(pages) > 2:
         return True

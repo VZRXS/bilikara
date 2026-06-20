@@ -727,6 +727,43 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_aria2c_download_uses_backup_urls_as_mirror_uris(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                target_dir = self.cache_dir / "song-a" / "video-p1"
+                log_path = Path(self.temp_dir.name) / "download.log"
+                captured = {}
+
+                def fake_run_item_command(_item_id, command, *_args, **_kwargs):
+                    captured["command"] = list(command)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    (target_dir / "video-p1.mp4").write_bytes(b"video")
+
+                with patch.object(manager, "_run_item_command", side_effect=fake_run_item_command):
+                    path = manager._download_stream_with_aria2c(
+                        "song-a",
+                        Path("aria2c.exe"),
+                        Path("ffmpeg.exe"),
+                        target_dir,
+                        log_path,
+                        urls=["https://primary.example/video.m4s", "https://backup.example/video.m4s"],
+                        out_name="video-p1.mp4",
+                        cookie="",
+                        stage_label="download video",
+                        track_key="video-p1",
+                        stream_kind="video",
+                    )
+
+                command = captured["command"]
+                self.assertEqual(path, target_dir / "video-p1.mp4")
+                self.assertIn("https://primary.example/video.m4s", command)
+                self.assertIn("https://backup.example/video.m4s", command)
+                self.assertLess(command.index("https://backup.example/video.m4s"), command.index("--dir"))
+                self.assertNotIn("--referer", command)
+            finally:
+                manager.shutdown()
+
     def test_retry_item_can_force_requeue_ready_cache_item(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)

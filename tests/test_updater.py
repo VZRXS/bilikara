@@ -342,6 +342,7 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertIn('set "PIDS=111 222"', script)
         self.assertIn('set "EXE=bilikara-desktop.exe"', script)
         self.assertIn('for %%I in (%PIDS%) do call :waitpid %%I', script)
+        self.assertIn('/XD runtime data updates __pycache__', script)
         self.assertIn(r'start "" "%DST%\%EXE%"', script)
 
     def test_app_update_manager_reports_unsupported_platform_without_downloading(self):

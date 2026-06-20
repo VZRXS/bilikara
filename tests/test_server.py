@@ -195,6 +195,14 @@ class AppContextRatingSubmissionTest(unittest.TestCase):
         self.assertIn(("vzrxs", "song-c"), context._rating_submission_keys)
 
 
+class BilikaraHandlerLocalClientTest(unittest.TestCase):
+    def test_ipv4_mapped_loopback_is_local_client(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.client_address = ("::ffff:127.0.0.1", 54321)
+
+        self.assertTrue(handler._is_local_client())
+
+
 class AppContextPlayerStatusTest(unittest.TestCase):
     def make_context(self) -> AppContext:
         context = AppContext.__new__(AppContext)

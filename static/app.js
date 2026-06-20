@@ -6463,6 +6463,10 @@ function setupAudioPitchShifter(audio) {
   if (!audio) {
     return;
   }
+  if (audio.jungle) {
+    applyKeyShiftToAudio(audio);
+    return;
+  }
   if (!window.AudioContext && !window.webkitAudioContext) {
     return;
   }
