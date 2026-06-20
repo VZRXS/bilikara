@@ -1,0 +1,13 @@
+{
+  "name": "bilikara-tauri",
+  "version": "1.0.0",
+  "author": "VZRXS",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.2"
+  }
+}

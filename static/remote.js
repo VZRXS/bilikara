@@ -5,12 +5,153 @@ const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const larkSearchTableCount = 5;
+const d1BrowseItemLimit = 450;
+const d1BrowseTagLimit = 450;
+const d1BrowseMergeMinLength = 5;
+const d1BrowseCountConcurrency = 4;
+const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
+const categoryBrowsePageSize = 100;
+const categoryBrowseDefinitionsRaw = [
+  { key: "hotBlood", tags: ["热血", "战斗"] },
+  { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
+  { key: "yuri", tags: ["百合"] },
+  { key: "vtuberSeries", tags: ["vtuber系列", "Hololive", "Vtuber"] },
+  { key: "idol", tags: ["偶像", "bangdream", "Lovelive系列", "偶像大师系列","SHOW BY ROCK!!","ガールズバンドクライ","22/7","Togenashi Togeari"] },
+  { key: "school", tags: ["校园", "学园","社团"] },
+  { key: "healing", tags: ["治愈", "催泪", "致郁"] },
+  { key: "vocaloid", tags: ["V家", "VOCALOID","DECO*27","Giga"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "detective", tags: ["推理","名探偵コナン","智斗"] },
+  { key: "mecha", tags: ["机战", "高达系列"] },
+  { key: "sliceOfLife", tags: ["日常"] },
+  { key: "moe", tags: ["萌系"] },
+  { key: "sports", tags: ["运动"] },
+  { key: "original", tags: ["原创"] },
+  { key: "mangaAdapted", tags: ["漫画改", "漫改", "动漫改"] },
+  { key: "gameAdapted", tags: ["游戏改", "Galgame", "GALGAME","鳴潮","ウマ娘","Key社","MAGES","Leaf","柚子社","August","游戏","ヘブンバーンズレッド","原神"] },
+  { key: "novelAdapted", tags: ["小说改", "轻改","轻小说改"] },
+  { key: "pjsk", tags: ["pjsk","プロジェクトセカイ"] },
+  { key: "symphogear", tags: ["战姬绝唱","戦姫絶唱シンフォギア"] },
+  { key: "pokemonSeries", tags: ["宝可梦系列"] },
+  { key: "childhood", tags: ["童年", "宝可梦系列"] },
+  { key: "bangDream", tags: ["bangdream","BanG Dream!","バンドリ！"] },
+  { key: "loveLive", tags: ["Lovelive系列","ラブライブ!"] },
+  { key: "idolmaster", tags: ["偶像大师系列","アイドルマスター"] },
+  { key: "isekai", tags: ["异世界", "穿越"] },
+  { key: "kamitsubaki", tags: ["神椿", "KAMITSUBAKI", "神椿工作室", "KAMITSUBAKI STUDIO","V.W.P","ヰ世界情緒","Albemuth","花譜"] },
+  { key: "youth", tags: ["青春","WHITE ALBUM2","HoneyWorks","励志"] },
+  { key: "otome", tags: ["乙女", "逆后宫"] },
+  { key: "kids", tags: ["子供向"] },
+  { key: "comedy", tags: ["搞笑", "喜剧"] },
+  { key: "tokusatsu", tags: ["特摄"] },
+  { key: "dark", tags: ["黑暗", "悬疑", "战争", "心理", "恐怖", "犯罪","扭曲"] },
+  { key: "godsDemons", tags: ["神魔"] },
+  { key: "workplace", tags: ["职场"] },
+  { key: "gourmet", tags: ["美食"] },
+  { key: "history", tags: ["历史","架空"] },
+  { key: "touhouProject", tags: ["东方project"] },
+  { key: "macross", tags: ["マクロス", "超时空要塞"] },
+  { key: "gundam", tags: ["高达系列"] },
+  { key: "longRunning", tags: ["名探偵コナン"] },
+];
+const categoryBrowseFullFieldTags = new Set([
+  "Hololive",
+  "Vtuber",
+  "SHOW BY ROCK!!",
+  "ガールズバンドクライ",
+  "22/7",
+  "Togenashi Togeari",
+  "VOCALOID",
+  "DECO*27",
+  "Giga",
+  "名探偵コナン",
+  "Galgame",
+  "GALGAME",
+  "鳴潮",
+  "ウマ娘",
+  "Key社",
+  "MAGES",
+  "Leaf",
+  "柚子社",
+  "August",
+  "游戏",
+  "ヘブンバーンズレッド",
+  "原神",
+  "プロジェクトセカイ",
+  "戦姫絶唱シンフォギア",
+  "BanG Dream!",
+  "バンドリ！",
+  "ラブライブ!",
+  "アイドルマスター",
+  "KAMITSUBAKI",
+  "神椿工作室",
+  "KAMITSUBAKI STUDIO",
+  "V.W.P",
+  "ヰ世界情緒",
+  "Albemuth",
+  "花譜",
+  "WHITE ALBUM2",
+  "HoneyWorks",
+  "超时空要塞",
+].map(categoryBrowseTagKey));
+const categoryBrowseImageUrls = [
+  "/pic/cat_1.png",
+  "/pic/cat_2.png",
+  "/pic/cat_3.png",
+  "/pic/cat_4.png",
+  "/pic/cat_5.png",
+  "/pic/cat_6.png",
+  "/pic/cat_7.jpg",
+  "/pic/cat_8.jpg",
+  "/pic/cat_9.png",
+  "/pic/cat_10.jpg",
+  "/pic/cat_11.jpg",
+  "/pic/cat_12.jpg",
+  "/pic/cat_13.jpg",
+  "/pic/cat_14.png",
+  "/pic/cat_15.png",
+  "/pic/cat_16.jpg",
+  "/pic/cat_17.jpg",
+  "/pic/cat_18.jpg",
+  "/pic/cat_19.jpg",
+  "/pic/cat_20.jpg",
+  "/pic/cat_21.png",
+  "/pic/cat_22.jpg",
+  "/pic/cat_23.jpg",
+  "/pic/cat_24.jpg",
+  "/pic/cat_25.png",
+  "/pic/cat_26.png",
+  "/pic/cat_27.jpg",
+  "/pic/cat_28.jpg",
+  "/pic/cat_29.png",
+  "/pic/cat_30.jpg",
+  "/pic/cat_31.jpg",
+  "/pic/cat_32.jpg",
+  "/pic/cat_33.jpg",
+  "/pic/cat_34.jpg",
+  "/pic/cat_35.jpg",
+  "/pic/cat_36.jpg",
+  "/pic/cat_37.jpg",
+  "/pic/cat_38.jpg",
+  "/pic/cat_39.webp",
+  "/pic/cat_40.png",
+];
 const playerControlStatusRefreshDelaysMs = [180, 520, 1100, 1800];
 const playerControlStatusSyncTimeoutMs = 3200;
+const remoteRatingPromptThreshold = 0.5;
 const storageKeys = {
   language: "bilikara.ui.language",
   layoutMode: "bilikara.remote.layout.mode",
+  theme: "bilikara.ui.theme",
 };
+
+function categoryBrowseTagKey(value) {
+  return String(value || "").normalize("NFKC").trim().toLowerCase();
+}
+
+function categoryBrowseUsesFullFieldSearch(tag) {
+  return categoryBrowseFullFieldTags.has(categoryBrowseTagKey(tag));
+}
 
 const state = {
   language: "zh",
@@ -37,12 +178,18 @@ const state = {
   remoteLocalVolumePercent: null,
   remoteLocalMuted: null,
   remoteVolumeCommitTimer: null,
+  remoteLocalKeyShift: null,
+  remoteKeyShiftEchoSuppressUntil: 0,
+  remoteKeyShiftSaveSeq: 0,
   audioVariantBarExpanded: false,
   audioVariantBarItemId: "",
   bindingSheetOpen: false,
   bindingIntent: null,
   gatchaFavlistSheetOpen: false,
   gatchaFavlistIntent: null,
+  poolConfigSheetOpen: false,
+  poolConfigData: null,
+  poolConfigSaving: false,
   reorderConfirmSheetOpen: false,
   reorderConfirmIntent: null,
   reorderConfirmSaving: false,
@@ -64,6 +211,10 @@ const state = {
   larkSearchVisible: false,
   larkSearchLoading: false,
   larkSearchSeq: 0,
+  searchModalOpen: false,
+  searchModalView: "search",
+  searchModalLarkLoading: false,
+  searchModalLarkSeq: 0,
   remoteSearchStageView: "",
   remoteSearchStageAngle: 0,
   remoteSearchFlipTimer: null,
@@ -79,6 +230,31 @@ const state = {
   followBrowseSelectedUid: "",
   followBrowseLoading: false,
   followBrowseRenderSignature: "",
+  modalFollowBrowseRenderSignature: "",
+  favlistBrowseData: null,
+  favlistBrowseSelectedFolderId: "",
+  favlistBrowseLoading: false,
+  favlistBrowseRenderSignature: "",
+  favlistBrowseReloadTimer: null,
+  d1BrowseKind: "",
+  d1BrowseLetter: "",
+  d1BrowseTag: "",
+  d1BrowseLocale: "",
+  d1BrowseAliases: [],
+  d1BrowseQuery: "",
+  d1BrowseData: null,
+  d1BrowseLoading: false,
+  d1BrowseSeq: 0,
+  d1BrowseResolvedCounts: new Map(),
+  d1BrowseItemCache: new Map(),
+  categoryBrowseSelectedId: "",
+  categoryBrowseQuery: "",
+  categoryBrowseItems: [],
+  categoryBrowseOffset: 0,
+  categoryBrowseHasMore: false,
+  categoryBrowseLoading: false,
+  categoryBrowseSeq: 0,
+  categoryBrowseError: "",
   requesterSelectRenderSignature: "",
   dataRenderSignature: "",
   currentNowPlayingSignature: "",
@@ -88,20 +264,38 @@ const state = {
   currentPlaybackClockStartedAt: 0,
   currentPlaybackClockPaused: true,
   currentPlaybackClockTimer: null,
+  ratingPromptElement: null,
+  ratingPromptItem: null,
+  ratingPromptItems: null,
+  ratingPromptActiveTab: "current",
+  ratingPromptItemId: "",
+  ratingPromptBvid: "",
+  ratingPromptScore: 5,
+  ratingPromptSubmitted: false,
+  ratingPromptSeenPlayIds: new Set(),
+  ratingSubmittedKeys: new Set(),
+  ratingOptOut: false,
   playerControlsRenderSignature: "",
   listHeaderRenderSignature: "",
   queueRenderSignature: "",
   historyRenderSignature: "",
   layoutMode: "full",
+  displaySettingsOpen: false,
   remoteAccessRenderSignature: "",
   viewportScaleResetTimers: [],
   renderDebounceTimer: null,
+  theme: "light",
 };
 
 const elements = {
   viewportMeta: document.getElementById("viewport-meta"),
   remoteShell: document.getElementById("remote-shell"),
   languageSwitch: document.getElementById("language-switch"),
+  themeSwitch: document.getElementById("theme-switch"),
+  displaySettingsToggle: document.getElementById("display-settings-toggle"),
+  displaySettingsPanel: document.getElementById("display-settings-popover"),
+  displayLayoutSummary: document.getElementById("remote-layout-summary"),
+  displayPopoverClose: document.getElementById("display-popover-close"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   remoteQrControl: document.getElementById("remote-qr-control"),
   remoteQrToggle: document.getElementById("remote-qr-toggle"),
@@ -118,8 +312,10 @@ const elements = {
   currentOwner: document.getElementById("current-owner"),
   currentCacheState: document.getElementById("current-cache-state"),
   currentMeta: document.getElementById("current-meta"),
+  currentRatingButton: document.getElementById("current-rating-button"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
+  floatingPlayerControlPanel: document.getElementById("floating-player-control-panel"),
   playerControlHint: document.getElementById("player-control-hint"),
   remoteAvSyncPanel: document.getElementById("remote-av-sync-panel"),
   remoteAvOffsetInput: document.getElementById("remote-av-offset-input"),
@@ -128,6 +324,16 @@ const elements = {
   remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
   remoteVolumeSlider: document.getElementById("remote-volume-slider"),
   remoteVolumeValue: document.getElementById("remote-volume-value"),
+  remoteKeyShiftPanel: document.getElementById("remote-key-shift-panel"),
+  remoteKeyShiftResetButton: document.getElementById("remote-key-shift-reset-button"),
+  remoteKeyShiftDecButton: document.getElementById("remote-key-shift-dec-button"),
+  remoteKeyShiftInput: document.getElementById("remote-key-shift-input"),
+  remoteKeyShiftIncButton: document.getElementById("remote-key-shift-inc-button"),
+  floatingControlTrigger: document.getElementById("floating-control-trigger"),
+  floatingControlOverlay: document.getElementById("floating-control-overlay"),
+  floatingControlBackdrop: document.getElementById("floating-control-backdrop"),
+  floatingControlCard: document.getElementById("floating-control-card"),
+  floatingControlClose: document.getElementById("floating-control-close"),
   bindingSheet: document.getElementById("binding-sheet"),
   bindingSheetBackdrop: document.getElementById("binding-sheet-backdrop"),
   bindingSheetText: document.getElementById("binding-sheet-text"),
@@ -147,6 +353,21 @@ const elements = {
   gatchaFavlistSheetClose: document.getElementById("gatcha-favlist-sheet-close"),
   gatchaFavlistSheetCancel: document.getElementById("gatcha-favlist-sheet-cancel"),
   gatchaFavlistSheetConfirm: document.getElementById("gatcha-favlist-sheet-confirm"),
+  poolConfigSheet: document.getElementById("gatcha-pool-config-sheet"),
+  poolConfigSheetBackdrop: document.getElementById("gatcha-pool-config-sheet-backdrop"),
+  poolConfigSheetClose: document.getElementById("gatcha-pool-config-sheet-close"),
+  poolConfigSheetCancel: document.getElementById("gatcha-pool-config-sheet-cancel"),
+  poolConfigSheetReset: document.getElementById("gatcha-pool-config-sheet-reset"),
+  poolConfigSheetSave: document.getElementById("gatcha-pool-config-sheet-save"),
+  poolConfigWeightSlider: document.getElementById("gatcha-pool-weight-slider"),
+  poolConfigWeightLabel: document.getElementById("gatcha-pool-weight-label"),
+  poolConfigUidOptions: document.getElementById("gatcha-pool-uid-options"),
+  poolConfigFavlistOptions: document.getElementById("gatcha-pool-favlist-options"),
+  poolConfigUidSelectAll: document.getElementById("gatcha-pool-uid-select-all"),
+  poolConfigUidSelectNone: document.getElementById("gatcha-pool-uid-select-none"),
+  poolConfigFavlistSelectAll: document.getElementById("gatcha-pool-favlist-select-all"),
+  poolConfigFavlistSelectNone: document.getElementById("gatcha-pool-favlist-select-none"),
+  poolConfigMessage: document.getElementById("gatcha-pool-config-message"),
   reorderConfirmSheet: document.getElementById("reorder-confirm-sheet"),
   reorderConfirmSheetBackdrop: document.getElementById("reorder-confirm-sheet-backdrop"),
   reorderConfirmSheetText: document.getElementById("reorder-confirm-sheet-text"),
@@ -166,6 +387,50 @@ const elements = {
   remoteSearchStageInner: document.getElementById("remote-search-stage-inner"),
   searchTag: document.querySelector(".search-panel .panel-tag"),
   searchTitle: document.querySelector(".search-panel .panel-title"),
+  searchLibraryOpen: document.getElementById("search-library-open"),
+  searchModal: document.getElementById("search-modal"),
+  searchModalBackdrop: document.getElementById("search-modal-backdrop"),
+  searchModalClose: document.getElementById("search-modal-close"),
+  searchModalTabs: document.querySelectorAll(".remote-search-modal-tab"),
+  searchModalSearchView: document.getElementById("search-modal-search-view"),
+  searchModalLarkForm: document.getElementById("search-modal-lark-form"),
+  searchModalLarkQuery: document.getElementById("search-modal-lark-query"),
+  searchModalLarkButton: document.getElementById("search-modal-lark-button"),
+  searchModalLarkMessage: document.getElementById("search-modal-lark-message"),
+  searchModalLarkResults: document.getElementById("search-modal-lark-results"),
+  favlistBrowserView: document.getElementById("favlist-browser-view"),
+  favlistListView: document.getElementById("favlist-list-view"),
+  favlistGrid: document.getElementById("favlist-grid"),
+  favlistItemsView: document.getElementById("favlist-items-view"),
+  favlistBrowseBack: document.getElementById("favlist-browse-back"),
+  favlistBrowseAvatar: document.getElementById("favlist-browse-avatar"),
+  favlistBrowseTitle: document.getElementById("favlist-browse-title"),
+  favlistBrowseCount: document.getElementById("favlist-browse-count"),
+  favlistSearchForm: document.getElementById("favlist-search-form"),
+  favlistSearchQuery: document.getElementById("favlist-search-query"),
+  favlistSearchButton: document.getElementById("favlist-search-button"),
+  favlistSongResults: document.getElementById("favlist-song-results"),
+  favlistBrowseMessage: document.getElementById("favlist-browse-message"),
+  modalFollowBrowserView: document.getElementById("modal-follow-browser-view"),
+  modalFollowUpListView: document.getElementById("modal-follow-up-list-view"),
+  modalFollowUidForm: document.getElementById("modal-follow-uid-form"),
+  modalFollowUidInput: document.getElementById("modal-follow-uid-input"),
+  modalAddFollowUidButton: document.getElementById("modal-add-follow-uid-button"),
+  modalFollowUpGrid: document.getElementById("modal-follow-up-grid"),
+  modalFollowUpItemsView: document.getElementById("modal-follow-up-items-view"),
+  modalFollowBrowseBack: document.getElementById("modal-follow-browse-back"),
+  modalFollowBrowseAvatar: document.getElementById("modal-follow-browse-avatar"),
+  modalFollowBrowseTitle: document.getElementById("modal-follow-browse-title"),
+  modalFollowBrowseCount: document.getElementById("modal-follow-browse-count"),
+  modalFollowSearchForm: document.getElementById("modal-follow-search-form"),
+  modalFollowSearchQuery: document.getElementById("modal-follow-search-query"),
+  modalFollowSearchButton: document.getElementById("modal-follow-search-button"),
+  modalFollowSongResults: document.getElementById("modal-follow-song-results"),
+  modalFollowBrowseMessage: document.getElementById("modal-follow-browse-message"),
+  modalFavlistPullForm: document.getElementById("modal-favlist-pull-form"),
+  modalFavlistUidInput: document.getElementById("modal-favlist-uid-input"),
+  modalPullFavlistButton: document.getElementById("modal-pull-favlist-button"),
+  searchModalOtherView: document.getElementById("search-modal-other-view"),
   larkSearchToggle: document.getElementById("lark-search-toggle"),
   larkSearchView: document.getElementById("lark-search-view"),
   larkSearchForm: document.getElementById("lark-search-form"),
@@ -190,6 +455,8 @@ const elements = {
   addNextButton: document.getElementById("add-next-button"),
   resortPlaylistButton: document.getElementById("resort-playlist-button"),
   refreshButton: document.getElementById("refresh-button"),
+  openRatingButton: document.getElementById("open-rating-button"),
+  gatchaPoolConfigToggle: document.getElementById("gatcha-pool-config-toggle"),
   gatchaUidToggle: document.getElementById("gatcha-uid-toggle"),
   gatchaButton: document.getElementById("gatcha-button"),
   gatchaConfirmButton: document.getElementById("gatcha-confirm-button"),
@@ -388,11 +655,15 @@ function renderLanguageSwitch() {
 function invalidateLanguageSensitiveRenderCache() {
   state.remoteAccessRenderSignature = "";
   state.followBrowseRenderSignature = "";
+  state.modalFollowBrowseRenderSignature = "";
+  state.favlistBrowseRenderSignature = "";
   state.requesterSelectRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
   state.listHeaderRenderSignature = "";
   state.queueRenderSignature = "";
   state.historyRenderSignature = "";
+  state.playerControlsRenderSignature = "";
+  state.currentNowPlayingSignature = "";
 }
 
 function setLanguage(language) {
@@ -409,6 +680,27 @@ function setLanguage(language) {
   if (state.data) {
     render();
   }
+  if (state.searchModalOpen) {
+    renderSearchModalView(state.searchModalView);
+  }
+}
+
+function applyTheme(theme) {
+  const nextTheme = normalizeTheme(theme);
+  state.theme = nextTheme;
+  document.documentElement.setAttribute("data-theme", nextTheme);
+  writeLocalPreference(storageKeys.theme, nextTheme);
+  renderThemeSwitch();
+}
+
+function normalizeTheme(theme) {
+  return theme === "dark" || theme === "blue" ? theme : "light";
+}
+
+function renderThemeSwitch() {
+  elements.themeSwitch?.querySelectorAll("button[data-theme]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === state.theme);
+  });
 }
 
 async function loadTranslations() {
@@ -522,6 +814,10 @@ function normalizeLayoutMode(value) {
 
 function hydrateLocalPreferences() {
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
+
+  // Hydrate and apply theme
+  state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
+  applyTheme(state.theme);
 }
 
 function renderLayoutMode() {
@@ -531,6 +827,8 @@ function renderLayoutMode() {
   elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
   });
+  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
+  setTextContent(elements.displayLayoutSummary, layoutKey);
 }
 
 function setLayoutMode(mode) {
@@ -546,8 +844,20 @@ function setLayoutMode(mode) {
 
 function setRemoteQrPopoverOpen(open) {
   state.remoteQrPopoverOpen = Boolean(open);
+  if (state.remoteQrPopoverOpen) {
+    setDisplaySettingsOpen(false);
+  }
   elements.remoteQrPopover?.classList.toggle("hidden", !state.remoteQrPopoverOpen);
   elements.remoteQrToggle?.setAttribute("aria-expanded", String(state.remoteQrPopoverOpen));
+}
+
+function setDisplaySettingsOpen(open) {
+  state.displaySettingsOpen = Boolean(open);
+  if (state.displaySettingsOpen) {
+    setRemoteQrPopoverOpen(false);
+  }
+  elements.displaySettingsPanel?.classList.toggle("hidden", !state.displaySettingsOpen);
+  elements.displaySettingsToggle?.setAttribute("aria-expanded", String(state.displaySettingsOpen));
 }
 
 function renderRemoteAccess(remoteAccess) {
@@ -667,6 +977,26 @@ function setMessageForSource(source, message, isError = false) {
     setLarkSearchMessage(message, isError);
     return;
   }
+  if (source === "modalSearch") {
+    setSearchModalLarkMessage(message, isError);
+    return;
+  }
+  if (source === "modalFavlist") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalFollow") {
+    setModalFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalBrowse") {
+    const messageElement = elements.searchModalOtherView?.querySelector(".tag-browser-message");
+    if (messageElement) {
+      messageElement.textContent = message || "";
+      messageElement.classList.toggle("is-error", Boolean(isError));
+      return;
+    }
+  }
   if (source === "follow") {
     setFollowBrowseMessage(message, isError);
     return;
@@ -679,7 +1009,10 @@ function setMessageForSource(source, message, isError = false) {
 }
 
 function localizedCacheMessage(message, cacheStatus = "") {
-  const raw = String(message || "").trim();
+  let raw = String(message || "").trim();
+  if (raw.includes("\n")) {
+    raw = raw.split("\n")[0].trim();
+  }
   const status = String(cacheStatus || "").trim();
   if (!raw) {
     return "";
@@ -965,6 +1298,425 @@ async function apiPost(url, payload = {}) {
   return data.data;
 }
 
+function submitSongRating(item, score) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = ratingSubmissionPlayId(item);
+  const sessionUserName = ratingSubmissionUserName(item);
+  if (!bvid) {
+    return null;
+  }
+  const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
+  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    return false;
+  }
+  if (submissionKey) {
+    state.ratingSubmittedKeys.add(submissionKey);
+  }
+  const payload = {
+    session_user_name: sessionUserName,
+    play_id: playId,
+    bvid,
+    score: Math.max(1, Math.min(5, Math.trunc(Number(score) || 5))),
+  };
+  fetch("/api/rating/submit", {
+    method: "POST",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+  }).catch((error) => {
+    if (submissionKey) {
+      state.ratingSubmittedKeys.delete(submissionKey);
+      renderCurrentRatingButton(state.data?.current_item);
+    }
+    console.warn("Rating submit failed:", error);
+  });
+  return true;
+}
+
+function ratingItemUrl(item) {
+  return String(item?.resolved_url || item?.original_url || item?.url || "").trim();
+}
+
+function safeHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const url = new URL(raw, window.location.href);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function ratingOwnerUid(item) {
+  const rawMid = item?.owner_mid ?? item?.mid;
+  const uid = String(rawMid || "").trim();
+  return /^\d+$/.test(uid) ? uid : "";
+}
+
+function ratingSubmissionUserName(item) {
+  return selectedRequesterName()
+    || String(item?.requester_name || "").trim()
+    || String(state.data?.current_item?.requester_name || "").trim()
+    || String(state.data?.session_users?.[0] || "").trim()
+    || "unknown";
+}
+
+function ratingSubmissionPlayId(item) {
+  const bvid = String(item?.bvid || "").trim();
+  return String(item?.play_id || item?.id || state.ratingPromptItemId || bvid).trim();
+}
+
+function ratingSubmissionKey(item) {
+  const playId = ratingSubmissionPlayId(item);
+  if (!playId) {
+    return "";
+  }
+  return `${ratingSubmissionUserName(item).toLowerCase()}::${playId}`;
+}
+
+function hasSubmittedSongRating(item) {
+  const key = ratingSubmissionKey(item);
+  return Boolean(key && state.ratingSubmittedKeys.has(key));
+}
+
+function normalizeRatingPromptItem(item) {
+  if (!item) {
+    return null;
+  }
+  const id = String(item.id || item.item_id || item.play_id || item.bvid || "").trim();
+  return {
+    ...item,
+    id,
+    play_id: String(item.play_id || item.item_id || id).trim(),
+    bvid: String(item.bvid || "").trim(),
+    cover_url: String(item.cover_url || "").trim(),
+  };
+}
+
+function previousRatingPromptItem(currentItem) {
+  const currentId = String(currentItem?.id || "").trim();
+  const playedItems = Array.isArray(state.data?.session_played) ? state.data.session_played : [];
+  for (let index = playedItems.length - 1; index >= 0; index -= 1) {
+    const entry = playedItems[index];
+    const entryId = String(entry?.item_id || entry?.id || "").trim();
+    if (entryId && entryId !== currentId) {
+      const candidate = normalizeRatingPromptItem({ ...entry, id: entryId, play_id: entryId });
+      return candidate?.bvid ? candidate : null;
+    }
+  }
+  return null;
+}
+
+function ratingPromptItemsForItem(item) {
+  return {
+    previous: previousRatingPromptItem(item),
+    current: normalizeRatingPromptItem(item),
+  };
+}
+
+function isItemRateable(item, isCurrent = false) {
+  const bvid = String(item?.bvid || "").trim();
+  if (!item || !bvid) {
+    return false;
+  }
+  if (isCurrent) {
+    const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
+    if (!(durationSeconds > 0)) return false;
+    const ratio = currentSeconds / durationSeconds;
+    if (ratio < remoteRatingPromptThreshold) return false;
+  } else {
+    // Previous items must have actually played past the threshold
+    // during their playback to be rateable.
+    if (!item.threshold_reached) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function activeRatingPromptItem() {
+  return normalizeRatingPromptItem(
+    state.ratingPromptItems?.[state.ratingPromptActiveTab]
+      || state.ratingPromptItems?.current
+      || state.ratingPromptItem,
+  );
+}
+
+function renderRatingStars() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  root.querySelectorAll("[data-rating-score]").forEach((button) => {
+    const score = Number(button.dataset.ratingScore || "0");
+    button.classList.toggle("active", score <= state.ratingPromptScore);
+    button.setAttribute("aria-pressed", score === state.ratingPromptScore ? "true" : "false");
+  });
+}
+
+function renderRatingPromptContent() {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const activeItem = activeRatingPromptItem();
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
+
+  root.querySelectorAll("[data-rating-tab]").forEach((button) => {
+    const tab = button.dataset.ratingTab;
+    const isRateable = tab === "current" ? state.ratingPromptCurrentRateable : state.ratingPromptPreviousRateable;
+    button.disabled = !isRateable;
+    button.classList.toggle("active", tab === state.ratingPromptActiveTab);
+    button.setAttribute("aria-selected", tab === state.ratingPromptActiveTab ? "true" : "false");
+  });
+
+  const content = root.querySelector("[data-rating-content]");
+  if (!content || !activeItem) {
+    return;
+  }
+  const bvid = String(activeItem.bvid || "").trim();
+  const ownerName = String(activeItem.owner_name || "").trim() || t("rating.unknownOwner");
+  const coverUrl = safeHttpUrl(activeItem.cover_url);
+  const url = safeHttpUrl(ratingItemUrl(activeItem) || (bvid ? `https://www.bilibili.com/video/${bvid}` : ""));
+  const titleKey = state.ratingPromptActiveTab === "previous" ? "rating.previousTitle" : "rating.title";
+  const media = document.createElement("div");
+  media.className = "rating-media";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.className = "rating-cover";
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+    media.appendChild(image);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "rating-cover rating-cover-empty";
+    media.appendChild(placeholder);
+  }
+  const copy = document.createElement("div");
+  copy.className = "rating-copy";
+  const kicker = document.createElement("p");
+  kicker.className = "rating-kicker";
+  kicker.textContent = t("rating.kicker");
+  const title = document.createElement("h2");
+  title.textContent = t(titleKey);
+  const hint = document.createElement("p");
+  hint.className = "rating-hint";
+  hint.textContent = t("rating.hint");
+  const owner = document.createElement("p");
+  owner.className = "rating-owner";
+  owner.textContent = t("rating.owner", { owner: ownerName });
+  copy.append(kicker, title, hint, owner);
+  if (url) {
+    const link = document.createElement("a");
+    link.className = "rating-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = url;
+    copy.appendChild(link);
+  }
+  media.appendChild(copy);
+  content.replaceChildren(media);
+  const addUpButton = root.querySelector("[data-rating-add-up]");
+  if (addUpButton) {
+    const ownerUid = ratingOwnerUid(activeItem);
+    addUpButton.disabled = !ownerUid;
+    addUpButton.textContent = ownerUid ? t("rating.addUp") : t("rating.missingUid");
+  }
+  renderRatingStars();
+}
+
+function setRatingPromptActiveTab(tab) {
+  if (!state.ratingPromptElement || !state.ratingPromptItems?.[tab]) {
+    return;
+  }
+  state.ratingPromptActiveTab = tab;
+  const activeItem = state.ratingPromptItems[tab];
+  state.ratingPromptItemId = String(activeItem?.id || activeItem?.bvid || "").trim();
+  renderRatingPromptContent();
+}
+
+function setRatingOptOut(enabled) {
+  state.ratingOptOut = Boolean(enabled);
+}
+
+function closeRatingPrompt({ submit = true } = {}) {
+  const root = state.ratingPromptElement;
+  if (!root) {
+    return;
+  }
+  const promptItem = activeRatingPromptItem();
+  const bvid = state.ratingPromptBvid;
+  const shouldSubmit = submit && !state.ratingPromptSubmitted && !state.ratingOptOut && bvid;
+  state.ratingPromptSubmitted = true;
+
+  root.classList.add("closing");
+
+  state.ratingPromptElement = null;
+  state.ratingPromptItem = null;
+  state.ratingPromptItems = null;
+  state.ratingPromptActiveTab = "current";
+  state.ratingPromptItemId = "";
+  state.ratingPromptBvid = "";
+
+  setTimeout(() => {
+    root.remove();
+  }, 250);
+
+  if (shouldSubmit) {
+    submitSongRating({ ...(promptItem || {}), bvid }, state.ratingPromptScore);
+  }
+}
+
+function openRatingPrompt(item, { manual = false } = {}) {
+  const bvid = String(item?.bvid || "").trim();
+  const playId = String(item?.id || bvid).trim();
+  if (!item || !bvid || !playId || (!manual && (state.ratingOptOut || state.ratingPromptSeenPlayIds.has(playId)))) {
+    return;
+  }
+
+  const promptItems = ratingPromptItemsForItem(item);
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+
+  if (!currentRateable && !previousRateable) {
+    return;
+  }
+
+  closeRatingPrompt({ submit: true });
+
+  const defaultTab = currentRateable ? "current" : "previous";
+  const activeItem = promptItems[defaultTab];
+  const activePlayId = String(activeItem?.id || activeItem?.bvid || "").trim();
+
+  if (activePlayId) {
+    state.ratingPromptSeenPlayIds.add(activePlayId);
+  }
+
+  state.ratingPromptItems = promptItems;
+  state.ratingPromptActiveTab = defaultTab;
+  state.ratingPromptItem = activeItem;
+  state.ratingPromptItemId = activePlayId;
+  state.ratingPromptBvid = String(activeItem?.bvid || "").trim();
+  state.ratingPromptScore = 5;
+  state.ratingPromptSubmitted = false;
+  state.ratingPromptCurrentRateable = currentRateable;
+  state.ratingPromptPreviousRateable = previousRateable;
+
+  const root = document.createElement("div");
+  root.className = "rating-modal";
+  root.innerHTML = `
+    <div class="rating-modal-backdrop" data-rating-close></div>
+    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
+      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
+      <div data-rating-content></div>
+      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
+        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
+      </div>
+      <div class="rating-actions">
+        <button type="button" class="secondary-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
+        <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
+        <button type="button" class="secondary-button" data-rating-opt-out-btn>${htmlT("rating.optOutBtn")}</button>
+      </div>
+      <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
+        <button type="button" data-rating-tab="previous" role="tab" ${previousRateable ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
+        <button type="button" data-rating-tab="current" role="tab" ${currentRateable ? "" : "disabled"}>${htmlT("rating.currentTab")}</button>
+      </div>
+      <p class="rating-message" data-rating-message></p>
+    </section>
+  `;
+  document.body.appendChild(root);
+  state.ratingPromptElement = root;
+  renderRatingPromptContent();
+}
+
+function currentPlaybackClockSeconds() {
+  const durationSeconds = Math.max(0, Number(state.currentPlaybackClockDurationSeconds || 0));
+  if (!(durationSeconds > 0)) {
+    return { currentSeconds: 0, durationSeconds: 0 };
+  }
+  const baseSeconds = Math.max(0, Number(state.currentPlaybackClockBaseSeconds || 0));
+  const elapsedSeconds = state.currentPlaybackClockPaused
+    ? 0
+    : Math.max(0, (Date.now() - Number(state.currentPlaybackClockStartedAt || Date.now())) / 1000);
+  return {
+    currentSeconds: Math.min(durationSeconds, baseSeconds + elapsedSeconds),
+    durationSeconds,
+  };
+}
+
+function maybeUpdateRemoteRatingPrompt(currentItem) {
+  const promptItems = ratingPromptItemsForItem(currentItem);
+  const currentRateable = isItemRateable(promptItems.current, true);
+  const previousRateable = isItemRateable(promptItems.previous, false);
+
+  if (elements.openRatingButton) {
+    elements.openRatingButton.disabled = !currentRateable && !previousRateable;
+  }
+
+  // Handle live-update, tab switching, and auto-closing of an already-open rating modal.
+  if (state.ratingPromptElement && state.ratingPromptItemId) {
+    const currentPromptId = String(promptItems.current?.id || promptItems.current?.bvid || "").trim();
+    const previousPromptId = String(promptItems.previous?.id || promptItems.previous?.bvid || "").trim();
+
+    if (state.ratingPromptItemId === currentPromptId && currentRateable) {
+      // The item being rated is still the current item, and is rateable.
+      const tabsChanged =
+        state.ratingPromptCurrentRateable !== currentRateable
+        || state.ratingPromptPreviousRateable !== previousRateable;
+      state.ratingPromptItems = promptItems;
+      state.ratingPromptCurrentRateable = currentRateable;
+      state.ratingPromptPreviousRateable = previousRateable;
+      if (tabsChanged) {
+        renderRatingPromptContent();
+      }
+    } else if (state.ratingPromptItemId === previousPromptId && previousRateable) {
+      // The item being rated is the previous item, and is rateable.
+      const needsTabTransition = state.ratingPromptActiveTab !== "previous";
+      const tabsChanged =
+        state.ratingPromptCurrentRateable !== currentRateable
+        || state.ratingPromptPreviousRateable !== previousRateable;
+      state.ratingPromptItems = promptItems;
+      state.ratingPromptActiveTab = "previous";
+      state.ratingPromptCurrentRateable = currentRateable;
+      state.ratingPromptPreviousRateable = previousRateable;
+      if (needsTabTransition || tabsChanged) {
+        renderRatingPromptContent();
+      }
+    } else {
+      // The item being rated is no longer rateable (neither current nor previous, or not rateable).
+      closeRatingPrompt({ submit: false });
+    }
+  }
+
+  const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
+  const bvid = String(currentItem?.bvid || "").trim();
+  const playId = String(currentItem?.id || bvid).trim();
+  if (!currentItem || !bvid || !playId || !(durationSeconds > 0)) {
+    return;
+  }
+  const ratio = currentSeconds / durationSeconds;
+  const ratingItem = { ...currentItem, play_id: playId };
+  if (ratio >= remoteRatingPromptThreshold) {
+    // Skip auto-submit when the rating modal is already open so the user
+    // can choose their own score instead of the default 5.
+    if (!state.ratingPromptSeenPlayIds.has(playId) && !state.ratingPromptElement) {
+      state.ratingPromptSeenPlayIds.add(playId);
+      submitSongRating(ratingItem, 5);
+    }
+  }
+}
+
+function handleRequesterSelectionChange() {
+  maybeUpdateRemoteRatingPrompt(state.data?.current_item);
+  render();
+}
+
 function filenameFromContentDisposition(headerValue, fallback) {
   const value = String(headerValue || "");
   const quotedMatch = value.match(/filename="([^"]+)"/i);
@@ -1026,6 +1778,12 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
+
+elements.openRatingButton?.addEventListener("click", () => {
+  if (state.data?.current_item) {
+    openRatingPrompt(state.data.current_item, { manual: true });
+  }
+});
 
 async function exportHistory(format) {
   const source = selectedHistoryExportSource();
@@ -1102,10 +1860,11 @@ async function refreshCacheStatusOnly() {
     const response = await fetch("/api/state", { headers: clientHeaders() });
     const payload = await response.json();
     if (response.ok && payload.ok && payload.data) {
+      const previousSnapshot = state.data;
       state.data = payload.data;
       const current = state.data.current_item;
+      renderCacheStatusOnly(previousSnapshot);
       if (current) {
-        renderCurrentPlaybackState(current);
         if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
           state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
           return;
@@ -1122,12 +1881,57 @@ function currentStateRevision(snapshot = state.data) {
   return Number.isFinite(revision) && revision >= 0 ? revision : 0;
 }
 
-function renderSignatureForSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") {
-    return "";
+const CACHE_VOLATILE_ITEM_KEYS = new Set([
+  "cache_activity_at",
+  "cache_download_current_bytes",
+  "cache_download_total_bytes",
+  "cache_download_tracks",
+  "cache_message",
+  "cache_progress",
+  "cache_size_bytes",
+]);
+
+function stableItemForRenderSignature(item) {
+  if (!item || typeof item !== "object") {
+    return item || null;
   }
-  const { player_status: _playerStatus, state_revision: _stateRevision, ...renderedData } = snapshot;
-  return JSON.stringify(renderedData);
+  const stableItem = { ...item };
+  CACHE_VOLATILE_ITEM_KEYS.forEach((key) => {
+    delete stableItem[key];
+  });
+  return stableItem;
+}
+
+function stableSnapshotForRenderSignature(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
+  const {
+    app_update: _appUpdate,
+    bbdown: _bbdown,
+    cache_policy: _cachePolicy,
+    ffmpeg: _ffmpeg,
+    player_status: _playerStatus,
+    state_revision: _stateRevision,
+    updated_at: _updatedAt,
+    ...renderedData
+  } = snapshot;
+  return {
+    ...renderedData,
+    current_item: stableItemForRenderSignature(renderedData.current_item),
+    playlist: Array.isArray(renderedData.playlist)
+      ? renderedData.playlist.map(stableItemForRenderSignature)
+      : renderedData.playlist,
+  };
+}
+
+function renderSignatureForSnapshot(snapshot) {
+  const stableSnapshot = stableSnapshotForRenderSignature(snapshot);
+  return stableSnapshot ? JSON.stringify(stableSnapshot) : "";
+}
+
+function playerStatusSignature(snapshot) {
+  return JSON.stringify(snapshot?.player_status || null);
 }
 
 function scheduleRender() {
@@ -1149,6 +1953,17 @@ function renderPlaybackStatusOnly() {
   renderPlayerControls(currentItem, frontendPlaybackMode(state.data?.playback_mode));
 }
 
+function renderCacheStatusOnly(previousSnapshot = null) {
+  const currentItem = state.data?.current_item;
+  if (currentItem) {
+    renderCurrentPlaybackState(currentItem);
+  }
+  renderQueueCacheStatus(Array.isArray(state.data?.playlist) ? state.data.playlist : []);
+  if (playerStatusSignature(previousSnapshot) !== playerStatusSignature(state.data)) {
+    renderPlayerControls(currentItem, frontendPlaybackMode(state.data?.playback_mode));
+  }
+}
+
 function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   if (!snapshot || typeof snapshot !== "object") {
     return false;
@@ -1163,20 +1978,22 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
       return false;
     }
   }
+  const previousSnapshot = state.data;
   const nextRenderSignature = renderSignatureForSnapshot(snapshot);
   const shouldRender = forceRender
     || !state.data
     || nextRenderSignature !== state.dataRenderSignature;
   state.data = snapshot;
-  
+  scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
+
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
   if (shouldRender) {
     state.dataRenderSignature = nextRenderSignature;
     scheduleRender();
   } else if (!state.renderDebounceTimer) {
-    renderPlaybackStatusOnly();
+    renderCacheStatusOnly(previousSnapshot);
   }
-  
+
   return true;
 }
 
@@ -1288,6 +2105,70 @@ async function searchLarkPoolTable(query, tableIndex) {
   return Array.isArray(payload.data?.items) ? payload.data.items : [];
 }
 
+async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "", locale = "", limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  params.set("kind", kind === "artist" ? "artist" : "name");
+  params.set("limit", String(limit));
+  const normalizedLetter = String(letter || "").trim().toUpperCase();
+  const normalizedQuery = String(query || "").trim();
+  const normalizedTag = String(tag || "").trim();
+  const normalizedLocale = String(locale || "").trim();
+  if (normalizedLetter) {
+    params.set("letter", normalizedLetter);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  if (normalizedTag) {
+    params.set("tag", normalizedTag);
+  }
+  if (normalizedLocale) {
+    params.set("locale", normalizedLocale);
+  }
+  const response = await fetch(`/api/d1/browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
+}
+
+async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
+  const params = new URLSearchParams();
+  const normalizedTags = uniqueD1BrowseAliases(
+    (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
+  ).map((entry) => entry.tag);
+  normalizedTags.forEach((tag) => {
+    params.append(categoryBrowseUsesFullFieldSearch(tag) ? "tag" : "tag45", tag);
+  });
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const response = await fetch(`/api/d1/category-browse?${params.toString()}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.larkSearchFailed"));
+  }
+  return payload.data || {
+    tags: normalizedTags,
+    query: normalizedQuery,
+    offset,
+    limit,
+    items: [],
+    has_more: false,
+    next_offset: offset,
+  };
+}
+
 async function fetchGatchaBrowse(uid = "", query = "") {
   const params = new URLSearchParams();
   const normalizedUid = String(uid || "").trim();
@@ -1308,6 +2189,44 @@ async function fetchGatchaBrowse(uid = "", query = "") {
     throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
   }
   return payload.data || { owners: [], items: [] };
+}
+
+async function fetchGatchaFavlistBrowse(folderId = "", query = "") {
+  const params = new URLSearchParams();
+  const normalizedFolderId = String(folderId || "").trim();
+  const normalizedQuery = String(query || "").trim();
+  if (normalizedFolderId) {
+    params.set("folder_id", normalizedFolderId);
+  }
+  if (normalizedQuery) {
+    params.set("q", normalizedQuery);
+  }
+  const queryString = params.toString();
+  const response = await fetch(`/api/gatcha/favlist/browse${queryString ? `?${queryString}` : ""}`, {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("error.browseFailed"));
+  }
+  return payload.data || { folders: [], items: [] };
+}
+
+async function fetchPoolConfig() {
+  const response = await fetch("/api/gatcha/pool-config", {
+    cache: "no-store",
+    headers: clientHeaders(),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(localizedApiMessage(payload.error) || t("gatcha.poolLoadFailed"));
+  }
+  return payload.data || {};
+}
+
+async function savePoolConfig(payload) {
+  return apiPost("/api/gatcha/pool-config", payload);
 }
 
 async function previewGatchaUid(uid) {
@@ -1440,14 +2359,129 @@ function searchResultOwnerName(item) {
   return String(item?.owner_name || item?.author || "").trim();
 }
 
-function createSearchResultUrlLine(item) {
+function firstSearchResultValue(item, keys) {
+  for (const key of keys) {
+    const value = String(item?.[key] ?? "").trim();
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function searchResultCoverUrl(item) {
+  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  if (coverUrl.startsWith("//")) {
+    coverUrl = `https:${coverUrl}`;
+  }
+  return coverUrl;
+}
+
+function formatCompactCount(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  const numeric = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(numeric)) {
+    return raw;
+  }
+  if (numeric >= 100000000) {
+    return `${Number((numeric / 100000000).toFixed(numeric >= 1000000000 ? 0 : 1))}亿`;
+  }
+  if (numeric >= 10000) {
+    return `${Number((numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1))}万`;
+  }
+  return String(Math.round(numeric));
+}
+
+function formatSearchDuration(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw.includes(":")) {
+    return raw;
+  }
+  const totalSeconds = Number(raw);
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+    return raw;
+  }
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${paddedSeconds}`;
+  }
+  return `${minutes}:${paddedSeconds}`;
+}
+
+function searchResultRatingValue(item) {
+  const raw = firstSearchResultValue(item, ["rank", "rating", "score"]);
+  const value = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(5, value));
+}
+
+function formatSearchRating(value) {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+  return Number(value.toFixed(1)).toString();
+}
+
+function searchResultRatingText(item) {
+  const rating = searchResultRatingValue(item);
+  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
+}
+
+function createSearchResultRatingStars(item) {
+  const rating = searchResultRatingValue(item);
+  if (rating == null) {
+    return null;
+  }
+  const stars = document.createElement("span");
+  stars.className = "search-result-rating-stars";
+  stars.setAttribute("aria-label", searchResultRatingText(item));
+  stars.style.setProperty("--rating-width", `${(rating / 5) * 100}%`);
+  stars.innerHTML = `<span class="search-result-rating-stars-base">★★★★★</span><span class="search-result-rating-stars-fill">★★★★★</span>`;
+  return stars;
+}
+
+function searchResultStatusLabel(item) {
+  const localSource = String(item?.local_source || "").trim();
+  if (localSource === "favlist") {
+    return t("search.favorited");
+  }
+  if (localSource === "follow") {
+    return t("search.followed");
+  }
+  const source = String(item?.source || "").trim();
+  if (source === "bilikara" || source === "cloudflare") {
+    return "";
+  }
+  if (source === "favlist") {
+    return t("search.favorited");
+  }
+  if (String(item?.mid || item?.fav_uid || "").trim()) {
+    return t("search.followed");
+  }
+  return "";
+}
+
+function createSearchResultUrlLine(item, { showBvid = true } = {}) {
   const line = document.createElement("div");
   line.className = "search-result-url";
 
-  const bvid = document.createElement("span");
-  bvid.className = "search-result-bvid";
-  bvid.textContent = String(item?.bvid || item?.url || "");
-  line.appendChild(bvid);
+  if (showBvid) {
+    const bvid = document.createElement("span");
+    bvid.className = "search-result-bvid";
+    bvid.textContent = String(item?.bvid || item?.url || "");
+    line.appendChild(bvid);
+  }
 
   const ownerName = searchResultOwnerName(item);
   if (ownerName) {
@@ -1456,6 +2490,10 @@ function createSearchResultUrlLine(item) {
     owner.textContent = t("owner.tooltip", { name: ownerName });
     line.appendChild(owner);
   }
+  const rating = document.createElement("span");
+  rating.className = "search-result-rating-text";
+  rating.textContent = searchResultRatingText(item);
+  line.appendChild(rating);
 
   return line;
 }
@@ -1578,6 +2616,1005 @@ function setFollowBrowseMessage(message, isError = false) {
   elements.followBrowseMessage.classList.toggle("hidden", !message);
 }
 
+function setModalFollowBrowseMessage(message, isError = false) {
+  if (!elements.modalFollowBrowseMessage) {
+    return;
+  }
+  elements.modalFollowBrowseMessage.textContent = message || "";
+  elements.modalFollowBrowseMessage.classList.toggle("is-error", Boolean(isError));
+  elements.modalFollowBrowseMessage.classList.toggle("hidden", !message);
+}
+
+function setSearchModalLarkMessage(message, isError = false) {
+  if (!elements.searchModalLarkMessage) {
+    return;
+  }
+  elements.searchModalLarkMessage.textContent = message || "";
+  elements.searchModalLarkMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setFavlistBrowseMessage(message, isError = false) {
+  if (!elements.favlistBrowseMessage) {
+    return;
+  }
+  elements.favlistBrowseMessage.textContent = message || "";
+  elements.favlistBrowseMessage.classList.toggle("is-error", Boolean(isError));
+  elements.favlistBrowseMessage.classList.toggle("hidden", !message);
+}
+
+function setGatchaUidFlowMessage(target, message, isError = false) {
+  if (target === "follow-modal") {
+    setModalFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (target === "favlist-modal") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  setGatchaUidMessage(message, isError);
+}
+
+function createSearchResultRow(item) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  const itemUrl = String(item?.url || "").trim();
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+
+  const coverUrl = searchResultCoverUrl(item);
+  const cover = document.createElement("div");
+  cover.className = "search-result-cover";
+  if (coverUrl) {
+    const image = document.createElement("img");
+    image.src = coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    cover.appendChild(image);
+  } else {
+    const fallback = document.createElement("span");
+    fallback.textContent = String(item?.bvid || "Bili");
+    cover.appendChild(fallback);
+    cover.classList.add("is-empty");
+  }
+
+  const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
+  if (duration) {
+    const durationNode = document.createElement("span");
+    durationNode.className = "search-result-duration";
+    durationNode.textContent = duration;
+    cover.appendChild(durationNode);
+  }
+  const ratingStars = createSearchResultRatingStars(item);
+  if (ratingStars) {
+    cover.appendChild(ratingStars);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "search-result-meta search-result-body";
+  const title = document.createElement("div");
+  title.className = "search-result-title";
+  title.textContent = String(item?.title || "");
+
+  const statusLine = document.createElement("div");
+  statusLine.className = "search-result-status";
+  const statusLabel = searchResultStatusLabel(item);
+  if (statusLabel) {
+    const status = document.createElement("span");
+    status.className = "search-result-follow";
+    status.textContent = statusLabel;
+    statusLine.appendChild(status);
+  }
+  const playCount = formatCompactCount(firstSearchResultValue(item, ["played_count", "play_count", "play", "view", "views"]));
+  if (playCount) {
+    const plays = document.createElement("span");
+    plays.className = "search-result-plays";
+    const playLabel = document.createElement("span");
+    playLabel.className = "search-result-play-label";
+    playLabel.textContent = t("search.playCountLabel");
+    const playValue = document.createElement("span");
+    playValue.textContent = playCount;
+    plays.append(playLabel, playValue);
+    statusLine.appendChild(plays);
+  }
+
+  const url = createSearchResultUrlLine(item, { showBvid: false });
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary-button search-result-add";
+  button.dataset.url = itemUrl;
+  button.textContent = t("search.add");
+
+  meta.append(title);
+  if (statusLine.children.length) {
+    meta.appendChild(statusLine);
+  }
+  meta.appendChild(url);
+  row.append(cover, meta, button);
+  return row;
+}
+
+function renderSearchResultItems(container, items, emptyText = "") {
+  if (!container) {
+    return;
+  }
+  const normalizedItems = Array.isArray(items) ? items : [];
+  container.innerHTML = "";
+  container.classList.remove("hidden");
+  if (!normalizedItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = emptyText || t("search.empty");
+    container.appendChild(empty);
+    return;
+  }
+  normalizedItems.forEach((item) => {
+    container.appendChild(createSearchResultRow(item));
+  });
+}
+
+function appendSearchResultItems(container, items) {
+  if (!container || !Array.isArray(items) || !items.length) {
+    return;
+  }
+  const existingEmpty = container.querySelector(".search-empty");
+  if (existingEmpty) {
+    existingEmpty.remove();
+  }
+  container.classList.remove("hidden");
+  items.forEach((item) => {
+    container.appendChild(createSearchResultRow(item));
+  });
+}
+
+function normalizeD1BrowseTagForMerge(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\u200b-\u200d\ufeff]/g, "")
+    .replace(/[\s"'`._!?,:;~\-\/\\|()[\]{}<>]+/g, "")
+    .replace(/[\u2018-\u201f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g, "");
+}
+
+function d1BrowseMergeLength(value) {
+  return Array.from(value || "").length;
+}
+
+function d1BrowseTitle(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.artistBrowse") : t("search.nameBrowse");
+}
+
+function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
+  return kind === "artist" ? t("search.browsePickArtistLetter") : t("search.browsePickLetter");
+}
+
+function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
+  return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
+}
+
+function d1BrowseMergeCandidate(entry) {
+  const tag = String(entry?.tag || "").trim();
+  const locale = String(entry?.locale || "").trim();
+  const normalized = normalizeD1BrowseTagForMerge(tag);
+  return {
+    tag,
+    locale,
+    normalized,
+    count: Number(entry?.count || 0),
+    yomi: String(entry?.yomi || ""),
+    letter: String(entry?.letter || ""),
+  };
+}
+
+function isBetterD1BrowseMergeLabel(candidate, current) {
+  const candidateLength = d1BrowseMergeLength(candidate.normalized);
+  const currentLength = d1BrowseMergeLength(current.normalized);
+  if (candidateLength !== currentLength) {
+    return candidateLength < currentLength;
+  }
+  if (candidate.count !== current.count) {
+    return candidate.count > current.count;
+  }
+  return false;
+}
+
+function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
+  const seen = new Set();
+  const results = [];
+  const source = Array.isArray(aliases) && aliases.length ? aliases : [{ tag: fallbackTag, locale: fallbackLocale }];
+  source.forEach((entry) => {
+    const tag = String(entry?.tag || "").trim();
+    const locale = String(entry?.locale || "").trim();
+    if (!tag) {
+      return;
+    }
+    const key = `${locale}\n${tag}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push({ tag, locale });
+  });
+  return results;
+}
+
+function d1BrowseAliasKey(aliases, { kind = state.d1BrowseKind, query = state.d1BrowseQuery } = {}) {
+  const normalizedAliases = uniqueD1BrowseAliases(aliases)
+    .map((entry) => ({ tag: entry.tag, locale: entry.locale }))
+    .sort((left, right) => `${left.locale}\n${left.tag}`.localeCompare(`${right.locale}\n${right.tag}`));
+  return JSON.stringify({
+    kind: kind === "artist" ? "artist" : "name",
+    query: String(query || "").trim(),
+    aliases: normalizedAliases,
+  });
+}
+
+function mergeD1BrowseTags(tags) {
+  const groups = [];
+  (Array.isArray(tags) ? tags : []).forEach((entry) => {
+    const candidate = d1BrowseMergeCandidate(entry);
+    if (!candidate.tag) {
+      return;
+    }
+    const canMerge = d1BrowseMergeLength(candidate.normalized) >= d1BrowseMergeMinLength;
+    let group = null;
+    if (canMerge) {
+      group = groups.find((item) => (
+        item.canMerge
+        && item.normalized
+        && (candidate.normalized.startsWith(item.normalized) || item.normalized.startsWith(candidate.normalized))
+      ));
+    }
+    if (!group) {
+      groups.push({
+        ...candidate,
+        canMerge,
+        aliases: [{ tag: candidate.tag, locale: candidate.locale }],
+      });
+      return;
+    }
+    group.count += candidate.count;
+    group.aliases.push({ tag: candidate.tag, locale: candidate.locale });
+    if (isBetterD1BrowseMergeLabel(candidate, group)) {
+      group.tag = candidate.tag;
+      group.locale = candidate.locale;
+      group.normalized = candidate.normalized;
+      group.yomi = candidate.yomi;
+      group.letter = candidate.letter;
+    }
+  });
+  groups.forEach((group) => {
+    group.aliases = uniqueD1BrowseAliases(group.aliases, group.tag, group.locale);
+    group.aliasKey = d1BrowseAliasKey(group.aliases, { kind: state.d1BrowseKind, query: "" });
+    if (state.d1BrowseResolvedCounts.has(group.aliasKey)) {
+      group.count = state.d1BrowseResolvedCounts.get(group.aliasKey);
+    }
+  });
+  return groups;
+}
+
+function d1BrowseItemKey(item) {
+  return String(item?.bvid || item?.url || item?.id || `${item?.title || ""}\n${searchResultOwnerName(item)}`).trim();
+}
+
+function categoryBrowseIdForName(name) {
+  return encodeURIComponent(String(name || "").trim()).replace(/%/g, "_");
+}
+
+function categoryBrowseDefinitions() {
+  const groups = [];
+  const byKey = new Map();
+  categoryBrowseDefinitionsRaw.forEach((definition) => {
+    const key = String(definition?.key || "").trim();
+    const tags = (Array.isArray(definition?.tags) ? definition.tags : []).map((value) => String(value || "").trim()).filter(Boolean);
+    if (!key || !tags.length) {
+      return;
+    }
+    let group = byKey.get(key);
+    if (!group) {
+      const imageIndex = groups.length;
+      group = {
+        id: categoryBrowseIdForName(key),
+        key,
+        name: t(`search.category.${key}`),
+        coverUrl: categoryBrowseImageUrls[imageIndex] || "",
+        tags: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    tags.forEach((tag) => {
+      if (!group.tags.includes(tag)) {
+        group.tags.push(tag);
+      }
+    });
+  });
+  return groups;
+}
+
+function selectedCategoryBrowseDefinition() {
+  const selectedId = String(state.categoryBrowseSelectedId || "");
+  return categoryBrowseDefinitions().find((entry) => entry.id === selectedId) || null;
+}
+
+function mergeCategoryBrowseItems(existingItems, nextItems) {
+  const seen = new Set();
+  const items = [];
+  [...(Array.isArray(existingItems) ? existingItems : []), ...(Array.isArray(nextItems) ? nextItems : [])].forEach((item) => {
+    const key = d1BrowseItemKey(item);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    items.push(item);
+  });
+  return items;
+}
+
+function mergeD1BrowseItemPayloads(payloads) {
+  const seen = new Set();
+  const items = [];
+  (Array.isArray(payloads) ? payloads : []).forEach((payload) => {
+    (Array.isArray(payload?.items) ? payload.items : []).forEach((item) => {
+      const key = d1BrowseItemKey(item);
+      if (!key || seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      items.push(item);
+    });
+  });
+  return items;
+}
+
+async function resolveD1BrowseMergedTagCounts(groups, { kind, letter, query } = {}) {
+  const targets = (Array.isArray(groups) ? groups : []).filter((group) => (
+    Array.isArray(group.aliases)
+    && group.aliases.length > 1
+    && group.aliasKey
+    && !state.d1BrowseResolvedCounts.has(group.aliasKey)
+  ));
+  if (!targets.length) {
+    return;
+  }
+  let targetIndex = 0;
+  const workerCount = Math.min(d1BrowseCountConcurrency, targets.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (targetIndex < targets.length) {
+      const group = targets[targetIndex];
+      targetIndex += 1;
+      try {
+        const payloads = await Promise.all(group.aliases.map((alias) => fetchD1Browse({
+          kind,
+          letter,
+          query,
+          tag: alias.tag,
+          locale: alias.locale,
+          limit: d1BrowseItemLimit,
+        })));
+        const items = mergeD1BrowseItemPayloads(payloads);
+        state.d1BrowseResolvedCounts.set(group.aliasKey, items.length);
+        state.d1BrowseItemCache.set(group.aliasKey, items);
+      } catch {
+        // Keep the aggregate count if exact merged counts fail.
+      }
+    }
+  }));
+}
+
+function ensureD1BrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("remote-search-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-d1-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "tag-browser";
+  view.dataset.d1BrowseView = "1";
+  view.innerHTML = `
+    <form class="tag-browser-search" data-d1-browse-search>
+      <input type="text" autocomplete="off" data-d1-browse-query>
+      <button type="submit" class="primary-button" data-d1-browse-submit></button>
+    </form>
+    <div class="tag-browser-alphabet" data-d1-browse-alphabet></div>
+    <div class="tag-browser-nav">
+      <button type="button" class="secondary-button tag-browser-back hidden" data-d1-browse-back></button>
+      <div class="tag-browser-current" data-d1-browse-current></div>
+    </div>
+    <div class="tag-browser-tags" data-d1-browse-tags></div>
+    <div class="search-results hidden" data-d1-browse-results></div>
+    <p class="gatcha-message tag-browser-message" data-d1-browse-message role="status"></p>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function renderD1BrowseView() {
+  const view = ensureD1BrowseView();
+  if (!view) {
+    return;
+  }
+  const kind = state.d1BrowseKind || "name";
+  const title = d1BrowseTitle(kind);
+  const queryInput = view.querySelector("[data-d1-browse-query]");
+  const submitButton = view.querySelector("[data-d1-browse-submit]");
+  const alphabet = view.querySelector("[data-d1-browse-alphabet]");
+  const backButton = view.querySelector("[data-d1-browse-back]");
+  const current = view.querySelector("[data-d1-browse-current]");
+  const tagGrid = view.querySelector("[data-d1-browse-tags]");
+  const results = view.querySelector("[data-d1-browse-results]");
+  const message = view.querySelector("[data-d1-browse-message]");
+
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.d1BrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = d1BrowseSearchPlaceholder(kind);
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.d1BrowseLoading;
+  }
+  if (alphabet) {
+    alphabet.innerHTML = "";
+    alphabet.classList.toggle("hidden", Boolean(state.d1BrowseLetter));
+    d1BrowseLetters.forEach((letter) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tag-letter-button";
+      button.dataset.letter = letter;
+      button.textContent = letter;
+      button.classList.toggle("active", state.d1BrowseLetter === letter);
+      button.disabled = state.d1BrowseLoading;
+      alphabet.appendChild(button);
+    });
+  }
+  view.classList.toggle("has-letter", Boolean(state.d1BrowseLetter));
+  view.classList.toggle("has-tag", Boolean(state.d1BrowseTag));
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.classList.toggle("hidden", !state.d1BrowseLetter);
+    backButton.disabled = state.d1BrowseLoading;
+  }
+
+  const tags = mergeD1BrowseTags(state.d1BrowseData?.tags);
+  const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
+  if (current) {
+    const parts = [title];
+    if (state.d1BrowseLetter) {
+      parts.push(state.d1BrowseLetter);
+    }
+    if (state.d1BrowseTag) {
+      parts.push(state.d1BrowseTag);
+    }
+    current.textContent = parts.join(" / ");
+  }
+  if (tagGrid) {
+    tagGrid.innerHTML = "";
+    tagGrid.classList.toggle("hidden", Boolean(state.d1BrowseTag));
+    if (!state.d1BrowseTag) {
+      if (state.d1BrowseLoading) {
+        const loading = document.createElement("div");
+        loading.className = "search-empty";
+        loading.textContent = t("search.browseLoading");
+        tagGrid.appendChild(loading);
+      } else if (!state.d1BrowseLetter) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = d1BrowsePickLetterText(kind);
+        tagGrid.appendChild(empty);
+      } else if (!tags.length) {
+        const empty = document.createElement("div");
+        empty.className = "search-empty";
+        empty.textContent = t("search.browseNoTags");
+        tagGrid.appendChild(empty);
+      } else {
+        tags.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tag-browser-tag";
+          button.dataset.tag = String(entry.tag || "");
+          button.dataset.locale = String(entry.locale || "");
+          button.dataset.aliases = JSON.stringify(entry.aliases || []);
+          const name = document.createElement("span");
+          name.className = "tag-browser-tag-name";
+          name.textContent = String(entry.tag || "");
+          const count = document.createElement("span");
+          count.className = "tag-browser-tag-count";
+          count.textContent = t("search.browseTagCount", { count: Number(entry.count || 0) });
+          button.append(name, count);
+          tagGrid.appendChild(button);
+        });
+      }
+    }
+  }
+  if (results) {
+    if (state.d1BrowseTag) {
+      renderSearchResultItems(results, items, t("search.larkNoResults"));
+    } else {
+      results.innerHTML = "";
+      results.classList.add("hidden");
+    }
+  }
+  if (message) {
+    let text = "";
+    if (state.d1BrowseTag && !state.d1BrowseLoading) {
+      text = items.length ? t("search.larkFound", { count: items.length }) : t("search.larkNoResults");
+    } else if (!state.d1BrowseTag && tags.length) {
+      text = t("search.browseTagsFound", { count: tags.length });
+    }
+    message.textContent = state.d1BrowseLoading ? t("search.browseLoading") : text;
+    message.classList.toggle("is-error", false);
+  }
+}
+
+async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "", aliases = [] } = {}) {
+  const searchSeq = state.d1BrowseSeq + 1;
+  state.d1BrowseSeq = searchSeq;
+  state.d1BrowseKind = kind === "artist" ? "artist" : "name";
+  state.d1BrowseLetter = String(letter || "").trim().toUpperCase();
+  state.d1BrowseQuery = String(query || "").trim();
+  state.d1BrowseTag = String(tag || "").trim();
+  state.d1BrowseLocale = String(locale || "").trim();
+  state.d1BrowseAliases = state.d1BrowseTag ? uniqueD1BrowseAliases(aliases, state.d1BrowseTag, state.d1BrowseLocale) : [];
+  state.d1BrowseLoading = true;
+  renderD1BrowseView();
+  try {
+    const requestAliases = state.d1BrowseTag ? state.d1BrowseAliases : [];
+    const requestAliasKey = requestAliases.length ? d1BrowseAliasKey(requestAliases, {
+      kind: state.d1BrowseKind,
+      query: state.d1BrowseQuery,
+    }) : "";
+    if (requestAliasKey && state.d1BrowseItemCache.has(requestAliasKey)) {
+      const items = state.d1BrowseItemCache.get(requestAliasKey) || [];
+      state.d1BrowseData = { kind: state.d1BrowseKind, letter: state.d1BrowseLetter, query: state.d1BrowseQuery, tag: state.d1BrowseTag, locale: state.d1BrowseLocale, tags: [], items };
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      return;
+    }
+    const payloads = requestAliases.length > 1
+      ? await Promise.all(requestAliases.map((alias) => fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: alias.tag,
+        locale: alias.locale,
+        limit: d1BrowseItemLimit,
+      })))
+      : [await fetchD1Browse({
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: state.d1BrowseQuery,
+        tag: state.d1BrowseTag,
+        locale: state.d1BrowseLocale,
+        limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
+      })];
+    if (state.d1BrowseSeq !== searchSeq) {
+      return;
+    }
+    const data = payloads[0] || {};
+    if (!state.d1BrowseTag) {
+      const mergedTags = mergeD1BrowseTags(data.tags);
+      await resolveD1BrowseMergedTagCounts(mergedTags, {
+        kind: state.d1BrowseKind,
+        letter: state.d1BrowseLetter,
+        query: "",
+      });
+      if (state.d1BrowseSeq !== searchSeq) {
+        return;
+      }
+    }
+    state.d1BrowseData = requestAliases.length > 1 ? { ...data, items: mergeD1BrowseItemPayloads(payloads) } : data;
+    if (requestAliasKey) {
+      const items = Array.isArray(state.d1BrowseData.items) ? state.d1BrowseData.items : [];
+      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
+      state.d1BrowseItemCache.set(requestAliasKey, items);
+    }
+  } catch (error) {
+    const view = ensureD1BrowseView();
+    const message = view?.querySelector("[data-d1-browse-message]");
+    if (message) {
+      message.textContent = error.message;
+      message.classList.add("is-error");
+    }
+  } finally {
+    if (state.d1BrowseSeq === searchSeq) {
+      state.d1BrowseLoading = false;
+      renderD1BrowseView();
+    }
+  }
+}
+
+function ensureCategoryBrowseView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("remote-search-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-category-browse-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "category-browser";
+  view.dataset.categoryBrowseView = "1";
+  view.innerHTML = `
+    <div class="category-browser-home" data-category-browser-home>
+      <div class="category-browser-grid" data-category-browser-grid></div>
+    </div>
+    <div class="category-browser-detail hidden" data-category-browser-detail>
+      <form class="tag-browser-search category-browser-search" data-category-browse-search>
+        <input type="text" autocomplete="off" data-category-browse-query>
+        <button type="submit" class="primary-button" data-category-browse-submit></button>
+      </form>
+      <div class="category-browser-tabs" data-category-browser-tabs></div>
+      <div class="tag-browser-nav">
+        <button type="button" class="secondary-button tag-browser-back" data-category-browse-back></button>
+        <div class="tag-browser-current hidden" data-category-browse-current></div>
+      </div>
+      <div class="search-results category-browser-results" data-category-browse-results></div>
+      <p class="gatcha-message tag-browser-message" data-category-browse-message role="status"></p>
+    </div>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function createCategoryBrowseCard(category, { compact = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = compact ? "category-browser-tab" : "category-browser-card";
+  button.dataset.categoryId = category.id;
+  const media = document.createElement("span");
+  media.className = compact ? "category-browser-tab-media" : "category-browser-card-media";
+  if (category.coverUrl) {
+    const image = document.createElement("img");
+    image.src = category.coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    media.appendChild(image);
+  }
+  const name = document.createElement("span");
+  name.className = compact ? "category-browser-tab-name" : "category-browser-card-name";
+  name.textContent = category.name;
+  button.append(media, name);
+  return button;
+}
+
+function renderCategoryBrowseView() {
+  const view = ensureCategoryBrowseView();
+  if (!view) {
+    return;
+  }
+  const categories = categoryBrowseDefinitions();
+  const selected = selectedCategoryBrowseDefinition();
+  const home = view.querySelector("[data-category-browser-home]");
+  const detail = view.querySelector("[data-category-browser-detail]");
+  const grid = view.querySelector("[data-category-browser-grid]");
+  const tabs = view.querySelector("[data-category-browser-tabs]");
+  const queryInput = view.querySelector("[data-category-browse-query]");
+  const submitButton = view.querySelector("[data-category-browse-submit]");
+  const backButton = view.querySelector("[data-category-browse-back]");
+  const results = view.querySelector("[data-category-browse-results]");
+  const message = view.querySelector("[data-category-browse-message]");
+
+  home?.classList.toggle("hidden", Boolean(selected));
+  detail?.classList.toggle("hidden", !selected);
+  if (grid && !selected) {
+    grid.innerHTML = "";
+    categories.forEach((category) => {
+      grid.appendChild(createCategoryBrowseCard(category));
+    });
+  }
+  if (!selected) {
+    return;
+  }
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.categoryBrowseQuery || "";
+  }
+  if (queryInput) {
+    queryInput.placeholder = t("search.browseItemPlaceholder");
+  }
+  if (submitButton) {
+    submitButton.textContent = t("search.submit");
+    submitButton.disabled = state.categoryBrowseLoading;
+  }
+  if (backButton) {
+    backButton.textContent = t("common.back");
+    backButton.disabled = state.categoryBrowseLoading;
+  }
+  if (tabs) {
+    tabs.innerHTML = "";
+    categories.forEach((category) => {
+      const tab = createCategoryBrowseCard(category, { compact: true });
+      tab.classList.toggle("active", category.id === selected.id);
+      tab.disabled = state.categoryBrowseLoading && category.id === selected.id;
+      tabs.appendChild(tab);
+    });
+  }
+  if (results) {
+    renderSearchResultItems(results, state.categoryBrowseItems, t("search.larkNoResults"));
+  }
+  if (message) {
+    let text = "";
+    if (state.categoryBrowseError) {
+      text = state.categoryBrowseError;
+    } else if (state.categoryBrowseLoading && !state.categoryBrowseItems.length) {
+      text = t("search.browseLoading");
+    } else if (state.categoryBrowseItems.length) {
+      text = state.categoryBrowseHasMore
+        ? t("search.categoryLoadedMore", { count: state.categoryBrowseItems.length })
+        : t("search.categoryLoadedAll", { count: state.categoryBrowseItems.length });
+    } else if (!state.categoryBrowseLoading) {
+      text = t("search.larkNoResults");
+    }
+    message.textContent = text;
+    message.classList.toggle("is-error", Boolean(state.categoryBrowseError));
+  }
+}
+
+async function loadCategoryBrowse({ categoryId = state.categoryBrowseSelectedId, query = state.categoryBrowseQuery, append = false } = {}) {
+  const category = categoryBrowseDefinitions().find((entry) => entry.id === categoryId);
+  if (!category) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    renderCategoryBrowseView();
+    return;
+  }
+  const searchSeq = state.categoryBrowseSeq + 1;
+  state.categoryBrowseSeq = searchSeq;
+  state.categoryBrowseSelectedId = category.id;
+  state.categoryBrowseQuery = String(query || "").trim();
+  state.categoryBrowseError = "";
+  if (!append) {
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = true;
+  }
+  state.categoryBrowseLoading = true;
+  renderCategoryBrowseView();
+  try {
+    const data = await fetchD1CategoryBrowse({
+      tags: category.tags,
+      query: state.categoryBrowseQuery,
+      offset: append ? state.categoryBrowseOffset : 0,
+      limit: categoryBrowsePageSize,
+    });
+    if (state.categoryBrowseSeq !== searchSeq) {
+      return;
+    }
+    const nextItems = Array.isArray(data.items) ? data.items : [];
+    state.categoryBrowseItems = append ? mergeCategoryBrowseItems(state.categoryBrowseItems, nextItems) : mergeCategoryBrowseItems([], nextItems);
+    state.categoryBrowseHasMore = Boolean(data.has_more);
+    state.categoryBrowseOffset = Number(data.next_offset ?? (append ? state.categoryBrowseOffset + nextItems.length : nextItems.length)) || state.categoryBrowseItems.length;
+  } catch (error) {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseError = error.message;
+    }
+  } finally {
+    if (state.categoryBrowseSeq === searchSeq) {
+      state.categoryBrowseLoading = false;
+      renderCategoryBrowseView();
+    }
+  }
+}
+
+function maybeLoadMoreCategoryBrowse(scrollContainer) {
+  if (
+    !state.categoryBrowseSelectedId
+    || state.categoryBrowseLoading
+    || !state.categoryBrowseHasMore
+    || !scrollContainer
+  ) {
+    return;
+  }
+  const remaining = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+  if (remaining <= 160) {
+    loadCategoryBrowse({ append: true });
+  }
+}
+
+function selectedFavlistFolder() {
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  return folders.find((folder) => String(folder.id || "") === state.favlistBrowseSelectedFolderId) || null;
+}
+
+function renderFavlistBrowse() {
+  if (!elements.favlistGrid || !elements.favlistSongResults) {
+    return;
+  }
+  const folders = Array.isArray(state.favlistBrowseData?.folders) ? state.favlistBrowseData.folders : [];
+  const items = Array.isArray(state.favlistBrowseData?.items) ? state.favlistBrowseData.items : [];
+  const signature = JSON.stringify({
+    loading: state.favlistBrowseLoading,
+    selected: state.favlistBrowseSelectedFolderId,
+    folders,
+    items,
+    language: state.language,
+  });
+  if (signature === state.favlistBrowseRenderSignature) {
+    return;
+  }
+  state.favlistBrowseRenderSignature = signature;
+
+  const hasSelectedFolder = Boolean(state.favlistBrowseSelectedFolderId);
+  elements.favlistListView?.classList.toggle("hidden", hasSelectedFolder);
+  elements.favlistItemsView?.classList.toggle("hidden", !hasSelectedFolder);
+
+  if (!hasSelectedFolder) {
+    elements.favlistGrid.innerHTML = "";
+    if (!folders.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.favlistBrowseLoading ? t("favlist.loadingFolders") : t("favlist.noBrowseFolders");
+      elements.favlistGrid.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const folderId = String(folder.id || "").trim();
+        const title = String(folder.title || folderId || t("favlist.folder")).trim();
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button favlist-browse-button";
+        button.dataset.folderId = folderId;
+        button.title = title;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name favlist-browse-name";
+        name.textContent = title;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count favlist-browse-count";
+        count.textContent = t("favlist.mediaCount", { count: Number(folder.media_count || folder.count || 0) });
+
+        button.append(name, count);
+
+        if (folder.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar favlist-browse-avatar";
+          avatar.src = folder.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
+        elements.favlistGrid.appendChild(button);
+      });
+    }
+    setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingFolders") : "");
+    return;
+  }
+
+  const folder = selectedFavlistFolder();
+  if (elements.favlistBrowseAvatar) {
+    const avatarUrl = String(folder?.avatar_url || "").trim();
+    elements.favlistBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.favlistBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.favlistBrowseAvatar.removeAttribute("src");
+    }
+  }
+  if (elements.favlistBrowseTitle) {
+    elements.favlistBrowseTitle.textContent = String(folder?.title || state.favlistBrowseSelectedFolderId || t("favlist.folder"));
+  }
+  if (elements.favlistBrowseCount) {
+    const totalCount = Number(folder?.media_count || folder?.count || items.length || 0);
+    elements.favlistBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.favlistSongResults,
+    items,
+    state.favlistBrowseLoading ? t("favlist.loadingItems") : t("favlist.noItems"),
+  );
+  setFavlistBrowseMessage(state.favlistBrowseLoading ? t("favlist.loadingItems") : "");
+}
+
+async function loadFavlistBrowse({
+  folderId = state.favlistBrowseSelectedFolderId,
+  query = "",
+  keepQuery = false,
+} = {}) {
+  state.favlistBrowseLoading = true;
+  state.favlistBrowseSelectedFolderId = String(folderId || "").trim();
+  renderFavlistBrowse();
+  let caughtError = null;
+  try {
+    const nextData = await fetchGatchaFavlistBrowse(state.favlistBrowseSelectedFolderId, query);
+    state.favlistBrowseData = nextData;
+    state.favlistBrowseSelectedFolderId = String(
+      nextData.selected_folder_id || state.favlistBrowseSelectedFolderId || "",
+    );
+    if (!keepQuery && elements.favlistSearchQuery) {
+      elements.favlistSearchQuery.value = String(nextData.query || "");
+    }
+  } catch (error) {
+    caughtError = error;
+  } finally {
+    state.favlistBrowseLoading = false;
+    renderFavlistBrowse();
+    if (caughtError) {
+      setFavlistBrowseMessage(caughtError.message, true);
+    }
+  }
+}
+
+function setSearchModalOpen(open) {
+  state.searchModalOpen = Boolean(open);
+  elements.searchModal?.classList.toggle("hidden", !state.searchModalOpen);
+  document.body.classList.toggle("remote-search-modal-open", state.searchModalOpen);
+  if (state.searchModalOpen) {
+    renderSearchModalView(state.searchModalView || "search");
+    window.setTimeout(() => {
+      if (state.searchModalView === "search") {
+        elements.searchModalLarkQuery?.focus();
+      }
+    }, 0);
+  }
+}
+
+function renderSearchModalView(target = state.searchModalView || "search") {
+  const nextTarget = ["search", "follow", "favlist", "category", "name", "artist"].includes(target) ? target : "search";
+  state.searchModalView = nextTarget;
+  elements.searchModalTabs?.forEach((button) => {
+    button.classList.toggle("active", button.dataset.target === nextTarget);
+  });
+  elements.searchModalSearchView?.classList.toggle("hidden", nextTarget !== "search");
+  elements.modalFollowBrowserView?.classList.toggle("hidden", nextTarget !== "follow");
+  elements.favlistBrowserView?.classList.toggle("hidden", nextTarget !== "favlist");
+  elements.searchModalOtherView?.classList.toggle("hidden", !["category", "name", "artist"].includes(nextTarget));
+
+  if (nextTarget === "follow") {
+    if (!state.followBrowseData && !state.followBrowseLoading) {
+      state.followBrowseSelectedUid = "";
+      if (elements.modalFollowSearchQuery) {
+        elements.modalFollowSearchQuery.value = "";
+      }
+      loadFollowBrowse({ uid: "", query: "" });
+    } else {
+      renderModalFollowBrowse();
+    }
+    return;
+  }
+  if (nextTarget === "favlist") {
+    if (!state.favlistBrowseData && !state.favlistBrowseLoading) {
+      state.favlistBrowseSelectedFolderId = "";
+      if (elements.favlistSearchQuery) {
+        elements.favlistSearchQuery.value = "";
+      }
+      loadFavlistBrowse({ folderId: "", query: "" });
+    } else {
+      renderFavlistBrowse();
+    }
+    return;
+  }
+  if (nextTarget === "category") {
+    renderCategoryBrowseView();
+    return;
+  }
+  if (nextTarget === "name" || nextTarget === "artist") {
+    if (state.d1BrowseKind !== nextTarget) {
+      state.d1BrowseData = null;
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+    }
+    state.d1BrowseKind = nextTarget;
+    renderD1BrowseView();
+  }
+}
+
 function selectedFollowOwner() {
   const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
   return owners.find((owner) => String(owner.uid || "") === state.followBrowseSelectedUid) || null;
@@ -1615,18 +3652,18 @@ function followOwnerDisplayName(owner) {
   return stateOwnerName || ownerName || `UID ${uid}`;
 }
 
-function renderFollowSongResults(items, emptyText) {
-  if (!elements.followSongResults) {
+function renderFollowSongResultsInto(container, items, emptyText) {
+  if (!container) {
     return;
   }
-  elements.followSongResults.innerHTML = "";
-  elements.followSongResults.classList.remove("hidden");
+  container.innerHTML = "";
+  container.classList.remove("hidden");
 
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "search-empty";
     empty.textContent = emptyText;
-    elements.followSongResults.appendChild(empty);
+    container.appendChild(empty);
     return;
   }
 
@@ -1650,8 +3687,35 @@ function renderFollowSongResults(items, emptyText) {
 
     meta.append(title, url);
     row.append(meta, button);
-    elements.followSongResults.appendChild(row);
+    container.appendChild(row);
   });
+}
+
+function renderFollowSongResults(items, emptyText) {
+  renderFollowSongResultsInto(elements.followSongResults, items, emptyText);
+}
+
+function scheduleFavlistBrowseReloadFromState(previousSnapshot, nextSnapshot) {
+  const previousUpdatedAt = Number(previousSnapshot?.gatcha_favlist_updated_at || 0);
+  const nextUpdatedAt = Number(nextSnapshot?.gatcha_favlist_updated_at || 0);
+  if (!state.favlistBrowseData || state.favlistBrowseLoading || !nextUpdatedAt || nextUpdatedAt <= previousUpdatedAt) {
+    return;
+  }
+  if (state.favlistBrowseReloadTimer) {
+    window.clearTimeout(state.favlistBrowseReloadTimer);
+  }
+  state.favlistBrowseReloadTimer = window.setTimeout(() => {
+    state.favlistBrowseReloadTimer = null;
+    if (!state.favlistBrowseData || state.favlistBrowseLoading) {
+      return;
+    }
+    state.favlistBrowseRenderSignature = "";
+    loadFavlistBrowse({
+      folderId: state.favlistBrowseSelectedFolderId,
+      query: String(elements.favlistSearchQuery?.value || "").trim(),
+      keepQuery: true,
+    });
+  }, 0);
 }
 
 function renderFollowBrowse() {
@@ -1765,10 +3829,116 @@ function renderFollowBrowse() {
   setFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
 }
 
+function renderModalFollowBrowse() {
+  if (!elements.modalFollowBrowserView || !elements.modalFollowUpGrid || !elements.modalFollowSongResults) {
+    return;
+  }
+
+  const owners = Array.isArray(state.followBrowseData?.owners) ? state.followBrowseData.owners : [];
+  const items = Array.isArray(state.followBrowseData?.items) ? state.followBrowseData.items : [];
+  const taskBusy = gatchaTaskBusy();
+  const signature = JSON.stringify({
+    loading: state.followBrowseLoading,
+    selected: state.followBrowseSelectedUid,
+    owners,
+    items,
+    uidSaving: state.gatchaUidSaving,
+    taskBusy,
+    language: state.language,
+  });
+  if (signature === state.modalFollowBrowseRenderSignature) {
+    return;
+  }
+  state.modalFollowBrowseRenderSignature = signature;
+
+  const hasSelectedUid = Boolean(state.followBrowseSelectedUid);
+  elements.modalFollowUpListView?.classList.toggle("hidden", hasSelectedUid);
+  elements.modalFollowUpItemsView?.classList.toggle("hidden", !hasSelectedUid);
+  if (elements.modalFollowUidInput) {
+    elements.modalFollowUidInput.disabled = state.gatchaUidSaving || taskBusy;
+  }
+  if (elements.modalAddFollowUidButton) {
+    elements.modalAddFollowUidButton.disabled = state.gatchaUidSaving || taskBusy;
+    elements.modalAddFollowUidButton.textContent = taskBusy
+      ? t("gatcha.globalCooldown")
+      : state.gatchaUidSaving
+        ? t("gatcha.adding")
+        : t("gatcha.add");
+  }
+
+  if (!hasSelectedUid) {
+    elements.modalFollowUpGrid.innerHTML = "";
+    if (!owners.length) {
+      const empty = document.createElement("div");
+      empty.className = "search-empty";
+      empty.textContent = state.followBrowseLoading ? t("follow.loadingOwners") : t("follow.noOwners");
+      elements.modalFollowUpGrid.appendChild(empty);
+    } else {
+      owners.forEach((owner) => {
+        const displayName = followOwnerDisplayName(owner);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "follow-up-button";
+        button.dataset.uid = String(owner.uid || "");
+        button.title = displayName;
+
+        const name = document.createElement("span");
+        name.className = "follow-up-name";
+        name.textContent = displayName;
+
+        const count = document.createElement("span");
+        count.className = "follow-up-count";
+        count.textContent = t("follow.countSongs", { count: Number(owner.count || 0) });
+
+        button.append(name, count);
+
+        if (owner.avatar_url) {
+          const avatar = document.createElement("img");
+          avatar.className = "follow-up-avatar";
+          avatar.src = owner.avatar_url;
+          avatar.alt = "";
+          avatar.loading = "lazy";
+          avatar.referrerPolicy = "no-referrer";
+          button.append(avatar);
+        }
+
+        elements.modalFollowUpGrid.appendChild(button);
+      });
+    }
+    setModalFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingOwners") : "");
+    return;
+  }
+
+  const owner = selectedFollowOwner();
+  if (elements.modalFollowBrowseAvatar) {
+    const avatarUrl = String(owner?.avatar_url || "").trim();
+    elements.modalFollowBrowseAvatar.classList.toggle("hidden", !avatarUrl);
+    if (avatarUrl) {
+      elements.modalFollowBrowseAvatar.src = avatarUrl;
+    } else {
+      elements.modalFollowBrowseAvatar.removeAttribute("src");
+    }
+  }
+  if (elements.modalFollowBrowseTitle) {
+    elements.modalFollowBrowseTitle.textContent = followOwnerDisplayName(owner) || `UID ${state.followBrowseSelectedUid}`;
+  }
+  if (elements.modalFollowBrowseCount) {
+    const totalCount = Number(owner?.count || items.length || 0);
+    elements.modalFollowBrowseCount.textContent = t("follow.itemCount", { shown: items.length, total: totalCount });
+  }
+  renderSearchResultItems(
+    elements.modalFollowSongResults,
+    items,
+    state.followBrowseLoading ? t("follow.loadingItems") : t("follow.noItems"),
+  );
+  setModalFollowBrowseMessage(state.followBrowseLoading ? t("follow.loadingItems") : "");
+}
+
 async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "", keepQuery = false } = {}) {
   state.followBrowseLoading = true;
   state.followBrowseSelectedUid = String(uid || "").trim();
   renderFollowBrowse();
+  renderModalFollowBrowse();
   try {
     const nextData = await fetchGatchaBrowse(state.followBrowseSelectedUid, query);
     state.followBrowseData = nextData;
@@ -1776,19 +3946,102 @@ async function loadFollowBrowse({ uid = state.followBrowseSelectedUid, query = "
     if (!keepQuery && elements.followSearchQuery) {
       elements.followSearchQuery.value = String(nextData.query || "");
     }
+    if (!keepQuery && elements.modalFollowSearchQuery) {
+      elements.modalFollowSearchQuery.value = String(nextData.query || "");
+    }
   } catch (error) {
     setFollowBrowseMessage(error.message, true);
+    setModalFollowBrowseMessage(error.message, true);
   } finally {
     state.followBrowseLoading = false;
     renderFollowBrowse();
+    renderModalFollowBrowse();
   }
 }
 
 async function refreshFollowBrowseAfterGatchaUidAdd(uid = "") {
   state.followBrowseRenderSignature = "";
+  state.modalFollowBrowseRenderSignature = "";
   const currentUid = String(state.followBrowseSelectedUid || "").trim();
   const nextUid = currentUid || String(uid || "").trim();
   await loadFollowBrowse({ uid: nextUid, query: "", keepQuery: false });
+}
+
+async function addGatchaUidFromInput(input, { messageTarget = "gatcha" } = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+  if (state.gatchaUidSaving) {
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
+    return;
+  }
+
+  state.gatchaUidSaving = true;
+  renderGatchaUidView();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.checkingUid"));
+  try {
+    const preview = await previewGatchaUid(uid);
+    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
+    const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
+    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
+
+    if (!window.confirm(t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }))) {
+      setGatchaUidFlowMessage(messageTarget, t("remote.uidAddCancelled"));
+      return;
+    }
+
+    const normalizedUid = preview?.uid || uid;
+    if (gatchaTaskBusy()) {
+      setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+      renderGatchaUidView();
+      return;
+    }
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.pullingOwnerItems", { name: ownerName }));
+    const result = await addGatchaUid(normalizedUid);
+    setGatchaUidFlowMessage(messageTarget, gatchaUidResultMessage(result, normalizedUid));
+    if (input) {
+      input.value = "";
+    }
+    await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || normalizedUid);
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaUidSaving = false;
+    renderGatchaUidView();
+  }
+}
+
+async function previewGatchaFavlistFromInput(input, { messageTarget = "gatcha" } = {}) {
+  const uid = String(input?.value || "").trim();
+  if (!uid) {
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.uidRequired"), true);
+    return;
+  }
+  if (gatchaTaskBusy()) {
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
+    renderGatchaUidView();
+    return;
+  }
+  state.gatchaFavlistSaving = true;
+  renderGatchaUidView();
+  setGatchaUidFlowMessage(messageTarget, t("gatcha.readingFavlists"));
+  try {
+    const result = await previewGatchaFavlist(uid);
+    openGatchaFavlistSheet(result?.uid || uid, result, { messageTarget });
+    setGatchaUidFlowMessage(messageTarget, t("gatcha.chooseFavlists"));
+  } catch (error) {
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
+  } finally {
+    state.gatchaFavlistSaving = false;
+    renderGatchaUidView();
+  }
 }
 
 async function handleGatchaDraw() {
@@ -1878,6 +4131,13 @@ function renderGatchaUidView() {
     elements.pullGatchaFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
     elements.pullGatchaFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
   }
+  if (elements.modalFavlistUidInput) {
+    elements.modalFavlistUidInput.disabled = state.gatchaFavlistSaving || taskBusy;
+  }
+  if (elements.modalPullFavlistButton) {
+    elements.modalPullFavlistButton.disabled = state.gatchaFavlistSaving || taskBusy;
+    elements.modalPullFavlistButton.textContent = state.gatchaFavlistSaving ? t("gatcha.pulling") : t("gatcha.pullFavlist");
+  }
   if (taskBusy) {
     if (elements.refreshGatchaCacheButton) {
       elements.refreshGatchaCacheButton.textContent = t("gatcha.globalCooldown");
@@ -1885,59 +4145,16 @@ function renderGatchaUidView() {
     if (elements.pullGatchaFavlistButton) {
       elements.pullGatchaFavlistButton.textContent = t("gatcha.globalCooldown");
     }
+    if (elements.modalPullFavlistButton) {
+      elements.modalPullFavlistButton.textContent = t("gatcha.globalCooldown");
+    }
   }
+  renderModalFollowBrowse();
 }
 
 async function handleGatchaUidSubmit(event) {
   event.preventDefault();
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
-  if (state.gatchaUidSaving) {
-    return;
-  }
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
-    return;
-  }
-
-  state.gatchaUidSaving = true;
-  renderGatchaUidView();
-  setGatchaUidMessage(t("gatcha.checkingUid"));
-  try {
-    const preview = await previewGatchaUid(uid);
-    const ownerName = preview?.name || `UID ${preview?.uid || uid}`;
-    const modeLabel = preview?.cache_mode === "incremental" ? t("gatcha.latestMode") : t("gatcha.allMode");
-    const followedPrefix = preview?.already_followed ? t("gatcha.alreadyFollowedPrefix") : "";
-    setGatchaUidMessage(t("gatcha.detectedOwner", { prefix: followedPrefix, owner: ownerName }));
-
-    if (!window.confirm(t("gatcha.confirmPullOwner", { owner: ownerName, mode: modeLabel }))) {
-      setGatchaUidMessage(t("remote.uidAddCancelled"));
-      return;
-    }
-
-    const normalizedUid = preview?.uid || uid;
-    if (gatchaTaskBusy()) {
-      setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-      renderGatchaUidView();
-      return;
-    }
-    setGatchaUidMessage(t("gatcha.pullingOwnerItems", { name: ownerName }));
-    const result = await addGatchaUid(normalizedUid);
-    setGatchaUidMessage(gatchaUidResultMessage(result, normalizedUid));
-    if (elements.gatchaUidInput) {
-      elements.gatchaUidInput.value = "";
-    }
-    await refreshFollowBrowseAfterGatchaUidAdd(result?.uid || normalizedUid);
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaUidSaving = false;
-    renderGatchaUidView();
-  }
+  await addGatchaUidFromInput(elements.gatchaUidInput, { messageTarget: "gatcha" });
 }
 
 function render() {
@@ -1949,18 +4166,22 @@ function render() {
 
   renderRequesterSelect(data.session_users || []);
   renderCurrentItem(data.current_item, playbackMode);
+  renderCurrentRatingButton(data.current_item);
   renderAudioVariantBar(data.current_item, playbackMode);
   renderPlayerControls(data.current_item, playbackMode);
   renderRemoteAvSyncControls(playbackMode, data.player_settings);
   renderRemoteVolumeControls(playbackMode, data.player_settings);
+  renderRemoteKeyShiftControls(playbackMode, data.player_settings);
   renderRemoteAccess(data.remote_access);
   renderFollowBrowse();
+  renderModalFollowBrowse();
   renderListHeader(data.playlist || [], data.history || []);
   renderQueue(Array.isArray(data.playlist) ? data.playlist : []);
   renderHistory(Array.isArray(data.history) ? data.history : []);
   syncListView();
   renderLayoutMode();
   renderGatchaUidView();
+  renderFloatingControlTrigger(data.current_item, playbackMode);
 }
 
 function frontendPlaybackMode(_mode) {
@@ -2017,12 +4238,20 @@ function renderCurrentItem(current, playbackMode) {
       elements.currentRequester.classList.toggle("hidden", !requesterText);
       elements.currentOwner.textContent = ownerText;
       elements.currentOwner.classList.toggle("hidden", !ownerText);
+      if (elements.openRatingButton) {
+        elements.openRatingButton.classList.toggle("hidden", !current.bvid);
+      }
       elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     }
-    
+
     renderCurrentPlaybackState(current);
+    try {
+      maybeUpdateRemoteRatingPrompt(current);
+    } catch (error) {
+      console.warn("Rating prompt update failed in renderCurrentItem:", error);
+    }
     elements.currentCacheState.classList.remove("hidden");
-    
+
     if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
       if (!state.autoRefreshTimer) {
         state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
@@ -2031,7 +4260,7 @@ function renderCurrentItem(current, playbackMode) {
       clearTimeout(state.autoRefreshTimer);
       state.autoRefreshTimer = null;
     }
-    
+
     elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
     elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
     elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
@@ -2044,6 +4273,9 @@ function renderCurrentItem(current, playbackMode) {
     elements.currentTitle.textContent = t("remote.noCurrentSong");
     elements.currentRequester.textContent = "";
     elements.currentRequester.classList.add("hidden");
+    if (elements.openRatingButton) {
+      elements.openRatingButton.classList.add("hidden");
+    }
     if (elements.currentOwner) {
       elements.currentOwner.textContent = "";
       elements.currentOwner.classList.add("hidden");
@@ -2053,6 +4285,18 @@ function renderCurrentItem(current, playbackMode) {
     elements.currentCacheState.classList.remove("ready", "failed");
     elements.currentMeta.textContent = t("remote.noCurrentHint");
   }
+}
+
+function renderCurrentRatingButton(current) {
+  const button = elements.currentRatingButton;
+  if (!button) {
+    return;
+  }
+  const enabled = Boolean(current?.bvid);
+  const submitted = enabled && hasSubmittedSongRating(current);
+  button.disabled = !enabled || submitted;
+  button.textContent = submitted ? t("rating.rated") : t("rating.rate");
+  button.title = submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
 }
 
 function audioVariantsForItem(item) {
@@ -2186,7 +4430,7 @@ function scheduleAudioVariantSwitchUnlock() {
 
 function renderAudioVariantBar(currentItem, playbackMode) {
   if (playbackMode !== "local" || !currentItem) {
-    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.replaceChildren();
     elements.audioVariantBar.classList.add("hidden");
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = "";
@@ -2195,7 +4439,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const variants = partOptionsForItem(currentItem);
   if (variants.length <= 1) {
-    elements.audioVariantBar.innerHTML = "";
+    elements.audioVariantBar.replaceChildren();
     elements.audioVariantBar.classList.add("hidden");
     state.audioVariantBarExpanded = false;
     state.audioVariantBarItemId = currentItem.id;
@@ -2209,7 +4453,7 @@ function renderAudioVariantBar(currentItem, playbackMode) {
 
   const selectedVariant = selectedAudioVariantForItem(currentItem);
   const buttonsDisabled = audioVariantSwitchLocked();
-  elements.audioVariantBar.innerHTML = "";
+  elements.audioVariantBar.replaceChildren();
   const list = document.createElement("div");
   list.className = "audio-variant-list";
   variants.forEach((variant) => {
@@ -2233,7 +4477,10 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   toggleButton.dataset.action = "toggle-audio-variants";
   toggleButton.setAttribute("aria-expanded", String(state.audioVariantBarExpanded));
   toggleButton.setAttribute("aria-label", state.audioVariantBarExpanded ? t("player.collapseParts") : t("player.expandParts"));
-  toggleButton.innerHTML = '<span aria-hidden="true">▾</span>';
+  const toggleIcon = document.createElement("span");
+  toggleIcon.setAttribute("aria-hidden", "true");
+  toggleIcon.textContent = "▾";
+  toggleButton.appendChild(toggleIcon);
 
   elements.audioVariantBar.append(list, toggleButton);
   elements.audioVariantBar.classList.remove("hidden");
@@ -2281,6 +4528,52 @@ function currentRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
   }
   state.remoteLocalAvOffsetMs = null;
   return serverRemoteAvOffsetMs(playerSettings);
+}
+
+function serverRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  return Math.max(-6, Math.min(6, Number(playerSettings?.key_shift ?? 0)));
+}
+
+function currentRemoteKeyShift(playerSettings = state.data?.player_settings) {
+  if (state.remoteLocalKeyShift !== null && Date.now() < state.remoteKeyShiftEchoSuppressUntil) {
+    return state.remoteLocalKeyShift;
+  }
+  state.remoteLocalKeyShift = null;
+  return serverRemoteKeyShift(playerSettings);
+}
+
+function markRemoteKeyShiftWrite(keyShift) {
+  state.remoteLocalKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  state.remoteKeyShiftEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
+  state.remoteKeyShiftSaveSeq += 1;
+  return state.remoteKeyShiftSaveSeq;
+}
+
+async function setRemoteKeyShift(keyShift) {
+  const boundedKeyShift = Math.max(-6, Math.min(6, Number(keyShift || 0)));
+  const currentValue = currentRemoteKeyShift();
+  if (boundedKeyShift === currentValue) {
+    markRemoteKeyShiftWrite(boundedKeyShift);
+    return;
+  }
+
+  const requestSeq = markRemoteKeyShiftWrite(boundedKeyShift);
+  renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  try {
+    const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    applyStateSnapshot(nextData);
+  } catch (error) {
+    if (requestSeq !== state.remoteKeyShiftSaveSeq) {
+      return;
+    }
+    state.remoteLocalKeyShift = null;
+    state.remoteKeyShiftEchoSuppressUntil = 0;
+    setFormMessage(error.message, true);
+    renderRemoteKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
+  }
 }
 
 function serverRemoteVolumePercent(playerSettings = state.data?.player_settings) {
@@ -2371,6 +4664,21 @@ function renderRemoteVolumeControls(playbackMode, playerSettings) {
   elements.remoteVolumeMuteButton.classList.toggle("is-muted", isMuted);
 }
 
+function renderRemoteKeyShiftControls(playbackMode, playerSettings) {
+  if (!elements.remoteKeyShiftPanel || !elements.remoteKeyShiftInput) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  elements.remoteKeyShiftPanel.classList.toggle("hidden", !isLocalMode);
+  const keyShift = currentRemoteKeyShift(playerSettings);
+  if (document.activeElement !== elements.remoteKeyShiftInput) {
+    elements.remoteKeyShiftInput.value = String(keyShift);
+  }
+  if (elements.remoteKeyShiftResetButton) {
+    elements.remoteKeyShiftResetButton.disabled = keyShift === 0;
+  }
+}
+
 function openBindingSheet(intent, payload) {
   const pages = Array.isArray(payload?.pages) ? payload.pages : [];
   if (!pages.length) {
@@ -2390,7 +4698,7 @@ function openBindingSheet(intent, payload) {
   const preferredPage = Number(payload.preferred_page || pages[0]?.page || 1);
   pages.forEach((entry) => {
     elements.bindingSheetVideoOptions.appendChild(renderBindingOption("radio", "binding-video-page", entry, Number(entry.page) === preferredPage));
-    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, Number(entry.page) === preferredPage));
+    elements.bindingSheetAudioOptions.appendChild(renderBindingOption("checkbox", "binding-audio-page", entry, false));
   });
   renderBindingAccordion();
 
@@ -2450,13 +4758,13 @@ function renderGatchaFavlistOption(folder) {
   return label;
 }
 
-function openGatchaFavlistSheet(uid, payload) {
+function openGatchaFavlistSheet(uid, payload, { messageTarget = "gatcha" } = {}) {
   const folders = Array.isArray(payload?.folders) ? payload.folders : [];
   if (!folders.length) {
-    setGatchaUidMessage(t("favlist.none"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.none"), true);
     return;
   }
-  state.gatchaFavlistIntent = { uid, folders };
+  state.gatchaFavlistIntent = { uid, folders, messageTarget };
   elements.gatchaFavlistSheetText.textContent = t("favlist.chooseForUid", {
     uid: payload?.uid || uid,
     count: payload?.public_folder_count || folders.length,
@@ -2485,6 +4793,232 @@ function closeGatchaFavlistSheet() {
     elements.gatchaFavlistSheet.classList.add("hidden");
     elements.gatchaFavlistSheetOptions.innerHTML = "";
   }, 280);
+}
+
+function poolConfigFolderId(folder) {
+  return String(folder?.id || folder?.folder_id || "").trim();
+}
+
+function poolConfigSetMessage(message, isError = false) {
+  if (!elements.poolConfigMessage) {
+    return;
+  }
+  elements.poolConfigMessage.textContent = message || "";
+  elements.poolConfigMessage.classList.toggle("is-error", Boolean(isError));
+  elements.poolConfigMessage.classList.toggle("hidden", !message);
+}
+
+function updatePoolConfigWeightLabel() {
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const favlistWeight = 100 - uidWeight;
+  if (elements.poolConfigWeightLabel) {
+    elements.poolConfigWeightLabel.textContent = t("gatcha.poolWeightValue", {
+      uid: uidWeight,
+      favlist: favlistWeight,
+    });
+  }
+}
+
+function renderPoolConfigOption({ type, id, title, meta, checked }) {
+  const label = document.createElement("label");
+  label.className = "binding-option pool-config-option";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.name = type === "uid" ? "gatcha-pool-uid" : "gatcha-pool-favlist";
+  input.value = String(id || "");
+  input.checked = Boolean(checked);
+
+  const copy = document.createElement("div");
+  const titleEl = document.createElement("div");
+  titleEl.className = "binding-option-title";
+  titleEl.textContent = title || id;
+  const metaEl = document.createElement("div");
+  metaEl.className = "binding-option-meta";
+  metaEl.textContent = meta || "";
+  copy.append(titleEl, metaEl);
+  label.append(input, copy);
+  return label;
+}
+
+function renderPoolConfigSheet() {
+  const data = state.poolConfigData || {};
+  const excludedUids = new Set((Array.isArray(data.excluded_uids) ? data.excluded_uids : []).map(String));
+  const excludedFolders = new Set((Array.isArray(data.excluded_favlist_folders) ? data.excluded_favlist_folders : []).map(String));
+  const uidWeight = Math.max(0, Math.min(100, Number(data.uid_weight ?? 50)));
+
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = String(uidWeight);
+    elements.poolConfigWeightSlider.disabled = state.poolConfigSaving;
+  }
+  updatePoolConfigWeightLabel();
+
+  if (elements.poolConfigUidOptions) {
+    elements.poolConfigUidOptions.innerHTML = "";
+    const uids = Array.isArray(data.uid_options) ? data.uid_options : [];
+    if (!uids.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyUid");
+      elements.poolConfigUidOptions.appendChild(empty);
+    } else {
+      uids.forEach((owner) => {
+        const uid = String(owner.uid || "").trim();
+        elements.poolConfigUidOptions.appendChild(renderPoolConfigOption({
+          type: "uid",
+          id: uid,
+          title: owner.name || `UID ${uid}`,
+          meta: t("gatcha.poolOptionCount", { count: Number(owner.count || 0) }),
+          checked: uid && !excludedUids.has(uid),
+        }));
+      });
+    }
+  }
+
+  if (elements.poolConfigFavlistOptions) {
+    elements.poolConfigFavlistOptions.innerHTML = "";
+    const folders = Array.isArray(data.favlist_folder_options) ? data.favlist_folder_options : [];
+    if (!folders.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted pool-config-empty";
+      empty.textContent = t("gatcha.poolEmptyFavlist");
+      elements.poolConfigFavlistOptions.appendChild(empty);
+    } else {
+      folders.forEach((folder) => {
+        const id = poolConfigFolderId(folder);
+        const title = folder.title || t("favlist.folderWithId", { id });
+        const meta = folder.uid
+          ? t("gatcha.poolFavlistMeta", { uid: folder.uid, count: Number(folder.count || folder.media_count || 0) })
+          : t("gatcha.poolOptionCount", { count: Number(folder.count || folder.media_count || 0) });
+        elements.poolConfigFavlistOptions.appendChild(renderPoolConfigOption({
+          type: "favlist",
+          id,
+          title,
+          meta,
+          checked: id && !excludedFolders.has(id),
+        }));
+      });
+    }
+  }
+
+  const hasUidOptions = Boolean(elements.poolConfigUidOptions?.querySelector('input[name="gatcha-pool-uid"]'));
+  const hasFavlistOptions = Boolean(elements.poolConfigFavlistOptions?.querySelector('input[name="gatcha-pool-favlist"]'));
+  [elements.poolConfigUidSelectAll, elements.poolConfigUidSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasUidOptions;
+  });
+  [elements.poolConfigFavlistSelectAll, elements.poolConfigFavlistSelectNone].forEach((button) => {
+    if (button) button.disabled = state.poolConfigSaving || !hasFavlistOptions;
+  });
+  if (elements.poolConfigSheetReset) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigSheetReset.disabled = state.poolConfigSaving || !detailLoaded;
+  }
+  if (elements.poolConfigSheetSave) {
+    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
+    elements.poolConfigSheetSave.disabled = state.poolConfigSaving || !detailLoaded;
+    elements.poolConfigSheetSave.textContent = state.poolConfigSaving ? t("gatcha.poolSaving") : t("gatcha.poolSave");
+  }
+}
+
+async function openPoolConfigSheet() {
+  if (!elements.poolConfigSheet || state.poolConfigSheetOpen) {
+    return;
+  }
+  state.poolConfigSheetOpen = true;
+  state.poolConfigSaving = false;
+  state.poolConfigData = state.data?.gatcha_pool_config || {};
+  elements.poolConfigSheet.classList.remove("hidden");
+  elements.poolConfigSheet.setAttribute("aria-hidden", "false");
+  renderPoolConfigSheet();
+  poolConfigSetMessage(t("gatcha.poolLoading"));
+  requestAnimationFrame(() => {
+    elements.poolConfigSheet.classList.add("is-open");
+  });
+  try {
+    state.poolConfigData = await fetchPoolConfig();
+    poolConfigSetMessage("");
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  }
+  renderPoolConfigSheet();
+}
+
+function closePoolConfigSheet() {
+  state.poolConfigSheetOpen = false;
+  state.poolConfigSaving = false;
+  elements.poolConfigSheet?.classList.remove("is-open");
+  elements.poolConfigSheet?.setAttribute("aria-hidden", "true");
+  window.setTimeout(() => {
+    if (state.poolConfigSheetOpen) {
+      return;
+    }
+    elements.poolConfigSheet?.classList.add("hidden");
+    state.poolConfigData = null;
+    poolConfigSetMessage("");
+  }, 280);
+}
+
+function setPoolConfigChecked(name, checked) {
+  document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+    input.checked = Boolean(checked);
+  });
+}
+
+function resetPoolConfigControls() {
+  if (elements.poolConfigWeightSlider) {
+    elements.poolConfigWeightSlider.value = "50";
+  }
+  updatePoolConfigWeightLabel();
+  setPoolConfigChecked("gatcha-pool-uid", true);
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+  poolConfigSetMessage("");
+}
+
+function poolConfigExcludedValues(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]`)]
+    .filter((input) => !input.checked)
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+async function submitPoolConfigSheet() {
+  if (state.poolConfigSaving) {
+    return;
+  }
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const payload = {
+    uid_weight: uidWeight,
+    favlist_weight: 100 - uidWeight,
+    excluded_uids: poolConfigExcludedValues("gatcha-pool-uid"),
+    excluded_favlist_folders: poolConfigExcludedValues("gatcha-pool-favlist"),
+  };
+  state.poolConfigData = {
+    ...(state.poolConfigData || {}),
+    ...payload,
+  };
+  state.poolConfigSaving = true;
+  renderPoolConfigSheet();
+  poolConfigSetMessage(t("gatcha.poolSaving"));
+  try {
+    state.poolConfigData = await savePoolConfig(payload);
+    if (state.data) {
+      state.data.gatcha_pool_config = {
+        uid_weight: state.poolConfigData.uid_weight,
+        favlist_weight: state.poolConfigData.favlist_weight,
+        excluded_uids: state.poolConfigData.excluded_uids || [],
+        excluded_favlist_folders: state.poolConfigData.excluded_favlist_folders || [],
+        updated_at: state.poolConfigData.updated_at || 0,
+      };
+    }
+    closePoolConfigSheet();
+  } catch (error) {
+    poolConfigSetMessage(error.message, true);
+  } finally {
+    state.poolConfigSaving = false;
+    if (state.poolConfigSheetOpen) {
+      renderPoolConfigSheet();
+    }
+  }
 }
 
 function openReorderConfirmSheet(intent) {
@@ -2572,29 +5106,38 @@ async function confirmGatchaFavlistSheet() {
   if (!intent?.uid) {
     return;
   }
+  const messageTarget = intent.messageTarget || "gatcha";
   const folderIds = selectedGatchaFavlistFolderIds();
   if (!folderIds.length) {
-    setGatchaUidMessage(t("favlist.selectAtLeastOne"), true);
+    setGatchaUidFlowMessage(messageTarget, t("favlist.selectAtLeastOne"), true);
     return;
   }
   if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
+    setGatchaUidFlowMessage(messageTarget, gatchaTaskBusyMessage(), true);
     renderGatchaUidView();
     return;
   }
 
   state.gatchaFavlistSaving = true;
   renderGatchaUidView();
-  setGatchaUidMessage(t("favlist.pullingSelected"));
+  setGatchaUidFlowMessage(messageTarget, t("favlist.pullingSelected"));
+  closeGatchaFavlistSheet();
   try {
     const result = await pullGatchaFavlist(intent.uid, folderIds);
-    closeGatchaFavlistSheet();
-    setGatchaUidMessage(t("favlist.pullResult", {
+    setGatchaUidFlowMessage(messageTarget, t("favlist.pullResult", {
       folders: result?.matched_folder_count || 0,
       items: result?.item_count || 0,
     }));
+    if (state.favlistBrowseData) {
+      state.favlistBrowseRenderSignature = "";
+      await loadFavlistBrowse({
+        folderId: state.favlistBrowseSelectedFolderId,
+        query: String(elements.favlistSearchQuery?.value || "").trim(),
+        keepQuery: true,
+      });
+    }
   } catch (error) {
-    setGatchaUidMessage(error.message, true);
+    setGatchaUidFlowMessage(messageTarget, error.message, true);
   } finally {
     state.gatchaFavlistSaving = false;
     renderGatchaUidView();
@@ -2667,10 +5210,12 @@ async function confirmBindingSheet() {
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
     setMessageForSource(source, t("binding.selectVideoPart"), true);
+    setAppMessage(t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
     setMessageForSource(source, t("binding.selectAudioPart"), true);
+    setAppMessage(t("binding.selectAudioPart"), true);
     return;
   }
 
@@ -2719,6 +5264,7 @@ async function confirmBindingSheet() {
       return;
     }
     setMessageForSource(source, error.message, true);
+    setAppMessage(error.message, true);
   } finally {
     state.submitting = false;
   }
@@ -2841,6 +5387,26 @@ function currentPlayerStatus(currentItem) {
   return playerStatus;
 }
 
+function durationSecondsForItem(item) {
+  if (!item) {
+    return 0;
+  }
+  const selectedDurations = Array.isArray(item.selected_durations) ? item.selected_durations : [];
+  const selectedPages = Array.isArray(item.selected_pages) ? item.selected_pages : [];
+  const currentPage = Number(item.page || item.video_page || selectedPages[0] || 0);
+  const selectedIndex = selectedPages.findIndex((page) => Number(page) === currentPage);
+  const selectedDuration = Number(selectedDurations[selectedIndex >= 0 ? selectedIndex : 0] || 0);
+  if (selectedDuration > 0) {
+    return Math.round(selectedDuration);
+  }
+
+  const availableDurations = Array.isArray(item.available_durations) ? item.available_durations : [];
+  const availablePages = Array.isArray(item.available_pages) ? item.available_pages : [];
+  const availableIndex = availablePages.findIndex((page) => Number(page) === currentPage);
+  const availableDuration = Number(availableDurations[availableIndex >= 0 ? availableIndex : 0] || 0);
+  return availableDuration > 0 ? Math.round(availableDuration) : 0;
+}
+
 function playerStatusUpdatedAt(playerStatus) {
   const updatedAt = Number(playerStatus?.updated_at || 0);
   return Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0;
@@ -2925,6 +5491,9 @@ function renderPlayerControls(currentItem, playbackMode) {
   if (!currentItem) {
     state.playerControlsRenderSignature = "__empty__";
     elements.playerControlPanel.classList.add("hidden");
+    if (elements.floatingPlayerControlPanel) {
+      elements.floatingPlayerControlPanel.classList.add("hidden");
+    }
     elements.playerControlHint.textContent = "";
     return;
   }
@@ -2946,23 +5515,38 @@ function renderPlayerControls(currentItem, playbackMode) {
   state.playerControlsRenderSignature = controlSignature;
 
   const toggleButton = elements.playerControlPanel.querySelector('[data-control-action="toggle-play"]');
+  const floatingToggleButton = elements.floatingPlayerControlPanel?.querySelector('[data-control-action="toggle-play"]');
+
   elements.playerControlPanel.classList.remove("hidden");
-
-  elements.playerControlPanel.querySelectorAll("button[data-control-action]").forEach((button) => {
-    const action = button.dataset.controlAction || "";
-    const isPending = action === state.playerControlPendingAction;
-    const disabled = action === "next-track"
-      ? Boolean(state.playerControlPendingAction)
-      : !canControl || Boolean(state.playerControlPendingAction);
-    button.disabled = disabled;
-    button.classList.toggle("is-pending", isPending);
-  });
-
-  if (toggleButton) {
-    toggleButton.textContent = isPaused ? t("remote.play") : t("remote.pause");
-    toggleButton.classList.toggle("is-paused", isPaused);
-    toggleButton.classList.toggle("is-playing", !isPaused);
+  if (elements.floatingPlayerControlPanel) {
+    elements.floatingPlayerControlPanel.classList.remove("hidden");
   }
+
+  const updateButtons = (panel) => {
+    if (!panel) return;
+    panel.querySelectorAll("button[data-control-action]").forEach((button) => {
+      const action = button.dataset.controlAction || "";
+      const isPending = action === state.playerControlPendingAction;
+      const disabled = action === "next-track"
+        ? Boolean(state.playerControlPendingAction)
+        : !canControl || Boolean(state.playerControlPendingAction);
+      button.disabled = disabled;
+      button.classList.toggle("is-pending", isPending);
+    });
+  };
+
+  updateButtons(elements.playerControlPanel);
+  updateButtons(elements.floatingPlayerControlPanel);
+
+  const updateToggleState = (btn) => {
+    if (!btn) return;
+    btn.textContent = isPaused ? t("remote.play") : t("remote.pause");
+    btn.classList.toggle("is-paused", isPaused);
+    btn.classList.toggle("is-playing", !isPaused);
+  };
+
+  updateToggleState(toggleButton);
+  updateToggleState(floatingToggleButton);
 
   if (playbackMode !== "local") {
     elements.playerControlHint.textContent = t("remote.controlUnsupported");
@@ -3009,43 +5593,88 @@ function syncListView() {
   elements.historyList.classList.toggle("hidden", !isHistoryView);
 }
 
+function queueRenderSignatureForItem(item, index) {
+  return {
+    index,
+    id: String(item?.id || ""),
+    title: String(item?.display_title || ""),
+    requester: String(item?.requester_name || ""),
+    cacheStatus: String(item?.cache_status || ""),
+  };
+}
+
+function createQueueEmptyNode(message) {
+  const node = document.createElement("div");
+  node.className = "queue-empty";
+  node.textContent = message;
+  return node;
+}
+
 function renderQueue(playlist) {
+  const items = Array.isArray(playlist) ? playlist : [];
   const signature = JSON.stringify({
     language: state.language,
-    playlist: playlist || [],
+    playlist: items.map(queueRenderSignatureForItem),
   });
   if (signature === state.queueRenderSignature) {
+    renderQueueCacheStatus(items);
     return;
   }
   state.queueRenderSignature = signature;
 
-  elements.queueList.innerHTML = "";
-  if (!playlist.length) {
-    elements.queueList.innerHTML = `<div class="queue-empty">${htmlT("remote.queueEmpty")}</div>`;
+  elements.queueList.replaceChildren();
+  if (!items.length) {
+    elements.queueList.appendChild(createQueueEmptyNode(t("remote.queueEmpty")));
     return;
   }
 
-  playlist.forEach((item, index) => {
+  items.forEach((item, index) => {
     const node = elements.queueItemTemplate.content.firstElementChild.cloneNode(true);
     applyStaticI18n(node);
-    node.classList.toggle("ready", item.cache_status === "ready");
+    node.dataset.id = String(item.id || "");
     const orderNode = node.querySelector(".queue-order");
     if (orderNode) {
       orderNode.textContent = String(index + 1);
     }
     node.querySelector(".queue-title").textContent = item.display_title;
-    const noteNode = node.querySelector(".queue-note");
-    const noteText = queueNoteText(item);
-    noteNode.textContent = noteText;
-    noteNode.classList.toggle("hidden", !noteText);
-    node.querySelector(".queue-main").classList.toggle("is-compact", !noteText);
-    node.querySelector(".queue-state").textContent = queueStateLabel(item);
     const requesterNode = node.querySelector(".queue-requester");
     const requesterText = requesterBadgeText(item.requester_name);
     requesterNode.textContent = requesterText;
     requesterNode.classList.toggle("hidden", !requesterText);
+    syncQueueItemCacheStatus(node, item);
     elements.queueList.appendChild(node);
   });
+}
+
+function renderQueueCacheStatus(playlist) {
+  const items = Array.isArray(playlist) ? playlist : [];
+  const itemsById = new Map(items.map((item) => [String(item.id || ""), item]));
+  elements.queueList.querySelectorAll(".queue-item").forEach((node) => {
+    const item = itemsById.get(String(node.dataset.id || ""));
+    if (item) {
+      syncQueueItemCacheStatus(node, item);
+    }
+  });
+}
+
+function syncQueueItemCacheStatus(node, item) {
+  if (!node || !item) {
+    return;
+  }
+  const noteNode = node.querySelector(".queue-note");
+  const noteText = queueNoteText(item);
+  if (noteNode && noteNode.textContent !== noteText) {
+    noteNode.textContent = noteText;
+  }
+  noteNode?.classList.toggle("hidden", !noteText);
+  node.querySelector(".queue-main")?.classList.toggle("is-compact", !noteText);
+
+  const stateNode = node.querySelector(".queue-state");
+  const stateText = queueStateLabel(item);
+  if (stateNode && stateNode.textContent !== stateText) {
+    stateNode.textContent = stateText;
+  }
+  node.classList.toggle("ready", item.cache_status === "ready");
 }
 
 function queueNoteText(item) {
@@ -3054,6 +5683,9 @@ function queueNoteText(item) {
   }
   if (item.cache_status === "ready") {
     return "";
+  }
+  if (item.cache_status === "downloading") {
+    return cacheDownloadTotalSizeLabel(item);
   }
   const message = String(item.cache_message || "").trim();
   if (!message) {
@@ -3071,6 +5703,10 @@ function queueStateLabel(item) {
     return t("status.ready");
   }
   if (item.cache_status === "downloading") {
+    const progressPercent = cacheProgressPercentForItem(item);
+    if (progressPercent !== null) {
+      return `${progressPercent}%`;
+    }
     return t("status.caching");
   }
   if (item.cache_status === "failed") {
@@ -3087,6 +5723,10 @@ function currentCacheStateLabel(item) {
     return "";
   }
   if (item.cache_status === "downloading") {
+    const progressLabel = cacheDownloadTotalProgressLabel(item);
+    if (progressLabel) {
+      return progressLabel;
+    }
     const message = localizedCacheMessage(item.cache_message, item.cache_status);
     if (message) {
       return message;
@@ -3095,6 +5735,46 @@ function currentCacheStateLabel(item) {
     return size > 0 ? t("status.cachingWithSize", { size: formatBytes(size) }) : t("status.caching");
   }
   return queueStateLabel(item);
+}
+
+function cacheProgressPercentForItem(item) {
+  if (!item || item.cache_status !== "downloading") {
+    return null;
+  }
+  const totalBytes = Number(item.cache_download_total_bytes || 0);
+  const currentBytes = Number(item.cache_download_current_bytes || 0);
+  if (totalBytes > 0) {
+    return Math.max(0, Math.min(99, Math.round((currentBytes / totalBytes) * 100)));
+  }
+  const cacheProgress = Number(item.cache_progress || 0);
+  if (cacheProgress > 0 && cacheProgress < 100) {
+    return Math.max(0, Math.min(99, Math.round(cacheProgress)));
+  }
+  return null;
+}
+
+function cacheDownloadTotalSizeLabel(item) {
+  const totalBytes = Number(item?.cache_download_total_bytes || 0);
+  const currentBytes = Number(item?.cache_download_current_bytes || 0);
+  if (totalBytes > 0) {
+    return `${formatBytes(Math.min(currentBytes, totalBytes))} / ${formatBytes(totalBytes)}`;
+  }
+  if (currentBytes > 0) {
+    return t("status.cachingWithSize", { size: formatBytes(currentBytes) });
+  }
+  return "";
+}
+
+function cacheDownloadTotalProgressLabel(item) {
+  const sizeLabel = cacheDownloadTotalSizeLabel(item);
+  const progressPercent = cacheProgressPercentForItem(item);
+  if (sizeLabel && progressPercent !== null) {
+    return `${sizeLabel} · ${progressPercent}%`;
+  }
+  if (progressPercent !== null) {
+    return `${t("status.caching")} ${progressPercent}%`;
+  }
+  return sizeLabel;
 }
 
 function formatPlaybackClockSeconds(seconds) {
@@ -3121,15 +5801,10 @@ function clearCurrentPlaybackClock() {
 }
 
 function currentPlaybackClockText() {
-  const durationSeconds = Math.max(0, Number(state.currentPlaybackClockDurationSeconds || 0));
+  const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   if (!(durationSeconds > 0)) {
     return "";
   }
-  const baseSeconds = Math.max(0, Number(state.currentPlaybackClockBaseSeconds || 0));
-  const elapsedSeconds = state.currentPlaybackClockPaused
-    ? 0
-    : Math.max(0, (Date.now() - Number(state.currentPlaybackClockStartedAt || Date.now())) / 1000);
-  const currentSeconds = Math.min(durationSeconds, baseSeconds + elapsedSeconds);
   return `${formatPlaybackClockSeconds(currentSeconds)} / ${formatPlaybackClockSeconds(durationSeconds)}`;
 }
 
@@ -3140,6 +5815,11 @@ function paintCurrentPlaybackClock() {
   }
   if (elements.currentCacheState.textContent !== text) {
     elements.currentCacheState.textContent = text;
+  }
+  try {
+    maybeUpdateRemoteRatingPrompt(state.data?.current_item);
+  } catch (error) {
+    console.warn("Rating prompt update failed:", error);
   }
 }
 
@@ -3159,7 +5839,9 @@ function renderCurrentPlaybackState(current) {
   }
 
   const playerStatus = currentPlayerStatus(current);
-  const durationSeconds = Number(playerStatus?.duration || 0);
+  const itemDurationSeconds = durationSecondsForItem(current);
+  const reportedDurationSeconds = Number(playerStatus?.duration || 0);
+  const durationSeconds = itemDurationSeconds > 0 ? itemDurationSeconds : reportedDurationSeconds;
   const currentSeconds = Math.max(0, Number(playerStatus?.current_time || 0));
   const isPaused = Boolean(playerStatus?.is_paused);
   const waitingForHostStatus = playerControlStatusSyncPending(current, playerStatus);
@@ -3226,11 +5908,17 @@ function renderHistory(history) {
   }
   state.historyRenderSignature = signature;
 
-  elements.historyList.innerHTML = "";
+  elements.historyList.replaceChildren();
 
   if (!history.length) {
-    elements.historyList.innerHTML =
-      `<div class="queue-empty"><p>${htmlT("history.emptyTitle")}</p><p>${htmlT("history.emptyHint")}</p></div>`;
+    const emptyNode = document.createElement("div");
+    emptyNode.className = "queue-empty";
+    const title = document.createElement("p");
+    title.textContent = t("history.emptyTitle");
+    const hint = document.createElement("p");
+    hint.textContent = t("history.emptyHint");
+    emptyNode.append(title, hint);
+    elements.historyList.appendChild(emptyNode);
     return;
   }
 
@@ -3524,6 +6212,313 @@ elements.searchResults.addEventListener("click", async (event) => {
   await addByUrl(String(button.dataset.url || ""), "tail", "search");
 });
 
+elements.searchLibraryOpen?.addEventListener("click", () => {
+  setSearchModalOpen(true);
+});
+
+elements.searchModalClose?.addEventListener("click", () => {
+  setSearchModalOpen(false);
+});
+
+elements.searchModalBackdrop?.addEventListener("click", () => {
+  setSearchModalOpen(false);
+});
+
+elements.searchModalTabs?.forEach((button) => {
+  button.addEventListener("click", () => {
+    renderSearchModalView(button.dataset.target || "search");
+  });
+});
+
+elements.searchModalLarkForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.searchModalLarkQuery?.value || "").trim();
+  if (!query) {
+    renderSearchResultItems(elements.searchModalLarkResults, [], t("search.keywordRequired"));
+    setSearchModalLarkMessage(t("search.keywordRequired"), true);
+    return;
+  }
+
+  state.searchModalLarkLoading = true;
+  if (elements.searchModalLarkButton) {
+    elements.searchModalLarkButton.disabled = true;
+  }
+  const searchSeq = state.searchModalLarkSeq + 1;
+  state.searchModalLarkSeq = searchSeq;
+  const seenBvids = new Set();
+  const collectedItems = [];
+  if (elements.searchModalLarkResults) {
+    elements.searchModalLarkResults.innerHTML = "";
+    elements.searchModalLarkResults.classList.remove("hidden");
+  }
+  setSearchModalLarkMessage(t("search.larkSearching"));
+  try {
+    const poolItems = await searchLarkPool(query);
+    if (state.searchModalLarkSeq !== searchSeq) {
+      return;
+    }
+    const freshItems = poolItems.filter((item) => {
+      const bvid = String(item?.bvid || "").trim();
+      if (!bvid || seenBvids.has(bvid)) {
+        return false;
+      }
+      seenBvids.add(bvid);
+      return true;
+    });
+    if (freshItems.length) {
+      collectedItems.push(...freshItems);
+      appendSearchResultItems(elements.searchModalLarkResults, freshItems);
+    }
+    if (!collectedItems.length) {
+      renderSearchResultItems(elements.searchModalLarkResults, [], t("search.larkNoResults"));
+    }
+    setSearchModalLarkMessage(
+      collectedItems.length ? t("search.larkFound", { count: collectedItems.length }) : t("search.larkNoResults"),
+    );
+  } catch (error) {
+    renderSearchResultItems(elements.searchModalLarkResults, [], "");
+    setSearchModalLarkMessage(error.message, true);
+  } finally {
+    if (state.searchModalLarkSeq === searchSeq) {
+      state.searchModalLarkLoading = false;
+      if (elements.searchModalLarkButton) {
+        elements.searchModalLarkButton.disabled = false;
+      }
+    }
+  }
+});
+
+elements.searchModalLarkResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.searchModalLarkResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalSearch");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.favlistGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-folder-id]");
+  if (!button) {
+    return;
+  }
+  const folderId = String(button.dataset.folderId || "").trim();
+  if (!folderId) {
+    return;
+  }
+  state.favlistBrowseSelectedFolderId = folderId;
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  await loadFavlistBrowse({ folderId, query: "" });
+});
+
+elements.favlistBrowseBack?.addEventListener("click", () => {
+  state.favlistBrowseSelectedFolderId = "";
+  if (elements.favlistSearchQuery) {
+    elements.favlistSearchQuery.value = "";
+  }
+  state.favlistBrowseRenderSignature = "";
+  renderFavlistBrowse();
+});
+
+elements.favlistSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.favlistSearchQuery?.value || "").trim();
+  await loadFavlistBrowse({
+    folderId: state.favlistBrowseSelectedFolderId,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.favlistSongResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.favlistSongResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalFavlist");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("submit", (event) => {
+  const categoryForm = event.target.closest("[data-category-browse-search]");
+  if (categoryForm && elements.searchModalOtherView.contains(categoryForm)) {
+    event.preventDefault();
+    const input = categoryForm.querySelector("[data-category-browse-query]");
+    loadCategoryBrowse({
+      query: input?.value || "",
+      append: false,
+    });
+    return;
+  }
+  const form = event.target.closest("[data-d1-browse-search]");
+  if (!form || !elements.searchModalOtherView.contains(form)) {
+    return;
+  }
+  event.preventDefault();
+  const input = form.querySelector("[data-d1-browse-query]");
+  if (!state.d1BrowseLetter) {
+    if (input) {
+      input.value = "";
+    }
+    state.d1BrowseQuery = "";
+    state.d1BrowseTag = "";
+    state.d1BrowseLocale = "";
+    state.d1BrowseAliases = [];
+    state.d1BrowseData = null;
+    renderD1BrowseView();
+    return;
+  }
+  if (state.d1BrowseTag) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: input?.value || "",
+      tag: state.d1BrowseTag,
+      locale: state.d1BrowseLocale,
+      aliases: state.d1BrowseAliases,
+    });
+    return;
+  }
+  loadD1Browse({
+    kind: state.d1BrowseKind || "name",
+    letter: state.d1BrowseLetter,
+    query: input?.value || "",
+    tag: "",
+    locale: "",
+  });
+});
+
+elements.searchModalOtherView?.addEventListener("click", (event) => {
+  const categoryBackButton = event.target.closest("[data-category-browse-back]");
+  if (categoryBackButton && elements.searchModalOtherView.contains(categoryBackButton)) {
+    state.categoryBrowseSelectedId = "";
+    state.categoryBrowseQuery = "";
+    state.categoryBrowseItems = [];
+    state.categoryBrowseOffset = 0;
+    state.categoryBrowseHasMore = false;
+    state.categoryBrowseError = "";
+    renderCategoryBrowseView();
+    return;
+  }
+  const categoryButton = event.target.closest("[data-category-id]");
+  if (categoryButton && elements.searchModalOtherView.contains(categoryButton)) {
+    loadCategoryBrowse({
+      categoryId: categoryButton.dataset.categoryId || "",
+      query: "",
+      append: false,
+    });
+    return;
+  }
+  const backButton = event.target.closest("[data-d1-browse-back]");
+  if (backButton && elements.searchModalOtherView.contains(backButton)) {
+    if (state.d1BrowseTag) {
+      loadD1Browse({
+        kind: state.d1BrowseKind || "name",
+        letter: state.d1BrowseLetter,
+        query: "",
+        tag: "",
+        locale: "",
+        aliases: [],
+      });
+    } else if (state.d1BrowseLetter) {
+      state.d1BrowseLetter = "";
+      state.d1BrowseTag = "";
+      state.d1BrowseLocale = "";
+      state.d1BrowseAliases = [];
+      state.d1BrowseQuery = "";
+      state.d1BrowseData = null;
+      renderD1BrowseView();
+    }
+    return;
+  }
+  const letterButton = event.target.closest("[data-letter]");
+  if (letterButton && elements.searchModalOtherView.contains(letterButton)) {
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: letterButton.dataset.letter || "",
+      query: "",
+      tag: "",
+      locale: "",
+      aliases: [],
+    });
+    return;
+  }
+  const tagButton = event.target.closest("[data-tag]");
+  if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
+    let aliases = [];
+    try {
+      aliases = JSON.parse(tagButton.dataset.aliases || "[]");
+    } catch {
+      aliases = [];
+    }
+    loadD1Browse({
+      kind: state.d1BrowseKind || "name",
+      letter: state.d1BrowseLetter,
+      query: "",
+      tag: tagButton.dataset.tag || "",
+      locale: tagButton.dataset.locale || "",
+      aliases,
+    });
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.searchModalOtherView.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalBrowse");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+});
+
+elements.searchModalOtherView?.addEventListener("scroll", (event) => {
+  const target = event.target;
+  if (target instanceof Element && target.matches("[data-category-browse-results]")) {
+    maybeLoadMoreCategoryBrowse(target);
+  }
+}, true);
+
 elements.larkSearchToggle?.addEventListener("click", () => {
   state.followBrowseVisible = false;
   state.larkSearchVisible = !state.larkSearchVisible;
@@ -3636,6 +6631,27 @@ elements.followUpGrid?.addEventListener("click", async (event) => {
   await loadFollowBrowse({ uid, query: "" });
 });
 
+elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await addGatchaUidFromInput(elements.modalFollowUidInput, { messageTarget: "follow-modal" });
+});
+
+elements.modalFollowUpGrid?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-uid]");
+  if (!button) {
+    return;
+  }
+  const uid = String(button.dataset.uid || "").trim();
+  if (!uid) {
+    return;
+  }
+  state.followBrowseSelectedUid = uid;
+  if (elements.modalFollowSearchQuery) {
+    elements.modalFollowSearchQuery.value = "";
+  }
+  await loadFollowBrowse({ uid, query: "" });
+});
+
 elements.followBrowseBack?.addEventListener("click", () => {
   state.followBrowseSelectedUid = "";
   if (elements.followSearchQuery) {
@@ -3644,9 +6660,27 @@ elements.followBrowseBack?.addEventListener("click", () => {
   renderFollowBrowse();
 });
 
+elements.modalFollowBrowseBack?.addEventListener("click", () => {
+  state.followBrowseSelectedUid = "";
+  if (elements.modalFollowSearchQuery) {
+    elements.modalFollowSearchQuery.value = "";
+  }
+  renderModalFollowBrowse();
+});
+
 elements.followSearchForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const query = String(elements.followSearchQuery?.value || "").trim();
+  await loadFollowBrowse({
+    uid: state.followBrowseSelectedUid,
+    query,
+    keepQuery: true,
+  });
+});
+
+elements.modalFollowSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = String(elements.modalFollowSearchQuery?.value || "").trim();
   await loadFollowBrowse({
     uid: state.followBrowseSelectedUid,
     query,
@@ -3668,6 +6702,28 @@ elements.followSongResults?.addEventListener("click", async (event) => {
     await addByUrl(url, "tail", "follow");
   } finally {
     button.disabled = false;
+  }
+});
+
+elements.modalFollowSongResults?.addEventListener("click", async (event) => {
+  const target = event.target.closest(".search-result-item[data-url], button[data-url]");
+  if (!target || !elements.modalFollowSongResults.contains(target)) {
+    return;
+  }
+  const button = target.closest("button[data-url]");
+  const url = String(target.dataset.url || button?.dataset.url || "").trim();
+  if (!url) {
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    await addByUrl(url, "tail", "modalFollow");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
   }
 });
 
@@ -3699,6 +6755,14 @@ elements.languageSwitch?.addEventListener("click", (event) => {
   setLanguage(button.dataset.language);
 });
 
+elements.themeSwitch?.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-theme]");
+  if (!button) {
+    return;
+  }
+  applyTheme(button.dataset.theme);
+});
+
 elements.remoteQrToggle?.addEventListener("click", () => {
   setRemoteQrPopoverOpen(!state.remoteQrPopoverOpen);
 });
@@ -3707,19 +6771,57 @@ elements.remoteQrPopoverClose?.addEventListener("click", () => {
   setRemoteQrPopoverOpen(false);
 });
 
+elements.displaySettingsToggle?.addEventListener("click", () => {
+  setDisplaySettingsOpen(!state.displaySettingsOpen);
+});
+
+elements.displayPopoverClose?.addEventListener("click", () => {
+  setDisplaySettingsOpen(false);
+});
+
 document.addEventListener("click", (event) => {
-  if (!state.remoteQrPopoverOpen) {
-    return;
+  // Toggle info tooltip popovers
+  const infoBtn = event.target.closest(".remote-info-button");
+  if (infoBtn) {
+    const wrap = infoBtn.closest(".info-trigger-wrap");
+    if (wrap) {
+      const isShown = wrap.classList.contains("show-tooltip");
+      // Close all tooltips first
+      document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+        el.classList.remove("show-tooltip");
+      });
+      // Toggle current
+      if (!isShown) {
+        wrap.classList.add("show-tooltip");
+      }
+      event.stopPropagation();
+    }
+  } else {
+    // Clicked outside, close all tooltips
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
   }
-  if (event.target.closest("#remote-qr-control")) {
-    return;
+
+  if (state.remoteQrPopoverOpen && !event.target.closest("#remote-qr-control")) {
+    setRemoteQrPopoverOpen(false);
   }
-  setRemoteQrPopoverOpen(false);
+
+  if (state.displaySettingsOpen && !event.target.closest("#display-control")) {
+    setDisplaySettingsOpen(false);
+  }
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (state.searchModalOpen) {
+      setSearchModalOpen(false);
+    }
     setRemoteQrPopoverOpen(false);
+    setDisplaySettingsOpen(false);
+    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
+      el.classList.remove("show-tooltip");
+    });
   }
 });
 
@@ -3781,12 +6883,93 @@ elements.remoteVolumeMuteButton?.addEventListener("click", async () => {
   });
 });
 
+elements.remoteKeyShiftPanel?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button");
+  if (!button) {
+    return;
+  }
+  const currentKey = currentRemoteKeyShift(state.data?.player_settings);
+  if (button.id === "remote-key-shift-reset-button") {
+    await setRemoteKeyShift(0);
+  } else if (button.id === "remote-key-shift-dec-button") {
+    await setRemoteKeyShift(currentKey - 1);
+  } else if (button.id === "remote-key-shift-inc-button") {
+    await setRemoteKeyShift(currentKey + 1);
+  }
+});
+
+elements.remoteKeyShiftInput?.addEventListener("change", async (event) => {
+  await setRemoteKeyShift(event.target.value);
+});
+
+elements.remoteKeyShiftInput?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+  event.preventDefault();
+  await setRemoteKeyShift(event.target.value);
+});
+
+elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
+
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
 
 elements.gatchaUidToggle?.addEventListener("click", () => {
   state.gatchaUidVisible = !state.gatchaUidVisible;
   renderGatchaUidView();
+});
+
+elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
+  await openPoolConfigSheet();
+});
+
+document.addEventListener("click", async (event) => {
+  const root = state.ratingPromptElement;
+  if (!root || !root.contains(event.target)) {
+    return;
+  }
+  const tabButton = event.target.closest("[data-rating-tab]");
+  if (tabButton) {
+    setRatingPromptActiveTab(tabButton.dataset.ratingTab || "current");
+    return;
+  }
+  const scoreButton = event.target.closest("[data-rating-score]");
+  if (scoreButton) {
+    state.ratingPromptScore = Math.max(1, Math.min(5, Number(scoreButton.dataset.ratingScore || "5")));
+    renderRatingStars();
+    return;
+  }
+  const optOutBtn = event.target.closest("[data-rating-opt-out-btn]");
+  if (optOutBtn) {
+    setRatingOptOut(true);
+    closeRatingPrompt({ submit: false });
+    return;
+  }
+  const addUpButton = event.target.closest("[data-rating-add-up]");
+  if (addUpButton) {
+    const promptItem = activeRatingPromptItem();
+    const uid = ratingOwnerUid(promptItem);
+    const message = root.querySelector("[data-rating-message]");
+    if (!uid) {
+      if (message) message.textContent = t("rating.missingUidMessage");
+      return;
+    }
+    addUpButton.disabled = true;
+    if (message) message.textContent = t("rating.addingUp");
+    try {
+      await addGatchaUid(uid);
+      if (message) message.textContent = t("rating.addedUp");
+    } catch (error) {
+      if (message) message.textContent = error.message || t("rating.addFailed");
+    } finally {
+      addUpButton.disabled = false;
+    }
+    return;
+  }
+  if (event.target.closest("[data-rating-close]")) {
+    closeRatingPrompt({ submit: true });
+  }
 });
 
 elements.gatchaUidForm?.addEventListener("submit", handleGatchaUidSubmit);
@@ -3820,29 +7003,12 @@ elements.refreshGatchaCacheButton?.addEventListener("click", async () => {
 });
 
 elements.pullGatchaFavlistButton?.addEventListener("click", async () => {
-  const uid = String(elements.gatchaUidInput?.value || "").trim();
-  if (!uid) {
-    setGatchaUidMessage(t("gatcha.uidRequired"), true);
-    return;
-  }
-  if (gatchaTaskBusy()) {
-    setGatchaUidMessage(gatchaTaskBusyMessage(), true);
-    renderGatchaUidView();
-    return;
-  }
-  state.gatchaFavlistSaving = true;
-  renderGatchaUidView();
-  setGatchaUidMessage(t("gatcha.readingFavlists"));
-  try {
-    const result = await previewGatchaFavlist(uid);
-    openGatchaFavlistSheet(result?.uid || uid, result);
-    setGatchaUidMessage(t("gatcha.chooseFavlists"));
-  } catch (error) {
-    setGatchaUidMessage(error.message, true);
-  } finally {
-    state.gatchaFavlistSaving = false;
-    renderGatchaUidView();
-  }
+  await previewGatchaFavlistFromInput(elements.gatchaUidInput, { messageTarget: "gatcha" });
+});
+
+elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await previewGatchaFavlistFromInput(elements.modalFavlistUidInput, { messageTarget: "favlist-modal" });
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
@@ -3882,6 +7048,46 @@ elements.gatchaFavlistSheetBackdrop?.addEventListener("click", () => {
 
 elements.gatchaFavlistSheetConfirm?.addEventListener("click", async () => {
   await confirmGatchaFavlistSheet();
+});
+
+elements.poolConfigSheetClose?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigSheetCancel?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigSheetBackdrop?.addEventListener("click", () => {
+  closePoolConfigSheet();
+});
+
+elements.poolConfigWeightSlider?.addEventListener("input", () => {
+  updatePoolConfigWeightLabel();
+});
+
+elements.poolConfigSheetReset?.addEventListener("click", () => {
+  resetPoolConfigControls();
+});
+
+elements.poolConfigUidSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", true);
+});
+
+elements.poolConfigUidSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-uid", false);
+});
+
+elements.poolConfigFavlistSelectAll?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", true);
+});
+
+elements.poolConfigFavlistSelectNone?.addEventListener("click", () => {
+  setPoolConfigChecked("gatcha-pool-favlist", false);
+});
+
+elements.poolConfigSheetSave?.addEventListener("click", async () => {
+  await submitPoolConfigSheet();
 });
 
 elements.reorderConfirmSheetClose?.addEventListener("click", () => {
@@ -4007,6 +7213,22 @@ elements.playerControlPanel.addEventListener("click", async (event) => {
   await sendPlayerControl(action, deltaSeconds);
 });
 
+if (elements.floatingPlayerControlPanel) {
+  elements.floatingPlayerControlPanel.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-control-action]");
+    if (!button) {
+      return;
+    }
+    const action = button.dataset.controlAction || "";
+    if (action === "next-track") {
+      await sendPlayerNext();
+      return;
+    }
+    const deltaSeconds = Number(button.dataset.delta || "0");
+    await sendPlayerControl(action, deltaSeconds);
+  });
+}
+
 elements.queueViewButton.addEventListener("click", () => {
   state.listView = "queue";
   render();
@@ -4070,8 +7292,14 @@ document.addEventListener("keydown", (event) => {
   if (state.gatchaFavlistSheetOpen) {
     closeGatchaFavlistSheet();
   }
+  if (state.poolConfigSheetOpen) {
+    closePoolConfigSheet();
+  }
   if (state.reorderConfirmSheetOpen) {
     closeReorderConfirmSheet();
+  }
+  if (elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
   }
 });
 
@@ -4109,9 +7337,186 @@ window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
+function makeElementDraggable(element, onClick) {
+  let startX = 0;
+  let startY = 0;
+  let initialLeft = 0;
+  let initialTop = 0;
+  let isDragging = false;
+  let moved = false;
+
+  const dragStart = (e) => {
+    if (e.type === "mousedown" && e.button !== 0) {
+      return;
+    }
+
+    const rect = element.getBoundingClientRect();
+    initialLeft = rect.left;
+    initialTop = rect.top;
+
+    if (e.type === "touchstart") {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    } else {
+      startX = e.clientX;
+      startY = e.clientY;
+    }
+
+    isDragging = true;
+    moved = false;
+
+    if (e.type === "touchstart") {
+      document.addEventListener("touchmove", dragMove, { passive: false });
+      document.addEventListener("touchend", dragEnd);
+    } else {
+      document.addEventListener("mousemove", dragMove);
+      document.addEventListener("mouseup", dragEnd);
+    }
+  };
+
+  const dragMove = (e) => {
+    if (!isDragging) return;
+
+    let currentX = 0;
+    let currentY = 0;
+
+    if (e.type === "touchmove") {
+      currentX = e.touches[0].clientX;
+      currentY = e.touches[0].clientY;
+    } else {
+      currentX = e.clientX;
+      currentY = e.clientY;
+    }
+
+    const deltaX = currentX - startX;
+    const deltaY = currentY - startY;
+
+    if (!moved && Math.hypot(deltaX, deltaY) > 5) {
+      moved = true;
+      element.classList.add("dragging");
+    }
+
+    if (moved) {
+      let newLeft = initialLeft + deltaX;
+      let newTop = initialTop + deltaY;
+
+      const maxLeft = window.innerWidth - element.offsetWidth;
+      const maxTop = window.innerHeight - element.offsetHeight;
+
+      newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+      newTop = Math.max(0, Math.min(newTop, maxTop));
+
+      element.style.left = `${newLeft}px`;
+      element.style.top = `${newTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  };
+
+  const dragEnd = (e) => {
+    isDragging = false;
+    element.classList.remove("dragging");
+
+    if (e.type === "touchend") {
+      document.removeEventListener("touchmove", dragMove);
+      document.removeEventListener("touchend", dragEnd);
+    } else {
+      document.removeEventListener("mousemove", dragMove);
+      document.removeEventListener("mouseup", dragEnd);
+    }
+
+    if (!moved) {
+      if (typeof onClick === "function") {
+        onClick();
+      }
+    }
+  };
+
+  element.addEventListener("mousedown", dragStart);
+  element.addEventListener("touchstart", dragStart);
+
+  window.addEventListener("resize", () => {
+    const rect = element.getBoundingClientRect();
+    let currentLeft = rect.left;
+    let currentTop = rect.top;
+
+    const maxLeft = window.innerWidth - element.offsetWidth;
+    const maxTop = window.innerHeight - element.offsetHeight;
+
+    if (currentLeft > maxLeft || currentTop > maxTop) {
+      const nextLeft = Math.max(0, Math.min(currentLeft, maxLeft));
+      const nextTop = Math.max(0, Math.min(currentTop, maxTop));
+      element.style.left = `${nextLeft}px`;
+      element.style.top = `${nextTop}px`;
+      element.style.bottom = "auto";
+      element.style.right = "auto";
+    }
+  });
+}
+
+function showFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  elements.floatingControlOverlay.classList.remove("closing");
+  elements.floatingControlOverlay.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+
+  if (elements.floatingControlTrigger && elements.floatingControlCard) {
+    const triggerRect = elements.floatingControlTrigger.getBoundingClientRect();
+    const cardRect = elements.floatingControlCard.getBoundingClientRect();
+    const originX = (triggerRect.left + triggerRect.width / 2) - cardRect.left;
+    const originY = (triggerRect.top + triggerRect.height / 2) - cardRect.top;
+    elements.floatingControlCard.style.transformOrigin = `${originX}px ${originY}px`;
+  }
+}
+
+function hideFloatingControlOverlay() {
+  if (!elements.floatingControlOverlay) return;
+  if (elements.floatingControlOverlay.classList.contains("hidden")) return;
+
+  elements.floatingControlOverlay.classList.add("closing");
+
+  setTimeout(() => {
+    if (elements.floatingControlOverlay.classList.contains("closing")) {
+      elements.floatingControlOverlay.classList.add("hidden");
+      elements.floatingControlOverlay.classList.remove("closing");
+      document.body.style.overflow = "";
+    }
+  }, 250);
+}
+
+function initFloatingControlConsole() {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  makeElementDraggable(elements.floatingControlTrigger, () => {
+    showFloatingControlOverlay();
+  });
+  elements.floatingControlClose?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+  elements.floatingControlBackdrop?.addEventListener("click", () => {
+    hideFloatingControlOverlay();
+  });
+}
+
+function renderFloatingControlTrigger(currentItem, playbackMode) {
+  if (!elements.floatingControlTrigger) {
+    return;
+  }
+  const isLocalMode = playbackMode === "local";
+  const hasCurrentItem = Boolean(currentItem);
+  const visible = isLocalMode && hasCurrentItem;
+  elements.floatingControlTrigger.classList.toggle("hidden", !visible);
+
+  if (!visible && elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
+    hideFloatingControlOverlay();
+  }
+}
+
 async function startRemoteSession() {
   setupRemoteFlipStages();
   hydrateLocalPreferences();
+  initFloatingControlConsole();
   await loadTranslations();
   renderLayoutMode();
   try {

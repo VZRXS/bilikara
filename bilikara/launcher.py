@@ -39,23 +39,33 @@ class _TeeStream:
     def __init__(self, primary, log_handle) -> None:
         self.primary = primary
         self.log_handle = log_handle
-        self.encoding = getattr(primary, "encoding", "utf-8")
-        self.errors = getattr(primary, "errors", "replace")
+        self.encoding = getattr(primary, "encoding", "utf-8") if primary is not None else "utf-8"
+        self.errors = getattr(primary, "errors", "replace") if primary is not None else "replace"
 
     def write(self, text) -> int:
         if not isinstance(text, str):
             text = str(text)
-        self.primary.write(text)
-        self.primary.flush()
+        if self.primary is not None:
+            try:
+                self.primary.write(text)
+                self.primary.flush()
+            except Exception:
+                pass
         self.log_handle.write(text)
         self.log_handle.flush()
         return len(text)
 
     def flush(self) -> None:
-        self.primary.flush()
+        if self.primary is not None:
+            try:
+                self.primary.flush()
+            except Exception:
+                pass
         self.log_handle.flush()
 
     def isatty(self) -> bool:
+        if self.primary is None:
+            return False
         return bool(getattr(self.primary, "isatty", lambda: False)())
 
 
@@ -115,6 +125,14 @@ def _install_startup_exception_hooks() -> None:
 
 
 def run_with_startup_logging() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="bilikara")
+    parser.add_argument("--no-browser", action="store_true", help="Do not open a system browser")
+    parser.add_argument("--headless", action="store_true", help="Do not auto-exit when browser closes")
+    parser.add_argument("--host", type=str, default=None, help="Bind host")
+    parser.add_argument("--port", type=int, default=None, help="Bind port")
+    args = parser.parse_args()
+
     _install_debug_log_streams()
     _install_startup_exception_hooks()
     if startup_logging_enabled():
@@ -135,4 +153,17 @@ def run_with_startup_logging() -> None:
             f"Resolved paths (root={ROOT_DIR}, app_home={APP_HOME}, static={STATIC_DIR})"
         )
         append_startup_log("Calling bilikara.server.run()")
-    run()
+
+    run_kwargs = {}
+    if args.no_browser:
+        run_kwargs["open_browser"] = False
+    if args.headless:
+        run_kwargs["shutdown_on_last_client"] = False
+    if args.host is not None:
+        run_kwargs["host"] = args.host
+    if args.port is not None:
+        run_kwargs["port"] = args.port
+        if args.port == 0:
+            run_kwargs["auto_select_port"] = False
+
+    run(**run_kwargs)

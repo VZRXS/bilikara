@@ -2,13 +2,17 @@ import io
 import json
 import os
 import queue
+import ssl
+import sys
 import unittest
+import urllib.error
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bilikara.cache import CacheManager, DownloadCommandError
+from bilikara.cache import CacheManager, DOWNLOAD_SOURCE_YTDLP, DownloadCommandError, VIDEO_QUALITY_CHOICES
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 
@@ -49,6 +53,37 @@ class CacheManagerOutputTest(unittest.TestCase):
         self.assertEqual(
             CacheManager._structured_stage_message("下载视频轨 P1", 32 * 1024 * 1024, 64 * 1024 * 1024),
             "下载视频轨 P1 50% · 32.0 MB / 64.0 MB",
+        )
+
+    def test_track_percent_ratio_counts_done_and_pending_tracks(self):
+        tracks = [
+            {"progress_percent": 50.0, "done": False},
+            {"done": True},
+            {"done": False},
+        ]
+        self.assertAlmostEqual(CacheManager._download_progress_ratio_from_track_percents(tracks), 0.5)
+
+    def test_track_percent_ratio_returns_none_without_progress_signal(self):
+        self.assertIsNone(CacheManager._download_progress_ratio_from_track_percents([{"done": False}]))
+
+    def test_structured_download_message_starts_with_total_progress(self):
+        tracks = [
+            {
+                "label": "视频轨P1",
+                "order": 0,
+                "current_bytes": 32 * 1024 * 1024,
+                "target_bytes": 64 * 1024 * 1024,
+            },
+            {
+                "label": "音轨P1",
+                "order": 1,
+                "current_bytes": 8 * 1024 * 1024,
+                "target_bytes": 16 * 1024 * 1024,
+            },
+        ]
+        self.assertEqual(
+            CacheManager._structured_download_message(tracks),
+            "总计：40.0 MB / 80.0 MB\n视频轨P1：32.0 MB / 64.0 MB\n音轨P1：8.0 MB / 16.0 MB",
         )
 
     def test_force_refresh_hint_matches_upgrade_message(self):
@@ -165,6 +200,22 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 restored.shutdown()
 
+    def test_cache_policy_persists_download_source(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                snapshot = manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_YTDLP)
+                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_YTDLP)
+            finally:
+                manager.shutdown()
+
+            restored = CacheManager(self.store, max_cache_items=3)
+            try:
+                snapshot = restored.policy_snapshot()
+                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_YTDLP)
+            finally:
+                restored.shutdown()
+
     def test_bbdown_stream_preference_args_use_cache_policy(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -175,6 +226,179 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     ["-q", "720P 高清,480P 清晰,360P 流畅"],
                 )
                 self.assertEqual(manager._bbdown_stream_preference_args("audio"), ["--audio-ascending"])
+            finally:
+                manager.shutdown()
+
+    def test_ytdlp_download_command_uses_policy_and_login_cookie(self):
+        target_dir = self.cache_dir / "song-a" / "video-p2"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.set_cache_policy(video_quality=VIDEO_QUALITY_CHOICES[2], audio_hires=False)
+                with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test-cookie"), patch.object(
+                    CacheManager,
+                    "_tool_arg_path",
+                    side_effect=lambda path: str(path),
+                ):
+                    command = manager._ytdlp_download_command(
+                        Path("/tools/ytdlp/yt-dlp.exe"),
+                        Path("/tools/ffmpeg/ffmpeg.exe"),
+                        "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+                        page=2,
+                        stream_kind="video",
+                        target_dir=target_dir,
+                    )
+                    cookie_file = Path(command[command.index("--cookies") + 1])
+                    self.assertTrue(cookie_file.exists(), f"cookie jar file not found: {cookie_file}")
+                    cookie_content = cookie_file.read_text(encoding="utf-8")
+                    self.assertIn("SESSDATA", cookie_content)
+                    self.assertIn("test-cookie", cookie_content)
+                    for line in cookie_content.splitlines():
+                        if "SESSDATA" in line and not line.startswith("#"):
+                            self.assertIn("\tTRUE\t/\tTRUE\t", line, "SESSDATA should have secure=TRUE")
+                    self.assertNotIn("--add-header", command)
+                    self.assertNotIn("--cookies-from-browser", command)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(command[0], str(Path("/tools/ytdlp/yt-dlp.exe")))
+        self.assertIn("--newline", command)
+        self.assertIn("--no-playlist", command)
+        self.assertIn("--retries", command)
+        self.assertEqual(command[command.index("--retries") + 1], "10")
+        self.assertIn("--fragment-retries", command)
+        self.assertEqual(command[command.index("--fragment-retries") + 1], "10")
+        self.assertIn("--file-access-retries", command)
+        self.assertEqual(command[command.index("--file-access-retries") + 1], "10")
+        self.assertIn("--retry-sleep", command)
+        self.assertEqual(command[command.index("--retry-sleep") + 1], "3")
+        self.assertIn("--throttled-rate", command)
+        self.assertEqual(command[command.index("--throttled-rate") + 1], "100K")
+        self.assertIn("--concurrent-fragments", command)
+        self.assertEqual(command[command.index("--concurrent-fragments") + 1], "1")
+        self.assertIn("height<=720", command[command.index("-f") + 1])
+        self.assertIn("--cookies", command)
+
+    def test_ytdlp_download_command_falls_back_to_browser_cookies(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch("bilikara.cache.effective_bilibili_cookie", return_value=""), patch.dict(
+                    os.environ,
+                    {"YTDLP_COOKIES_FROM_BROWSER": "firefox"},
+                ), patch.object(
+                    CacheManager,
+                    "_tool_arg_path",
+                    side_effect=lambda path: str(path),
+                ):
+                    command = manager._ytdlp_download_command(
+                        Path("/tools/ytdlp/yt-dlp.exe"),
+                        Path("/tools/ffmpeg/ffmpeg.exe"),
+                        "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+                        page=1,
+                        stream_kind="audio",
+                        target_dir=Path("/cache/song-a/audio-p1"),
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(command[command.index("-f") + 1], "ba/bestaudio")
+        self.assertEqual(command[command.index("--cookies-from-browser") + 1], "firefox")
+        self.assertNotIn("--add-header", command)
+
+    def test_bbdown_stream_preference_args_force_avc_when_hevc_unsupported(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                snapshot = manager.set_client_media_capabilities(
+                    {
+                        "hevc_supported": False,
+                        "avc_supported": True,
+                        "max_avc_quality_index": 2,
+                        "can_play_type": {'video/mp4; codecs="hvc1"': ""},
+                        "user_agent": "Firefox on Windows 7",
+                        "platform": "Win32",
+                    }
+                )
+                self.assertTrue(snapshot["force_avc"])
+                self.assertEqual(snapshot["max_avc_quality"], VIDEO_QUALITY_CHOICES[2])
+                self.assertEqual(
+                    manager._bbdown_stream_preference_args("video"),
+                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[2:]), "-e", "avc"],
+                )
+                self.assertEqual(manager._bbdown_stream_preference_args("audio"), [])
+            finally:
+                manager.shutdown()
+
+    def test_avc_quality_cap_does_not_raise_lower_manual_quality(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                max_avc_quality_index = min(2, len(VIDEO_QUALITY_CHOICES) - 2)
+                manual_quality_index = max_avc_quality_index + 1
+                manager.set_cache_policy(video_quality=VIDEO_QUALITY_CHOICES[manual_quality_index])
+                manager.set_client_media_capabilities(
+                    {
+                        "hevc_supported": False,
+                        "avc_supported": True,
+                        "max_avc_quality_index": max_avc_quality_index,
+                    }
+                )
+                self.assertEqual(
+                    manager._bbdown_stream_preference_args("video"),
+                    ["-q", ",".join(VIDEO_QUALITY_CHOICES[manual_quality_index:]), "-e", "avc"],
+                )
+            finally:
+                manager.shutdown()
+
+    def test_hevc_unsupported_without_avc_level_falls_back_to_lowest_quality(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                snapshot = manager.set_client_media_capabilities({"hevc_supported": False})
+                self.assertEqual(snapshot["max_avc_quality"], VIDEO_QUALITY_CHOICES[-1])
+                self.assertEqual(
+                    manager._bbdown_stream_preference_args("video"),
+                    ["-q", VIDEO_QUALITY_CHOICES[-1], "-e", "avc"],
+                )
+            finally:
+                manager.shutdown()
+
+    def test_hevc_unsupported_requeues_desired_ready_items_for_avc(self):
+        item_dir = self.cache_dir / "song-a"
+        video_file = item_dir / "video-p1" / "video.mp4"
+        video_file.parent.mkdir(parents=True, exist_ok=True)
+        video_file.write_bytes(b"media")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                self.store.add_item(item, requester_name="cache-test-user")
+                self.store.update_item(
+                    "song-a",
+                    cache_status="ready",
+                    cache_progress=100.0,
+                    cache_message="ready",
+                    video_relative_path="song-a/video-p1/video.mp4",
+                    video_media_url="/media/song-a/video-p1/video.mp4",
+                    audio_variants=[{"id": "p1", "audio_url": "/media/song-a/audio-p1/audio.m4a"}],
+                    selected_audio_variant_id="p1",
+                    persist_backup=False,
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-a"}
+                with patch.object(manager, "enqueue") as enqueue_mock:
+                    manager.set_client_media_capabilities({"hevc_supported": False})
+
+                refreshed = self.store.get_item("song-a")
+                self.assertIsNotNone(refreshed)
+                self.assertEqual(refreshed.cache_status, "pending")
+                self.assertEqual(refreshed.video_media_url, "")
+                self.assertEqual(refreshed.audio_variants, [])
+                self.assertFalse(item_dir.exists())
+                enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()
 
@@ -277,6 +501,32 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
                 (item_dir / "audio.m4a").write_bytes(b"audio")
                 self.assertTrue(manager._item_cache_ready(item))
+            finally:
+                manager.shutdown()
+
+    def test_ensure_item_cached_preserves_selected_audio_variant_while_requeueing(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                item.page = 2
+                item.video_page = 2
+                item.selected_pages = [1, 2]
+                item.selected_parts = ["main track", "off vocal"]
+                item.selected_audio_variant_id = "p2_off_vocal"
+                self.store.add_item(item, requester_name="cache-test-user")
+
+                manager._ensure_item_cached(item)
+
+                updated = self.store.get_item("song-a")
+                self.assertIsNotNone(updated)
+                self.assertEqual(updated.cache_status, "pending")
+                self.assertEqual(updated.audio_variants, [])
+                self.assertEqual(updated.selected_audio_variant_id, "p2_off_vocal")
             finally:
                 manager.shutdown()
 
@@ -474,6 +724,43 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     self.assertEqual(retried.cache_status, "pending")
                     self.assertEqual(retried.cache_message, "准备重新下载")
                     enqueue_mock.assert_called_once_with("song-a")
+            finally:
+                manager.shutdown()
+
+    def test_aria2c_download_uses_backup_urls_as_mirror_uris(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                target_dir = self.cache_dir / "song-a" / "video-p1"
+                log_path = Path(self.temp_dir.name) / "download.log"
+                captured = {}
+
+                def fake_run_item_command(_item_id, command, *_args, **_kwargs):
+                    captured["command"] = list(command)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    (target_dir / "video-p1.mp4").write_bytes(b"video")
+
+                with patch.object(manager, "_run_item_command", side_effect=fake_run_item_command):
+                    path = manager._download_stream_with_aria2c(
+                        "song-a",
+                        Path("aria2c.exe"),
+                        Path("ffmpeg.exe"),
+                        target_dir,
+                        log_path,
+                        urls=["https://primary.example/video.m4s", "https://backup.example/video.m4s"],
+                        out_name="video-p1.mp4",
+                        cookie="",
+                        stage_label="download video",
+                        track_key="video-p1",
+                        stream_kind="video",
+                    )
+
+                command = captured["command"]
+                self.assertEqual(path, target_dir / "video-p1.mp4")
+                self.assertIn("https://primary.example/video.m4s", command)
+                self.assertIn("https://backup.example/video.m4s", command)
+                self.assertLess(command.index("https://backup.example/video.m4s"), command.index("--dir"))
+                self.assertNotIn("--referer", command)
             finally:
                 manager.shutdown()
 
@@ -841,7 +1128,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
-        ):
+        ), patch("bilikara.cache.TOOL_ASSET_BASE_URL", ""):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
@@ -862,7 +1149,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
-        ):
+        ), patch("bilikara.cache.TOOL_ASSET_BASE_URL", ""):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
@@ -872,6 +1159,87 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         manager._ensure_bbdown()
             finally:
                 manager.shutdown()
+
+    def test_tool_asset_download_retries_bucket_fallback(self):
+        target_path = Path(self.temp_dir.name) / "yt-dlp.exe"
+        calls: list[str] = []
+
+        def fake_download(url: str, path: Path) -> None:
+            calls.append(url)
+            if len(calls) == 1:
+                raise RuntimeError("github offline")
+            path.write_bytes(b"tool-bin")
+
+        manager = CacheManager(self.store, max_cache_items=3)
+        try:
+            with patch("bilikara.cache.TOOL_ASSET_BASE_URL", "https://download.example/bilikara/tools"), patch.object(
+                manager,
+                "_download_url",
+                side_effect=fake_download,
+            ):
+                manager._download_tool_asset(
+                    {
+                        "name": "yt-dlp.exe",
+                        "browser_download_url": "https://github.example/yt-dlp.exe",
+                    },
+                    target_path,
+                )
+        finally:
+            manager.shutdown()
+
+        self.assertEqual(
+            calls,
+            [
+                "https://github.example/yt-dlp.exe",
+                "https://download.example/bilikara/tools/yt-dlp.exe",
+            ],
+        )
+        self.assertEqual(target_path.read_bytes(), b"tool-bin")
+
+    def test_bbdown_uses_bucket_fallback_when_release_check_fails(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        local_binary = bbdown_dir / f"BBDown{suffix}"
+        version_file = bbdown_dir / "VERSION"
+        calls: list[str] = []
+
+        def fake_download(url: str, path: Path) -> None:
+            calls.append(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr(f"BBDown{suffix}", b"bbdown-bin")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR",
+            bbdown_dir,
+        ), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE",
+            version_file,
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL",
+            "https://download.example/bilikara/tools",
+        ), patch(
+            "bilikara.cache.platform.system",
+            return_value="Windows",
+        ), patch(
+            "bilikara.cache.platform.machine",
+            return_value="AMD64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
+                    manager,
+                    "_fetch_latest_release",
+                    side_effect=RuntimeError("offline"),
+                ), patch.object(manager, "_download_url", side_effect=fake_download):
+                    path = manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, local_binary)
+        self.assertEqual(calls, ["https://download.example/bilikara/tools/BBDown_1.6.3_20240814_win-x64.zip"])
+        self.assertEqual(local_binary.read_bytes(), b"bbdown-bin")
+        self.assertEqual(version_file.read_text(encoding="utf-8"), "r2-fallback")
 
     def test_select_asset_uses_windows_arm64_package(self):
         release = {
@@ -894,6 +1262,168 @@ class CacheManagerPolicyTest(unittest.TestCase):
             selected = CacheManager._select_asset(object(), release)
 
         self.assertEqual(selected["name"], "BBDown_1.6.3_20240814_win-arm64.zip")
+
+    def test_select_asset_uses_macos_arm64_package(self):
+        release = {
+            "assets": [
+                {
+                    "name": "BBDown_1.6.3_20240814_osx-x64.zip",
+                    "browser_download_url": "https://example.test/osx-x64.zip",
+                },
+                {
+                    "name": "BBDown_1.6.3_20240814_osx-arm64.zip",
+                    "browser_download_url": "https://example.test/osx-arm64.zip",
+                },
+            ],
+        }
+
+        with patch("bilikara.cache.platform.system", return_value="Darwin"), patch(
+            "bilikara.cache.platform.machine",
+            return_value="arm64",
+        ):
+            selected = CacheManager._select_asset(object(), release)
+
+        self.assertEqual(selected["name"], "BBDown_1.6.3_20240814_osx-arm64.zip")
+
+    def test_select_ytdlp_asset_prefers_windows_arm64_binary(self):
+        release = {
+            "assets": [
+                {
+                    "name": "yt-dlp.exe",
+                    "browser_download_url": "https://example.test/yt-dlp.exe",
+                },
+                {
+                    "name": "yt-dlp_arm64.exe",
+                    "browser_download_url": "https://example.test/yt-dlp_arm64.exe",
+                },
+            ],
+        }
+
+        with patch("bilikara.cache.platform.system", return_value="Windows"), patch(
+            "bilikara.cache.platform.machine",
+            return_value="ARM64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                selected = manager._select_ytdlp_asset(release)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(selected["name"], "yt-dlp_arm64.exe")
+
+    def test_ensure_ytdlp_downloads_release_asset_when_missing(self):
+        ytdlp_dir = Path(self.temp_dir.name) / "tools" / "ytdlp"
+        target_path = ytdlp_dir / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp")
+        release = {
+            "assets": [
+                {
+                    "name": "yt-dlp.exe",
+                    "browser_download_url": "https://example.test/yt-dlp",
+                },
+                {
+                    "name": "yt-dlp_macos",
+                    "browser_download_url": "https://example.test/yt-dlp",
+                },
+                {
+                    "name": "yt-dlp_linux",
+                    "browser_download_url": "https://example.test/yt-dlp",
+                },
+                {
+                    "name": "yt-dlp",
+                    "browser_download_url": "https://example.test/yt-dlp",
+                }
+            ],
+        }
+
+        def fake_download(url: str, path: Path) -> None:
+            self.assertEqual(url, "https://example.test/yt-dlp")
+            path.write_bytes(b"yt-dlp-bin")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.YTDLP_DIR", ytdlp_dir
+        ), patch("bilikara.cache.YTDLP_PATH_OVERRIDE", ""):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_ytdlp_binary_path", return_value=target_path), patch.object(
+                    manager, "_fetch_ytdlp_release", return_value=release
+                ), patch.object(manager, "_download_url", side_effect=fake_download), patch.object(
+                    manager,
+                    "_read_ytdlp_version",
+                    return_value="2026.06.15",
+                ):
+                    path = manager._ensure_ytdlp()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, target_path)
+        self.assertEqual(target_path.read_bytes(), b"yt-dlp-bin")
+        self.assertEqual(manager.binary_version, "2026.06.15")
+
+    def test_ensure_aria2c_downloads_and_extracts_zip_when_missing(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        target_path = aria2_dir / "aria2c.exe"
+        release = {
+            "assets": [
+                {
+                    "name": "aria2-1.37.0-win-64bit-build1.zip",
+                    "browser_download_url": "https://example.test/aria2.zip",
+                }
+            ],
+        }
+
+        def fake_download(url: str, path: Path) -> None:
+            self.assertEqual(url, "https://example.test/aria2.zip")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("aria2-1.37.0-win-64bit-build1/aria2c.exe", b"aria2c-bin")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.platform.system",
+            return_value="Windows",
+        ), patch(
+            "bilikara.cache.platform.machine",
+            return_value="AMD64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_aria2c_binary_path", return_value=target_path), patch.object(
+                    manager, "_fetch_aria2_release", return_value=release
+                ), patch.object(manager, "_download_url", side_effect=fake_download), patch.object(
+                    manager,
+                    "_read_aria2c_version",
+                    return_value="1.37.0",
+                ):
+                    path = manager._ensure_aria2c()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, target_path)
+        self.assertEqual(target_path.read_bytes(), b"aria2c-bin")
+        self.assertEqual(manager.binary_version, "1.37.0")
+        self.assertFalse((aria2_dir / "aria2-1.37.0-win-64bit-build1.zip").exists())
+
+    def test_urlopen_retries_ssl_certificate_failure_with_certifi(self):
+        certificate_error = urllib.error.URLError(
+            ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED")
+        )
+        fallback_response = object()
+        fake_certifi = SimpleNamespace(where=lambda: "certifi.pem")
+
+        with patch.dict(sys.modules, {"certifi": fake_certifi}), patch(
+            "bilikara.cache.ssl.create_default_context",
+            return_value="ssl-context",
+        ) as context_mock, patch(
+            "bilikara.cache.urllib.request.urlopen",
+            side_effect=[certificate_error, fallback_response],
+        ) as urlopen_mock:
+            response = CacheManager._urlopen("https://example.test", timeout=20)
+
+        self.assertIs(response, fallback_response)
+        context_mock.assert_called_once_with(cafile="certifi.pem")
+        self.assertEqual(urlopen_mock.call_count, 2)
+        self.assertEqual(urlopen_mock.call_args.kwargs["context"], "ssl-context")
 
     def test_ensure_ffmpeg_syncs_bundled_binary_into_runtime_tools(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"
@@ -996,6 +1526,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        download_source="bbdown",
                     )
             finally:
                 manager.shutdown()
@@ -1034,6 +1565,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        download_source="bbdown",
                     )
             finally:
                 manager.shutdown()
@@ -1042,6 +1574,49 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(result["audio_variants"][0]["id"], "p2_track_1")
         self.assertEqual(result["audio_variants"][0]["page"], 2)
         self.assertEqual(result["selected_audio_variant_id"], "p2_track_1")
+
+    def test_download_selected_streams_preserves_p2_default_when_p1_audio_is_also_bound(self):
+        item_dir = self.cache_dir / "song-a"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        video_file = item_dir / "video-p2" / "video.mp4"
+        audio_p1_file = item_dir / "audio-p1" / "audio.m4a"
+        audio_p2_file = item_dir / "audio-p2" / "audio.m4a"
+        log_path = Path(self.temp_dir.name) / "logs" / "song-a.log"
+        for file_path in (video_file, audio_p1_file, audio_p2_file):
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_bytes(b"track")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-a")
+                item.page = 2
+                item.cid = 789
+                item.part_title = "off vocal"
+                item.display_title = "title-song-a - off vocal"
+                item.selected_pages = [1, 2]
+                item.selected_parts = ["main track", "off vocal"]
+                item.available_pages = [1, 2]
+                item.available_parts = ["main track", "off vocal"]
+                item.selected_audio_variant_id = "p2_off_vocal"
+                item.video_page = 2
+                manager.desired_ids.add(item.id)
+                with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_p1_file, audio_p2_file]):
+                    result = manager._download_selected_streams(
+                        item,
+                        Path("/tools/BBDown"),
+                        Path("/tools/ffmpeg"),
+                        item_dir,
+                        log_path,
+                        download_source="bbdown",
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(Path(result["video_relative_path"]).as_posix(), "song-a/video-p2/video.mp4")
+        self.assertEqual([variant["id"] for variant in result["audio_variants"]], ["p1_main_track", "p2_off_vocal"])
+        self.assertEqual([variant["page"] for variant in result["audio_variants"]], [1, 2])
+        self.assertEqual(result["selected_audio_variant_id"], "p2_off_vocal")
 
     def test_start_bbdown_login_removes_stale_qr_image(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"

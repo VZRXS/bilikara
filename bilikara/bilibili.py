@@ -59,6 +59,9 @@ _GATCHA_FAVLIST_LOCK = threading.Lock()
 _GATCHA_FAVLIST_REQUEST_LOCK = threading.Lock()
 _GATCHA_FAVLIST_LAST_REQUEST_AT = 0.0
 _GATCHA_FAVLIST_TITLE_KEYWORDS = ("🎤", "卡拉", "k")
+_GATCHA_POOL_CONFIG_FILE = cfg.DATA_DIR / "gatcha_pool_config.json"
+_GATCHA_POOL_CONFIG_LOCK = threading.RLock()
+_GATCHA_POOL_CONFIG_SCHEMA_VERSION = 1
 GATCHA_RETRY_DELAY_SECONDS = 5
 GATCHA_FAVLIST_RETRY_DELAY_SECONDS = 3
 GATCHA_PROFILE_CACHE_TTL_SECONDS = 300
@@ -384,6 +387,112 @@ def gatcha_uid_snapshot() -> dict:
 
 def _configured_gatcha_uids() -> list[str]:
     return gatcha_uid_snapshot()["uids"]
+
+
+def _default_gatcha_pool_config() -> dict:
+    return {
+        "schema_version": _GATCHA_POOL_CONFIG_SCHEMA_VERSION,
+        "uid_weight": 50,
+        "favlist_weight": 50,
+        "excluded_uids": [],
+        "excluded_favlist_folders": [],
+        "updated_at": 0.0,
+    }
+
+
+def _load_gatcha_pool_config() -> dict:
+    if not _GATCHA_POOL_CONFIG_FILE.exists():
+        return _default_gatcha_pool_config()
+    payload = _read_json_file(_GATCHA_POOL_CONFIG_FILE)
+    if not isinstance(payload, dict):
+        return _default_gatcha_pool_config()
+    uid_weight = payload.get("uid_weight")
+    favlist_weight = payload.get("favlist_weight")
+    try:
+        uid_weight = max(0, min(100, int(uid_weight)))
+    except (TypeError, ValueError):
+        uid_weight = 50
+    try:
+        favlist_weight = max(0, min(100, int(favlist_weight)))
+    except (TypeError, ValueError):
+        favlist_weight = 50
+    excluded_uids = payload.get("excluded_uids")
+    if not isinstance(excluded_uids, list):
+        excluded_uids = []
+    excluded_uids = [str(uid).strip() for uid in excluded_uids if str(uid).strip()]
+    excluded_favlist_folders = payload.get("excluded_favlist_folders")
+    if not isinstance(excluded_favlist_folders, list):
+        excluded_favlist_folders = []
+    excluded_favlist_folders = [str(fid).strip() for fid in excluded_favlist_folders if str(fid).strip()]
+    return {
+        "schema_version": _GATCHA_POOL_CONFIG_SCHEMA_VERSION,
+        "uid_weight": uid_weight,
+        "favlist_weight": favlist_weight,
+        "excluded_uids": excluded_uids,
+        "excluded_favlist_folders": excluded_favlist_folders,
+        "updated_at": float(payload.get("updated_at") or 0),
+    }
+
+
+def _save_gatcha_pool_config(config: dict) -> None:
+    config["schema_version"] = _GATCHA_POOL_CONFIG_SCHEMA_VERSION
+    _write_json_file(_GATCHA_POOL_CONFIG_FILE, config)
+
+
+def gatcha_pool_config_snapshot() -> dict:
+    with _GATCHA_POOL_CONFIG_LOCK:
+        config = _load_gatcha_pool_config()
+    return {
+        "uid_weight": config.get("uid_weight", 50),
+        "favlist_weight": config.get("favlist_weight", 50),
+        "excluded_uids": list(config.get("excluded_uids") or []),
+        "excluded_favlist_folders": list(config.get("excluded_favlist_folders") or []),
+        "updated_at": float(config.get("updated_at") or 0),
+    }
+
+
+def gatcha_pool_config_detail() -> dict:
+    config = gatcha_pool_config_snapshot()
+    try:
+        uid_options = browse_gatcha_cache().get("owners") or []
+    except Exception:  # noqa: BLE001
+        uid_options = []
+    try:
+        favlist_options = browse_gatcha_favlist().get("folders") or []
+    except Exception:  # noqa: BLE001
+        favlist_options = []
+    return {
+        **config,
+        "uid_options": uid_options if isinstance(uid_options, list) else [],
+        "favlist_folder_options": favlist_options if isinstance(favlist_options, list) else [],
+    }
+
+
+def update_gatcha_pool_config(
+    *,
+    uid_weight: int | None = None,
+    favlist_weight: int | None = None,
+    excluded_uids: list[str] | None = None,
+    excluded_favlist_folders: list[str] | None = None,
+) -> dict:
+    with _GATCHA_POOL_CONFIG_LOCK:
+        config = _load_gatcha_pool_config()
+        if uid_weight is not None:
+            config["uid_weight"] = max(0, min(100, int(uid_weight)))
+        if favlist_weight is not None:
+            config["favlist_weight"] = max(0, min(100, int(favlist_weight)))
+        if excluded_uids is not None:
+            if not isinstance(excluded_uids, list):
+                raise ValueError("excluded_uids must be a list")
+            config["excluded_uids"] = [str(uid).strip() for uid in excluded_uids if str(uid).strip()]
+        if excluded_favlist_folders is not None:
+            if not isinstance(excluded_favlist_folders, list):
+                raise ValueError("excluded_favlist_folders must be a list")
+            config["excluded_favlist_folders"] = [str(fid).strip() for fid in excluded_favlist_folders if str(fid).strip()]
+        config["updated_at"] = time.time()
+        _save_gatcha_pool_config(config)
+        return gatcha_pool_config_snapshot()
+
 
 @dataclass
 class VideoReference:
@@ -2315,6 +2424,14 @@ def browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
     }
 
 
+def gatcha_favlist_updated_at() -> float:
+    with _GATCHA_FAVLIST_LOCK:
+        payload = _load_gatcha_favlist()
+    if not isinstance(payload, dict):
+        return 0.0
+    return float(payload.get("updated_at") or 0)
+
+
 
 
 def request_json(url: str) -> dict:
@@ -2384,6 +2501,11 @@ def parse_video_pages(data: dict) -> list[VideoPage]:
         duration = int(payload.get("duration") or 0)
         part = str(payload.get("part") or f"P{page_number}").strip() or f"P{page_number}"
         pages.append(VideoPage(page=page_number, cid=cid, duration=duration, part=part))
+        
+    valid_pages = [p for p in pages if p.duration >= 10]
+    if valid_pages and len(valid_pages) < len(pages):
+        return valid_pages
+        
     return pages
 
 
@@ -2466,7 +2588,27 @@ def _part_keyword_match(part: str) -> bool:
 
 
 def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
-    return len(pages) == 2 and any(_part_keyword_match(page.part) for page in pages)
+    if len(pages) != 2:
+        return False
+    if not any(_part_keyword_match(page.part) for page in pages):
+        return False
+    if abs(pages[0].duration - pages[1].duration) > DURATION_TOLERANCE_SECONDS:
+        return False
+    return True
+
+
+def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+    if len(pages) != 2:
+        return None
+    first_page, second_page = sorted(pages, key=lambda page: page.page)
+    if (
+        first_page.page == 1
+        and second_page.page == 2
+        and not _part_keyword_match(first_page.part)
+        and _part_keyword_match(second_page.part)
+    ):
+        return second_page.page
+    return None
 
 
 def _requires_manual_binding(pages: list[VideoPage]) -> bool:
@@ -2541,6 +2683,7 @@ def fetch_video_item(
     available_page_numbers = [page.page for page in pages]
     available_pages_by_number = {page.page: page for page in pages}
     normalized_audio_pages = _normalize_selected_pages(selected_audio_pages)
+    auto_video_page = None
     if manual_selection:
         video_page = int(selected_video_page or preferred_page)
         if video_page not in available_pages_by_number:
@@ -2554,6 +2697,7 @@ def fetch_video_item(
     else:
         if _is_auto_dual_audio_pair(pages):
             selected_pages = list(pages)
+            auto_video_page = _auto_dual_audio_video_page(pages)
         else:
             selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
         if selected_video_page is not None or normalized_audio_pages:
@@ -2565,7 +2709,7 @@ def fetch_video_item(
     if manual_selection:
         video_page = int(selected_video_page or selected_page_numbers[0])
     else:
-        video_page = preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0]
+        video_page = auto_video_page or (preferred_page if preferred_page in selected_page_numbers else selected_page_numbers[0])
     video_page_info = available_pages_by_number[video_page]
     aid = int(data["aid"])
     bvid = str(data["bvid"])
@@ -2710,20 +2854,212 @@ def get_cached_wbi_keys():
     _WBI_CACHE["last_update"] = curr_time
     return keys
 
+def fetch_dash_playurl(
+    bvid: str,
+    cid: int,
+    *,
+    avid: int = 0,
+    qn: int = 127,
+    fnval: int = 4048,
+) -> dict:
+    """Fetch DASH playurl from Bilibili API, returning stream URLs for video/audio.
+
+    Args:
+        bvid: BV ID of the video.
+        cid: CID of the specific page.
+        avid: AV ID (optional, derived from bvid if not given).
+        qn: Quality ID (default 127 = 8K, API will auto-downgrade).
+        fnval: DASH format flag (default 4048 = all DASH formats).
+
+    Returns:
+        Dict with keys:
+          - "video": list of dicts with "url", "backup_url", "codec_id", "codec_name", "width", "height"
+          - "audio": list of dicts with "url", "backup_url", "bandwidth"
+          - "flac": dict or None with "url", "backup_url" if Hi-Res FLAC available
+          - "dolby": dict or None with "url", "backup_url" if Dolby Atmos available
+    """
+    if not bvid and not avid:
+        raise BilibiliError("bvid 和 avid 至少需要提供一个")
+
+    try:
+        img_key, sub_key = get_cached_wbi_keys()
+    except Exception as exc:
+        raise BilibiliError(f"WBI 签名失败: {exc}") from exc
+
+    params = {
+        "cid": str(cid),
+        "qn": str(qn),
+        "fnval": str(fnval),
+        "fourk": "1",
+        "platform": "web",
+    }
+    if avid:
+        params["avid"] = str(avid)
+    if bvid:
+        params["bvid"] = bvid
+
+    signed_params = enc_wbi(params, img_key, sub_key)
+    query_string = urllib.parse.urlencode(signed_params)
+    api_url = f"https://api.bilibili.com/x/player/wbi/playurl?{query_string}"
+
+    payload = request_json(api_url)
+    code = int(payload.get("code") or 0) if isinstance(payload.get("code"), (int, float)) else 0
+    if code != 0:
+        message = str(payload.get("message") or "获取播放地址失败")
+        if code in {-404, -403, 62002}:
+            raise BilibiliError(f"视频播放地址不可用: {message}")
+        if code == -352:
+            raise BilibiliError(f"请求被风控拦截: {message}")
+        raise BilibiliError(message)
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise BilibiliError("播放地址响应格式异常")
+
+    dash = data.get("dash")
+    if not isinstance(dash, dict):
+        durl_list = data.get("durl")
+        if isinstance(durl_list, list) and durl_list:
+            urls = []
+            for segment in durl_list:
+                if isinstance(segment, dict):
+                    url = str(segment.get("url") or "").strip()
+                    backup_urls = segment.get("backup_url") or []
+                    urls.append({
+                        "url": url,
+                        "backup_urls": [str(u).strip() for u in backup_urls if u],
+                        "order": int(segment.get("order") or 0),
+                    })
+            return {"video": urls, "audio": [], "flac": None, "dolby": None}
+        raise BilibiliError("视频不支持 DASH 格式且无可回退地址")
+
+    video_streams = []
+    for video in dash.get("video") or []:
+        if not isinstance(video, dict):
+            continue
+        base_url = str(video.get("baseUrl") or video.get("base_url") or "").strip()
+        if not base_url:
+            continue
+        backup_urls = video.get("backupUrl") or video.get("backup_url") or []
+        codec_id = int(video.get("codecid") or video.get("codecId") or 0)
+        codec_map = {7: "avc", 12: "hevc", 13: "av1"}
+        video_streams.append({
+            "url": base_url,
+            "backup_urls": [str(u).strip() for u in backup_urls if u],
+            "codec_id": codec_id,
+            "codec_name": codec_map.get(codec_id, f"codec_{codec_id}"),
+            "width": int(video.get("width") or 0),
+            "height": int(video.get("height") or 0),
+            "quality_id": int(video.get("id") or 0),
+            "bandwidth": int(video.get("bandwidth") or 0),
+        })
+
+    audio_streams = []
+    for audio in dash.get("audio") or []:
+        if not isinstance(audio, dict):
+            continue
+        base_url = str(audio.get("baseUrl") or audio.get("base_url") or "").strip()
+        if not base_url:
+            continue
+        backup_urls = audio.get("backupUrl") or audio.get("backup_url") or []
+        audio_streams.append({
+            "url": base_url,
+            "backup_urls": [str(u).strip() for u in backup_urls if u],
+            "quality_id": int(audio.get("id") or 0),
+            "bandwidth": int(audio.get("bandwidth") or 0),
+            "codecs": str(audio.get("codecs") or ""),
+            "mime_type": str(audio.get("mimeType") or ""),
+        })
+
+    flac_info = None
+    flac = dash.get("flac")
+    if isinstance(flac, dict):
+        flac_audio = flac.get("audio")
+        if isinstance(flac_audio, dict):
+            flac_url = str(flac_audio.get("baseUrl") or flac_audio.get("base_url") or "").strip()
+            if flac_url:
+                flac_backup = flac_audio.get("backupUrl") or flac_audio.get("backup_url") or []
+                flac_info = {
+                    "url": flac_url,
+                    "backup_urls": [str(u).strip() for u in flac_backup if u],
+                    "bandwidth": int(flac_audio.get("bandwidth") or 0),
+                }
+
+    dolby_info = None
+    dolby = dash.get("dolby")
+    if isinstance(dolby, dict):
+        dolby_audio_list = dolby.get("audio") or []
+        for dolby_audio in dolby_audio_list:
+            if not isinstance(dolby_audio, dict):
+                continue
+            dolby_url = str(dolby_audio.get("baseUrl") or dolby_audio.get("base_url") or "").strip()
+            if dolby_url:
+                dolby_backup = dolby_audio.get("backupUrl") or dolby_audio.get("backup_url") or []
+                dolby_info = {
+                    "url": dolby_url,
+                    "backup_urls": [str(u).strip() for u in dolby_backup if u],
+                    "bandwidth": int(dolby_audio.get("bandwidth") or 0),
+                }
+                break
+
+    return {
+        "video": video_streams,
+        "audio": audio_streams,
+        "flac": flac_info,
+        "dolby": dolby_info,
+    }
+
+
 def fetch_gatcha_candidate() -> dict | None:
+    pool_config = gatcha_pool_config_snapshot()
+    excluded_uid_set = set(pool_config.get("excluded_uids") or [])
+    excluded_folder_set = set(pool_config.get("excluded_favlist_folders") or [])
+    uid_weight = int(pool_config.get("uid_weight", 50))
+    favlist_weight = int(pool_config.get("favlist_weight", 50))
+
     raw_candidates_by_uid = _local_gatcha_candidates_by_uid()
     candidates_by_uid: dict[str, list[dict]] = {}
-    for mid, entries in raw_candidates_by_uid.items():
-        valid_entries = [entry for entry in entries if isinstance(entry, dict) and not _is_expired_gatcha_entry(entry)]
-        if valid_entries:
-            candidates_by_uid[mid] = valid_entries
-    favlist_candidates = [entry for entry in _local_gatcha_favlist_candidates() if not _is_expired_gatcha_entry(entry)]
+    if uid_weight > 0:
+        for mid, entries in raw_candidates_by_uid.items():
+            if mid in excluded_uid_set:
+                continue
+            valid_entries = [entry for entry in entries if isinstance(entry, dict) and not _is_expired_gatcha_entry(entry)]
+            if valid_entries:
+                candidates_by_uid[mid] = valid_entries
+
+    all_favlist_candidates = _local_gatcha_favlist_candidates()
+    favlist_candidates: list[dict] = []
+    if favlist_weight > 0:
+        for entry in all_favlist_candidates:
+            if _is_expired_gatcha_entry(entry):
+                continue
+            entry_fav_uid = str(entry.get("fav_uid") or "").strip()
+            entry_folder_id = str(entry.get("fav_folder_id") or "").strip()
+            folder_key = f"{entry_fav_uid}:{entry_folder_id}" if entry_fav_uid else entry_folder_id
+            if folder_key in excluded_folder_set or entry_folder_id in excluded_folder_set:
+                continue
+            favlist_candidates.append(entry)
+
     if not candidates_by_uid and not favlist_candidates:
         if not effective_bilibili_cookie():
             raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
         raise BilibiliError("本地稿件缓存还没准备好，请稍后再试")
 
-    if favlist_candidates and (not candidates_by_uid or random.random() < 0.5):
+    total_weight = uid_weight + favlist_weight
+    if total_weight <= 0:
+        total_weight = 100
+        uid_weight = 50
+        favlist_weight = 50
+
+    pick_favlist = False
+    if favlist_candidates and not candidates_by_uid:
+        pick_favlist = True
+    elif candidates_by_uid and not favlist_candidates:
+        pick_favlist = False
+    elif favlist_candidates and candidates_by_uid:
+        pick_favlist = random.random() < (favlist_weight / total_weight)
+
+    if pick_favlist:
         chosen = random.choice(favlist_candidates)
         payload = {
             "mid": str(chosen.get("mid") or ""),

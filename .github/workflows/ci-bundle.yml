@@ -33,6 +33,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-packaging.txt
+
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
@@ -49,11 +54,18 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            label: Windows
+            label: Windows x64
+            slug: windows
+          - os: windows-11-arm
+            label: Windows ARM64
             slug: windows
           - os: macos-latest
-            label: macOS
+            label: macOS ARM64
             slug: macos
+          - os: macos-15-intel
+            label: macOS Intel
+            slug: macos
+
 
     steps:
       - name: Checkout
@@ -81,6 +93,30 @@ jobs:
       - name: Build app bundle
         run: python build_bundle.py
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Tauri App
+        run: |
+          npm install
+          npx tauri icon static/pic/icon.png
+          npm run build
+
+      - name: Inject Tauri into Windows Bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Copy-Item src-tauri/target/release/bilikara.exe -Destination dist/bilikara/bilikara-desktop.exe
+
+
+      - name: Inject Tauri into macOS Bundle
+        if: runner.os == 'macOS'
+        run: cp -r src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
+
       - name: Resolve bundle archive name
         id: bundle-name
         shell: bash
@@ -90,8 +126,9 @@ jobs:
           if [ -z "$safe_ref" ]; then
             safe_ref="local"
           fi
-          archive_name="bilikara-${safe_ref}-${{ matrix.slug }}.zip"
-          artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}"
+          runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else (m or 'unknown'))")"
+          archive_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}.zip"
+          artifact_name="bilikara-${safe_ref}-${{ matrix.slug }}-${runner_arch}"
           echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
           echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
@@ -103,11 +140,15 @@ jobs:
 
       - name: Archive macOS bundle
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent dist/bilikara.app "$BUNDLE_ARCHIVE"
+        run: |
+          mkdir -p dist_release
+          mv dist/bilikara.app dist_release/
+          mv dist/Bilikara-Desktop.app dist_release/
+          ditto -c -k --sequesterRsrc dist_release "$BUNDLE_ARCHIVE"
 
       - name: Upload Windows bundle artifact
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
           path: dist/bilikara
@@ -115,10 +156,10 @@ jobs:
 
       - name: Upload macOS bundle artifact
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
-          path: dist/bilikara.app
+          path: dist_release
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release
@@ -127,3 +168,99 @@ jobs:
         with:
           files: ${{ steps.bundle-name.outputs.archive_name }}
           generate_release_notes: true
+
+  mirror-release-r2:
+    name: Mirror Release To R2
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'bilikara-releases' }}
+      RELEASE_DOWNLOAD_BASE_URL: ${{ vars.RELEASE_DOWNLOAD_BASE_URL || 'https://api.kevinx96.icu/bilikara/releases/download' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install AWS CLI
+        run: python -m pip install --upgrade awscli
+
+      - name: Download GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets release-metadata
+          gh release download "$GITHUB_REF_NAME" --dir release-assets --clobber
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+            > release-metadata/current-github.json
+          gh api -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/releases?per_page=30" \
+            > release-metadata/releases-github.json
+
+      - name: Generate mirrored release metadata
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const tag = process.env.GITHUB_REF_NAME;
+          const baseUrl = String(process.env.RELEASE_DOWNLOAD_BASE_URL || "").replace(/\/+$/, "");
+
+          function assetUrl(assetName, tagName = tag) {
+            return `${baseUrl}/${encodeURIComponent(tagName)}/${encodeURIComponent(assetName)}`;
+          }
+
+          function mirrorRelease(release) {
+            return {
+              ...release,
+              assets: Array.isArray(release.assets)
+                ? release.assets.map((asset) => ({
+                    ...asset,
+                    browser_download_url: assetUrl(asset.name, release.tag_name || tag),
+                  }))
+                : [],
+            };
+          }
+
+          const current = mirrorRelease(JSON.parse(fs.readFileSync("release-metadata/current-github.json", "utf8")));
+          const releases = JSON.parse(fs.readFileSync("release-metadata/releases-github.json", "utf8"))
+            .filter((release) => release && typeof release === "object")
+            .map(mirrorRelease);
+
+          fs.writeFileSync("release-metadata/tag.json", JSON.stringify(current, null, 2));
+          fs.writeFileSync("release-metadata/releases.json", JSON.stringify(releases, null, 2));
+          if (!current.prerelease) {
+            fs.writeFileSync("release-metadata/latest.json", JSON.stringify(current, null, 2));
+          }
+          NODE
+
+      - name: Upload release mirror to R2
+        run: |
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          tag="${GITHUB_REF_NAME}"
+          aws s3 cp release-assets "s3://${R2_BUCKET}/bilikara/releases/download/${tag}/" \
+            --recursive \
+            --endpoint-url "$endpoint" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --only-show-errors
+          aws s3 cp release-metadata/tag.json "s3://${R2_BUCKET}/bilikara/releases/tags/${tag}.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "public, max-age=300" \
+            --only-show-errors
+          aws s3 cp release-metadata/releases.json "s3://${R2_BUCKET}/bilikara/releases/releases.json" \
+            --endpoint-url "$endpoint" \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "public, max-age=300" \
+            --only-show-errors
+          if [ -f release-metadata/latest.json ]; then
+            aws s3 cp release-metadata/latest.json "s3://${R2_BUCKET}/bilikara/releases/latest.json" \
+              --endpoint-url "$endpoint" \
+              --content-type "application/json; charset=utf-8" \
+              --cache-control "public, max-age=300" \
+              --only-show-errors
+          fi
