@@ -100,6 +100,14 @@ def _is_path_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 class DuplicateSessionRequestError(ValueError):
     def __init__(self, item, session_entry=None, active_item=None) -> None:
         self.item = item
