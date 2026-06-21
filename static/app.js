@@ -270,6 +270,7 @@ const elements = {
   advanceDelaySlider: document.getElementById("advance-delay-slider"),
   advanceDelayScale: document.getElementById("advance-delay-scale"),
   cacheQualitySelect: document.getElementById("cache-quality-select"),
+  cacheDownloadSourceSelect: document.getElementById("cache-download-source-select"),
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
@@ -1144,7 +1145,7 @@ function hydrateLocalPreferences() {
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
   state.updatePreviewEnabled = readLocalBoolean(storageKeys.updatePreview, state.updatePreviewEnabled);
-  
+
   // Hydrate and apply theme
   state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
   applyTheme(state.theme);
@@ -1286,7 +1287,6 @@ function submitSongRating(item, score) {
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
-      renderPlayerRatingButton();
     }
     console.warn("Rating submit failed:", error);
   });
@@ -4041,7 +4041,7 @@ async function handleGatchaDraw() {
 
     state.gatchaCandidate = payload.data;
     elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
-    
+
     // 切换界面
     elements.gatchaInitView.classList.add("hidden");
     elements.gatchaResultView.classList.remove("hidden");
@@ -5128,9 +5128,30 @@ function renderCachePolicyControls(cachePolicy) {
     ];
   const currentQuality = String(cachePolicy?.video_quality || choices[0]?.value || "1080P 高码率");
   const audioHires = Boolean(cachePolicy?.audio_hires);
+  const rawSourceChoices = Array.isArray(cachePolicy?.download_source_choices)
+    ? cachePolicy.download_source_choices
+    : [];
+  const sourceChoices = rawSourceChoices.length
+    ? rawSourceChoices.map((choice) => {
+      if (typeof choice === "string") {
+        return { value: choice, label: choice };
+      }
+      const value = String(choice?.value || "");
+      return {
+        value,
+        label: String(choice?.label || value),
+      };
+    }).filter((choice) => choice.value)
+    : [
+      { value: "bbdown", label: "BBDown" },
+      { value: "ytdlp", label: "yt-dlp" },
+    ];
+  const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
   const signature = JSON.stringify({
     choices,
     currentQuality,
+    sourceChoices,
+    currentDownloadSource,
     audioHires,
     saving: state.cachePolicySaving,
   });
@@ -5154,6 +5175,22 @@ function renderCachePolicyControls(cachePolicy) {
     }
     elements.cacheQualitySelect.value = currentQuality;
     elements.cacheQualitySelect.disabled = state.cachePolicySaving;
+  }
+
+  if (elements.cacheDownloadSourceSelect) {
+    const choicesSignature = JSON.stringify(sourceChoices);
+    if (elements.cacheDownloadSourceSelect.dataset.choicesSignature !== choicesSignature) {
+      elements.cacheDownloadSourceSelect.innerHTML = "";
+      sourceChoices.forEach((choice) => {
+        const option = document.createElement("option");
+        option.value = choice.value;
+        option.textContent = choice.label;
+        elements.cacheDownloadSourceSelect.appendChild(option);
+      });
+      elements.cacheDownloadSourceSelect.dataset.choicesSignature = choicesSignature;
+    }
+    elements.cacheDownloadSourceSelect.value = currentDownloadSource;
+    elements.cacheDownloadSourceSelect.disabled = state.cachePolicySaving;
   }
 
   if (elements.cacheHiresCheckbox) {
@@ -6424,6 +6461,10 @@ async function setLocalPlayerKeyShift(keyShift) {
 
 function setupAudioPitchShifter(audio) {
   if (!audio) {
+    return;
+  }
+  if (audio.jungle) {
+    applyKeyShiftToAudio(audio);
     return;
   }
   if (!window.AudioContext && !window.webkitAudioContext) {
@@ -9659,7 +9700,7 @@ elements.sessionUserList.addEventListener("dragover", (e) => {
   e.preventDefault();
   if (!draggedSessionUser) return;
   e.dataTransfer.dropEffect = "move";
-  
+
   const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
   draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
 
@@ -9700,12 +9741,12 @@ document.addEventListener("dragend", async (e) => {
       } else if (state.sessionUserDragAfter) {
         elements.sessionUserList.appendChild(draggedSessionUser);
       }
-      
+
       const name = draggedSessionUser.dataset.name;
       const newElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
       const newIndex = newElements.indexOf(draggedSessionUser);
       const oldIndex = parseInt(draggedSessionUser.dataset.index, 10);
-      
+
       if (newIndex !== -1 && newIndex !== oldIndex) {
         await moveSessionUser(name, newIndex);
       }
@@ -9869,6 +9910,18 @@ elements.cacheQualitySelect?.addEventListener("change", async (event) => {
   await setCachePolicyPreference(
     { video_quality: quality },
     t("service.qualityUpdated", { quality: selectedLabel }),
+  );
+});
+
+elements.cacheDownloadSourceSelect?.addEventListener("change", async (event) => {
+  const downloadSource = String(event.target.value || "").trim();
+  if (!downloadSource || downloadSource === String(state.data?.cache_policy?.download_source || "")) {
+    return;
+  }
+  const selectedLabel = event.target.selectedOptions?.[0]?.textContent || downloadSource;
+  await setCachePolicyPreference(
+    { download_source: downloadSource },
+    t("service.downloadSourceUpdated", { source: selectedLabel }),
   );
 });
 
@@ -11252,7 +11305,7 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
   try {
     state.data = await submitAddRequest(url, "tail", { requesterName });
     setFormMessage(t("gatcha.requestSuccess", { title: state.gatchaCandidate.title }));
-    
+
 
     state.gatchaCandidate = null;
     elements.gatchaResultView.classList.add("hidden");

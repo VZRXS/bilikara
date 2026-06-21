@@ -312,6 +312,7 @@ const elements = {
   currentOwner: document.getElementById("current-owner"),
   currentCacheState: document.getElementById("current-cache-state"),
   currentMeta: document.getElementById("current-meta"),
+  currentRatingButton: document.getElementById("current-rating-button"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   playerControlPanel: document.getElementById("player-control-panel"),
   floatingPlayerControlPanel: document.getElementById("floating-player-control-panel"),
@@ -813,7 +814,7 @@ function normalizeLayoutMode(value) {
 
 function hydrateLocalPreferences() {
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
-  
+
   // Hydrate and apply theme
   state.theme = normalizeTheme(readLocalString(storageKeys.theme, state.theme));
   applyTheme(state.theme);
@@ -1700,12 +1701,13 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
     return;
   }
   const ratio = currentSeconds / durationSeconds;
+  const ratingItem = { ...currentItem, play_id: playId };
   if (ratio >= remoteRatingPromptThreshold) {
     // Skip auto-submit when the rating modal is already open so the user
     // can choose their own score instead of the default 5.
     if (!state.ratingPromptSeenPlayIds.has(playId) && !state.ratingPromptElement) {
       state.ratingPromptSeenPlayIds.add(playId);
-      submitSongRating({ ...currentItem, play_id: playId }, 5);
+      submitSongRating(ratingItem, 5);
     }
   }
 }
@@ -1983,7 +1985,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     || nextRenderSignature !== state.dataRenderSignature;
   state.data = snapshot;
   scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
-  
+
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
   if (shouldRender) {
     state.dataRenderSignature = nextRenderSignature;
@@ -1991,7 +1993,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
   } else if (!state.renderDebounceTimer) {
     renderCacheStatusOnly(previousSnapshot);
   }
-  
+
   return true;
 }
 
@@ -4164,6 +4166,7 @@ function render() {
 
   renderRequesterSelect(data.session_users || []);
   renderCurrentItem(data.current_item, playbackMode);
+  renderCurrentRatingButton(data.current_item);
   renderAudioVariantBar(data.current_item, playbackMode);
   renderPlayerControls(data.current_item, playbackMode);
   renderRemoteAvSyncControls(playbackMode, data.player_settings);
@@ -4240,7 +4243,7 @@ function renderCurrentItem(current, playbackMode) {
       }
       elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     }
-    
+
     renderCurrentPlaybackState(current);
     try {
       maybeUpdateRemoteRatingPrompt(current);
@@ -4248,7 +4251,7 @@ function renderCurrentItem(current, playbackMode) {
       console.warn("Rating prompt update failed in renderCurrentItem:", error);
     }
     elements.currentCacheState.classList.remove("hidden");
-    
+
     if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
       if (!state.autoRefreshTimer) {
         state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
@@ -4257,7 +4260,7 @@ function renderCurrentItem(current, playbackMode) {
       clearTimeout(state.autoRefreshTimer);
       state.autoRefreshTimer = null;
     }
-    
+
     elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
     elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
     elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
@@ -4282,6 +4285,18 @@ function renderCurrentItem(current, playbackMode) {
     elements.currentCacheState.classList.remove("ready", "failed");
     elements.currentMeta.textContent = t("remote.noCurrentHint");
   }
+}
+
+function renderCurrentRatingButton(current) {
+  const button = elements.currentRatingButton;
+  if (!button) {
+    return;
+  }
+  const enabled = Boolean(current?.bvid);
+  const submitted = enabled && hasSubmittedSongRating(current);
+  button.disabled = !enabled || submitted;
+  button.textContent = submitted ? t("rating.rated") : t("rating.rate");
+  button.title = submitted ? t("rating.ratedTitle") : t("rating.rateTitle");
 }
 
 function audioVariantsForItem(item) {
@@ -7492,7 +7507,7 @@ function renderFloatingControlTrigger(currentItem, playbackMode) {
   const hasCurrentItem = Boolean(currentItem);
   const visible = isLocalMode && hasCurrentItem;
   elements.floatingControlTrigger.classList.toggle("hidden", !visible);
-  
+
   if (!visible && elements.floatingControlOverlay && !elements.floatingControlOverlay.classList.contains("hidden")) {
     hideFloatingControlOverlay();
   }

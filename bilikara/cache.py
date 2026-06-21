@@ -23,13 +23,16 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TextIO
 
 from .config import (
+    ARIA2C_DIR,
+    ARIA2C_PATH_OVERRIDE,
+    ARIA2_RELEASE_API,
     BB_DOWN_DIR,
     BB_DOWN_PATH_OVERRIDE,
     BB_DOWN_RELEASE_API,
     BB_DOWN_VERSION_FILE,
+    BILIBILI_HEADERS,
     CACHE_DIR,
     CACHE_POLICY_FILE,
-    # COOKIE,
     FFMPEG_RUNTIME_PATH,
     FFMPEG_PATH_OVERRIDE,
     FFMPEG_TOOLS_DIR,
@@ -37,9 +40,13 @@ from .config import (
     INTERNAL_VENDOR_DIR,
     LOG_DIR,
     MAX_CACHE_ITEMS,
+    TOOL_ASSET_BASE_URL,
     VENDOR_DIR,
+    YTDLP_DIR,
+    YTDLP_PATH_OVERRIDE,
+    YTDLP_RELEASE_API,
 )
-from .bilibili import effective_bilibili_cookie
+from .bilibili import BilibiliError, effective_bilibili_cookie, fetch_dash_playurl
 from .store import PlaylistStore
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
@@ -70,6 +77,11 @@ VIDEO_QUALITY_CHOICES = (
 )
 DEFAULT_VIDEO_QUALITY = "1080P 高帧率"
 DEFAULT_AUDIO_HIRES = True
+DOWNLOAD_SOURCE_BBDOWN = "bbdown"
+DOWNLOAD_SOURCE_YTDLP = "ytdlp"
+DOWNLOAD_SOURCE_DOWNKYI = "downkyi"
+DOWNLOAD_SOURCE_CHOICES = (DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_YTDLP, DOWNLOAD_SOURCE_DOWNKYI)
+DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_BBDOWN
 
 
 class CacheCancelledError(RuntimeError):
@@ -78,6 +90,17 @@ class CacheCancelledError(RuntimeError):
 
 class DownloadCommandError(RuntimeError):
     pass
+
+
+def _debug_print(msg: str) -> None:
+    """Print debug message to console, replacing unencodable characters."""
+    import sys
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        encoded = msg.encode(sys.stdout.encoding or "utf-8", errors="replace")
+        sys.stdout.buffer.write(encoded + b"\n")
+        sys.stdout.buffer.flush()
 
 
 class CacheManager:
@@ -92,6 +115,7 @@ class CacheManager:
         self.max_cache_items = self._bounded_cache_items(max_cache_items)
         self.video_quality = DEFAULT_VIDEO_QUALITY
         self.audio_hires = DEFAULT_AUDIO_HIRES
+        self.download_source = DEFAULT_DOWNLOAD_SOURCE
         self.hevc_supported: bool | None = None
         self.avc_quality_cap = ""
         self.client_media_capabilities: dict[str, Any] = {}
@@ -137,6 +161,7 @@ class CacheManager:
                 "state": self.binary_state,
                 "version": self.binary_version,
                 "message": self.binary_message,
+                "download_source": self.download_source,
                 "max_cache_items": self.max_cache_items,
                 "cache_bytes": cache_metrics["total_bytes"],
                 "cached_items": cache_metrics["item_count"],
@@ -223,6 +248,21 @@ class CacheManager:
                     for quality in VIDEO_QUALITY_CHOICES
                 ],
                 "audio_hires": self.audio_hires,
+                "download_source": self.download_source,
+                "download_source_choices": [
+                    {
+                        "value": DOWNLOAD_SOURCE_BBDOWN,
+                        "label": "BBDown",
+                    },
+                    {
+                        "value": DOWNLOAD_SOURCE_YTDLP,
+                        "label": "yt-dlp",
+                    },
+                    {
+                        "value": DOWNLOAD_SOURCE_DOWNKYI,
+                        "label": "Downkyi (aria2c)",
+                    },
+                ],
                 "force_avc": self._should_force_avc_locked(),
                 "avc_quality_cap": self.avc_quality_cap,
                 "media_capabilities": dict(self.client_media_capabilities),
@@ -442,6 +482,7 @@ class CacheManager:
         max_cache_items: int | None = None,
         video_quality: str | None = None,
         audio_hires: bool | None = None,
+        download_source: str | None = None,
     ) -> dict[str, Any]:
         changed = False
         cache_limit_changed = False
@@ -461,6 +502,11 @@ class CacheManager:
                 normalized_hires = bool(audio_hires)
                 if self.audio_hires != normalized_hires:
                     self.audio_hires = normalized_hires
+                    changed = True
+            if download_source is not None:
+                normalized_source = self._normalize_download_source(download_source)
+                if self.download_source != normalized_source:
+                    self.download_source = normalized_source
                     changed = True
 
             if changed:
@@ -484,12 +530,15 @@ class CacheManager:
                 self.video_quality = self._normalize_video_quality(payload["video_quality"])
             if "audio_hires" in payload:
                 self.audio_hires = bool(payload["audio_hires"])
+            if "download_source" in payload:
+                self.download_source = self._normalize_download_source(payload["download_source"])
 
     def _save_cache_policy_locked(self) -> None:
         payload = {
             "max_cache_items": self.max_cache_items,
             "video_quality": self.video_quality,
             "audio_hires": self.audio_hires,
+            "download_source": self.download_source,
         }
         try:
             CACHE_POLICY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -517,6 +566,13 @@ class CacheManager:
         if value in VIDEO_QUALITY_CHOICES:
             return value
         return DEFAULT_VIDEO_QUALITY
+
+    @staticmethod
+    def _normalize_download_source(download_source: object) -> str:
+        value = str(download_source or "").strip().lower()
+        if value in DOWNLOAD_SOURCE_CHOICES:
+            return value
+        return DEFAULT_DOWNLOAD_SOURCE
 
     def cache_metrics(self) -> dict[str, Any]:
         item_bytes: dict[str, int] = {}
@@ -885,13 +941,15 @@ class CacheManager:
         self._append_log_line(log_path, "")
         self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
 
+        download_source = self._current_download_source()
         try:
-            binary_path = self._ensure_bbdown()
+            binary_path = self._ensure_downloader(download_source)
         except Exception as exc:  # noqa: BLE001
+            label = self._download_source_label(download_source)
             self.store.update_item(
                 item_id,
                 cache_status="failed",
-                cache_message=f"BBDown 不可用: {exc}",
+                cache_message=f"{label} 不可用: {exc}",
                 persist_backup=False,
             )
             return False
@@ -920,7 +978,14 @@ class CacheManager:
         self._record_item_activity(item_id)
 
         try:
-            cache_result = self._download_selected_streams(item, binary_path, ffmpeg_path, item_dir, log_path)
+            cache_result = self._download_selected_streams(
+                item,
+                binary_path,
+                ffmpeg_path,
+                item_dir,
+                log_path,
+                download_source=download_source,
+            )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
             self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
@@ -948,7 +1013,15 @@ class CacheManager:
                     return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
                 return False
             last_message = str(exc)
-            if allow_refresh_retry and self._should_force_refresh_bbdown(last_message):
+            if (
+                download_source == DOWNLOAD_SOURCE_BBDOWN
+                and allow_refresh_retry
+                and self._should_force_refresh_bbdown(last_message)
+            ):
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
+                )
                 self._append_log_line(
                     log_path,
                     f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
@@ -965,6 +1038,7 @@ class CacheManager:
                         f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
                     )
             self._clear_item_download_progress(item_id)
+            _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
             self.store.update_item(
                 item_id,
@@ -1186,6 +1260,8 @@ class CacheManager:
         ffmpeg_path: Path,
         item_dir: Path,
         log_path: Path,
+        *,
+        download_source: str,
     ) -> dict[str, object]:
         self._raise_if_priority_shift(item.id)
         selected_pages = self._selected_pages_for_item(item)
@@ -1210,54 +1286,85 @@ class CacheManager:
         download_tracks = [video_track, *audio_tracks]
         self._begin_download_progress(item.id, download_tracks)
 
-        result_paths: dict[str, Path] = {}
-        max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
-        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-cache-track")
-        future_to_track = {
-            executor.submit(
-                self._download_page_stream,
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            ordered_tracks = [*audio_tracks, video_track]
+            result_paths: dict[str, Path] = {}
+            for track in ordered_tracks:
+                self._raise_if_priority_shift(item.id)
+                self._raise_if_retry_requested(item.id)
+                result_paths[str(track["key"])] = self._download_page_stream(
+                    item,
+                    binary_path,
+                    ffmpeg_path,
+                    item_dir,
+                    log_path,
+                    page=int(track["page"]),
+                    stream_kind=str(track["stream_kind"]),
+                    track_key=str(track["key"]),
+                    download_source=download_source,
+                )
+        elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            dash_streams = self._resolve_dash_streams(item)
+            result_paths = self._download_dash_streams_with_aria2c(
                 item,
                 binary_path,
                 ffmpeg_path,
                 item_dir,
                 log_path,
-                page=int(track["page"]),
-                stream_kind=str(track["stream_kind"]),
-                track_key=str(track["key"]),
-            ): track
-            for track in download_tracks
-        }
-        try:
-            done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
-            exceptions: list[Exception] = []
-            for future in done:
-                if future.cancelled():
-                    continue
-                try:
-                    future.result()
-                except Exception as exc:  # noqa: BLE001
-                    exceptions.append(exc)
+                dash_streams=dash_streams,
+                video_track=video_track,
+                audio_tracks=audio_tracks,
+            )
+        else:
+            result_paths = {}
+            max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
+            executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-cache-track")
+            future_to_track = {
+                executor.submit(
+                    self._download_page_stream,
+                    item,
+                    binary_path,
+                    ffmpeg_path,
+                    item_dir,
+                    log_path,
+                    page=int(track["page"]),
+                    stream_kind=str(track["stream_kind"]),
+                    track_key=str(track["key"]),
+                    download_source=download_source,
+                ): track
+                for track in download_tracks
+            }
+            try:
+                done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
+                exceptions: list[Exception] = []
+                for future in done:
+                    if future.cancelled():
+                        continue
+                    try:
+                        future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        exceptions.append(exc)
 
-            if exceptions:
-                for future in pending:
-                    future.cancel()
-                self._terminate_item_processes(item.id)
-                still_running = [future for future in pending if not future.cancelled()]
-                if still_running:
-                    wait(still_running)
-                    for future in still_running:
-                        if future.cancelled():
-                            continue
-                        try:
-                            future.result()
-                        except Exception as exc:  # noqa: BLE001
-                            exceptions.append(exc)
-                raise self._preferred_download_exception(exceptions)
+                if exceptions:
+                    for future in pending:
+                        future.cancel()
+                    self._terminate_item_processes(item.id)
+                    still_running = [future for future in pending if not future.cancelled()]
+                    if still_running:
+                        wait(still_running)
+                        for future in still_running:
+                            if future.cancelled():
+                                continue
+                            try:
+                                future.result()
+                            except Exception as exc:  # noqa: BLE001
+                                exceptions.append(exc)
+                    raise self._preferred_download_exception(exceptions)
 
-            for future, track in future_to_track.items():
-                result_paths[str(track["key"])] = future.result()
-        finally:
-            executor.shutdown(wait=True)
+                for future, track in future_to_track.items():
+                    result_paths[str(track["key"])] = future.result()
+            finally:
+                executor.shutdown(wait=True)
 
         video_file = result_paths[str(video_track["key"])]
         audio_files: list[tuple[int, Path, str]] = []
@@ -1378,33 +1485,20 @@ class CacheManager:
         page: int,
         stream_kind: str,
         track_key: str,
+        download_source: str,
     ) -> Path:
         page_url = self._page_url(item.resolved_url, page)
         target_dir = item_dir / f"{stream_kind}-p{page}"
         target_dir.mkdir(parents=True, exist_ok=True)
-        preference_args = self._bbdown_stream_preference_args(stream_kind)
-
-        command = [
-            self._tool_arg_path(binary_path),
+        command = self._download_command(
+            download_source,
+            binary_path,
+            ffmpeg_path,
             page_url,
-            "-p",
-            str(page),
-            *preference_args,
-            "--work-dir",
-            self._tool_arg_path(target_dir),
-            "--ffmpeg-path",
-            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
-            "--file-pattern",
-            f"{stream_kind}-p{page}",
-            "--skip-mux",
-            "--skip-subtitle",
-            "--skip-cover",
-            "--skip-ai",
-            "--video-only" if stream_kind == "video" else "--audio-only",
-        ]
-        cookie = effective_bilibili_cookie()
-        if cookie:
-            command.extend(["-c", cookie])
+            page=page,
+            stream_kind=stream_kind,
+            target_dir=target_dir,
+        )
 
         label = "视频轨" if stream_kind == "video" else "音轨"
         stage_label = f"下载{label} P{page}"
@@ -1418,6 +1512,7 @@ class CacheManager:
             stream_kind=stream_kind,
             target_dir=target_dir,
             track_key=track_key,
+            tool_dir=binary_path.parent,
         )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
@@ -1437,6 +1532,546 @@ class CacheManager:
             done=True,
         )
         return stream_file
+
+    def _download_command(
+        self,
+        download_source: str,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            return self._ytdlp_download_command(
+                binary_path,
+                ffmpeg_path,
+                page_url,
+                page=page,
+                stream_kind=stream_kind,
+                target_dir=target_dir,
+            )
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return self._downkyi_download_command(
+                binary_path,
+                ffmpeg_path,
+                page_url,
+                page=page,
+                stream_kind=stream_kind,
+                target_dir=target_dir,
+            )
+        return self._bbdown_download_command(
+            binary_path,
+            ffmpeg_path,
+            page_url,
+            page=page,
+            stream_kind=stream_kind,
+            target_dir=target_dir,
+        )
+
+    def _bbdown_download_command(
+        self,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        command = [
+            self._tool_arg_path(binary_path),
+            page_url,
+            "-p",
+            str(page),
+            *self._bbdown_stream_preference_args(stream_kind),
+            "--work-dir",
+            self._tool_arg_path(target_dir),
+            "--ffmpeg-path",
+            self._bbdown_ffmpeg_path_arg(ffmpeg_path),
+            "--file-pattern",
+            f"{stream_kind}-p{page}",
+            "--skip-mux",
+            "--skip-subtitle",
+            "--skip-cover",
+            "--skip-ai",
+            "--video-only" if stream_kind == "video" else "--audio-only",
+        ]
+        cookie = effective_bilibili_cookie()
+        if cookie:
+            command.extend(["-c", cookie])
+        return command
+
+    def _ytdlp_download_command(
+        self,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        command = [
+            self._tool_arg_path(binary_path),
+            "--newline",
+            "--no-playlist",
+            "--retries",
+            "10",
+            "--fragment-retries",
+            "10",
+            "--file-access-retries",
+            "10",
+            "--retry-sleep",
+            "3",
+            "--throttled-rate",
+            "100K",
+            "--concurrent-fragments",
+            "1",
+            "--ffmpeg-location",
+            self._tool_arg_path(ffmpeg_path),
+            "-f",
+            self._ytdlp_format_selector(stream_kind),
+            "-o",
+            self._tool_arg_path(target_dir / f"{stream_kind}-p{page}.%(ext)s"),
+            page_url,
+        ]
+        cookie = effective_bilibili_cookie()
+        if cookie:
+            cookie_file = self._write_ytdlp_cookie_jar(cookie, target_dir)
+            command.extend(["--cookies", self._tool_arg_path(cookie_file)])
+        else:
+            command.extend(["--cookies-from-browser", self._ytdlp_browser_cookie_source()])
+        return command
+
+    def _ytdlp_format_selector(self, stream_kind: str) -> str:
+        if stream_kind == "audio":
+            with self.lock:
+                audio_hires = self.audio_hires
+            return "ba/bestaudio" if audio_hires else "ba[abr<=320]/ba/bestaudio"
+
+        with self.lock:
+            video_quality = self.video_quality
+            force_avc = self._should_force_avc_locked()
+            avc_quality_cap = self.avc_quality_cap if force_avc else ""
+        max_height = self._ytdlp_max_height(video_quality, avc_quality_cap)
+        codec_filter = "[vcodec^=avc1]" if force_avc else ""
+        height_filter = f"[height<={max_height}]" if max_height else ""
+        return (
+            f"bv*{codec_filter}{height_filter}/"
+            f"bestvideo{codec_filter}{height_filter}/"
+            f"bv*{height_filter}/bestvideo{height_filter}/bv*/bestvideo"
+        )
+
+    @staticmethod
+    def _ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
+        quality = CacheManager._optional_video_quality(quality_cap) or CacheManager._normalize_video_quality(video_quality)
+        if "360" in quality:
+            return 360
+        if "480" in quality:
+            return 480
+        if "720" in quality:
+            return 720
+        if "1080" in quality:
+            return 1080
+        if "4K" in quality:
+            return 2160
+        if "8K" in quality:
+            return 4320
+        return 1080
+
+    @staticmethod
+    def _ytdlp_browser_cookie_source() -> str:
+        return os.getenv("YTDLP_COOKIES_FROM_BROWSER", "chrome").strip() or "chrome"
+
+    @staticmethod
+    def _write_ytdlp_cookie_jar(cookie_header: str, target_dir: Path) -> Path:
+        """Write a Netscape cookie jar file from a cookie header string.
+
+        yt-dlp rejects ``--add-header Cookie:`` values that contain
+        characters like ``*`` (common in Bilibili SESSDATA).  Writing a
+        standard cookie jar file and passing ``--cookies`` avoids this.
+        """
+        cookie_file = target_dir / "cookies.txt"
+        lines = ["# Netscape HTTP Cookie File", "# Generated by bilikara for yt-dlp", ""]
+        secure_names = {
+            name.lower()
+            for name in ("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5")
+        }
+        for pair in cookie_header.split(";"):
+            pair = pair.strip()
+            if not pair or "=" not in pair:
+                continue
+            name, _, value = pair.partition("=")
+            name = name.strip()
+            value = value.strip()
+            if not name:
+                continue
+            secure = "TRUE" if name.lower() in secure_names else "FALSE"
+            # domain  include_subdomains  path  secure  expiry  name  value
+            lines.append(f".bilibili.com\tTRUE\t/\t{secure}\t0\t{name}\t{value}")
+        lines.append("")
+        cookie_file.write_text("\n".join(lines), encoding="utf-8")
+        return cookie_file
+
+    def _resolve_dash_streams(self, item) -> dict:
+        """Resolve DASH stream URLs from Bilibili API for the given item.
+
+        Returns a dict with keys matching fetch_dash_playurl output:
+          - "video": list of video stream dicts
+          - "audio": list of audio stream dicts
+          - "flac": FLAC stream dict or None
+          - "dolby": Dolby stream dict or None
+        """
+        cookie = effective_bilibili_cookie()
+        if not cookie:
+            raise BilibiliError("Downkyi 模式需要 Bilibili Cookie 才能获取播放地址")
+
+        dash = fetch_dash_playurl(
+            bvid=item.bvid,
+            cid=item.cid,
+            avid=item.aid,
+        )
+
+        if not dash.get("video") and not dash.get("audio"):
+            raise BilibiliError("未获取到任何视频/音频流地址")
+
+        with self.lock:
+            force_avc = self._should_force_avc_locked()
+            avc_quality_cap = self.avc_quality_cap if force_avc else ""
+            video_quality = self.video_quality
+            audio_hires = self.audio_hires
+
+        video_streams = dash.get("video") or []
+        codec_filter = "avc" if force_avc else None
+        max_quality_id = self._dash_max_quality_id(video_quality)
+        filtered_video = self._select_dash_video_stream(
+            video_streams,
+            max_quality_id=max_quality_id,
+            codec_filter=codec_filter,
+            avc_quality_cap=avc_quality_cap,
+        )
+        audio_streams = dash.get("audio") or []
+        selected_audio = self._select_dash_audio_stream(audio_streams, audio_hires=audio_hires)
+        flac_info = dash.get("flac")
+        dolby_info = dash.get("dolby")
+
+        result = {
+            "video": [filtered_video] if filtered_video else [],
+            "audio": [selected_audio] if selected_audio else [],
+            "flac": flac_info if audio_hires and flac_info else None,
+            "dolby": dolby_info if audio_hires and dolby_info else None,
+        }
+
+        if not result["video"]:
+            raise BilibiliError("未找到符合质量要求的视频流")
+        if not result["audio"] and not result["flac"] and not result["dolby"]:
+            raise BilibiliError("未找到符合质量要求的音频流")
+
+        return result
+
+    def _dash_max_quality_id(self, video_quality: str) -> int:
+        quality_id_map = {
+            "360P 流畅": 16,
+            "480P 清晰": 32,
+            "720P 高清": 64,
+            "720P 60帧": 74,
+            "1080P 高清": 80,
+            "1080P 高码率": 112,
+            "1080P 高帧率": 116,
+            "4K 超清": 120,
+            "HDR 真彩": 125,
+            "杜比视界": 126,
+            "8K 超高清": 127,
+        }
+        return quality_id_map.get(video_quality, 80)
+
+    def _select_dash_video_stream(
+        self,
+        video_streams: list[dict],
+        *,
+        max_quality_id: int,
+        codec_filter: str | None = None,
+        avc_quality_cap: str = "",
+    ) -> dict | None:
+        max_avc_quality_id = self._dash_max_quality_id(avc_quality_cap) if avc_quality_cap else 0
+        candidates = []
+        for stream in video_streams:
+            quality_id = stream.get("quality_id", 0)
+            if quality_id > max_quality_id:
+                continue
+            codec_name = stream.get("codec_name", "")
+            if codec_filter and codec_name != codec_filter:
+                continue
+            if codec_filter == "avc" and max_avc_quality_id and quality_id > max_avc_quality_id:
+                continue
+            candidates.append(stream)
+        if not candidates:
+            for stream in video_streams:
+                quality_id = stream.get("quality_id", 0)
+                if quality_id <= max_quality_id:
+                    candidates.append(stream)
+            if not candidates:
+                candidates = list(video_streams)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda s: (-s.get("quality_id", 0), -s.get("bandwidth", 0)))
+        return candidates[0]
+
+    def _select_dash_audio_stream(self, audio_streams: list[dict], *, audio_hires: bool = True) -> dict | None:
+        if not audio_streams:
+            return None
+        candidates = list(audio_streams)
+        quality_order = {
+            30250: 0,   # Dolby Atmos
+            30251: 1,   # Hi-Res FLAC
+            30280: 2,   # High 192K
+            30232: 3,   # Mid 132K
+            30216: 4,   # Low 64K
+        }
+        if not audio_hires:
+            high_quality_ids = {30250, 30251}
+            candidates = [s for s in candidates if s.get("quality_id") not in high_quality_ids]
+            if not candidates:
+                candidates = list(audio_streams)
+        candidates.sort(key=lambda s: quality_order.get(s.get("quality_id", 0), 99))
+        return candidates[0]
+
+    def _download_dash_streams_with_aria2c(
+        self,
+        item,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        item_dir: Path,
+        log_path: Path,
+        *,
+        dash_streams: dict,
+        video_track: dict,
+        audio_tracks: list[dict],
+    ) -> dict[str, Path]:
+        item_id = item.id
+        cookie = effective_bilibili_cookie()
+
+        selected_pages = self._selected_pages_for_item(item)
+        video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
+
+        with self.lock:
+            audio_hires = self.audio_hires
+
+        best_audio = dash_streams.get("audio") or []
+        flac_audio = dash_streams.get("flac")
+        dolby_audio = dash_streams.get("dolby")
+        preferred_audio = best_audio[0] if best_audio else None
+        if flac_audio and audio_hires:
+            preferred_audio = flac_audio
+        if dolby_audio and audio_hires:
+            preferred_audio = dolby_audio
+
+        video_urls = self._dash_stream_urls(dash_streams, "video")
+        if not video_urls:
+            raise DownloadCommandError("未找到视频流下载地址")
+        video_target_dir = item_dir / f"video-p{video_page}"
+        video_target_dir.mkdir(parents=True, exist_ok=True)
+
+        track_args: list[tuple[dict, list[str], str, Path, str, str]] = []
+        track_args.append((
+            video_track,
+            video_urls,
+            f"video-p{video_page}.mp4",
+            video_target_dir,
+            f"下载视频轨 P{video_page}",
+            "video",
+        ))
+
+        for track in audio_tracks:
+            page = int(track["page"])
+            audio_target_dir = item_dir / f"audio-p{page}"
+            audio_target_dir.mkdir(parents=True, exist_ok=True)
+
+            if preferred_audio:
+                audio_urls = [preferred_audio["url"]]
+                audio_urls.extend(preferred_audio.get("backup_urls") or [])
+            else:
+                audio_urls = self._dash_stream_urls(dash_streams, "audio")
+            if not audio_urls:
+                raise DownloadCommandError(f"未找到音频轨 P{page} 的下载地址")
+
+            out_ext = ".flac" if (flac_audio and preferred_audio is flac_audio and audio_hires) else ".m4a"
+            track_args.append((
+                track,
+                audio_urls,
+                f"audio-p{page}{out_ext}",
+                audio_target_dir,
+                f"下载音轨 P{page}",
+                "audio",
+            ))
+
+        result_paths: dict[str, Path] = {}
+        max_workers = max(1, min(len(track_args), MAX_PARALLEL_TRACK_DOWNLOADS))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-downkyi-track")
+
+        def _download_track(args: tuple) -> tuple[str, Path]:
+            track, urls, out_name, target_dir, stage_label, stream_kind = args
+            return str(track["key"]), self._download_stream_with_aria2c(
+                item_id, binary_path, ffmpeg_path, target_dir, log_path,
+                urls=urls,
+                out_name=out_name,
+                cookie=cookie,
+                stage_label=stage_label,
+                track_key=self._download_track_key(stream_kind, int(track["page"])),
+                stream_kind=stream_kind,
+            )
+
+        future_to_track = {
+            executor.submit(_download_track, args): args[0]
+            for args in track_args
+        }
+        try:
+            done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
+            exceptions: list[Exception] = []
+            for future in done:
+                if future.cancelled():
+                    continue
+                try:
+                    key, path = future.result()
+                    result_paths[key] = path
+                except Exception as exc:  # noqa: BLE001
+                    exceptions.append(exc)
+
+            if exceptions:
+                for future in pending:
+                    future.cancel()
+                self._terminate_item_processes(item_id)
+                still_running = [future for future in pending if not future.cancelled()]
+                if still_running:
+                    wait(still_running)
+                    for future in still_running:
+                        if future.cancelled():
+                            continue
+                        try:
+                            future.result()
+                        except Exception as exc:  # noqa: BLE001
+                            exceptions.append(exc)
+                raise self._preferred_download_exception(exceptions)
+
+            for future, track_ref in future_to_track.items():
+                if future not in done:
+                    try:
+                        key, path = future.result()
+                        result_paths[key] = path
+                    except Exception as exc:  # noqa: BLE001
+                        exceptions.append(exc)
+        finally:
+            executor.shutdown(wait=True)
+
+        return result_paths
+
+    @staticmethod
+    def _dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
+        if stream_kind == "video":
+            streams = dash_streams.get("video") or []
+            urls = []
+            for stream in streams:
+                url = str(stream.get("url") or "").strip()
+                if url:
+                    urls.append(url)
+                for backup in stream.get("backup_urls") or []:
+                    backup_url = str(backup).strip()
+                    if backup_url:
+                        urls.append(backup_url)
+            return urls
+        if stream_kind == "audio":
+            streams = dash_streams.get("audio") or []
+            urls = []
+            for stream in streams:
+                url = str(stream.get("url") or "").strip()
+                if url:
+                    urls.append(url)
+                for backup in stream.get("backup_urls") or []:
+                    backup_url = str(backup).strip()
+                    if backup_url:
+                        urls.append(backup_url)
+            return urls
+        return []
+
+    def _download_stream_with_aria2c(
+        self,
+        item_id: str,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        target_dir: Path,
+        log_path: Path,
+        *,
+        urls: list[str],
+        out_name: str,
+        cookie: str,
+        stage_label: str,
+        track_key: str,
+        stream_kind: str,
+    ) -> Path:
+        if not urls:
+            raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
+
+        download_urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not download_urls:
+            raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
+
+        command = [
+            self._tool_arg_path(binary_path),
+            *download_urls,
+            "--dir", self._tool_arg_path(target_dir),
+            "--out", out_name,
+            "--continue=true",
+            "--max-tries=10",
+            "--retry-wait=3",
+            "--split=16",
+            "--min-split-size=1M",
+            "--max-connection-per-server=16",
+            "--file-allocation=falloc",
+            "--summary-interval=5",
+            "--console-log-level=notice",
+        ]
+
+        if cookie:
+            command.extend(["--header", f"Cookie: {cookie}"])
+        command.extend(["--header", "Origin: https://www.bilibili.com"])
+        command.extend(["--header", "Referer: https://www.bilibili.com"])
+        user_agent = BILIBILI_HEADERS.get("User-Agent", "")
+        if user_agent:
+            command.extend(["--header", f"User-Agent: {user_agent}"])
+
+        self._run_item_command(
+            item_id,
+            command,
+            ffmpeg_path,
+            log_path,
+            stage_label=stage_label,
+            stream_kind=stream_kind,
+            target_dir=target_dir,
+            track_key=track_key,
+            tool_dir=binary_path.parent,
+        )
+
+        allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
+        self._raise_if_retry_requested(item_id)
+        stream_file = self._find_stream_file(target_dir, allowed_extensions)
+        if not stream_file:
+            raise DownloadCommandError(f"{stage_label} 完成后未找到输出文件")
+        return stream_file
+
+    def _downkyi_download_command(
+        self,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        page_url: str,
+        *,
+        page: int,
+        stream_kind: str,
+        target_dir: Path,
+    ) -> list[str]:
+        raise DownloadCommandError("Downkyi 模式不使用 URL 下载命令，请使用 _download_dash_streams_with_aria2c")
 
     def _bbdown_stream_preference_args(self, stream_kind: str) -> list[str]:
         with self.lock:
@@ -1509,8 +2144,10 @@ class CacheManager:
         stream_kind: str,
         target_dir: Path,
         track_key: str,
+        tool_dir: Path | None = None,
     ) -> None:
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+        _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(command, ensure_ascii=False)}")
         target_bytes_state = {"value": 0}
         monitor_stop = threading.Event()
 
@@ -1523,8 +2160,8 @@ class CacheManager:
             encoding=SUBPROCESS_OUTPUT_ENCODING,
             errors="replace",
             bufsize=1,
-            cwd=self._tool_arg_path(BB_DOWN_DIR),
-            env=self._tool_process_env(ffmpeg_path),
+            cwd=self._tool_arg_path(tool_dir or BB_DOWN_DIR),
+            env=self._tool_process_env(ffmpeg_path, extra_tool_dirs=[tool_dir] if tool_dir else None),
             **self._hidden_process_kwargs(),
         )
         last_message = stage_label
@@ -1555,17 +2192,20 @@ class CacheManager:
                 if not line:
                     continue
                 last_message = line
+                _debug_print(f"[bilikara-cache] [{stage_label}] {line}")
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
                 self._record_item_activity(item_id)
+                progress = self._extract_progress(line)
                 target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
                 if target_bytes:
                     target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
-                    self._update_download_track_progress(
-                        item_id,
-                        track_key=track_key,
-                        target_dir=target_dir,
-                        target_bytes=target_bytes_state["value"],
-                    )
+                self._update_download_track_progress(
+                    item_id,
+                    track_key=track_key,
+                    target_dir=target_dir,
+                    target_bytes=target_bytes_state["value"],
+                    progress_percent=progress,
+                )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
                     raise CacheCancelledError("缓存已停止")
@@ -1592,6 +2232,7 @@ class CacheManager:
             raise CacheCancelledError(self._outside_window_message())
 
         if return_code != 0:
+            _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
             raise DownloadCommandError(last_message)
 
         self._update_download_track_progress(
@@ -2133,6 +2774,7 @@ class CacheManager:
                     "order": int(track.get("order") or 0),
                     "current_bytes": 0,
                     "target_bytes": 0,
+                    "progress_percent": None,
                     "done": False,
                 }
                 for track in tracks
@@ -2152,6 +2794,7 @@ class CacheManager:
         track_key: str,
         target_dir: Path,
         target_bytes: int | None = None,
+        progress_percent: float | None = None,
         done: bool = False,
     ) -> None:
         current_bytes = self._path_size(target_dir)
@@ -2166,8 +2809,18 @@ class CacheManager:
                     int(track.get("target_bytes") or 0),
                     int(target_bytes or 0),
                 )
+            if progress_percent is not None:
+                try:
+                    normalized_progress = float(progress_percent)
+                except (TypeError, ValueError):
+                    normalized_progress = 0.0
+                track["progress_percent"] = max(
+                    float(track.get("progress_percent") or 0.0),
+                    max(0.0, min(normalized_progress, 100.0)),
+                )
             if done:
                 track["done"] = True
+                track["progress_percent"] = 100.0
                 if int(track.get("target_bytes") or 0) <= 0:
                     track["target_bytes"] = int(track.get("current_bytes") or 0)
                 elif int(track.get("current_bytes") or 0) > int(track.get("target_bytes") or 0):
@@ -2189,6 +2842,11 @@ class CacheManager:
             ratio = max(0.0, min(float(total_current) / float(total_target), 1.0))
             progress_cap = 99.0 if all_done else 98.0
             changes["cache_progress"] = min(progress_cap, ratio * progress_cap)
+        else:
+            percent_ratio = self._download_progress_ratio_from_track_percents(tracks)
+            if percent_ratio is not None:
+                progress_cap = 99.0 if all_done else 98.0
+                changes["cache_progress"] = min(progress_cap, percent_ratio * progress_cap)
 
         cache_progress_signature = (
             round(float(changes["cache_progress"]), 3)
@@ -2230,6 +2888,30 @@ class CacheManager:
             if not bool(track.get("done")):
                 all_done = False
         return total_current, total_target, all_targets_known, all_done
+
+    @staticmethod
+    def _download_progress_ratio_from_track_percents(tracks: list[dict[str, object]]) -> float | None:
+        if not tracks:
+            return None
+        total = 0.0
+        saw_progress = False
+        for track in tracks:
+            if bool(track.get("done")):
+                total += 1.0
+                saw_progress = True
+                continue
+            progress = track.get("progress_percent")
+            if progress is None:
+                continue
+            try:
+                percent = float(progress)
+            except (TypeError, ValueError):
+                continue
+            total += max(0.0, min(percent, 100.0)) / 100.0
+            saw_progress = True
+        if not saw_progress:
+            return None
+        return max(0.0, min(total / len(tracks), 1.0))
 
     @classmethod
     def _structured_download_message(cls, tracks: list[dict[str, object]]) -> str:
@@ -2337,6 +3019,25 @@ class CacheManager:
             if process.poll() is not None:
                 return
 
+    def _current_download_source(self) -> str:
+        with self.lock:
+            return self.download_source
+
+    @staticmethod
+    def _download_source_label(download_source: str) -> str:
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            return "yt-dlp"
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return "Downkyi"
+        return "BBDown"
+
+    def _ensure_downloader(self, download_source: str, *, force_refresh: bool = False) -> Path:
+        if download_source == DOWNLOAD_SOURCE_YTDLP:
+            return self._ensure_ytdlp()
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return self._ensure_aria2c()
+        return self._ensure_bbdown(force_refresh=force_refresh)
+
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         with self.binary_prepare_lock:
             override = Path(BB_DOWN_PATH_OVERRIDE) if BB_DOWN_PATH_OVERRIDE else None
@@ -2371,7 +3072,10 @@ class CacheManager:
                         else:
                             self.binary_message = "BBDown 已就绪（未检查更新）"
                     return current_binary
-                raise RuntimeError(f"无法检查 BBDown 最新版本: {release_error}")
+                if not TOOL_ASSET_BASE_URL:
+                    raise RuntimeError(f"无法检查 BBDown 最新版本: {release_error}")
+                release = {"tag_name": "r2-fallback", "assets": [self._bbdown_fallback_asset()]}
+                latest_version = str(release["tag_name"])
 
             version_matches = (
                 not force_refresh
@@ -2394,7 +3098,7 @@ class CacheManager:
 
             asset = self._select_asset(release)
             tmp_archive = BB_DOWN_DIR / asset["name"]
-            self._download_url(asset["browser_download_url"], tmp_archive)
+            self._download_tool_asset(asset, tmp_archive)
             self._extract_archive(tmp_archive, BB_DOWN_DIR)
             tmp_archive.unlink(missing_ok=True)
 
@@ -2411,13 +3115,327 @@ class CacheManager:
 
             return current_binary
 
-    def _fetch_latest_release(self) -> dict:
+    def _ensure_ytdlp(self) -> Path:
+        with self.binary_prepare_lock:
+            override = Path(YTDLP_PATH_OVERRIDE).expanduser() if YTDLP_PATH_OVERRIDE else None
+            if override and override.exists():
+                version = self._read_ytdlp_version(override)
+                if not version:
+                    raise RuntimeError(f"外部 yt-dlp 不可执行: {override}")
+                with self.lock:
+                    self.binary_state = "ready"
+                    self.binary_version = version
+                    self.binary_message = f"使用外部 yt-dlp: {override}"
+                return override
+
+            binary_path = self._local_ytdlp_binary_path()
+            if not binary_path.exists():
+                with self.lock:
+                    self.binary_state = "installing"
+                    self.binary_message = "正在下载 yt-dlp"
+                self._install_ytdlp(binary_path)
+            if not binary_path.exists():
+                raise RuntimeError(f"未找到 yt-dlp，可将 yt-dlp 放入 {YTDLP_DIR}")
+            binary_path.chmod(binary_path.stat().st_mode | stat.S_IEXEC)
+            version = self._read_ytdlp_version(binary_path)
+            if not version:
+                raise RuntimeError(f"yt-dlp 不可执行: {binary_path}")
+            with self.lock:
+                self.binary_state = "ready"
+                self.binary_version = version
+                self.binary_message = f"yt-dlp {version} 已就绪"
+            return binary_path
+
+    def _ensure_aria2c(self) -> Path:
+        with self.binary_prepare_lock:
+            override = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None
+            if override and override.exists():
+                with self.lock:
+                    self.binary_state = "ready"
+                    version = self._read_aria2c_version(override)
+                    self.binary_version = version
+                    self.binary_message = f"使用外部 aria2c: {override}"
+                return override
+
+            binary_path = self._local_aria2c_binary_path()
+            if not binary_path.exists():
+                with self.lock:
+                    self.binary_state = "installing"
+                    self.binary_message = "正在下载 aria2c"
+                self._install_aria2c(binary_path)
+            if not binary_path.exists():
+                raise RuntimeError(
+                    f"未找到 aria2c，可将 aria2c 放入 {ARIA2C_DIR}\n"
+                    f"下载地址: https://github.com/aria2/aria2/releases"
+                )
+            binary_path.chmod(binary_path.stat().st_mode | stat.S_IEXEC)
+            version = self._read_aria2c_version(binary_path)
+            if not version:
+                raise RuntimeError(f"aria2c 不可执行: {binary_path}")
+            with self.lock:
+                self.binary_state = "ready"
+                self.binary_version = version
+                self.binary_message = f"aria2c {version} 已就绪"
+            return binary_path
+
+    @staticmethod
+    def _local_aria2c_binary_path() -> Path:
+        return ARIA2C_DIR / ("aria2c.exe" if os.name == "nt" else "aria2c")
+
+    def _install_ytdlp(self, target_path: Path) -> None:
+        try:
+            release = self._fetch_ytdlp_release()
+            asset = self._select_ytdlp_asset(release)
+        except Exception:
+            asset = self._ytdlp_fallback_asset()
+        YTDLP_DIR.mkdir(parents=True, exist_ok=True)
+        name = str(asset.get("name") or target_path.name)
+        download_url = str(asset.get("browser_download_url") or "")
+        if not download_url and not self._tool_fallback_url(name):
+            raise RuntimeError("yt-dlp release asset missing download URL")
+        if name.lower().endswith((".zip", ".tar.gz", ".tgz")):
+            archive_path = YTDLP_DIR / name
+            self._download_tool_asset(asset, archive_path)
+            try:
+                self._extract_tool_binary_from_archive(archive_path, YTDLP_DIR, target_path.name)
+            finally:
+                archive_path.unlink(missing_ok=True)
+        else:
+            self._download_tool_asset(asset, target_path)
+
+    def _install_aria2c(self, target_path: Path) -> None:
+        try:
+            release = self._fetch_aria2_release()
+            asset = self._select_aria2_asset(release)
+        except Exception:
+            asset = self._aria2_fallback_asset()
+        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
+        name = str(asset.get("name") or "aria2c.zip")
+        download_url = str(asset.get("browser_download_url") or "")
+        if not download_url and not self._tool_fallback_url(name):
+            raise RuntimeError("aria2 release asset missing download URL")
+        archive_path = ARIA2C_DIR / name
+        self._download_tool_asset(asset, archive_path)
+        try:
+            self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+    def _fetch_ytdlp_release(self) -> dict:
+        return self._fetch_release(YTDLP_RELEASE_API)
+
+    def _fetch_aria2_release(self) -> dict:
+        return self._fetch_release(ARIA2_RELEASE_API)
+
+    @classmethod
+    def _fetch_release(cls, api_url: str) -> dict:
         request = urllib.request.Request(
-            BB_DOWN_RELEASE_API,
+            api_url,
             headers={"User-Agent": "bilikara"},
         )
-        with self._urlopen(request, timeout=20) as response:
+        with cls._urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _fallback_tool_asset(name: str) -> dict[str, str]:
+        if not TOOL_ASSET_BASE_URL:
+            raise RuntimeError("tool asset fallback base URL is not configured")
+        return {
+            "name": name,
+            "browser_download_url": f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}",
+        }
+
+    @staticmethod
+    def _tool_fallback_url(name: str) -> str:
+        if not TOOL_ASSET_BASE_URL or not name:
+            return ""
+        return f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}"
+
+    def _download_tool_asset(self, asset: dict, target_path: Path) -> None:
+        name = str(asset.get("name") or target_path.name)
+        primary_url = str(asset.get("browser_download_url") or "")
+        fallback_url = self._tool_fallback_url(name)
+        urls: list[str] = []
+        for url in (primary_url, fallback_url):
+            if url and url not in urls:
+                urls.append(url)
+        if not urls:
+            raise RuntimeError(f"tool asset {name} missing download URL")
+
+        last_error: Exception | None = None
+        for url in urls:
+            try:
+                self._download_url(url, target_path)
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                target_path.unlink(missing_ok=True)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"tool asset {name} download failed")
+
+    @staticmethod
+    def _current_platform_tokens() -> tuple[str, str]:
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        if machine in {"amd64", "x86_64"}:
+            arch = "x64"
+        elif machine in {"i386", "i686", "x86"}:
+            arch = "x86"
+        elif machine in {"arm64", "aarch64"}:
+            arch = "arm64"
+        elif "armv7" in machine:
+            arch = "armv7"
+        else:
+            arch = machine
+        return system, arch
+
+    def _bbdown_fallback_asset(self) -> dict[str, str]:
+        system, arch = self._current_platform_tokens()
+        asset_names = {
+            ("windows", "x64"): "BBDown_1.6.3_20240814_win-x64.zip",
+            ("windows", "x86"): "BBDown_1.6.3_20240814_win-x64.zip",
+            ("windows", "arm64"): "BBDown_1.6.3_20240814_win-arm64.zip",
+            ("darwin", "x64"): "BBDown_1.6.3_20240814_osx-x64.zip",
+            ("darwin", "arm64"): "BBDown_1.6.3_20240814_osx-arm64.zip",
+            ("linux", "x64"): "BBDown_1.6.3_20240814_linux-x64.zip",
+            ("linux", "arm64"): "BBDown_1.6.3_20240814_linux-arm64.zip",
+        }
+        name = asset_names.get((system, arch))
+        if not name:
+            raise RuntimeError(f"no BBDown tool fallback asset for {system}/{arch}")
+        return self._fallback_tool_asset(name)
+
+    def _ytdlp_fallback_asset(self) -> dict[str, str]:
+        system, arch = self._current_platform_tokens()
+        if system == "windows":
+            if arch == "arm64":
+                name = "yt-dlp_arm64.exe"
+            elif arch == "x86":
+                name = "yt-dlp_x86.exe"
+            else:
+                name = "yt-dlp.exe"
+        elif system == "darwin":
+            name = "yt-dlp_macos"
+        elif system == "linux":
+            name = "yt-dlp_linux"
+        else:
+            name = "yt-dlp"
+        return self._fallback_tool_asset(name)
+
+    def _aria2_fallback_asset(self) -> dict[str, str]:
+        system, arch = self._current_platform_tokens()
+        if system != "windows":
+            raise RuntimeError(f"aria2c auto download is currently only available for Windows: {system}/{arch}")
+        if arch == "x86":
+            name = "aria2-1.37.0-win-32bit-build1.zip"
+        else:
+            name = "aria2-1.37.0-win-64bit-build1.zip"
+        return self._fallback_tool_asset(name)
+
+    def _select_ytdlp_asset(self, release: dict) -> dict:
+        system, arch = self._current_platform_tokens()
+        if system == "windows":
+            if arch == "arm64":
+                preferred_names = ("yt-dlp_arm64.exe", "yt-dlp.exe")
+            elif arch == "x86":
+                preferred_names = ("yt-dlp_x86.exe",)
+            else:
+                preferred_names = ("yt-dlp.exe",)
+        elif system == "darwin":
+            preferred_names = ("yt-dlp_macos",)
+        elif system == "linux":
+            if arch == "arm64":
+                preferred_names = ("yt-dlp_linux_aarch64", "yt-dlp_linux")
+            elif arch == "armv7":
+                preferred_names = ("yt-dlp_linux_armv7l",)
+            elif arch == "x64":
+                preferred_names = ("yt-dlp_linux",)
+            else:
+                preferred_names = ("yt-dlp",)
+        else:
+            preferred_names = ("yt-dlp",)
+        return self._select_asset_by_name(release, preferred_names, "yt-dlp")
+
+    def _select_aria2_asset(self, release: dict) -> dict:
+        system, arch = self._current_platform_tokens()
+        if system != "windows":
+            raise RuntimeError(f"aria2c auto download is currently only available for Windows: {system}/{arch}")
+        if arch == "arm64":
+            preferred_fragments = ("win-64bit",)
+        elif arch == "x86":
+            preferred_fragments = ("win-32bit",)
+        else:
+            preferred_fragments = ("win-64bit",)
+        assets = release.get("assets") or []
+        for fragment in preferred_fragments:
+            for asset in assets:
+                name = str(asset.get("name") or "").lower()
+                if fragment in name and name.endswith(".zip"):
+                    return asset
+        raise RuntimeError(f"no aria2c release asset for {system}/{arch}")
+
+    @staticmethod
+    def _select_asset_by_name(release: dict, preferred_names: Iterable[str], tool_name: str) -> dict:
+        assets = release.get("assets") or []
+        asset_by_name = {
+            str(asset.get("name") or "").lower(): asset
+            for asset in assets
+        }
+        for preferred_name in preferred_names:
+            asset = asset_by_name.get(preferred_name.lower())
+            if asset:
+                return asset
+        raise RuntimeError(f"no {tool_name} release asset for current platform")
+
+    @staticmethod
+    def _extract_tool_binary_from_archive(archive_path: Path, output_dir: Path, binary_name: str) -> Path:
+        extract_dir = output_dir / f".extract-{archive_path.stem}"
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            lower_name = archive_path.name.lower()
+            if lower_name.endswith(".zip"):
+                with zipfile.ZipFile(archive_path) as zf:
+                    zf.extractall(extract_dir)
+            elif lower_name.endswith((".tar.gz", ".tgz")):
+                with tarfile.open(archive_path, "r:gz") as tf:
+                    tf.extractall(extract_dir)
+            else:
+                raise RuntimeError(f"unsupported archive format: {archive_path.name}")
+
+            expected_name = binary_name.lower()
+            for candidate in extract_dir.rglob("*"):
+                if candidate.is_file() and candidate.name.lower() == expected_name:
+                    target_path = output_dir / binary_name
+                    shutil.copy2(candidate, target_path)
+                    return target_path
+            raise RuntimeError(f"{binary_name} not found in {archive_path.name}")
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+    @staticmethod
+    def _read_aria2c_version(binary_path: Path) -> str:
+        try:
+            process = subprocess.run(
+                [str(binary_path), "--version"],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=10,
+                **CacheManager._hidden_process_kwargs(),
+            )
+            first_line = (process.stdout or "").split("\n")[0].strip()
+            for part in first_line.split():
+                if part[0:1].isdigit() and "." in part:
+                    return part
+            return first_line
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def _fetch_latest_release(self) -> dict:
+        return self._fetch_release(BB_DOWN_RELEASE_API)
 
     @staticmethod
     def _is_ssl_certificate_error(exc: BaseException) -> bool:
@@ -2494,6 +3512,23 @@ class CacheManager:
 
     def _local_binary_path(self) -> Path:
         return BB_DOWN_DIR / ("BBDown.exe" if os.name == "nt" else "BBDown")
+
+    def _local_ytdlp_binary_path(self) -> Path:
+        if os.name == "nt":
+            machine = platform.machine().lower()
+            if machine in {"arm64", "aarch64"}:
+                arm64_path = YTDLP_DIR / "yt-dlp_arm64.exe"
+                x64_path = YTDLP_DIR / "yt-dlp.exe"
+                if arm64_path.exists() or not x64_path.exists():
+                    return arm64_path
+                return x64_path
+            if machine in {"i386", "i686", "x86"}:
+                x86_path = YTDLP_DIR / "yt-dlp_x86.exe"
+                x64_path = YTDLP_DIR / "yt-dlp.exe"
+                if x86_path.exists() or not x64_path.exists():
+                    return x86_path
+            return YTDLP_DIR / "yt-dlp.exe"
+        return YTDLP_DIR / "yt-dlp"
 
     def _find_media_file(self, item_dir: Path) -> Path | None:
         return self._largest_media_file(item_dir, MEDIA_EXTENSIONS)
@@ -2699,6 +3734,27 @@ class CacheManager:
         return self._read_tool_version(binary_path, "ffmpeg")
 
     @staticmethod
+    def _read_ytdlp_version(binary_path: Path) -> str:
+        if not binary_path.exists():
+            return ""
+        try:
+            process = subprocess.run(
+                [str(binary_path), "--version"],
+                shell=False,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=10,
+                **CacheManager._hidden_process_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if process.returncode != 0:
+            return ""
+        return (process.stdout or process.stderr or "").splitlines()[0].strip()
+
+    @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:
         target = binary_path if binary_path.is_dir() else binary_path.parent
         return CacheManager._tool_arg_path(target)
@@ -2789,15 +3845,24 @@ class CacheManager:
     #     return f"data:image/svg+xml;base64,{encoded}"
 
     @staticmethod
-    def _tool_process_env(binary_path: Path) -> dict[str, str]:
+    def _tool_process_env(binary_path: Path, extra_tool_dirs: Iterable[Path | None] | None = None) -> dict[str, str]:
         env = os.environ.copy()
         path_entries = []
         ffmpeg_dir = CacheManager._tool_arg_path(binary_path if binary_path.is_dir() else binary_path.parent)
         if ffmpeg_dir:
             path_entries.append(ffmpeg_dir)
+        for extra_dir in extra_tool_dirs or []:
+            if not extra_dir:
+                continue
+            tool_dir = CacheManager._tool_arg_path(extra_dir)
+            if tool_dir and tool_dir not in path_entries:
+                path_entries.append(tool_dir)
         bbdown_dir = CacheManager._tool_arg_path(BB_DOWN_DIR)
         if bbdown_dir and bbdown_dir not in path_entries:
             path_entries.append(bbdown_dir)
+        ytdlp_dir = CacheManager._tool_arg_path(YTDLP_DIR)
+        if ytdlp_dir and ytdlp_dir not in path_entries:
+            path_entries.append(ytdlp_dir)
         existing_path = env.get("PATH", "")
         env["PATH"] = os.pathsep.join([*path_entries, existing_path]) if existing_path else os.pathsep.join(path_entries)
         return env
@@ -3039,7 +4104,6 @@ class CacheManager:
             processes = self._active_processes_locked(item_id)
         if item_id and item_id not in desired_ids:
             self._terminate_processes(processes)
-
     def _active_processes_locked(self, item_id: str | None = None) -> list[subprocess.Popen[str]]:
         if item_id is not None and self.active_item_id != item_id:
             return []

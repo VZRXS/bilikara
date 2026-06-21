@@ -81,7 +81,7 @@
   --theme-preview-light-border: 1px solid #cfc7bd;
   --theme-preview-dark-bg: linear-gradient(135deg, #1c1815 50%, #e06c53 50%);
   --theme-preview-dark-border: 1px solid #494540;
-  --theme-preview-blue-bg: linear-gradient(135deg, #06111f 50%, #38bdf8 50%);
+  --theme-preview-blue-bg: linear-gradient(135deg, #0b1120 50%, #00d2ff 50%);
   --theme-preview-blue-border: 1px solid #28445f;
   --theme-preview-active-border: var(--on-accent);
 
@@ -127,6 +127,7 @@
   --toast-bg: rgba(255, 251, 245, 0.94);
   --toast-border: 1px solid rgba(87, 63, 43, 0.12);
   --toast-shadow: 0 16px 42px rgba(88, 56, 30, 0.16);
+  --btn-hover-shadow: transparent;
 }
 
 * {
@@ -668,16 +669,19 @@ h1 {
 .now-playing-panel>.panel-head #refresh-button {
   position: absolute;
   top: 18px;
-  right: 18px;
   white-space: nowrap;
   padding: 10px 12px;
   border-radius: 14px;
 }
 
+.now-playing-panel>.panel-head #refresh-button {
+  right: 18px;
+}
+
 .now-playing-panel #current-title::before {
   content: "";
   float: right;
-  width: min(32%, 74px);
+  width: min(44%, 160px);
   height: 52px;
 }
 
@@ -1343,8 +1347,8 @@ button[data-control-action="next-track"] {
   margin: 0;
   padding: 12px 14px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(67, 53, 41, 0.08);
+  background: var(--item-bg);
+  border: var(--item-border);
   color: var(--muted);
 }
 
@@ -1570,6 +1574,11 @@ select:disabled {
 .primary-button {
   background: var(--accent);
   color: white;
+}
+
+.primary-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px var(--btn-hover-shadow);
 }
 
 .secondary-button,
@@ -3386,6 +3395,35 @@ body.remote-search-modal-open {
   color: var(--muted);
 }
 
+.rating-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 4px;
+  border: 1px solid rgba(0, 210, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.rating-tabs button {
+  min-height: 36px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.rating-tabs button.active {
+  background: rgba(0, 210, 255, 0.16);
+  color: #f8fafc;
+}
+
+.rating-tabs button:disabled {
+  opacity: 0.42;
+}
+
 .rating-media {
   display: grid;
   grid-template-columns: 128px 1fr;
@@ -3925,10 +3963,9 @@ body.remote-search-modal-open {
   --scrollbar-thumb-hover-bg: rgba(224, 108, 83, 0.4);
   --toast-bg: rgba(30, 26, 23, 0.94);
   --toast-border: 1px solid rgba(246, 241, 235, 0.15);
-  --toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
+--toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
+  --btn-hover-shadow: transparent;
 }
-
-
 /* --- BLUE BLACK THEME OVERRIDES --- */
 :root[data-theme="blue"] {
   --bg: #06111f;
@@ -4046,8 +4083,102 @@ body.remote-search-modal-open {
   --toast-bg: rgba(8, 18, 32, 0.94);
   --toast-border: 1px solid rgba(148, 202, 233, 0.18);
   --toast-shadow: 0 16px 42px rgba(2, 8, 23, 0.58);
+  --btn-hover-shadow: rgba(56, 189, 248, 0.22);
 }
 
+
+/* Fork blue theme: previous dev blue-black/cyan palette. */
+:root[data-theme="blue"] {
+  --bg: #0b1120;
+  --panel: rgba(17, 25, 40, 0.92);
+  --line: rgba(255, 255, 255, 0.1);
+  --ink: #f0f4f8;
+  --muted: #8b9bb4;
+  --accent: #00d2ff;
+  --accent-deep: #3a7bd5;
+  --accent-soft: rgba(0, 210, 255, 0.12);
+  --green: #00ffa3;
+  --red: #ff3366;
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+  --danger-btn-color: var(--accent-deep);
+  --danger-btn-bg: rgba(0, 210, 255, 0.12);
+  --danger-btn-hover-bg: rgba(0, 210, 255, 0.2);
+  --toast-error-border: rgba(255, 51, 102, 0.24);
+  --bg-glow: rgba(30, 41, 59, 0.9);
+  --bg-top: #0b1120;
+  --bg-bottom: #050810;
+
+  --chip-bg: rgba(17, 25, 40, 0.56);
+  --chip-border: 1px solid rgba(255, 255, 255, 0.1);
+  --settings-panel-bg: rgba(17, 25, 40, 0.68);
+  --settings-panel-border: 1px solid rgba(255, 255, 255, 0.1);
+  --input-wrap-bg: rgba(5, 8, 16, 0.92);
+  --input-wrap-border: 1px solid rgba(0, 210, 255, 0.22);
+  --key-shift-bg: rgba(30, 41, 59, 0.84);
+  --key-shift-border: 1px solid rgba(255, 255, 255, 0.12);
+  --switch-bg: rgba(5, 8, 16, 0.72);
+  --switch-border: 1px solid rgba(255, 255, 255, 0.14);
+  --view-toggle-bg: rgba(255, 255, 255, 0.06);
+  --toggle-active-bg: rgba(0, 210, 255, 0.18);
+  --toggle-active-color: var(--ink);
+  --toggle-active-shadow: 0 0 18px rgba(0, 210, 255, 0.12);
+  --input-bg: rgba(17, 25, 40, 0.86);
+  --input-border: 1px solid rgba(255, 255, 255, 0.12);
+  --btn-secondary-bg: rgba(30, 41, 59, 0.84);
+  --btn-border: 1px solid rgba(255, 255, 255, 0.1);
+  --modal-card-bg: rgba(17, 25, 40, 0.98);
+  --modal-card-border: 1px solid rgba(0, 210, 255, 0.22);
+  --desktop-modal-border: 1px solid rgba(0, 210, 255, 0.22);
+  --item-bg: rgba(17, 25, 40, 0.74);
+  --item-border: 1px solid rgba(255, 255, 255, 0.1);
+  --floating-settings-bg: rgba(5, 8, 16, 0.44);
+  --floating-settings-border: 1px solid rgba(255, 255, 255, 0.1);
+  --player-btn-border: 1px solid rgba(255, 255, 255, 0.12);
+  --player-btn-hover-bg: rgba(30, 41, 59, 0.96);
+  --player-btn-hover-border: rgba(0, 210, 255, 0.3);
+  --player-paused-bg: rgba(30, 41, 59, 0.9);
+  --player-paused-color: #ffffff;
+  --player-paused-shadow: inset 0 0 0 1px rgba(0, 210, 255, 0.28), 0 0 18px rgba(0, 210, 255, 0.12);
+  --variant-toggle-bg: rgba(30, 41, 59, 0.84);
+  --variant-toggle-color: var(--accent);
+  --qr-popover-bg: rgba(17, 25, 40, 0.98);
+  --qr-popover-border: 1px solid rgba(255, 255, 255, 0.12);
+  --qr-popover-close-bg: rgba(30, 41, 59, 0.8);
+  --theme-switch-button-bg: #050810;
+  --theme-switch-button-border: 1px solid rgba(255, 255, 255, 0.14);
+  --dark-control-rail-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --dark-control-bg: rgba(30, 41, 59, 0.84);
+  --dark-control-hover-bg: rgba(30, 41, 59, 0.96);
+  --dark-surface-bg: rgba(17, 25, 40, 0.76);
+  --dark-surface-strong-bg: rgba(17, 25, 40, 0.98);
+  --dark-inset-bg: rgba(5, 8, 16, 0.88);
+  --dark-option-bg: rgba(5, 8, 16, 0.98);
+  --dark-surface-border-color: rgba(255, 255, 255, 0.12);
+  --dark-control-hover-border-color: rgba(0, 210, 255, 0.3);
+  --dark-pending-bg: rgba(30, 41, 59, 0.68);
+  --dark-pending-border-color: rgba(0, 210, 255, 0.32);
+  --dark-active-soft-bg: rgba(0, 210, 255, 0.18);
+  --dark-active-border-color: rgba(0, 210, 255, 0.4);
+  --remote-focus-border-color: rgba(0, 210, 255, 0.5);
+  --remote-focus-ring-shadow: 0 0 0 4px rgba(0, 210, 255, 0.14);
+  --remote-slider-rest-bg: rgba(255, 255, 255, 0.18);
+  --remote-slider-thumb-border: 2px solid rgba(240, 244, 248, 0.96);
+  --remote-slider-thumb-shadow: 0 4px 14px rgba(0, 0, 0, 0.34), 0 0 16px rgba(0, 210, 255, 0.2);
+  --remote-slider-thumb-focus-shadow: 0 4px 14px rgba(0, 0, 0, 0.34), 0 0 0 5px rgba(0, 210, 255, 0.18);
+  --remote-muted-border-color: rgba(0, 210, 255, 0.42);
+  --player-pending-shadow: 0 0 0 3px rgba(0, 210, 255, 0.16);
+  --player-playing-bg: linear-gradient(180deg, #00d2ff 0%, #3a7bd5 100%);
+  --player-playing-color: var(--on-accent);
+  --player-next-track-border: 1.5px solid rgba(0, 210, 255, 0.46);
+  --player-next-track-bg: rgba(0, 210, 255, 0.12);
+  --player-next-track-color: var(--accent);
+  --scrollbar-track-bg: rgba(255, 255, 255, 0.05);
+  --scrollbar-thumb-bg: rgba(0, 210, 255, 0.28);
+  --scrollbar-thumb-hover-bg: rgba(0, 210, 255, 0.42);
+--toast-bg: rgba(17, 25, 40, 0.94);
+  --toast-border: 1px solid rgba(255, 255, 255, 0.14);
+  --btn-hover-shadow: rgba(0, 210, 255, 0.22);
+}
 
 /* Dark theme extracted surface fixes. */
 :root:is([data-theme="dark"], [data-theme="blue"]) .display-popover .mode-switch,
@@ -4115,6 +4246,16 @@ body.remote-search-modal-open {
   background: var(--dark-inset-bg);
   border-color: var(--dark-surface-border-color);
   color: var(--ink);
+}
+
+:root[data-theme="dark"] .category-browser-card-name,
+:root[data-theme="dark"] .category-browser-tab-name {
+  background: rgba(22, 19, 17, 0.52);
+}
+
+:root[data-theme="blue"] .category-browser-card-name,
+:root[data-theme="blue"] .category-browser-tab-name {
+  background: rgba(5, 8, 16, 0.52);
 }
 
 /* Dark theme active surface fixes. */

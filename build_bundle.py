@@ -280,7 +280,8 @@ def _tool_version_output(binary_path: Path) -> str:
 
 
 def _write_text(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8", newline="\n")
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
 
 
 def _python_https_args(data_separator: str, *, verbose: bool = False) -> list[str]:

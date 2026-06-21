@@ -3,11 +3,56 @@ import io
 from collections import deque
 import threading
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
 from bilikara.server import AppContext, BilikaraHandler, run
+
+
+class FileServingPathSecurityTest(unittest.TestCase):
+    @staticmethod
+    def make_handler():
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        streams = []
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+        handler._stream_file = lambda path, **kwargs: streams.append(path)
+        return handler, writes, streams
+
+    def test_media_route_rejects_sibling_directory_with_cache_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "cache"
+            sibling_dir = root / "cache_secret"
+            cache_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.mp4").write_bytes(b"secret")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.CACHE_DIR", cache_dir):
+                handler._serve_media("/media/../cache_secret/secret.mp4")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
+
+    def test_static_route_rejects_sibling_directory_with_static_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            static_dir = root / "static"
+            sibling_dir = root / "static_secret"
+            static_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.js").write_text("secret", encoding="utf-8")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.STATIC_DIR", static_dir):
+                handler._serve_static("/../static_secret/secret.js")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
 
 
 class AppContextRemoteAccessTest(unittest.TestCase):
@@ -148,6 +193,14 @@ class AppContextRatingSubmissionTest(unittest.TestCase):
         self.assertNotIn(("vzrxs", "song-a"), context._rating_submission_keys)
         self.assertIn(("vzrxs", "song-b"), context._rating_submission_keys)
         self.assertIn(("vzrxs", "song-c"), context._rating_submission_keys)
+
+
+class BilikaraHandlerLocalClientTest(unittest.TestCase):
+    def test_ipv4_mapped_loopback_is_local_client(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.client_address = ("::ffff:127.0.0.1", 54321)
+
+        self.assertTrue(handler._is_local_client())
 
 
 class AppContextPlayerStatusTest(unittest.TestCase):
