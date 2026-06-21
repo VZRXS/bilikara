@@ -166,6 +166,37 @@ class AppContextRemoteIdentityTest(unittest.TestCase):
 
 
 class AppContextStateRevisionTest(unittest.TestCase):
+    def test_background_tasks_include_cloudflare_pool_prewarm(self):
+        context = AppContext.__new__(AppContext)
+        context._startup_lock = threading.RLock()
+        context._startup_started = False
+        context._closed = False
+        context.cache_manager = SimpleNamespace(prewarm_binary=lambda: None)
+        created_threads = []
+
+        class FakeThread:
+            def __init__(self, *, target, daemon=False, name=None):
+                self.target = target
+                self.daemon = daemon
+                self.name = name
+                self.started = False
+                created_threads.append(self)
+
+            def start(self):
+                self.started = True
+
+        with (
+            patch.object(server_module.threading, "Thread", FakeThread),
+            patch.object(server_module, "prewarm_cloudflare_pool") as prewarm,
+        ):
+            context._start_background_tasks_once()
+
+        prewarm_thread = next((thread for thread in created_threads if thread.name == "bilikara-cloudflare-prewarm"), None)
+        self.assertIsNotNone(prewarm_thread)
+        self.assertIs(prewarm_thread.target, prewarm)
+        self.assertTrue(prewarm_thread.daemon)
+        self.assertTrue(prewarm_thread.started)
+
     def test_startup_gatcha_refresh_bypasses_global_lock_only_once(self):
         context = AppContext.__new__(AppContext)
         context._startup_lock = threading.RLock()

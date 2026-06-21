@@ -51,6 +51,7 @@ from .lark_pool_client import (
     delete_cloudflare_pool_entry,
     delete_cloudflare_video_entry,
     pending_cloudflare_review_items,
+    prewarm_cloudflare_pool,
     reset_cloudflare_video_tags,
     search_lark_pool,
     search_lark_pool_table,
@@ -147,6 +148,7 @@ class AppContext:
         self._client_stale_seconds = 120.0
         self._client_watchdog: threading.Thread | None = None
         self._owner_enrichment: threading.Thread | None = None
+        self._cloudflare_prewarm: threading.Thread | None = None
         self._player_control_lock = threading.RLock()
         self._player_control_seq = 0
         self._player_control_ack_seq = 0
@@ -697,6 +699,12 @@ class AppContext:
             if self._startup_started or self._closed:
                 return
             self._startup_started = True
+            self._cloudflare_prewarm = threading.Thread(
+                target=prewarm_cloudflare_pool,
+                daemon=True,
+                name="bilikara-cloudflare-prewarm",
+            )
+            self._cloudflare_prewarm.start()
             self.cache_manager.prewarm_binary()
             self._client_watchdog = threading.Thread(target=self._client_watchdog_loop, daemon=True)
             self._client_watchdog.start()
