@@ -7533,6 +7533,7 @@ function makeElementDraggable(element, onClick) {
   let initialTop = 0;
   let isDragging = false;
   let moved = false;
+  let suppressNextClick = false;
 
   const dragStart = (e) => {
     if (e.type === "mousedown" && e.button !== 0) {
@@ -7553,10 +7554,12 @@ function makeElementDraggable(element, onClick) {
 
     isDragging = true;
     moved = false;
+    suppressNextClick = false;
 
     if (e.type === "touchstart") {
       document.addEventListener("touchmove", dragMove, { passive: false });
       document.addEventListener("touchend", dragEnd);
+      document.addEventListener("touchcancel", dragEnd);
     } else {
       document.addEventListener("mousemove", dragMove);
       document.addEventListener("mouseup", dragEnd);
@@ -7586,6 +7589,9 @@ function makeElementDraggable(element, onClick) {
     }
 
     if (moved) {
+      if (e.cancelable) {
+        e.preventDefault();
+      }
       let newLeft = initialLeft + deltaX;
       let newTop = initialTop + deltaY;
 
@@ -7606,23 +7612,33 @@ function makeElementDraggable(element, onClick) {
     isDragging = false;
     element.classList.remove("dragging");
 
-    if (e.type === "touchend") {
+    if (e.type === "touchend" || e.type === "touchcancel") {
       document.removeEventListener("touchmove", dragMove);
       document.removeEventListener("touchend", dragEnd);
+      document.removeEventListener("touchcancel", dragEnd);
     } else {
       document.removeEventListener("mousemove", dragMove);
       document.removeEventListener("mouseup", dragEnd);
     }
 
-    if (!moved) {
-      if (typeof onClick === "function") {
-        onClick();
-      }
+    suppressNextClick = e.type !== "touchcancel" && moved;
+  };
+
+  const handleClick = (e) => {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (typeof onClick === "function") {
+      onClick();
     }
   };
 
   element.addEventListener("mousedown", dragStart);
   element.addEventListener("touchstart", dragStart);
+  element.addEventListener("click", handleClick);
 
   window.addEventListener("resize", () => {
     const rect = element.getBoundingClientRect();
