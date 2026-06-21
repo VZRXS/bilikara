@@ -1533,29 +1533,85 @@ function openRatingPrompt(item) {
 
   const root = document.createElement("div");
   root.className = "rating-modal";
-  root.innerHTML = `
-    <div class="rating-modal-backdrop" data-rating-close></div>
-    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
-      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
-      <div data-rating-content></div>
-      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
-        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
-      </div>
-      <div class="rating-actions">
-        <button type="button" class="toolbar-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
-        <button type="button" class="next-button" data-rating-close>${htmlT("rating.done")}</button>
-      </div>
-      <label class="rating-opt-out">
-        <input type="checkbox" data-rating-opt-out>
-        <span>${htmlT("rating.optOut")}</span>
-      </label>
-      <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
-        <button type="button" data-rating-tab="previous" role="tab" ${promptItems.previous ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
-        <button type="button" data-rating-tab="current" role="tab">${htmlT("rating.currentTab")}</button>
-      </div>
-      <p class="rating-message" data-rating-message></p>
-    </section>
-  `;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "rating-modal-backdrop";
+  backdrop.dataset.ratingClose = "";
+
+  const card = document.createElement("section");
+  card.className = "rating-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", t("rating.dialogLabel"));
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "rating-close";
+  closeButton.dataset.ratingClose = "";
+  closeButton.setAttribute("aria-label", t("rating.closeLabel"));
+  closeButton.textContent = "\u00d7";
+
+  const content = document.createElement("div");
+  content.dataset.ratingContent = "";
+
+  const stars = document.createElement("div");
+  stars.className = "rating-stars";
+  stars.setAttribute("role", "radiogroup");
+  stars.setAttribute("aria-label", t("rating.scoreLabel"));
+  [1, 2, 3, 4, 5].forEach((score) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.ratingScore = String(score);
+    button.setAttribute("aria-label", t("rating.scoreAria", { score }));
+    button.textContent = "\u2605";
+    stars.appendChild(button);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "rating-actions";
+  const addUpButton = document.createElement("button");
+  addUpButton.type = "button";
+  addUpButton.className = "toolbar-button";
+  addUpButton.dataset.ratingAddUp = "";
+  addUpButton.textContent = t("rating.addUp");
+  const doneButton = document.createElement("button");
+  doneButton.type = "button";
+  doneButton.className = "next-button";
+  doneButton.dataset.ratingClose = "";
+  doneButton.textContent = t("rating.done");
+  actions.append(addUpButton, doneButton);
+
+  const optOut = document.createElement("label");
+  optOut.className = "rating-opt-out";
+  const optOutInput = document.createElement("input");
+  optOutInput.type = "checkbox";
+  optOutInput.dataset.ratingOptOut = "";
+  const optOutText = document.createElement("span");
+  optOutText.textContent = t("rating.optOut");
+  optOut.append(optOutInput, optOutText);
+
+  const tabs = document.createElement("div");
+  tabs.className = "rating-tabs";
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", t("rating.dialogLabel"));
+  const previousTab = document.createElement("button");
+  previousTab.type = "button";
+  previousTab.dataset.ratingTab = "previous";
+  previousTab.setAttribute("role", "tab");
+  previousTab.disabled = !promptItems.previous;
+  previousTab.textContent = t("rating.previousTab");
+  const currentTab = document.createElement("button");
+  currentTab.type = "button";
+  currentTab.dataset.ratingTab = "current";
+  currentTab.setAttribute("role", "tab");
+  currentTab.textContent = t("rating.currentTab");
+  tabs.append(previousTab, currentTab);
+
+  const message = document.createElement("p");
+  message.className = "rating-message";
+  message.dataset.ratingMessage = "";
+  card.append(closeButton, content, stars, actions, optOut, tabs, message);
+  root.append(backdrop, card);
   document.body.appendChild(root);
   state.ratingPromptElement = root;
   renderRatingPromptContent();
