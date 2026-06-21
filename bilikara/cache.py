@@ -179,6 +179,69 @@ class CacheManager:
                 "path": str(FFMPEG_RUNTIME_PATH),
             }
 
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            active_item_id = self.active_item_id or ""
+            pending_ids = list(self.pending_ids)
+            desired_ids = list(self.ordered_desired_ids)
+            binary_state = self.binary_state
+            binary_version = self.binary_version
+            ffmpeg_state = self.ffmpeg_state
+            ffmpeg_version = self.ffmpeg_version
+            download_source = self.download_source
+
+        bbdown_path = Path(BB_DOWN_PATH_OVERRIDE).expanduser() if BB_DOWN_PATH_OVERRIDE else self._local_binary_path()
+        ytdlp_path = Path(YTDLP_PATH_OVERRIDE).expanduser() if YTDLP_PATH_OVERRIDE else self._local_ytdlp_binary_path()
+        aria2c_path = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else self._local_aria2c_binary_path()
+        ffmpeg_path = Path(FFMPEG_PATH_OVERRIDE).expanduser() if FFMPEG_PATH_OVERRIDE else FFMPEG_RUNTIME_PATH
+
+        bbdown_version = ""
+        if BB_DOWN_VERSION_FILE.exists():
+            try:
+                bbdown_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
+            except OSError:
+                bbdown_version = ""
+        if not bbdown_version and download_source == DOWNLOAD_SOURCE_BBDOWN:
+            bbdown_version = binary_version
+        if not bbdown_version:
+            bbdown_version = self._read_bbdown_version(bbdown_path)
+
+        return {
+            "tools": {
+                "BBDown": self._diagnostic_tool_entry(bbdown_path, bbdown_version, binary_state),
+                "yt-dlp": self._diagnostic_tool_entry(
+                    ytdlp_path,
+                    self._read_ytdlp_version(ytdlp_path),
+                    binary_state if download_source == DOWNLOAD_SOURCE_YTDLP else "",
+                ),
+                "aria2c": self._diagnostic_tool_entry(
+                    aria2c_path,
+                    self._read_aria2c_version(aria2c_path) if aria2c_path.exists() else "",
+                    binary_state if download_source == DOWNLOAD_SOURCE_DOWNKYI else "",
+                ),
+                "FFmpeg": self._diagnostic_tool_entry(
+                    ffmpeg_path,
+                    ffmpeg_version or self._read_ffmpeg_version(ffmpeg_path),
+                    ffmpeg_state,
+                ),
+            },
+            "tasks": {
+                "active_item_id": active_item_id,
+                "pending_item_ids": pending_ids,
+                "desired_item_ids": desired_ids,
+                "queued_worker_tasks": self.tasks.qsize(),
+            },
+        }
+
+    @staticmethod
+    def _diagnostic_tool_entry(path: Path, version: str, state: str) -> dict[str, Any]:
+        return {
+            "installed": path.exists(),
+            "version": str(version or ""),
+            "state": str(state or ""),
+            "path": str(path),
+        }
+
     def bbdown_login_status(self) -> dict[str, Any]:
         logged_in = self._bbdown_data_path().exists()
         with self.lock:
@@ -3753,6 +3816,27 @@ class CacheManager:
         if process.returncode != 0:
             return ""
         return (process.stdout or process.stderr or "").splitlines()[0].strip()
+
+    @staticmethod
+    def _read_bbdown_version(binary_path: Path) -> str:
+        if not binary_path.exists():
+            return ""
+        try:
+            process = subprocess.run(
+                [str(binary_path), "--version"],
+                shell=False,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                check=False,
+                timeout=10,
+                **CacheManager._hidden_process_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
+        match = re.search(r"(?i)\b(?:v|version\s*)?(\d+(?:\.\d+){1,3}(?:[-+._0-9A-Za-z]*)?)", output)
+        return match.group(1) if match else ""
 
     @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:

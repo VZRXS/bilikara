@@ -105,6 +105,7 @@ const state = {
   displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
+  diagnosticsBusy: false,
   avOffsetSaving: false,
   avOffsetSaveSeq: 0,
   avOffsetEchoSuppressUntil: 0,
@@ -278,6 +279,8 @@ const elements = {
   playerResetButton: document.getElementById("player-reset-button"),
   updatePreviewCheckbox: document.getElementById("update-preview-checkbox"),
   updateCheckButton: document.getElementById("update-check-button"),
+  diagnosticCopyButton: document.getElementById("diagnostic-copy-button"),
+  diagnosticPackageButton: document.getElementById("diagnostic-package-button"),
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
@@ -9051,6 +9054,116 @@ async function exportHistory(format, source = "played", pageSize = 200) {
   }
 }
 
+function diagnosticBrowserInfo() {
+  const userAgentData = navigator.userAgentData;
+  const brands = Array.isArray(userAgentData?.brands)
+    ? userAgentData.brands.map((item) => ({
+      brand: String(item?.brand || ""),
+      version: String(item?.version || ""),
+    }))
+    : [];
+  return {
+    user_agent: String(navigator.userAgent || ""),
+    platform: String(userAgentData?.platform || navigator.platform || ""),
+    mobile: Boolean(userAgentData?.mobile),
+    brands,
+  };
+}
+
+function setDiagnosticsBusy(busy) {
+  state.diagnosticsBusy = Boolean(busy);
+  if (elements.diagnosticCopyButton) {
+    elements.diagnosticCopyButton.disabled = state.diagnosticsBusy;
+  }
+  if (elements.diagnosticPackageButton) {
+    elements.diagnosticPackageButton.disabled = state.diagnosticsBusy;
+  }
+}
+
+async function diagnosticResponse(path) {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ browser: diagnosticBrowserInfo() }),
+  });
+  if (!response.ok) {
+    let message = t("service.diagnosticsFailed");
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      // Keep the generic message for non-JSON failures.
+    }
+    throw new Error(message);
+  }
+  return response;
+}
+
+async function copyDiagnosticsMarkdown() {
+  if (state.diagnosticsBusy) {
+    return;
+  }
+  setDiagnosticsBusy(true);
+  setAppMessage(t("service.diagnosticsGenerating"));
+  try {
+    const response = await diagnosticResponse("/api/diagnostics/markdown");
+    const payload = await response.json();
+    const markdown = String(payload?.data?.markdown || "");
+    if (!markdown) {
+      throw new Error(t("service.diagnosticsFailed"));
+    }
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(markdown);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = markdown;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    setDiagnosticsBusy(false);
+    setAppMessage(t("service.diagnosticsCopied"));
+  } catch (error) {
+    setDiagnosticsBusy(false);
+    setAppMessage(error?.message || t("service.diagnosticsFailed"), true);
+  }
+}
+
+async function downloadDiagnosticsPackage() {
+  if (state.diagnosticsBusy) {
+    return;
+  }
+  setDiagnosticsBusy(true);
+  setAppMessage(t("service.diagnosticsGenerating"));
+  try {
+    const response = await diagnosticResponse("/api/diagnostics/package");
+    const blob = await response.blob();
+    const filename = filenameFromContentDisposition(
+      response.headers.get("Content-Disposition"),
+      "bilikara-diagnostics.zip",
+    );
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = filename;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+    setDiagnosticsBusy(false);
+    setAppMessage(t("service.diagnosticsDownloaded"));
+  } catch (error) {
+    setDiagnosticsBusy(false);
+    setAppMessage(error?.message || t("service.diagnosticsFailed"), true);
+  }
+}
+
 async function resetRuntimeData() {
   try {
     teardownMountedPlayer();
@@ -9970,6 +10083,9 @@ elements.updatePreviewCheckbox?.addEventListener("change", (event) => {
   writeLocalPreference(storageKeys.updatePreview, state.updatePreviewEnabled);
   renderUpdatePreviewControl();
 });
+
+elements.diagnosticCopyButton?.addEventListener("click", copyDiagnosticsMarkdown);
+elements.diagnosticPackageButton?.addEventListener("click", downloadDiagnosticsPackage);
 
 elements.avSyncPanel?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-step], button[data-reset-av-offset]");

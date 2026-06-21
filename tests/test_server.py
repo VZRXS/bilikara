@@ -3,12 +3,14 @@ import io
 from collections import deque
 import threading
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
+from bilikara.diagnostics import DiagnosticArtifact
 from bilikara.remote_identity import RemoteIdentityStore
 from bilikara.server import AppContext, BilikaraHandler, run
 from bilikara.store import PlaylistStore
@@ -784,6 +786,84 @@ class UpdateRouteTest(unittest.TestCase):
 
         self.assertEqual(calls, [{"include_preview": True}])
         self.assertEqual(writes[0], {"ok": True, "data": {"state": "checking", "include_preview": True}})
+
+
+class DiagnosticRouteTest(unittest.TestCase):
+    @staticmethod
+    def make_handler(path, body):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = path
+        handler.headers = {}
+        handler.client_address = ("127.0.0.1", 12345)
+        handler._read_json_body = lambda: body
+        return handler
+
+    def test_markdown_route_forwards_browser_info(self):
+        handler = self.make_handler(
+            "/api/diagnostics/markdown",
+            {
+                "browser": {
+                    "user_agent": "Browser/1.0",
+                    "platform": "Windows",
+                    "brands": [{"brand": "Browser", "version": "1"}],
+                }
+            },
+        )
+        writes = []
+        browser_infos = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: (
+                browser_infos.append(browser_info)
+                or DiagnosticArtifact(markdown="# report", files={})
+            ),
+        )
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes, [{"ok": True, "data": {"markdown": "# report"}}])
+        self.assertEqual(browser_infos[0]["user_agent"], "Browser/1.0")
+        self.assertEqual(browser_infos[0]["brands"], [{"brand": "Browser", "version": "1"}])
+
+    def test_package_route_downloads_zip(self):
+        handler = self.make_handler("/api/diagnostics/package", {"browser": {}})
+        downloads = []
+        artifact = DiagnosticArtifact(markdown="# report", files={"system.json": b"{}"})
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: artifact,
+        )
+        handler._write_download = lambda payload, *, content_type, filename: downloads.append(
+            {"payload": payload, "content_type": content_type, "filename": filename}
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(downloads[0]["content_type"], "application/zip")
+        self.assertTrue(downloads[0]["filename"].startswith("bilikara-diagnostics-"))
+        with zipfile.ZipFile(io.BytesIO(downloads[0]["payload"])) as archive:
+            self.assertEqual(set(archive.namelist()), {"diagnostics.md", "system.json"})
+
+    def test_diagnostic_routes_reject_non_local_clients(self):
+        handler = self.make_handler("/api/diagnostics/markdown", {"browser": {}})
+        handler.client_address = ("192.168.1.50", 12345)
+        writes = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: self.fail("diagnostics must not be generated"),
+        )
+        handler._write_json = lambda payload, status=None: writes.append(
+            {"payload": payload, "status": status}
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.FORBIDDEN)
+        self.assertEqual(writes[0]["payload"], {"ok": False, "error": "forbidden"})
 
 
 class PlayerResetRouteTest(unittest.TestCase):

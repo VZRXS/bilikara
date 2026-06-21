@@ -73,6 +73,7 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
+from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
 from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .remote_identity import RemoteIdentityStore
 from .store import PlaylistStore
@@ -201,6 +202,44 @@ class AppContext:
 
     def app_update_snapshot(self) -> dict[str, object]:
         return self.update_manager.snapshot()
+
+    def build_diagnostics(self, browser_info: dict[str, object] | None = None) -> DiagnosticArtifact:
+        store_snapshot = self.store.snapshot()
+        current_item = store_snapshot.get("current_item")
+        playlist = store_snapshot.get("playlist") or []
+        runtime_state = {
+            "current_item": self._diagnostic_item_snapshot(current_item),
+            "queued_items": [
+                self._diagnostic_item_snapshot(item)
+                for item in playlist[:10]
+                if isinstance(item, dict)
+            ],
+            "queue_count": len(playlist),
+            "gatcha_task": gatcha_task_snapshot(),
+            "app_update": self.app_update_snapshot(),
+            "state_revision": self._state_revision,
+        }
+        metrics = self.cache_manager.cache_metrics()
+        return build_diagnostic_artifact(
+            cache_manager=self.cache_manager,
+            cache_policy=self.cache_manager.policy_snapshot(metrics),
+            runtime_state=runtime_state,
+            browser_info=browser_info,
+            local_usernames=[str(name) for name in store_snapshot.get("session_users") or []],
+        )
+
+    @staticmethod
+    def _diagnostic_item_snapshot(item: object) -> dict[str, object] | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            "id": str(item.get("id") or ""),
+            "bvid": str(item.get("bvid") or ""),
+            "title": str(item.get("display_title") or item.get("title") or ""),
+            "cache_status": str(item.get("cache_status") or ""),
+            "cache_progress": item.get("cache_progress"),
+            "cache_message": str(item.get("cache_message") or ""),
+        }
 
     def start_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
         return self.update_manager.start(include_preview=include_preview)
@@ -976,6 +1015,25 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route == "/api/diagnostics/markdown":
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
+                self._write_json({"ok": True, "data": {"markdown": artifact.markdown}})
+                return
+            if route == "/api/diagnostics/package":
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                self._write_download(
+                    artifact.zip_bytes(),
+                    content_type="application/zip",
+                    filename=f"bilikara-diagnostics-{timestamp}.zip",
+                )
+                return
             if route == "/api/remote-identity/register":
                 token, identity = CONTEXT.register_remote_identity(str(body.get("name") or ""))
                 self._write_json(
@@ -1657,6 +1715,30 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return ""
         morsel = cookie.get(REMOTE_IDENTITY_COOKIE)
         return str(morsel.value or "").strip() if morsel else ""
+
+    @staticmethod
+    def _diagnostic_browser_info(body: dict[str, object]) -> dict[str, object]:
+        browser = body.get("browser")
+        if not isinstance(browser, dict):
+            return {}
+        brands = browser.get("brands")
+        normalized_brands = []
+        if isinstance(brands, list):
+            for item in brands[:10]:
+                if not isinstance(item, dict):
+                    continue
+                normalized_brands.append(
+                    {
+                        "brand": str(item.get("brand") or "")[:80],
+                        "version": str(item.get("version") or "")[:40],
+                    }
+                )
+        return {
+            "user_agent": str(browser.get("user_agent") or "")[:1000],
+            "platform": str(browser.get("platform") or "")[:120],
+            "mobile": bool(browser.get("mobile")),
+            "brands": normalized_brands,
+        }
 
     @staticmethod
     def _remote_identity_cookie(token: str) -> str:
