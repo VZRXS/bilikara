@@ -1236,6 +1236,18 @@ h2 {
   flex: 0 0 auto;
 }
 
+.cache-panel-row.diagnostic-panel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.diagnostic-panel-actions {
+  width: auto;
+  justify-content: flex-end;
+}
+
 .cache-update-control {
   display: inline-flex;
   align-items: center;

@@ -144,8 +144,12 @@
           <button type="button" id="resort-playlist-button" class="secondary-button requester-row-button" data-i18n="request.resort">重新排序</button>
         </div>
         <form id="request-form" class="request-form">
-          <div class="requester-row">
-            <select id="requester-select" name="requester_name"></select>
+          <div class="requester-row remote-identity-row">
+            <p class="remote-identity-summary">
+              <span data-i18n="remoteIdentity.myId">我的 ID：</span>
+              <strong id="remote-identity-name">—</strong>
+            </p>
+            <button type="button" id="remote-identity-rename" class="secondary-button" data-i18n="remoteIdentity.rename">重命名</button>
           </div>
           <textarea
             id="url-input"
@@ -769,6 +773,24 @@
     </div>
 
     <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
+
+    <div id="remote-identity-modal" class="remote-identity-modal" role="dialog" aria-modal="true" aria-labelledby="remote-identity-title">
+      <div class="remote-identity-backdrop"></div>
+      <div class="remote-identity-card">
+        <p class="panel-tag" data-i18n="remoteIdentity.tag">REMOTE ID</p>
+        <h2 id="remote-identity-title" data-i18n="remoteIdentity.registerTitle">添加点歌用户</h2>
+        <p id="remote-identity-description" class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用必须填写本场点歌 ID。</p>
+        <form id="remote-identity-form" class="remote-identity-form">
+          <label for="remote-identity-input" data-i18n="remoteIdentity.inputLabel">我的 ID</label>
+          <input id="remote-identity-input" name="remote_identity" type="text" maxlength="24" required autocomplete="nickname" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="请输入 ID" />
+          <p id="remote-identity-message" class="message" role="status"></p>
+          <div class="remote-identity-actions">
+            <button type="button" id="remote-identity-cancel" class="ghost-button hidden" data-i18n="common.cancel">取消</button>
+            <button type="submit" id="remote-identity-submit" class="primary-button" data-i18n="remoteIdentity.registerSubmit">添加并开始使用</button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>

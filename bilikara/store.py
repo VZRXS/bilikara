@@ -128,6 +128,15 @@ class PlaylistStore:
         with self.lock:
             return bool(self.session_users)
 
+    def has_session_user(self, name: str) -> bool:
+        normalized = self._normalize_session_user_name(name)
+        with self.lock:
+            return bool(normalized and normalized in self.session_users)
+
+    @classmethod
+    def normalize_session_user_name(cls, name: str) -> str:
+        return cls._normalize_session_user_name(name)
+
     def remove_item(self, item_id: str) -> bool:
         with self.lock:
             if self.current_item and self.current_item.id == item_id:
@@ -383,6 +392,40 @@ class PlaylistStore:
             self._rebuild_cycle_items_unlocked()
             self._touch(persist_backup=True)
             return True
+
+    def rename_session_user(self, current_name: str, new_name: str) -> str:
+        with self.lock:
+            current = self._normalize_session_user_name(current_name)
+            renamed = self._normalize_session_user_name(new_name)
+            if not current or current not in self.session_users:
+                raise ValueError("session user does not exist")
+            if not renamed:
+                raise ValueError("user name cannot be empty")
+            if renamed != current and renamed in self.session_users:
+                raise ValueError("session user already exists")
+            if renamed == current:
+                return renamed
+
+            index = self.session_users.index(current)
+            self.session_users[index] = renamed
+            if self.current_item and self.current_item.requester_name == current:
+                self.current_item.requester_name = renamed
+            for item in self.playlist:
+                if item.requester_name == current:
+                    item.requester_name = renamed
+            for entry in self.history:
+                if entry.requester_name == current:
+                    entry.requester_name = renamed
+            for entry in self.session_history:
+                if entry.requester_name == current:
+                    entry.requester_name = renamed
+            for entry in self.session_played:
+                if entry.requester_name == current:
+                    entry.requester_name = renamed
+
+            self._rebuild_cycle_items_unlocked()
+            self._touch(persist_backup=True)
+            return renamed
 
     def move_session_user_to_index(self, name: str, target_index: int) -> bool:
         with self.lock:

@@ -690,6 +690,7 @@ exit "$STATUS"
 
 def _launch_restart_helper(command: list[str]) -> None:
     popen_kwargs = {
+        "shell": False,
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
@@ -699,9 +700,13 @@ def _launch_restart_helper(command: list[str]) -> None:
         creationflags = 0
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen(command, creationflags=creationflags, **popen_kwargs)
+        subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            command, creationflags=creationflags, **popen_kwargs
+        )
     else:
-        subprocess.Popen(command, start_new_session=True, **popen_kwargs)
+        subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            command, start_new_session=True, **popen_kwargs
+        )
 
 
 class AppUpdateManager:
