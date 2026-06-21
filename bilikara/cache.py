@@ -94,6 +94,7 @@ class DownloadCommandError(RuntimeError):
 
 def _debug_print(msg: str) -> None:
     """Print debug message to console, replacing unencodable characters."""
+    return
     import sys
     try:
         print(msg, flush=True)

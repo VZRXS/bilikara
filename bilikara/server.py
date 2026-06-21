@@ -1438,6 +1438,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True})
                 return
+            if route == "/api/rating/log":
+                message = str(body.get("message") or "").strip()
+                if message:
+                    print(f"[rating-front] {message}", flush=True)
+                self._write_json({"ok": True})
+                return
             if route == "/api/rating/submit":
                 session_user_name = str(
                     body.get("session_user_name")
@@ -1469,6 +1475,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if score < 1 or score > 5:
                     raise ValueError("score must be between 1 and 5")
                 duplicate = not CONTEXT.register_rating_submission(session_user_name, play_id)
+                print(f"[rating] user={session_user_name} play_id={play_id} bvid={bvid} score={score} duplicate={duplicate}", flush=True)
                 if not duplicate:
                     self._submit_rating_in_background(session_user_name, play_id, bvid, score)
                 self._write_json({

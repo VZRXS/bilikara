@@ -283,6 +283,19 @@ const state = {
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
   ratingOptOut: false,
+  // Deferred auto-ratings: items that crossed the play threshold but whose
+  // auto score=5 has not been submitted yet. The auto-rating fires TWO songs
+  // later (when the next-next song starts), so the user has a full song's
+  // duration to manually rate first. Map: playId -> { item, playId }.
+  pendingAutoRatings: new Map(),
+  // Ordered list of playIds waiting to be flushed. On each song transition,
+  // the current song's pending auto-rating is moved here. Only the head
+  // (oldest) is flushed — this gives a one-song buffer so A's auto-rating
+  // fires when C starts, not when B starts.
+  autoRatingFlushQueue: [],
+  // Track the playId of the song currently being played so we can detect
+  // song transitions and flush the previous song's deferred auto-rating.
+  ratingCurrentPlayId: "",
   playerControlsRenderSignature: "",
   listHeaderRenderSignature: "",
   queueRenderSignature: "",
@@ -1466,6 +1479,18 @@ async function submitRemoteIdentity(event) {
   }
 }
 
+function ratingLog(message) {
+  console.log("[rating]", message);
+  try {
+    fetch("/api/rating/log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) { /* ignore */ }
+}
+
 function submitSongRating(item, score) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
@@ -1475,11 +1500,20 @@ function submitSongRating(item, score) {
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
   if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    ratingLog("submit BLOCKED by dedup: playId=" + playId + " score=" + score);
     return false;
   }
   if (submissionKey) {
     state.ratingSubmittedKeys.add(submissionKey);
+    // The user submitted a manual rating — cancel any pending auto-rating
+    // for this item so the auto score=5 doesn't override the user's choice.
+    state.pendingAutoRatings.delete(playId);
+    // Also remove it from the flush queue if it's already been moved there.
+    state.autoRatingFlushQueue = state.autoRatingFlushQueue.filter(
+      (entry) => entry.playId !== playId
+    );
   }
+  ratingLog("submit OK: playId=" + playId + " score=" + score + " user=" + sessionUserName);
   const payload = {
     session_user_name: sessionUserName,
     play_id: playId,
@@ -1490,6 +1524,7 @@ function submitSongRating(item, score) {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
+    keepalive: true,
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
@@ -1589,18 +1624,8 @@ function isItemRateable(item, isCurrent = false) {
   if (!item || !bvid) {
     return false;
   }
-  if (isCurrent) {
-    const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
-    if (!(durationSeconds > 0)) return false;
-    const ratio = currentSeconds / durationSeconds;
-    if (ratio < remoteRatingPromptThreshold) return false;
-  } else {
-    // Previous items must have actually played past the threshold
-    // during their playback to be rateable.
-    if (!item.threshold_reached) {
-      return false;
-    }
-  }
+  // Manual rating is no longer gated by the play threshold. The user can
+  // rate at any time — the auto-rating defers to the user's choice.
   return true;
 }
 
@@ -1874,6 +1899,44 @@ function currentPlaybackClockSeconds() {
   };
 }
 
+function flushPendingAutoRating(playId, itemData) {
+  if (!playId) {
+    return;
+  }
+  // itemData may be provided directly (when flushing from the queue, where
+  // the item was already removed from pendingAutoRatings). Otherwise look
+  // it up in pendingAutoRatings.
+  let pending = itemData;
+  if (!pending) {
+    pending = state.pendingAutoRatings.get(playId);
+    if (!pending) {
+      ratingLog("flush: no pending for " + playId);
+      return;
+    }
+    state.pendingAutoRatings.delete(playId);
+  }
+  // If the user already submitted a manual rating, skip the auto-rating.
+  const submissionKey = ratingSubmissionKey({ ...pending.item, play_id: playId });
+  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    ratingLog("flush: skipping " + playId + " (user already rated)");
+    return;
+  }
+  ratingLog("flush: submitting auto score=5 for " + playId);
+  submitSongRating(pending.item, 5);
+}
+
+function flushAllPendingAutoRatings() {
+  // On session close, flush everything in order: the queue first, then any
+  // remaining pending items (the current/last song).
+  for (const entry of state.autoRatingFlushQueue.splice(0)) {
+    flushPendingAutoRating(entry.playId, entry);
+  }
+  const playIds = Array.from(state.pendingAutoRatings.keys());
+  for (const playId of playIds) {
+    flushPendingAutoRating(playId);
+  }
+}
+
 function maybeUpdateRemoteRatingPrompt(currentItem) {
   const promptItems = ratingPromptItemsForItem(currentItem);
   const currentRateable = isItemRateable(promptItems.current, true);
@@ -1921,17 +1984,61 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   const bvid = String(currentItem?.bvid || "").trim();
   const playId = String(currentItem?.id || bvid).trim();
+
+  // Detect song transition: when the current playId changes, move the
+  // previous song's pending auto-rating into the flush queue, then flush
+  // the queue head (the oldest un-rated song). Songs that the user already
+  // manually rated are removed from the queue at submit time, so the head
+  // is always a song that still needs its auto score=5.
+  if (playId && state.ratingCurrentPlayId && state.ratingCurrentPlayId !== playId) {
+    const prevPlayId = state.ratingCurrentPlayId;
+    ratingLog("transition: " + prevPlayId + " -> " + playId
+      + " pending=" + Array.from(state.pendingAutoRatings.keys()).join(",")
+      + " queue=" + state.autoRatingFlushQueue.map((e) => e.playId).join(","));
+    // Move the previous song's pending auto-rating into the flush queue.
+    if (state.pendingAutoRatings.has(prevPlayId)) {
+      const entry = state.pendingAutoRatings.get(prevPlayId);
+      state.pendingAutoRatings.delete(prevPlayId);
+      state.autoRatingFlushQueue.push(entry);
+      ratingLog("moved " + prevPlayId + " to flush queue (len=" + state.autoRatingFlushQueue.length + ")");
+    }
+    // Flush the head of the queue — it's the oldest song that hasn't been
+    // manually rated. If the user rated it, submitSongRating already removed
+    // it from the queue, so the head is always a genuinely pending auto-rating.
+    if (state.autoRatingFlushQueue.length > 0) {
+      const headEntry = state.autoRatingFlushQueue.shift();
+      flushPendingAutoRating(headEntry.playId, headEntry);
+    }
+  }
+  if (playId) {
+    state.ratingCurrentPlayId = playId;
+  }
+
   if (!currentItem || !bvid || !playId || !(durationSeconds > 0)) {
+    ratingLog("early return: playId=" + playId + " dur=" + durationSeconds + " cur=" + currentSeconds);
     return;
   }
+
   const ratio = currentSeconds / durationSeconds;
-  const ratingItem = { ...currentItem, play_id: playId };
+  if (ratio >= remoteRatingPromptThreshold && !state.ratingPromptSeenPlayIds.has(playId)) {
+    ratingLog("threshold reached: playId=" + playId + " ratio=" + ratio.toFixed(2)
+      + " seen=" + state.ratingPromptSeenPlayIds.has(playId));
+  }
   if (ratio >= remoteRatingPromptThreshold) {
-    // Skip auto-submit when the rating modal is already open so the user
-    // can choose their own score instead of the default 5.
-    if (!state.ratingPromptSeenPlayIds.has(playId) && !state.ratingPromptElement) {
+    // Mark as seen so the auto-prompt can fire, but do NOT auto-submit
+    // score=5 immediately. Instead, queue it as a pending auto-rating
+    // that will be flushed when the next song starts or on session close.
+    // This gives the user time to manually rate first.
+    if (!state.ratingPromptSeenPlayIds.has(playId)) {
       state.ratingPromptSeenPlayIds.add(playId);
-      submitSongRating(ratingItem, 5);
+      const ratingItem = { ...currentItem, play_id: playId };
+      const submissionKey = ratingSubmissionKey({ ...ratingItem, play_id: playId });
+      // Only queue if the user hasn't already submitted a manual rating.
+      if (!submissionKey || !state.ratingSubmittedKeys.has(submissionKey)) {
+        state.pendingAutoRatings.set(playId, { item: ratingItem, playId });
+        ratingLog("queued pending auto for " + playId
+          + " pending=" + Array.from(state.pendingAutoRatings.keys()).join(","));
+      }
     }
   }
 }
@@ -6345,6 +6452,14 @@ function queueNoteText() {
 }
 
 function disconnectClient() {
+  // Flush any pending auto-ratings before disconnecting so songs that
+  // crossed the threshold but never got a deferred flush (e.g. the last
+  // song in the session) still get their auto score=5 submitted.
+  try {
+    flushAllPendingAutoRatings();
+  } catch (error) {
+    console.warn("Failed to flush pending auto-ratings on disconnect:", error);
+  }
   closeEventStream();
   if (state.disconnectSent) {
     return;
