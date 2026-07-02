@@ -85,6 +85,14 @@ MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
 
 
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 class DuplicateSessionRequestError(ValueError):
     def __init__(self, item, session_entry=None, active_item=None) -> None:
         self.item = item
@@ -304,11 +312,13 @@ class AppContext:
         max_cache_items: int | None = None,
         video_quality: str | None = None,
         audio_hires: bool | None = None,
+        download_source: str | None = None,
     ) -> None:
         self.cache_manager.set_cache_policy(
             max_cache_items=max_cache_items,
             video_quality=video_quality,
             audio_hires=audio_hires,
+            download_source=download_source,
         )
         self._notify_state_changed()
 
@@ -1307,12 +1317,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("invalid bvid")
                 if score < 1 or score > 5:
                     raise ValueError("score must be between 1 and 5")
-                self._submit_rating_in_background(session_user_name, play_id, bvid, score)
+                duplicate = not CONTEXT.register_rating_submission(session_user_name, play_id)
+                if not duplicate:
+                    self._submit_rating_in_background(session_user_name, play_id, bvid, score)
                 self._write_json({
                     "ok": True,
                     "data": {
                         "success": True,
-                        "queued": True,
+                        "queued": not duplicate,
+                        "duplicate": duplicate,
                         "session_user_name": session_user_name,
                         "play_id": play_id,
                         "bvid": bvid,
@@ -1324,18 +1337,22 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 max_cache_items = body.get("max_cache_items") if "max_cache_items" in body else None
                 video_quality = body.get("video_quality") if "video_quality" in body else None
                 audio_hires = body.get("audio_hires") if "audio_hires" in body else None
+                download_source = body.get("download_source") if "download_source" in body else None
                 if max_cache_items is not None and not isinstance(max_cache_items, int):
                     raise ValueError("max_cache_items 必须是整数")
                 if video_quality is not None and not isinstance(video_quality, str):
                     raise ValueError("video_quality 必须是字符串")
                 if audio_hires is not None and not isinstance(audio_hires, bool):
                     raise ValueError("audio_hires 必须是布尔值")
-                if max_cache_items is None and video_quality is None and audio_hires is None:
+                if download_source is not None and not isinstance(download_source, str):
+                    raise ValueError("download_source 必须是字符串")
+                if max_cache_items is None and video_quality is None and audio_hires is None and download_source is None:
                     raise ValueError("没有可更新的缓存策略")
                 CONTEXT.set_cache_policy(
                     max_cache_items=max_cache_items,
                     video_quality=video_quality,
                     audio_hires=audio_hires,
+                    download_source=download_source,
                 )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
@@ -1498,7 +1515,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         else:
             relative = route.lstrip("/")
         static_path = (STATIC_DIR / relative).resolve()
-        if not str(static_path).startswith(str(STATIC_DIR.resolve())) or not static_path.exists():
+        if not _is_path_within(static_path, STATIC_DIR.resolve()) or not static_path.exists():
             self._write_json({"ok": False, "error": "资源不存在"}, status=HTTPStatus.NOT_FOUND)
             return
         self._stream_file(
@@ -1513,7 +1530,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         relative = route[len(prefix):] if route.startswith(prefix) else route
         decoded = unquote(relative)
         media_path = (CACHE_DIR / decoded).resolve()
-        if not str(media_path).startswith(str(CACHE_DIR.resolve())) or not media_path.exists():
+        if not _is_path_within(media_path, CACHE_DIR.resolve()) or not media_path.exists():
             self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
             return
         self._stream_file(
@@ -1537,7 +1554,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
 
     def _is_local_client(self) -> bool:
         host = self.client_address[0] if self.client_address else ""
-        return host in {"127.0.0.1", "::1", "localhost"}
+        return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
 
     def _has_valid_shutdown_token(self) -> bool:
         expected = os.getenv("BILIKARA_SHUTDOWN_TOKEN", "").strip()

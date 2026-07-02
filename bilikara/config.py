@@ -220,6 +220,18 @@ def _default_app_home() -> Path:
     return _resource_root()
 
 
+def _split_env_urls(name: str) -> tuple[str, ...]:
+    raw = os.getenv(name, "")
+    if not raw:
+        return ()
+    normalized = raw.replace("\n", ",").replace(";", ",")
+    return tuple(part.strip() for part in normalized.split(",") if part.strip())
+
+
+def _env_truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 ROOT_DIR = _resource_root()
 APP_HOME = _default_app_home()
 STATIC_DIR = ROOT_DIR / "static"
@@ -241,6 +253,10 @@ FFPROBE_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffprobe.exe" if os.name == "nt" else
 FFMPEG_BUNDLED_PATH = VENDOR_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 FFPROBE_BUNDLED_PATH = VENDOR_DIR / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
 BB_DOWN_VERSION_FILE = BB_DOWN_DIR / "VERSION"
+YTDLP_DIR = TOOLS_DIR / "ytdlp"
+YTDLP_PATH_OVERRIDE = os.getenv("YT_DLP_PATH", "").strip()
+ARIA2C_DIR = TOOLS_DIR / "aria2c"
+ARIA2C_PATH_OVERRIDE = os.getenv("ARIA2C_PATH", "").strip()
 GATCHA_UIDS = ["3145040", "671767", "33091201", "3494356589742209", "44627483", "8474818", "10077309", "74089392", "1879151", "87101327", "99061404", "602998", "1159885664", "215040", "31624333", "21129450", "2625848", "29955371", "3014315", "80148988", "464873", "41924655", "356716", "174980119", "1326466", "13775191", "524220885"]
 GATCHA_KEYWORDS = ["卡拉", "カラ", "投屏","KTV","纯K","纯k","kara","Kara","karaoke","Karaoke","vocal","Vocal","伴奏"]
 USER_VIDEO_API = "https://api.bilibili.com/x/space/wbi/arc/search?mid={mid}&ps=50&tid=0&pn=1&order=pubdate"
@@ -263,8 +279,21 @@ BILIBILI_HEADERS = {
 }
 
 BB_DOWN_RELEASE_API = "https://api.github.com/repos/nilaoda/BBDown/releases/latest"
+YTDLP_RELEASE_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+ARIA2_RELEASE_API = "https://api.github.com/repos/aria2/aria2/releases/latest"
+TOOL_ASSET_BASE_URL = os.getenv("BILIKARA_TOOL_ASSET_BASE_URL", "https://download.kevinx96.icu/bilikara/tools").strip().rstrip("/")
 APP_RELEASE_API = "https://api.github.com/repos/VZRXS/bilikara/releases/latest"
 APP_RELEASES_URL = "https://github.com/VZRXS/bilikara/releases"
+APP_RELEASE_API_FALLBACKS = (
+    "https://api.kevinx96.icu/bilikara/releases/latest",
+    *_split_env_urls("BILIKARA_APP_RELEASE_API_FALLBACKS"),
+)
+APP_RELEASES_API_FALLBACKS = (
+    "https://api.kevinx96.icu/bilikara/releases",
+    *_split_env_urls("BILIKARA_APP_RELEASES_API_FALLBACKS"),
+)
+APP_UPDATE_DOWNLOAD_PROXY = os.getenv("BILIKARA_UPDATE_DOWNLOAD_PROXY", "").strip()
+APP_UPDATE_DOWNLOAD_PROXY_FIRST = _env_truthy("BILIKARA_UPDATE_DOWNLOAD_PROXY_FIRST")
 
 
 def _detect_app_version() -> str:
