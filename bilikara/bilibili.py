@@ -2873,10 +2873,10 @@ def fetch_dash_playurl(
 
     Returns:
         Dict with keys:
-          - "video": list of dicts with "url", "backup_url", "codec_id", "codec_name", "width", "height"
-          - "audio": list of dicts with "url", "backup_url", "bandwidth"
-          - "flac": dict or None with "url", "backup_url" if Hi-Res FLAC available
-          - "dolby": dict or None with "url", "backup_url" if Dolby Atmos available
+          - "video": list of dicts with "url", "backup_urls", "codec_id", "codec_name", "width", "height"
+          - "audio": list of dicts with "url", "backup_urls", "bandwidth"
+          - "flac": dict or None with "url", "backup_urls" if Hi-Res FLAC available
+          - "dolby": dict or None with "url", "backup_urls" if Dolby Atmos available
     """
     if not bvid and not avid:
         raise BilibiliError("bvid 和 avid 至少需要提供一个")
