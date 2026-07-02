@@ -5144,7 +5144,7 @@ function renderCachePolicyControls(cachePolicy) {
     }).filter((choice) => choice.value)
     : [
       { value: "bbdown", label: "BBDown" },
-      { value: "ytdlp", label: "yt-dlp" },
+      { value: "downkyi", label: "Downkyi (aria2c)" },
     ];
   const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
   const signature = JSON.stringify({

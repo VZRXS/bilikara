@@ -254,10 +254,10 @@ class CacheManager:
                         "value": DOWNLOAD_SOURCE_BBDOWN,
                         "label": "BBDown",
                     },
-                    {
-                        "value": DOWNLOAD_SOURCE_YTDLP,
-                        "label": "yt-dlp",
-                    },
+                    # {
+                    #     "value": DOWNLOAD_SOURCE_YTDLP,
+                    #     "label": "yt-dlp",
+                    # },
                     {
                         "value": DOWNLOAD_SOURCE_DOWNKYI,
                         "label": "Downkyi (aria2c)",
