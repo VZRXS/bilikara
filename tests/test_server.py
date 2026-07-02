@@ -3,13 +3,60 @@ import io
 from collections import deque
 import threading
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
+from bilikara.diagnostics import DiagnosticArtifact
+from bilikara.remote_identity import RemoteIdentityStore
 from bilikara.server import AppContext, BilikaraHandler, run
+from bilikara.store import PlaylistStore
+
+
+class FileServingPathSecurityTest(unittest.TestCase):
+    @staticmethod
+    def make_handler():
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        streams = []
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+        handler._stream_file = lambda path, **kwargs: streams.append(path)
+        return handler, writes, streams
+
+    def test_media_route_rejects_sibling_directory_with_cache_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "cache"
+            sibling_dir = root / "cache_secret"
+            cache_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.mp4").write_bytes(b"secret")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.CACHE_DIR", cache_dir):
+                handler._serve_media("/media/../cache_secret/secret.mp4")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
+
+    def test_static_route_rejects_sibling_directory_with_static_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            static_dir = root / "static"
+            sibling_dir = root / "static_secret"
+            static_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.js").write_text("secret", encoding="utf-8")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.STATIC_DIR", static_dir):
+                handler._serve_static("/../static_secret/secret.js")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
 
 
 class FileServingPathSecurityTest(unittest.TestCase):
@@ -94,7 +141,107 @@ class AppContextRemoteAccessTest(unittest.TestCase):
         self.assertEqual(context._state_revision, 1)
 
 
+class AppContextRemoteIdentityTest(unittest.TestCase):
+    def make_context(self, root: Path) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 0
+        context.store = PlaylistStore(
+            root / "state.json",
+            root / "backup.json",
+            root / "played",
+            on_change=context._notify_state_changed,
+        )
+        context.remote_identities = RemoteIdentityStore(root / "remote_identities.json")
+        context._remote_identity_lock = threading.RLock()
+        context._rating_submission_lock = threading.RLock()
+        context._rating_submission_keys = set()
+        context._rating_submission_key_order = deque()
+        return context
+
+    @staticmethod
+    def prepare_reset_state(context: AppContext) -> None:
+        context.cache_manager = SimpleNamespace(clear_runtime_cache=lambda: None)
+        context.auto_restored_backup = False
+        context._player_control_lock = threading.RLock()
+        context._player_control_seq = 0
+        context._player_control_ack_seq = 0
+        context._player_control_command = None
+        context._player_status_lock = threading.RLock()
+        context._player_status = None
+
+    def test_register_rename_and_host_delete_identity(self):
+        with TemporaryDirectory() as tmpdir:
+            context = self.make_context(Path(tmpdir))
+
+            token, registered = context.register_remote_identity("Kevin")
+            renamed = context.rename_remote_identity(token, "VZRXS")
+
+            self.assertEqual(registered["name"], "Kevin")
+            self.assertEqual(renamed["name"], "VZRXS")
+            self.assertEqual(context.store.snapshot()["session_users"], ["VZRXS"])
+            context.remove_session_user("VZRXS")
+            self.assertFalse(context.remote_identity_snapshot(token)["registered"])
+
+    def test_cookie_is_persistent_and_lan_http_compatible(self):
+        cookie = BilikaraHandler._remote_identity_cookie("token")
+
+        self.assertIn("bilikara_remote_token=token", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("Max-Age=31536000", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertNotIn("Secure", cookie)
+
+    def test_clear_data_starts_a_new_remote_session(self):
+        with TemporaryDirectory() as tmpdir:
+            context = self.make_context(Path(tmpdir))
+            self.prepare_reset_state(context)
+            token, identity = context.register_remote_identity("Kevin")
+            context._rating_submission_keys.add(("kevin", "play-1"))
+            context._rating_submission_key_order.append(("kevin", "play-1"))
+
+            context.reset_runtime_data()
+
+            snapshot = context.remote_identity_snapshot(token)
+            self.assertFalse(snapshot["registered"])
+            self.assertNotEqual(snapshot["session_id"], identity["session_id"])
+            self.assertEqual(context.store.snapshot()["session_users"], [])
+            self.assertEqual(context._rating_submission_keys, set())
+            self.assertEqual(context._rating_submission_key_order, deque())
+
+
 class AppContextStateRevisionTest(unittest.TestCase):
+    def test_background_tasks_include_cloudflare_pool_prewarm(self):
+        context = AppContext.__new__(AppContext)
+        context._startup_lock = threading.RLock()
+        context._startup_started = False
+        context._closed = False
+        context.cache_manager = SimpleNamespace(prewarm_binary=lambda: None)
+        created_threads = []
+
+        class FakeThread:
+            def __init__(self, *, target, daemon=False, name=None):
+                self.target = target
+                self.daemon = daemon
+                self.name = name
+                self.started = False
+                created_threads.append(self)
+
+            def start(self):
+                self.started = True
+
+        with (
+            patch.object(server_module.threading, "Thread", FakeThread),
+            patch.object(server_module, "prewarm_cloudflare_pool") as prewarm,
+        ):
+            context._start_background_tasks_once()
+
+        prewarm_thread = next((thread for thread in created_threads if thread.name == "bilikara-cloudflare-prewarm"), None)
+        self.assertIsNotNone(prewarm_thread)
+        self.assertIs(prewarm_thread.target, prewarm)
+        self.assertTrue(prewarm_thread.daemon)
+        self.assertTrue(prewarm_thread.started)
+
     def test_startup_gatcha_refresh_bypasses_global_lock_only_once(self):
         context = AppContext.__new__(AppContext)
         context._startup_lock = threading.RLock()
@@ -682,6 +829,84 @@ class UpdateRouteTest(unittest.TestCase):
 
         self.assertEqual(calls, [{"include_preview": True}])
         self.assertEqual(writes[0], {"ok": True, "data": {"state": "checking", "include_preview": True}})
+
+
+class DiagnosticRouteTest(unittest.TestCase):
+    @staticmethod
+    def make_handler(path, body):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = path
+        handler.headers = {}
+        handler.client_address = ("127.0.0.1", 12345)
+        handler._read_json_body = lambda: body
+        return handler
+
+    def test_markdown_route_forwards_browser_info(self):
+        handler = self.make_handler(
+            "/api/diagnostics/markdown",
+            {
+                "browser": {
+                    "user_agent": "Browser/1.0",
+                    "platform": "Windows",
+                    "brands": [{"brand": "Browser", "version": "1"}],
+                }
+            },
+        )
+        writes = []
+        browser_infos = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: (
+                browser_infos.append(browser_info)
+                or DiagnosticArtifact(markdown="# report", files={})
+            ),
+        )
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes, [{"ok": True, "data": {"markdown": "# report"}}])
+        self.assertEqual(browser_infos[0]["user_agent"], "Browser/1.0")
+        self.assertEqual(browser_infos[0]["brands"], [{"brand": "Browser", "version": "1"}])
+
+    def test_package_route_downloads_zip(self):
+        handler = self.make_handler("/api/diagnostics/package", {"browser": {}})
+        downloads = []
+        artifact = DiagnosticArtifact(markdown="# report", files={"system.json": b"{}"})
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: artifact,
+        )
+        handler._write_download = lambda payload, *, content_type, filename: downloads.append(
+            {"payload": payload, "content_type": content_type, "filename": filename}
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(downloads[0]["content_type"], "application/zip")
+        self.assertTrue(downloads[0]["filename"].startswith("bilikara-diagnostics-"))
+        with zipfile.ZipFile(io.BytesIO(downloads[0]["payload"])) as archive:
+            self.assertEqual(set(archive.namelist()), {"diagnostics.md", "system.json"})
+
+    def test_diagnostic_routes_reject_non_local_clients(self):
+        handler = self.make_handler("/api/diagnostics/markdown", {"browser": {}})
+        handler.client_address = ("192.168.1.50", 12345)
+        writes = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: self.fail("diagnostics must not be generated"),
+        )
+        handler._write_json = lambda payload, status=None: writes.append(
+            {"payload": payload, "status": status}
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.FORBIDDEN)
+        self.assertEqual(writes[0]["payload"], {"ok": False, "error": "forbidden"})
 
 
 class PlayerResetRouteTest(unittest.TestCase):

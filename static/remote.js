@@ -255,7 +255,15 @@ const state = {
   categoryBrowseLoading: false,
   categoryBrowseSeq: 0,
   categoryBrowseError: "",
-  requesterSelectRenderSignature: "",
+  remoteIdentity: {
+    registered: false,
+    name: "",
+    sessionId: "",
+  },
+  remoteIdentityChecking: true,
+  remoteIdentitySaving: false,
+  remoteIdentityModalMode: "register",
+  remoteIdentityError: "",
   dataRenderSignature: "",
   currentNowPlayingSignature: "",
   currentPlaybackClockSignature: "",
@@ -275,6 +283,19 @@ const state = {
   ratingPromptSeenPlayIds: new Set(),
   ratingSubmittedKeys: new Set(),
   ratingOptOut: false,
+  // Deferred auto-ratings: items that crossed the play threshold but whose
+  // auto score=5 has not been submitted yet. The auto-rating fires TWO songs
+  // later (when the next-next song starts), so the user has a full song's
+  // duration to manually rate first. Map: playId -> { item, playId }.
+  pendingAutoRatings: new Map(),
+  // Ordered list of playIds waiting to be flushed. On each song transition,
+  // the current song's pending auto-rating is moved here. Only the head
+  // (oldest) is flushed — this gives a one-song buffer so A's auto-rating
+  // fires when C starts, not when B starts.
+  autoRatingFlushQueue: [],
+  // Track the playId of the song currently being played so we can detect
+  // song transitions and flush the previous song's deferred auto-rating.
+  ratingCurrentPlayId: "",
   playerControlsRenderSignature: "",
   listHeaderRenderSignature: "",
   queueRenderSignature: "",
@@ -375,7 +396,16 @@ const elements = {
   reorderConfirmSheetCancel: document.getElementById("reorder-confirm-sheet-cancel"),
   reorderConfirmSheetConfirm: document.getElementById("reorder-confirm-sheet-confirm"),
   requestForm: document.getElementById("request-form"),
-  requesterSelect: document.getElementById("requester-select"),
+  remoteIdentityName: document.getElementById("remote-identity-name"),
+  remoteIdentityRename: document.getElementById("remote-identity-rename"),
+  remoteIdentityModal: document.getElementById("remote-identity-modal"),
+  remoteIdentityForm: document.getElementById("remote-identity-form"),
+  remoteIdentityTitle: document.getElementById("remote-identity-title"),
+  remoteIdentityDescription: document.getElementById("remote-identity-description"),
+  remoteIdentityInput: document.getElementById("remote-identity-input"),
+  remoteIdentityMessage: document.getElementById("remote-identity-message"),
+  remoteIdentityCancel: document.getElementById("remote-identity-cancel"),
+  remoteIdentitySubmit: document.getElementById("remote-identity-submit"),
   urlInput: document.getElementById("url-input"),
   formMessage: document.getElementById("form-message"),
   searchForm: document.getElementById("search-form"),
@@ -534,7 +564,7 @@ function ownerLineText(ownerName) {
 }
 
 function selectedRequesterName() {
-  return String(elements.requesterSelect?.value || "").trim();
+  return state.remoteIdentity.registered ? String(state.remoteIdentity.name || "").trim() : "";
 }
 
 function readLocalString(key, fallbackValue) {
@@ -568,15 +598,6 @@ function normalizeLanguage(value) {
   return "zh";
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 function t(key, replacements = {}) {
   const fallbackLanguage = state.translations.defaultLanguage || "zh";
   const languages = state.translations.languages || {};
@@ -588,14 +609,6 @@ function t(key, replacements = {}) {
   return String(source).replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
     Object.prototype.hasOwnProperty.call(replacements, name) ? String(replacements[name]) : match
   ));
-}
-
-function htmlT(key, replacements = {}) {
-  const escapedReplacements = {};
-  Object.entries(replacements).forEach(([name, value]) => {
-    escapedReplacements[name] = escapeHtml(value);
-  });
-  return t(key, escapedReplacements);
 }
 
 function activeLocale() {
@@ -657,7 +670,6 @@ function invalidateLanguageSensitiveRenderCache() {
   state.followBrowseRenderSignature = "";
   state.modalFollowBrowseRenderSignature = "";
   state.favlistBrowseRenderSignature = "";
-  state.requesterSelectRenderSignature = "";
   state.gatchaTaskLastMessageSignature = "";
   state.listHeaderRenderSignature = "";
   state.queueRenderSignature = "";
@@ -1284,6 +1296,7 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
 async function apiPost(url, payload = {}) {
   const response = await fetch(url, {
     method: "POST",
+    credentials: "same-origin",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
@@ -1298,6 +1311,186 @@ async function apiPost(url, payload = {}) {
   return data.data;
 }
 
+function normalizedRemoteIdentity(payload) {
+  return {
+    registered: Boolean(payload?.registered),
+    name: String(payload?.name || "").trim(),
+    sessionId: String(payload?.session_id || "").trim(),
+  };
+}
+
+function renderRemoteIdentity() {
+  const identity = state.remoteIdentity;
+  const registered = Boolean(identity.registered && identity.name);
+  const renameMode = registered && state.remoteIdentityModalMode === "rename";
+  const modalOpen = !registered || renameMode;
+
+  if (elements.remoteIdentityName) {
+    elements.remoteIdentityName.textContent = registered ? identity.name : "—";
+  }
+  if (elements.remoteIdentityRename) {
+    elements.remoteIdentityRename.disabled = !registered || state.remoteIdentitySaving;
+  }
+  elements.remoteIdentityModal?.classList.toggle("hidden", !modalOpen);
+  document.body.classList.toggle("remote-identity-modal-open", modalOpen);
+  if (elements.remoteShell) {
+    elements.remoteShell.inert = modalOpen;
+  }
+  if (elements.remoteIdentityTitle) {
+    elements.remoteIdentityTitle.textContent = t(renameMode ? "remoteIdentity.renameTitle" : "remoteIdentity.registerTitle");
+  }
+  if (elements.remoteIdentityDescription) {
+    elements.remoteIdentityDescription.textContent = t(
+      renameMode ? "remoteIdentity.renameDescription" : "remoteIdentity.registerDescription",
+    );
+  }
+  if (elements.remoteIdentityCancel) {
+    elements.remoteIdentityCancel.classList.toggle("hidden", !renameMode);
+  }
+  if (elements.remoteIdentitySubmit) {
+    elements.remoteIdentitySubmit.textContent = t(
+      state.remoteIdentitySaving
+        ? "remoteIdentity.saving"
+        : renameMode
+          ? "remoteIdentity.renameSubmit"
+          : "remoteIdentity.registerSubmit",
+    );
+    elements.remoteIdentitySubmit.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
+  }
+  if (elements.remoteIdentityInput) {
+    elements.remoteIdentityInput.disabled = state.remoteIdentityChecking || state.remoteIdentitySaving;
+  }
+  if (elements.remoteIdentityMessage) {
+    elements.remoteIdentityMessage.textContent = state.remoteIdentityChecking
+      ? t("remoteIdentity.checking")
+      : state.remoteIdentityError;
+    elements.remoteIdentityMessage.classList.toggle("is-error", Boolean(state.remoteIdentityError));
+  }
+}
+
+function applyRemoteIdentity(payload) {
+  state.remoteIdentity = normalizedRemoteIdentity(payload);
+  state.remoteIdentityChecking = false;
+  state.remoteIdentitySaving = false;
+  state.remoteIdentityModalMode = "register";
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+}
+
+async function fetchRemoteIdentity({ showExpired = false } = {}) {
+  state.remoteIdentityChecking = true;
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+  try {
+    const response = await fetch("/api/remote-identity", {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: clientHeaders(),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(localizedApiMessage(payload.error) || t("error.requestFailed"));
+    }
+    applyRemoteIdentity(payload.data);
+    if (showExpired && !state.remoteIdentity.registered) {
+      state.remoteIdentityError = t("remoteIdentity.expired");
+      renderRemoteIdentity();
+    }
+  } catch (error) {
+    state.remoteIdentity = normalizedRemoteIdentity(null);
+    state.remoteIdentityChecking = false;
+    state.remoteIdentityError = error?.message || t("error.requestFailed");
+    renderRemoteIdentity();
+  }
+}
+
+function syncRemoteIdentityWithSnapshot(snapshot) {
+  if (!state.remoteIdentity.registered) {
+    renderRemoteIdentity();
+    return;
+  }
+  if (state.remoteIdentitySaving || state.remoteIdentityChecking) {
+    return;
+  }
+  const sessionId = String(snapshot?.remote_session_id || "").trim();
+  const users = Array.isArray(snapshot?.session_users) ? snapshot.session_users : [];
+  const identityIsCurrent = sessionId
+    && sessionId === state.remoteIdentity.sessionId
+    && users.includes(state.remoteIdentity.name);
+  if (identityIsCurrent) {
+    return;
+  }
+  // Re-check only when SSE reveals a session/name mismatch. This keeps other
+  // tabs in sync after rename without adding a polling loop.
+  void fetchRemoteIdentity({ showExpired: true });
+}
+
+function openRemoteIdentityRename() {
+  if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
+    return;
+  }
+  state.remoteIdentityModalMode = "rename";
+  state.remoteIdentityError = "";
+  if (elements.remoteIdentityInput) {
+    elements.remoteIdentityInput.value = state.remoteIdentity.name;
+  }
+  renderRemoteIdentity();
+  elements.remoteIdentityInput?.focus();
+  elements.remoteIdentityInput?.select();
+}
+
+function closeRemoteIdentityRename() {
+  if (!state.remoteIdentity.registered || state.remoteIdentitySaving) {
+    return;
+  }
+  state.remoteIdentityModalMode = "register";
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+}
+
+async function submitRemoteIdentity(event) {
+  event.preventDefault();
+  if (state.remoteIdentityChecking || state.remoteIdentitySaving) {
+    return;
+  }
+  const name = String(elements.remoteIdentityInput?.value || "").trim();
+  if (!name) {
+    state.remoteIdentityError = t("remoteIdentity.required");
+    renderRemoteIdentity();
+    return;
+  }
+  const renameMode = state.remoteIdentity.registered && state.remoteIdentityModalMode === "rename";
+  state.remoteIdentitySaving = true;
+  state.remoteIdentityError = "";
+  renderRemoteIdentity();
+  try {
+    const identity = await apiPost(
+      renameMode ? "/api/remote-identity/rename" : "/api/remote-identity/register",
+      { name },
+    );
+    applyRemoteIdentity(identity);
+    if (elements.remoteIdentityInput) {
+      elements.remoteIdentityInput.value = "";
+    }
+  } catch (error) {
+    state.remoteIdentitySaving = false;
+    state.remoteIdentityError = error?.message || t("error.requestFailed");
+    renderRemoteIdentity();
+  }
+}
+
+function ratingLog(message) {
+  console.log("[rating]", message);
+  try {
+    fetch("/api/rating/log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) { /* ignore */ }
+}
+
 function submitSongRating(item, score) {
   const bvid = String(item?.bvid || "").trim();
   const playId = ratingSubmissionPlayId(item);
@@ -1307,11 +1500,20 @@ function submitSongRating(item, score) {
   }
   const submissionKey = ratingSubmissionKey({ ...item, play_id: playId, requester_name: sessionUserName });
   if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    ratingLog("submit BLOCKED by dedup: playId=" + playId + " score=" + score);
     return false;
   }
   if (submissionKey) {
     state.ratingSubmittedKeys.add(submissionKey);
+    // The user submitted a manual rating — cancel any pending auto-rating
+    // for this item so the auto score=5 doesn't override the user's choice.
+    state.pendingAutoRatings.delete(playId);
+    // Also remove it from the flush queue if it's already been moved there.
+    state.autoRatingFlushQueue = state.autoRatingFlushQueue.filter(
+      (entry) => entry.playId !== playId
+    );
   }
+  ratingLog("submit OK: playId=" + playId + " score=" + score + " user=" + sessionUserName);
   const payload = {
     session_user_name: sessionUserName,
     play_id: playId,
@@ -1322,6 +1524,7 @@ function submitSongRating(item, score) {
     method: "POST",
     headers: clientHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
+    keepalive: true,
   }).catch((error) => {
     if (submissionKey) {
       state.ratingSubmittedKeys.delete(submissionKey);
@@ -1421,18 +1624,8 @@ function isItemRateable(item, isCurrent = false) {
   if (!item || !bvid) {
     return false;
   }
-  if (isCurrent) {
-    const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
-    if (!(durationSeconds > 0)) return false;
-    const ratio = currentSeconds / durationSeconds;
-    if (ratio < remoteRatingPromptThreshold) return false;
-  } else {
-    // Previous items must have actually played past the threshold
-    // during their playback to be rateable.
-    if (!item.threshold_reached) {
-      return false;
-    }
-  }
+  // Manual rating is no longer gated by the play threshold. The user can
+  // rate at any time — the auto-rating defers to the user's choice.
   return true;
 }
 
@@ -1610,26 +1803,82 @@ function openRatingPrompt(item, { manual = false } = {}) {
 
   const root = document.createElement("div");
   root.className = "rating-modal";
-  root.innerHTML = `
-    <div class="rating-modal-backdrop" data-rating-close></div>
-    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
-      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
-      <div data-rating-content></div>
-      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
-        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
-      </div>
-      <div class="rating-actions">
-        <button type="button" class="secondary-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
-        <button type="button" class="primary-button" data-rating-close>${htmlT("rating.done")}</button>
-        <button type="button" class="secondary-button" data-rating-opt-out-btn>${htmlT("rating.optOutBtn")}</button>
-      </div>
-      <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
-        <button type="button" data-rating-tab="previous" role="tab" ${previousRateable ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
-        <button type="button" data-rating-tab="current" role="tab" ${currentRateable ? "" : "disabled"}>${htmlT("rating.currentTab")}</button>
-      </div>
-      <p class="rating-message" data-rating-message></p>
-    </section>
-  `;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "rating-modal-backdrop";
+  backdrop.dataset.ratingClose = "";
+
+  const card = document.createElement("section");
+  card.className = "rating-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", t("rating.dialogLabel"));
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "rating-close";
+  closeButton.dataset.ratingClose = "";
+  closeButton.setAttribute("aria-label", t("rating.closeLabel"));
+  closeButton.textContent = "\u00d7";
+
+  const content = document.createElement("div");
+  content.dataset.ratingContent = "";
+
+  const stars = document.createElement("div");
+  stars.className = "rating-stars";
+  stars.setAttribute("role", "radiogroup");
+  stars.setAttribute("aria-label", t("rating.scoreLabel"));
+  [1, 2, 3, 4, 5].forEach((score) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.ratingScore = String(score);
+    button.setAttribute("aria-label", t("rating.scoreAria", { score }));
+    button.textContent = "\u2605";
+    stars.appendChild(button);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "rating-actions";
+  const addUpButton = document.createElement("button");
+  addUpButton.type = "button";
+  addUpButton.className = "secondary-button";
+  addUpButton.dataset.ratingAddUp = "";
+  addUpButton.textContent = t("rating.addUp");
+  const doneButton = document.createElement("button");
+  doneButton.type = "button";
+  doneButton.className = "primary-button";
+  doneButton.dataset.ratingClose = "";
+  doneButton.textContent = t("rating.done");
+  const optOutButton = document.createElement("button");
+  optOutButton.type = "button";
+  optOutButton.className = "secondary-button";
+  optOutButton.dataset.ratingOptOutBtn = "";
+  optOutButton.textContent = t("rating.optOutBtn");
+  actions.append(addUpButton, doneButton, optOutButton);
+
+  const tabs = document.createElement("div");
+  tabs.className = "rating-tabs";
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", t("rating.dialogLabel"));
+  const previousTab = document.createElement("button");
+  previousTab.type = "button";
+  previousTab.dataset.ratingTab = "previous";
+  previousTab.setAttribute("role", "tab");
+  previousTab.disabled = !previousRateable;
+  previousTab.textContent = t("rating.previousTab");
+  const currentTab = document.createElement("button");
+  currentTab.type = "button";
+  currentTab.dataset.ratingTab = "current";
+  currentTab.setAttribute("role", "tab");
+  currentTab.disabled = !currentRateable;
+  currentTab.textContent = t("rating.currentTab");
+  tabs.append(previousTab, currentTab);
+
+  const message = document.createElement("p");
+  message.className = "rating-message";
+  message.dataset.ratingMessage = "";
+  card.append(closeButton, content, stars, actions, tabs, message);
+  root.append(backdrop, card);
   document.body.appendChild(root);
   state.ratingPromptElement = root;
   renderRatingPromptContent();
@@ -1648,6 +1897,44 @@ function currentPlaybackClockSeconds() {
     currentSeconds: Math.min(durationSeconds, baseSeconds + elapsedSeconds),
     durationSeconds,
   };
+}
+
+function flushPendingAutoRating(playId, itemData) {
+  if (!playId) {
+    return;
+  }
+  // itemData may be provided directly (when flushing from the queue, where
+  // the item was already removed from pendingAutoRatings). Otherwise look
+  // it up in pendingAutoRatings.
+  let pending = itemData;
+  if (!pending) {
+    pending = state.pendingAutoRatings.get(playId);
+    if (!pending) {
+      ratingLog("flush: no pending for " + playId);
+      return;
+    }
+    state.pendingAutoRatings.delete(playId);
+  }
+  // If the user already submitted a manual rating, skip the auto-rating.
+  const submissionKey = ratingSubmissionKey({ ...pending.item, play_id: playId });
+  if (submissionKey && state.ratingSubmittedKeys.has(submissionKey)) {
+    ratingLog("flush: skipping " + playId + " (user already rated)");
+    return;
+  }
+  ratingLog("flush: submitting auto score=5 for " + playId);
+  submitSongRating(pending.item, 5);
+}
+
+function flushAllPendingAutoRatings() {
+  // On session close, flush everything in order: the queue first, then any
+  // remaining pending items (the current/last song).
+  for (const entry of state.autoRatingFlushQueue.splice(0)) {
+    flushPendingAutoRating(entry.playId, entry);
+  }
+  const playIds = Array.from(state.pendingAutoRatings.keys());
+  for (const playId of playIds) {
+    flushPendingAutoRating(playId);
+  }
 }
 
 function maybeUpdateRemoteRatingPrompt(currentItem) {
@@ -1697,24 +1984,63 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   const bvid = String(currentItem?.bvid || "").trim();
   const playId = String(currentItem?.id || bvid).trim();
-  if (!currentItem || !bvid || !playId || !(durationSeconds > 0)) {
-    return;
-  }
-  const ratio = currentSeconds / durationSeconds;
-  const ratingItem = { ...currentItem, play_id: playId };
-  if (ratio >= remoteRatingPromptThreshold) {
-    // Skip auto-submit when the rating modal is already open so the user
-    // can choose their own score instead of the default 5.
-    if (!state.ratingPromptSeenPlayIds.has(playId) && !state.ratingPromptElement) {
-      state.ratingPromptSeenPlayIds.add(playId);
-      submitSongRating(ratingItem, 5);
+
+  // Detect song transition: when the current playId changes, move the
+  // previous song's pending auto-rating into the flush queue, then flush
+  // the queue head (the oldest un-rated song). Songs that the user already
+  // manually rated are removed from the queue at submit time, so the head
+  // is always a song that still needs its auto score=5.
+  if (playId && state.ratingCurrentPlayId && state.ratingCurrentPlayId !== playId) {
+    const prevPlayId = state.ratingCurrentPlayId;
+    ratingLog("transition: " + prevPlayId + " -> " + playId
+      + " pending=" + Array.from(state.pendingAutoRatings.keys()).join(",")
+      + " queue=" + state.autoRatingFlushQueue.map((e) => e.playId).join(","));
+    // Move the previous song's pending auto-rating into the flush queue.
+    if (state.pendingAutoRatings.has(prevPlayId)) {
+      const entry = state.pendingAutoRatings.get(prevPlayId);
+      state.pendingAutoRatings.delete(prevPlayId);
+      state.autoRatingFlushQueue.push(entry);
+      ratingLog("moved " + prevPlayId + " to flush queue (len=" + state.autoRatingFlushQueue.length + ")");
+    }
+    // Flush the head of the queue — it's the oldest song that hasn't been
+    // manually rated. If the user rated it, submitSongRating already removed
+    // it from the queue, so the head is always a genuinely pending auto-rating.
+    if (state.autoRatingFlushQueue.length > 0) {
+      const headEntry = state.autoRatingFlushQueue.shift();
+      flushPendingAutoRating(headEntry.playId, headEntry);
     }
   }
-}
+  if (playId) {
+    state.ratingCurrentPlayId = playId;
+  }
 
-function handleRequesterSelectionChange() {
-  maybeUpdateRemoteRatingPrompt(state.data?.current_item);
-  render();
+  if (!currentItem || !bvid || !playId || !(durationSeconds > 0)) {
+    ratingLog("early return: playId=" + playId + " dur=" + durationSeconds + " cur=" + currentSeconds);
+    return;
+  }
+
+  const ratio = currentSeconds / durationSeconds;
+  if (ratio >= remoteRatingPromptThreshold && !state.ratingPromptSeenPlayIds.has(playId)) {
+    ratingLog("threshold reached: playId=" + playId + " ratio=" + ratio.toFixed(2)
+      + " seen=" + state.ratingPromptSeenPlayIds.has(playId));
+  }
+  if (ratio >= remoteRatingPromptThreshold) {
+    // Mark as seen so the auto-prompt can fire, but do NOT auto-submit
+    // score=5 immediately. Instead, queue it as a pending auto-rating
+    // that will be flushed when the next song starts or on session close.
+    // This gives the user time to manually rate first.
+    if (!state.ratingPromptSeenPlayIds.has(playId)) {
+      state.ratingPromptSeenPlayIds.add(playId);
+      const ratingItem = { ...currentItem, play_id: playId };
+      const submissionKey = ratingSubmissionKey({ ...ratingItem, play_id: playId });
+      // Only queue if the user hasn't already submitted a manual rating.
+      if (!submissionKey || !state.ratingSubmittedKeys.has(submissionKey)) {
+        state.pendingAutoRatings.set(playId, { item: ratingItem, playId });
+        ratingLog("queued pending auto for " + playId
+          + " pending=" + Array.from(state.pendingAutoRatings.keys()).join(","));
+      }
+    }
+  }
 }
 
 function filenameFromContentDisposition(headerValue, fallback) {
@@ -1984,6 +2310,7 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     || !state.data
     || nextRenderSignature !== state.dataRenderSignature;
   state.data = snapshot;
+  syncRemoteIdentityWithSnapshot(snapshot);
   scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
 
   // 简单的渲染防抖，合并 50ms 内的多次状态变更（如切歌时的密集事件）
@@ -4164,7 +4491,7 @@ function render() {
   }
   const playbackMode = frontendPlaybackMode(data.playback_mode);
 
-  renderRequesterSelect(data.session_users || []);
+  renderRemoteIdentity();
   renderCurrentItem(data.current_item, playbackMode);
   renderCurrentRatingButton(data.current_item);
   renderAudioVariantBar(data.current_item, playbackMode);
@@ -4186,39 +4513,6 @@ function render() {
 
 function frontendPlaybackMode(_mode) {
   return "local";
-}
-
-function renderRequesterSelect(sessionUsers) {
-  const users = Array.isArray(sessionUsers) ? sessionUsers : [];
-  const signature = JSON.stringify({ language: state.language, users });
-  if (signature === state.requesterSelectRenderSignature) {
-    return;
-  }
-  state.requesterSelectRenderSignature = signature;
-
-  const previousValue = selectedRequesterName();
-  elements.requesterSelect.innerHTML = "";
-
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = users.length ? t("session.selectRequester") : t("remote.addUserFirst");
-  elements.requesterSelect.appendChild(placeholder);
-
-  users.forEach((userName) => {
-    const option = document.createElement("option");
-    option.value = userName;
-    option.textContent = userName;
-    elements.requesterSelect.appendChild(option);
-  });
-
-  if (previousValue && users.includes(previousValue)) {
-    elements.requesterSelect.value = previousValue;
-  } else if (users.length) {
-    elements.requesterSelect.value = users[0];
-  } else {
-    elements.requesterSelect.value = "";
-  }
-  elements.requesterSelect.disabled = users.length === 0;
 }
 
 function renderCurrentItem(current, playbackMode) {
@@ -6158,6 +6452,14 @@ function queueNoteText() {
 }
 
 function disconnectClient() {
+  // Flush any pending auto-ratings before disconnecting so songs that
+  // crossed the threshold but never got a deferred flush (e.g. the last
+  // song in the session) still get their auto score=5 submitted.
+  try {
+    flushAllPendingAutoRatings();
+  } catch (error) {
+    console.warn("Failed to flush pending auto-ratings on disconnect:", error);
+  }
   closeEventStream();
   if (state.disconnectSent) {
     return;
@@ -6910,7 +7212,9 @@ elements.remoteKeyShiftInput?.addEventListener("keydown", async (event) => {
   await setRemoteKeyShift(event.target.value);
 });
 
-elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
+elements.remoteIdentityRename?.addEventListener("click", openRemoteIdentityRename);
+elements.remoteIdentityCancel?.addEventListener("click", closeRemoteIdentityRename);
+elements.remoteIdentityForm?.addEventListener("submit", submitRemoteIdentity);
 
 elements.gatchaButton.addEventListener("click", handleGatchaDraw);
 elements.gatchaRetryButton.addEventListener("click", handleGatchaDraw);
@@ -7344,6 +7648,7 @@ function makeElementDraggable(element, onClick) {
   let initialTop = 0;
   let isDragging = false;
   let moved = false;
+  let suppressNextClick = false;
 
   const dragStart = (e) => {
     if (e.type === "mousedown" && e.button !== 0) {
@@ -7364,10 +7669,12 @@ function makeElementDraggable(element, onClick) {
 
     isDragging = true;
     moved = false;
+    suppressNextClick = false;
 
     if (e.type === "touchstart") {
       document.addEventListener("touchmove", dragMove, { passive: false });
       document.addEventListener("touchend", dragEnd);
+      document.addEventListener("touchcancel", dragEnd);
     } else {
       document.addEventListener("mousemove", dragMove);
       document.addEventListener("mouseup", dragEnd);
@@ -7397,6 +7704,9 @@ function makeElementDraggable(element, onClick) {
     }
 
     if (moved) {
+      if (e.cancelable) {
+        e.preventDefault();
+      }
       let newLeft = initialLeft + deltaX;
       let newTop = initialTop + deltaY;
 
@@ -7417,23 +7727,33 @@ function makeElementDraggable(element, onClick) {
     isDragging = false;
     element.classList.remove("dragging");
 
-    if (e.type === "touchend") {
+    if (e.type === "touchend" || e.type === "touchcancel") {
       document.removeEventListener("touchmove", dragMove);
       document.removeEventListener("touchend", dragEnd);
+      document.removeEventListener("touchcancel", dragEnd);
     } else {
       document.removeEventListener("mousemove", dragMove);
       document.removeEventListener("mouseup", dragEnd);
     }
 
-    if (!moved) {
-      if (typeof onClick === "function") {
-        onClick();
-      }
+    suppressNextClick = e.type !== "touchcancel" && moved;
+  };
+
+  const handleClick = (e) => {
+    if (suppressNextClick) {
+      suppressNextClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (typeof onClick === "function") {
+      onClick();
     }
   };
 
   element.addEventListener("mousedown", dragStart);
   element.addEventListener("touchstart", dragStart);
+  element.addEventListener("click", handleClick);
 
   window.addEventListener("resize", () => {
     const rect = element.getBoundingClientRect();
@@ -7519,6 +7839,8 @@ async function startRemoteSession() {
   initFloatingControlConsole();
   await loadTranslations();
   renderLayoutMode();
+  renderRemoteIdentity();
+  await fetchRemoteIdentity();
   try {
     await fetchState();
   } catch (error) {

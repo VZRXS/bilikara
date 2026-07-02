@@ -691,6 +691,26 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.session_users[:3], ["A", "C", "B"])
         self.assertEqual([item.id for item in self.store.playlist], ["c1", "b1", "a2"])
 
+    def test_rename_session_user_updates_current_queue_and_session_records(self):
+        self.add_item("a1", requester_name="A")
+        self.add_item("b1", requester_name="B")
+        self.store.advance_to_next()
+
+        renamed = self.store.rename_session_user("A", "Singer A")
+
+        self.assertEqual(renamed, "Singer A")
+        self.assertIn("Singer A", self.store.session_users)
+        self.assertNotIn("A", self.store.session_users)
+        requesters = [
+            self.store.current_item.requester_name if self.store.current_item else "",
+            *(item.requester_name for item in self.store.playlist),
+            *(entry.requester_name for entry in self.store.history),
+            *(entry.requester_name for entry in self.store.session_history),
+            *(entry.requester_name for entry in self.store.session_played),
+        ]
+        self.assertNotIn("A", requesters)
+        self.assertIn("Singer A", requesters)
+
     def test_play_now_rebuilds_cycle_queue_for_new_current_requester(self):
         self.add_item("a1", requester_name="A")
         self.add_item("b1", requester_name="B")

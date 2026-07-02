@@ -105,6 +105,7 @@ const state = {
   displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
+  diagnosticsBusy: false,
   avOffsetSaving: false,
   avOffsetSaveSeq: 0,
   avOffsetEchoSuppressUntil: 0,
@@ -210,6 +211,7 @@ const state = {
   pendingReviewItems: [],
   pendingReviewTotal: 0,
   pendingReviewExportCount: 0,
+  pendingReviewLoaded: false,
   pendingReviewLoading: false,
   pendingReviewApproving: false,
   pendingReviewSeq: 0,
@@ -277,6 +279,8 @@ const elements = {
   playerResetButton: document.getElementById("player-reset-button"),
   updatePreviewCheckbox: document.getElementById("update-preview-checkbox"),
   updateCheckButton: document.getElementById("update-check-button"),
+  diagnosticCopyButton: document.getElementById("diagnostic-copy-button"),
+  diagnosticPackageButton: document.getElementById("diagnostic-package-button"),
   currentTitle: document.getElementById("current-title"),
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
@@ -1529,29 +1533,85 @@ function openRatingPrompt(item) {
 
   const root = document.createElement("div");
   root.className = "rating-modal";
-  root.innerHTML = `
-    <div class="rating-modal-backdrop" data-rating-close></div>
-    <section class="rating-card" role="dialog" aria-modal="true" aria-label="${htmlT("rating.dialogLabel")}">
-      <button type="button" class="rating-close" data-rating-close aria-label="${htmlT("rating.closeLabel")}">×</button>
-      <div data-rating-content></div>
-      <div class="rating-stars" role="radiogroup" aria-label="${htmlT("rating.scoreLabel")}">
-        ${[1, 2, 3, 4, 5].map((score) => `<button type="button" data-rating-score="${score}" aria-label="${htmlT("rating.scoreAria", { score })}">★</button>`).join("")}
-      </div>
-      <div class="rating-actions">
-        <button type="button" class="toolbar-button" data-rating-add-up>${htmlT("rating.addUp")}</button>
-        <button type="button" class="next-button" data-rating-close>${htmlT("rating.done")}</button>
-      </div>
-      <label class="rating-opt-out">
-        <input type="checkbox" data-rating-opt-out>
-        <span>${htmlT("rating.optOut")}</span>
-      </label>
-      <div class="rating-tabs" role="tablist" aria-label="${htmlT("rating.dialogLabel")}">
-        <button type="button" data-rating-tab="previous" role="tab" ${promptItems.previous ? "" : "disabled"}>${htmlT("rating.previousTab")}</button>
-        <button type="button" data-rating-tab="current" role="tab">${htmlT("rating.currentTab")}</button>
-      </div>
-      <p class="rating-message" data-rating-message></p>
-    </section>
-  `;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "rating-modal-backdrop";
+  backdrop.dataset.ratingClose = "";
+
+  const card = document.createElement("section");
+  card.className = "rating-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", t("rating.dialogLabel"));
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "rating-close";
+  closeButton.dataset.ratingClose = "";
+  closeButton.setAttribute("aria-label", t("rating.closeLabel"));
+  closeButton.textContent = "\u00d7";
+
+  const content = document.createElement("div");
+  content.dataset.ratingContent = "";
+
+  const stars = document.createElement("div");
+  stars.className = "rating-stars";
+  stars.setAttribute("role", "radiogroup");
+  stars.setAttribute("aria-label", t("rating.scoreLabel"));
+  [1, 2, 3, 4, 5].forEach((score) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.ratingScore = String(score);
+    button.setAttribute("aria-label", t("rating.scoreAria", { score }));
+    button.textContent = "\u2605";
+    stars.appendChild(button);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "rating-actions";
+  const addUpButton = document.createElement("button");
+  addUpButton.type = "button";
+  addUpButton.className = "toolbar-button";
+  addUpButton.dataset.ratingAddUp = "";
+  addUpButton.textContent = t("rating.addUp");
+  const doneButton = document.createElement("button");
+  doneButton.type = "button";
+  doneButton.className = "next-button";
+  doneButton.dataset.ratingClose = "";
+  doneButton.textContent = t("rating.done");
+  actions.append(addUpButton, doneButton);
+
+  const optOut = document.createElement("label");
+  optOut.className = "rating-opt-out";
+  const optOutInput = document.createElement("input");
+  optOutInput.type = "checkbox";
+  optOutInput.dataset.ratingOptOut = "";
+  const optOutText = document.createElement("span");
+  optOutText.textContent = t("rating.optOut");
+  optOut.append(optOutInput, optOutText);
+
+  const tabs = document.createElement("div");
+  tabs.className = "rating-tabs";
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", t("rating.dialogLabel"));
+  const previousTab = document.createElement("button");
+  previousTab.type = "button";
+  previousTab.dataset.ratingTab = "previous";
+  previousTab.setAttribute("role", "tab");
+  previousTab.disabled = !promptItems.previous;
+  previousTab.textContent = t("rating.previousTab");
+  const currentTab = document.createElement("button");
+  currentTab.type = "button";
+  currentTab.dataset.ratingTab = "current";
+  currentTab.setAttribute("role", "tab");
+  currentTab.textContent = t("rating.currentTab");
+  tabs.append(previousTab, currentTab);
+
+  const message = document.createElement("p");
+  message.className = "rating-message";
+  message.dataset.ratingMessage = "";
+  card.append(closeButton, content, stars, actions, optOut, tabs, message);
+  root.append(backdrop, card);
   document.body.appendChild(root);
   state.ratingPromptElement = root;
   renderRatingPromptContent();
@@ -2003,6 +2063,11 @@ function setDeveloperMode(enabled) {
   if (!state.developerMode) {
     state.bilikaraSecret = "";
     state.pendingReviewItems = [];
+    state.pendingReviewTotal = 0;
+    state.pendingReviewExportCount = 0;
+    state.pendingReviewLoaded = false;
+    state.pendingReviewLoading = false;
+    state.pendingReviewSeq += 1;
     state.pendingReviewMessage = "";
     state.pendingReviewError = "";
     const activeReviewButton = Array.from(elements.searchSidebarItems || []).find(
@@ -2196,7 +2261,10 @@ async function deleteDeveloperD1Entry(snapshot) {
     bvid: snapshot.bvid,
     BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
   });
-  removePendingReviewItem(snapshot.bvid);
+  const reviewCacheExhausted = removePendingReviewItem(snapshot.bvid);
+  if (reviewCacheExhausted) {
+    await loadPendingReviewItems({ force: true });
+  }
   setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
 }
 
@@ -2210,7 +2278,14 @@ async function deleteDeveloperD1EntriesByMid(snapshot) {
     BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
   });
   if (Array.isArray(state.pendingReviewItems) && mid) {
+    const previousCount = state.pendingReviewItems.length;
     state.pendingReviewItems = state.pendingReviewItems.filter((item) => String(item?.mid || "").trim() !== mid);
+    const removedCount = previousCount - state.pendingReviewItems.length;
+    state.pendingReviewTotal = Math.max(0, Number(state.pendingReviewTotal || 0) - removedCount);
+    if (removedCount && state.pendingReviewItems.length === 0) {
+      state.pendingReviewLoaded = false;
+      await loadPendingReviewItems({ force: true });
+    }
     if (elements.searchModalOtherView?.querySelector("[data-pending-review-view]")) {
       renderPendingReviewView();
     }
@@ -3373,11 +3448,16 @@ function renderPendingReviewView() {
   }
 }
 
-async function loadPendingReviewItems() {
+async function loadPendingReviewItems({ force = false } = {}) {
   if (!state.developerMode || !state.bilikaraSecret) {
     state.pendingReviewItems = [];
+    state.pendingReviewLoaded = false;
     state.pendingReviewMessage = "";
     state.pendingReviewError = t("search.reviewNeedDeveloper");
+    renderPendingReviewView();
+    return;
+  }
+  if (!force && (state.pendingReviewLoaded || state.pendingReviewLoading)) {
     renderPendingReviewView();
     return;
   }
@@ -3395,9 +3475,11 @@ async function loadPendingReviewItems() {
     state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
     state.pendingReviewTotal = Number(payload?.total_pending || 0);
     state.pendingReviewExportCount = Number(payload?.export_count || 0);
+    state.pendingReviewLoaded = true;
   } catch (error) {
     if (state.pendingReviewSeq === reviewSeq) {
       state.pendingReviewItems = [];
+      state.pendingReviewLoaded = false;
       state.pendingReviewError = error?.message || t("error.requestFailed");
     }
   } finally {
@@ -3411,17 +3493,22 @@ async function loadPendingReviewItems() {
 function removePendingReviewItem(bvid) {
   const normalizedBvid = String(bvid || "").trim();
   if (!normalizedBvid || !Array.isArray(state.pendingReviewItems)) {
-    return;
+    return false;
   }
   const nextItems = state.pendingReviewItems.filter((item) => searchResultBvid(item) !== normalizedBvid);
   if (nextItems.length === state.pendingReviewItems.length) {
-    return;
+    return false;
   }
   state.pendingReviewItems = nextItems;
   state.pendingReviewTotal = Math.max(0, Number(state.pendingReviewTotal || 0) - 1);
+  const exhausted = nextItems.length === 0;
+  if (exhausted) {
+    state.pendingReviewLoaded = false;
+  }
   if (elements.searchModalOtherView?.querySelector("[data-pending-review-view]")) {
     renderPendingReviewView();
   }
+  return exhausted;
 }
 
 async function approvePendingReviewVisibleItems() {
@@ -3443,6 +3530,7 @@ async function approvePendingReviewVisibleItems() {
     state.pendingReviewItems = Array.isArray(payload?.items) ? payload.items : [];
     state.pendingReviewTotal = Number(payload?.total_pending || 0);
     state.pendingReviewExportCount = Number(payload?.export_count || 0);
+    state.pendingReviewLoaded = true;
     state.pendingReviewMessage = t("search.reviewApproved", {
       count: Number(payload?.approved || 0),
       skipped: Number(payload?.skipped_missing || 0),
@@ -9022,6 +9110,116 @@ async function exportHistory(format, source = "played", pageSize = 200) {
   }
 }
 
+function diagnosticBrowserInfo() {
+  const userAgentData = navigator.userAgentData;
+  const brands = Array.isArray(userAgentData?.brands)
+    ? userAgentData.brands.map((item) => ({
+      brand: String(item?.brand || ""),
+      version: String(item?.version || ""),
+    }))
+    : [];
+  return {
+    user_agent: String(navigator.userAgent || ""),
+    platform: String(userAgentData?.platform || navigator.platform || ""),
+    mobile: Boolean(userAgentData?.mobile),
+    brands,
+  };
+}
+
+function setDiagnosticsBusy(busy) {
+  state.diagnosticsBusy = Boolean(busy);
+  if (elements.diagnosticCopyButton) {
+    elements.diagnosticCopyButton.disabled = state.diagnosticsBusy;
+  }
+  if (elements.diagnosticPackageButton) {
+    elements.diagnosticPackageButton.disabled = state.diagnosticsBusy;
+  }
+}
+
+async function diagnosticResponse(path) {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: clientHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ browser: diagnosticBrowserInfo() }),
+  });
+  if (!response.ok) {
+    let message = t("service.diagnosticsFailed");
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      // Keep the generic message for non-JSON failures.
+    }
+    throw new Error(message);
+  }
+  return response;
+}
+
+async function copyDiagnosticsMarkdown() {
+  if (state.diagnosticsBusy) {
+    return;
+  }
+  setDiagnosticsBusy(true);
+  setAppMessage(t("service.diagnosticsGenerating"));
+  try {
+    const response = await diagnosticResponse("/api/diagnostics/markdown");
+    const payload = await response.json();
+    const markdown = String(payload?.data?.markdown || "");
+    if (!markdown) {
+      throw new Error(t("service.diagnosticsFailed"));
+    }
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(markdown);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = markdown;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    setDiagnosticsBusy(false);
+    setAppMessage(t("service.diagnosticsCopied"));
+  } catch (error) {
+    setDiagnosticsBusy(false);
+    setAppMessage(error?.message || t("service.diagnosticsFailed"), true);
+  }
+}
+
+async function downloadDiagnosticsPackage() {
+  if (state.diagnosticsBusy) {
+    return;
+  }
+  setDiagnosticsBusy(true);
+  setAppMessage(t("service.diagnosticsGenerating"));
+  try {
+    const response = await diagnosticResponse("/api/diagnostics/package");
+    const blob = await response.blob();
+    const filename = filenameFromContentDisposition(
+      response.headers.get("Content-Disposition"),
+      "bilikara-diagnostics.zip",
+    );
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = filename;
+    link.rel = "noopener";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+    setDiagnosticsBusy(false);
+    setAppMessage(t("service.diagnosticsDownloaded"));
+  } catch (error) {
+    setDiagnosticsBusy(false);
+    setAppMessage(error?.message || t("service.diagnosticsFailed"), true);
+  }
+}
+
 async function resetRuntimeData() {
   try {
     teardownMountedPlayer();
@@ -9941,6 +10139,9 @@ elements.updatePreviewCheckbox?.addEventListener("change", (event) => {
   writeLocalPreference(storageKeys.updatePreview, state.updatePreviewEnabled);
   renderUpdatePreviewControl();
 });
+
+elements.diagnosticCopyButton?.addEventListener("click", copyDiagnosticsMarkdown);
+elements.diagnosticPackageButton?.addEventListener("click", downloadDiagnosticsPackage);
 
 elements.avSyncPanel?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-step], button[data-reset-av-offset]");
@@ -10984,7 +11185,11 @@ elements.searchSidebarItems?.forEach((btn) => {
       elements.searchModalPlaceholder?.classList.add("hidden");
       elements.favlistBrowserView?.classList.add("hidden");
       elements.searchModalOtherView?.classList.remove("hidden");
-      loadPendingReviewItems();
+      if (state.pendingReviewLoaded || state.pendingReviewLoading) {
+        renderPendingReviewView();
+      } else {
+        loadPendingReviewItems();
+      }
     } else {
       elements.searchModalPlaceholder?.classList.add("hidden");
       elements.favlistBrowserView?.classList.add("hidden");
@@ -11049,7 +11254,7 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
 elements.searchModalOtherView?.addEventListener("click", (event) => {
   const reviewRefreshButton = event.target.closest("[data-pending-review-refresh]");
   if (reviewRefreshButton && elements.searchModalOtherView.contains(reviewRefreshButton)) {
-    loadPendingReviewItems();
+    loadPendingReviewItems({ force: true });
     return;
   }
   const reviewApproveButton = event.target.closest("[data-pending-review-approve]");
