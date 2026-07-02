@@ -88,6 +88,8 @@
 
   --accent-soft: rgba(208, 90, 63, 0.12);
   --accent-soft-hover: rgba(208, 90, 63, 0.18);
+  --cache-retry-bg: rgba(208, 90, 63, 0.12);
+  --cache-retry-hover-bg: rgba(208, 90, 63, 0.18);
   --switch-checked-bg: rgba(208, 90, 63, 0.78);
   --switch-checked-border: rgba(208, 90, 63, 0.2);
   --switch-checked-shadow: rgba(208, 90, 63, 0.12);
