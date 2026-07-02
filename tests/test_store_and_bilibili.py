@@ -7,8 +7,10 @@ from unittest.mock import patch
 
 import bilikara.bilibili as bilibili_module
 from bilikara.bilibili import (
+    BilibiliError,
     ManualBindingRequiredError,
     VideoPage,
+    fetch_dash_playurl,
     fetch_video_item,
     resolve_video_reference,
     select_matching_pages,
@@ -2188,6 +2190,16 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["bvid"], "BV1xx411c7mD")
         mock_sleep.assert_any_call(bilibili_module.GATCHA_RETRY_DELAY_SECONDS)
+
+
+    @patch("bilikara.bilibili.request_json")
+    @patch("bilikara.bilibili.get_cached_wbi_keys")
+    def test_fetch_dash_playurl_rejects_non_dict_payload(self, mock_get_cached_wbi_keys, mock_request_json):
+        mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
+        mock_request_json.return_value = []
+
+        with self.assertRaisesRegex(BilibiliError, "播放地址响应格式异常"):
+            fetch_dash_playurl("BV1xx411c7mD", 456)
 
 
 if __name__ == "__main__":

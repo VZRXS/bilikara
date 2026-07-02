@@ -2903,6 +2903,8 @@ def fetch_dash_playurl(
     api_url = f"https://api.bilibili.com/x/player/wbi/playurl?{query_string}"
 
     payload = request_json(api_url)
+    if not isinstance(payload, dict):
+        raise BilibiliError("播放地址响应格式异常")
     code = int(payload.get("code") or 0) if isinstance(payload.get("code"), (int, float)) else 0
     if code != 0:
         message = str(payload.get("message") or "获取播放地址失败")
