@@ -437,6 +437,14 @@ class AppContext:
         )
         self._notify_state_changed()
 
+    def cache_downloader_status(self, download_source: str) -> dict[str, object]:
+        return self.cache_manager.downloader_status(download_source)
+
+    def prepare_cache_downloader(self, download_source: str) -> dict[str, object]:
+        result = self.cache_manager.prepare_downloader(download_source)
+        self._notify_state_changed()
+        return result
+
     def set_client_media_capabilities(self, payload: dict[str, object]) -> dict[str, object]:
         result = self.cache_manager.set_client_media_capabilities(payload)
         self._notify_state_changed()
@@ -1490,6 +1498,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         "score": score,
                     },
                 })
+                return
+            if route == "/api/cache-downloader/status":
+                download_source = body.get("download_source")
+                if not isinstance(download_source, str):
+                    raise ValueError("download_source 必须是字符串")
+                result = CONTEXT.cache_downloader_status(download_source)
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/cache-downloader/prepare":
+                download_source = body.get("download_source")
+                if not isinstance(download_source, str):
+                    raise ValueError("download_source 必须是字符串")
+                result = CONTEXT.prepare_cache_downloader(download_source)
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/cache-policy":
                 max_cache_items = body.get("max_cache_items") if "max_cache_items" in body else None

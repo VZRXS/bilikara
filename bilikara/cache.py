@@ -638,6 +638,74 @@ class CacheManager:
             return value
         return DEFAULT_DOWNLOAD_SOURCE
 
+    def downloader_status(self, download_source: object) -> dict[str, Any]:
+        normalized_source = self._normalize_download_source(download_source)
+        if normalized_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return self._aria2c_status()
+        return {
+            "download_source": normalized_source,
+            "tool": self._download_source_label(normalized_source),
+            "ready": True,
+            "requires_prepare": False,
+        }
+
+    def prepare_downloader(self, download_source: object) -> dict[str, Any]:
+        normalized_source = self._normalize_download_source(download_source)
+        if normalized_source != DOWNLOAD_SOURCE_DOWNKYI:
+            return self.downloader_status(normalized_source)
+        status = self._aria2c_status()
+        if status.get("ready"):
+            return status
+        if not status.get("auto_prepare_supported"):
+            raise RuntimeError(str(status.get("message") or "aria2c requires manual installation"))
+        self._ensure_aria2c()
+        status = self._aria2c_status()
+        status["prepared"] = True
+        return status
+
+    def _aria2c_status(self) -> dict[str, Any]:
+        override = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None
+        system_path = None
+        if not override:
+            system_aria2c = shutil.which("aria2c")
+            if system_aria2c:
+                system_path = Path(system_aria2c)
+
+        binary_path = override if override else (system_path if system_path else self._local_aria2c_binary_path())
+        exists = binary_path.exists() if (override or not system_path) else True
+        version = self._read_aria2c_version(binary_path) if exists else ""
+        system, arch = self._current_platform_tokens()
+        auto_prepare_supported = system == "windows"
+        ready = bool(version)
+        manual_path = self._local_aria2c_binary_path()
+        if ready:
+            if override:
+                message = f"使用外部 aria2c: {override}"
+            elif system_path:
+                message = f"使用系统 aria2c: {system_path}"
+            else:
+                message = f"aria2c {version} 已就绪"
+        elif exists:
+            message = f"aria2c 不可执行: {binary_path}"
+        elif auto_prepare_supported:
+            message = f"需要下载 aria2c 到 {manual_path}"
+        else:
+            message = f"当前平台需要手动安装 aria2c，或将 aria2c 放入 {manual_path}"
+        return {
+            "download_source": DOWNLOAD_SOURCE_DOWNKYI,
+            "tool": "aria2c",
+            "ready": ready,
+            "requires_prepare": not ready,
+            "auto_prepare_supported": auto_prepare_supported,
+            "path": str(binary_path),
+            "manual_path": str(manual_path),
+            "version": version,
+            "platform": system,
+            "arch": arch,
+            "install_url": "https://github.com/aria2/aria2/releases",
+            "message": message,
+        }
+
     def cache_metrics(self) -> dict[str, Any]:
         item_bytes: dict[str, int] = {}
         total_bytes = 0
@@ -958,9 +1026,12 @@ class CacheManager:
                 continue
             should_resync = False
             try:
-                with self.lock:
-                    self.active_item_id = item_id
-                should_resync = self._cache_item(item_id)
+                try:
+                    with self.lock:
+                        self.active_item_id = item_id
+                    should_resync = self._cache_item(item_id)
+                except Exception as exc:  # noqa: BLE001
+                    _debug_print(f"[bilikara-cache] Unexpected error caching item {item_id}: {exc}")
             finally:
                 with self.lock:
                     if self.active_item_id == item_id:
@@ -1101,6 +1172,26 @@ class CacheManager:
                         log_path,
                         f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
                     )
+            self._clear_item_download_progress(item_id)
+            _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
+            self.store.update_item(
+                item_id,
+                cache_status="failed",
+                cache_message=f"缓存失败: {last_message}",
+                persist_backup=False,
+            )
+            self._record_item_activity(item_id)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            if self._take_retry_request(item_id):
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                self._remove_cache_dir(item_id)
+                fresh_item = self.store.get_item(item_id)
+                if fresh_item and self._should_cache(item_id):
+                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                return False
+            last_message = str(exc)
             self._clear_item_download_progress(item_id)
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
@@ -3220,6 +3311,17 @@ class CacheManager:
                     self.binary_version = version
                     self.binary_message = f"使用外部 aria2c: {override}"
                 return override
+
+            system_aria2c = shutil.which("aria2c")
+            if system_aria2c:
+                system_path = Path(system_aria2c)
+                version = self._read_aria2c_version(system_path)
+                if version:
+                    with self.lock:
+                        self.binary_state = "ready"
+                        self.binary_version = version
+                        self.binary_message = f"使用系统 aria2c: {system_path}"
+                    return system_path
 
             binary_path = self._local_aria2c_binary_path()
             if not binary_path.exists():

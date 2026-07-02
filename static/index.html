@@ -272,84 +272,93 @@
                   </div>
                 </div>
               </div>
-              <div class="cache-panel-row cache-panel-danger-row">
-                <div>
-                  <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
-                  <p class="cache-panel-hint" data-i18n="service.dataCleanupHint">保留已唱归档和抽卡缓存</p>
-                </div>
-                <button
-                  type="button"
-                  class="toolbar-button cache-data-reset-button"
-                  id="data-reset-button"
-                  title="清空 data"
-                  data-i18n-title="service.clearDataTitle"
-                >
-                  <span data-i18n="common.clear">清空</span>
-                </button>
-              </div>
-              <div class="cache-panel-row cache-panel-danger-row">
-                <div>
-                  <p class="cache-panel-label" data-i18n="service.playbackRepair">播放异常处理</p>
-                  <p class="cache-panel-hint" data-i18n="service.playbackRepairHint">本地播放出错时重新缓存或重置播放器</p>
-                </div>
-                <div class="cache-panel-actions">
-                  <button
-                    type="button"
-                    class="toolbar-button cache-retry-current-button"
-                    id="current-cache-retry-button"
-                    title="重新缓存当前歌曲"
-                    data-i18n-title="service.retryCurrentTitle"
-                    disabled
-                  >
-                    <span data-i18n="service.retryCache">重新缓存</span>
-                  </button>
+              <div class="cache-panel-divider"></div>
+              <button type="button" class="cache-panel-menu-row" id="cache-panel-advanced-trigger" aria-expanded="false">
+                <span class="cache-panel-label" data-i18n="service.advancedSettings">高级与系统维护</span>
+                <span class="cache-panel-menu-chevron" aria-hidden="true"></span>
+              </button>
+              
+              <!-- COLLAPSIBLE INLINE ADVANCED VIEW -->
+              <div class="cache-advanced-inline-view hidden" id="cache-advanced-inline-view">
+                <div class="cache-panel-row cache-panel-danger-row">
+                  <div>
+                    <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
+                    <p class="cache-panel-hint" data-i18n="service.dataCleanupHint">保留已唱归档和抽卡缓存</p>
+                  </div>
                   <button
                     type="button"
                     class="toolbar-button cache-data-reset-button"
-                    id="player-reset-button"
-                    title="重置播放器状态"
-                    data-i18n-title="service.resetPlayerTitle"
+                    id="data-reset-button"
+                    title="清空 data"
+                    data-i18n-title="service.clearDataTitle"
                   >
-                    <span data-i18n="common.reset">重置</span>
+                    <span data-i18n="common.clear">清空</span>
                   </button>
                 </div>
-              </div>
-              <div class="cache-panel-row cache-panel-update-row">
-                <div>
-                  <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
-                  <p class="cache-panel-hint" data-i18n="service.releaseOnlyHint">默认检查正式版</p>
+                <div class="cache-panel-row cache-panel-danger-row">
+                  <div>
+                    <p class="cache-panel-label" data-i18n="service.playbackRepair">播放异常处理</p>
+                    <p class="cache-panel-hint" data-i18n="service.playbackRepairHint">本地播放出错时重新缓存或重置播放器</p>
+                  </div>
+                  <div class="cache-panel-actions">
+                    <button
+                      type="button"
+                      class="toolbar-button cache-retry-current-button"
+                      id="current-cache-retry-button"
+                      title="重新缓存当前歌曲"
+                      data-i18n-title="service.retryCurrentTitle"
+                      disabled
+                    >
+                      <span data-i18n="service.retryCache">重新缓存</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="toolbar-button cache-data-reset-button"
+                      id="player-reset-button"
+                      title="重置播放器状态"
+                      data-i18n-title="service.resetPlayerTitle"
+                    >
+                      <span data-i18n="common.reset">重置</span>
+                    </button>
+                  </div>
                 </div>
-                <div class="cache-update-control">
-                  <label class="cache-preview-field" for="update-preview-checkbox" title="同时检查预览版 Release" data-i18n-title="service.previewTitle">
-                    <span data-i18n="service.previewRelease">预览版</span>
-                    <input id="update-preview-checkbox" type="checkbox" />
-                    <span class="cache-preview-switch" aria-hidden="true">
-                      <span class="cache-preview-switch-thumb"></span>
-                    </span>
-                  </label>
-                  <button
-                    type="button"
-                    class="toolbar-button cache-update-button"
-                    id="update-check-button"
-                    title="检查 bilikara 新版本"
-                    data-i18n-title="service.checkUpdateTitle"
-                  >
-                    <span data-i18n="service.checkUpdate">检查更新</span>
-                  </button>
+                <div class="cache-panel-row cache-panel-update-row">
+                  <div>
+                    <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
+                    <p class="cache-panel-hint" data-i18n="service.releaseOnlyHint">默认检查正式版</p>
+                  </div>
+                  <div class="cache-update-control">
+                    <label class="cache-preview-field" for="update-preview-checkbox" title="同时检查预览版 Release" data-i18n-title="service.previewTitle">
+                      <span data-i18n="service.previewRelease">预览版</span>
+                      <input id="update-preview-checkbox" type="checkbox" />
+                      <span class="cache-preview-switch" aria-hidden="true">
+                        <span class="cache-preview-switch-thumb"></span>
+                      </span>
+                    </label>
+                    <button
+                      type="button"
+                      class="toolbar-button cache-update-button"
+                      id="update-check-button"
+                      title="检查 bilikara 新版本"
+                      data-i18n-title="service.checkUpdateTitle"
+                    >
+                      <span data-i18n="service.checkUpdate">检查更新</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <div class="cache-panel-row diagnostic-panel-row">
-                <div>
-                  <p class="cache-panel-label" data-i18n="service.diagnostics">诊断信息</p>
-                  <p class="cache-panel-hint" data-i18n="service.diagnosticsHint">不含个人信息</p>
-                </div>
-                <div class="cache-panel-actions diagnostic-panel-actions">
-                  <button type="button" class="toolbar-button cache-retry-current-button" id="diagnostic-copy-button">
-                    <span data-i18n="service.copyDiagnosticsMarkdown">复制 .md</span>
-                  </button>
-                  <button type="button" class="toolbar-button cache-update-button" id="diagnostic-package-button">
-                    <span data-i18n="service.downloadDiagnostics">生成诊断包</span>
-                  </button>
+                <div class="cache-panel-row diagnostic-panel-row">
+                  <div>
+                    <p class="cache-panel-label" data-i18n="service.diagnostics">诊断信息</p>
+                    <p class="cache-panel-hint" data-i18n="service.diagnosticsHint">不含个人信息</p>
+                  </div>
+                  <div class="cache-panel-actions diagnostic-panel-actions">
+                    <button type="button" class="toolbar-button cache-retry-current-button" id="diagnostic-copy-button">
+                      <span data-i18n="service.copyDiagnosticsMarkdown">复制 .md</span>
+                    </button>
+                    <button type="button" class="toolbar-button cache-update-button" id="diagnostic-package-button">
+                      <span data-i18n="service.downloadDiagnostics">生成诊断包</span>
+                    </button>
+                  </div>
                 </div>
               </div>
               <div class="cache-panel-footer">

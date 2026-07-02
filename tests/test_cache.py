@@ -1404,6 +1404,28 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(manager.binary_version, "1.37.0")
         self.assertFalse((aria2_dir / "aria2-1.37.0-win-64bit-build1.zip").exists())
 
+    def test_ensure_aria2c_resolves_system_path_when_available(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_PATH_OVERRIDE", ""
+        ), patch(
+            "bilikara.cache.shutil.which", return_value="/usr/bin/aria2c"
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(
+                    manager,
+                    "_read_aria2c_version",
+                    return_value="1.37.0",
+                ) as mock_read_version:
+                    path = manager._ensure_aria2c()
+                    mock_read_version.assert_called_once_with(Path("/usr/bin/aria2c"))
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, Path("/usr/bin/aria2c"))
+        self.assertEqual(manager.binary_version, "1.37.0")
+        self.assertIn("使用系统 aria2c", manager.binary_message)
+
     def test_urlopen_retries_ssl_certificate_failure_with_certifi(self):
         certificate_error = urllib.error.URLError(
             ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED")

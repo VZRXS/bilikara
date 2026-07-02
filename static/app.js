@@ -102,6 +102,7 @@ const state = {
   listFlipTimer: null,
   listFlipFrame: null,
   cacheSettingsOpen: false,
+  cacheAdvancedOpen: false,
   displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
@@ -255,6 +256,8 @@ const elements = {
   cacheSettings: document.getElementById("cache-settings"),
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
+  cacheAdvancedInlineView: document.getElementById("cache-advanced-inline-view"),
+  cachePanelAdvancedTrigger: document.getElementById("cache-panel-advanced-trigger"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
   cachePanelVersion: document.getElementById("cache-panel-version"),
   bbdownStatusRow: document.getElementById("bbdown-status-row"),
@@ -5242,6 +5245,7 @@ function renderCachePolicyControls(cachePolicy) {
     currentDownloadSource,
     audioHires,
     saving: state.cachePolicySaving,
+    downloadSourcePreparing: state.downloadSourcePreparing,
   });
 
   if (signature === state.cachePolicyControlRenderSignature) {
@@ -5293,6 +5297,13 @@ function syncCachePanelVisibility(options = {}) {
     elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);
   }
   setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen);
+  if (!state.cacheSettingsOpen) {
+    state.cacheAdvancedOpen = false;
+  }
+  setClassToggle(elements.cacheAdvancedInlineView, "hidden", !state.cacheAdvancedOpen);
+  if (elements.cachePanelAdvancedTrigger) {
+    elements.cachePanelAdvancedTrigger.setAttribute("aria-expanded", String(state.cacheAdvancedOpen));
+  }
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
   });
@@ -9515,6 +9526,107 @@ async function setAdvanceDelay(delaySeconds) {
   }
 }
 
+function isDownkyiDownloadSource(downloadSource) {
+  return String(downloadSource || "").trim().toLowerCase() === "downkyi";
+}
+
+function currentCacheDownloadSource() {
+  return String(state.data?.cache_policy?.download_source || "bbdown");
+}
+
+function restoreCacheDownloadSourceSelect() {
+  if (elements.cacheDownloadSourceSelect) {
+    elements.cacheDownloadSourceSelect.value = currentCacheDownloadSource();
+  }
+}
+
+function aria2cPrepareConfirmMessage(status) {
+  const path = String(status?.manual_path || status?.path || "tools/aria2c");
+  const url = String(status?.install_url || "https://github.com/aria2/aria2/releases");
+  if (status?.auto_prepare_supported) {
+    return t("service.aria2cDownloadConfirm", { path });
+  }
+  return t("service.aria2cInstallRequired", { path, url });
+}
+
+async function setDownloadSourcePreference(downloadSource, selectedLabel) {
+  if (!downloadSource || downloadSource === currentCacheDownloadSource()) {
+    return;
+  }
+
+  if (isDownkyiDownloadSource(downloadSource)) {
+    state.downloadSourcePreparing = true;
+    renderCachePolicyControls(state.data?.cache_policy);
+    let status = null;
+    try {
+      status = await apiPost("/api/cache-downloader/status", { download_source: downloadSource });
+    } catch (error) {
+      restoreCacheDownloadSourceSelect();
+      setAppMessage(error.message, true);
+      return;
+    } finally {
+      state.downloadSourcePreparing = false;
+      if (state.data) {
+        renderCachePolicyControls(state.data.cache_policy);
+      }
+    }
+
+    if (!status?.ready) {
+      restoreCacheDownloadSourceSelect();
+      openConfirm({
+        type: "prepare-download-source",
+        downloadSource,
+        selectedLabel,
+        canPrepare: Boolean(status?.auto_prepare_supported),
+        message: aria2cPrepareConfirmMessage(status),
+        primaryLabel: status?.auto_prepare_supported ? t("service.downloadAndEnable") : t("common.confirm"),
+        anchorElementId: "cache-download-source-select",
+        anchorAlign: "end",
+        anchorGap: 8,
+      });
+      return;
+    }
+  }
+
+  await setCachePolicyPreference(
+    { download_source: downloadSource },
+    t("service.downloadSourceUpdated", { source: selectedLabel }),
+  );
+}
+
+async function prepareDownloadSourceAndApply(intent) {
+  const downloadSource = String(intent?.downloadSource || "").trim();
+  if (!downloadSource) {
+    closeConfirm();
+    return;
+  }
+  if (!intent?.canPrepare) {
+    closeConfirm();
+    restoreCacheDownloadSourceSelect();
+    setAppMessage(intent?.message || t("service.aria2cInstallRequired", { path: "tools/aria2c", url: "https://github.com/aria2/aria2/releases" }), true);
+    return;
+  }
+
+  state.downloadSourcePreparing = true;
+  renderCachePolicyControls(state.data?.cache_policy);
+  setAppMessage(t("service.aria2cPreparing"));
+  try {
+    await apiPost("/api/cache-downloader/prepare", { download_source: downloadSource });
+    state.data = await apiPost("/api/cache-policy", { download_source: downloadSource });
+    closeConfirm();
+    setAppMessage(t("service.downloadSourceUpdated", { source: intent.selectedLabel || downloadSource }));
+    render();
+  } catch (error) {
+    restoreCacheDownloadSourceSelect();
+    setAppMessage(error.message, true);
+  } finally {
+    state.downloadSourcePreparing = false;
+    if (state.data) {
+      renderCachePolicyControls(state.data.cache_policy);
+    }
+  }
+}
+
 async function setCachePolicyPreference(payload, successMessage) {
   if (state.cachePolicySaving) {
     return;
@@ -10045,6 +10157,11 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
 });
 
+elements.cachePanelAdvancedTrigger?.addEventListener("click", () => {
+  state.cacheAdvancedOpen = !state.cacheAdvancedOpen;
+  syncCachePanelVisibility();
+});
+
 elements.displaySettingsToggle?.addEventListener("click", () => {
   state.displaySettingsOpen = !state.displaySettingsOpen;
   if (state.displaySettingsOpen) {
@@ -10117,10 +10234,7 @@ elements.cacheDownloadSourceSelect?.addEventListener("change", async (event) => 
     return;
   }
   const selectedLabel = event.target.selectedOptions?.[0]?.textContent || downloadSource;
-  await setCachePolicyPreference(
-    { download_source: downloadSource },
-    t("service.downloadSourceUpdated", { source: selectedLabel }),
-  );
+  await setDownloadSourcePreference(downloadSource, selectedLabel);
 });
 
 elements.cacheHiresCheckbox?.addEventListener("change", async (event) => {
@@ -10711,6 +10825,10 @@ elements.confirmOk.addEventListener("click", async () => {
       await installAppUpdate(Boolean(intent.includePreview));
       return;
     }
+    if (intent.type === "prepare-download-source") {
+      await prepareDownloadSourceAndApply(intent);
+      return;
+    }
     if (intent.type === "open-release" && intent.releaseUrl) {
       window.open(intent.releaseUrl, "_blank", "noopener");
       closeConfirm();
@@ -10779,6 +10897,7 @@ document.addEventListener("click", (event) => {
       event.target.closest("#current-cache-retry-button") ||
       event.target.closest("#player-reset-button") ||
       event.target.closest("#update-check-button") ||
+      event.target.closest("#cache-download-source-select") ||
       event.target.closest("#add-form") ||
       event.target.closest("#gatcha-uid-form") ||
       event.target.closest("#modal-follow-uid-form") ||
