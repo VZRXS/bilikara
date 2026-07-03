@@ -4911,7 +4911,7 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   }
 
   setTextContent(elements.cacheChipMeta, cacheChipMeta);
-  setTextContent(elements.cacheUsageDetail, cacheUsageDetail);
+  renderCacheUsageDetail(cacheUsageDetail);
   renderCacheSlider(cachePolicy);
   renderAdvanceDelaySlider(state.data?.player_settings);
   renderCachePolicyControls(cachePolicy);
@@ -5282,7 +5282,7 @@ function renderCachePolicyControls(cachePolicy) {
       elements.cacheDownloadSourceSelect.dataset.choicesSignature = choicesSignature;
     }
     elements.cacheDownloadSourceSelect.value = currentDownloadSource;
-    elements.cacheDownloadSourceSelect.disabled = state.cachePolicySaving;
+    elements.cacheDownloadSourceSelect.disabled = state.cachePolicySaving || state.downloadSourcePreparing;
   }
 
   if (elements.cacheHiresCheckbox) {
@@ -7951,6 +7951,23 @@ function formatCacheUsage(cachePolicy) {
   return t("service.cacheUsageDetail", { usage, count: cachedItemCount });
 }
 
+function renderCacheUsageDetail(detailText) {
+  if (!elements.cacheUsageDetail) {
+    return;
+  }
+  const lines = String(detailText || "").split(/\n+/);
+  const usageLine = lines.shift() || "";
+  const countLine = lines.join(" ").trim();
+  const usageEl = elements.cacheUsageDetail.querySelector(".cache-usage-size");
+  const countEl = elements.cacheUsageDetail.querySelector(".cache-usage-count");
+  if (!usageEl || !countEl) {
+    setTextContent(elements.cacheUsageDetail, detailText);
+    return;
+  }
+  setTextContent(usageEl, usageLine);
+  setTextContent(countEl, countLine);
+}
+
 function cacheProgressPercentForItem(item) {
   if (!item || item.cache_status !== "downloading") {
     return null;
@@ -9572,14 +9589,23 @@ async function setDownloadSourcePreference(downloadSource, selectedLabel) {
     }
 
     if (!status?.ready) {
+      if (status?.auto_prepare_supported) {
+        await prepareDownloadSourceAndApply({
+          type: "prepare-download-source",
+          downloadSource,
+          selectedLabel,
+          canPrepare: true,
+        });
+        return;
+      }
       restoreCacheDownloadSourceSelect();
       openConfirm({
         type: "prepare-download-source",
         downloadSource,
         selectedLabel,
-        canPrepare: Boolean(status?.auto_prepare_supported),
+        canPrepare: false,
         message: aria2cPrepareConfirmMessage(status),
-        primaryLabel: status?.auto_prepare_supported ? t("service.downloadAndEnable") : t("common.confirm"),
+        primaryLabel: t("common.confirm"),
         anchorElementId: "cache-download-source-select",
         anchorAlign: "end",
         anchorGap: 8,

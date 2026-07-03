@@ -658,30 +658,53 @@ class CacheManager:
             return status
         if not status.get("auto_prepare_supported"):
             raise RuntimeError(str(status.get("message") or "aria2c requires manual installation"))
-        self._ensure_aria2c()
+
+        restore_binary_state = normalized_source != self._current_download_source()
+        with self.lock:
+            previous_binary = (self.binary_state, self.binary_version, self.binary_message)
+        try:
+            self._ensure_aria2c()
+        except urllib.error.HTTPError as exc:
+            if restore_binary_state:
+                self._restore_binary_status(previous_binary)
+            if exc.code == 404:
+                raise RuntimeError(
+                    f"未找到可用的 aria2c 自动下载包。请安装 aria2c，"
+                    f"或将可执行文件放入 {self._local_aria2c_binary_path()} 后再切换。"
+                ) from exc
+            raise
+        except Exception:
+            if restore_binary_state:
+                self._restore_binary_status(previous_binary)
+            raise
         status = self._aria2c_status()
         status["prepared"] = True
         return status
 
+    def _restore_binary_status(self, status: tuple[str, str, str]) -> None:
+        with self.lock:
+            self.binary_state, self.binary_version, self.binary_message = status
+
     def _aria2c_status(self) -> dict[str, Any]:
         override = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else None
-        system_path = None
-        if not override:
-            system_aria2c = shutil.which("aria2c")
-            if system_aria2c:
-                system_path = Path(system_aria2c)
+        manual_path = self._local_aria2c_binary_path()
+        system_path = None if override else self._system_aria2c_path()
 
-        binary_path = override if override else (system_path if system_path else self._local_aria2c_binary_path())
-        exists = binary_path.exists() if (override or not system_path) else True
+        if override and override.exists():
+            binary_path = override
+        elif system_path:
+            binary_path = system_path
+        else:
+            binary_path = manual_path
+        exists = binary_path.exists()
         version = self._read_aria2c_version(binary_path) if exists else ""
         system, arch = self._current_platform_tokens()
-        auto_prepare_supported = system == "windows"
+        auto_prepare_supported = not exists and self._aria2_auto_prepare_supported(system, arch)
         ready = bool(version)
-        manual_path = self._local_aria2c_binary_path()
         if ready:
-            if override:
+            if override and binary_path == override:
                 message = f"使用外部 aria2c: {override}"
-            elif system_path:
+            elif system_path and binary_path == system_path:
                 message = f"使用系统 aria2c: {system_path}"
             else:
                 message = f"aria2c {version} 已就绪"
@@ -2185,7 +2208,7 @@ class CacheManager:
             "--min-split-size=1M",
             "--max-connection-per-server=16",
             "--file-allocation=falloc",
-            "--summary-interval=5",
+            "--summary-interval=1",
             "--console-log-level=notice",
         ]
 
@@ -2872,6 +2895,32 @@ class CacheManager:
     @staticmethod
     def _selected_stream_size_hint_bytes(line: str, stream_kind: str) -> int:
         normalized_line = str(line or "").strip()
+
+        # Check for aria2c progress line, e.g. [#23e8fe 96KiB/2.3MiB(3%)] or [#23e8fe 96K/2.3M(3%)]
+        aria2c_match = re.search(
+            r"\[#\w+\s+[0-9.]+[a-zA-Z]*/([0-9.]+)([a-zA-Z]+)\(",
+            normalized_line,
+            re.IGNORECASE,
+        )
+        if aria2c_match:
+            amount, unit = aria2c_match.groups()
+            try:
+                value = float(amount)
+            except (TypeError, ValueError):
+                return 0
+            unit_upper = str(unit or "").upper()
+            if unit_upper.startswith("T"):
+                multiplier = 1024 ** 4
+            elif unit_upper.startswith("G"):
+                multiplier = 1024 ** 3
+            elif unit_upper.startswith("M"):
+                multiplier = 1024 ** 2
+            elif unit_upper.startswith("K"):
+                multiplier = 1024 ** 1
+            else:
+                multiplier = 1
+            return max(0, int(value * multiplier))
+
         expected_prefix = "[视频]" if stream_kind == "video" else "[音频]"
         if not normalized_line.startswith(expected_prefix):
             return 0
@@ -2952,13 +3001,11 @@ class CacheManager:
         progress_percent: float | None = None,
         done: bool = False,
     ) -> None:
-        current_bytes = self._path_size(target_dir)
         with self.lock:
             tracks = self.item_download_progress.get(item_id)
             if not tracks or track_key not in tracks:
                 return
             track = tracks[track_key]
-            track["current_bytes"] = max(0, int(current_bytes or 0))
             if target_bytes is not None and int(target_bytes or 0) > 0:
                 track["target_bytes"] = max(
                     int(track.get("target_bytes") or 0),
@@ -2976,10 +3023,23 @@ class CacheManager:
             if done:
                 track["done"] = True
                 track["progress_percent"] = 100.0
+                disk_size = self._path_size(target_dir)
+                track["current_bytes"] = max(0, int(disk_size or 0))
                 if int(track.get("target_bytes") or 0) <= 0:
                     track["target_bytes"] = int(track.get("current_bytes") or 0)
                 elif int(track.get("current_bytes") or 0) > int(track.get("target_bytes") or 0):
                     track["target_bytes"] = int(track.get("current_bytes") or 0)
+            else:
+                target_val = int(track.get("target_bytes") or 0)
+                pct = float(track.get("progress_percent") or 0.0)
+                if target_val > 0 and pct > 0.0:
+                    track["current_bytes"] = int(target_val * pct / 100.0)
+                else:
+                    disk_size = self._path_size(target_dir)
+                    if target_val > 0 and disk_size == target_val:
+                        pass
+                    else:
+                        track["current_bytes"] = max(0, int(disk_size or 0))
         self._publish_download_progress(item_id)
 
     def _publish_download_progress(self, item_id: str) -> None:
@@ -3251,17 +3311,23 @@ class CacheManager:
                 self.binary_state = "installing"
                 self.binary_message = "正在强制更新 BBDown" if force_refresh else "正在检查和更新 BBDown"
 
-            asset = self._select_asset(release)
-            tmp_archive = BB_DOWN_DIR / asset["name"]
-            self._download_tool_asset(asset, tmp_archive)
-            self._extract_archive(tmp_archive, BB_DOWN_DIR)
-            tmp_archive.unlink(missing_ok=True)
+            try:
+                asset = self._select_asset(release)
+                tmp_archive = BB_DOWN_DIR / asset["name"]
+                self._download_tool_asset(asset, tmp_archive)
+                self._extract_archive(tmp_archive, BB_DOWN_DIR)
+                tmp_archive.unlink(missing_ok=True)
 
-            if not current_binary.exists():
-                raise RuntimeError("下载完成，但未找到 BBDown 可执行文件")
+                if not current_binary.exists():
+                    raise RuntimeError("下载完成，但未找到 BBDown 可执行文件")
 
-            current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
-            BB_DOWN_VERSION_FILE.write_text(latest_version, encoding="utf-8")
+                current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
+                BB_DOWN_VERSION_FILE.write_text(latest_version, encoding="utf-8")
+            except Exception as exc:
+                with self.lock:
+                    self.binary_state = "error"
+                    self.binary_message = f"更新 BBDown 失败: {exc}"
+                raise
 
             with self.lock:
                 self.binary_state = "ready"
@@ -3288,7 +3354,13 @@ class CacheManager:
                 with self.lock:
                     self.binary_state = "installing"
                     self.binary_message = "正在下载 yt-dlp"
-                self._install_ytdlp(binary_path)
+                try:
+                    self._install_ytdlp(binary_path)
+                except Exception as exc:
+                    with self.lock:
+                        self.binary_state = "error"
+                        self.binary_message = f"下载 yt-dlp 失败: {exc}"
+                    raise
             if not binary_path.exists():
                 raise RuntimeError(f"未找到 yt-dlp，可将 yt-dlp 放入 {YTDLP_DIR}")
             binary_path.chmod(binary_path.stat().st_mode | stat.S_IEXEC)
@@ -3312,9 +3384,8 @@ class CacheManager:
                     self.binary_message = f"使用外部 aria2c: {override}"
                 return override
 
-            system_aria2c = shutil.which("aria2c")
-            if system_aria2c:
-                system_path = Path(system_aria2c)
+            system_path = self._system_aria2c_path()
+            if system_path:
                 version = self._read_aria2c_version(system_path)
                 if version:
                     with self.lock:
@@ -3325,10 +3396,21 @@ class CacheManager:
 
             binary_path = self._local_aria2c_binary_path()
             if not binary_path.exists():
+                system, arch = self._current_platform_tokens()
+                if not self._aria2_auto_prepare_supported(system, arch):
+                    raise RuntimeError(
+                        f"未找到 aria2c。请安装 aria2c，或将可执行文件放入 {binary_path} 后再切换。"
+                    )
                 with self.lock:
                     self.binary_state = "installing"
                     self.binary_message = "正在下载 aria2c"
-                self._install_aria2c(binary_path)
+                try:
+                    self._install_aria2c(binary_path)
+                except Exception as exc:
+                    with self.lock:
+                        self.binary_state = "error"
+                        self.binary_message = f"下载 aria2c 失败: {exc}"
+                    raise
             if not binary_path.exists():
                 raise RuntimeError(
                     f"未找到 aria2c，可将 aria2c 放入 {ARIA2C_DIR}\n"
@@ -3347,6 +3429,26 @@ class CacheManager:
     @staticmethod
     def _local_aria2c_binary_path() -> Path:
         return ARIA2C_DIR / ("aria2c.exe" if os.name == "nt" else "aria2c")
+
+    @staticmethod
+    def _system_aria2c_path() -> Path | None:
+        resolved = shutil.which("aria2c")
+        if resolved:
+            return Path(resolved)
+        if os.name == "nt":
+            return None
+        for raw_path in (
+            "/opt/homebrew/bin/aria2c",
+            "/usr/local/bin/aria2c",
+            "/opt/local/bin/aria2c",
+            "/usr/bin/aria2c",
+            "/bin/aria2c",
+            "/snap/bin/aria2c",
+        ):
+            candidate = Path(raw_path)
+            if candidate.exists():
+                return candidate
+        return None
 
     def _install_ytdlp(self, target_path: Path) -> None:
         try:
@@ -3370,6 +3472,14 @@ class CacheManager:
             self._download_tool_asset(asset, target_path)
 
     def _install_aria2c(self, target_path: Path) -> None:
+        system, arch = self._current_platform_tokens()
+        if system == "linux" and shutil.which("apt-get") and shutil.which("dpkg-deb"):
+            self._install_aria2_apt(target_path)
+            return
+        if system == "darwin" and shutil.which("brew"):
+            self._install_aria2_brew(target_path)
+            return
+
         try:
             release = self._fetch_aria2_release()
             asset = self._select_aria2_asset(release)
@@ -3386,6 +3496,169 @@ class CacheManager:
             self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
         finally:
             archive_path.unlink(missing_ok=True)
+
+    def _install_aria2_apt(self, target_path: Path) -> None:
+        import tempfile
+        import subprocess
+
+        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=str(ARIA2C_DIR)) as tmpdir:
+            try:
+                subprocess.run(
+                    ["apt-get", "download", "aria2", "libaria2-0"],
+                    cwd=tmpdir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except (subprocess.CalledProcessError, subprocess.SubprocessError):
+                try:
+                    subprocess.run(
+                        ["apt-get", "download", "aria2"],
+                        cwd=tmpdir,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                except (subprocess.CalledProcessError, subprocess.SubprocessError) as exc:
+                    raise RuntimeError(
+                        f"apt-get download 失败: "
+                        f"{getattr(exc, 'stderr', None) or getattr(exc, 'stdout', None) or str(exc)}"
+                    )
+
+            deb_files = list(Path(tmpdir).glob("*.deb"))
+            if not deb_files:
+                raise RuntimeError("apt-get download 成功运行但未找到 .deb 文件")
+
+            extract_dir = Path(tmpdir) / "extracted"
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            for deb_file in deb_files:
+                try:
+                    subprocess.run(
+                        ["dpkg-deb", "-x", str(deb_file), str(extract_dir)],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                    )
+                except (subprocess.CalledProcessError, subprocess.SubprocessError) as exc:
+                    raise RuntimeError(
+                        f"dpkg-deb 解压 {deb_file.name} 失败: "
+                        f"{getattr(exc, 'stderr', None) or getattr(exc, 'stdout', None) or str(exc)}"
+                    )
+
+            found_binary = None
+            for candidate in extract_dir.rglob("aria2c"):
+                if candidate.is_file() and not candidate.is_symlink():
+                    found_binary = candidate
+                    break
+
+            if not found_binary:
+                raise RuntimeError("在提取的 .deb 包中未找到 aria2c 可执行文件")
+
+            shutil.copy2(found_binary, target_path)
+
+            for candidate in extract_dir.rglob("libaria2.so*"):
+                if candidate.is_file() or candidate.is_symlink():
+                    dest = target_path.parent / candidate.name
+                    if candidate.is_symlink():
+                        dest.unlink(missing_ok=True)
+                        link_target = os.readlink(candidate)
+                        os.symlink(link_target, dest)
+                    else:
+                        shutil.copy2(candidate, dest)
+
+    def _install_aria2_brew(self, target_path: Path) -> None:
+        import subprocess
+
+        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                ["brew", "fetch", "--bottle", "aria2"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except (subprocess.CalledProcessError, subprocess.SubprocessError):
+            try:
+                subprocess.run(
+                    ["brew", "fetch", "aria2"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except (subprocess.CalledProcessError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(
+                    f"brew fetch aria2 失败: "
+                    f"{getattr(exc, 'stderr', None) or getattr(exc, 'stdout', None) or str(exc)}"
+                )
+
+        try:
+            res = subprocess.run(
+                ["brew", "--cache", "--bottle", "aria2"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            cache_path_str = res.stdout.strip()
+        except (subprocess.CalledProcessError, subprocess.SubprocessError):
+            try:
+                res = subprocess.run(
+                    ["brew", "--cache", "aria2"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                cache_path_str = res.stdout.strip()
+            except (subprocess.CalledProcessError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(
+                    f"获取 brew 缓存路径失败: "
+                    f"{getattr(exc, 'stderr', None) or getattr(exc, 'stdout', None) or str(exc)}"
+                )
+
+        lines = [line.strip() for line in cache_path_str.splitlines() if line.strip()]
+        if not lines:
+            raise RuntimeError("brew --cache 返回空路径")
+        cache_file_path = Path(lines[-1])
+
+        if not cache_file_path.exists():
+            try:
+                res = subprocess.run(
+                    ["brew", "--cache"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                brew_cache_dir = Path(res.stdout.strip())
+            except (subprocess.CalledProcessError, subprocess.SubprocessError):
+                brew_cache_dir = Path("~/Library/Caches/Homebrew").expanduser()
+
+            candidates = []
+            if brew_cache_dir.exists():
+                for p in brew_cache_dir.rglob("*aria2*"):
+                    if p.is_file() and p.name.endswith((".tar.gz", ".tgz", ".bottle.tar.gz")):
+                        candidates.append(p)
+            if candidates:
+                candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                cache_file_path = candidates[0]
+            else:
+                raise RuntimeError(
+                    f"Brew 缓存文件不存在于 {cache_file_path} 且未在 {brew_cache_dir} 找到替代文件"
+                )
+
+        tmp_archive = ARIA2C_DIR / "aria2_brew_bottle.tar.gz"
+        try:
+            shutil.copy2(cache_file_path, tmp_archive)
+            self._extract_tool_binary_from_archive(tmp_archive, ARIA2C_DIR, target_path.name)
+        finally:
+            tmp_archive.unlink(missing_ok=True)
 
     def _fetch_ytdlp_release(self) -> dict:
         return self._fetch_release(YTDLP_RELEASE_API)
@@ -3489,15 +3762,31 @@ class CacheManager:
             name = "yt-dlp"
         return self._fallback_tool_asset(name)
 
+    @staticmethod
+    def _aria2_windows_fallback_asset_name(arch: str) -> str:
+        if arch == "x86":
+            return "aria2-1.37.0-win-32bit-build1.zip"
+        return "aria2-1.37.0-win-64bit-build1.zip"
+
+    @staticmethod
+    def _aria2_auto_prepare_supported(system: str, arch: str) -> bool:
+        if system == "windows":
+            return True
+        if system == "linux":
+            return bool(shutil.which("apt-get") and shutil.which("dpkg-deb"))
+        if system == "darwin":
+            return bool(shutil.which("brew"))
+        return False
+
     def _aria2_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
         if system != "windows":
-            raise RuntimeError(f"aria2c auto download is currently only available for Windows: {system}/{arch}")
-        if arch == "x86":
-            name = "aria2-1.37.0-win-32bit-build1.zip"
-        else:
-            name = "aria2-1.37.0-win-64bit-build1.zip"
-        return self._fallback_tool_asset(name)
+            raise RuntimeError(f"no aria2c fallback asset for {system}/{arch}")
+        name = self._aria2_windows_fallback_asset_name(arch)
+        return {
+            "name": name,
+            "browser_download_url": f"https://github.com/aria2/aria2/releases/download/release-1.37.0/{urllib.parse.quote(name)}",
+        }
 
     def _select_ytdlp_asset(self, release: dict) -> dict:
         system, arch = self._current_platform_tokens()
@@ -3525,19 +3814,23 @@ class CacheManager:
 
     def _select_aria2_asset(self, release: dict) -> dict:
         system, arch = self._current_platform_tokens()
-        if system != "windows":
-            raise RuntimeError(f"aria2c auto download is currently only available for Windows: {system}/{arch}")
-        if arch == "arm64":
-            preferred_fragments = ("win-64bit",)
-        elif arch == "x86":
-            preferred_fragments = ("win-32bit",)
+        if system == "windows":
+            preferred_fragments = ("win-32bit",) if arch == "x86" else ("win-64bit",)
+        elif system == "darwin":
+            preferred_fragments = ("osx-arm64", "macos-arm64", "darwin-arm64") if arch == "arm64" else (
+                "osx-x64",
+                "macos-x64",
+                "darwin-x64",
+            )
+        elif system == "linux":
+            preferred_fragments = ("linux-arm64", "linux-aarch64") if arch == "arm64" else ("linux-x64", "linux-amd64")
         else:
-            preferred_fragments = ("win-64bit",)
+            raise RuntimeError(f"no aria2c release asset for {system}/{arch}")
         assets = release.get("assets") or []
         for fragment in preferred_fragments:
             for asset in assets:
                 name = str(asset.get("name") or "").lower()
-                if fragment in name and name.endswith(".zip"):
+                if fragment in name and name.endswith((".zip", ".tar.gz", ".tgz")):
                     return asset
         raise RuntimeError(f"no aria2c release asset for {system}/{arch}")
 
@@ -3582,6 +3875,15 @@ class CacheManager:
             shutil.rmtree(extract_dir, ignore_errors=True)
 
     @staticmethod
+    def _aria2c_env(binary_path: Path) -> dict[str, str]:
+        env = os.environ.copy()
+        if os.name != "nt":
+            lib_dir = str(binary_path.parent)
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = os.pathsep.join([lib_dir, existing_ld]) if existing_ld else lib_dir
+        return env
+
+    @staticmethod
     def _read_aria2c_version(binary_path: Path) -> str:
         try:
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
@@ -3591,6 +3893,7 @@ class CacheManager:
                 text=True,
                 errors="replace",
                 timeout=10,
+                env=CacheManager._aria2c_env(binary_path),
                 **CacheManager._hidden_process_kwargs(),
             )
             first_line = (process.stdout or "").split("\n")[0].strip()
@@ -4053,6 +4356,18 @@ class CacheManager:
             path_entries.append(ytdlp_dir)
         existing_path = env.get("PATH", "")
         env["PATH"] = os.pathsep.join([*path_entries, existing_path]) if existing_path else os.pathsep.join(path_entries)
+
+        if os.name != "nt":
+            lib_dirs = []
+            for extra_dir in extra_tool_dirs or []:
+                if extra_dir:
+                    tool_dir_path = str(extra_dir)
+                    if tool_dir_path not in lib_dirs:
+                        lib_dirs.append(tool_dir_path)
+            if lib_dirs:
+                existing_ld = env.get("LD_LIBRARY_PATH", "")
+                env["LD_LIBRARY_PATH"] = os.pathsep.join(lib_dirs + [existing_ld]) if existing_ld else os.pathsep.join(lib_dirs)
+
         return env
 
     @staticmethod

@@ -909,6 +909,48 @@ class DiagnosticRouteTest(unittest.TestCase):
         self.assertEqual(writes[0]["payload"], {"ok": False, "error": "forbidden"})
 
 
+class CacheDownloaderRouteTest(unittest.TestCase):
+    def test_cache_downloader_status_route_returns_tool_status(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        checked: list[str] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            cache_downloader_status=lambda download_source: checked.append(download_source) or {"ready": False},
+        )
+
+        handler.path = "/api/cache-downloader/status"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"download_source": "downkyi"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(checked, ["downkyi"])
+        self.assertEqual(writes[0], {"ok": True, "data": {"ready": False}})
+
+    def test_cache_downloader_prepare_route_returns_tool_status(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        prepared: list[str] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            prepare_cache_downloader=lambda download_source: prepared.append(download_source) or {"ready": True},
+        )
+
+        handler.path = "/api/cache-downloader/prepare"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"download_source": "downkyi"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(prepared, ["downkyi"])
+        self.assertEqual(writes[0], {"ok": True, "data": {"ready": True}})
+
+
 class PlayerResetRouteTest(unittest.TestCase):
     def test_player_reset_route_returns_fresh_snapshot(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
