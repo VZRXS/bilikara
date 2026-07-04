@@ -264,7 +264,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
             "bilikara.cache.shutil.which", return_value=None
         ), patch(
             "bilikara.cache.TOOL_ASSET_BASE_URL", "https://download.example/bilikara/tools"
-        ), patch.object(CacheManager, "_system_aria2c_path", return_value=None), patch.object(
+        ), patch("bilikara.cache.os.name", "posix"), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ), patch.object(
             CacheManager,
             "_current_platform_tokens",
             return_value=("linux", "x64"),
@@ -289,7 +291,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
             "bilikara.cache.shutil.which", return_value=None
         ), patch(
             "bilikara.cache.TOOL_ASSET_BASE_URL", ""
-        ), patch.object(CacheManager, "_system_aria2c_path", return_value=None), patch.object(
+        ), patch("bilikara.cache.os.name", "posix"), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ), patch.object(
             CacheManager,
             "_current_platform_tokens",
             return_value=("linux", "riscv64"),
@@ -349,7 +353,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.ARIA2C_DIR", aria2_dir
-        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch.object(
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.os.name", "posix"
+        ), patch.object(
             CacheManager,
             "_system_aria2c_path",
             return_value=None,
@@ -1533,7 +1539,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.ARIA2C_DIR", aria2_dir
-        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ), patch(
             "bilikara.cache.platform.system",
             return_value="Windows",
         ), patch(
