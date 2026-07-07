@@ -6101,48 +6101,7 @@ function syncCurrentCacheState(current) {
   }
 }
 
-async function loadPlayedSessions() {
-  if (!elements.historyExportSource) return;
-  try {
-    const response = await fetch("/api/played-sessions", {
-      headers: clientHeaders(),
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    const res = await response.json();
-    if (res && res.ok && Array.isArray(res.data)) {
-      const currentVal = elements.historyExportSource.value;
-      elements.historyExportSource.replaceChildren();
 
-      const playedOpt = document.createElement("option");
-      playedOpt.value = "played";
-      playedOpt.textContent = t("history.playedSource") || "本场记录";
-      playedOpt.dataset.i18n = "history.playedSource";
-      elements.historyExportSource.appendChild(playedOpt);
-
-      res.data.forEach(session => {
-        const opt = document.createElement("option");
-        opt.value = session.id;
-        const prefix = t("history.sessionPrefix") || "历史场次: ";
-        opt.textContent = `${prefix}${session.name}`;
-        elements.historyExportSource.appendChild(opt);
-      });
-
-      const historyOpt = document.createElement("option");
-      historyOpt.value = "history";
-      historyOpt.textContent = t("history.allSource") || "全部历史";
-      historyOpt.dataset.i18n = "history.allSource";
-      elements.historyExportSource.appendChild(historyOpt);
-
-      if ([...elements.historyExportSource.options].some(opt => opt.value === currentVal)) {
-        elements.historyExportSource.value = currentVal;
-      }
-    }
-  } catch (error) {
-    console.error("加载场次列表失败:", error);
-  }
-}
 
 function currentCacheStateLabel(item) {
   if (!item) {
@@ -7676,7 +7635,6 @@ elements.queueViewButton.addEventListener("click", () => {
 elements.historyViewButton.addEventListener("click", () => {
   state.listView = "history";
   render();
-  loadPlayedSessions();
 });
 
 elements.currentCacheState?.addEventListener("click", async (event) => {
@@ -8005,11 +7963,6 @@ async function startRemoteSession() {
     await fetchState();
   } catch (error) {
     setFormMessage(error.message, true);
-  }
-  try {
-    await loadPlayedSessions();
-  } catch (err) {
-    console.warn("Failed to load played sessions:", err);
   }
   connectStateStream();
 }

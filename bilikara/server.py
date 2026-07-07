@@ -963,20 +963,38 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if PLAYED_SESSION_DIR.exists():
                     for f in PLAYED_SESSION_DIR.glob("played-*.json"):
                         stem = f.stem
-                        parts = stem.split("-")
-                        if len(parts) >= 3:
-                            date_str = parts[1]
-                            time_parts = parts[2].split("-")
-                            if len(time_parts) >= 3:
-                                time_formatted = f"{time_parts[0]}:{time_parts[1]}:{time_parts[2]}"
-                                display_name = f"{date_str} {time_formatted}"
-                            else:
-                                display_name = f"{date_str} {parts[2]}"
-                        else:
-                            display_name = stem
+                        if stem.startswith("played-"):
+                            stem = stem[7:]
+                        parts = stem.split("_")
+                        if len(parts) == 2:
+                            date_part, time_part = parts
+                            date_splits = date_part.split("-")
+                            time_splits = time_part.split("-")
+                            if len(date_splits) == 3 and len(time_splits) >= 2:
+                                try:
+                                    year = int(date_splits[0])
+                                    month = int(date_splits[1])
+                                    day = int(date_splits[2])
+                                    hour = int(time_splits[0])
+                                    minute = int(time_splits[1])
+                                    sessions.append({
+                                        "id": f.name,
+                                        "year": year,
+                                        "month": month,
+                                        "day": day,
+                                        "hour": hour,
+                                        "minute": minute,
+                                    })
+                                    continue
+                                except ValueError:
+                                    pass
                         sessions.append({
                             "id": f.name,
-                            "name": display_name,
+                            "year": 0,
+                            "month": 0,
+                            "day": 0,
+                            "hour": 0,
+                            "minute": 0,
                         })
                 sessions.sort(key=lambda x: x["id"], reverse=True)
                 self._write_json({"ok": True, "data": sessions})

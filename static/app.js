@@ -9079,11 +9079,29 @@ function filenameFromContentDisposition(header, fallback) {
 }
 
 function normalizedHistoryExportSource(source) {
-  return String(source || "").trim().toLowerCase() === "history" ? "history" : "played";
+  const val = String(source || "").trim();
+  if (val.toLowerCase() === "history") {
+    return "history";
+  }
+  if (val.toLowerCase().startsWith("played-") && val.toLowerCase().endsWith(".json")) {
+    return val;
+  }
+  return "played";
 }
 
 function historyExportSourceLabel(source) {
-  return normalizedHistoryExportSource(source) === "history" ? t("history.allSource") : t("history.playedSource");
+  const normalized = normalizedHistoryExportSource(source);
+  if (elements.confirmSource) {
+    const opt = [...elements.confirmSource.options].find((o) => o.value === normalized);
+    if (opt) {
+      const parent = opt.parentElement;
+      if (parent && parent.tagName.toLowerCase() === "optgroup") {
+        return `${parent.label} ${opt.textContent}`;
+      }
+      return opt.textContent;
+    }
+  }
+  return normalized === "history" ? t("history.allSource") : t("history.playedSource");
 }
 
 function selectedConfirmHistoryExportSource(intent) {
@@ -9113,6 +9131,143 @@ function updateConfirmHistoryExportPageSize() {
   }
   state.confirmIntent.pageSize = selectedConfirmHistoryExportPageSize(state.confirmIntent);
   state.confirmPopoverRenderSignature = "";
+}
+
+async function loadPlayedSessions() {
+  if (!elements.confirmSource) return;
+  try {
+    const response = await fetch("/api/played-sessions", {
+      headers: clientHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const res = await response.json();
+    if (res && res.ok && Array.isArray(res.data)) {
+      const currentVal = elements.confirmSource.value;
+      elements.confirmSource.replaceChildren();
+
+      // 1. 本场记录
+      const playedOpt = document.createElement("option");
+      playedOpt.value = "played";
+      playedOpt.textContent = t("history.playedSource") || "本场记录";
+      playedOpt.dataset.i18n = "history.playedSource";
+      elements.confirmSource.appendChild(playedOpt);
+
+      // 2. 全部历史
+      const historyOpt = document.createElement("option");
+      historyOpt.value = "history";
+      historyOpt.textContent = t("history.allSource") || "全部历史";
+      historyOpt.dataset.i18n = "history.allSource";
+      elements.confirmSource.appendChild(historyOpt);
+
+      // 3. 历史场次 (限制显示最近 10 场)
+      const rawSessions = res.data;
+      const displaySessions = rawSessions.slice(0, 10);
+
+      // Helper to parse filename as fallback if backend returns old model
+      const parseSessionId = (id) => {
+        let stem = id || "";
+        if (stem.startsWith("played-")) {
+          stem = stem.substring(7);
+        }
+        if (stem.endsWith(".json")) {
+          stem = stem.substring(0, stem.length - 5);
+        }
+        const parts = stem.split("_");
+        if (parts.length === 2) {
+          const dateParts = parts[0].split("-");
+          const timeParts = parts[1].split("-");
+          if (dateParts.length === 3 && timeParts.length >= 2) {
+            const year = parseInt(dateParts[0], 10);
+            const month = parseInt(dateParts[1], 10);
+            const day = parseInt(dateParts[2], 10);
+            const hour = parseInt(timeParts[0], 10);
+            const minute = parseInt(timeParts[1], 10);
+            if (!isNaN(year) && !isNaN(month) && !isNaN(day) && !isNaN(hour) && !isNaN(minute)) {
+              return { year, month, day, hour, minute };
+            }
+          }
+        }
+        return null;
+      };
+
+      // Group displaySessions by year and month
+      const groups = [];
+      displaySessions.forEach(session => {
+        const parsed = (session.year > 0 && session.month > 0)
+          ? session
+          : (parseSessionId(session.id) || { year: 0, month: 0, day: 0, hour: 0, minute: 0 });
+
+        let groupLabel = "";
+        if (parsed.year > 0 && parsed.month > 0) {
+          const lang = state.language || "zh";
+          if (lang === "en") {
+            const monthNames = [
+              "January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"
+            ];
+            groupLabel = `${monthNames[parsed.month - 1]} ${parsed.year}`;
+          } else {
+            groupLabel = `${parsed.year} 年 ${parsed.month} 月`;
+          }
+        } else {
+          groupLabel = t("history.otherSessions") || "其他场次";
+        }
+
+        let group = groups.find(g => g.label === groupLabel);
+        if (!group) {
+          group = { label: groupLabel, options: [] };
+          groups.push(group);
+        }
+
+        // Format day and time: "x日 xx:xx" or "Day x, xx:xx"
+        let optionText = "";
+        if (parsed.day > 0) {
+          const lang = state.language || "zh";
+          const paddedHour = String(parsed.hour).padStart(2, "0");
+          const paddedMinute = String(parsed.minute).padStart(2, "0");
+          if (lang === "en") {
+            optionText = `Day ${parsed.day}, ${paddedHour}:${paddedMinute}`;
+          } else {
+            optionText = `${parsed.day} 日 ${paddedHour}:${paddedMinute}`;
+          }
+        } else {
+          optionText = session.id;
+        }
+
+        group.options.push({ value: session.id, text: optionText });
+      });
+
+      // Append groups to select element
+      groups.forEach(group => {
+        const optGroup = document.createElement("optgroup");
+        optGroup.label = group.label;
+        group.options.forEach(optData => {
+          const opt = document.createElement("option");
+          opt.value = optData.value;
+          opt.textContent = optData.text;
+          optGroup.appendChild(opt);
+        });
+        elements.confirmSource.appendChild(optGroup);
+      });
+
+      // 4. (仅显示最近 10 场) note
+      if (rawSessions.length > 10) {
+        const noteOpt = document.createElement("option");
+        noteOpt.disabled = true;
+        noteOpt.textContent = t("history.onlyRecentTen") || "（仅显示最近 10 场）";
+        noteOpt.dataset.i18n = "history.onlyRecentTen";
+        elements.confirmSource.appendChild(noteOpt);
+      }
+
+      if ([...elements.confirmSource.options].some(opt => opt.value === currentVal)) {
+        elements.confirmSource.value = currentVal;
+      }
+    }
+  } catch (error) {
+    console.error("加载场次列表失败:", error);
+  }
 }
 
 async function downloadHistoryExport(format, source = "played", pageSize = 200) {
@@ -10459,6 +10614,9 @@ elements.clearHistoryButton?.addEventListener("click", (event) => {
 
 elements.historyExportButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.historyExportButton);
+  loadPlayedSessions().catch((err) => {
+    console.warn("加载历史场次失败:", err);
+  });
   openConfirm({
     type: "export-history",
     source: "played",
@@ -10476,6 +10634,11 @@ elements.historyExportButton?.addEventListener("click", (event) => {
 elements.historyToggleButton.addEventListener("click", () => {
   state.listView = state.listView === "history" ? "queue" : "history";
   render();
+  if (state.listView === "history") {
+    loadPlayedSessions().catch((err) => {
+      console.warn("加载历史场次失败:", err);
+    });
+  }
 });
 
 elements.playerFullscreenButton?.addEventListener("click", async () => {
