@@ -161,6 +161,7 @@ const state = {
   disconnectSent: false,
   data: null,
   submitting: false,
+  retryActivityById: {},
   listView: "queue",
   openQueueMenuId: null,
   openHistoryMenuId: null,
@@ -208,7 +209,7 @@ const state = {
   gatchaTaskLastMessageSignature: "",
   gatchaTaskWatchStartedAt: Date.now() / 1000,
   followBrowseVisible: false,
-  larkSearchVisible: false,
+  larkSearchVisible: true,
   larkSearchLoading: false,
   larkSearchSeq: 0,
   searchModalOpen: false,
@@ -2054,8 +2055,7 @@ function filenameFromContentDisposition(headerValue, fallback) {
 }
 
 function selectedHistoryExportSource() {
-  const source = String(elements.historyExportSource?.value || "played").trim().toLowerCase();
-  return source === "history" ? "history" : "played";
+  return String(elements.historyExportSource?.value || "played").trim();
 }
 
 function selectedHistoryExportPageSize() {
@@ -2065,7 +2065,7 @@ function selectedHistoryExportPageSize() {
 
 async function downloadHistoryExport(format, source = selectedHistoryExportSource(), pageSize = selectedHistoryExportPageSize()) {
   const normalizedFormat = String(format || "").trim().toLowerCase();
-  const normalizedSource = source === "history" ? "history" : "played";
+  const normalizedSource = source;
   const requestedPageSize = Number.parseInt(String(pageSize || "200"), 10);
   const normalizedPageSize = [200, 150, 100, 80, 60, 50].includes(requestedPageSize) ? requestedPageSize : 200;
   if (!["csv", "image"].includes(normalizedFormat)) {
@@ -2091,7 +2091,7 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     throw new Error(message);
   }
   const blob = await response.blob();
-  const sourceName = normalizedSource === "played" ? "played" : "history";
+  const sourceName = normalizedSource.startsWith("played") ? "played" : "history";
   const fallback = normalizedFormat === "csv" ? `bilikara-${sourceName}.csv` : `bilikara-${sourceName}.png`;
   const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
   const downloadUrl = URL.createObjectURL(blob);
@@ -4544,7 +4544,7 @@ function renderCurrentItem(current, playbackMode) {
     } catch (error) {
       console.warn("Rating prompt update failed in renderCurrentItem:", error);
     }
-    elements.currentCacheState.classList.remove("hidden");
+    syncCurrentCacheState(current);
 
     if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
       if (!state.autoRefreshTimer) {
@@ -4555,8 +4555,6 @@ function renderCurrentItem(current, playbackMode) {
       state.autoRefreshTimer = null;
     }
 
-    elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
-    elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
     elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     return;
   }
@@ -4574,9 +4572,7 @@ function renderCurrentItem(current, playbackMode) {
       elements.currentOwner.textContent = "";
       elements.currentOwner.classList.add("hidden");
     }
-    elements.currentCacheState.textContent = "";
-    elements.currentCacheState.classList.add("hidden");
-    elements.currentCacheState.classList.remove("ready", "failed");
+    syncCurrentCacheState(null);
     elements.currentMeta.textContent = t("remote.noCurrentHint");
   }
 }
@@ -5969,6 +5965,8 @@ function syncQueueItemCacheStatus(node, item) {
     stateNode.textContent = stateText;
   }
   node.classList.toggle("ready", item.cache_status === "ready");
+
+  syncQueueItemRetryButton(node, item);
 }
 
 function queueNoteText(item) {
@@ -6010,6 +6008,140 @@ function queueStateLabel(item) {
     return t("status.queued");
   }
   return t("status.waiting");
+}
+
+function shouldShowRetryButton(item) {
+  if (!item) return false;
+  const itemId = String(item.id || "");
+  if (!itemId) return false;
+  if (item.cache_status === "ready") {
+    delete state.retryActivityById[itemId];
+    return false;
+  }
+  if (item.cache_status === "failed") {
+    delete state.retryActivityById[itemId];
+    return true;
+  }
+  if (item.cache_status !== "downloading") {
+    delete state.retryActivityById[itemId];
+    return false;
+  }
+  const now = Date.now() / 1000;
+  const lastActivity = Number(item.cache_activity_at || 0);
+  const cacheSizeBytes = Number(item.cache_size_bytes || 0);
+  const cacheProgress = Number(item.cache_progress || 0);
+  const cacheMessage = String(item.cache_message || "");
+  const previous = state.retryActivityById[itemId];
+
+  const hasFreshActivity = !previous
+    || lastActivity > Number(previous.lastActivity || 0)
+    || cacheSizeBytes > Number(previous.cacheSizeBytes || 0)
+    || cacheProgress > Number(previous.cacheProgress || 0)
+    || cacheMessage !== String(previous.cacheMessage || "");
+
+  const observedAt = hasFreshActivity ? now : Number(previous?.observedAt || 0);
+
+  state.retryActivityById[itemId] = {
+    observedAt,
+    lastActivity,
+    cacheSizeBytes,
+    cacheProgress,
+    cacheMessage,
+  };
+
+  if (observedAt <= 0) return false;
+  return now - observedAt >= 5; // stalledRetrySeconds = 5
+}
+
+function syncQueueItemRetryButton(node, item) {
+  if (!node || !item) return;
+  const retryBtn = node.querySelector(".queue-retry-button");
+  if (retryBtn) {
+    const visible = shouldShowRetryButton(item);
+    retryBtn.classList.toggle("hidden", !visible);
+  }
+}
+
+function syncCurrentCacheState(current) {
+  if (!elements.currentCacheState) return;
+  if (!current) {
+    const textNode = elements.currentCacheState.querySelector(".cache-state-text");
+    if (textNode) textNode.textContent = "";
+    else elements.currentCacheState.textContent = "";
+    const retryBtn = elements.currentCacheState.querySelector("#current-cache-retry");
+    if (retryBtn) retryBtn.classList.add("hidden");
+    elements.currentCacheState.classList.add("hidden");
+    elements.currentCacheState.classList.remove("ready", "failed");
+    return;
+  }
+
+  elements.currentCacheState.classList.remove("hidden");
+  elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
+  elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
+
+  const label = currentCacheStateLabel(current);
+  const textNode = elements.currentCacheState.querySelector(".cache-state-text");
+  if (textNode) {
+    if (textNode.textContent !== label) {
+      textNode.textContent = label;
+    }
+  } else {
+    elements.currentCacheState.textContent = label;
+  }
+
+  const retryBtn = elements.currentCacheState.querySelector("#current-cache-retry");
+  if (retryBtn) {
+    const showRetry = shouldShowRetryButton(current);
+    retryBtn.classList.toggle("hidden", !showRetry);
+    if (showRetry) {
+      retryBtn.dataset.id = current.id;
+    } else {
+      delete retryBtn.dataset.id;
+    }
+  }
+}
+
+async function loadPlayedSessions() {
+  if (!elements.historyExportSource) return;
+  try {
+    const response = await fetch("/api/played-sessions", {
+      headers: clientHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const res = await response.json();
+    if (res && res.ok && Array.isArray(res.data)) {
+      const currentVal = elements.historyExportSource.value;
+      elements.historyExportSource.replaceChildren();
+
+      const playedOpt = document.createElement("option");
+      playedOpt.value = "played";
+      playedOpt.textContent = t("history.playedSource") || "本场记录";
+      playedOpt.dataset.i18n = "history.playedSource";
+      elements.historyExportSource.appendChild(playedOpt);
+
+      res.data.forEach(session => {
+        const opt = document.createElement("option");
+        opt.value = session.id;
+        const prefix = t("history.sessionPrefix") || "历史场次: ";
+        opt.textContent = `${prefix}${session.name}`;
+        elements.historyExportSource.appendChild(opt);
+      });
+
+      const historyOpt = document.createElement("option");
+      historyOpt.value = "history";
+      historyOpt.textContent = t("history.allSource") || "全部历史";
+      historyOpt.dataset.i18n = "history.allSource";
+      elements.historyExportSource.appendChild(historyOpt);
+
+      if ([...elements.historyExportSource.options].some(opt => opt.value === currentVal)) {
+        elements.historyExportSource.value = currentVal;
+      }
+    }
+  } catch (error) {
+    console.error("加载场次列表失败:", error);
+  }
 }
 
 function currentCacheStateLabel(item) {
@@ -6107,8 +6239,15 @@ function paintCurrentPlaybackClock() {
   if (!text || !elements.currentCacheState) {
     return;
   }
-  if (elements.currentCacheState.textContent !== text) {
-    elements.currentCacheState.textContent = text;
+  const textNode = elements.currentCacheState.querySelector(".cache-state-text");
+  if (textNode) {
+    if (textNode.textContent !== text) {
+      textNode.textContent = text;
+    }
+  } else {
+    if (elements.currentCacheState.textContent !== text) {
+      elements.currentCacheState.textContent = text;
+    }
   }
   try {
     maybeUpdateRemoteRatingPrompt(state.data?.current_item);
@@ -6126,9 +6265,7 @@ function renderCurrentPlaybackState(current) {
       clearPlayerControlStatusSync();
     }
     clearCurrentPlaybackClock();
-    if (elements.currentCacheState) {
-      elements.currentCacheState.textContent = currentCacheStateLabel(current);
-    }
+    syncCurrentCacheState(current);
     return;
   }
 
@@ -6141,9 +6278,7 @@ function renderCurrentPlaybackState(current) {
   const waitingForHostStatus = playerControlStatusSyncPending(current, playerStatus);
   if (!(durationSeconds > 0) || (!currentSeconds && isPaused)) {
     clearCurrentPlaybackClock();
-    if (elements.currentCacheState) {
-      elements.currentCacheState.textContent = currentCacheStateLabel(current);
-    }
+    syncCurrentCacheState(current);
     return;
   }
 
@@ -7541,6 +7676,30 @@ elements.queueViewButton.addEventListener("click", () => {
 elements.historyViewButton.addEventListener("click", () => {
   state.listView = "history";
   render();
+  loadPlayedSessions();
+});
+
+elements.currentCacheState?.addEventListener("click", async (event) => {
+  const retryBtn = event.target.closest("#current-cache-retry");
+  if (!retryBtn) {
+    return;
+  }
+  event.stopPropagation();
+  const itemId = retryBtn.dataset.id;
+  if (!itemId) {
+    return;
+  }
+  const confirmed = window.confirm(t("cache.retryConfirm") || "确定要重新缓存吗？");
+  if (!confirmed) {
+    return;
+  }
+  try {
+    state.data = await apiPost("/api/cache/retry", { item_id: itemId, force: true });
+    setFormMessage(t("cache.retryStarted"));
+    render();
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
 });
 
 elements.historyExportImageButton?.addEventListener("click", async () => {
@@ -7649,6 +7808,8 @@ function makeElementDraggable(element, onClick) {
   let isDragging = false;
   let moved = false;
   let suppressNextClick = false;
+  let pctX = null;
+  let pctY = null;
 
   const dragStart = (e) => {
     if (e.type === "mousedown" && e.button !== 0) {
@@ -7720,6 +7881,9 @@ function makeElementDraggable(element, onClick) {
       element.style.top = `${newTop}px`;
       element.style.bottom = "auto";
       element.style.right = "auto";
+
+      pctX = maxLeft > 0 ? newLeft / maxLeft : 1.0;
+      pctY = maxTop > 0 ? newTop / maxTop : 1.0;
     }
   };
 
@@ -7756,21 +7920,17 @@ function makeElementDraggable(element, onClick) {
   element.addEventListener("click", handleClick);
 
   window.addEventListener("resize", () => {
-    const rect = element.getBoundingClientRect();
-    let currentLeft = rect.left;
-    let currentTop = rect.top;
-
+    if (pctX === null || pctY === null) {
+      return;
+    }
     const maxLeft = window.innerWidth - element.offsetWidth;
     const maxTop = window.innerHeight - element.offsetHeight;
-
-    if (currentLeft > maxLeft || currentTop > maxTop) {
-      const nextLeft = Math.max(0, Math.min(currentLeft, maxLeft));
-      const nextTop = Math.max(0, Math.min(currentTop, maxTop));
-      element.style.left = `${nextLeft}px`;
-      element.style.top = `${nextTop}px`;
-      element.style.bottom = "auto";
-      element.style.right = "auto";
-    }
+    const nextLeft = Math.max(0, Math.min(pctX * maxLeft, maxLeft));
+    const nextTop = Math.max(0, Math.min(pctY * maxTop, maxTop));
+    element.style.left = `${nextLeft}px`;
+    element.style.top = `${nextTop}px`;
+    element.style.bottom = "auto";
+    element.style.right = "auto";
   });
 }
 
@@ -7845,6 +8005,11 @@ async function startRemoteSession() {
     await fetchState();
   } catch (error) {
     setFormMessage(error.message, true);
+  }
+  try {
+    await loadPlayedSessions();
+  } catch (err) {
+    console.warn("Failed to load played sessions:", err);
   }
   connectStateStream();
 }

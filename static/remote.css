@@ -4419,3 +4419,49 @@ body.remote-identity-modal-open {
   background: var(--dark-option-bg);
   color: var(--ink);
 }
+
+.queue-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.queue-retry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+  padding: 0;
+  vertical-align: middle;
+}
+.queue-retry-button:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--accent);
+}
+
+.current-cache-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  padding: 0;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.current-cache-retry:hover {
+  background: rgba(255, 255, 255, 0.15);
+}

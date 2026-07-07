@@ -957,6 +957,32 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/played-sessions":
+            try:
+                sessions = []
+                if PLAYED_SESSION_DIR.exists():
+                    for f in PLAYED_SESSION_DIR.glob("played-*.json"):
+                        stem = f.stem
+                        parts = stem.split("-")
+                        if len(parts) >= 3:
+                            date_str = parts[1]
+                            time_parts = parts[2].split("-")
+                            if len(time_parts) >= 3:
+                                time_formatted = f"{time_parts[0]}:{time_parts[1]}:{time_parts[2]}"
+                                display_name = f"{date_str} {time_formatted}"
+                            else:
+                                display_name = f"{date_str} {parts[2]}"
+                        else:
+                            display_name = stem
+                        sessions.append({
+                            "id": f.name,
+                            "name": display_name,
+                        })
+                sessions.sort(key=lambda x: x["id"], reverse=True)
+                self._write_json({"ok": True, "data": sessions})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
         if route in ("/api/playlist/export", "/api/history/export"):
             query = parse_qs(urlparse(self.path).query)
             export_format = str(query.get("format", ["csv"])[0] or "csv").strip().lower()
@@ -980,6 +1006,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "time_header": "播放时间",
                 },
             }
+            if export_source.startswith("played-") and export_source.endswith(".json"):
+                safe_name = "".join(c for c in export_source if c.isalnum() or c in "-_.")
+                session_file = PLAYED_SESSION_DIR / safe_name
+                if session_file.exists() and session_file.is_file():
+                    def read_session_file():
+                        try:
+                            with open(session_file, "r", encoding="utf-8") as rf:
+                                data = json.load(rf)
+                                return data.get("items") or []
+                        except Exception:
+                            return []
+                    source_settings[export_source] = {
+                        "items": read_session_file,
+                        "filename": Path(safe_name).stem,
+                        "title": f"bilikara 歌单导出 ({Path(safe_name).stem})",
+                        "time_header": "播放时间",
+                    }
             if export_source not in source_settings:
                 self._write_json({"ok": False, "error": "source must be history or played"}, status=HTTPStatus.BAD_REQUEST)
                 return

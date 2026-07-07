@@ -513,6 +513,37 @@ function setSearchMessage(message, isError = false) {
   elements.searchMessage.classList.toggle("is-error", Boolean(isError));
 }
 
+function setMessageForSource(source, message, isError = false) {
+  if (source === "search") {
+    setSearchMessage(message, isError);
+    return;
+  }
+  if (source === "lark") {
+    setLarkSearchMessage(message, isError);
+    return;
+  }
+  if (source === "modalFollow") {
+    setFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalFavlist") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalBrowse") {
+    const msgElements = elements.searchModalOtherView?.querySelectorAll(".tag-browser-message");
+    if (msgElements && msgElements.length > 0) {
+      msgElements.forEach((el) => {
+        el.textContent = message || "";
+        el.classList.toggle("is-error", Boolean(isError));
+      });
+    }
+    return;
+  }
+  // Default fallback (e.g. "history" or others)
+  setFormMessage(message, isError);
+}
+
 function setAppMessage(message, isError = false) {
   if (!elements.appToast) {
     return;
@@ -8945,16 +8976,19 @@ async function handleAdd(position, anchorPoint) {
   }
 }
 
-async function handleAddByUrl(url, position, anchorPoint) {
+async function handleAddByUrl(url, position, anchorPoint, source = "search") {
   const requesterName = validatedRequesterNameForAdd();
   if (!requesterName) {
     return;
   }
-  setFormMessage(t("history.addingFromHistory"));
+  const isHistory = source === "history";
+  setMessageForSource(source, isHistory ? t("history.addingFromHistory") : t("request.parsing"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
-    const message = position === "next" ? t("history.addedNext") : t("history.addedTail");
-    setFormMessage(message);
+    const message = isHistory
+      ? (position === "next" ? t("history.addedNext") : t("history.addedTail"))
+      : (position === "next" ? t("request.addedNext") : t("request.addedTail"));
+    setMessageForSource(source, message);
     setAppMessage(message);
     render();
   } catch (error) {
@@ -8982,13 +9016,13 @@ async function handleAddByUrl(url, position, anchorPoint) {
           error.payload?.session_entry,
           error.payload?.active_item,
         ),
-        x: anchorPoint?.x ?? anchorPointForEvent({}, elements.historyList).x,
-        y: anchorPoint?.y ?? anchorPointForEvent({}, elements.historyList).y,
+        x: anchorPoint?.x ?? anchorPointForEvent({}, isHistory ? elements.historyList : elements.addForm).x,
+        y: anchorPoint?.y ?? anchorPointForEvent({}, isHistory ? elements.historyList : elements.addForm).y,
       });
-      setFormMessage(t("request.duplicateHint"));
+      setMessageForSource(source, t("request.duplicateHint"));
       return;
     }
-    setFormMessage(error.message, true);
+    setMessageForSource(source, error.message, true);
   }
 }
 
@@ -9832,7 +9866,7 @@ elements.searchResults.addEventListener("click", async (event) => {
     target.button.disabled = true;
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "search");
     hideSearchResults();
     setSearchMessage("");
     elements.searchQuery.value = "";
@@ -9941,7 +9975,7 @@ elements.larkSearchResults?.addEventListener("click", async (event) => {
     target.button.disabled = true;
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "lark");
   } finally {
     if (target.button) {
       target.button.disabled = false;
@@ -10037,32 +10071,80 @@ elements.sessionUserList.addEventListener("dragover", (e) => {
   if (!draggedSessionUser) return;
   e.dataTransfer.dropEffect = "move";
 
-  const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
-  draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
+  const allElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
+  const draggableElements = allElements.filter(el => el !== draggedSessionUser);
+  allElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
 
-  let afterElement = null;
-  for (const child of draggableElements) {
+  if (allElements.length === 0) {
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+    return;
+  }
+
+  let closestElement = null;
+  let minDistance = Infinity;
+
+  for (const child of allElements) {
     const box = child.getBoundingClientRect();
-    if (e.clientY < box.bottom && e.clientY > box.top) {
-      if (e.clientX < box.left + box.width / 2) {
-        afterElement = child;
-        break;
-      }
-    } else if (e.clientY < box.top) {
-      afterElement = child;
-      break;
+    const centerX = box.left + box.width / 2;
+    const centerY = box.top + box.height / 2;
+    const distance = (e.clientX - centerX) ** 2 + (e.clientY - centerY) ** 2;
+    if (distance < minDistance) {
+      minDistance = distance;
+      closestElement = child;
     }
   }
 
-  state.sessionUserDragTarget = afterElement;
-  state.sessionUserDragAfter = afterElement == null;
+  if (closestElement) {
+    const box = closestElement.getBoundingClientRect();
+    const isAfter = e.clientX >= box.left + box.width / 2;
 
-  if (afterElement == null) {
-    if (draggableElements.length > 0) {
-      draggableElements[draggableElements.length - 1].classList.add("drop-after");
+    if (closestElement === draggedSessionUser) {
+      if (isAfter) {
+        const next = draggedSessionUser.nextElementSibling;
+        if (next && next.classList.contains("session-user-badge")) {
+          state.sessionUserDragTarget = next;
+          state.sessionUserDragAfter = false;
+          next.classList.add("drop-before");
+        } else {
+          state.sessionUserDragTarget = null;
+          state.sessionUserDragAfter = true;
+          draggedSessionUser.classList.add("drop-after");
+        }
+      } else {
+        state.sessionUserDragTarget = draggedSessionUser;
+        state.sessionUserDragAfter = false;
+        const prev = draggedSessionUser.previousElementSibling;
+        if (prev && prev.classList.contains("session-user-badge")) {
+          prev.classList.add("drop-after");
+        } else {
+          draggedSessionUser.classList.add("drop-before");
+        }
+      }
+    } else {
+      if (isAfter) {
+        if (closestElement.nextElementSibling === draggedSessionUser) {
+          state.sessionUserDragTarget = draggedSessionUser;
+          state.sessionUserDragAfter = false;
+          closestElement.classList.add("drop-after");
+        } else {
+          const idx = draggableElements.indexOf(closestElement);
+          if (idx !== -1 && idx < draggableElements.length - 1) {
+            state.sessionUserDragTarget = draggableElements[idx + 1];
+            state.sessionUserDragAfter = false;
+            draggableElements[idx + 1].classList.add("drop-before");
+          } else {
+            state.sessionUserDragTarget = null;
+            state.sessionUserDragAfter = true;
+            closestElement.classList.add("drop-after");
+          }
+        }
+      } else {
+        state.sessionUserDragTarget = closestElement;
+        state.sessionUserDragAfter = false;
+        closestElement.classList.add("drop-before");
+      }
     }
-  } else {
-    afterElement.classList.add("drop-before");
   }
 });
 
@@ -10670,7 +10752,7 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!url) {
     return;
   }
-  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point);
+  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point, "history");
   closeOpenMenus();
 });
 
@@ -11489,7 +11571,7 @@ elements.searchModalOtherView?.addEventListener("click", async (event) => {
     target.button.disabled = true;
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalBrowse");
   } finally {
     if (target.button) {
       target.button.disabled = false;
@@ -11571,7 +11653,7 @@ elements.followSongResults?.addEventListener("click", async (event) => {
     target.button.disabled = true;
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalFollow");
   } finally {
     if (target.button) {
       target.button.disabled = false;
@@ -11626,7 +11708,7 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
     target.button.disabled = true;
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalFavlist");
   } finally {
     if (target.button) {
       target.button.disabled = false;

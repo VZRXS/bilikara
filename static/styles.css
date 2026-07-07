@@ -2757,6 +2757,7 @@ select:disabled {
   gap: 10px;
   max-height: 340px;
   overflow-y: auto;
+  padding-left: 10px;
   padding-right: 56px;
   padding-bottom: 10px;
   overscroll-behavior: contain;

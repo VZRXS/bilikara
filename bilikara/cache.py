@@ -2207,7 +2207,7 @@ class CacheManager:
             "--split=16",
             "--min-split-size=1M",
             "--max-connection-per-server=16",
-            "--file-allocation=falloc",
+            "--file-allocation=none",
             "--summary-interval=1",
             "--console-log-level=notice",
         ]
@@ -2349,6 +2349,7 @@ class CacheManager:
             track_key=track_key,
             target_dir=target_dir,
             target_bytes=0,
+            is_preallocated=False,
         )
         monitor = threading.Thread(
             target=self._monitor_download_track_progress,
@@ -2383,6 +2384,7 @@ class CacheManager:
                     target_dir=target_dir,
                     target_bytes=target_bytes_state["value"],
                     progress_percent=progress,
+                    is_preallocated=False,
                 )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
@@ -2419,6 +2421,7 @@ class CacheManager:
             target_dir=target_dir,
             target_bytes=target_bytes_state["value"],
             done=True,
+            is_preallocated=False,
         )
         self._record_item_activity(item_id)
         self._raise_if_retry_requested(item_id)
@@ -3000,12 +3003,15 @@ class CacheManager:
         target_bytes: int | None = None,
         progress_percent: float | None = None,
         done: bool = False,
+        is_preallocated: bool = False,
     ) -> None:
+        current_bytes = self._path_size(target_dir)
         with self.lock:
             tracks = self.item_download_progress.get(item_id)
             if not tracks or track_key not in tracks:
                 return
             track = tracks[track_key]
+            track["current_bytes"] = max(0, int(current_bytes or 0))
             if target_bytes is not None and int(target_bytes or 0) > 0:
                 track["target_bytes"] = max(
                     int(track.get("target_bytes") or 0),
@@ -3023,23 +3029,10 @@ class CacheManager:
             if done:
                 track["done"] = True
                 track["progress_percent"] = 100.0
-                disk_size = self._path_size(target_dir)
-                track["current_bytes"] = max(0, int(disk_size or 0))
                 if int(track.get("target_bytes") or 0) <= 0:
                     track["target_bytes"] = int(track.get("current_bytes") or 0)
                 elif int(track.get("current_bytes") or 0) > int(track.get("target_bytes") or 0):
                     track["target_bytes"] = int(track.get("current_bytes") or 0)
-            else:
-                target_val = int(track.get("target_bytes") or 0)
-                pct = float(track.get("progress_percent") or 0.0)
-                if target_val > 0 and pct > 0.0:
-                    track["current_bytes"] = int(target_val * pct / 100.0)
-                else:
-                    disk_size = self._path_size(target_dir)
-                    if target_val > 0 and disk_size == target_val:
-                        pass
-                    else:
-                        track["current_bytes"] = max(0, int(disk_size or 0))
         self._publish_download_progress(item_id)
 
     def _publish_download_progress(self, item_id: str) -> None:
@@ -3168,6 +3161,7 @@ class CacheManager:
                 track_key=track_key,
                 target_dir=target_dir,
                 target_bytes=target_bytes_state.get("value", 0),
+                is_preallocated=False,
             )
             if process.poll() is not None:
                 return
@@ -3505,7 +3499,7 @@ class CacheManager:
         with tempfile.TemporaryDirectory(dir=str(ARIA2C_DIR)) as tmpdir:
             try:
                 subprocess.run(
-                    ["apt-get", "download", "aria2", "libaria2-0"],
+                    ["apt-get", "download", "aria2", "libaria2-0", "libssh2-1", "libc-ares2"],
                     cwd=tmpdir,
                     check=True,
                     capture_output=True,
@@ -3515,18 +3509,28 @@ class CacheManager:
             except (subprocess.CalledProcessError, subprocess.SubprocessError):
                 try:
                     subprocess.run(
-                        ["apt-get", "download", "aria2"],
+                        ["apt-get", "download", "aria2", "libaria2-0"],
                         cwd=tmpdir,
                         check=True,
                         capture_output=True,
                         text=True,
                         timeout=60,
                     )
-                except (subprocess.CalledProcessError, subprocess.SubprocessError) as exc:
-                    raise RuntimeError(
-                        f"apt-get download 失败: "
-                        f"{getattr(exc, 'stderr', None) or getattr(exc, 'stdout', None) or str(exc)}"
-                    )
+                except (subprocess.CalledProcessError, subprocess.SubprocessError):
+                    try:
+                        subprocess.run(
+                            ["apt-get", "download", "aria2"],
+                            cwd=tmpdir,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+                    except (subprocess.CalledProcessError, subprocess.SubprocessError) as exc:
+                        raise RuntimeError(
+                            f"apt-get download 失败: "
+                            f"{getattr(exc, 'stderr', None) or getattr(exc, 'stdout', None) or str(exc)}"
+                        )
 
             deb_files = list(Path(tmpdir).glob("*.deb"))
             if not deb_files:
@@ -3560,15 +3564,16 @@ class CacheManager:
 
             shutil.copy2(found_binary, target_path)
 
-            for candidate in extract_dir.rglob("libaria2.so*"):
-                if candidate.is_file() or candidate.is_symlink():
-                    dest = target_path.parent / candidate.name
-                    if candidate.is_symlink():
-                        dest.unlink(missing_ok=True)
-                        link_target = os.readlink(candidate)
-                        os.symlink(link_target, dest)
-                    else:
-                        shutil.copy2(candidate, dest)
+            for pattern in ("libaria2.so*", "libssh2.so*", "libcares.so*"):
+                for candidate in extract_dir.rglob(pattern):
+                    if candidate.is_file() or candidate.is_symlink():
+                        dest = target_path.parent / candidate.name
+                        if candidate.is_symlink():
+                            dest.unlink(missing_ok=True)
+                            link_target = os.readlink(candidate)
+                            os.symlink(link_target, dest)
+                        else:
+                            shutil.copy2(candidate, dest)
 
     def _install_aria2_brew(self, target_path: Path) -> None:
         import subprocess
@@ -4031,38 +4036,55 @@ class CacheManager:
 
     @staticmethod
     def _iter_output_messages(stream: TextIO) -> Iterator[str]:
-        buffer = ""
+        raw_stream = getattr(stream, "buffer", stream)
+        if hasattr(raw_stream, "raw") and raw_stream.raw is not None:
+            raw_stream = raw_stream.raw
+
+        buffer = bytearray()
         last_progress: int | None = None
         last_emitted = ""
         while True:
-            character = stream.read(1)
-            if character == "":
+            if hasattr(raw_stream, "read"):
+                chunk = raw_stream.read(1)
+            else:
+                chunk = stream.read(1)
+
+            if not chunk:
                 break
-            if character == "\b":
-                buffer = buffer[:-1]
-                continue
-            if character in {"\r", "\n"}:
-                stripped = buffer.strip()
-                if stripped and stripped != last_emitted:
-                    yield stripped
-                    last_emitted = stripped
-                buffer = ""
-                last_progress = None
-                continue
-            buffer += character
-            progress = CacheManager._extract_progress(CacheManager._normalize_output_line(buffer))
-            if progress is None:
-                continue
-            progress_step = int(progress)
-            if progress_step != last_progress:
-                stripped = buffer.strip()
-                if stripped and stripped != last_emitted:
-                    yield stripped
-                    last_emitted = stripped
-                last_progress = progress_step
-        stripped = buffer.strip()
-        if stripped and stripped != last_emitted:
-            yield stripped
+
+            if isinstance(chunk, str):
+                char_byte = chunk.encode("utf-8", errors="replace")
+            else:
+                char_byte = chunk
+
+            for b in char_byte:
+                if b == ord("\b"):
+                    if buffer:
+                        buffer.pop()
+                    continue
+                if b in {ord("\r"), ord("\n")}:
+                    stripped = buffer.decode("utf-8", errors="replace").strip()
+                    if stripped and stripped != last_emitted:
+                        yield stripped
+                        last_emitted = stripped
+                    buffer = bytearray()
+                    last_progress = None
+                    continue
+                buffer.append(b)
+                decoded_buffer = buffer.decode("utf-8", errors="replace")
+                progress = CacheManager._extract_progress(CacheManager._normalize_output_line(decoded_buffer))
+                if progress is not None:
+                    progress_step = int(progress)
+                    if progress_step != last_progress:
+                        stripped = decoded_buffer.strip()
+                        if stripped and stripped != last_emitted:
+                            yield stripped
+                            last_emitted = stripped
+                        last_progress = progress_step
+        if buffer:
+            stripped = buffer.decode("utf-8", errors="replace").strip()
+            if stripped and stripped != last_emitted:
+                yield stripped
 
     @staticmethod
     def _normalize_output_line(line: str) -> str:
