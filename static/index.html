@@ -201,11 +201,11 @@
               </div>
             </div>
             <div class="cache-panel-row cache-policy-row">
-              <label class="cache-quality-field" for="cache-quality-select">
+              <label class="cache-quality-field" for="cache-quality-select" title="下一个下载生效" data-i18n-title="service.nextDownloadEffect">
                 <span class="cache-panel-label" data-i18n="service.defaultQuality">默认清晰度</span>
                 <select id="cache-quality-select" class="cache-quality-select"></select>
               </label>
-              <label class="cache-hires-field" for="cache-hires-checkbox">
+              <label class="cache-hires-field" for="cache-hires-checkbox" title="下一个下载生效" data-i18n-title="service.nextDownloadEffect">
                 <span class="cache-panel-label" data-i18n="service.hires">Hi-Res 无损</span>
                 <input id="cache-hires-checkbox" type="checkbox" />
                 <span class="cache-hires-switch" aria-hidden="true">
@@ -213,10 +213,19 @@
                 </span>
               </label>
             </div>
-            <label class="cache-quality-field cache-download-source-row" for="cache-download-source-select">
-              <span class="cache-panel-label" data-i18n="service.downloadSource">下载源</span>
-              <select id="cache-download-source-select" class="cache-quality-select"></select>
-            </label>
+            <div class="cache-panel-row cache-policy-row">
+              <label class="cache-quality-field" for="cache-download-source-select" title="选择下载器（Downkyi需登录哔哩哔哩账号）" data-i18n-title="service.downloadSourceHint">
+                <span class="cache-panel-label" data-i18n="service.downloadSource">下载源</span>
+                <select id="cache-download-source-select" class="cache-quality-select"></select>
+              </label>
+              <label class="cache-hires-field" for="reset-offset-checkbox" title="更换曲目时自动重置音画延迟" data-i18n-title="service.resetOffsetHint">
+                <span class="cache-panel-label" data-i18n="service.resetOffset">自动重置音画延迟</span>
+                <input id="reset-offset-checkbox" type="checkbox" />
+                <span class="cache-hires-switch" aria-hidden="true">
+                  <span class="cache-hires-switch-thumb"></span>
+                </span>
+              </label>
+            </div>
             <div class="bbdown-login-panel hidden" id="bbdown-login-panel">
               <div class="bbdown-login-copy">
                 <p class="cache-panel-label" data-i18n="service.bbdownLogin">BBDown 登录</p>

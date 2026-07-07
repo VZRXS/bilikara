@@ -117,6 +117,7 @@ class CacheManager:
         self.video_quality = DEFAULT_VIDEO_QUALITY
         self.audio_hires = DEFAULT_AUDIO_HIRES
         self.download_source = DEFAULT_DOWNLOAD_SOURCE
+        self.reset_offset_on_next = True
         self.hevc_supported: bool | None = None
         self.avc_quality_cap = ""
         self.client_media_capabilities: dict[str, Any] = {}
@@ -313,6 +314,7 @@ class CacheManager:
                 ],
                 "audio_hires": self.audio_hires,
                 "download_source": self.download_source,
+                "reset_offset_on_next": self.reset_offset_on_next,
                 "download_source_choices": [
                     {
                         "value": DOWNLOAD_SOURCE_BBDOWN,
@@ -547,6 +549,7 @@ class CacheManager:
         video_quality: str | None = None,
         audio_hires: bool | None = None,
         download_source: str | None = None,
+        reset_offset_on_next: bool | None = None,
     ) -> dict[str, Any]:
         changed = False
         cache_limit_changed = False
@@ -572,6 +575,11 @@ class CacheManager:
                 if self.download_source != normalized_source:
                     self.download_source = normalized_source
                     changed = True
+            if reset_offset_on_next is not None:
+                val = bool(reset_offset_on_next)
+                if self.reset_offset_on_next != val:
+                    self.reset_offset_on_next = val
+                    changed = True
 
             if changed:
                 self._save_cache_policy_locked()
@@ -596,6 +604,8 @@ class CacheManager:
                 self.audio_hires = bool(payload["audio_hires"])
             if "download_source" in payload:
                 self.download_source = self._normalize_download_source(payload["download_source"])
+            if "reset_offset_on_next" in payload:
+                self.reset_offset_on_next = bool(payload["reset_offset_on_next"])
 
     def _save_cache_policy_locked(self) -> None:
         payload = {
@@ -603,6 +613,7 @@ class CacheManager:
             "video_quality": self.video_quality,
             "audio_hires": self.audio_hires,
             "download_source": self.download_source,
+            "reset_offset_on_next": self.reset_offset_on_next,
         }
         try:
             CACHE_POLICY_FILE.parent.mkdir(parents=True, exist_ok=True)

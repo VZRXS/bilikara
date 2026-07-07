@@ -428,12 +428,14 @@ class AppContext:
         video_quality: str | None = None,
         audio_hires: bool | None = None,
         download_source: str | None = None,
+        reset_offset_on_next: bool | None = None,
     ) -> None:
         self.cache_manager.set_cache_policy(
             max_cache_items=max_cache_items,
             video_quality=video_quality,
             audio_hires=audio_hires,
             download_source=download_source,
+            reset_offset_on_next=reset_offset_on_next,
         )
         self._notify_state_changed()
 
@@ -1579,6 +1581,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 video_quality = body.get("video_quality") if "video_quality" in body else None
                 audio_hires = body.get("audio_hires") if "audio_hires" in body else None
                 download_source = body.get("download_source") if "download_source" in body else None
+                reset_offset_on_next = body.get("reset_offset_on_next") if "reset_offset_on_next" in body else None
                 if max_cache_items is not None and not isinstance(max_cache_items, int):
                     raise ValueError("max_cache_items 必须是整数")
                 if video_quality is not None and not isinstance(video_quality, str):
@@ -1587,13 +1590,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("audio_hires 必须是布尔值")
                 if download_source is not None and not isinstance(download_source, str):
                     raise ValueError("download_source 必须是字符串")
-                if max_cache_items is None and video_quality is None and audio_hires is None and download_source is None:
+                if reset_offset_on_next is not None and not isinstance(reset_offset_on_next, bool):
+                    raise ValueError("reset_offset_on_next 必须是布尔值")
+                if max_cache_items is None and video_quality is None and audio_hires is None and download_source is None and reset_offset_on_next is None:
                     raise ValueError("没有可更新的缓存策略")
                 CONTEXT.set_cache_policy(
                     max_cache_items=max_cache_items,
                     video_quality=video_quality,
                     audio_hires=audio_hires,
                     download_source=download_source,
+                    reset_offset_on_next=reset_offset_on_next,
                 )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return

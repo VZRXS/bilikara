@@ -277,6 +277,7 @@ const elements = {
   cacheQualitySelect: document.getElementById("cache-quality-select"),
   cacheDownloadSourceSelect: document.getElementById("cache-download-source-select"),
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
+  resetOffsetCheckbox: document.getElementById("reset-offset-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
   playerResetButton: document.getElementById("player-reset-button"),
@@ -1786,6 +1787,19 @@ async function fetchState() {
   state.data = payload.data;
   maybeShowIncomingRequestToast(previousData, state.data);
   maybeShowSongTransitionOverlay(previousData, state.data);
+
+  if (previousData) {
+    const previousId = currentItemIdFromData(previousData);
+    const nextId = currentItemIdFromData(state.data);
+    if (previousId !== nextId && nextId) {
+      if (state.data?.cache_policy?.reset_offset_on_next) {
+        if (currentAvOffsetMs() !== 0) {
+          setAvOffset(0).catch((err) => console.warn("自动重置 Offset 失败:", err));
+        }
+      }
+    }
+  }
+
   syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
   if (!state.localOffsetRestoreApplied) {
     const rememberedOffset = rememberedAvOffsetMs();
@@ -5250,6 +5264,7 @@ function renderCachePolicyControls(cachePolicy) {
     ];
   const currentQuality = String(cachePolicy?.video_quality || choices[0]?.value || "1080P 高码率");
   const audioHires = Boolean(cachePolicy?.audio_hires);
+  const resetOffsetOnNext = Boolean(cachePolicy?.reset_offset_on_next);
   const rawSourceChoices = Array.isArray(cachePolicy?.download_source_choices)
     ? cachePolicy.download_source_choices
     : [];
@@ -5275,6 +5290,7 @@ function renderCachePolicyControls(cachePolicy) {
     sourceChoices,
     currentDownloadSource,
     audioHires,
+    resetOffsetOnNext,
     saving: state.cachePolicySaving,
     downloadSourcePreparing: state.downloadSourcePreparing,
   });
@@ -5319,6 +5335,11 @@ function renderCachePolicyControls(cachePolicy) {
   if (elements.cacheHiresCheckbox) {
     elements.cacheHiresCheckbox.checked = audioHires;
     elements.cacheHiresCheckbox.disabled = state.cachePolicySaving;
+  }
+
+  if (elements.resetOffsetCheckbox) {
+    elements.resetOffsetCheckbox.checked = resetOffsetOnNext;
+    elements.resetOffsetCheckbox.disabled = state.cachePolicySaving;
   }
 }
 
@@ -10508,6 +10529,17 @@ elements.cacheHiresCheckbox?.addEventListener("change", async (event) => {
   await setCachePolicyPreference(
     { audio_hires: audioHires },
     audioHires ? t("service.hiresEnabled") : t("service.hiresDisabled"),
+  );
+});
+
+elements.resetOffsetCheckbox?.addEventListener("change", async (event) => {
+  const resetOffset = Boolean(event.target.checked);
+  if (resetOffset === Boolean(state.data?.cache_policy?.reset_offset_on_next)) {
+    return;
+  }
+  await setCachePolicyPreference(
+    { reset_offset_on_next: resetOffset },
+    resetOffset ? t("service.resetOffsetEnabled") : t("service.resetOffsetDisabled"),
   );
 });
 
