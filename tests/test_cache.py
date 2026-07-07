@@ -375,7 +375,6 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertFalse(status["requires_prepare"])
         self.assertEqual(status["path"], str(target_path))
         self.assertEqual(status["version"], "1.37.0")
-
     def test_bbdown_stream_preference_args_use_cache_policy(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -1692,7 +1691,6 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         self.assertEqual(path, target_path)
         self.assertEqual(target_path.read_bytes(), b"fake-brew-aria2c-bin")
-
     def test_urlopen_retries_ssl_certificate_failure_with_certifi(self):
         certificate_error = urllib.error.URLError(
             ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED")

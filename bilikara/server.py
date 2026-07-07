@@ -108,6 +108,14 @@ def _is_path_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 class DuplicateSessionRequestError(ValueError):
     def __init__(self, item, session_entry=None, active_item=None) -> None:
         self.item = item
@@ -1142,6 +1150,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "on",
                 }
                 self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
+                return
+            if route == "/api/app/open-url":
+                url_to_open = str(body.get("url", "")).strip()
+                if url_to_open.startswith(("http://", "https://")):
+                    threading.Thread(
+                        target=lambda: webbrowser.open(url_to_open),
+                        daemon=True
+                    ).start()
+                    self._write_json({"ok": True})
+                else:
+                    self._write_json({"ok": False, "error": "invalid url"}, status=HTTPStatus.BAD_REQUEST)
                 return
             if route == "/api/playlist/add":
                 self._handle_add(body)

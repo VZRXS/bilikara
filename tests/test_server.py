@@ -102,6 +102,49 @@ class FileServingPathSecurityTest(unittest.TestCase):
         self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
 
 
+class FileServingPathSecurityTest(unittest.TestCase):
+    @staticmethod
+    def make_handler():
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        streams = []
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+        handler._stream_file = lambda path, **kwargs: streams.append(path)
+        return handler, writes, streams
+
+    def test_media_route_rejects_sibling_directory_with_cache_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "cache"
+            sibling_dir = root / "cache_secret"
+            cache_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.mp4").write_bytes(b"secret")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.CACHE_DIR", cache_dir):
+                handler._serve_media("/media/../cache_secret/secret.mp4")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
+
+    def test_static_route_rejects_sibling_directory_with_static_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            static_dir = root / "static"
+            sibling_dir = root / "static_secret"
+            static_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.js").write_text("secret", encoding="utf-8")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.STATIC_DIR", static_dir):
+                handler._serve_static("/../static_secret/secret.js")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
+
+
 class AppContextRemoteAccessTest(unittest.TestCase):
     def make_context(self, *, host: str = "0.0.0.0", port: int = 8080) -> AppContext:
         context = AppContext.__new__(AppContext)

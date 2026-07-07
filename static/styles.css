@@ -1388,14 +1388,15 @@ h2 {
 }
 
 .cache-retry-current-button {
-  background: var(--cache-retry-bg);
-  color: var(--accent-deep);
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 8px 18px rgba(208, 90, 63, 0.18);
 }
 
 .cache-retry-current-button:hover,
 .cache-retry-current-button:focus-visible {
-  background: var(--cache-retry-hover-bg);
-  color: var(--accent-deep);
+  background: var(--accent-deep);
+  color: var(--on-accent);
 }
 
 .cache-data-reset-button {

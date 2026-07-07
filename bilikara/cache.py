@@ -739,7 +739,6 @@ class CacheManager:
             "install_url": "https://github.com/aria2/aria2/releases",
             "message": message,
         }
-
     def cache_metrics(self) -> dict[str, Any]:
         item_bytes: dict[str, int] = {}
         total_bytes = 0
@@ -3484,7 +3483,6 @@ class CacheManager:
         if system == "darwin" and shutil.which("brew"):
             self._install_aria2_brew(target_path)
             return
-
         try:
             release = self._fetch_aria2_release()
             asset = self._select_aria2_asset(release)
@@ -4277,8 +4275,6 @@ class CacheManager:
         output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
         match = re.search(r"(?i)\b(?:v|version\s*)?(\d+(?:\.\d+){1,3}(?:[-+._0-9A-Za-z]*)?)", output)
         return match.group(1) if match else ""
-
-    @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:
         target = binary_path if binary_path.is_dir() else binary_path.parent
         return CacheManager._tool_arg_path(target)

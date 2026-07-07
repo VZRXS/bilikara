@@ -23,6 +23,17 @@ const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.sear
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
 const projectUrl = "https://github.com/VZRXS/bilikara";
+
+function openExternalUrl(url) {
+  if (window.__TAURI__) {
+    apiPost("/api/app/open-url", { url }).catch((err) => {
+      console.error("Failed to open URL via backend:", err);
+      window.location.href = url;
+    });
+  } else {
+    window.open(url, "_blank");
+  }
+}
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -2141,7 +2152,7 @@ function openBilikaraSecretModal() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = projectUrl;
+    openExternalUrl(projectUrl);
     return;
   }
   if (elements.bilikaraSecretInput) {
@@ -2174,7 +2185,7 @@ async function verifyBilikaraSecret() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = projectUrl;
+    openExternalUrl(projectUrl);
     return;
   }
   const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();
