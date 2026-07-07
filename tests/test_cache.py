@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bilikara.cache import CacheManager, DOWNLOAD_SOURCE_YTDLP, DownloadCommandError, VIDEO_QUALITY_CHOICES
+from bilikara.cache import CacheManager, DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_YTDLP, DownloadCommandError, VIDEO_QUALITY_CHOICES
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 
@@ -48,6 +48,23 @@ class CacheManagerOutputTest(unittest.TestCase):
             int(71.78 * 1024 * 1024),
         )
         self.assertEqual(CacheManager._selected_stream_size_hint_bytes(line, "audio"), 0)
+
+        # Test aria2c progress log parsing
+        aria_line = "[#23e8fe 96KiB/2.3MiB(3%) CN:1 DL:53KiB ETA:43s]"
+        self.assertEqual(
+            CacheManager._selected_stream_size_hint_bytes(aria_line, "video"),
+            int(2.3 * 1024 * 1024),
+        )
+
+        self.assertEqual(
+            CacheManager._selected_stream_size_hint_bytes("[#111111 0B/150MB(0%)", "video"),
+            150 * 1024 * 1024,
+        )
+
+        self.assertEqual(
+            CacheManager._selected_stream_size_hint_bytes("[#222222 10M/163.5M(6%)", "video"),
+            int(163.5 * 1024 * 1024),
+        )
 
     def test_structured_stage_message_prefers_tracked_bytes(self):
         self.assertEqual(
@@ -216,6 +233,148 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 restored.shutdown()
 
+    def test_downkyi_status_prompts_windows_prepare_when_aria2c_missing(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.shutil.which", return_value=None
+        ), patch("bilikara.cache.os.name", "nt"), patch.object(
+            CacheManager,
+            "_current_platform_tokens",
+            return_value=("windows", "x64"),
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                status = manager.downloader_status(DOWNLOAD_SOURCE_DOWNKYI)
+            finally:
+                manager.shutdown()
+
+        self.assertFalse(status["ready"])
+        self.assertTrue(status["requires_prepare"])
+        self.assertTrue(status["auto_prepare_supported"])
+        self.assertTrue(status["path"].endswith("aria2c.exe"))
+        self.assertIn(str(aria2_dir), status["message"])
+
+    def test_downkyi_status_uses_manual_prepare_on_linux_when_aria2c_missing(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.shutil.which", return_value=None
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL", "https://download.example/bilikara/tools"
+        ), patch("bilikara.cache.os.name", "posix"), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ), patch.object(
+            CacheManager,
+            "_current_platform_tokens",
+            return_value=("linux", "x64"),
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                status = manager.downloader_status(DOWNLOAD_SOURCE_DOWNKYI)
+            finally:
+                manager.shutdown()
+
+        self.assertFalse(status["ready"])
+        self.assertTrue(status["requires_prepare"])
+        self.assertFalse(status["auto_prepare_supported"])
+        self.assertTrue(status["path"].endswith("aria2c"))
+        self.assertIn(str(aria2_dir), status["message"])
+
+    def test_downkyi_status_uses_manual_prepare_when_fallback_asset_unavailable(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.shutil.which", return_value=None
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL", ""
+        ), patch("bilikara.cache.os.name", "posix"), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ), patch.object(
+            CacheManager,
+            "_current_platform_tokens",
+            return_value=("linux", "riscv64"),
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                status = manager.downloader_status(DOWNLOAD_SOURCE_DOWNKYI)
+                with patch.object(manager, "_install_aria2c") as install:
+                    with self.assertRaisesRegex(RuntimeError, "手动安装"):
+                        manager.prepare_downloader(DOWNLOAD_SOURCE_DOWNKYI)
+                    install.assert_not_called()
+            finally:
+                manager.shutdown()
+
+        self.assertFalse(status["ready"])
+        self.assertTrue(status["requires_prepare"])
+        self.assertFalse(status["auto_prepare_supported"])
+        self.assertTrue(status["path"].endswith("aria2c"))
+        self.assertIn(str(aria2_dir), status["message"])
+
+
+    def test_prepare_downkyi_reports_missing_auto_package_for_404_without_polluting_current_source(self):
+        manager = CacheManager(self.store, max_cache_items=3)
+        try:
+            manager.binary_state = "ready"
+            manager.binary_version = "1.6.3"
+            manager.binary_message = "BBDown 1.6.3 已就绪"
+            error = urllib.error.HTTPError(
+                "https://download.example/bilikara/tools/aria2.tar.gz",
+                404,
+                "Not Found",
+                {},
+                None,
+            )
+            with patch.object(
+                manager,
+                "_aria2c_status",
+                return_value={"ready": False, "auto_prepare_supported": True},
+            ), patch.object(
+                manager,
+                "_local_aria2c_binary_path",
+                return_value=Path("/tmp/tools/aria2c"),
+            ), patch.object(manager, "_ensure_aria2c", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, "自动下载包"):
+                    manager.prepare_downloader(DOWNLOAD_SOURCE_DOWNKYI)
+            self.assertEqual(manager.binary_state, "ready")
+            self.assertEqual(manager.binary_version, "1.6.3")
+            self.assertEqual(manager.binary_message, "BBDown 1.6.3 已就绪")
+        finally:
+            manager.shutdown()
+
+    def test_downkyi_status_accepts_local_aria2c_binary(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        target_path = aria2_dir / "aria2c"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(b"aria2c-bin")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.os.name", "posix"
+        ), patch.object(
+            CacheManager,
+            "_system_aria2c_path",
+            return_value=None,
+        ), patch.object(
+            CacheManager,
+            "_current_platform_tokens",
+            return_value=("linux", "x64"),
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_read_aria2c_version", return_value="1.37.0"):
+                    status = manager.downloader_status(DOWNLOAD_SOURCE_DOWNKYI)
+            finally:
+                manager.shutdown()
+
+        self.assertTrue(status["ready"])
+        self.assertFalse(status["requires_prepare"])
+        self.assertEqual(status["path"], str(target_path))
+        self.assertEqual(status["version"], "1.37.0")
     def test_bbdown_stream_preference_args_use_cache_policy(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -1224,7 +1383,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ), patch(
             "bilikara.cache.platform.machine",
             return_value="AMD64",
-        ):
+        ), patch.object(CacheManager, "_system_aria2c_path", return_value=None):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
@@ -1379,7 +1538,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
             "bilikara.cache.ARIA2C_DIR", aria2_dir
-        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ), patch(
             "bilikara.cache.platform.system",
             return_value="Windows",
         ), patch(
@@ -1404,6 +1565,132 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(manager.binary_version, "1.37.0")
         self.assertFalse((aria2_dir / "aria2-1.37.0-win-64bit-build1.zip").exists())
 
+
+    def test_ensure_aria2c_resolves_system_path_when_available(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_PATH_OVERRIDE", ""
+        ), patch(
+            "bilikara.cache.shutil.which", return_value="/usr/bin/aria2c"
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(
+                    manager,
+                    "_read_aria2c_version",
+                    return_value="1.37.0",
+                ) as mock_read_version:
+                    path = manager._ensure_aria2c()
+                    mock_read_version.assert_called_once_with(Path("/usr/bin/aria2c"))
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, Path("/usr/bin/aria2c"))
+        self.assertEqual(manager.binary_version, "1.37.0")
+        self.assertIn("使用系统 aria2c", manager.binary_message)
+
+    def test_ensure_aria2c_downloads_via_apt_on_linux(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        target_path = aria2_dir / "aria2c"
+
+        def fake_which(cmd):
+            if cmd in ("apt-get", "dpkg-deb"):
+                return f"/usr/bin/{cmd}"
+            return None
+
+        import subprocess
+        def fake_run(args, **kwargs):
+            if args[0] == "apt-get" and args[1] == "download":
+                cwd = kwargs.get("cwd")
+                if cwd:
+                    Path(cwd).mkdir(parents=True, exist_ok=True)
+                    (Path(cwd) / "aria2_1.36.0-1_amd64.deb").write_bytes(b"fake-deb")
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            if args[0] == "dpkg-deb" and args[1] == "-x":
+                extract_dir = Path(args[3])
+                binary_dir = extract_dir / "usr" / "bin"
+                binary_dir.mkdir(parents=True, exist_ok=True)
+                (binary_dir / "aria2c").write_bytes(b"fake-aria2c-bin")
+                return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.shutil.which", side_effect=fake_which
+        ), patch(
+            "bilikara.cache.platform.system",
+            return_value="Linux",
+        ), patch(
+            "bilikara.cache.platform.machine",
+            return_value="x86_64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch("subprocess.run", side_effect=fake_run), patch.object(
+                    manager, "_system_aria2c_path", return_value=None
+                ), patch.object(
+                    manager, "_local_aria2c_binary_path", return_value=target_path
+                ), patch.object(
+                    manager, "_read_aria2c_version", return_value="1.37.0"
+                ):
+                    path = manager._ensure_aria2c()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, target_path)
+        self.assertEqual(target_path.read_bytes(), b"fake-aria2c-bin")
+
+    def test_ensure_aria2c_downloads_via_brew_on_macos(self):
+        aria2_dir = Path(self.temp_dir.name) / "tools" / "aria2c"
+        target_path = aria2_dir / "aria2c"
+
+        def fake_which(cmd):
+            if cmd == "brew":
+                return "/usr/local/bin/brew"
+            return None
+
+        import subprocess
+        fake_cache_dir = Path(self.temp_dir.name) / "brew_cache"
+        fake_cache_dir.mkdir(parents=True, exist_ok=True)
+        fake_bottle_file = fake_cache_dir / "aria2-1.37.0.bottle.tar.gz"
+
+        def fake_run(args, **kwargs):
+            if "fetch" in args:
+                fake_bottle_file.write_bytes(b"fake-bottle-tar-gz")
+                return subprocess.CompletedProcess(args, 0, stdout="Fetched", stderr="")
+            if "--cache" in args:
+                return subprocess.CompletedProcess(args, 0, stdout=str(fake_bottle_file), stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.shutil.which", side_effect=fake_which
+        ), patch(
+            "bilikara.cache.platform.system",
+            return_value="Darwin",
+        ), patch(
+            "bilikara.cache.platform.machine",
+            return_value="arm64",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch("subprocess.run", side_effect=fake_run), patch.object(
+                    manager, "_system_aria2c_path", return_value=None
+                ), patch.object(
+                    manager, "_local_aria2c_binary_path", return_value=target_path
+                ), patch.object(
+                    manager, "_extract_tool_binary_from_archive",
+                    side_effect=lambda archive, out_dir, bin_name: target_path.write_bytes(b"fake-brew-aria2c-bin")
+                ), patch.object(
+                    manager, "_read_aria2c_version", return_value="1.37.0"
+                ):
+                    path = manager._ensure_aria2c()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, target_path)
+        self.assertEqual(target_path.read_bytes(), b"fake-brew-aria2c-bin")
     def test_urlopen_retries_ssl_certificate_failure_with_certifi(self):
         certificate_error = urllib.error.URLError(
             ssl.SSLCertVerificationError("CERTIFICATE_VERIFY_FAILED")

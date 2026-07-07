@@ -27,6 +27,8 @@ BITABLE_TABLES = (
 _BASE_URL = "https://open.feishu.cn/open-apis"
 _CLOUDFLARE_API_URL = (os.environ.get("BILIKARA_CF_API_URL") or "https://api.kevinx96.icu").rstrip("/")
 _CLOUDFLARE_SEARCH_TIMEOUT = float(os.environ.get("BILIKARA_CF_SEARCH_TIMEOUT") or "2.0")
+_CLOUDFLARE_CATEGORY_TIMEOUT = float(os.environ.get("BILIKARA_CF_CATEGORY_TIMEOUT") or "8.0")
+_CLOUDFLARE_PREWARM_TIMEOUT = float(os.environ.get("BILIKARA_CF_PREWARM_TIMEOUT") or "8.0")
 _TOKEN_LOCK = threading.RLock()
 _TOKEN_VALUE = ""
 _TOKEN_EXPIRES_AT = 0.0
@@ -628,6 +630,20 @@ def _search_cloudflare_pool(query: str, *, limit: int = 80) -> list[dict] | None
     return results
 
 
+def prewarm_cloudflare_pool() -> bool:
+    if not _CLOUDFLARE_API_URL:
+        return False
+    try:
+        _cloudflare_json(
+            "GET",
+            "/search?keyword=VZRXS",
+            timeout=_CLOUDFLARE_PREWARM_TIMEOUT,
+        )
+    except LarkPoolError:
+        return False
+    return True
+
+
 def browse_d1_pool(
     kind: str,
     *,
@@ -743,7 +759,7 @@ def browse_d1_category_pool(
         payload = _cloudflare_json(
             "GET",
             f"/browse-category?{urllib.parse.urlencode(params)}",
-            timeout=_CLOUDFLARE_SEARCH_TIMEOUT,
+            timeout=_CLOUDFLARE_CATEGORY_TIMEOUT,
         )
     except (LarkPoolError, ValueError):
         return {

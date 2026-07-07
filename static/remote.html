@@ -121,7 +121,14 @@
           </div>
           <button type="button" id="open-rating-button" class="ghost-button hidden" data-i18n="remote.rate">评分</button>
         </div>
-        <p id="current-cache-state" class="queue-state current-cache-state hidden"></p>
+        <div id="current-cache-state" class="queue-state current-cache-state hidden">
+          <span class="cache-state-text"></span>
+          <button type="button" id="current-cache-retry" class="current-cache-retry hidden" title="重新缓存" aria-label="重新缓存" data-i18n-title="cache.retryDownload" data-i18n-aria-label="cache.retryDownload">
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+            </svg>
+          </button>
+        </div>
         <p id="current-meta" class="muted"></p>
         <div id="audio-variant-bar" class="audio-variant-bar hidden"></div>
         <div id="player-control-panel" class="player-control-panel hidden">
@@ -144,8 +151,12 @@
           <button type="button" id="resort-playlist-button" class="secondary-button requester-row-button" data-i18n="request.resort">重新排序</button>
         </div>
         <form id="request-form" class="request-form">
-          <div class="requester-row">
-            <select id="requester-select" name="requester_name"></select>
+          <div class="requester-row remote-identity-row">
+            <p class="remote-identity-summary">
+              <span data-i18n="remoteIdentity.myId">我的 ID：</span>
+              <strong id="remote-identity-name">—</strong>
+            </p>
+            <button type="button" id="remote-identity-rename" class="secondary-button" data-i18n="remoteIdentity.rename">重命名</button>
           </div>
           <textarea
             id="url-input"
@@ -615,6 +626,11 @@
                 <span class="queue-requester hidden"></span>
               </div>
               <div class="queue-actions-wrap">
+                <button type="button" class="queue-retry-button hidden" data-action="retry-cache" title="重新缓存" aria-label="重新缓存" data-i18n-title="cache.retryDownload" data-i18n-aria-label="cache.retryDownload">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+                    <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+                  </svg>
+                </button>
                 <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作" data-i18n-aria-label="common.moreActions">
                   <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
                     <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/>
@@ -769,6 +785,24 @@
     </div>
 
     <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
+
+    <div id="remote-identity-modal" class="remote-identity-modal" role="dialog" aria-modal="true" aria-labelledby="remote-identity-title">
+      <div class="remote-identity-backdrop"></div>
+      <div class="remote-identity-card">
+        <p class="panel-tag" data-i18n="remoteIdentity.tag">REMOTE ID</p>
+        <h2 id="remote-identity-title" data-i18n="remoteIdentity.registerTitle">添加点歌用户</h2>
+        <p id="remote-identity-description" class="remote-identity-description" data-i18n="remoteIdentity.registerDescription">首次使用必须填写本场点歌 ID。</p>
+        <form id="remote-identity-form" class="remote-identity-form">
+          <label for="remote-identity-input" data-i18n="remoteIdentity.inputLabel">我的 ID</label>
+          <input id="remote-identity-input" name="remote_identity" type="text" maxlength="24" required autocomplete="nickname" data-i18n-placeholder="remoteIdentity.inputPlaceholder" placeholder="请输入 ID" />
+          <p id="remote-identity-message" class="message" role="status"></p>
+          <div class="remote-identity-actions">
+            <button type="button" id="remote-identity-cancel" class="ghost-button hidden" data-i18n="common.cancel">取消</button>
+            <button type="submit" id="remote-identity-submit" class="primary-button" data-i18n="remoteIdentity.registerSubmit">添加并开始使用</button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>

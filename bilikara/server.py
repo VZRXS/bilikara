@@ -12,6 +12,7 @@ import socket
 import threading
 import time
 import webbrowser
+from http.cookies import SimpleCookie
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,6 +51,7 @@ from .lark_pool_client import (
     delete_cloudflare_pool_entry,
     delete_cloudflare_video_entry,
     pending_cloudflare_review_items,
+    prewarm_cloudflare_pool,
     reset_cloudflare_video_tags,
     search_lark_pool,
     search_lark_pool_table,
@@ -66,11 +68,14 @@ from .config import (
     MAX_CACHE_ITEMS,
     PLAYED_SESSION_DIR,
     PORT,
+    REMOTE_IDENTITIES_FILE,
     STATE_FILE,
     STATIC_DIR,
     ensure_directories,
 )
+from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
 from .playlist_export import playlist_csv_bytes, playlist_image_export
+from .remote_identity import RemoteIdentityStore
 from .store import PlaylistStore
 from .updater import AppUpdateManager, check_for_update
 
@@ -83,6 +88,24 @@ BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 RATING_SUBMISSION_KEY_LIMIT = 2000
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
+REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
+REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
+
+
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _is_path_within(path: Path, root: Path) -> bool:
@@ -112,6 +135,8 @@ class AppContext:
             PLAYED_SESSION_DIR,
             on_change=self._notify_state_changed,
         )
+        self.remote_identities = RemoteIdentityStore(REMOTE_IDENTITIES_FILE)
+        self._remote_identity_lock = threading.RLock()
         self.auto_restored_backup = self.store.restore_backup()
         self.cache_manager = CacheManager(
             self.store,
@@ -140,6 +165,7 @@ class AppContext:
         self._client_stale_seconds = 120.0
         self._client_watchdog: threading.Thread | None = None
         self._owner_enrichment: threading.Thread | None = None
+        self._cloudflare_prewarm: threading.Thread | None = None
         self._player_control_lock = threading.RLock()
         self._player_control_seq = 0
         self._player_control_ack_seq = 0
@@ -169,6 +195,7 @@ class AppContext:
         payload["session_flags"] = {
             "auto_restored_backup": self.auto_restored_backup,
         }
+        payload["remote_session_id"] = self.remote_identities.snapshot_session_id()
         payload["remote_access"] = self.remote_access_snapshot()
         payload["gatcha"] = gatcha_task_snapshot()
         payload["gatcha_pool_config"] = gatcha_pool_config_snapshot()
@@ -191,6 +218,44 @@ class AppContext:
 
     def app_update_snapshot(self) -> dict[str, object]:
         return self.update_manager.snapshot()
+
+    def build_diagnostics(self, browser_info: dict[str, object] | None = None) -> DiagnosticArtifact:
+        store_snapshot = self.store.snapshot()
+        current_item = store_snapshot.get("current_item")
+        playlist = store_snapshot.get("playlist") or []
+        runtime_state = {
+            "current_item": self._diagnostic_item_snapshot(current_item),
+            "queued_items": [
+                self._diagnostic_item_snapshot(item)
+                for item in playlist[:10]
+                if isinstance(item, dict)
+            ],
+            "queue_count": len(playlist),
+            "gatcha_task": gatcha_task_snapshot(),
+            "app_update": self.app_update_snapshot(),
+            "state_revision": self._state_revision,
+        }
+        metrics = self.cache_manager.cache_metrics()
+        return build_diagnostic_artifact(
+            cache_manager=self.cache_manager,
+            cache_policy=self.cache_manager.policy_snapshot(metrics),
+            runtime_state=runtime_state,
+            browser_info=browser_info,
+            local_usernames=[str(name) for name in store_snapshot.get("session_users") or []],
+        )
+
+    @staticmethod
+    def _diagnostic_item_snapshot(item: object) -> dict[str, object] | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            "id": str(item.get("id") or ""),
+            "bvid": str(item.get("bvid") or ""),
+            "title": str(item.get("display_title") or item.get("title") or ""),
+            "cache_status": str(item.get("cache_status") or ""),
+            "cache_progress": item.get("cache_progress"),
+            "cache_message": str(item.get("cache_message") or ""),
+        }
 
     def start_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
         return self.update_manager.start(include_preview=include_preview)
@@ -301,7 +366,65 @@ class AppContext:
         self.store.add_session_user(name)
 
     def remove_session_user(self, name: str) -> None:
-        self.store.remove_session_user(name)
+        with self._remote_identity_lock:
+            if self.store.remove_session_user(name):
+                self.remote_identities.revoke_name(name)
+
+    def remote_identity_snapshot(self, token: str) -> dict[str, object]:
+        with self._remote_identity_lock:
+            name = self.remote_identities.resolve(token)
+            if name and not self.store.has_session_user(name):
+                self.remote_identities.revoke_token(token)
+                name = ""
+            return {
+                "registered": bool(name),
+                "name": name,
+                "session_id": self.remote_identities.snapshot_session_id(),
+            }
+
+    def register_remote_identity(self, name: str) -> tuple[str, dict[str, object]]:
+        with self._remote_identity_lock:
+            self.store.add_session_user(name)
+            normalized = self.store.normalize_session_user_name(name)
+            try:
+                token = self.remote_identities.issue(normalized)
+            except Exception:
+                self.store.remove_session_user(normalized)
+                raise
+            return token, {
+                "registered": True,
+                "name": normalized,
+                "session_id": self.remote_identities.snapshot_session_id(),
+            }
+
+    def rename_remote_identity(self, token: str, new_name: str) -> dict[str, object]:
+        with self._remote_identity_lock:
+            current_name = self.remote_identities.resolve(token)
+            if not current_name or not self.store.has_session_user(current_name):
+                self.remote_identities.revoke_token(token)
+                raise ValueError("remote identity is no longer valid")
+            renamed = self.store.rename_session_user(current_name, new_name)
+            if not self.remote_identities.rename(token, renamed):
+                raise ValueError("remote identity is no longer valid")
+            self._rename_rating_identity(current_name, renamed)
+            return {
+                "registered": True,
+                "name": renamed,
+                "session_id": self.remote_identities.snapshot_session_id(),
+            }
+
+    def _rename_rating_identity(self, current_name: str, new_name: str) -> None:
+        current_key = str(current_name or "").strip().casefold()
+        new_key = str(new_name or "").strip().casefold()
+        if not current_key or current_key == new_key:
+            return
+        with self._rating_submission_lock:
+            renamed_order = deque(
+                (new_key if user_name == current_key else user_name, play_id)
+                for user_name, play_id in self._rating_submission_key_order
+            )
+            self._rating_submission_key_order = renamed_order
+            self._rating_submission_keys = set(renamed_order)
 
     def move_session_user_to_index(self, name: str, index: int) -> None:
         self.store.move_session_user_to_index(name, index)
@@ -313,14 +436,24 @@ class AppContext:
         video_quality: str | None = None,
         audio_hires: bool | None = None,
         download_source: str | None = None,
+        reset_offset_on_next: bool | None = None,
     ) -> None:
         self.cache_manager.set_cache_policy(
             max_cache_items=max_cache_items,
             video_quality=video_quality,
             audio_hires=audio_hires,
             download_source=download_source,
+            reset_offset_on_next=reset_offset_on_next,
         )
         self._notify_state_changed()
+
+    def cache_downloader_status(self, download_source: str) -> dict[str, object]:
+        return self.cache_manager.downloader_status(download_source)
+
+    def prepare_cache_downloader(self, download_source: str) -> dict[str, object]:
+        result = self.cache_manager.prepare_downloader(download_source)
+        self._notify_state_changed()
+        return result
 
     def set_client_media_capabilities(self, payload: dict[str, object]) -> dict[str, object]:
         result = self.cache_manager.set_client_media_capabilities(payload)
@@ -450,7 +583,12 @@ class AppContext:
 
     def reset_runtime_data(self) -> None:
         self.cache_manager.clear_runtime_cache()
-        self.store.reset_runtime_data()
+        with self._remote_identity_lock:
+            self.store.reset_runtime_data()
+            self.remote_identities.rotate_session()
+            with self._rating_submission_lock:
+                self._rating_submission_keys.clear()
+                self._rating_submission_key_order.clear()
         self.auto_restored_backup = False
         with self._player_control_lock:
             self._player_control_ack_seq = self._player_control_seq
@@ -626,6 +764,12 @@ class AppContext:
             if self._startup_started or self._closed:
                 return
             self._startup_started = True
+            self._cloudflare_prewarm = threading.Thread(
+                target=prewarm_cloudflare_pool,
+                daemon=True,
+                name="bilikara-cloudflare-prewarm",
+            )
+            self._cloudflare_prewarm.start()
             self.cache_manager.prewarm_binary()
             self._client_watchdog = threading.Thread(target=self._client_watchdog_loop, daemon=True)
             self._client_watchdog.start()
@@ -688,6 +832,9 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+            return
+        if route == "/api/remote-identity":
+            self._write_json({"ok": True, "data": CONTEXT.remote_identity_snapshot(self._remote_identity_token())})
             return
         if route == "/api/app/update/status":
             self._write_json({"ok": True, "data": CONTEXT.app_update_snapshot()})
@@ -820,6 +967,50 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/played-sessions":
+            try:
+                sessions = []
+                if PLAYED_SESSION_DIR.exists():
+                    for f in PLAYED_SESSION_DIR.glob("played-*.json"):
+                        stem = f.stem
+                        if stem.startswith("played-"):
+                            stem = stem[7:]
+                        parts = stem.split("_")
+                        if len(parts) == 2:
+                            date_part, time_part = parts
+                            date_splits = date_part.split("-")
+                            time_splits = time_part.split("-")
+                            if len(date_splits) == 3 and len(time_splits) >= 2:
+                                try:
+                                    year = int(date_splits[0])
+                                    month = int(date_splits[1])
+                                    day = int(date_splits[2])
+                                    hour = int(time_splits[0])
+                                    minute = int(time_splits[1])
+                                    sessions.append({
+                                        "id": f.name,
+                                        "year": year,
+                                        "month": month,
+                                        "day": day,
+                                        "hour": hour,
+                                        "minute": minute,
+                                    })
+                                    continue
+                                except ValueError:
+                                    pass
+                        sessions.append({
+                            "id": f.name,
+                            "year": 0,
+                            "month": 0,
+                            "day": 0,
+                            "hour": 0,
+                            "minute": 0,
+                        })
+                sessions.sort(key=lambda x: x["id"], reverse=True)
+                self._write_json({"ok": True, "data": sessions})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
         if route in ("/api/playlist/export", "/api/history/export"):
             query = parse_qs(urlparse(self.path).query)
             export_format = str(query.get("format", ["csv"])[0] or "csv").strip().lower()
@@ -843,6 +1034,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "time_header": "播放时间",
                 },
             }
+            if export_source.startswith("played-") and export_source.endswith(".json"):
+                safe_name = "".join(c for c in export_source if c.isalnum() or c in "-_.")
+                session_file = PLAYED_SESSION_DIR / safe_name
+                if session_file.exists() and session_file.is_file():
+                    def read_session_file():
+                        try:
+                            with open(session_file, "r", encoding="utf-8") as rf:
+                                data = json.load(rf)
+                                return data.get("items") or []
+                        except Exception:
+                            return []
+                    source_settings[export_source] = {
+                        "items": read_session_file,
+                        "filename": Path(safe_name).stem,
+                        "title": f"bilikara 歌单导出 ({Path(safe_name).stem})",
+                        "time_header": "播放时间",
+                    }
             if export_source not in source_settings:
                 self._write_json({"ok": False, "error": "source must be history or played"}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -894,6 +1102,39 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            if route == "/api/diagnostics/markdown":
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
+                self._write_json({"ok": True, "data": {"markdown": artifact.markdown}})
+                return
+            if route == "/api/diagnostics/package":
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                self._write_download(
+                    artifact.zip_bytes(),
+                    content_type="application/zip",
+                    filename=f"bilikara-diagnostics-{timestamp}.zip",
+                )
+                return
+            if route == "/api/remote-identity/register":
+                token, identity = CONTEXT.register_remote_identity(str(body.get("name") or ""))
+                self._write_json(
+                    {"ok": True, "data": identity},
+                    headers={"Set-Cookie": self._remote_identity_cookie(token)},
+                )
+                return
+            if route == "/api/remote-identity/rename":
+                identity = CONTEXT.rename_remote_identity(
+                    self._remote_identity_token(),
+                    str(body.get("name") or ""),
+                )
+                self._write_json({"ok": True, "data": identity})
+                return
             if route == "/api/app/shutdown":
                 if not self._is_local_client() and not self._has_valid_shutdown_token():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
@@ -1287,6 +1528,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True})
                 return
+            if route == "/api/rating/log":
+                message = str(body.get("message") or "").strip()
+                if message:
+                    print(f"[rating-front] {message}", flush=True)
+                self._write_json({"ok": True})
+                return
             if route == "/api/rating/submit":
                 session_user_name = str(
                     body.get("session_user_name")
@@ -1318,6 +1565,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if score < 1 or score > 5:
                     raise ValueError("score must be between 1 and 5")
                 duplicate = not CONTEXT.register_rating_submission(session_user_name, play_id)
+                print(f"[rating] user={session_user_name} play_id={play_id} bvid={bvid} score={score} duplicate={duplicate}", flush=True)
                 if not duplicate:
                     self._submit_rating_in_background(session_user_name, play_id, bvid, score)
                 self._write_json({
@@ -1333,11 +1581,26 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     },
                 })
                 return
+            if route == "/api/cache-downloader/status":
+                download_source = body.get("download_source")
+                if not isinstance(download_source, str):
+                    raise ValueError("download_source 必须是字符串")
+                result = CONTEXT.cache_downloader_status(download_source)
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/cache-downloader/prepare":
+                download_source = body.get("download_source")
+                if not isinstance(download_source, str):
+                    raise ValueError("download_source 必须是字符串")
+                result = CONTEXT.prepare_cache_downloader(download_source)
+                self._write_json({"ok": True, "data": result})
+                return
             if route == "/api/cache-policy":
                 max_cache_items = body.get("max_cache_items") if "max_cache_items" in body else None
                 video_quality = body.get("video_quality") if "video_quality" in body else None
                 audio_hires = body.get("audio_hires") if "audio_hires" in body else None
                 download_source = body.get("download_source") if "download_source" in body else None
+                reset_offset_on_next = body.get("reset_offset_on_next") if "reset_offset_on_next" in body else None
                 if max_cache_items is not None and not isinstance(max_cache_items, int):
                     raise ValueError("max_cache_items 必须是整数")
                 if video_quality is not None and not isinstance(video_quality, str):
@@ -1346,13 +1609,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("audio_hires 必须是布尔值")
                 if download_source is not None and not isinstance(download_source, str):
                     raise ValueError("download_source 必须是字符串")
-                if max_cache_items is None and video_quality is None and audio_hires is None and download_source is None:
+                if reset_offset_on_next is not None and not isinstance(reset_offset_on_next, bool):
+                    raise ValueError("reset_offset_on_next 必须是布尔值")
+                if max_cache_items is None and video_quality is None and audio_hires is None and download_source is None and reset_offset_on_next is None:
                     raise ValueError("没有可更新的缓存策略")
                 CONTEXT.set_cache_policy(
                     max_cache_items=max_cache_items,
                     video_quality=video_quality,
                     audio_hires=audio_hires,
                     download_source=download_source,
+                    reset_offset_on_next=reset_offset_on_next,
                 )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
@@ -1561,6 +1827,55 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         provided = self.headers.get("X-Bilikara-Shutdown-Token", "").strip()
         return bool(expected and provided and hmac.compare_digest(expected, provided))
 
+    def _remote_identity_token(self) -> str:
+        cookie_header = str(self.headers.get("Cookie") or "")
+        if not cookie_header:
+            return ""
+        cookie = SimpleCookie()
+        try:
+            cookie.load(cookie_header)
+        except Exception:
+            return ""
+        morsel = cookie.get(REMOTE_IDENTITY_COOKIE)
+        return str(morsel.value or "").strip() if morsel else ""
+
+    @staticmethod
+    def _diagnostic_browser_info(body: dict[str, object]) -> dict[str, object]:
+        browser = body.get("browser")
+        if not isinstance(browser, dict):
+            return {}
+        brands = browser.get("brands")
+        normalized_brands = []
+        if isinstance(brands, list):
+            for item in brands[:10]:
+                if not isinstance(item, dict):
+                    continue
+                normalized_brands.append(
+                    {
+                        "brand": str(item.get("brand") or "")[:80],
+                        "version": str(item.get("version") or "")[:40],
+                    }
+                )
+        return {
+            "user_agent": str(browser.get("user_agent") or "")[:1000],
+            "platform": str(browser.get("platform") or "")[:120],
+            "mobile": bool(browser.get("mobile")),
+            "brands": normalized_brands,
+        }
+
+    @staticmethod
+    def _remote_identity_cookie(token: str) -> str:
+        cookie = SimpleCookie()
+        cookie[REMOTE_IDENTITY_COOKIE] = str(token or "")
+        morsel = cookie[REMOTE_IDENTITY_COOKIE]
+        morsel["path"] = "/"
+        morsel["max-age"] = str(REMOTE_IDENTITY_COOKIE_MAX_AGE)
+        morsel["httponly"] = True
+        morsel["samesite"] = "Strict"
+        # LAN deployments currently use plain HTTP, so Secure cannot be set.
+        # Add Secure here when remote access is moved behind HTTPS.
+        return morsel.OutputString()
+
     def _verified_bilikara_secret(self, bilikara_secret: str) -> bool:
         normalized_secret = str(bilikara_secret or "").strip()
         configured_bilikara_secret = str(os.environ.get("BILIKARA_ADMIN_SECRET") or "").strip()
@@ -1568,11 +1883,19 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return bool(normalized_secret) and hmac.compare_digest(normalized_secret, configured_bilikara_secret)
         return bool(verify_cloudflare_bilikara_secret(normalized_secret).get("verified"))
 
-    def _write_json(self, payload: dict, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def _write_json(
+        self,
+        payload: dict,
+        status: HTTPStatus = HTTPStatus.OK,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
         self.wfile.flush()

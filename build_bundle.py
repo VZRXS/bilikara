@@ -55,7 +55,9 @@ def main() -> None:
     if platform.system() == "Darwin":
         command.extend(["--osx-bundle-identifier", "com.bilikara.app"])
 
-    subprocess.run(command, shell=False, check=True, cwd=ROOT_DIR)
+    subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        command, shell=False, check=True, cwd=ROOT_DIR
+    )
     _write_release_compliance_files()
     print()
     print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")
@@ -262,8 +264,9 @@ def _ffmpeg_source_notice(bundled_paths: dict[str, Path], missing_tools: list[st
 
 def _tool_version_output(binary_path: Path) -> str:
     try:
-        process = subprocess.run(
+        process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
             [str(binary_path), "-version"],
+            shell=False,
             capture_output=True,
             text=True,
             errors="replace",

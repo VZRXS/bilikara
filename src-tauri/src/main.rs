@@ -262,6 +262,9 @@ fn main() {
                             if let Err(error) = window_clone.show() {
                                 eprintln!("Failed to show window: {}", error);
                             }
+                            let _ = window_clone.set_always_on_top(true);
+                            let _ = window_clone.set_always_on_top(false);
+                            let _ = window_clone.set_focus();
                             if let Err(error) = window_clone
                                 .eval(&format!("window.location.replace('{}');", ready.base_url))
                             {

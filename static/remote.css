@@ -1462,6 +1462,39 @@ button[data-control-action="next-track"] {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.request-panel .remote-identity-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.remote-identity-summary {
+  min-width: 0;
+  min-height: 48px;
+  margin: 0;
+  padding: 0 15px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  border: var(--input-border);
+  border-radius: 18px;
+  background: var(--input-bg);
+  color: var(--muted);
+}
+
+.remote-identity-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-identity-row .secondary-button {
+  width: auto;
+  min-height: 48px;
+  white-space: nowrap;
+}
+
 .requester-row-button {
   width: auto;
   min-height: 48px;
@@ -3282,6 +3315,91 @@ body.remote-search-modal-open {
   padding: 14px;
 }
 
+body.remote-identity-modal-open {
+  overflow: hidden;
+}
+
+.remote-identity-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2400;
+  display: grid;
+  place-items: end center;
+  padding: 14px;
+}
+
+.remote-identity-modal.hidden {
+  display: none;
+}
+
+.remote-identity-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--modal-backdrop-bg);
+  backdrop-filter: blur(10px);
+}
+
+.remote-identity-card {
+  position: relative;
+  z-index: 1;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 28px);
+  max-height: calc(100dvh - 28px);
+  overflow: auto;
+  padding: 20px;
+  border: var(--modal-card-border);
+  border-radius: 18px;
+  background: var(--modal-card-bg);
+  color: var(--ink);
+  box-shadow: var(--rating-card-shadow);
+}
+
+.remote-identity-card h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.3;
+}
+
+.remote-identity-description {
+  margin: 8px 0 18px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.remote-identity-form {
+  display: grid;
+  gap: 10px;
+}
+
+.remote-identity-form label {
+  font-weight: 700;
+}
+
+.remote-identity-form .message {
+  min-height: 20px;
+  margin: 0;
+}
+
+.remote-identity-form .message.is-error {
+  color: var(--danger-btn-color);
+}
+
+.remote-identity-actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.remote-identity-actions .primary-button:only-child,
+.remote-identity-actions .hidden + .primary-button {
+  grid-column: 1 / -1;
+}
+
+.remote-identity-actions .hidden {
+  display: none;
+}
+
 .rating-modal-backdrop {
   position: absolute;
   inset: 0;
@@ -3784,6 +3902,10 @@ body.remote-search-modal-open {
   .rating-modal {
     place-items: center;
   }
+
+  .remote-identity-modal {
+    place-items: center;
+  }
 }
 
 /* --- THEME SWITCH PILL STYLES --- */
@@ -4273,4 +4395,50 @@ body.remote-search-modal-open {
 :root:is([data-theme="dark"], [data-theme="blue"]) option {
   background: var(--dark-option-bg);
   color: var(--ink);
+}
+
+.queue-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.queue-retry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+  padding: 0;
+  vertical-align: middle;
+}
+.queue-retry-button:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--accent);
+}
+
+.current-cache-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  padding: 0;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.current-cache-retry:hover {
+  background: rgba(255, 255, 255, 0.15);
 }

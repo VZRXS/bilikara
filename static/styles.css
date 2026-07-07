@@ -1008,7 +1008,8 @@ h2 {
   top: calc(100% + 12px);
   right: 0;
   width: min(340px, calc(100vw - 32px));
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   padding: 16px;
   border-radius: 20px;
@@ -1017,6 +1018,58 @@ h2 {
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
   z-index: 120;
+}
+
+.cache-panel-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 2px 0;
+}
+
+.cache-panel-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 10px 0;
+  margin: -10px 0;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.2s ease;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.cache-panel-menu-row:hover {
+  background: var(--btn-hover-bg);
+}
+
+.cache-panel-menu-chevron {
+  width: 6px;
+  height: 6px;
+  border-top: 1.5px solid var(--muted);
+  border-right: 1.5px solid var(--muted);
+  transform: rotate(135deg);
+  opacity: 0.8;
+  margin-right: 6px;
+  transition: transform 0.2s ease;
+}
+
+.cache-panel-menu-row[aria-expanded="true"] .cache-panel-menu-chevron {
+  transform: rotate(-45deg);
+}
+
+.cache-advanced-inline-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 10px;
+}
+
+.cache-advanced-inline-view.hidden {
+  display: none !important;
 }
 
 .cache-panel-row {
@@ -1238,6 +1291,18 @@ h2 {
   flex: 0 0 auto;
 }
 
+.cache-panel-row.diagnostic-panel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.diagnostic-panel-actions {
+  width: auto;
+  justify-content: flex-end;
+}
+
 .cache-update-control {
   display: inline-flex;
   align-items: center;
@@ -1351,6 +1416,19 @@ h2 {
   margin-top: 6px;
   font-size: 15px;
   color: var(--ink);
+  white-space: pre-line;
+  line-height: 1.4;
+}
+
+#cache-usage-detail .cache-usage-size,
+#cache-usage-detail .cache-usage-count {
+  display: block;
+}
+
+#cache-usage-detail .cache-usage-count {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .cache-panel-hint {
@@ -1435,19 +1513,16 @@ h2 {
 }
 
 .cache-limit-scale {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 8px;
+  display: flex;
+  justify-content: space-between;
   font-size: 11px;
   color: var(--muted);
 }
 
 .cache-limit-scale span {
+  width: 18px;
   text-align: center;
-}
-
-.advance-delay-scale {
-  grid-template-columns: repeat(5, 1fr);
+  flex: 0 0 18px;
 }
 
 .cache-limit-scale span.active {
@@ -1459,6 +1534,31 @@ h2 {
   align-items: center;
 }
 
+.cache-panel-row-double {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+}
+
+.cache-double-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cache-double-col .cache-slider-block {
+  width: 100%;
+}
+
+.cache-double-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+
 .cache-quality-field,
 .cache-hires-field {
   min-width: 0;
@@ -1468,6 +1568,7 @@ h2 {
   display: grid;
   gap: 7px;
   flex: 1 1 auto;
+  cursor: pointer;
 }
 
 .cache-quality-select {
@@ -1482,6 +1583,7 @@ h2 {
   font-weight: 700;
   outline: none;
   box-shadow: var(--quality-select-shadow);
+  cursor: pointer;
 }
 
 .cache-quality-select:disabled {
@@ -1505,6 +1607,10 @@ h2 {
   position: absolute;
   opacity: 0;
   pointer-events: none;
+}
+
+.cache-hires-switch {
+  cursor: pointer;
 }
 
 .cache-hires-field input:disabled+.cache-hires-switch {
@@ -1648,11 +1754,11 @@ h2 {
   max-width: calc(100% - 8px);
 }
 
-.player-panel > .panel-head #player-rating-button {
+.player-panel>.panel-head #player-rating-button {
   right: clamp(104px, 15ch, 168px);
 }
 
-.player-panel > .panel-head #player-fullscreen-button {
+.player-panel>.panel-head #player-fullscreen-button {
   right: 0;
 }
 
@@ -2652,6 +2758,7 @@ select:disabled {
   gap: 10px;
   max-height: 340px;
   overflow-y: auto;
+  padding-left: 10px;
   padding-right: 56px;
   padding-bottom: 10px;
   overscroll-behavior: contain;
@@ -2725,6 +2832,7 @@ select:disabled {
   margin-right: 6px;
   margin-left: -10px;
 }
+
 .session-user-trash {
   position: absolute;
   bottom: 0;
@@ -6475,6 +6583,7 @@ select:disabled {
   --progress-badge-bg: rgba(22, 19, 17, 0.9);
   --progress-badge-active-bg: rgba(30, 26, 23, 0.96);
 }
+
 /* --- BLUE BLACK THEME OVERRIDES --- */
 :root[data-theme="blue"] {
   --bg: #06111f;

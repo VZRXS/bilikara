@@ -81,6 +81,26 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertEqual(results[0]["bvid"], "BVCF1")
         self.assertEqual(results[0]["source"], "cloudflare")
 
+    def test_prewarm_cloudflare_pool_uses_dedicated_search_request(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return []
+
+        with (
+            patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare),
+            patch.object(lark_pool, "_CLOUDFLARE_PREWARM_TIMEOUT", 8.0),
+        ):
+            warmed = lark_pool.prewarm_cloudflare_pool()
+
+        self.assertTrue(warmed)
+        self.assertEqual(requests, [("GET", "/search?keyword=VZRXS", None, 8.0)])
+
+    def test_prewarm_cloudflare_pool_ignores_worker_failure(self):
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=lark_pool.LarkPoolError("timeout")):
+            self.assertFalse(lark_pool.prewarm_cloudflare_pool())
+
     def test_append_lark_pool_entries_posts_to_cloudflare(self):
         posted_payloads = []
 
@@ -444,7 +464,10 @@ class LarkPoolClientTest(unittest.TestCase):
                 "next_offset": 120,
             }
 
-        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+        with (
+            patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare),
+            patch.object(lark_pool, "_CLOUDFLARE_CATEGORY_TIMEOUT", 8.0),
+        ):
             result = lark_pool.browse_d1_category_pool(["热血", "战斗"], query="op", offset=20, limit=100)
 
         self.assertEqual(result["items"][0]["bvid"], "BV1xx411c7mD")
@@ -459,7 +482,7 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertIn("q=op", path)
         self.assertIn("offset=20", path)
         self.assertIsNone(payload)
-        self.assertLessEqual(timeout, 2.0)
+        self.assertEqual(timeout, 8.0)
 
     def test_browse_d1_category_pool_forwards_tag45s(self):
         requests = []
@@ -478,7 +501,7 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertIn("tag=Hololive", path)
         self.assertIn("tag45=%E4%B9%99%E5%A5%B3", path)
         self.assertIsNone(payload)
-        self.assertLessEqual(timeout, 2.0)
+        self.assertEqual(timeout, lark_pool._CLOUDFLARE_CATEGORY_TIMEOUT)
 
 
 if __name__ == "__main__":
