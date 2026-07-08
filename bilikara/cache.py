@@ -1087,7 +1087,6 @@ class CacheManager:
                             cache_message=f"缓存发生意外错误: {exc}",
                             persist_backup=False,
                         )
-                        should_resync = True
                     except Exception:
                         pass
             finally:
@@ -4626,6 +4625,8 @@ class CacheManager:
         return True
 
     def _ensure_item_cached(self, item) -> None:
+        if item.cache_status == "failed":
+            return
         if self._item_cache_ready(item):
             self.store.update_item(
                 item.id,

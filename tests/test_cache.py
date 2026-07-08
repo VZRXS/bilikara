@@ -2188,9 +2188,17 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     manager.tasks.put("song-err")
                     manager.tasks.join()
                 
+                import time
+                time.sleep(0.1)
+                
                 refreshed = self.store.get_item("song-err")
                 self.assertEqual(refreshed.cache_status, "failed")
                 self.assertIn("缓存发生意外错误: unexpected crash", refreshed.cache_message)
+                
+                manager.sync_with_playlist()
+                self.assertEqual(manager.tasks.qsize(), 0)
+                refreshed = self.store.get_item("song-err")
+                self.assertEqual(refreshed.cache_status, "failed")
                 
                 log_path = manager._item_log_path("song-err")
                 self.assertTrue(log_path.exists())
