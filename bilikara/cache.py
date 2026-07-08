@@ -2309,6 +2309,7 @@ class CacheManager:
             target_dir=target_dir,
             track_key=track_key,
             tool_dir=binary_path.parent,
+            silent=True,
         )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
@@ -2402,9 +2403,11 @@ class CacheManager:
         target_dir: Path,
         track_key: str,
         tool_dir: Path | None = None,
+        silent: bool = False,
     ) -> None:
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
-        _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(command, ensure_ascii=False)}")
+        if not silent:
+            _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(command, ensure_ascii=False)}")
         target_bytes_state = {"value": 0}
         monitor_stop = threading.Event()
 
@@ -2450,7 +2453,8 @@ class CacheManager:
                 if not line:
                     continue
                 last_message = line
-                _debug_print(f"[bilikara-cache] [{stage_label}] {line}")
+                if not silent:
+                    _debug_print(f"[bilikara-cache] [{stage_label}] {line}")
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
                 self._record_item_activity(item_id)
                 progress = self._extract_progress(line)
