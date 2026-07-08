@@ -2006,5 +2006,199 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
 
+class CacheManagerBBDownRegressionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        temp_path = Path(self.temp_dir.name)
+        self.cache_dir = temp_path / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.store = PlaylistStore(
+            state_file=temp_path / "state.json",
+            backup_file=temp_path / "playlist_backup.json",
+        )
+        self.store.add_session_user("cache-test-user")
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_debug_print_no_early_return_and_handles_unicode(self):
+        from bilikara.cache import _debug_print
+        fake_stdout = io.StringIO()
+        with patch("sys.stdout", fake_stdout):
+            _debug_print("Hello 世界")
+            self.assertIn("Hello 世界", fake_stdout.getvalue())
+
+        fake_buffer = io.BytesIO()
+        class UnicodeErrorStdout:
+            def __init__(self):
+                self.encoding = "ascii"
+                self.buffer = fake_buffer
+            def write(self, s):
+                raise UnicodeEncodeError("ascii", s, 0, 1, "ordinal not in range")
+            def flush(self):
+                pass
+        
+        with patch("sys.stdout", UnicodeErrorStdout()):
+            _debug_print("Hello 世界")
+            self.assertIn(b"Hello ??", fake_buffer.getvalue())
+
+    def test_download_tool_asset_attempts_both_urls_and_formats_errors(self):
+        manager = CacheManager(self.store, max_cache_items=3)
+        try:
+            download_calls = []
+            def fake_download_url(url, target_path):
+                download_calls.append(url)
+                raise ConnectionError(f"failed to connect to {url}")
+
+            target_file = Path(self.temp_dir.name) / "test_tool"
+            
+            with patch("bilikara.cache.TOOL_ASSET_BASE_URL", "https://mirror.example.com"), patch.object(
+                manager, "_download_url", side_effect=fake_download_url
+            ):
+                asset = {
+                    "name": "test_tool_asset",
+                    "browser_download_url": "https://github.example.com/test_tool_asset"
+                }
+                with self.assertRaisesRegex(RuntimeError, "tool asset test_tool_asset download failed") as ctx:
+                    manager._download_tool_asset(asset, target_file)
+                
+                err_msg = str(ctx.exception)
+                self.assertIn("test_tool_asset", err_msg)
+                self.assertIn("https://github.example.com/test_tool_asset", err_msg)
+                self.assertIn("https://mirror.example.com/test_tool_asset", err_msg)
+                self.assertIn("ConnectionError: failed to connect to https://github.example.com/test_tool_asset", err_msg)
+                self.assertIn("ConnectionError: failed to connect to https://mirror.example.com/test_tool_asset", err_msg)
+                self.assertEqual(download_calls, [
+                    "https://github.example.com/test_tool_asset",
+                    "https://mirror.example.com/test_tool_asset"
+                ])
+                self.assertFalse(target_file.exists())
+        finally:
+            manager.shutdown()
+
+    def test_invalid_bbdown_archive_raises_clear_error(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        bbdown_dir.mkdir(parents=True, exist_ok=True)
+        version_file = bbdown_dir / "VERSION"
+        
+        invalid_zip_content = b"<html><body>Proxy Error</body></html>"
+        
+        def fake_download_url(url, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(invalid_zip_content)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR", bbdown_dir
+        ), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ), patch(
+            "bilikara.cache.platform.system", return_value="Windows"
+        ), patch(
+            "bilikara.cache.platform.machine", return_value="AMD64"
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL", "https://mirror.example.com"
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                release_data = {
+                    "tag_name": "v1.6.3",
+                    "assets": [{"name": "BBDown_1.6.3_win-x64.zip", "browser_download_url": "https://github.com/win-x64.zip"}]
+                }
+                with patch.object(manager, "_fetch_latest_release", return_value=release_data), patch.object(
+                    manager, "_download_url", side_effect=fake_download_url
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "BBDown 下载内容不是有效压缩包: BBDown_1.6.3_win-x64.zip \\(size=37 bytes\\)"):
+                        manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+    def test_failed_bbdown_update_preserves_existing_binary_and_bbdown_data(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        bbdown_dir.mkdir(parents=True, exist_ok=True)
+        version_file = bbdown_dir / "VERSION"
+        version_file.write_text("v1.6.2", encoding="utf-8")
+        
+        suffix = ".exe" if os.name == "nt" else ""
+        existing_binary = bbdown_dir / f"BBDown{suffix}"
+        existing_binary.write_bytes(b"existing-binary-content")
+        
+        data_file = bbdown_dir / "BBDown.data"
+        data_file.write_text("user-data", encoding="utf-8")
+
+        def fake_download_url(url, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"invalid-archive")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR", bbdown_dir
+        ), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ), patch(
+            "bilikara.cache.platform.system", return_value="Windows"
+        ), patch(
+            "bilikara.cache.platform.machine", return_value="AMD64"
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL", "https://mirror.example.com"
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                release_data = {
+                    "tag_name": "v1.6.3",
+                    "assets": [{"name": "BBDown_1.6.3_win-x64.zip", "browser_download_url": "https://github.com/win-x64.zip"}]
+                }
+                with patch.object(manager, "_fetch_latest_release", return_value=release_data), patch.object(
+                    manager, "_download_url", side_effect=fake_download_url
+                ):
+                    with self.assertRaises(Exception):
+                        manager._ensure_bbdown(force_refresh=True)
+
+                self.assertTrue(existing_binary.exists())
+                self.assertEqual(existing_binary.read_bytes(), b"existing-binary-content")
+                
+                self.assertTrue(data_file.exists())
+                self.assertEqual(data_file.read_text(encoding="utf-8"), "user-data")
+                
+                self.assertEqual(version_file.read_text(encoding="utf-8").strip(), "v1.6.2")
+            finally:
+                manager.shutdown()
+
+    def test_worker_loop_handles_unexpected_exception(self):
+        log_dir = Path(self.temp_dir.name) / "logs"
+        
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = PlaylistItem(
+                    id="song-err",
+                    original_url="https://www.bilibili.com/video/BV1xx411c7mD",
+                    resolved_url="https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+                    bvid="BV1xx411c7mD",
+                    aid=123,
+                    cid=456,
+                    page=1,
+                    title="song-err",
+                    part_title="P1",
+                    display_title="song-err - P1",
+                    cover_url="",
+                    embed_url="https://player.bilibili.com/player.html?aid=123",
+                )
+                self.store.add_item(item, requester_name="cache-test-user")
+                
+                with patch.object(manager, "_cache_item", side_effect=RuntimeError("unexpected crash")):
+                    manager.tasks.put("song-err")
+                    manager.tasks.join()
+                
+                refreshed = self.store.get_item("song-err")
+                self.assertEqual(refreshed.cache_status, "failed")
+                self.assertIn("缓存发生意外错误: unexpected crash", refreshed.cache_message)
+                
+                log_path = manager._item_log_path("song-err")
+                self.assertTrue(log_path.exists())
+                log_content = log_path.read_text(encoding="utf-8")
+                self.assertIn("Unexpected error caching item: unexpected crash", log_content)
+            finally:
+                manager.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()

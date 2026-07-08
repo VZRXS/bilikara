@@ -94,14 +94,21 @@ class DownloadCommandError(RuntimeError):
 
 def _debug_print(msg: str) -> None:
     """Print debug message to console, replacing unencodable characters."""
-    return
     import sys
     try:
         print(msg, flush=True)
-    except UnicodeEncodeError:
-        encoded = msg.encode(sys.stdout.encoding or "utf-8", errors="replace")
-        sys.stdout.buffer.write(encoded + b"\n")
-        sys.stdout.buffer.flush()
+    except (UnicodeEncodeError, OSError):
+        try:
+            encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+            encoded = msg.encode(encoding, errors="replace")
+            if hasattr(sys.stdout, "buffer") and sys.stdout.buffer:
+                sys.stdout.buffer.write(encoded + b"\n")
+                sys.stdout.buffer.flush()
+            else:
+                sys.stdout.write(encoded.decode(encoding, errors="replace") + "\n")
+                sys.stdout.flush()
+        except Exception:
+            pass
 
 
 class CacheManager:
@@ -1065,6 +1072,24 @@ class CacheManager:
                     should_resync = self._cache_item(item_id)
                 except Exception as exc:  # noqa: BLE001
                     _debug_print(f"[bilikara-cache] Unexpected error caching item {item_id}: {exc}")
+                    try:
+                        log_path = self._item_log_path(item_id)
+                        self._append_log_line(
+                            log_path,
+                            f"[{self._log_timestamp()}] Unexpected error caching item: {exc}"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        self.store.update_item(
+                            item_id,
+                            cache_status="failed",
+                            cache_message=f"缓存发生意外错误: {exc}",
+                            persist_backup=False,
+                        )
+                        should_resync = True
+                    except Exception:
+                        pass
             finally:
                 with self.lock:
                     if self.active_item_id == item_id:
@@ -3315,23 +3340,67 @@ class CacheManager:
                 self.binary_state = "installing"
                 self.binary_message = "正在强制更新 BBDown" if force_refresh else "正在检查和更新 BBDown"
 
+            BB_DOWN_DIR.mkdir(parents=True, exist_ok=True)
+            asset = self._select_asset(release)
+            tmp_archive = BB_DOWN_DIR / f".tmp_{asset['name']}"
+            tmp_extract_dir = BB_DOWN_DIR / f".tmp_extract_{asset['name']}"
+
             try:
-                asset = self._select_asset(release)
-                tmp_archive = BB_DOWN_DIR / asset["name"]
+                # 1. Download to temporary archive
                 self._download_tool_asset(asset, tmp_archive)
-                self._extract_archive(tmp_archive, BB_DOWN_DIR)
-                tmp_archive.unlink(missing_ok=True)
 
-                if not current_binary.exists():
-                    raise RuntimeError("下载完成，但未找到 BBDown 可执行文件")
+                # 2. Validate downloaded archive
+                archive_name = asset["name"]
+                is_valid = False
+                lower_name = archive_name.lower()
+                if lower_name.endswith(".zip"):
+                    is_valid = zipfile.is_zipfile(tmp_archive)
+                elif lower_name.endswith((".tar.gz", ".tgz")):
+                    is_valid = tarfile.is_tarfile(tmp_archive)
 
+                if not is_valid:
+                    size = tmp_archive.stat().st_size if tmp_archive.exists() else 0
+                    raise RuntimeError(f"BBDown 下载内容不是有效压缩包: {archive_name} (size={size} bytes)")
+
+                # 3. Extract to a temporary directory
+                if tmp_extract_dir.exists():
+                    shutil.rmtree(tmp_extract_dir, ignore_errors=True)
+                tmp_extract_dir.mkdir(parents=True, exist_ok=True)
+                self._extract_archive(tmp_archive, tmp_extract_dir)
+
+                # 4. Search the extracted directory for the expected binary
+                expected_binary_name = "BBDown.exe" if os.name == "nt" else "BBDown"
+                found_binary_path = None
+                for candidate in tmp_extract_dir.rglob("*"):
+                    if candidate.is_file() and candidate.name.lower() == expected_binary_name.lower():
+                        found_binary_path = candidate
+                        break
+
+                if not found_binary_path:
+                    raise RuntimeError(f"在压缩包中未找到 {expected_binary_name} 可执行文件")
+
+                # Validate binary
+                found_binary_path.chmod(found_binary_path.stat().st_mode | stat.S_IEXEC)
+                if found_binary_path.stat().st_size == 0:
+                    raise RuntimeError(f"提取的可执行文件 {expected_binary_name} 大小为 0，无效")
+
+                # 5. Replace active binary only after validation
+                shutil.copy2(found_binary_path, current_binary)
                 current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
+
+                # 6. Only write BB_DOWN_VERSION_FILE after successful install
                 BB_DOWN_VERSION_FILE.write_text(latest_version, encoding="utf-8")
+
             except Exception as exc:
                 with self.lock:
                     self.binary_state = "error"
                     self.binary_message = f"更新 BBDown 失败: {exc}"
                 raise
+            finally:
+                if tmp_archive.exists():
+                    tmp_archive.unlink(missing_ok=True)
+                if tmp_extract_dir.exists():
+                    shutil.rmtree(tmp_extract_dir, ignore_errors=True)
 
             with self.lock:
                 self.binary_state = "ready"
@@ -3715,16 +3784,23 @@ class CacheManager:
         if not urls:
             raise RuntimeError(f"tool asset {name} missing download URL")
 
-        last_error: Exception | None = None
+        failures: list[tuple[str, Exception]] = []
         for url in urls:
             try:
                 self._download_url(url, target_path)
                 return
             except Exception as exc:  # noqa: BLE001
-                last_error = exc
+                failures.append((url, exc))
                 target_path.unlink(missing_ok=True)
-        if last_error is not None:
-            raise last_error
+
+        if failures:
+            error_details = []
+            for idx, (url, exc) in enumerate(failures, 1):
+                exc_type = type(exc).__name__
+                error_details.append(f"Attempt {idx} ({url}): {exc_type}: {exc}")
+            errors_str = "; ".join(error_details)
+            msg = f"tool asset {name} download failed. Attempted URLs: {urls}. Failures: {errors_str}"
+            raise RuntimeError(msg)
         raise RuntimeError(f"tool asset {name} download failed")
 
     @staticmethod
@@ -3979,12 +4055,6 @@ class CacheManager:
         raise RuntimeError(f"没有找到适合当前平台的 BBDown 安装包: {token}")
 
     def _extract_archive(self, archive_path: Path, output_dir: Path) -> None:
-        for child in output_dir.iterdir():
-            if child.is_file() and child.name != archive_path.name:
-                child.unlink()
-            elif child.is_dir():
-                shutil.rmtree(child)
-
         if archive_path.name.endswith(".zip"):
             with zipfile.ZipFile(archive_path) as zf:
                 zf.extractall(output_dir)
@@ -4275,6 +4345,7 @@ class CacheManager:
         output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
         match = re.search(r"(?i)\b(?:v|version\s*)?(\d+(?:\.\d+){1,3}(?:[-+._0-9A-Za-z]*)?)", output)
         return match.group(1) if match else ""
+    @staticmethod
     def _bbdown_ffmpeg_path_arg(binary_path: Path) -> str:
         target = binary_path if binary_path.is_dir() else binary_path.parent
         return CacheManager._tool_arg_path(target)
