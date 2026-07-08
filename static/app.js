@@ -10045,12 +10045,15 @@ elements.searchResults.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
 
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "search");
@@ -10060,6 +10063,7 @@ elements.searchResults.addEventListener("click", async (event) => {
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -10155,17 +10159,21 @@ elements.larkSearchResults?.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "lark");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -11770,17 +11778,21 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
 
 elements.searchModalOtherView?.addEventListener("click", async (event) => {
   const target = searchResultRequestTarget(event, elements.searchModalOtherView);
-  if (!target?.url) {
+  if (!target?.url || (target.button && target.button.disabled)) {
     return;
   }
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalBrowse");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -11851,18 +11863,22 @@ elements.followSongResults?.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
 
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalFollow");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -11906,18 +11922,22 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
 
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalFavlist");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });

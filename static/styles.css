@@ -716,13 +716,14 @@ p {
 }
 
 .toolbar-button:disabled,
-.next-button:disabled {
+.next-button:disabled,
+.primary-button:disabled {
   opacity: 0.48;
   cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-  background: rgba(109, 98, 88, 0.16);
-  color: var(--muted);
+  transform: none !important;
+  box-shadow: none !important;
+  background: rgba(109, 98, 88, 0.16) !important;
+  color: var(--muted) !important;
 }
 
 .topbar {

@@ -6623,10 +6623,18 @@ elements.searchForm.addEventListener("submit", async (event) => {
 
 elements.searchResults.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
-  await addByUrl(String(button.dataset.url || ""), "tail", "search");
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = t("search.adding") || "添加中...";
+  try {
+    await addByUrl(String(button.dataset.url || ""), "tail", "search");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
 });
 
 elements.searchLibraryOpen?.addEventListener("click", () => {
@@ -6711,18 +6719,25 @@ elements.searchModalLarkResults?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalSearch");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
@@ -6768,18 +6783,25 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalFavlist");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
@@ -6913,18 +6935,25 @@ elements.searchModalOtherView?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalBrowse");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
@@ -7013,10 +7042,18 @@ elements.larkSearchForm?.addEventListener("submit", async (event) => {
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
-  await addByUrl(String(button.dataset.url || ""), "tail", "lark");
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = t("search.adding") || "添加中...";
+  try {
+    await addByUrl(String(button.dataset.url || ""), "tail", "lark");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
 });
 
 elements.followBrowseToggle?.addEventListener("click", () => {
@@ -7107,18 +7144,21 @@ elements.modalFollowSearchForm?.addEventListener("submit", async (event) => {
 
 elements.followSongResults?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
   const url = String(button.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  const originalText = button.textContent;
   button.disabled = true;
+  button.textContent = t("search.adding") || "添加中...";
   try {
     await addByUrl(url, "tail", "follow");
   } finally {
     button.disabled = false;
+    button.textContent = originalText;
   }
 });
 
@@ -7128,18 +7168,25 @@ elements.modalFollowSongResults?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalFollow");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
