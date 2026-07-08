@@ -3084,13 +3084,11 @@ class CacheManager:
         done: bool = False,
         is_preallocated: bool = False,
     ) -> None:
-        current_bytes = self._path_size(target_dir)
         with self.lock:
             tracks = self.item_download_progress.get(item_id)
             if not tracks or track_key not in tracks:
                 return
             track = tracks[track_key]
-            track["current_bytes"] = max(0, int(current_bytes or 0))
             if target_bytes is not None and int(target_bytes or 0) > 0:
                 track["target_bytes"] = max(
                     int(track.get("target_bytes") or 0),
@@ -3108,6 +3106,18 @@ class CacheManager:
             if done:
                 track["done"] = True
                 track["progress_percent"] = 100.0
+
+            # Calculate current_bytes using progress_percent if available to avoid pre-allocated disk size issue
+            t_bytes = int(track.get("target_bytes") or 0)
+            p_percent = track.get("progress_percent")
+            if p_percent is not None and t_bytes > 0:
+                current_bytes = int(t_bytes * (float(p_percent) / 100.0))
+            else:
+                current_bytes = self._path_size(target_dir)
+
+            track["current_bytes"] = max(0, int(current_bytes or 0))
+
+            if done:
                 if int(track.get("target_bytes") or 0) <= 0:
                     track["target_bytes"] = int(track.get("current_bytes") or 0)
                 elif int(track.get("current_bytes") or 0) > int(track.get("target_bytes") or 0):
