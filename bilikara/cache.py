@@ -1929,7 +1929,7 @@ class CacheManager:
         cookie_file.write_text("\n".join(lines), encoding="utf-8")
         return cookie_file
 
-    def _resolve_dash_streams(self, item) -> dict:
+    def _resolve_dash_streams(self, item, cid: int | None = None) -> dict:
         """Resolve DASH stream URLs from Bilibili API for the given item.
 
         Returns a dict with keys matching fetch_dash_playurl output:
@@ -1942,9 +1942,11 @@ class CacheManager:
         if not cookie:
             raise BilibiliError("Downkyi 模式需要 Bilibili Cookie 才能获取播放地址")
 
+        resolved_cid = cid if cid is not None else item.cid
+
         dash = fetch_dash_playurl(
             bvid=item.bvid,
-            cid=item.cid,
+            cid=resolved_cid,
             avid=item.aid,
         )
 
@@ -1984,6 +1986,39 @@ class CacheManager:
             raise BilibiliError("未找到符合质量要求的音频流")
 
         return result
+
+    def _cid_for_page(self, item, page: int) -> int:
+        """Resolve the CID for a given page number.
+
+        Tries selected_pages first, then available_pages. Falls back to item.cid if
+        it matches item.page. Raises RuntimeError if unable to resolve.
+        """
+        selected_pages = getattr(item, "selected_pages", None)
+        selected_cids = getattr(item, "selected_cids", None)
+        if selected_pages and selected_cids:
+            try:
+                idx = selected_pages.index(page)
+                if idx < len(selected_cids):
+                    return selected_cids[idx]
+            except ValueError:
+                pass
+
+        available_pages = getattr(item, "available_pages", None)
+        available_cids = getattr(item, "available_cids", None)
+        if available_pages and available_cids:
+            try:
+                idx = available_pages.index(page)
+                if idx < len(available_cids):
+                    return available_cids[idx]
+            except ValueError:
+                pass
+
+        if getattr(item, "page", None) == page:
+            cid = getattr(item, "cid", 0)
+            if cid:
+                return cid
+
+        raise RuntimeError(f"无法解析 P{page} 的 cid，不能下载对应音频")
 
     def _dash_max_quality_id(self, video_quality: str) -> int:
         quality_id_map = {
@@ -2073,15 +2108,6 @@ class CacheManager:
         with self.lock:
             audio_hires = self.audio_hires
 
-        best_audio = dash_streams.get("audio") or []
-        flac_audio = dash_streams.get("flac")
-        dolby_audio = dash_streams.get("dolby")
-        preferred_audio = best_audio[0] if best_audio else None
-        if flac_audio and audio_hires:
-            preferred_audio = flac_audio
-        if dolby_audio and audio_hires:
-            preferred_audio = dolby_audio
-
         video_urls = self._dash_stream_urls(dash_streams, "video")
         if not video_urls:
             raise DownloadCommandError("未找到视频流下载地址")
@@ -2100,14 +2126,33 @@ class CacheManager:
 
         for track in audio_tracks:
             page = int(track["page"])
+            label = str(track["label"])
             audio_target_dir = item_dir / f"audio-p{page}"
             audio_target_dir.mkdir(parents=True, exist_ok=True)
+
+            cid = self._cid_for_page(item, page)
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] resolve audio DASH: page={page}, cid={cid}")
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] download audio track: page={page}, label={label}")
+
+            try:
+                page_dash_streams = self._resolve_dash_streams(item, cid=cid)
+            except Exception as exc:
+                raise RuntimeError(f"P{page} 音频解析失败: {exc}") from exc
+
+            best_audio = page_dash_streams.get("audio") or []
+            flac_audio = page_dash_streams.get("flac")
+            dolby_audio = page_dash_streams.get("dolby")
+            preferred_audio = best_audio[0] if best_audio else None
+            if flac_audio and audio_hires:
+                preferred_audio = flac_audio
+            if dolby_audio and audio_hires:
+                preferred_audio = dolby_audio
 
             if preferred_audio:
                 audio_urls = [preferred_audio["url"]]
                 audio_urls.extend(preferred_audio.get("backup_urls") or [])
             else:
-                audio_urls = self._dash_stream_urls(dash_streams, "audio")
+                audio_urls = self._dash_stream_urls(page_dash_streams, "audio")
             if not audio_urls:
                 raise DownloadCommandError(f"未找到音频轨 P{page} 的下载地址")
 

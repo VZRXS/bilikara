@@ -2200,5 +2200,225 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                 manager.shutdown()
 
 
+class CacheManagerDownkyiRegressionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        temp_path = Path(self.temp_dir.name)
+        self.cache_dir = temp_path / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.store = PlaylistStore(
+            state_file=temp_path / "state.json",
+            backup_file=temp_path / "playlist_backup.json",
+        )
+        self.store.add_session_user("cache-test-user")
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_downkyi_multi_page_audio_resolves_correct_cids_and_urls(self):
+        item = PlaylistItem(
+            id="multi-p-item",
+            original_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+            bvid="BV1xx411c7mD",
+            aid=123,
+            cid=111,
+            page=1,
+            title="Multi P Video",
+            part_title="P1",
+            display_title="Multi P Video",
+            cover_url="",
+            embed_url="",
+            selected_pages=[1, 2, 3],
+            selected_cids=[111, 222, 333],
+            selected_parts=["P1", "P2", "P3"],
+            video_page=1,
+        )
+
+        resolved_cids = []
+
+        def mock_fetch_dash(bvid, cid, avid):
+            resolved_cids.append(cid)
+            return {
+                "video": [{"id": 80, "url": f"video-cid-{cid}.m4s", "backup_urls": []}],
+                "audio": [{"id": 30216, "url": f"audio-cid-{cid}.m4s", "backup_urls": []}],
+            }
+
+        downloaded_tracks = []
+
+        def mock_download_aria2c(item_id, binary_path, ffmpeg_path, target_dir, log_path, urls, out_name, cookie, stage_label, track_key, stream_kind):
+            downloaded_tracks.append({
+                "urls": urls,
+                "out_name": out_name,
+                "stage_label": stage_label,
+            })
+            return Path(target_dir) / out_name
+
+        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"), patch(
+            "bilikara.cache.fetch_dash_playurl", side_effect=mock_fetch_dash
+        ), patch.object(
+            CacheManager, "_download_stream_with_aria2c", side_effect=mock_download_aria2c
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                log_path = Path(self.temp_dir.name) / "test.log"
+                dash_streams = manager._resolve_dash_streams(item)
+                result = manager._download_dash_streams_with_aria2c(
+                    item=item,
+                    binary_path=Path("/tools/aria2c"),
+                    ffmpeg_path=Path("/tools/ffmpeg"),
+                    item_dir=self.cache_dir / "multi-p-item",
+                    log_path=log_path,
+                    dash_streams=dash_streams,
+                    video_track={
+                        "key": "video_1",
+                        "page": 1,
+                        "stream_kind": "video",
+                        "label": "视频轨 P1",
+                        "order": 0,
+                    },
+                    audio_tracks=[
+                        {
+                            "key": "audio_1",
+                            "page": 1,
+                            "stream_kind": "audio",
+                            "label": "音轨 P1",
+                            "order": 1,
+                        },
+                        {
+                            "key": "audio_2",
+                            "page": 2,
+                            "stream_kind": "audio",
+                            "label": "音轨 P2",
+                            "order": 2,
+                        },
+                        {
+                            "key": "audio_3",
+                            "page": 3,
+                            "stream_kind": "audio",
+                            "label": "音轨 P3",
+                            "order": 3,
+                        },
+                    ]
+                )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(resolved_cids, [111, 111, 222, 333])
+        self.assertEqual(len(downloaded_tracks), 4)
+        self.assertEqual(downloaded_tracks[0]["urls"][0], "video-cid-111.m4s")
+        self.assertEqual(downloaded_tracks[1]["urls"][0], "audio-cid-111.m4s")
+        self.assertEqual(downloaded_tracks[2]["urls"][0], "audio-cid-222.m4s")
+        self.assertEqual(downloaded_tracks[3]["urls"][0], "audio-cid-333.m4s")
+
+        self.assertTrue(log_path.exists())
+        log_content = log_path.read_text(encoding="utf-8")
+        self.assertIn("resolve audio DASH: page=1, cid=111", log_content)
+        self.assertIn("resolve audio DASH: page=2, cid=222", log_content)
+        self.assertIn("resolve audio DASH: page=3, cid=333", log_content)
+        self.assertIn("download audio track: page=1, label=音轨 P1", log_content)
+        self.assertIn("download audio track: page=2, label=音轨 P2", log_content)
+        self.assertIn("download audio track: page=3, label=音轨 P3", log_content)
+
+    def test_downkyi_single_page_regression(self):
+        item = PlaylistItem(
+            id="single-p-item",
+            original_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+            bvid="BV1xx411c7mD",
+            aid=123,
+            cid=111,
+            page=1,
+            title="Single P Video",
+            part_title="P1",
+            display_title="Single P Video",
+            cover_url="",
+            embed_url="",
+            selected_pages=[1],
+            selected_cids=[111],
+            selected_parts=["P1"],
+            video_page=1,
+        )
+
+        resolved_cids = []
+
+        def mock_fetch_dash(bvid, cid, avid):
+            resolved_cids.append(cid)
+            return {
+                "video": [{"id": 80, "url": "video.m4s", "backup_urls": []}],
+                "audio": [{"id": 30216, "url": "audio.m4s", "backup_urls": []}],
+            }
+
+        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"), patch(
+            "bilikara.cache.fetch_dash_playurl", side_effect=mock_fetch_dash
+        ), patch.object(
+            CacheManager, "_download_stream_with_aria2c", return_value=Path("/tmp/ok")
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                log_path = Path(self.temp_dir.name) / "test.log"
+                dash_streams = manager._resolve_dash_streams(item)
+                result = manager._download_dash_streams_with_aria2c(
+                    item=item,
+                    binary_path=Path("/tools/aria2c"),
+                    ffmpeg_path=Path("/tools/ffmpeg"),
+                    item_dir=self.cache_dir / "single-p-item",
+                    log_path=log_path,
+                    dash_streams=dash_streams,
+                    video_track={"key": "v1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
+                    audio_tracks=[{"key": "a1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}]
+                )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(resolved_cids, [111, 111])
+
+    def test_downkyi_missing_cid_mapping_fails_clear(self):
+        item = PlaylistItem(
+            id="bad-item",
+            original_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+            bvid="BV1xx411c7mD",
+            aid=123,
+            cid=111,
+            page=1,
+            title="Bad Video",
+            part_title="P1",
+            display_title="Bad Video",
+            cover_url="",
+            embed_url="",
+            selected_pages=[1, 2],
+            selected_cids=[111],
+            selected_parts=["P1", "P2"],
+            video_page=1,
+        )
+
+        with patch("bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"), patch(
+            "bilikara.cache.fetch_dash_playurl", return_value={
+                "video": [{"url": "video.m4s", "backup_urls": []}],
+                "audio": [{"id": 30216, "url": "audio.m4s", "backup_urls": []}],
+            }
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                log_path = Path(self.temp_dir.name) / "test.log"
+                with self.assertRaisesRegex(RuntimeError, "无法解析 P2 的 cid，不能下载对应音频"):
+                    manager._download_dash_streams_with_aria2c(
+                        item=item,
+                        binary_path=Path("/tools/aria2c"),
+                        ffmpeg_path=Path("/tools/ffmpeg"),
+                        item_dir=self.cache_dir / "bad-item",
+                        log_path=log_path,
+                        dash_streams={"video": [{"url": "video.m4s", "backup_urls": []}], "audio": []},
+                        video_track={"key": "v1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
+                        audio_tracks=[
+                            {"key": "a1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1},
+                            {"key": "a2", "page": 2, "stream_kind": "audio", "label": "A2", "order": 2},
+                        ]
+                    )
+            finally:
+                manager.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()
