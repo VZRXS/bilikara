@@ -124,6 +124,12 @@ class DuplicateSessionRequestError(ValueError):
         super().__init__(f"本次已经点过《{item.display_title}》")
 
 
+class SessionUserAlreadyExistsError(ValueError):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__("该用户已存在")
+
+
 class AppContext:
     def __init__(self) -> None:
         ensure_directories()
@@ -382,14 +388,23 @@ class AppContext:
                 "session_id": self.remote_identities.snapshot_session_id(),
             }
 
-    def register_remote_identity(self, name: str) -> tuple[str, dict[str, object]]:
+    def register_remote_identity(self, name: str, *, claim: bool = False) -> tuple[str, dict[str, object]]:
         with self._remote_identity_lock:
-            self.store.add_session_user(name)
             normalized = self.store.normalize_session_user_name(name)
+            if not normalized:
+                raise ValueError("用户名不能为空")
+            newly_added = False
+            if self.store.has_session_user(normalized):
+                if not claim:
+                    raise SessionUserAlreadyExistsError(normalized)
+            else:
+                self.store.add_session_user(normalized)
+                newly_added = True
             try:
                 token = self.remote_identities.issue(normalized)
             except Exception:
-                self.store.remove_session_user(normalized)
+                if newly_added:
+                    self.store.remove_session_user(normalized)
                 raise
             return token, {
                 "registered": True,
@@ -1122,7 +1137,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 return
             if route == "/api/remote-identity/register":
-                token, identity = CONTEXT.register_remote_identity(str(body.get("name") or ""))
+                token, identity = CONTEXT.register_remote_identity(
+                    str(body.get("name") or ""),
+                    claim=bool(body.get("claim")),
+                )
                 self._write_json(
                     {"ok": True, "data": identity},
                     headers={"Set-Cookie": self._remote_identity_cookie(token)},
@@ -1707,6 +1725,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "duplicate_item": exc.item.to_dict(),
                     "session_entry": exc.session_entry.to_dict() if exc.session_entry else None,
                     "active_item": exc.active_item.to_dict() if exc.active_item else None,
+                },
+                status=HTTPStatus.CONFLICT,
+            )
+        except SessionUserAlreadyExistsError as exc:
+            self._write_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": "session_user_already_exists",
+                    "name": exc.name,
                 },
                 status=HTTPStatus.CONFLICT,
             )

@@ -1474,6 +1474,28 @@ async function submitRemoteIdentity(event) {
       elements.remoteIdentityInput.value = "";
     }
   } catch (error) {
+    if (error.code === "session_user_already_exists") {
+      const confirmClaim = confirm(
+        t("remoteIdentity.confirmClaim", { name }) || `该用户 "${name}" 已存在，是否认领该身份？`
+      );
+      if (confirmClaim) {
+        try {
+          state.remoteIdentitySaving = true;
+          renderRemoteIdentity();
+          const identity = await apiPost("/api/remote-identity/register", { name, claim: true });
+          applyRemoteIdentity(identity);
+          if (elements.remoteIdentityInput) {
+            elements.remoteIdentityInput.value = "";
+          }
+          return;
+        } catch (innerError) {
+          state.remoteIdentitySaving = false;
+          state.remoteIdentityError = innerError?.message || t("error.requestFailed");
+          renderRemoteIdentity();
+          return;
+        }
+      }
+    }
     state.remoteIdentitySaving = false;
     state.remoteIdentityError = error?.message || t("error.requestFailed");
     renderRemoteIdentity();

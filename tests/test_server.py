@@ -226,6 +226,26 @@ class AppContextRemoteIdentityTest(unittest.TestCase):
             context.remove_session_user("VZRXS")
             self.assertFalse(context.remote_identity_snapshot(token)["registered"])
 
+    def test_register_existing_identity_succeeds(self):
+        with TemporaryDirectory() as tmpdir:
+            context = self.make_context(Path(tmpdir))
+
+            # Register "Kevin" for the first time
+            token1, registered1 = context.register_remote_identity("Kevin")
+            self.assertEqual(registered1["name"], "Kevin")
+            self.assertEqual(context.store.snapshot()["session_users"], ["Kevin"])
+
+            # Register "Kevin" again without claiming (should fail)
+            with self.assertRaises(server_module.SessionUserAlreadyExistsError):
+                context.register_remote_identity("Kevin", claim=False)
+
+            # Register "Kevin" again with claim=True (should succeed)
+            token2, registered2 = context.register_remote_identity("Kevin", claim=True)
+            self.assertEqual(registered2["name"], "Kevin")
+            self.assertNotEqual(token1, token2)
+            self.assertEqual(context.store.snapshot()["session_users"], ["Kevin"])  # No duplicate entries
+            self.assertTrue(context.remote_identity_snapshot(token2)["registered"])
+
     def test_cookie_is_persistent_and_lan_http_compatible(self):
         cookie = BilikaraHandler._remote_identity_cookie("token")
 
