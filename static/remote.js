@@ -5532,6 +5532,15 @@ async function confirmBindingSheet() {
 
   state.submitting = true;
   setMessageForSource(source, intent.position === "next" ? t("remote.bindingAddingNext") : t("remote.bindingAddingTail"));
+
+  const button = elements.bindingSheetConfirm;
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
+  }
+
   try {
     const result = await submitAddRequestWithDuplicateConfirm(
       intent.url,
@@ -5578,6 +5587,10 @@ async function confirmBindingSheet() {
     setAppMessage(error.message, true);
   } finally {
     state.submitting = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 

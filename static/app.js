@@ -8890,6 +8890,14 @@ async function confirmBindingModal() {
     return;
   }
 
+  const button = elements.bindingModalConfirm;
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
+  }
+
   try {
     state.data = await submitAddRequest(intent.url, intent.position || "tail", {
       requesterName: intent.requesterName || selectedRequesterName(),
@@ -8952,6 +8960,11 @@ async function confirmBindingModal() {
       setGatchaMessage(error.message, true);
     } else {
       setFormMessage(error.message, true);
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
     }
   }
 }
