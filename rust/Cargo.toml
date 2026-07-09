@@ -1,0 +1,11 @@
+[package]
+name = "bilikara_rust"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+regex = "1"
