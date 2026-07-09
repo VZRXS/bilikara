@@ -152,7 +152,7 @@ class CacheManager:
         self.item_download_progress: dict[str, dict[str, dict[str, object]]] = {}
         self.retry_requested_ids: set[str] = set()
         self.cache_interrupted_messages: dict[str, str] = {}
-        self.log_dir = LOG_DIR / "bbdown"
+        self.log_dir = LOG_DIR
         self.bbdown_login_process: subprocess.Popen[str] | None = None
         self.bbdown_login_state = "idle"
         self.bbdown_login_message = "未登录"
@@ -865,7 +865,8 @@ class CacheManager:
         if not self._is_in_cache_window(item_id):
             raise ValueError("当前不在自动缓存窗口中")
 
-        log_path = self._item_log_path(item_id)
+        download_source = self._current_download_source()
+        log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
 
         with self.lock:
@@ -896,8 +897,9 @@ class CacheManager:
 
         self._remove_cache_dir(item_id)
         if preempted_item_id:
+            download_source = self._current_download_source()
             self._append_log_line(
-                self._item_log_path(preempted_item_id),
+                self._item_log_path(preempted_item_id, download_source),
                 f"[{self._log_timestamp()}] interrupted by manual retry: {item.display_title}",
             )
             self._enqueue_retry_front(item_id, requeue_after=preempted_item_id)
@@ -1073,7 +1075,8 @@ class CacheManager:
                 except Exception as exc:  # noqa: BLE001
                     _debug_print(f"[bilikara-cache] Unexpected error caching item {item_id}: {exc}")
                     try:
-                        log_path = self._item_log_path(item_id)
+                        download_source = self._current_download_source()
+                        log_path = self._item_log_path(item_id, download_source)
                         self._append_log_line(
                             log_path,
                             f"[{self._log_timestamp()}] Unexpected error caching item: {exc}"
@@ -1129,11 +1132,11 @@ class CacheManager:
 
         item_dir = CACHE_DIR / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self._item_log_path(item_id)
+        download_source = self._current_download_source()
+        log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, "")
         self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
 
-        download_source = self._current_download_source()
         try:
             binary_path = self._ensure_downloader(download_source)
         except Exception as exc:  # noqa: BLE001
@@ -2403,7 +2406,7 @@ class CacheManager:
         target_dir: Path,
         track_key: str,
         tool_dir: Path | None = None,
-        silent: bool = False,
+        silent: bool = True,
     ) -> None:
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
         if not silent:
@@ -2495,7 +2498,8 @@ class CacheManager:
             raise CacheCancelledError(self._outside_window_message())
 
         if return_code != 0:
-            _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
+            if not silent:
+                _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
             raise DownloadCommandError(last_message)
 
         self._update_download_track_progress(
@@ -4542,8 +4546,9 @@ class CacheManager:
             kwargs["startupinfo"] = startupinfo
         return kwargs
 
-    def _item_log_path(self, item_id: str) -> Path:
-        return self.log_dir / f"{item_id}.log"
+    def _item_log_path(self, item_id: str, download_source: str | None = None) -> Path:
+        source = download_source or self._current_download_source()
+        return self.log_dir / source / f"{item_id}.log"
 
     @staticmethod
     def _log_timestamp() -> str:
@@ -4693,7 +4698,8 @@ class CacheManager:
         self._remove_item_log(item_id)
 
     def _remove_item_log(self, item_id: str) -> None:
-        self._safe_unlink(self._item_log_path(item_id))
+        for source in DOWNLOAD_SOURCE_CHOICES:
+            self._safe_unlink(self.log_dir / source / f"{item_id}.log")
 
     def _clear_log_root(self) -> None:
         if not self.log_dir.exists():
