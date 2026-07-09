@@ -2313,6 +2313,7 @@ class CacheManager:
             track_key=track_key,
             tool_dir=binary_path.parent,
             silent=True,
+            is_preallocated=True,
         )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
@@ -2407,6 +2408,7 @@ class CacheManager:
         track_key: str,
         tool_dir: Path | None = None,
         silent: bool = True,
+        is_preallocated: bool = False,
     ) -> None:
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
         if not silent:
@@ -2434,7 +2436,7 @@ class CacheManager:
             track_key=track_key,
             target_dir=target_dir,
             target_bytes=0,
-            is_preallocated=False,
+            is_preallocated=is_preallocated,
         )
         monitor = threading.Thread(
             target=self._monitor_download_track_progress,
@@ -2445,6 +2447,7 @@ class CacheManager:
                 "track_key": track_key,
                 "target_dir": target_dir,
                 "target_bytes_state": target_bytes_state,
+                "is_preallocated": is_preallocated,
             },
             daemon=True,
         )
@@ -2470,7 +2473,7 @@ class CacheManager:
                     target_dir=target_dir,
                     target_bytes=target_bytes_state["value"],
                     progress_percent=progress,
-                    is_preallocated=False,
+                    is_preallocated=is_preallocated,
                 )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
@@ -2508,7 +2511,7 @@ class CacheManager:
             target_dir=target_dir,
             target_bytes=target_bytes_state["value"],
             done=True,
-            is_preallocated=False,
+            is_preallocated=is_preallocated,
         )
         self._record_item_activity(item_id)
         self._raise_if_retry_requested(item_id)
@@ -3012,7 +3015,7 @@ class CacheManager:
             return max(0, int(value * multiplier))
 
         expected_prefix = "[视频]" if stream_kind == "video" else "[音频]"
-        if not normalized_line.startswith(expected_prefix):
+        if expected_prefix not in normalized_line:
             return 0
         matches = STREAM_SIZE_HINT_RE.findall(normalized_line)
         if not matches:
@@ -3118,7 +3121,7 @@ class CacheManager:
             # Calculate current_bytes using progress_percent if available to avoid pre-allocated disk size issue
             t_bytes = int(track.get("target_bytes") or 0)
             p_percent = track.get("progress_percent")
-            if p_percent is not None and t_bytes > 0:
+            if is_preallocated and p_percent is not None and t_bytes > 0:
                 current_bytes = int(t_bytes * (float(p_percent) / 100.0))
             else:
                 current_bytes = self._path_size(target_dir)
@@ -3126,10 +3129,7 @@ class CacheManager:
             track["current_bytes"] = max(0, int(current_bytes or 0))
 
             if done:
-                if int(track.get("target_bytes") or 0) <= 0:
-                    track["target_bytes"] = int(track.get("current_bytes") or 0)
-                elif int(track.get("current_bytes") or 0) > int(track.get("target_bytes") or 0):
-                    track["target_bytes"] = int(track.get("current_bytes") or 0)
+                track["target_bytes"] = int(track.get("current_bytes") or 0)
         self._publish_download_progress(item_id)
 
     def _publish_download_progress(self, item_id: str) -> None:
@@ -3251,6 +3251,7 @@ class CacheManager:
         track_key: str,
         target_dir: Path,
         target_bytes_state: dict[str, int],
+        is_preallocated: bool = False,
     ) -> None:
         while not stop_event.wait(1.0):
             self._update_download_track_progress(
@@ -3258,7 +3259,7 @@ class CacheManager:
                 track_key=track_key,
                 target_dir=target_dir,
                 target_bytes=target_bytes_state.get("value", 0),
-                is_preallocated=False,
+                is_preallocated=is_preallocated,
             )
             if process.poll() is not None:
                 return
@@ -4194,7 +4195,7 @@ class CacheManager:
                 break
 
             if isinstance(chunk, str):
-                char_byte = chunk.encode("utf-8", errors="replace")
+                char_byte = chunk.encode(SUBPROCESS_OUTPUT_ENCODING, errors="replace")
             else:
                 char_byte = chunk
 
@@ -4204,7 +4205,7 @@ class CacheManager:
                         buffer.pop()
                     continue
                 if b in {ord("\r"), ord("\n")}:
-                    stripped = buffer.decode("utf-8", errors="replace").strip()
+                    stripped = buffer.decode(SUBPROCESS_OUTPUT_ENCODING, errors="replace").strip()
                     if stripped and stripped != last_emitted:
                         yield stripped
                         last_emitted = stripped
@@ -4212,7 +4213,7 @@ class CacheManager:
                     last_progress = None
                     continue
                 buffer.append(b)
-                decoded_buffer = buffer.decode("utf-8", errors="replace")
+                decoded_buffer = buffer.decode(SUBPROCESS_OUTPUT_ENCODING, errors="replace")
                 progress = CacheManager._extract_progress(CacheManager._normalize_output_line(decoded_buffer))
                 if progress is not None:
                     progress_step = int(progress)
@@ -4223,7 +4224,7 @@ class CacheManager:
                             last_emitted = stripped
                         last_progress = progress_step
         if buffer:
-            stripped = buffer.decode("utf-8", errors="replace").strip()
+            stripped = buffer.decode(SUBPROCESS_OUTPUT_ENCODING, errors="replace").strip()
             if stripped and stripped != last_emitted:
                 yield stripped
 
