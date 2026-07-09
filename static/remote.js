@@ -6396,6 +6396,17 @@ async function submitRequest(position) {
 
   state.submitting = true;
   setFormMessage(position === "next" ? t("remote.addingNext") : t("remote.addingTail"));
+
+  const button = position === "next"
+    ? elements.addNextButton
+    : elements.requestForm?.querySelector('button[type="submit"]');
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
+  }
+
   try {
     const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
     if (result.cancelled) {
@@ -6422,6 +6433,10 @@ async function submitRequest(position) {
     setFormMessage(error.message, true);
   } finally {
     state.submitting = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 

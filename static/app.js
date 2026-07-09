@@ -8980,6 +8980,16 @@ async function handleAdd(position, anchorPoint) {
     return;
   }
 
+  const button = position === "next"
+    ? elements.queueNextButton
+    : elements.addForm?.querySelector('button[type="submit"]');
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
+  }
+
   setFormMessage(t("request.parsing"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
@@ -9018,6 +9028,11 @@ async function handleAdd(position, anchorPoint) {
       return;
     }
     setFormMessage(error.message, true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
