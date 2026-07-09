@@ -1063,7 +1063,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     source_settings[export_source] = {
                         "items": read_session_file,
                         "filename": Path(safe_name).stem,
-                        "title": f"bilikara 歌单导出 ({Path(safe_name).stem})",
+                        "title": "bilikara 歌单导出",
                         "time_header": "播放时间",
                     }
             if export_source not in source_settings:
