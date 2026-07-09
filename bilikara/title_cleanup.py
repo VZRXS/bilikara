@@ -36,7 +36,50 @@ def _clean_bracket_content(match: re.Match) -> str:
     return f"{full_block[0]}{cleaned_inner}{full_block[-1]}"
 
 
-def clean_display_title(
+import ctypes
+import platform
+from pathlib import Path
+
+# Load Rust dynamic library
+_rust_lib = None
+_RUST_LOAD_ERROR = None
+
+def _get_rust_lib_path() -> Path | None:
+    root_dir = Path(__file__).parent.parent
+    system = platform.system()
+    if system == "Windows":
+        lib_name = "bilikara_rust.dll"
+    elif system == "Darwin":
+        lib_name = "libbilikara_rust.dylib"
+    else:
+        lib_name = "libbilikara_rust.so"
+
+    # Search in release first, then debug
+    for mode in ("release", "debug"):
+        candidate = root_dir / "rust" / "target" / mode / lib_name
+        if candidate.exists():
+            return candidate
+    return None
+
+try:
+    _lib_path = _get_rust_lib_path()
+    if _lib_path:
+        _rust_lib = ctypes.CDLL(str(_lib_path))
+        _rust_lib.rust_clean_display_title.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+        ]
+        _rust_lib.rust_clean_display_title.restype = ctypes.c_void_p
+        _rust_lib.rust_free_string.argtypes = [ctypes.c_void_p]
+        _rust_lib.rust_free_string.restype = None
+    else:
+        _RUST_LOAD_ERROR = "Rust library not compiled"
+except Exception as e:
+    _RUST_LOAD_ERROR = str(e)
+
+
+def _py_clean_display_title(
     *,
     title: str = "",
     display_title: str = "",
@@ -50,6 +93,31 @@ def clean_display_title(
     cleaned = MULTISPACE_RE.sub(" ", cleaned).strip()
     cleaned = EDGE_SEPARATOR_RE.sub("", cleaned).strip()
     return cleaned or candidate.strip()
+
+
+def clean_display_title(
+    *,
+    title: str = "",
+    display_title: str = "",
+    part_title: str = "",
+) -> str:
+    if _rust_lib is not None:
+        try:
+            title_bytes = str(title or "").encode("utf-8")
+            display_bytes = str(display_title or "").encode("utf-8")
+            part_bytes = str(part_title or "").encode("utf-8")
+
+            res_ptr = _rust_lib.rust_clean_display_title(title_bytes, display_bytes, part_bytes)
+            if res_ptr:
+                try:
+                    res_str = ctypes.c_char_p(res_ptr).value.decode("utf-8")
+                    return res_str
+                finally:
+                    _rust_lib.rust_free_string(res_ptr)
+        except Exception:
+            pass
+
+    return _py_clean_display_title(title=title, display_title=display_title, part_title=part_title)
 
 
 def _remove_part_suffix(display_title: str, part_title: str) -> str:
