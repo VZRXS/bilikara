@@ -53,7 +53,9 @@ jobs:
           cd ..
 
       - name: Compile Python files
-        run: python -m py_compile bilikara/*.py start_bilikara.py build_bundle.py
+        run: |
+          python -m compileall -q bilikara
+          python -m py_compile start_bilikara.py build_bundle.py
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v

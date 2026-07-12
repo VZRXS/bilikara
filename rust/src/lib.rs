@@ -157,11 +157,19 @@ mod tests {
 
         // karaoke keywords
         assert_eq!(
-            clean_display_title_impl("ニコカラ Aegisub びりから on/off vocal 无损 1080p mv", "", ""),
+            clean_display_title_impl(
+                "ニコカラ Aegisub びりから on/off vocal 无损 1080p mv",
+                "",
+                ""
+            ),
             "ニコカラ Aegisub びりから on/off vocal 无损 1080p mv"
         );
         assert_eq!(
-            clean_display_title_impl("[Aegisub] (KTV) 『字幕』 <60fps> 〈无损〉 《Hi-Res》", "", ""),
+            clean_display_title_impl(
+                "[Aegisub] (KTV) 『字幕』 <60fps> 〈无损〉 《Hi-Res》",
+                "",
+                ""
+            ),
             "(KTV)"
         );
 
@@ -172,10 +180,16 @@ mod tests {
         );
 
         // Chinese titles
-        assert_eq!(clean_display_title_impl("【卡拉OK】七里香", "", ""), "七里香");
+        assert_eq!(
+            clean_display_title_impl("【卡拉OK】七里香", "", ""),
+            "七里香"
+        );
 
         // empty title with display_title fallback
-        assert_eq!(clean_display_title_impl("", "My Display Title", ""), "My Display Title");
+        assert_eq!(
+            clean_display_title_impl("", "My Display Title", ""),
+            "My Display Title"
+        );
 
         // display_title with part_title suffix
         assert_eq!(clean_display_title_impl("", "歌名 - P2", "P2"), "歌名");
@@ -188,6 +202,9 @@ mod tests {
 
         // interior NUL input behavior
         assert_eq!(clean_display_title_impl("abc\0def", "", ""), "abcdef");
-        assert_eq!(clean_display_title_impl("【ニコカラ\0】歌词", "", ""), "歌词");
+        assert_eq!(
+            clean_display_title_impl("【ニコカラ\0】歌词", "", ""),
+            "歌词"
+        );
     }
 }
