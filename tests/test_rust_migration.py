@@ -1,4 +1,5 @@
 import unittest
+import ctypes
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -74,8 +75,11 @@ class RustMigrationTest(unittest.TestCase):
         self.assertIn("error", status)
         self.assertIn("path", status)
         self.assertIn("capabilities", status)
+        self.assertIn("fully_compatible", status)
+        self.assertIn("missing_capabilities", status)
         self.assertIsInstance(status["loaded"], bool)
         self.assertIsInstance(status["capabilities"], dict)
+        self.assertEqual(status["fully_compatible"], not status["missing_capabilities"])
         self.assertEqual(title_cleanup.rust_backend_status(), status)
 
     def test_load_library_keeps_available_capability_when_symbol_is_missing(self):
@@ -96,6 +100,44 @@ class RustMigrationTest(unittest.TestCase):
         ):
             self.assertIsNone(rust_backend.safe_filename("demo.zip", "fallback.zip"))
             self.assertTrue(capabilities["title_cleanup"])
+
+    def test_only_title_symbol_keeps_title_usable(self):
+        result_buffer = ctypes.create_string_buffer("歌词".encode("utf-8"))
+        library = fake_library(
+            rust_clean_display_title=FakeFunction(ctypes.addressof(result_buffer))
+        )
+        capabilities = rust_backend._configure_library(library)
+        with patch("bilikara.rust_backend._rust_lib", library), patch(
+            "bilikara.rust_backend._CAPABILITIES", capabilities
+        ), patch("bilikara.rust_backend._RUST_LOAD_ERROR", None):
+            status = rust_backend.backend_status()
+            self.assertTrue(status["loaded"])
+            self.assertFalse(status["fully_compatible"])
+            self.assertTrue(status["capabilities"]["title_cleanup"])
+            self.assertEqual(
+                status["missing_capabilities"],
+                sorted(set(rust_backend._SYMBOLS) - {"title_cleanup"}),
+            )
+            self.assertEqual(rust_backend.clean_display_title("title", "", ""), "歌词")
+            self.assertIsNone(rust_backend.safe_filename("demo.zip", "fallback.zip"))
+            self.assertEqual(rust_backend.try_version_tuple("v1.2.3"), (False, None))
+            self.assertIsNone(rust_backend.normalize_machine_arch("AMD64"))
+
+    def test_missing_free_string_disables_all_capabilities(self):
+        library = SimpleNamespace(rust_clean_display_title=FakeFunction())
+        with patch("bilikara.rust_backend.ctypes.CDLL", return_value=library):
+            loaded, capabilities, error = rust_backend._load_library(Path("unsafe-library"))
+        self.assertIsNone(loaded)
+        self.assertFalse(any(capabilities.values()))
+        self.assertEqual(error, "Rust library has no usable symbols")
+
+        with patch("bilikara.rust_backend._rust_lib", loaded), patch(
+            "bilikara.rust_backend._CAPABILITIES", capabilities
+        ), patch("bilikara.rust_backend._RUST_LOAD_ERROR", error):
+            status = rust_backend.backend_status()
+            self.assertFalse(status["loaded"])
+            self.assertFalse(status["fully_compatible"])
+            self.assertEqual(status["missing_capabilities"], sorted(rust_backend._SYMBOLS))
 
     def test_clean_display_title_python_fallback_without_library(self):
         with patch("bilikara.rust_backend._rust_lib", None), patch(

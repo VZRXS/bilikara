@@ -124,11 +124,16 @@ _rust_lib, _CAPABILITIES, _RUST_LOAD_ERROR = _load_library(_lib_path)
 
 
 def backend_status() -> dict[str, object]:
+    missing_capabilities = sorted(
+        capability for capability, available in _CAPABILITIES.items() if not available
+    )
     return {
         "loaded": _rust_lib is not None,
+        "fully_compatible": _rust_lib is not None and not missing_capabilities,
         "error": _RUST_LOAD_ERROR,
         "path": str(_lib_path) if _lib_path else "",
         "capabilities": dict(_CAPABILITIES),
+        "missing_capabilities": missing_capabilities,
     }
 
 
@@ -210,10 +215,6 @@ def try_version_sort_key(
     if result is None:
         return completed, None
     return completed, (result[0], result[1], result[2], result[3], result[4])
-
-
-def version_tuple(version: str) -> tuple[int, int, int] | None:
-    return try_version_tuple(version)[1]
 
 
 def normalize_machine_arch(machine: str) -> str | None:

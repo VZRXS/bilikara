@@ -101,8 +101,9 @@ class UpdateCheckTest(unittest.TestCase):
                 normalized = rust_backend.normalize_version_tag(version)
                 self.assertIsNotNone(normalized)
                 self.assertEqual(normalized, updater._py_normalize_version_tag(version))
-                rust_tuple = rust_backend.version_tuple(version)
+                completed, rust_tuple = rust_backend.try_version_tuple(version)
                 py_tuple = updater._py_version_tuple(version)
+                self.assertTrue(completed)
                 if py_tuple is not None:
                     self.assertIsNotNone(rust_tuple)
                 self.assertEqual(rust_tuple, py_tuple)
