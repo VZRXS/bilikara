@@ -47,6 +47,10 @@ def _configure_library(library: Any) -> None:
     library.rust_clean_display_title.restype = ctypes.c_void_p
     library.rust_safe_filename.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
     library.rust_safe_filename.restype = ctypes.c_void_p
+    library.rust_normalize_version_tag.argtypes = [ctypes.c_char_p]
+    library.rust_normalize_version_tag.restype = ctypes.c_void_p
+    library.rust_version_tuple.argtypes = [ctypes.c_char_p]
+    library.rust_version_tuple.restype = ctypes.c_void_p
     library.rust_free_string.argtypes = [ctypes.c_void_p]
     library.rust_free_string.restype = None
 
@@ -111,5 +115,31 @@ def safe_filename(name: str, fallback: str) -> str | None:
             fallback.encode("utf-8"),
         )
         return _read_rust_string(pointer)
+    except Exception:
+        return None
+
+
+def normalize_version_tag(version: str) -> str | None:
+    if _rust_lib is None or "\x00" in version:
+        return None
+    try:
+        pointer = _rust_lib.rust_normalize_version_tag(version.encode("utf-8"))
+        return _read_rust_string(pointer)
+    except Exception:
+        return None
+
+
+def version_tuple(version: str) -> tuple[int, int, int] | None:
+    if _rust_lib is None or "\x00" in version:
+        return None
+    try:
+        pointer = _rust_lib.rust_version_tuple(version.encode("utf-8"))
+        result = _read_rust_string(pointer)
+        if result is None:
+            return None
+        parts = result.split(",")
+        if len(parts) != 3:
+            return None
+        return int(parts[0]), int(parts[1]), int(parts[2])
     except Exception:
         return None

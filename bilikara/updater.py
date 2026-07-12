@@ -104,15 +104,30 @@ def _download_url_candidates(url: str) -> list[str]:
     return _dedupe_urls(candidates)
 
 
-def normalize_version_tag(version: object) -> str:
+def _py_normalize_version_tag(version: object) -> str:
     return str(version or "").strip()
 
 
-def version_tuple(version: object) -> tuple[int, int, int] | None:
-    match = VERSION_RE.match(normalize_version_tag(version))
+def normalize_version_tag(version: object) -> str:
+    version_text = str(version or "")
+    rust_result = rust_backend.normalize_version_tag(version_text)
+    if rust_result is not None:
+        return rust_result
+    return _py_normalize_version_tag(version)
+
+
+def _py_version_tuple(version: object) -> tuple[int, int, int] | None:
+    match = VERSION_RE.match(_py_normalize_version_tag(version))
     if not match:
         return None
     return tuple(int(part) for part in match.groups()[:3])
+
+
+def version_tuple(version: object) -> tuple[int, int, int] | None:
+    rust_result = rust_backend.version_tuple(str(version or ""))
+    if rust_result is not None:
+        return rust_result
+    return _py_version_tuple(version)
 
 
 def version_sort_key(version: object) -> tuple[int, int, int, int, int] | None:

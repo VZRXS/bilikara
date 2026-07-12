@@ -25,6 +25,38 @@ class FakeHTTPResponse:
 
 
 class UpdateCheckTest(unittest.TestCase):
+    def test_version_helpers_use_python_fallback_without_rust(self):
+        with patch("bilikara.updater.rust_backend.normalize_version_tag", return_value=None), patch(
+            "bilikara.updater.rust_backend.version_tuple", return_value=None
+        ):
+            self.assertEqual(updater.normalize_version_tag("  v1.2.3  "), "v1.2.3")
+            self.assertEqual(updater.version_tuple("v1.2.3-preview.4"), (1, 2, 3))
+
+    def test_version_rust_matches_python(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        cases = [
+            "v0.4.1",
+            "0.4.1",
+            "  v10.20.30-preview.4  ",
+            "V1.2.3-PREVIEW.9",
+            "v0.4.1-2-gabc123",
+            "dev",
+            "",
+            "v999999999999999999999.2.3",
+        ]
+        for version in cases:
+            with self.subTest(version=version):
+                normalized = rust_backend.normalize_version_tag(version)
+                self.assertIsNotNone(normalized)
+                self.assertEqual(normalized, updater._py_normalize_version_tag(version))
+                rust_tuple = rust_backend.version_tuple(version)
+                py_tuple = updater._py_version_tuple(version)
+                if py_tuple is not None:
+                    self.assertIsNotNone(rust_tuple)
+                self.assertEqual(rust_tuple, py_tuple)
+
     def test_safe_filename_python_cases(self):
         long_name = f"{'a' * 300}.zip"
         cases = [
