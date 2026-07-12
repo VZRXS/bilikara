@@ -10,6 +10,11 @@ use crate::platform::normalize_machine_arch_impl;
 use crate::title_cleanup::clean_display_title_impl;
 use crate::version::{normalize_version_tag_impl, version_sort_key_impl, version_tuple_impl};
 
+#[no_mangle]
+pub extern "C" fn rust_backend_abi_version() -> u32 {
+    catch_unwind(|| 1).unwrap_or(0)
+}
+
 fn ffi_string_result<F>(operation: F) -> *mut c_char
 where
     F: FnOnce() -> Option<String> + UnwindSafe,

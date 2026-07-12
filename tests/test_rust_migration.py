@@ -77,6 +77,9 @@ class RustMigrationTest(unittest.TestCase):
         self.assertIn("capabilities", status)
         self.assertIn("fully_compatible", status)
         self.assertIn("missing_capabilities", status)
+        self.assertIn("abi_version", status)
+        self.assertIn("expected_abi_version", status)
+        self.assertIn("abi_compatible", status)
         self.assertIsInstance(status["loaded"], bool)
         self.assertIsInstance(status["capabilities"], dict)
         self.assertEqual(status["fully_compatible"], not status["missing_capabilities"])
@@ -138,6 +141,38 @@ class RustMigrationTest(unittest.TestCase):
             self.assertFalse(status["loaded"])
             self.assertFalse(status["fully_compatible"])
             self.assertEqual(status["missing_capabilities"], sorted(rust_backend._SYMBOLS))
+
+    def test_matching_abi_version(self):
+        library = fake_library(rust_backend_abi_version=FakeFunction(1))
+        version, compatible = rust_backend._detect_abi_version(library)
+        self.assertEqual(version, 1)
+        self.assertTrue(compatible)
+
+    def test_missing_abi_symbol_is_legacy_compatible(self):
+        version, compatible = rust_backend._detect_abi_version(fake_library())
+        self.assertIsNone(version)
+        self.assertIsNone(compatible)
+
+    def test_incompatible_abi_disables_features_and_falls_back(self):
+        library = fake_library(
+            rust_backend_abi_version=FakeFunction(2),
+            rust_clean_display_title=FakeFunction(),
+        )
+        version, compatible = rust_backend._detect_abi_version(library)
+        self.assertEqual(version, 2)
+        self.assertFalse(compatible)
+        capabilities = rust_backend._empty_capabilities()
+        with patch("bilikara.rust_backend._rust_lib", None), patch(
+            "bilikara.rust_backend._CAPABILITIES", capabilities
+        ), patch("bilikara.rust_backend._ABI_VERSION", version), patch(
+            "bilikara.rust_backend._ABI_COMPATIBLE", compatible
+        ):
+            status = rust_backend.backend_status()
+            self.assertFalse(status["loaded"])
+            self.assertFalse(status["abi_compatible"])
+            self.assertEqual(
+                title_cleanup.clean_display_title(title="【ニコカラ】歌词"), "歌词"
+            )
 
     def test_clean_display_title_python_fallback_without_library(self):
         with patch("bilikara.rust_backend._rust_lib", None), patch(

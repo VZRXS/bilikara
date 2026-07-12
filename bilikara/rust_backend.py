@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+EXPECTED_ABI_VERSION = 1
+
 
 def _rust_library_name() -> str:
     system = platform.system()
@@ -130,6 +132,28 @@ _lib_path = _get_rust_lib_path()
 _rust_lib, _CAPABILITIES, _RUST_LOAD_ERROR = _load_library(_lib_path)
 
 
+def _detect_abi_version(library: Any | None) -> tuple[int | None, bool | None]:
+    if library is None:
+        return None, None
+    try:
+        symbol = library.rust_backend_abi_version
+    except Exception:
+        return None, None
+    try:
+        symbol.argtypes = []
+        symbol.restype = ctypes.c_uint32
+        version = int(symbol())
+        return version, version == EXPECTED_ABI_VERSION
+    except Exception:
+        return None, False
+
+
+_ABI_VERSION, _ABI_COMPATIBLE = _detect_abi_version(_rust_lib)
+if _ABI_COMPATIBLE is False:
+    _CAPABILITIES = _empty_capabilities()
+    _rust_lib = None
+
+
 def backend_status() -> dict[str, object]:
     missing_capabilities = sorted(
         capability for capability, available in _CAPABILITIES.items() if not available
@@ -141,6 +165,9 @@ def backend_status() -> dict[str, object]:
         "path": str(_lib_path) if _lib_path else "",
         "capabilities": dict(_CAPABILITIES),
         "missing_capabilities": missing_capabilities,
+        "abi_version": _ABI_VERSION,
+        "expected_abi_version": EXPECTED_ABI_VERSION,
+        "abi_compatible": _ABI_COMPATIBLE,
     }
 
 
