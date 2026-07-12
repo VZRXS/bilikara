@@ -63,6 +63,13 @@ _SYMBOLS = {
         "rust_normalize_machine_arch",
         [ctypes.c_char_p],
     ),
+    "asset_tokens": ("rust_asset_tokens", [ctypes.c_char_p]),
+    "asset_has_windows": ("rust_asset_has_windows", [ctypes.c_char_p]),
+    "asset_has_macos": ("rust_asset_has_macos", [ctypes.c_char_p]),
+    "asset_has_linux": ("rust_asset_has_linux", [ctypes.c_char_p]),
+    "asset_has_x64": ("rust_asset_has_x64", [ctypes.c_char_p, ctypes.c_char_p]),
+    "asset_has_arm64": ("rust_asset_has_arm64", [ctypes.c_char_p]),
+    "asset_has_universal": ("rust_asset_has_universal", [ctypes.c_char_p]),
 }
 
 
@@ -225,3 +232,23 @@ def normalize_machine_arch(machine: str) -> str | None:
         return _read_rust_string(pointer)
     except Exception:
         return None
+
+def asset_tokens(text: str) -> set[str] | None:
+    if _rust_lib is None or not _CAPABILITIES["asset_tokens"]: return None
+    try:
+        value=_read_rust_string(_rust_lib.rust_asset_tokens(text.encode()))
+        return None if value is None else set(filter(None,value.splitlines()))
+    except Exception: return None
+def _asset_bool(capability: str, *values: str) -> bool | None:
+    if _rust_lib is None or not _CAPABILITIES[capability]: return None
+    try:
+        value=_read_rust_string(getattr(_rust_lib,"rust_"+capability)(*(v.encode() for v in values)))
+        return True if value=="1" else False if value=="0" else None
+    except Exception: return None
+def _payload(t:set[str])->str: return "\n".join(sorted(t))
+def asset_has_windows(t): return _asset_bool("asset_has_windows",_payload(t))
+def asset_has_macos(t): return _asset_bool("asset_has_macos",_payload(t))
+def asset_has_linux(t): return _asset_bool("asset_has_linux",_payload(t))
+def asset_has_x64(s,t): return _asset_bool("asset_has_x64",s,_payload(t))
+def asset_has_arm64(t): return _asset_bool("asset_has_arm64",_payload(t))
+def asset_has_universal(t): return _asset_bool("asset_has_universal",_payload(t))

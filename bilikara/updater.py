@@ -300,32 +300,42 @@ def _asset_text(asset: dict[str, Any]) -> str:
     ).lower()
 
 
-def _asset_tokens(text: str) -> set[str]:
+def _py_asset_tokens(text: str) -> set[str]:
     return {part for part in re.split(r"[^a-z0-9]+", text.lower()) if part}
 
 
-def _asset_has_windows(tokens: set[str]) -> bool:
+def _py_asset_has_windows(tokens: set[str]) -> bool:
     return bool(tokens & {"windows", "window", "win", "win32", "win64"})
 
 
-def _asset_has_macos(tokens: set[str]) -> bool:
+def _py_asset_has_macos(tokens: set[str]) -> bool:
     return bool(tokens & {"macos", "mac", "darwin", "osx", "app"})
 
 
-def _asset_has_linux(tokens: set[str]) -> bool:
+def _py_asset_has_linux(tokens: set[str]) -> bool:
     return "linux" in tokens
 
 
-def _asset_has_x64(text: str, tokens: set[str]) -> bool:
+def _py_asset_has_x64(text: str, tokens: set[str]) -> bool:
     return "x86_64" in text or bool(tokens & {"x64", "amd64", "win64"})
 
 
-def _asset_has_arm64(text: str, tokens: set[str]) -> bool:
+def _py_asset_has_arm64(text: str, tokens: set[str]) -> bool:
     return bool(tokens & {"arm64", "aarch64"})
 
 
-def _asset_has_universal(tokens: set[str]) -> bool:
+def _py_asset_has_universal(tokens: set[str]) -> bool:
     return bool(tokens & {"universal", "universal2"})
+
+def _asset_tokens(text):
+    value=rust_backend.asset_tokens(text); return _py_asset_tokens(text) if value is None else value
+def _fb(value,fallback): return fallback if value is None else value
+def _asset_has_windows(t): return _fb(rust_backend.asset_has_windows(t),_py_asset_has_windows(t))
+def _asset_has_macos(t): return _fb(rust_backend.asset_has_macos(t),_py_asset_has_macos(t))
+def _asset_has_linux(t): return _fb(rust_backend.asset_has_linux(t),_py_asset_has_linux(t))
+def _asset_has_x64(s,t): return _fb(rust_backend.asset_has_x64(s,t),_py_asset_has_x64(s,t))
+def _asset_has_arm64(s,t): return _fb(rust_backend.asset_has_arm64(t),_py_asset_has_arm64(s,t))
+def _asset_has_universal(t): return _fb(rust_backend.asset_has_universal(t),_py_asset_has_universal(t))
 
 
 def _coerce_asset_size(asset: dict[str, Any]) -> int:

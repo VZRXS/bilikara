@@ -2,6 +2,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, UnwindSafe};
 
+use crate::asset_tokens::{
+    asset_tokens, has_arm64, has_linux, has_macos, has_universal, has_windows, has_x64,
+};
 use crate::filename::safe_filename_impl;
 use crate::platform::normalize_machine_arch_impl;
 use crate::title_cleanup::clean_display_title_impl;
@@ -17,6 +20,57 @@ where
             .unwrap_or(std::ptr::null_mut()),
         _ => std::ptr::null_mut(),
     }
+}
+
+fn bool_string(value: bool) -> String {
+    if value { "1" } else { "0" }.to_string()
+}
+unsafe fn input<'a>(p: *const c_char) -> Option<&'a str> {
+    if p.is_null() {
+        None
+    } else {
+        CStr::from_ptr(p).to_str().ok()
+    }
+}
+fn tokens_from_payload(p: &str) -> std::collections::HashSet<String> {
+    p.lines()
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn rust_asset_tokens(p: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        let mut v: Vec<_> = asset_tokens(input(p)?).into_iter().collect();
+        v.sort();
+        Some(v.join("\n"))
+    })
+}
+macro_rules! classifier {
+    ($name:ident,$fun:ident) => {
+        #[no_mangle]
+        #[allow(clippy::missing_safety_doc)]
+        pub unsafe extern "C" fn $name(p: *const c_char) -> *mut c_char {
+            ffi_string_result(|| Some(bool_string($fun(&tokens_from_payload(input(p)?)))))
+        }
+    };
+}
+classifier!(rust_asset_has_windows, has_windows);
+classifier!(rust_asset_has_macos, has_macos);
+classifier!(rust_asset_has_linux, has_linux);
+classifier!(rust_asset_has_arm64, has_arm64);
+classifier!(rust_asset_has_universal, has_universal);
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn rust_asset_has_x64(text: *const c_char, p: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        Some(bool_string(has_x64(
+            input(text)?,
+            &tokens_from_payload(input(p)?),
+        )))
+    })
 }
 
 /// # Safety
