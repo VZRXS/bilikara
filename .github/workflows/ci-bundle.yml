@@ -104,6 +104,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-packaging.txt
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust Backend Library
+        run: |
+          cd rust
+          cargo build --release
+          cd ..
+
       - name: Build app bundle
         run: python build_bundle.py
 
@@ -111,9 +120,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Build Tauri App
         run: |

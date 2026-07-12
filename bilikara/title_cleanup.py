@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ctypes
+import platform
 import re
+import sys
+from pathlib import Path
 
 FULLWIDTH_BRACKET_RE = re.compile(r"【[^】]*】")
 EDGE_SEPARATOR_RE = re.compile(r"^[\s\-|｜/:：]+|[\s\-|｜/:：]+$")
@@ -36,30 +40,42 @@ def _clean_bracket_content(match: re.Match) -> str:
     return f"{full_block[0]}{cleaned_inner}{full_block[-1]}"
 
 
-import ctypes
-import platform
-from pathlib import Path
-
 # Load Rust dynamic library
 _rust_lib = None
 _RUST_LOAD_ERROR = None
 
-def _get_rust_lib_path() -> Path | None:
-    root_dir = Path(__file__).parent.parent
+def _rust_library_name() -> str:
     system = platform.system()
     if system == "Windows":
-        lib_name = "bilikara_rust.dll"
-    elif system == "Darwin":
-        lib_name = "libbilikara_rust.dylib"
-    else:
-        lib_name = "libbilikara_rust.so"
+        return "bilikara_rust.dll"
+    if system == "Darwin":
+        return "libbilikara_rust.dylib"
+    return "libbilikara_rust.so"
 
-    # Search in release first, then debug
-    for mode in ("release", "debug"):
-        candidate = root_dir / "rust" / "target" / mode / lib_name
+
+def _get_rust_lib_path() -> Path | None:
+    root_dir = Path(__file__).resolve().parent.parent
+    lib_name = _rust_library_name()
+
+    candidates = [
+        root_dir / "rust" / "target" / "release" / lib_name,
+        root_dir / "rust" / "target" / "debug" / lib_name,
+    ]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "rust" / lib_name)
+    candidates.extend(
+        [
+            Path(sys.executable).resolve().parent / "rust" / lib_name,
+            Path(sys.executable).resolve().parent / lib_name,
+        ]
+    )
+
+    for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
+
 
 try:
     _lib_path = _get_rust_lib_path()

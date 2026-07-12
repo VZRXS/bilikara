@@ -1,8 +1,54 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
+
 from bilikara import title_cleanup
 
+
 class RustMigrationTest(unittest.TestCase):
+    def test_get_rust_lib_path_finds_dev_release_before_debug(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            release = root / "rust" / "target" / "release" / "libbilikara_rust.so"
+            debug = root / "rust" / "target" / "debug" / "libbilikara_rust.so"
+            release.parent.mkdir(parents=True)
+            debug.parent.mkdir(parents=True)
+            release.touch()
+            debug.touch()
+
+            with patch.object(title_cleanup, "__file__", str(root / "bilikara" / "title_cleanup.py")), patch(
+                "bilikara.title_cleanup.platform.system", return_value="Linux"
+            ), patch.object(title_cleanup.sys, "executable", str(root / "python")):
+                self.assertEqual(title_cleanup._get_rust_lib_path(), release)
+
+    def test_get_rust_lib_path_finds_dev_debug(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            debug = root / "rust" / "target" / "debug" / "libbilikara_rust.so"
+            debug.parent.mkdir(parents=True)
+            debug.touch()
+
+            with patch.object(title_cleanup, "__file__", str(root / "bilikara" / "title_cleanup.py")), patch(
+                "bilikara.title_cleanup.platform.system", return_value="Linux"
+            ), patch.object(title_cleanup.sys, "executable", str(root / "python")):
+                self.assertEqual(title_cleanup._get_rust_lib_path(), debug)
+
+    def test_get_rust_lib_path_finds_pyinstaller_bundle(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            meipass = root / "extracted"
+            bundled = meipass / "rust" / "libbilikara_rust.so"
+            bundled.parent.mkdir(parents=True)
+            bundled.touch()
+
+            with patch.object(title_cleanup, "__file__", str(root / "source" / "bilikara" / "title_cleanup.py")), patch(
+                "bilikara.title_cleanup.platform.system", return_value="Linux"
+            ), patch.object(title_cleanup.sys, "_MEIPASS", str(meipass), create=True), patch.object(
+                title_cleanup.sys, "executable", str(root / "app" / "bilikara")
+            ):
+                self.assertEqual(title_cleanup._get_rust_lib_path(), bundled)
+
     def test_rust_backend_status_structure(self):
         status = title_cleanup.rust_backend_status()
         self.assertIn("loaded", status)

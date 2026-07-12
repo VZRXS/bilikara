@@ -8,6 +8,33 @@ import build_bundle
 
 
 class BuildBundleTest(unittest.TestCase):
+    def test_rust_library_args_includes_release_library(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = root / "rust" / "target" / "release" / "libbilikara_rust.so"
+            library.parent.mkdir(parents=True)
+            library.touch()
+
+            with patch("build_bundle.ROOT_DIR", root), patch(
+                "build_bundle.platform.system", return_value="Linux"
+            ):
+                args = build_bundle._rust_library_args(":")
+
+        self.assertEqual(args, ["--add-binary", f"{library.resolve()}:rust"])
+
+    def test_rust_library_args_allows_missing_library(self):
+        with TemporaryDirectory() as temp_dir, patch("build_bundle.ROOT_DIR", Path(temp_dir)), patch(
+            "build_bundle.platform.system", return_value="Linux"
+        ), patch.dict("build_bundle.os.environ", {}, clear=True):
+            self.assertEqual(build_bundle._rust_library_args(":"), [])
+
+    def test_rust_library_args_rejects_missing_library_in_strict_mode(self):
+        with TemporaryDirectory() as temp_dir, patch("build_bundle.ROOT_DIR", Path(temp_dir)), patch(
+            "build_bundle.platform.system", return_value="Linux"
+        ), patch.dict("build_bundle.os.environ", {build_bundle.RUST_STRICT_ENV: "1"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "Rust library not found"):
+                build_bundle._rust_library_args(":")
+
     def test_resolve_windows_binary_prefers_chocolatey_real_executable(self):
         shim = Path("/ProgramData/chocolatey/bin/ffmpeg.exe")
         real = Path("/ProgramData/chocolatey/lib/ffmpeg/tools/ffmpeg/bin/ffmpeg.exe")
