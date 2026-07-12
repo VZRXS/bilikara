@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "author": "VZRXS",
   "scripts": {
+    "build:rust": "cd rust && cargo build --release",
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "dev:rust": "npm run build:rust && tauri dev",
+    "build": "npm run build:rust && tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"

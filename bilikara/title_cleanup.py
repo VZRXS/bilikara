@@ -101,23 +101,39 @@ def clean_display_title(
     display_title: str = "",
     part_title: str = "",
 ) -> str:
+    title_sanitized = str(title or "").replace("\x00", "")
+    display_title_sanitized = str(display_title or "").replace("\x00", "")
+    part_title_sanitized = str(part_title or "").replace("\x00", "")
+
     if _rust_lib is not None:
         try:
-            title_bytes = str(title or "").encode("utf-8")
-            display_bytes = str(display_title or "").encode("utf-8")
-            part_bytes = str(part_title or "").encode("utf-8")
+            title_bytes = title_sanitized.encode("utf-8")
+            display_bytes = display_title_sanitized.encode("utf-8")
+            part_bytes = part_title_sanitized.encode("utf-8")
 
             res_ptr = _rust_lib.rust_clean_display_title(title_bytes, display_bytes, part_bytes)
             if res_ptr:
                 try:
-                    res_str = ctypes.c_char_p(res_ptr).value.decode("utf-8")
+                    res_str = ctypes.string_at(res_ptr).decode("utf-8")
                     return res_str
                 finally:
                     _rust_lib.rust_free_string(res_ptr)
         except Exception:
             pass
 
-    return _py_clean_display_title(title=title, display_title=display_title, part_title=part_title)
+    return _py_clean_display_title(
+        title=title_sanitized,
+        display_title=display_title_sanitized,
+        part_title=part_title_sanitized,
+    )
+
+
+def rust_backend_status() -> dict[str, object]:
+    return {
+        "loaded": _rust_lib is not None,
+        "error": _RUST_LOAD_ERROR,
+        "path": str(_lib_path) if "_lib_path" in globals() and _lib_path else "",
+    }
 
 
 def _remove_part_suffix(display_title: str, part_title: str) -> str:

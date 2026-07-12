@@ -38,11 +38,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-packaging.txt
 
-      - name: Run unit tests
-        run: python -m unittest discover -s tests -v
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Checks and Build
+        run: |
+          cd rust
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+          cargo build --release
+          cd ..
 
       - name: Compile Python files
-        run: python -m compileall bilikara tests server.py start_bilikara.py build_bundle.py
+        run: python -m py_compile bilikara/*.py start_bilikara.py build_bundle.py
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
 
   bundle:
     name: Bundle (${{ matrix.label }})
