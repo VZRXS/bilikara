@@ -16,6 +16,11 @@ class FakeFunction:
         return self.result
 
 
+def fake_library(**symbols):
+    symbols.setdefault("rust_free_string", FakeFunction())
+    return SimpleNamespace(**symbols)
+
+
 class RustMigrationTest(unittest.TestCase):
     def test_get_rust_lib_path_finds_dev_release_before_debug(self):
         with TemporaryDirectory() as temp_dir:
@@ -53,24 +58,49 @@ class RustMigrationTest(unittest.TestCase):
             ):
                 self.assertEqual(rust_backend._get_rust_lib_path(), bundled)
 
+    def test_get_rust_lib_path_finds_executable_adjacent_library(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bundled = root / "app" / "rust" / "libbilikara_rust.so"
+            bundled.parent.mkdir(parents=True)
+            bundled.touch()
+
+            with self._lookup_environment(root, executable=root / "app" / "bilikara"):
+                self.assertEqual(rust_backend._get_rust_lib_path(), bundled)
+
     def test_backend_status_structure(self):
         status = rust_backend.backend_status()
         self.assertIn("loaded", status)
         self.assertIn("error", status)
         self.assertIn("path", status)
+        self.assertIn("capabilities", status)
         self.assertIsInstance(status["loaded"], bool)
+        self.assertIsInstance(status["capabilities"], dict)
         self.assertEqual(title_cleanup.rust_backend_status(), status)
 
-    def test_load_library_rejects_missing_symbol(self):
-        stale_library = SimpleNamespace(rust_clean_display_title=FakeFunction())
+    def test_load_library_keeps_available_capability_when_symbol_is_missing(self):
+        stale_library = fake_library(rust_clean_display_title=FakeFunction())
         with patch("bilikara.rust_backend.ctypes.CDLL", return_value=stale_library):
-            library, error = rust_backend._load_library(Path("stale-library"))
+            library, capabilities, error = rust_backend._load_library(Path("stale-library"))
 
-        self.assertIsNone(library)
-        self.assertIn("rust_safe_filename", error)
+        self.assertIs(library, stale_library)
+        self.assertIsNone(error)
+        self.assertTrue(capabilities["title_cleanup"])
+        self.assertFalse(capabilities["safe_filename"])
+
+    def test_missing_symbol_disables_only_its_wrapper(self):
+        stale_library = fake_library(rust_clean_display_title=FakeFunction())
+        capabilities = rust_backend._configure_library(stale_library)
+        with patch("bilikara.rust_backend._rust_lib", stale_library), patch(
+            "bilikara.rust_backend._CAPABILITIES", capabilities
+        ):
+            self.assertIsNone(rust_backend.safe_filename("demo.zip", "fallback.zip"))
+            self.assertTrue(capabilities["title_cleanup"])
 
     def test_clean_display_title_python_fallback_without_library(self):
-        with patch("bilikara.rust_backend._rust_lib", None):
+        with patch("bilikara.rust_backend._rust_lib", None), patch(
+            "bilikara.rust_backend._CAPABILITIES", rust_backend._empty_capabilities()
+        ):
             self.assertIsNone(rust_backend.clean_display_title("title", "", ""))
             result = title_cleanup.clean_display_title(
                 title="【ニコカラ】七里香 [on vocal]",
@@ -80,8 +110,11 @@ class RustMigrationTest(unittest.TestCase):
         self.assertEqual(result, "七里香 [on vocal]")
 
     def test_clean_display_title_falls_back_on_null_result(self):
-        null_library = SimpleNamespace(rust_clean_display_title=FakeFunction(None))
-        with patch("bilikara.rust_backend._rust_lib", null_library):
+        null_library = fake_library(rust_clean_display_title=FakeFunction(None))
+        capabilities = rust_backend._configure_library(null_library)
+        with patch("bilikara.rust_backend._rust_lib", null_library), patch(
+            "bilikara.rust_backend._CAPABILITIES", capabilities
+        ):
             result = title_cleanup.clean_display_title(title="【ニコカラ】歌词")
         self.assertEqual(result, "歌词")
 
@@ -115,10 +148,10 @@ class RustMigrationTest(unittest.TestCase):
 
     @staticmethod
     @contextmanager
-    def _lookup_environment(root: Path):
+    def _lookup_environment(root: Path, *, executable: Path | None = None):
         with patch.object(
             rust_backend, "__file__", str(root / "bilikara" / "rust_backend.py")
         ), patch("bilikara.rust_backend.platform.system", return_value="Linux"), patch.object(
-            rust_backend.sys, "executable", str(root / "python")
+            rust_backend.sys, "executable", str(executable or root / "python")
         ):
             yield

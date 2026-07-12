@@ -84,8 +84,19 @@ class UpdateCheckTest(unittest.TestCase):
             self.assertEqual(updater._safe_filename("歌名 / demo.zip"), "demo.zip")
 
     def test_safe_filename_falls_back_on_null_result(self):
-        null_library = type("NullLibrary", (), {"rust_safe_filename": lambda self, *args: None})()
-        with patch("bilikara.rust_backend._rust_lib", null_library):
+        null_library = type(
+            "NullLibrary",
+            (),
+            {
+                "rust_safe_filename": lambda self, *args: None,
+                "rust_free_string": lambda self, *args: None,
+            },
+        )()
+        capabilities = rust_backend._empty_capabilities()
+        capabilities["safe_filename"] = True
+        with patch("bilikara.rust_backend._rust_lib", null_library), patch(
+            "bilikara.rust_backend._CAPABILITIES", capabilities
+        ):
             self.assertEqual(updater._safe_filename("歌名 / demo.zip"), "demo.zip")
 
     def test_safe_filename_preserves_non_string_fallback_behavior(self):

@@ -38,32 +38,63 @@ def _get_rust_lib_path() -> Path | None:
     return None
 
 
-def _configure_library(library: Any) -> None:
-    library.rust_clean_display_title.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-    ]
-    library.rust_clean_display_title.restype = ctypes.c_void_p
-    library.rust_safe_filename.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-    library.rust_safe_filename.restype = ctypes.c_void_p
-    library.rust_normalize_version_tag.argtypes = [ctypes.c_char_p]
-    library.rust_normalize_version_tag.restype = ctypes.c_void_p
-    library.rust_version_tuple.argtypes = [ctypes.c_char_p]
-    library.rust_version_tuple.restype = ctypes.c_void_p
-    library.rust_free_string.argtypes = [ctypes.c_void_p]
-    library.rust_free_string.restype = None
+_SYMBOLS = {
+    "title_cleanup": (
+        "rust_clean_display_title",
+        [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+    ),
+    "safe_filename": (
+        "rust_safe_filename",
+        [ctypes.c_char_p, ctypes.c_char_p],
+    ),
+    "normalize_version_tag": (
+        "rust_normalize_version_tag",
+        [ctypes.c_char_p],
+    ),
+    "version_tuple": (
+        "rust_version_tuple",
+        [ctypes.c_char_p],
+    ),
+}
 
 
-def _load_library(path: Path | None) -> tuple[Any | None, str | None]:
+def _empty_capabilities() -> dict[str, bool]:
+    return {capability: False for capability in _SYMBOLS}
+
+
+def _configure_library(library: Any) -> dict[str, bool]:
+    capabilities = _empty_capabilities()
+    try:
+        free_string = library.rust_free_string
+        free_string.argtypes = [ctypes.c_void_p]
+        free_string.restype = None
+    except Exception:
+        return capabilities
+
+    for capability, (symbol_name, argtypes) in _SYMBOLS.items():
+        try:
+            symbol = getattr(library, symbol_name)
+            symbol.argtypes = argtypes
+            symbol.restype = ctypes.c_void_p
+            capabilities[capability] = True
+        except Exception:
+            continue
+    return capabilities
+
+
+def _load_library(
+    path: Path | None,
+) -> tuple[Any | None, dict[str, bool], str | None]:
     if path is None:
-        return None, "Rust library not compiled"
+        return None, _empty_capabilities(), "Rust library not compiled"
     try:
         library = ctypes.CDLL(str(path))
-        _configure_library(library)
-        return library, None
+        capabilities = _configure_library(library)
+        if not any(capabilities.values()):
+            return None, capabilities, "Rust library has no usable symbols"
+        return library, capabilities, None
     except Exception as exc:
-        return None, str(exc)
+        return None, _empty_capabilities(), str(exc)
 
 
 def _read_rust_string(pointer: int | None) -> str | None:
@@ -81,7 +112,7 @@ def _read_rust_string(pointer: int | None) -> str | None:
 
 
 _lib_path = _get_rust_lib_path()
-_rust_lib, _RUST_LOAD_ERROR = _load_library(_lib_path)
+_rust_lib, _CAPABILITIES, _RUST_LOAD_ERROR = _load_library(_lib_path)
 
 
 def backend_status() -> dict[str, object]:
@@ -89,11 +120,12 @@ def backend_status() -> dict[str, object]:
         "loaded": _rust_lib is not None,
         "error": _RUST_LOAD_ERROR,
         "path": str(_lib_path) if _lib_path else "",
+        "capabilities": dict(_CAPABILITIES),
     }
 
 
 def clean_display_title(title: str, display_title: str, part_title: str) -> str | None:
-    if _rust_lib is None:
+    if _rust_lib is None or not _CAPABILITIES["title_cleanup"]:
         return None
     try:
         pointer = _rust_lib.rust_clean_display_title(
@@ -107,7 +139,7 @@ def clean_display_title(title: str, display_title: str, part_title: str) -> str 
 
 
 def safe_filename(name: str, fallback: str) -> str | None:
-    if _rust_lib is None or "\x00" in fallback:
+    if _rust_lib is None or not _CAPABILITIES["safe_filename"] or "\x00" in fallback:
         return None
     try:
         pointer = _rust_lib.rust_safe_filename(
@@ -120,7 +152,7 @@ def safe_filename(name: str, fallback: str) -> str | None:
 
 
 def normalize_version_tag(version: str) -> str | None:
-    if _rust_lib is None or "\x00" in version:
+    if _rust_lib is None or not _CAPABILITIES["normalize_version_tag"] or "\x00" in version:
         return None
     try:
         pointer = _rust_lib.rust_normalize_version_tag(version.encode("utf-8"))
@@ -130,7 +162,7 @@ def normalize_version_tag(version: str) -> str | None:
 
 
 def version_tuple(version: str) -> tuple[int, int, int] | None:
-    if _rust_lib is None or "\x00" in version:
+    if _rust_lib is None or not _CAPABILITIES["version_tuple"] or "\x00" in version:
         return None
     try:
         pointer = _rust_lib.rust_version_tuple(version.encode("utf-8"))
