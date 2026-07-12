@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
+from . import title_cleanup
 from .config import (
     APP_HOME,
     APP_RELEASE_API,
@@ -472,9 +473,19 @@ def check_for_update(
     }
 
 
-def _safe_filename(name: object, fallback: str = "bilikara-update.zip") -> str:
+def _py_safe_filename(name: object, fallback: str = "bilikara-update.zip") -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(name or "")).strip(".-")
     return normalized or fallback
+
+
+def _safe_filename(name: object, fallback: str = "bilikara-update.zip") -> str:
+    if not isinstance(fallback, str):
+        return _py_safe_filename(name, fallback=fallback)
+    name_text = str(name or "")
+    rust_result = title_cleanup._rust_safe_filename(name_text, fallback)
+    if rust_result is not None:
+        return rust_result
+    return _py_safe_filename(name, fallback=fallback)
 
 
 def _safe_version_dir(version: object) -> str:

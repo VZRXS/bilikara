@@ -24,6 +24,64 @@ class FakeHTTPResponse:
 
 
 class UpdateCheckTest(unittest.TestCase):
+    def test_safe_filename_python_cases(self):
+        long_name = f"{'a' * 300}.zip"
+        cases = [
+            ("bilikara-v0.7.0.zip", "fallback.zip", "bilikara-v0.7.0.zip"),
+            ("歌ってみた.zip", "fallback.zip", "zip"),
+            ("卡拉OK更新包.zip", "fallback.zip", "OK-.zip"),
+            ("karaoke🎤mix.zip", "fallback.zip", "karaoke-mix.zip"),
+            ('bad<>:"/\\|?*name.zip', "fallback.zip", "bad-name.zip"),
+            ("  update.zip  ", "fallback.zip", "update.zip"),
+            ("part///name.zip", "fallback.zip", "part-name.zip"),
+            ("CON", "fallback.zip", "CON"),
+            ("...", "fallback.zip", "fallback.zip"),
+            ("", "fallback.zip", "fallback.zip"),
+            ("abc\x00def.zip", "fallback.zip", "abc-def.zip"),
+            ("unchanged_name-1.2.zip", "fallback.zip", "unchanged_name-1.2.zip"),
+            (long_name, "fallback.zip", long_name),
+        ]
+
+        for name, fallback, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(updater._py_safe_filename(name, fallback), expected)
+
+    def test_safe_filename_uses_python_fallback_without_rust(self):
+        with patch("bilikara.updater.title_cleanup._rust_safe_filename", return_value=None):
+            self.assertEqual(updater._safe_filename("歌名 / demo.zip"), "demo.zip")
+
+    def test_safe_filename_preserves_non_string_fallback_behavior(self):
+        fallback = object()
+        self.assertIs(updater._safe_filename("...", fallback), fallback)
+
+    def test_safe_filename_rust_matches_python(self):
+        if not updater.title_cleanup.rust_backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        long_name = f"{'a' * 300}.zip"
+        cases = [
+            ("bilikara-v0.7.0.zip", "fallback.zip"),
+            ("歌ってみた.zip", "fallback.zip"),
+            ("卡拉OK更新包.zip", "fallback.zip"),
+            ("karaoke🎤mix.zip", "fallback.zip"),
+            ('bad<>:"/\\|?*name.zip', "fallback.zip"),
+            ("  update.zip  ", "fallback.zip"),
+            ("part///name.zip", "fallback.zip"),
+            ("CON", "fallback.zip"),
+            ("...", "fallback.zip"),
+            ("", "fallback.zip"),
+            ("abc\x00def.zip", "fallback.zip"),
+            ("unchanged_name-1.2.zip", "fallback.zip"),
+            (long_name, "fallback.zip"),
+        ]
+
+        for name, fallback in cases:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    updater._safe_filename(name, fallback),
+                    updater._py_safe_filename(name, fallback),
+                )
+
     def test_version_tuple_accepts_release_tags(self):
         self.assertEqual(version_tuple("v0.4.1"), (0, 4, 1))
         self.assertEqual(version_tuple("0.4.1"), (0, 4, 1))

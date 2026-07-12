@@ -80,15 +80,18 @@ def _get_rust_lib_path() -> Path | None:
 try:
     _lib_path = _get_rust_lib_path()
     if _lib_path:
-        _rust_lib = ctypes.CDLL(str(_lib_path))
-        _rust_lib.rust_clean_display_title.argtypes = [
+        loaded_lib = ctypes.CDLL(str(_lib_path))
+        loaded_lib.rust_clean_display_title.argtypes = [
             ctypes.c_char_p,
             ctypes.c_char_p,
             ctypes.c_char_p,
         ]
-        _rust_lib.rust_clean_display_title.restype = ctypes.c_void_p
-        _rust_lib.rust_free_string.argtypes = [ctypes.c_void_p]
-        _rust_lib.rust_free_string.restype = None
+        loaded_lib.rust_clean_display_title.restype = ctypes.c_void_p
+        loaded_lib.rust_safe_filename.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        loaded_lib.rust_safe_filename.restype = ctypes.c_void_p
+        loaded_lib.rust_free_string.argtypes = [ctypes.c_void_p]
+        loaded_lib.rust_free_string.restype = None
+        _rust_lib = loaded_lib
     else:
         _RUST_LOAD_ERROR = "Rust library not compiled"
 except Exception as e:
@@ -142,6 +145,23 @@ def clean_display_title(
         display_title=display_title_sanitized,
         part_title=part_title_sanitized,
     )
+
+
+def _rust_safe_filename(name: str, fallback: str) -> str | None:
+    if _rust_lib is None or "\x00" in fallback:
+        return None
+    try:
+        name_bytes = name.replace("\x00", "/").encode("utf-8")
+        fallback_bytes = fallback.encode("utf-8")
+        res_ptr = _rust_lib.rust_safe_filename(name_bytes, fallback_bytes)
+        if not res_ptr:
+            return None
+        try:
+            return ctypes.string_at(res_ptr).decode("utf-8")
+        finally:
+            _rust_lib.rust_free_string(res_ptr)
+    except Exception:
+        return None
 
 
 def rust_backend_status() -> dict[str, object]:

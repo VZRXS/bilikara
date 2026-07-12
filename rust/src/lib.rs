@@ -8,6 +8,7 @@ static EDGE_SEPARATOR_RE: OnceLock<Regex> = OnceLock::new();
 static MULTISPACE_RE: OnceLock<Regex> = OnceLock::new();
 static KARAOKE_TAGS_RE: OnceLock<Regex> = OnceLock::new();
 static BRACKET_BLOCK_RE: OnceLock<Regex> = OnceLock::new();
+static UNSAFE_FILENAME_RE: OnceLock<Regex> = OnceLock::new();
 
 fn init_regexes() {
     FULLWIDTH_BRACKET_RE.get_or_init(|| Regex::new(r"【[^】]*】").unwrap());
@@ -18,6 +19,7 @@ fn init_regexes() {
     KARAOKE_TAGS_RE.get_or_init(|| Regex::new(keywords).unwrap());
 
     BRACKET_BLOCK_RE.get_or_init(|| Regex::new(r"([\[\(『<〈《](.*?)[\]\)』>〉》])").unwrap());
+    UNSAFE_FILENAME_RE.get_or_init(|| Regex::new(r"[^A-Za-z0-9_.-]+").unwrap());
 }
 
 fn remove_part_suffix(display_title: &str, part_title: &str) -> String {
@@ -98,6 +100,17 @@ pub fn clean_display_title_impl(title: &str, display_title: &str, part_title: &s
     }
 }
 
+pub fn safe_filename_impl(name: &str, fallback: &str) -> String {
+    init_regexes();
+    let normalized = UNSAFE_FILENAME_RE.get().unwrap().replace_all(name, "-");
+    let normalized = normalized.trim_matches(['.', '-']);
+    if normalized.is_empty() {
+        fallback.to_string()
+    } else {
+        normalized.to_string()
+    }
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences raw pointers. The caller must ensure
@@ -129,6 +142,30 @@ pub unsafe extern "C" fn rust_clean_display_title(
     let sanitized = cleaned.replace('\0', "");
     let c_str = CString::new(sanitized).unwrap_or_else(|_| CString::new("").unwrap());
     c_str.into_raw()
+}
+
+/// # Safety
+///
+/// This function is unsafe because it dereferences raw pointers. The caller must ensure
+/// that both pointers are non-null and point to valid null-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn rust_safe_filename(
+    name: *const c_char,
+    fallback: *const c_char,
+) -> *mut c_char {
+    let result = std::panic::catch_unwind(|| {
+        if name.is_null() || fallback.is_null() {
+            return None;
+        }
+        let name = CStr::from_ptr(name).to_str().ok()?;
+        let fallback = CStr::from_ptr(fallback).to_str().ok()?;
+        CString::new(safe_filename_impl(name, fallback)).ok()
+    });
+
+    match result {
+        Ok(Some(value)) => value.into_raw(),
+        _ => std::ptr::null_mut(),
+    }
 }
 
 /// # Safety
@@ -206,5 +243,41 @@ mod tests {
             clean_display_title_impl("【ニコカラ\0】歌词", "", ""),
             "歌词"
         );
+    }
+
+    #[test]
+    fn test_safe_filename_cases() {
+        let long_name = format!("{}.zip", "a".repeat(300));
+        let cases = [
+            ("bilikara-v0.7.0.zip", "fallback.zip", "bilikara-v0.7.0.zip"),
+            ("歌ってみた.zip", "fallback.zip", "zip"),
+            ("卡拉OK更新包.zip", "fallback.zip", "OK-.zip"),
+            ("karaoke🎤mix.zip", "fallback.zip", "karaoke-mix.zip"),
+            ("bad<>:\"/\\|?*name.zip", "fallback.zip", "bad-name.zip"),
+            ("  update.zip  ", "fallback.zip", "update.zip"),
+            ("part///name.zip", "fallback.zip", "part-name.zip"),
+            ("CON", "fallback.zip", "CON"),
+            ("...", "fallback.zip", "fallback.zip"),
+            ("abc\0def.zip", "fallback.zip", "abc-def.zip"),
+            (
+                "unchanged_name-1.2.zip",
+                "fallback.zip",
+                "unchanged_name-1.2.zip",
+            ),
+        ];
+        for (name, fallback, expected) in cases {
+            assert_eq!(safe_filename_impl(name, fallback), expected);
+        }
+        assert_eq!(safe_filename_impl(&long_name, "fallback.zip"), long_name);
+    }
+
+    #[test]
+    fn test_safe_filename_ffi_rejects_invalid_inputs() {
+        let fallback = CString::new("fallback.zip").unwrap();
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        unsafe {
+            assert!(rust_safe_filename(std::ptr::null(), fallback.as_ptr()).is_null());
+            assert!(rust_safe_filename(invalid_utf8.as_ptr(), fallback.as_ptr()).is_null());
+        }
     }
 }
