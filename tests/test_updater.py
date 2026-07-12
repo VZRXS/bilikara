@@ -25,6 +25,53 @@ class FakeHTTPResponse:
 
 
 class UpdateCheckTest(unittest.TestCase):
+    def test_machine_arch_python_fallback(self):
+        with patch("bilikara.updater.rust_backend.normalize_machine_arch", return_value=None):
+            self.assertEqual(updater.normalize_machine_arch("  AMD64 "), "x64")
+            self.assertEqual(updater.normalize_machine_arch(None), "unknown")
+
+    def test_machine_arch_rust_matches_python(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        cases = [
+            "amd64",
+            "AMD64",
+            "x86_64",
+            "x64",
+            "arm64",
+            "ARM64",
+            "aarch64",
+            "i386",
+            "i686",
+            "x86",
+            "  AMD64 ",
+            "",
+            "riscv64",
+            "unknown123",
+            "ＲＩＳＣＶ 64",
+        ]
+        for machine in cases:
+            with self.subTest(machine=machine):
+                rust_result = rust_backend.normalize_machine_arch(machine)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(rust_result, updater._py_normalize_machine_arch(machine))
+
+    def test_machine_arch_missing_symbol_falls_back(self):
+        capabilities = rust_backend._empty_capabilities()
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(rust_backend.normalize_machine_arch("AMD64"))
+            self.assertEqual(updater.normalize_machine_arch("AMD64"), "x64")
+
+    def test_detect_update_target_keeps_python_platform_detection(self):
+        with patch("bilikara.updater.platform_module.system", return_value="Linux"), patch(
+            "bilikara.updater.platform_module.machine", return_value="AMD64"
+        ):
+            target = updater.detect_update_target()
+        self.assertEqual(target["platform"], "linux")
+        self.assertEqual(target["arch"], "x64")
+        self.assertEqual(target["machine"], "AMD64")
+
     def test_version_helpers_use_python_fallback_without_rust(self):
         with patch("bilikara.updater.rust_backend.normalize_version_tag", return_value=None), patch(
             "bilikara.updater.rust_backend.try_version_tuple", return_value=(False, None)

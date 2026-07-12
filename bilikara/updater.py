@@ -255,7 +255,7 @@ def _latest_release_for_current(
     return latest_stable
 
 
-def normalize_machine_arch(machine: object) -> str:
+def _py_normalize_machine_arch(machine: object) -> str:
     normalized = str(machine or "").strip().lower().replace(" ", "")
     if normalized in {"amd64", "x86_64", "x64"}:
         return "x64"
@@ -264,6 +264,14 @@ def normalize_machine_arch(machine: object) -> str:
     if normalized in {"i386", "i686", "x86"}:
         return "x86"
     return normalized or "unknown"
+
+
+def normalize_machine_arch(machine: object) -> str:
+    machine_text = str(machine or "")
+    rust_result = rust_backend.normalize_machine_arch(machine_text)
+    if rust_result is not None:
+        return rust_result
+    return _py_normalize_machine_arch(machine)
 
 
 def detect_update_target() -> dict[str, str]:

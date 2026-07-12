@@ -3,6 +3,7 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, UnwindSafe};
 
 use crate::filename::safe_filename_impl;
+use crate::platform::normalize_machine_arch_impl;
 use crate::title_cleanup::clean_display_title_impl;
 use crate::version::{normalize_version_tag_impl, version_sort_key_impl, version_tuple_impl};
 
@@ -119,6 +120,21 @@ pub unsafe extern "C" fn rust_version_sort_key(version: *const c_char) -> *mut c
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
+/// that the pointer is non-null and points to a valid null-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn rust_normalize_machine_arch(machine: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        if machine.is_null() {
+            return None;
+        }
+        let machine = CStr::from_ptr(machine).to_str().ok()?;
+        Some(normalize_machine_arch_impl(machine))
+    })
+}
+
+/// # Safety
+///
+/// This function is unsafe because it dereferences a raw pointer. The caller must ensure
 /// that the pointer is null or was returned by this library as an owned C string.
 #[no_mangle]
 pub unsafe extern "C" fn rust_free_string(ptr: *mut c_char) {
@@ -171,6 +187,15 @@ mod tests {
             assert!(rust_normalize_version_tag(invalid_utf8.as_ptr()).is_null());
             assert!(rust_version_tuple(invalid_utf8.as_ptr()).is_null());
             assert!(rust_version_sort_key(invalid_utf8.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn machine_arch_export_rejects_invalid_ffi_inputs() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        unsafe {
+            assert!(rust_normalize_machine_arch(std::ptr::null()).is_null());
+            assert!(rust_normalize_machine_arch(invalid_utf8.as_ptr()).is_null());
         }
     }
 }

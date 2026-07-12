@@ -59,6 +59,10 @@ _SYMBOLS = {
         "rust_version_sort_key",
         [ctypes.c_char_p],
     ),
+    "normalize_machine_arch": (
+        "rust_normalize_machine_arch",
+        [ctypes.c_char_p],
+    ),
 }
 
 
@@ -210,3 +214,13 @@ def try_version_sort_key(
 
 def version_tuple(version: str) -> tuple[int, int, int] | None:
     return try_version_tuple(version)[1]
+
+
+def normalize_machine_arch(machine: str) -> str | None:
+    if _rust_lib is None or not _CAPABILITIES["normalize_machine_arch"] or "\x00" in machine:
+        return None
+    try:
+        pointer = _rust_lib.rust_normalize_machine_arch(machine.encode("utf-8"))
+        return _read_rust_string(pointer)
+    except Exception:
+        return None
