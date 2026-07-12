@@ -124,14 +124,14 @@ def _py_version_tuple(version: object) -> tuple[int, int, int] | None:
 
 
 def version_tuple(version: object) -> tuple[int, int, int] | None:
-    rust_result = rust_backend.version_tuple(str(version or ""))
-    if rust_result is not None:
+    completed, rust_result = rust_backend.try_version_tuple(str(version or ""))
+    if completed:
         return rust_result
     return _py_version_tuple(version)
 
 
-def version_sort_key(version: object) -> tuple[int, int, int, int, int] | None:
-    match = VERSION_RE.match(normalize_version_tag(version))
+def _py_version_sort_key(version: object) -> tuple[int, int, int, int, int] | None:
+    match = VERSION_RE.match(_py_normalize_version_tag(version))
     if not match:
         return None
     major, minor, patch = (int(part) for part in match.groups()[:3])
@@ -139,6 +139,13 @@ def version_sort_key(version: object) -> tuple[int, int, int, int, int] | None:
     if preview_number is None:
         return (major, minor, patch, 1, 0)
     return (major, minor, patch, 0, int(preview_number))
+
+
+def version_sort_key(version: object) -> tuple[int, int, int, int, int] | None:
+    completed, rust_result = rust_backend.try_version_sort_key(str(version or ""))
+    if completed:
+        return rust_result
+    return _py_version_sort_key(version)
 
 
 def is_release_version(version: object) -> bool:

@@ -55,6 +55,10 @@ _SYMBOLS = {
         "rust_version_tuple",
         [ctypes.c_char_p],
     ),
+    "version_sort_key": (
+        "rust_version_sort_key",
+        [ctypes.c_char_p],
+    ),
 }
 
 
@@ -161,17 +165,48 @@ def normalize_version_tag(version: str) -> str | None:
         return None
 
 
-def version_tuple(version: str) -> tuple[int, int, int] | None:
-    if _rust_lib is None or not _CAPABILITIES["version_tuple"] or "\x00" in version:
-        return None
+def _try_version_fields(
+    version: str,
+    capability: str,
+    symbol_name: str,
+    field_count: int,
+) -> tuple[bool, tuple[int, ...] | None]:
+    if _rust_lib is None or not _CAPABILITIES[capability] or "\x00" in version:
+        return False, None
     try:
-        pointer = _rust_lib.rust_version_tuple(version.encode("utf-8"))
+        pointer = getattr(_rust_lib, symbol_name)(version.encode("utf-8"))
         result = _read_rust_string(pointer)
         if result is None:
-            return None
+            return False, None
+        if result == "":
+            return True, None
         parts = result.split(",")
-        if len(parts) != 3:
-            return None
-        return int(parts[0]), int(parts[1]), int(parts[2])
+        if len(parts) != field_count:
+            return False, None
+        return True, tuple(int(part) for part in parts)
     except Exception:
-        return None
+        return False, None
+
+
+def try_version_tuple(version: str) -> tuple[bool, tuple[int, int, int] | None]:
+    completed, result = _try_version_fields(
+        version, "version_tuple", "rust_version_tuple", 3
+    )
+    if result is None:
+        return completed, None
+    return completed, (result[0], result[1], result[2])
+
+
+def try_version_sort_key(
+    version: str,
+) -> tuple[bool, tuple[int, int, int, int, int] | None]:
+    completed, result = _try_version_fields(
+        version, "version_sort_key", "rust_version_sort_key", 5
+    )
+    if result is None:
+        return completed, None
+    return completed, (result[0], result[1], result[2], result[3], result[4])
+
+
+def version_tuple(version: str) -> tuple[int, int, int] | None:
+    return try_version_tuple(version)[1]

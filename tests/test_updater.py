@@ -27,10 +27,13 @@ class FakeHTTPResponse:
 class UpdateCheckTest(unittest.TestCase):
     def test_version_helpers_use_python_fallback_without_rust(self):
         with patch("bilikara.updater.rust_backend.normalize_version_tag", return_value=None), patch(
-            "bilikara.updater.rust_backend.version_tuple", return_value=None
+            "bilikara.updater.rust_backend.try_version_tuple", return_value=(False, None)
+        ), patch(
+            "bilikara.updater.rust_backend.try_version_sort_key", return_value=(False, None)
         ):
             self.assertEqual(updater.normalize_version_tag("  v1.2.3  "), "v1.2.3")
             self.assertEqual(updater.version_tuple("v1.2.3-preview.4"), (1, 2, 3))
+            self.assertEqual(updater.version_sort_key("v1.2.3-preview.4"), (1, 2, 3, 0, 4))
 
     def test_version_rust_matches_python(self):
         if not rust_backend.backend_status()["loaded"]:
@@ -56,6 +59,26 @@ class UpdateCheckTest(unittest.TestCase):
                 if py_tuple is not None:
                     self.assertIsNotNone(rust_tuple)
                 self.assertEqual(rust_tuple, py_tuple)
+                completed, rust_sort_key = rust_backend.try_version_sort_key(version)
+                self.assertTrue(completed)
+                self.assertEqual(rust_sort_key, updater._py_version_sort_key(version))
+
+    def test_direct_rust_invalid_version_is_not_backend_failure(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        completed, result = rust_backend.try_version_tuple("dev")
+        self.assertTrue(completed)
+        self.assertIsNone(result)
+        completed, result = rust_backend.try_version_sort_key("v0.7.0-2-gabc123")
+        self.assertTrue(completed)
+        self.assertIsNone(result)
+
+    def test_stable_version_sorts_after_preview(self):
+        self.assertGreater(
+            updater.version_sort_key("v0.7.0"),
+            updater.version_sort_key("v0.7.0-preview.999"),
+        )
 
     def test_safe_filename_python_cases(self):
         long_name = f"{'a' * 300}.zip"

@@ -4,7 +4,7 @@ use std::panic::{catch_unwind, UnwindSafe};
 
 use crate::filename::safe_filename_impl;
 use crate::title_cleanup::clean_display_title_impl;
-use crate::version::{normalize_version_tag_impl, version_tuple_impl};
+use crate::version::{normalize_version_tag_impl, version_sort_key_impl, version_tuple_impl};
 
 fn ffi_string_result<F>(operation: F) -> *mut c_char
 where
@@ -86,7 +86,33 @@ pub unsafe extern "C" fn rust_version_tuple(version: *const c_char) -> *mut c_ch
             return None;
         }
         let version = CStr::from_ptr(version).to_str().ok()?;
-        Some(version_tuple_impl(version)?.join(","))
+        Some(
+            version_tuple_impl(version)
+                .map(|value| value.join(","))
+                .unwrap_or_default(),
+        )
+    })
+}
+
+/// Returns the five numeric sort-key fields separated by commas, or an empty string for
+/// a successfully processed invalid version.
+///
+/// # Safety
+///
+/// This function is unsafe because it dereferences a raw pointer. The caller must ensure
+/// that the pointer is non-null and points to a valid null-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn rust_version_sort_key(version: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        if version.is_null() {
+            return None;
+        }
+        let version = CStr::from_ptr(version).to_str().ok()?;
+        Some(
+            version_sort_key_impl(version)
+                .map(|value| value.join(","))
+                .unwrap_or_default(),
+        )
     })
 }
 
@@ -141,8 +167,10 @@ mod tests {
         unsafe {
             assert!(rust_normalize_version_tag(std::ptr::null()).is_null());
             assert!(rust_version_tuple(std::ptr::null()).is_null());
+            assert!(rust_version_sort_key(std::ptr::null()).is_null());
             assert!(rust_normalize_version_tag(invalid_utf8.as_ptr()).is_null());
             assert!(rust_version_tuple(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_version_sort_key(invalid_utf8.as_ptr()).is_null());
         }
     }
 }
