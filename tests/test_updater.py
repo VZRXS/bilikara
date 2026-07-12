@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import bilikara.updater as updater
+from bilikara import rust_backend
 from bilikara.updater import AppUpdateManager, check_for_update, fetch_latest_release, is_auto_update_supported, is_newer_version, select_update_asset, version_tuple
 
 
@@ -47,7 +48,12 @@ class UpdateCheckTest(unittest.TestCase):
                 self.assertEqual(updater._py_safe_filename(name, fallback), expected)
 
     def test_safe_filename_uses_python_fallback_without_rust(self):
-        with patch("bilikara.updater.title_cleanup._rust_safe_filename", return_value=None):
+        with patch("bilikara.updater.rust_backend.safe_filename", return_value=None):
+            self.assertEqual(updater._safe_filename("歌名 / demo.zip"), "demo.zip")
+
+    def test_safe_filename_falls_back_on_null_result(self):
+        null_library = type("NullLibrary", (), {"rust_safe_filename": lambda self, *args: None})()
+        with patch("bilikara.rust_backend._rust_lib", null_library):
             self.assertEqual(updater._safe_filename("歌名 / demo.zip"), "demo.zip")
 
     def test_safe_filename_preserves_non_string_fallback_behavior(self):
@@ -55,7 +61,7 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertIs(updater._safe_filename("...", fallback), fallback)
 
     def test_safe_filename_rust_matches_python(self):
-        if not updater.title_cleanup.rust_backend_status()["loaded"]:
+        if not rust_backend.backend_status()["loaded"]:
             self.skipTest("Rust dynamic library is not available")
 
         long_name = f"{'a' * 300}.zip"
@@ -77,10 +83,9 @@ class UpdateCheckTest(unittest.TestCase):
 
         for name, fallback in cases:
             with self.subTest(name=name):
-                self.assertEqual(
-                    updater._safe_filename(name, fallback),
-                    updater._py_safe_filename(name, fallback),
-                )
+                rust_result = rust_backend.safe_filename(name, fallback)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(rust_result, updater._py_safe_filename(name, fallback))
 
     def test_version_tuple_accepts_release_tags(self):
         self.assertEqual(version_tuple("v0.4.1"), (0, 4, 1))

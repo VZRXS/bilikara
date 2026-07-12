@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import ctypes
-import platform
 import re
-import sys
-from pathlib import Path
+
+from . import rust_backend
 
 FULLWIDTH_BRACKET_RE = re.compile(r"【[^】]*】")
 EDGE_SEPARATOR_RE = re.compile(r"^[\s\-|｜/:：]+|[\s\-|｜/:：]+$")
@@ -40,64 +38,6 @@ def _clean_bracket_content(match: re.Match) -> str:
     return f"{full_block[0]}{cleaned_inner}{full_block[-1]}"
 
 
-# Load Rust dynamic library
-_rust_lib = None
-_RUST_LOAD_ERROR = None
-
-def _rust_library_name() -> str:
-    system = platform.system()
-    if system == "Windows":
-        return "bilikara_rust.dll"
-    if system == "Darwin":
-        return "libbilikara_rust.dylib"
-    return "libbilikara_rust.so"
-
-
-def _get_rust_lib_path() -> Path | None:
-    root_dir = Path(__file__).resolve().parent.parent
-    lib_name = _rust_library_name()
-
-    candidates = [
-        root_dir / "rust" / "target" / "release" / lib_name,
-        root_dir / "rust" / "target" / "debug" / lib_name,
-    ]
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        candidates.append(Path(meipass) / "rust" / lib_name)
-    candidates.extend(
-        [
-            Path(sys.executable).resolve().parent / "rust" / lib_name,
-            Path(sys.executable).resolve().parent / lib_name,
-        ]
-    )
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
-
-
-try:
-    _lib_path = _get_rust_lib_path()
-    if _lib_path:
-        loaded_lib = ctypes.CDLL(str(_lib_path))
-        loaded_lib.rust_clean_display_title.argtypes = [
-            ctypes.c_char_p,
-            ctypes.c_char_p,
-            ctypes.c_char_p,
-        ]
-        loaded_lib.rust_clean_display_title.restype = ctypes.c_void_p
-        loaded_lib.rust_safe_filename.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-        loaded_lib.rust_safe_filename.restype = ctypes.c_void_p
-        loaded_lib.rust_free_string.argtypes = [ctypes.c_void_p]
-        loaded_lib.rust_free_string.restype = None
-        _rust_lib = loaded_lib
-    else:
-        _RUST_LOAD_ERROR = "Rust library not compiled"
-except Exception as e:
-    _RUST_LOAD_ERROR = str(e)
-
-
 def _py_clean_display_title(
     *,
     title: str = "",
@@ -124,21 +64,13 @@ def clean_display_title(
     display_title_sanitized = str(display_title or "").replace("\x00", "")
     part_title_sanitized = str(part_title or "").replace("\x00", "")
 
-    if _rust_lib is not None:
-        try:
-            title_bytes = title_sanitized.encode("utf-8")
-            display_bytes = display_title_sanitized.encode("utf-8")
-            part_bytes = part_title_sanitized.encode("utf-8")
-
-            res_ptr = _rust_lib.rust_clean_display_title(title_bytes, display_bytes, part_bytes)
-            if res_ptr:
-                try:
-                    res_str = ctypes.string_at(res_ptr).decode("utf-8")
-                    return res_str
-                finally:
-                    _rust_lib.rust_free_string(res_ptr)
-        except Exception:
-            pass
+    rust_result = rust_backend.clean_display_title(
+        title_sanitized,
+        display_title_sanitized,
+        part_title_sanitized,
+    )
+    if rust_result is not None:
+        return rust_result
 
     return _py_clean_display_title(
         title=title_sanitized,
@@ -147,29 +79,8 @@ def clean_display_title(
     )
 
 
-def _rust_safe_filename(name: str, fallback: str) -> str | None:
-    if _rust_lib is None or "\x00" in fallback:
-        return None
-    try:
-        name_bytes = name.replace("\x00", "/").encode("utf-8")
-        fallback_bytes = fallback.encode("utf-8")
-        res_ptr = _rust_lib.rust_safe_filename(name_bytes, fallback_bytes)
-        if not res_ptr:
-            return None
-        try:
-            return ctypes.string_at(res_ptr).decode("utf-8")
-        finally:
-            _rust_lib.rust_free_string(res_ptr)
-    except Exception:
-        return None
-
-
 def rust_backend_status() -> dict[str, object]:
-    return {
-        "loaded": _rust_lib is not None,
-        "error": _RUST_LOAD_ERROR,
-        "path": str(_lib_path) if "_lib_path" in globals() and _lib_path else "",
-    }
+    return rust_backend.backend_status()
 
 
 def _remove_part_suffix(display_title: str, part_title: str) -> str:
