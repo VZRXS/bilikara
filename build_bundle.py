@@ -16,6 +16,8 @@ REQUIRED_TOOL_BINARIES = ("ffmpeg",)
 OPTIONAL_TOOL_BINARIES = ("ffprobe",)
 LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
 PYTHON_HTTPS_HIDDEN_IMPORTS = ("ssl", "_ssl", "urllib.request", "http.client", "certifi")
+RUST_BUNDLE_DIR = "rust"
+RUST_STRICT_ENV = "BILIKARA_REQUIRE_RUST_LIB"
 
 
 def main() -> None:
@@ -47,6 +49,7 @@ def main() -> None:
     command.extend(_python_https_args(data_separator, verbose=True))
     command.extend(_python_certifi_args(data_separator, verbose=True))
     command.extend(_bundled_binary_args(data_separator, verbose=True, validate=True))
+    command.extend(_rust_library_args(data_separator, verbose=True))
 
     if platform.system() == "Windows":
         version_info_file = _write_windows_version_info(bundle_version, spec_dir)
@@ -156,6 +159,31 @@ def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate
             print(f"Optional tools not bundled: {', '.join(optional_missing)}")
 
     return args
+
+
+def _rust_library_name() -> str:
+    system = platform.system()
+    if system == "Windows":
+        return "bilikara_rust.dll"
+    if system == "Darwin":
+        return "libbilikara_rust.dylib"
+    return "libbilikara_rust.so"
+
+
+def _rust_library_args(data_separator: str, *, verbose: bool = False) -> list[str]:
+    library_path = ROOT_DIR / "rust" / "target" / "release" / _rust_library_name()
+    if library_path.is_file():
+        if verbose:
+            print("Bundling Rust title cleanup library:")
+            print(f"  - {library_path}")
+        return ["--add-binary", f"{library_path.resolve()}{data_separator}{RUST_BUNDLE_DIR}"]
+
+    message = f"Rust library not found; using Python fallback: {library_path}"
+    if os.getenv(RUST_STRICT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        raise RuntimeError(message)
+    if verbose:
+        print(f"Warning: {message}")
+    return []
 
 
 def _validate_ffmpeg_redistribution_metadata(bundled_paths: dict[str, Path]) -> None:
