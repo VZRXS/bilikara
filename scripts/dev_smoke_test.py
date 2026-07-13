@@ -220,6 +220,10 @@ class SmokeRunner:
                 "/api/gatcha/refresh",
                 "/api/gatcha/favlist",
                 "/api/app/update",
+                "handleSplitPlaybackFault",
+                "handleSplitAudioEnded",
+                "handleSplitVideoEnded",
+                "audio.ended",
             ],
             "/player-health.js": [
                 "classifyAudioEnded",

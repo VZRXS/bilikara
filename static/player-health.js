@@ -62,20 +62,38 @@
     const expectedRemaining = remainingSeconds(values.expectedDuration, values.videoCurrentTime);
     const audioRemaining = remainingSeconds(values.audioDuration, values.audioCurrentTime);
     const tolerance = durationToleranceSeconds(values.expectedDuration, values.videoDuration);
+    const offset = Math.abs(finiteNumber(values.avOffsetSeconds) || 0);
+    const allowedRemaining = tolerance + offset;
     const suspiciousRemaining = Math.max(expectedRemaining || 0, audioRemaining || 0);
-    if (suspiciousRemaining > tolerance) {
+    if (suspiciousRemaining > allowedRemaining) {
       return {
         classification: "video-ended-early",
         fault: true,
         remainingSeconds: suspiciousRemaining,
-        toleranceSeconds: tolerance,
+        toleranceSeconds: allowedRemaining,
       };
     }
     return {
       classification: "normal-end",
       fault: false,
       remainingSeconds: suspiciousRemaining,
-      toleranceSeconds: tolerance,
+      toleranceSeconds: allowedRemaining,
+    };
+  }
+
+  function classifyBuffering(input) {
+    const values = input || {};
+    const eventCount = Math.max(0, Number(values.eventCount || 0));
+    const readyState = Math.max(0, Number(values.readyState || 0));
+    const networkState = Math.max(0, Number(values.networkState || 0));
+    const noSource = networkState === 3;
+    const repeatedUnavailable = eventCount >= 3 && readyState < 3;
+    return {
+      classification: noSource ? "media-no-source" : "media-repeated-buffering",
+      fault: noSource || repeatedUnavailable,
+      eventCount,
+      readyState,
+      networkState,
     };
   }
 
@@ -83,7 +101,7 @@
     const code = Number(errorCode || 0);
     return {
       classification: `${String(mediaKind || "media")}-error`,
-      fault: code > 0,
+      fault: true,
       errorCode: code,
     };
   }
@@ -97,6 +115,7 @@
     remainingSeconds,
     classifyAudioEnded,
     classifyVideoEnded,
+    classifyBuffering,
     classifyMediaError,
     shouldGuardAdvance,
   };
