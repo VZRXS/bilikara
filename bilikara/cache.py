@@ -2922,11 +2922,23 @@ class CacheManager:
         if not isinstance(validation_files, list):
             return
 
+        requires_downkyi_validation = any(
+            isinstance(entry, dict)
+            and str(entry.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI
+            for entry in validation_files
+        )
         ffprobe_path = self._ffprobe_path_for_ffmpeg(ffmpeg_path)
         if not ffprobe_path:
+            message = "缓存校验失败: DownKyi 下载需要可用的 ffprobe"
             self._append_log_line(
                 log_path,
-                f"[{self._log_timestamp()}] ffprobe validate: skipped, ffprobe unavailable",
+                f"[{self._log_timestamp()}] ffprobe validate: failed, ffprobe unavailable",
+            )
+            if requires_downkyi_validation:
+                raise DownloadCommandError(message)
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] ffprobe validate: skipped for non-DownKyi source",
             )
             return
 
@@ -2942,7 +2954,7 @@ class CacheManager:
             f"[{self._log_timestamp()}] ffprobe validate: start ({len(validation_files)} files)",
         )
 
-        failure_count = 0
+        validation_errors: list[str] = []
         validation_metadata: list[dict[str, object]] = []
         for entry in validation_files:
             self._raise_if_retry_requested(item_id)
@@ -2965,26 +2977,39 @@ class CacheManager:
                     log_path=log_path,
                     diagnostic_context={**entry, "item_id": item_id},
                 )
+                metadata.update(
+                    {
+                        "label": label,
+                        "page": int(entry.get("page") or 0),
+                        "stream_kind": str(entry.get("stream_kind") or ""),
+                        "expected_duration": self._optional_probe_float(entry.get("expected_duration")),
+                    }
+                )
                 validation_metadata.append(metadata)
             except CacheCancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                failure_count += 1
+                message = self._compact_probe_error(str(exc))
+                validation_errors.append(message)
+                path = entry.get("path")
+                if isinstance(path, Path):
+                    self._discard_invalid_media(path)
                 self._append_log_line(
                     log_path,
-                    f"[{self._log_timestamp()}] ffprobe validate {label}: failed: "
-                    f"{self._compact_probe_error(str(exc))}",
+                    f"[{self._log_timestamp()}] ffprobe validate {label}: failed: {message}",
                 )
 
+        validation_errors.extend(self._duration_pair_errors(validation_metadata))
         cache_result["validation_metadata"] = validation_metadata
-        cache_result["validation_failure_count"] = failure_count
-        if failure_count:
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] ffprobe validate: completed with {failure_count} warning(s)",
-            )
-        else:
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] ffprobe validate: ok")
+        cache_result["validation_failure_count"] = len(validation_errors)
+        if validation_errors:
+            for message in validation_errors:
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] cache validation error: {message}",
+                )
+            raise DownloadCommandError("；".join(validation_errors))
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] ffprobe validate: ok")
 
     def _validate_media_file(
         self,
@@ -3057,6 +3082,28 @@ class CacheManager:
             )
 
         duration = self._probe_duration(payload)
+        context = diagnostic_context or {}
+        expected_duration = self._optional_probe_float(context.get("expected_duration"))
+        if expected_duration is not None and expected_duration > 0 and duration is None:
+            raise DownloadCommandError(f"缓存校验失败: {label} 未报告有效时长")
+        if duration is not None and duration < 1.0:
+            raise DownloadCommandError(f"缓存校验失败: {label} 时长异常，实际 {duration:.2f} 秒")
+        if expected_duration is not None and expected_duration > 0 and duration is not None:
+            tolerance = self._duration_tolerance(expected_duration)
+            if duration + tolerance < expected_duration:
+                raise DownloadCommandError(
+                    f"缓存校验失败: {label} 时长异常，预期约 {expected_duration:.0f} 秒，"
+                    f"实际 {duration:.0f} 秒"
+                )
+        if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
+            self._validate_demux_file(
+                ffmpeg_path,
+                media_path,
+                label=label,
+                stream_kind=str(context.get("stream_kind") or ""),
+                log_path=log_path,
+            )
+
         duration_label = f"{duration:.2f}s" if duration is not None else "unknown"
         stream_label = "/".join(sorted(stream for stream in detected_streams if stream)) or "unknown"
         self._append_log_line(
@@ -3085,7 +3132,6 @@ class CacheManager:
             "start_time": self._optional_probe_float(file_format.get("start_time")),
             "streams": normalized_streams,
         }
-        context = diagnostic_context or {}
         if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
             selected = context.get("stream_metadata") if isinstance(context.get("stream_metadata"), dict) else {}
             summary = {
@@ -3114,6 +3160,105 @@ class CacheManager:
                 f"{json.dumps(summary, ensure_ascii=False, sort_keys=True)}",
             )
         return metadata
+
+    @staticmethod
+    def _duration_tolerance(expected_duration: float) -> float:
+        return max(3.0, expected_duration * 0.02)
+
+    @classmethod
+    def _duration_pair_errors(cls, metadata: list[dict[str, object]]) -> list[str]:
+        videos = [entry for entry in metadata if entry.get("stream_kind") == "video"]
+        audios = [entry for entry in metadata if entry.get("stream_kind") == "audio"]
+        errors: list[str] = []
+        for audio in audios:
+            audio_duration = cls._optional_probe_float(audio.get("duration"))
+            if audio_duration is None:
+                continue
+            audio_page = int(audio.get("page") or 0)
+            audio_expected = cls._optional_probe_float(audio.get("expected_duration"))
+            for video in videos:
+                video_duration = cls._optional_probe_float(video.get("duration"))
+                if video_duration is None:
+                    continue
+                video_page = int(video.get("page") or 0)
+                video_expected = cls._optional_probe_float(video.get("expected_duration"))
+                expected_match = (
+                    audio_expected is not None
+                    and video_expected is not None
+                    and abs(audio_expected - video_expected)
+                    <= cls._duration_tolerance(max(audio_expected, video_expected))
+                )
+                if audio_page != video_page and not expected_match:
+                    continue
+                tolerance = cls._duration_tolerance(video_duration)
+                if audio_duration + tolerance < video_duration:
+                    label = str(audio.get("label") or f"音轨 P{audio_page}")
+                    errors.append(
+                        f"缓存校验失败: {label} 比视频轨明显更短，"
+                        f"视频 {video_duration:.0f} 秒，音频 {audio_duration:.0f} 秒"
+                    )
+                break
+        return errors
+
+    @staticmethod
+    def _discard_invalid_media(media_path: Path) -> None:
+        for candidate in (media_path, Path(f"{media_path}.aria2")):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _validate_demux_file(
+        self,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        stream_kind: str,
+        log_path: Path,
+    ) -> None:
+        map_specifier = "0:v:0" if stream_kind == "video" else "0:a:0"
+        command = [
+            self._tool_arg_path(ffmpeg_path),
+            "-v",
+            "error",
+            "-xerror",
+            "-i",
+            self._tool_arg_path(media_path),
+            "-map",
+            map_specifier,
+            "-c",
+            "copy",
+            "-f",
+            "null",
+            "-",
+        ]
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
+        )
+        try:
+            process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+                command,
+                shell=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=120,
+                cwd=self._tool_arg_path(BB_DOWN_DIR),
+                env=self._tool_process_env(ffmpeg_path),
+                **self._hidden_process_kwargs(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise DownloadCommandError(f"缓存校验失败: {label}: FFmpeg 完整包扫描超时") from exc
+        if process.returncode != 0:
+            message = (process.stderr or process.stdout or "").strip()
+            raise DownloadCommandError(
+                f"缓存校验失败: {label}: FFmpeg 完整包扫描失败: "
+                f"{self._compact_probe_error(message)}"
+            )
 
     @staticmethod
     def _optional_probe_float(value: object) -> float | None:

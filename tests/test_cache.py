@@ -1181,7 +1181,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_validate_cache_result_logs_probe_failure_without_failing_cache(self):
+    def test_validate_cache_result_rejects_probe_failure(self):
         log_dir = Path(self.temp_dir.name) / "logs"
         media_file = self.cache_dir / "song-a" / "audio.m4a"
         media_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1203,26 +1203,28 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         stderr="",
                     ),
                 ):
-                    manager._validate_cache_result(
-                        "song-a",
-                        {
-                            "validation_files": [
-                                {
-                                    "path": media_file,
-                                    "label": "音轨 P1",
-                                    "required_streams": {"audio"},
-                                }
-                            ]
-                        },
-                        Path("/tools/ffmpeg"),
-                        log_path,
-                    )
+                    with self.assertRaisesRegex(DownloadCommandError, "音轨 P1"):
+                        manager._validate_cache_result(
+                            "song-a",
+                            {
+                                "validation_files": [
+                                    {
+                                        "path": media_file,
+                                        "label": "音轨 P1",
+                                        "required_streams": {"audio"},
+                                    }
+                                ]
+                            },
+                            Path("/tools/ffmpeg"),
+                            log_path,
+                        )
                 log_text = log_path.read_text(encoding="utf-8")
             finally:
                 manager.shutdown()
 
         self.assertIn("ffprobe validate 音轨 P1: failed", log_text)
-        self.assertIn("completed with 1 warning(s)", log_text)
+        self.assertIn("cache validation error", log_text)
+        self.assertFalse(media_file.exists())
 
     def test_ffprobe_path_for_ffmpeg_skips_broken_runtime_probe(self):
         suffix = ".exe" if os.name == "nt" else ""
@@ -2102,7 +2104,6 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         self.assertEqual(result["streams"][0]["codec_name"], "h264")
         self.assertEqual(result["streams"][0]["codec_tag_string"], "avc1")
 
-    @unittest.expectedFailure
     def test_validation_error_prevents_cache_result_acceptance(self):
         media = self.cache_dir / "song" / "audio.m4a"
         media.parent.mkdir(parents=True)
@@ -2134,17 +2135,76 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    @unittest.expectedFailure
     def test_ffprobe_missing_duration_is_rejected(self):
         self._assert_duration_rejected("audio", None, expected=120)
 
-    @unittest.expectedFailure
     def test_audio_significantly_shorter_than_expected_is_rejected(self):
         self._assert_duration_rejected("audio", "87", expected=243)
 
-    @unittest.expectedFailure
     def test_video_significantly_shorter_than_expected_is_rejected(self):
         self._assert_duration_rejected("video", "87", expected=243)
+
+    def test_downkyi_validation_requires_ffprobe(self):
+        media = self.cache_dir / "song" / "audio.m4a"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"media")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=None):
+                    with self.assertRaisesRegex(DownloadCommandError, "需要可用的 ffprobe"):
+                        manager._validate_cache_result(
+                            "song",
+                            {"validation_files": [{
+                                "path": media,
+                                "label": "音轨 P1",
+                                "required_streams": {"audio"},
+                                "download_source": DOWNLOAD_SOURCE_DOWNKYI,
+                            }]},
+                            Path("/tools/ffmpeg"),
+                            self.log_path,
+                        )
+            finally:
+                manager.shutdown()
+
+    def test_downkyi_full_demux_failure_is_rejected(self):
+        media = self.cache_dir / "song" / "audio.m4a"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"partial")
+        probe = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(self._probe_payload("audio", "120")),
+            stderr="",
+        )
+        demux = SimpleNamespace(returncode=1, stdout="", stderr="partial file: unexpected EOF")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", side_effect=[probe, demux]):
+                    with self.assertRaisesRegex(DownloadCommandError, "完整包扫描失败"):
+                        manager._validate_media_file(
+                            Path("/tools/ffprobe"),
+                            Path("/tools/ffmpeg"),
+                            media,
+                            label="音轨 P1",
+                            required_streams={"audio"},
+                            log_path=self.log_path,
+                            diagnostic_context={
+                                "expected_duration": 120,
+                                "download_source": DOWNLOAD_SOURCE_DOWNKYI,
+                                "stream_kind": "audio",
+                            },
+                        )
+            finally:
+                manager.shutdown()
+
+    def test_matching_page_audio_shorter_than_video_is_rejected(self):
+        errors = CacheManager._duration_pair_errors([
+            {"label": "视频轨 P1", "stream_kind": "video", "page": 1, "duration": 243.0},
+            {"label": "音轨 P1", "stream_kind": "audio", "page": 1, "duration": 87.0},
+        ])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("比视频轨明显更短", errors[0])
 
     def _assert_duration_rejected(self, kind: str, actual: str | None, *, expected: float) -> None:
         extension = ".mp4" if kind == "video" else ".m4a"
