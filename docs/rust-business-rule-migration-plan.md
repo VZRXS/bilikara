@@ -45,13 +45,17 @@ must only evaluate the supplied value model.
 
 ### 1. Update asset scoring and selection
 
+Status: implemented as the first Phase-2 domain through the single
+`rust_select_update_asset` JSON export. Python still owns input adaptation,
+response validation, result construction, and the complete fallback.
+
 Current Python ownership:
 
 - `bilikara/updater.py`
-- `_asset_text`
-- `_coerce_asset_size`
 - `_score_asset_for_target`
 - `select_update_asset`
+- `_asset_text` and `_coerce_asset_size` remain Python adapters; asset size is
+  normalized only after selection and is not a scoring input;
 - existing Phase-1 token classifiers and archive recognition supply utility
   semantics but do not own the scoring policy.
 
@@ -59,13 +63,14 @@ Input/output model:
 
 ```json
 {
+  "schema_version": 1,
   "assets": [
     {
+      "original_index": 0,
       "name": "bilikara-v0.7.0-windows-x64.zip",
       "label": "",
       "browser_download_url": "https://example/file.zip",
-      "content_type": "application/zip",
-      "size": 12345
+      "content_type": "application/zip"
     }
   ],
   "target": {"platform": "windows", "arch": "x64"}
@@ -76,14 +81,16 @@ The response should be structured and explicit:
 
 ```json
 {
+  "schema_version": 1,
   "status": "selected",
   "selected_index": 0,
-  "scores": [125]
+  "scores": [{"original_index": 0, "score": 140}]
 }
 ```
 
-`status` should distinguish `selected`, `no_match`, `invalid_request`, and
-backend failure at the Python wrapper level. Returning an index avoids
+`status` distinguishes `selected` from a valid `no_match`. Invalid request
+syntax, an FFI failure, or an invalid response produces the backend-failure
+signal and invokes the Python fallback. Returning original indices avoids
 round-tripping or reconstructing arbitrary release dictionary fields.
 
 User-visible policy:
@@ -92,14 +99,19 @@ User-visible policy:
 - rejection of cross-platform assets;
 - universal macOS handling;
 - exact-architecture preference;
-- package-size tie breaking and original-order stability.
+- first-in-input tie breaking for equal scores.
+
+The current Python selector does **not** use package size as a tie breaker.
+`size` is added to the selected result only after selection, so changing asset
+sizes must not change the chosen index.
 
 Proposed Rust data structures:
 
 ```text
-AssetDescriptor { name, label, download_url, content_type, size }
+AssetDescriptor { original_index, name, label, download_url, content_type }
 UpdateTarget { platform, arch }
-AssetSelection { selected_index, scores }
+AssetScore { original_index, score }
+AssetSelection { status, selected_index, scores }
 ```
 
 Proposed coarse FFI API:
@@ -122,7 +134,8 @@ Required golden/regression tests:
 - wrong-platform and wrong-architecture rejection;
 - checksum/signature/text assets and missing URLs;
 - `x86_64` token behavior;
-- invalid/missing size, equal score, and stable original-order tie breaking;
+- invalid/missing/different sizes proving size has no effect;
+- equal scores and stable original-order tie breaking;
 - full snapshots of score vectors and selected indices;
 - Rust/Python property equivalence over generated asset combinations;
 - malformed JSON, null response, missing symbol, and Python fallback.
@@ -501,9 +514,9 @@ The exact sequence after the first domain should be re-evaluated using test
 coverage and production behavior at that time. Only one domain should be
 migrated per commit and each should be independently revertible.
 
-## First Phase-2 recommendation
+## First Phase-2 implementation
 
-The first implementation should be **update asset scoring and selection**.
+The first implementation is **update asset scoring and selection**.
 
 It is safer than the alternatives because:
 
@@ -519,6 +532,6 @@ It is safer than the alternatives because:
 - its blast radius is narrower than playback page/binding rules, stream quality
   policy, cache preparation, or playlist fairness.
 
-Before implementation, add score-vector golden fixtures and randomized
-Rust/Python equivalence generation. Do not combine release selection, network
-fetching, download candidate ordering, or installation with this first domain.
+Its validation includes score-vector golden fixtures and generated Rust/Python
+equivalence coverage. Release selection, network fetching, download candidate
+ordering, and installation remain outside this domain.

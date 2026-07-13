@@ -1,4 +1,5 @@
 mod archive;
+mod asset_selection;
 mod asset_tokens;
 mod ffi;
 mod filename;
@@ -12,6 +13,6 @@ pub use ffi::{
     rust_asset_has_windows, rust_asset_has_x64, rust_asset_tokens, rust_backend_abi_version,
     rust_clean_display_title, rust_format_download_proxy_url, rust_free_string,
     rust_is_downloadable_archive, rust_normalize_machine_arch, rust_normalize_version_tag,
-    rust_release_list_api_from_latest, rust_safe_filename, rust_version_sort_key,
-    rust_version_tuple,
+    rust_release_list_api_from_latest, rust_safe_filename, rust_select_update_asset,
+    rust_version_sort_key, rust_version_tuple,
 };

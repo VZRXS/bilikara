@@ -46,7 +46,15 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         self.assertEqual(status["abi_version"], 1)
         self.assertTrue(status["abi_compatible"])
         self.assertTrue(status["fully_compatible"])
-        self.assertEqual(set(status["capabilities"]), EXPECTED_PHASE1_CAPABILITIES)
+        self.assertTrue(
+            EXPECTED_PHASE1_CAPABILITIES.issubset(status["capabilities"])
+        )
+        self.assertTrue(
+            all(
+                status["capabilities"][capability]
+                for capability in EXPECTED_PHASE1_CAPABILITIES
+            )
+        )
         self.assertTrue(all(status["capabilities"].values()))
 
         # These are Rust-only backend calls. None/False completion sentinels
@@ -80,7 +88,7 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
 
     def test_phase1_capability_documentation_matches_backend_symbols(self):
         self.assertEqual(set(rust_backend.PHASE1_CAPABILITIES), EXPECTED_PHASE1_CAPABILITIES)
-        self.assertEqual(set(rust_backend._SYMBOLS), EXPECTED_PHASE1_CAPABILITIES)
+        self.assertTrue(EXPECTED_PHASE1_CAPABILITIES.issubset(rust_backend._SYMBOLS))
 
         inventory_path = (
             Path(__file__).resolve().parent.parent
