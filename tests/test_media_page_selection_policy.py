@@ -1,5 +1,8 @@
 import itertools
+import os
 import unittest
+
+from bilikara import rust_backend
 from bilikara.bilibili import (
     VideoPage,
     _py_select_matching_pages,
@@ -11,6 +14,20 @@ from bilikara.bilibili import (
 
 
 class TestMediaPageSelectionPolicy(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") != "1":
+            return
+        status = rust_backend.backend_status()
+        if not status["loaded"]:
+            raise AssertionError(
+                f"BILIKARA_REQUIRE_RUST_LIB=1 but Rust backend did not load: {status['error']}"
+            )
+        if not status["capabilities"].get("select_media_pages", False):
+            raise AssertionError(
+                "BILIKARA_REQUIRE_RUST_LIB=1 but select_media_pages is unavailable"
+            )
+
     def test_empty_input(self):
         self.assertEqual(_py_select_matching_pages([], preferred_page=1), [])
         self.assertEqual(select_matching_pages([], preferred_page=1), [])

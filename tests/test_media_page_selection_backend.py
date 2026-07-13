@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 import json
@@ -251,6 +252,10 @@ class TestMediaPageSelectionBackend(unittest.TestCase):
 
     def test_rust_python_equivalence(self):
         if rust_backend._rust_lib is None or not rust_backend._CAPABILITIES.get("select_media_pages"):
+            if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
+                self.fail(
+                    "BILIKARA_REQUIRE_RUST_LIB=1 but native select_media_pages is unavailable"
+                )
             self.skipTest("Rust backend library not available")
 
         cases = [

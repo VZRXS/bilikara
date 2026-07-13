@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -682,16 +683,29 @@ class UpdateAssetSelectionRustTest(unittest.TestCase):
     @staticmethod
     def _native_selection_available() -> bool:
         status = rust_backend.backend_status()
-        return bool(
+        available = bool(
             Path(str(status["path"])).is_file()
             and status["capabilities"].get("select_update_asset", False)
         )
+        if not available and os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
+            raise AssertionError(
+                "BILIKARA_REQUIRE_RUST_LIB=1 but native select_update_asset is unavailable"
+            )
+        return available
 
     def _require_native_selection(self) -> None:
         status = rust_backend.backend_status()
         if not Path(str(status["path"])).is_file():
+            if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
+                self.fail(
+                    "BILIKARA_REQUIRE_RUST_LIB=1 but the Rust dynamic library is not compiled"
+                )
             self.skipTest("Rust dynamic library is not compiled")
         if not status["capabilities"].get("select_update_asset", False):
+            if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
+                self.fail(
+                    "BILIKARA_REQUIRE_RUST_LIB=1 but select_update_asset is unavailable"
+                )
             self.skipTest("compiled Rust library has no update asset selection symbol")
 
     @staticmethod

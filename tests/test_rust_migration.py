@@ -34,7 +34,7 @@ class RustMigrationTest(unittest.TestCase):
             debug.touch()
 
             with self._lookup_environment(root):
-                self.assertEqual(rust_backend._get_rust_lib_path(), release)
+                self.assertEqual(rust_backend._get_rust_lib_path(), release.resolve())
 
     def test_get_rust_lib_path_finds_dev_debug(self):
         with TemporaryDirectory() as temp_dir:
@@ -44,7 +44,7 @@ class RustMigrationTest(unittest.TestCase):
             debug.touch()
 
             with self._lookup_environment(root):
-                self.assertEqual(rust_backend._get_rust_lib_path(), debug)
+                self.assertEqual(rust_backend._get_rust_lib_path(), debug.resolve())
 
     def test_get_rust_lib_path_finds_pyinstaller_bundle(self):
         with TemporaryDirectory() as temp_dir:
@@ -67,7 +67,7 @@ class RustMigrationTest(unittest.TestCase):
             bundled.touch()
 
             with self._lookup_environment(root, executable=root / "app" / "bilikara"):
-                self.assertEqual(rust_backend._get_rust_lib_path(), bundled)
+                self.assertEqual(rust_backend._get_rust_lib_path(), bundled.resolve())
 
     def test_backend_status_structure(self):
         status = rust_backend.backend_status()

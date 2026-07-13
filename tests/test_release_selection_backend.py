@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 import json
@@ -156,6 +157,10 @@ class TestReleaseSelectionBackend(unittest.TestCase):
     def test_rust_python_equivalence(self):
         # Without mocks, we use the real rust backend
         if rust_backend._rust_lib is None or not rust_backend._CAPABILITIES.get("select_release"):
+            if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
+                self.fail(
+                    "BILIKARA_REQUIRE_RUST_LIB=1 but native select_release is unavailable"
+                )
             self.skipTest("Rust backend not available")
         
         releases = [

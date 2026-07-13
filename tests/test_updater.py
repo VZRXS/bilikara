@@ -265,7 +265,7 @@ class UpdateCheckTest(unittest.TestCase):
     def test_detect_update_target_keeps_python_platform_detection(self):
         with patch("bilikara.updater.platform_module.system", return_value="Linux"), patch(
             "bilikara.updater.platform_module.machine", return_value="AMD64"
-        ):
+        ), patch("bilikara.updater.sys.platform", "linux"):
             target = updater.detect_update_target()
         self.assertEqual(target["platform"], "linux")
         self.assertEqual(target["arch"], "x64")

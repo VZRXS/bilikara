@@ -1,4 +1,5 @@
 import ctypes
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,10 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         status = rust_backend.backend_status()
         library_path = Path(str(status["path"]))
         if not library_path.is_file():
+            if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
+                self.fail(
+                    "BILIKARA_REQUIRE_RUST_LIB=1 but the Rust dynamic library is not compiled"
+                )
             self.skipTest("Rust dynamic library is not compiled")
 
         self.assertTrue(status["loaded"])
