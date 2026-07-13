@@ -896,8 +896,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
                 def fake_run_item_command(_item_id, command, *_args, **_kwargs):
                     captured["command"] = list(command)
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    (target_dir / "video-p1.mp4").write_bytes(b"video")
+                    attempt_dir = Path(command[command.index("--dir") + 1])
+                    out_name = command[command.index("--out") + 1]
+                    attempt_dir.mkdir(parents=True, exist_ok=True)
+                    (attempt_dir / out_name).write_bytes(b"video")
 
                 with patch.object(manager, "_run_item_command", side_effect=fake_run_item_command):
                     path = manager._download_stream_with_aria2c(
@@ -915,11 +917,18 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     )
 
                 command = captured["command"]
-                self.assertEqual(path, target_dir / "video-p1.mp4")
+                self.assertEqual(path.name, "video-p1.mp4")
+                self.assertTrue(path.parent.name.startswith(".attempt-"))
+                self.assertEqual(path.parent.parent, target_dir)
+                self.assertFalse((target_dir / "video-p1.mp4").exists())
                 self.assertIn("https://primary.example/video.m4s", command)
                 self.assertIn("https://backup.example/video.m4s", command)
                 self.assertLess(command.index("https://backup.example/video.m4s"), command.index("--dir"))
                 self.assertNotIn("--referer", command)
+                self.assertIn("--continue=false", command)
+                self.assertIn("--auto-file-renaming=false", command)
+                self.assertIn("--allow-overwrite=false", command)
+                self.assertNotIn("--continue=true", command)
             finally:
                 manager.shutdown()
 
@@ -2234,15 +2243,12 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    @unittest.expectedFailure
     def test_aria2_control_file_after_success_is_rejected(self):
         self._assert_aria2_output_rejected(["video-p1.mp4", "video-p1.mp4.aria2"])
 
-    @unittest.expectedFailure
     def test_stale_expected_output_plus_new_numbered_output_is_rejected(self):
         self._assert_aria2_output_rejected(["video-p1.mp4", "video-p1.1.mp4"])
 
-    @unittest.expectedFailure
     def test_multiple_matching_media_outputs_are_rejected(self):
         self._assert_aria2_output_rejected(["video-p1.mp4", "other.mp4"])
 
@@ -2254,9 +2260,11 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         ):
             manager = self._manager()
             try:
-                def fake_run(*_args, **_kwargs):
+                def fake_run(_item_id, command, *_args, **_kwargs):
+                    attempt_dir = Path(command[command.index("--dir") + 1])
+                    attempt_dir.mkdir(parents=True, exist_ok=True)
                     for index, name in enumerate(names, start=1):
-                        (target / name).write_bytes(b"x" * index)
+                        (attempt_dir / name).write_bytes(b"x" * index)
 
                 with patch.object(manager, "_run_item_command", side_effect=fake_run):
                     with self.assertRaises(DownloadCommandError):
@@ -2275,6 +2283,36 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                             page=1,
                             cid=123,
                         )
+            finally:
+                manager.shutdown()
+
+    def test_validated_attempt_is_atomically_published_and_urls_rewritten(self):
+        target = self.cache_dir / "song" / "video-p1"
+        attempt = target / ".attempt-test"
+        source = attempt / "video-p1.mp4"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"validated")
+        result = {
+            "video_file": source,
+            "video_relative_path": str(source.relative_to(self.cache_dir)),
+            "video_media_url": f"/media/{source.relative_to(self.cache_dir)}",
+            "audio_variants": [],
+            "validation_files": [{"path": source}],
+            "validation_metadata": [{"path": str(source)}],
+        }
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                manager._publish_validated_cache_result(result, self.log_path)
+                final_path = target / "video-p1.mp4"
+                self.assertTrue(final_path.exists())
+                self.assertFalse(attempt.exists())
+                self.assertEqual(result["video_file"], final_path)
+                self.assertEqual(result["validation_files"][0]["path"], final_path)
+                self.assertEqual(result["validation_metadata"][0]["path"], str(final_path))
+                self.assertNotIn(".attempt-", result["video_media_url"])
             finally:
                 manager.shutdown()
 

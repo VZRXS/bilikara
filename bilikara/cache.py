@@ -18,6 +18,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TextIO
@@ -57,6 +58,13 @@ STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
 CACHE_RETENTION_BUFFER_ITEMS = 3
 MAX_PARALLEL_TRACK_DOWNLOADS = 4
+try:
+    ARIA2_CONNECTIONS_PER_TRACK = max(
+        1,
+        min(16, int(os.getenv("BILIKARA_ARIA2_CONNECTIONS_PER_TRACK", "8"))),
+    )
+except ValueError:
+    ARIA2_CONNECTIONS_PER_TRACK = 8
 CREATE_NO_WINDOW = 0x08000000
 STARTF_USESHOWWINDOW = 0x00000001
 SW_HIDE = 0
@@ -1133,6 +1141,8 @@ class CacheManager:
         item_dir = CACHE_DIR / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
         download_source = self._current_download_source()
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            self._cleanup_attempt_dirs(item_dir)
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, "")
         self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
@@ -1186,6 +1196,8 @@ class CacheManager:
             self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
+            if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+                self._publish_validated_cache_result(cache_result, log_path)
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._take_retry_request(item_id)
@@ -1200,6 +1212,7 @@ class CacheManager:
             self._drop_item_cache(item_id, str(exc))
             return False
         except DownloadCommandError as exc:
+            self._cleanup_attempt_dirs(item_dir)
             if self._take_retry_request(item_id):
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
                 self._remove_cache_dir(item_id)
@@ -1244,6 +1257,7 @@ class CacheManager:
             self._record_item_activity(item_id)
             return False
         except Exception as exc:  # noqa: BLE001
+            self._cleanup_attempt_dirs(item_dir)
             if self._take_retry_request(item_id):
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
                 self._remove_cache_dir(item_id)
@@ -2396,7 +2410,11 @@ class CacheManager:
         if not download_urls:
             raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
 
-        expected_path = target_dir / out_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        attempt_dir = target_dir / f".attempt-{uuid.uuid4().hex}"
+        attempt_dir.mkdir(parents=False, exist_ok=False)
+        expected_path = attempt_dir / out_name
+        final_path = target_dir / out_name
         metadata = stream_metadata or {}
         selection_summary = {
             "event": "downkyi_track_selected",
@@ -2412,6 +2430,7 @@ class CacheManager:
             "primary_url": self._safe_url_summary(download_urls[0]),
             "backup_url_count": max(0, len(download_urls) - 1),
             "expected_output": str(expected_path),
+            "final_output": str(final_path),
         }
         self._append_log_line(
             log_path,
@@ -2419,17 +2438,20 @@ class CacheManager:
             f"{json.dumps(selection_summary, ensure_ascii=False, sort_keys=True)}",
         )
 
+        connections = str(ARIA2_CONNECTIONS_PER_TRACK)
         command = [
             self._tool_arg_path(binary_path),
             *download_urls,
-            "--dir", self._tool_arg_path(target_dir),
+            "--dir", self._tool_arg_path(attempt_dir),
             "--out", out_name,
-            "--continue=true",
+            "--continue=false",
+            "--auto-file-renaming=false",
+            "--allow-overwrite=false",
             "--max-tries=10",
             "--retry-wait=3",
-            "--split=16",
-            "--min-split-size=1M",
-            "--max-connection-per-server=16",
+            f"--split={connections}",
+            "--min-split-size=5M",
+            f"--max-connection-per-server={connections}",
             "--file-allocation=none",
             "--summary-interval=1",
             "--console-log-level=notice",
@@ -2443,6 +2465,7 @@ class CacheManager:
         if user_agent:
             command.extend(["--header", f"User-Agent: {user_agent}"])
 
+        exit_code: int | None = None
         try:
             self._run_item_command(
                 item_id,
@@ -2451,50 +2474,72 @@ class CacheManager:
                 log_path,
                 stage_label=stage_label,
                 stream_kind=stream_kind,
-                target_dir=target_dir,
+                target_dir=attempt_dir,
                 track_key=track_key,
                 tool_dir=binary_path.parent,
                 silent=True,
-                is_preallocated=True,
+                is_preallocated=False,
             )
+            exit_code = 0
         except Exception as exc:
-            output_summary = self._aria2_output_diagnostics(target_dir, expected_path)
-            output_summary.update(
-                event="aria2_output",
-                item_id=item_id,
-                exit_code=getattr(exc, "return_code", None),
-                stream_kind=stream_kind,
-                page=page,
-                cid=cid,
-            )
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] media_diagnostic: "
-                f"{json.dumps(output_summary, ensure_ascii=False, sort_keys=True)}",
-            )
+            exit_code = getattr(exc, "return_code", None)
             raise
-        else:
-            output_summary = self._aria2_output_diagnostics(target_dir, expected_path)
+        finally:
+            output_summary = self._aria2_output_diagnostics(attempt_dir, expected_path)
             output_summary.update(
                 event="aria2_output",
                 item_id=item_id,
-                exit_code=0,
+                exit_code=exit_code,
                 stream_kind=stream_kind,
                 page=page,
                 cid=cid,
+                final_output=str(final_path),
             )
             self._append_log_line(
                 log_path,
                 f"[{self._log_timestamp()}] media_diagnostic: "
                 f"{json.dumps(output_summary, ensure_ascii=False, sort_keys=True)}",
             )
+            if exit_code != 0:
+                self._safe_rmtree(attempt_dir)
 
-        allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
         self._raise_if_retry_requested(item_id)
-        stream_file = self._find_stream_file(target_dir, allowed_extensions)
-        if not stream_file:
-            raise DownloadCommandError(f"{stage_label} 完成后未找到输出文件")
-        return stream_file
+        output_summary = self._aria2_output_diagnostics(attempt_dir, expected_path)
+        try:
+            self._require_exact_aria2_output(output_summary, expected_path, stage_label)
+        except Exception:
+            self._safe_rmtree(attempt_dir)
+            raise
+        return expected_path
+
+    @staticmethod
+    def _require_exact_aria2_output(
+        output_summary: dict[str, object],
+        expected_path: Path,
+        stage_label: str,
+    ) -> None:
+        aria2_files = list(output_summary.get("aria2_files") or [])
+        if aria2_files:
+            raise DownloadCommandError(
+                f"{stage_label} 完成后仍有 aria2 控制文件: {', '.join(map(str, aria2_files))}"
+            )
+        numbered = list(output_summary.get("numbered_alternatives") or [])
+        if numbered:
+            raise DownloadCommandError(
+                f"{stage_label} 生成了意外的编号输出: {', '.join(map(str, numbered))}"
+            )
+        media_files = [
+            entry
+            for entry in list(output_summary.get("files") or [])
+            if isinstance(entry, dict) and bool(entry.get("media_like"))
+        ]
+        if len(media_files) != 1 or str(media_files[0].get("name") or "") != expected_path.name:
+            names = ", ".join(str(entry.get("name") or "") for entry in media_files) or "无"
+            raise DownloadCommandError(f"{stage_label} 输出不唯一或路径不符: {names}")
+        if not bool(output_summary.get("expected_exists")):
+            raise DownloadCommandError(f"{stage_label} 完成后未找到精确输出文件 {expected_path.name}")
+        if int(media_files[0].get("size") or 0) <= 0:
+            raise DownloadCommandError(f"{stage_label} 输出文件为空")
 
     def _downkyi_download_command(
         self,
@@ -2910,6 +2955,112 @@ class CacheManager:
     #         self._record_item_activity(item.id)
     #         variant_files.append((variant_id, label, variant_path))
     #     return variant_files
+
+    @staticmethod
+    def _final_path_for_attempt(path: Path) -> Path:
+        if path.parent.name.startswith(".attempt-"):
+            return path.parent.parent / path.name
+        return path
+
+    @classmethod
+    def _cleanup_attempt_dirs(cls, item_dir: Path) -> None:
+        try:
+            attempts = [
+                path
+                for path in item_dir.rglob(".attempt-*")
+                if path.is_dir()
+            ]
+        except OSError:
+            return
+        for attempt_dir in sorted(attempts, key=lambda path: len(path.parts), reverse=True):
+            cls._safe_rmtree(attempt_dir)
+
+    def _publish_validated_cache_result(
+        self,
+        cache_result: dict[str, object],
+        log_path: Path,
+    ) -> None:
+        validation_files = cache_result.get("validation_files")
+        if not isinstance(validation_files, list):
+            raise DownloadCommandError("缓存发布失败: 缺少校验文件清单")
+
+        publish_pairs: list[tuple[Path, Path]] = []
+        for entry in validation_files:
+            if not isinstance(entry, dict):
+                continue
+            source = entry.get("path")
+            if not isinstance(source, Path):
+                raise DownloadCommandError("缓存发布失败: 媒体路径无效")
+            final_path = self._final_path_for_attempt(source)
+            if final_path == source:
+                continue
+            if not source.exists() or source.stat().st_size <= 0:
+                raise DownloadCommandError(f"缓存发布失败: 临时文件不可用 {source.name}")
+            publish_pairs.append((source, final_path))
+
+        if not publish_pairs:
+            raise DownloadCommandError("缓存发布失败: DownKyi 没有待发布的临时文件")
+        if len({str(final) for _source, final in publish_pairs}) != len(publish_pairs):
+            raise DownloadCommandError("缓存发布失败: 多条媒体轨道指向同一最终路径")
+
+        published: dict[str, Path] = {}
+        try:
+            for source, final_path in publish_pairs:
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(source, final_path)
+                published[str(source)] = final_path
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] media_diagnostic: "
+                    f"{json.dumps({'event': 'downkyi_track_published', 'temporary_output': str(source), 'final_output': str(final_path), 'size': final_path.stat().st_size}, ensure_ascii=False, sort_keys=True)}",
+                )
+        except OSError as exc:
+            for final_path in published.values():
+                try:
+                    final_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise DownloadCommandError(f"缓存发布失败: {exc}") from exc
+
+        for entry in validation_files:
+            if not isinstance(entry, dict):
+                continue
+            source = entry.get("path")
+            if isinstance(source, Path) and str(source) in published:
+                entry["path"] = published[str(source)]
+
+        metadata = cache_result.get("validation_metadata")
+        if isinstance(metadata, list):
+            for entry in metadata:
+                if not isinstance(entry, dict):
+                    continue
+                source = str(entry.get("path") or "")
+                if source in published:
+                    entry["path"] = str(published[source])
+
+        video_source = cache_result.get("video_file")
+        if isinstance(video_source, Path) and str(video_source) in published:
+            video_file = published[str(video_source)]
+            cache_result["video_file"] = video_file
+            cache_result["video_relative_path"] = str(video_file.relative_to(CACHE_DIR))
+            cache_result["video_media_url"] = self._build_media_url(str(video_file.relative_to(CACHE_DIR)))
+
+        variants = cache_result.get("audio_variants")
+        if isinstance(variants, list):
+            url_map = {
+                self._build_media_url(str(Path(source).relative_to(CACHE_DIR))):
+                self._build_media_url(str(final.relative_to(CACHE_DIR)))
+                for source, final in published.items()
+            }
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                current_url = str(variant.get("audio_url") or "")
+                if current_url in url_map:
+                    variant["audio_url"] = url_map[current_url]
+
+        for source, _final_path in publish_pairs:
+            self._safe_rmtree(source.parent)
 
     def _validate_cache_result(
         self,
