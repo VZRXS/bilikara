@@ -8,6 +8,25 @@ from typing import Any
 
 EXPECTED_ABI_VERSION = 1
 
+PHASE1_CAPABILITIES = (
+    "title_cleanup",
+    "safe_filename",
+    "normalize_version_tag",
+    "version_tuple",
+    "version_sort_key",
+    "normalize_machine_arch",
+    "asset_tokens",
+    "asset_has_windows",
+    "asset_has_macos",
+    "asset_has_linux",
+    "asset_has_x64",
+    "asset_has_arm64",
+    "asset_has_universal",
+    "release_list_api_from_latest",
+    "format_download_proxy_url",
+    "is_downloadable_archive",
+)
+
 
 def _rust_library_name() -> str:
     system = platform.system()
@@ -193,8 +212,20 @@ def _detect_abi_version(library: Any | None) -> tuple[int | None, bool | None]:
         return None, False
 
 
+def _abi_compatibility_error(
+    version: int | None,
+    compatible: bool | None,
+) -> str | None:
+    if compatible is not False:
+        return None
+    if version is None:
+        return "Rust backend ABI check failed"
+    return f"Rust backend ABI mismatch: expected {EXPECTED_ABI_VERSION}, got {version}"
+
+
 _ABI_VERSION, _ABI_COMPATIBLE = _detect_abi_version(_rust_lib)
 if _ABI_COMPATIBLE is False:
+    _RUST_LOAD_ERROR = _abi_compatibility_error(_ABI_VERSION, _ABI_COMPATIBLE)
     _CAPABILITIES = _empty_capabilities()
     _rust_lib = None
 

@@ -166,10 +166,17 @@ class RustMigrationTest(unittest.TestCase):
             "bilikara.rust_backend._CAPABILITIES", capabilities
         ), patch("bilikara.rust_backend._ABI_VERSION", version), patch(
             "bilikara.rust_backend._ABI_COMPATIBLE", compatible
+        ), patch(
+            "bilikara.rust_backend._RUST_LOAD_ERROR",
+            "Rust backend ABI mismatch: expected 1, got 2",
         ):
             status = rust_backend.backend_status()
             self.assertFalse(status["loaded"])
             self.assertFalse(status["abi_compatible"])
+            self.assertEqual(
+                status["error"],
+                "Rust backend ABI mismatch: expected 1, got 2",
+            )
             self.assertEqual(
                 title_cleanup.clean_display_title(title="【ニコカラ】歌词"), "歌词"
             )
