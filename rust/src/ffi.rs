@@ -2,6 +2,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{catch_unwind, UnwindSafe};
 
+use crate::archive::is_downloadable_archive;
 use crate::asset_tokens::{
     asset_tokens, has_arm64, has_linux, has_macos, has_universal, has_windows, has_x64,
 };
@@ -211,6 +212,27 @@ pub unsafe extern "C" fn rust_format_download_proxy_url(
     ffi_string_result(|| Some(format_download_proxy_url(input(proxy)?, input(url)?)))
 }
 
+/// Returns `1` for a downloadable ZIP, `0` for a valid non-downloadable
+/// asset, and `-1` when the FFI input is invalid or the call panics.
+///
+/// # Safety
+///
+/// Both pointers must point to valid null-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn rust_is_downloadable_archive(
+    name: *const c_char,
+    url: *const c_char,
+) -> i32 {
+    catch_unwind(|| {
+        let name = input(name).ok_or(())?;
+        let url = input(url).ok_or(())?;
+        Ok::<i32, ()>(i32::from(is_downloadable_archive(name, url)))
+    })
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or(-1)
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
@@ -288,6 +310,24 @@ mod tests {
             assert!(rust_format_download_proxy_url(std::ptr::null(), empty.as_ptr()).is_null());
             assert!(
                 rust_format_download_proxy_url(empty.as_ptr(), invalid_utf8.as_ptr()).is_null()
+            );
+        }
+    }
+
+    #[test]
+    fn archive_export_distinguishes_false_from_failure() {
+        let name = CString::new("readme.txt").unwrap();
+        let url = CString::new("https://example/readme.txt").unwrap();
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        unsafe {
+            assert_eq!(rust_is_downloadable_archive(name.as_ptr(), url.as_ptr()), 0);
+            assert_eq!(
+                rust_is_downloadable_archive(std::ptr::null(), url.as_ptr()),
+                -1
+            );
+            assert_eq!(
+                rust_is_downloadable_archive(name.as_ptr(), invalid_utf8.as_ptr()),
+                -1
             );
         }
     }

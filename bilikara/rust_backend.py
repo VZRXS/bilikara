@@ -44,41 +44,66 @@ _SYMBOLS = {
     "title_cleanup": (
         "rust_clean_display_title",
         [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
     "safe_filename": (
         "rust_safe_filename",
         [ctypes.c_char_p, ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
     "normalize_version_tag": (
         "rust_normalize_version_tag",
         [ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
     "version_tuple": (
         "rust_version_tuple",
         [ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
     "version_sort_key": (
         "rust_version_sort_key",
         [ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
     "normalize_machine_arch": (
         "rust_normalize_machine_arch",
         [ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
-    "asset_tokens": ("rust_asset_tokens", [ctypes.c_char_p]),
-    "asset_has_windows": ("rust_asset_has_windows", [ctypes.c_char_p]),
-    "asset_has_macos": ("rust_asset_has_macos", [ctypes.c_char_p]),
-    "asset_has_linux": ("rust_asset_has_linux", [ctypes.c_char_p]),
-    "asset_has_x64": ("rust_asset_has_x64", [ctypes.c_char_p, ctypes.c_char_p]),
-    "asset_has_arm64": ("rust_asset_has_arm64", [ctypes.c_char_p]),
-    "asset_has_universal": ("rust_asset_has_universal", [ctypes.c_char_p]),
+    "asset_tokens": ("rust_asset_tokens", [ctypes.c_char_p], ctypes.c_void_p),
+    "asset_has_windows": (
+        "rust_asset_has_windows",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "asset_has_macos": ("rust_asset_has_macos", [ctypes.c_char_p], ctypes.c_void_p),
+    "asset_has_linux": ("rust_asset_has_linux", [ctypes.c_char_p], ctypes.c_void_p),
+    "asset_has_x64": (
+        "rust_asset_has_x64",
+        [ctypes.c_char_p, ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "asset_has_arm64": ("rust_asset_has_arm64", [ctypes.c_char_p], ctypes.c_void_p),
+    "asset_has_universal": (
+        "rust_asset_has_universal",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
     "release_list_api_from_latest": (
         "rust_release_list_api_from_latest",
         [ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
     "format_download_proxy_url": (
         "rust_format_download_proxy_url",
         [ctypes.c_char_p, ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "is_downloadable_archive": (
+        "rust_is_downloadable_archive",
+        [ctypes.c_char_p, ctypes.c_char_p],
+        ctypes.c_int,
     ),
 }
 
@@ -108,11 +133,11 @@ def _configure_library(library: Any) -> dict[str, bool]:
     except Exception:
         return capabilities
 
-    for capability, (symbol_name, argtypes) in _SYMBOLS.items():
+    for capability, (symbol_name, argtypes, restype) in _SYMBOLS.items():
         try:
             symbol = getattr(library, symbol_name)
             symbol.argtypes = argtypes
-            symbol.restype = ctypes.c_void_p
+            symbol.restype = restype
             capabilities[capability] = True
         except Exception:
             continue
@@ -404,5 +429,29 @@ def format_download_proxy_url(proxy: str, url: str) -> str | None:
             url.encode("utf-8"),
         )
         return _read_rust_string(pointer)
+    except Exception:
+        return None
+
+
+def is_downloadable_archive(name: str, url: str) -> bool | None:
+    if (
+        _rust_lib is None
+        or not _CAPABILITIES["is_downloadable_archive"]
+        or "\x00" in name
+        or "\x00" in url
+    ):
+        return None
+    try:
+        result = int(
+            _rust_lib.rust_is_downloadable_archive(
+                name.encode("utf-8"),
+                url.encode("utf-8"),
+            )
+        )
+        if result == 1:
+            return True
+        if result == 0:
+            return False
+        return None
     except Exception:
         return None

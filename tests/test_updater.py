@@ -25,6 +25,63 @@ class FakeHTTPResponse:
 
 
 class UpdateCheckTest(unittest.TestCase):
+    def test_archive_recognition_rust_matches_python(self):
+        capabilities = rust_backend.backend_status()["capabilities"]
+        if not capabilities["is_downloadable_archive"]:
+            self.skipTest("Rust archive recognition symbol is not available")
+        cases = [
+            {"name": "bilikara.zip", "browser_download_url": "https://example/file.zip"},
+            {"name": "BILIKARA.ZIP", "browser_download_url": "https://example/download"},
+            {"name": "download", "browser_download_url": "https://example/file.zip?token=1"},
+            {"name": "file.zip.sha256", "browser_download_url": "https://example/file.zip"},
+            {"name": "file.sig", "browser_download_url": "https://example/file.zip"},
+            {"name": "歌曲.zip", "browser_download_url": "https://example/download"},
+            {"name": "file.tar.gz", "browser_download_url": "https://example/file.tar.gz"},
+            {"name": "file.zip", "browser_download_url": ""},
+        ]
+        for asset in cases:
+            with self.subTest(asset=asset):
+                rust_result = rust_backend.is_downloadable_archive(
+                    str(asset["name"]),
+                    str(asset["browser_download_url"]),
+                )
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(rust_result, updater._py_is_downloadable_archive(asset))
+
+        self.assertFalse(
+            rust_backend.is_downloadable_archive(
+                "readme.txt",
+                "https://example/readme.txt",
+            )
+        )
+
+    def test_archive_recognition_falls_back_on_failure(self):
+        with patch(
+            "bilikara.updater.rust_backend.is_downloadable_archive",
+            return_value=None,
+        ):
+            asset = {
+                "name": "bilikara.zip",
+                "browser_download_url": "https://example/download",
+            }
+            self.assertTrue(updater._is_downloadable_archive(asset))
+
+        capabilities = dict(rust_backend._CAPABILITIES)
+        capabilities["is_downloadable_archive"] = False
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(
+                rust_backend.is_downloadable_archive(
+                    "bilikara.zip",
+                    "https://example/download",
+                )
+            )
+        self.assertIsNone(
+            rust_backend.is_downloadable_archive(
+                "bilikara\x00.zip",
+                "https://example/download",
+            )
+        )
+
     def test_url_utilities_use_python_fallback(self):
         with patch(
             "bilikara.updater.rust_backend.release_list_api_from_latest",

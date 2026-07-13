@@ -401,7 +401,7 @@ def _coerce_asset_size(asset: dict[str, Any]) -> int:
         return 0
 
 
-def _is_downloadable_archive(asset: dict[str, Any]) -> bool:
+def _py_is_downloadable_archive(asset: dict[str, Any]) -> bool:
     name = str(asset.get("name") or "").strip().lower()
     url = str(asset.get("browser_download_url") or "").strip().lower()
     if not url:
@@ -409,6 +409,15 @@ def _is_downloadable_archive(asset: dict[str, Any]) -> bool:
     if name.endswith((".sha256", ".sha256sum", ".sig", ".asc", ".txt")):
         return False
     return name.endswith(".zip") or url.split("?", 1)[0].endswith(".zip")
+
+
+def _is_downloadable_archive(asset: dict[str, Any]) -> bool:
+    name = str(asset.get("name") or "")
+    url = str(asset.get("browser_download_url") or "")
+    rust_result = rust_backend.is_downloadable_archive(name, url)
+    if rust_result is not None:
+        return rust_result
+    return _py_is_downloadable_archive(asset)
 
 
 def _score_asset_for_target(asset: dict[str, Any], target: dict[str, str]) -> int:
