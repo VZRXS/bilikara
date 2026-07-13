@@ -898,40 +898,18 @@ function canTogglePlayerFullscreen() {
 
 function tauriAppWindow() {
   const tauriWebviewWindow = window.__TAURI__?.webviewWindow;
-  if (tauriWebviewWindow) {
-    if (typeof tauriWebviewWindow.getCurrentWebviewWindow === "function") {
-      try {
-        return tauriWebviewWindow.getCurrentWebviewWindow();
-      } catch {
-        return null;
-      }
-    }
-    if (typeof tauriWebviewWindow.getCurrent === "function") {
-      try {
-        return tauriWebviewWindow.getCurrent();
-      } catch {
-        return null;
-      }
+  if (typeof tauriWebviewWindow?.getCurrentWebviewWindow === "function") {
+    try {
+      return tauriWebviewWindow.getCurrentWebviewWindow();
+    } catch {
+      // Try the Tauri v2 window API below.
     }
   }
 
   const tauriWindow = window.__TAURI__?.window;
-  if (!tauriWindow) {
-    return null;
-  }
-  if (tauriWindow.appWindow) {
-    return tauriWindow.appWindow;
-  }
-  if (typeof tauriWindow.getCurrentWindow === "function") {
+  if (typeof tauriWindow?.getCurrentWindow === "function") {
     try {
       return tauriWindow.getCurrentWindow();
-    } catch {
-      return null;
-    }
-  }
-  if (typeof tauriWindow.getCurrent === "function") {
-    try {
-      return tauriWindow.getCurrent();
     } catch {
       return null;
     }
@@ -940,10 +918,7 @@ function tauriAppWindow() {
 }
 
 function tauriInvoke() {
-  return window.__TAURI__?.tauri?.invoke
-    || window.__TAURI__?.core?.invoke
-    || window.__TAURI__?.invoke
-    || null;
+  return window.__TAURI__?.core?.invoke || null;
 }
 
 async function setTauriWindowFullscreen(enabled) {

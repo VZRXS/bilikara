@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::panic::{catch_unwind, UnwindSafe};
+use std::panic::{UnwindSafe, catch_unwind};
 
 use crate::archive::is_downloadable_archive;
 use crate::asset_tokens::{
@@ -12,7 +12,7 @@ use crate::title_cleanup::clean_display_title_impl;
 use crate::url_utils::{format_download_proxy_url, release_list_api_from_latest};
 use crate::version::{normalize_version_tag_impl, version_sort_key_impl, version_tuple_impl};
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn rust_backend_abi_version() -> u32 {
     catch_unwind(|| 1).unwrap_or(0)
 }
@@ -36,7 +36,9 @@ unsafe fn input<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
         None
     } else {
-        CStr::from_ptr(p).to_str().ok()
+        // SAFETY: Every caller is an unsafe C export whose contract requires a
+        // valid, null-terminated input pointer. Null is rejected above.
+        unsafe { CStr::from_ptr(p) }.to_str().ok()
     }
 }
 fn tokens_from_payload(p: &str) -> std::collections::HashSet<String> {
@@ -46,21 +48,27 @@ fn tokens_from_payload(p: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn rust_asset_tokens(p: *const c_char) -> *mut c_char {
     ffi_string_result(|| {
-        let mut v: Vec<_> = asset_tokens(input(p)?).into_iter().collect();
+        // SAFETY: Required by this export's C ABI contract.
+        let text = unsafe { input(p)? };
+        let mut v: Vec<_> = asset_tokens(text).into_iter().collect();
         v.sort();
         Some(v.join("\n"))
     })
 }
 macro_rules! classifier {
     ($name:ident,$fun:ident) => {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         #[allow(clippy::missing_safety_doc)]
         pub unsafe extern "C" fn $name(p: *const c_char) -> *mut c_char {
-            ffi_string_result(|| Some(bool_string($fun(&tokens_from_payload(input(p)?)))))
+            ffi_string_result(|| {
+                // SAFETY: Required by this export's C ABI contract.
+                let payload = unsafe { input(p)? };
+                Some(bool_string($fun(&tokens_from_payload(payload))))
+            })
         }
     };
 }
@@ -69,14 +77,15 @@ classifier!(rust_asset_has_macos, has_macos);
 classifier!(rust_asset_has_linux, has_linux);
 classifier!(rust_asset_has_arm64, has_arm64);
 classifier!(rust_asset_has_universal, has_universal);
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn rust_asset_has_x64(text: *const c_char, p: *const c_char) -> *mut c_char {
     ffi_string_result(|| {
-        Some(bool_string(has_x64(
-            input(text)?,
-            &tokens_from_payload(input(p)?),
-        )))
+        // SAFETY: Required by this export's C ABI contract.
+        let text = unsafe { input(text)? };
+        // SAFETY: Required by this export's C ABI contract.
+        let payload = unsafe { input(p)? };
+        Some(bool_string(has_x64(text, &tokens_from_payload(payload))))
     })
 }
 
@@ -84,19 +93,19 @@ pub unsafe extern "C" fn rust_asset_has_x64(text: *const c_char, p: *const c_cha
 ///
 /// This function is unsafe because it dereferences raw pointers. The caller must ensure
 /// that all pointers are non-null and point to valid null-terminated UTF-8 C strings.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_clean_display_title(
     title: *const c_char,
     display_title: *const c_char,
     part_title: *const c_char,
 ) -> *mut c_char {
     ffi_string_result(|| {
-        if title.is_null() || display_title.is_null() || part_title.is_null() {
-            return None;
-        }
-        let title = CStr::from_ptr(title).to_str().ok()?;
-        let display_title = CStr::from_ptr(display_title).to_str().ok()?;
-        let part_title = CStr::from_ptr(part_title).to_str().ok()?;
+        // SAFETY: Required by this export's C ABI contract.
+        let title = unsafe { input(title)? };
+        // SAFETY: Required by this export's C ABI contract.
+        let display_title = unsafe { input(display_title)? };
+        // SAFETY: Required by this export's C ABI contract.
+        let part_title = unsafe { input(part_title)? };
         Some(clean_display_title_impl(title, display_title, part_title))
     })
 }
@@ -105,17 +114,16 @@ pub unsafe extern "C" fn rust_clean_display_title(
 ///
 /// This function is unsafe because it dereferences raw pointers. The caller must ensure
 /// that both pointers are non-null and point to valid null-terminated UTF-8 C strings.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_safe_filename(
     name: *const c_char,
     fallback: *const c_char,
 ) -> *mut c_char {
     ffi_string_result(|| {
-        if name.is_null() || fallback.is_null() {
-            return None;
-        }
-        let name = CStr::from_ptr(name).to_str().ok()?;
-        let fallback = CStr::from_ptr(fallback).to_str().ok()?;
+        // SAFETY: Required by this export's C ABI contract.
+        let name = unsafe { input(name)? };
+        // SAFETY: Required by this export's C ABI contract.
+        let fallback = unsafe { input(fallback)? };
         Some(safe_filename_impl(name, fallback))
     })
 }
@@ -124,13 +132,11 @@ pub unsafe extern "C" fn rust_safe_filename(
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
 /// that the pointer is non-null and points to a valid null-terminated UTF-8 C string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_normalize_version_tag(version: *const c_char) -> *mut c_char {
     ffi_string_result(|| {
-        if version.is_null() {
-            return None;
-        }
-        let version = CStr::from_ptr(version).to_str().ok()?;
+        // SAFETY: Required by this export's C ABI contract.
+        let version = unsafe { input(version)? };
         Some(normalize_version_tag_impl(version))
     })
 }
@@ -141,13 +147,11 @@ pub unsafe extern "C" fn rust_normalize_version_tag(version: *const c_char) -> *
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
 /// that the pointer is non-null and points to a valid null-terminated UTF-8 C string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_version_tuple(version: *const c_char) -> *mut c_char {
     ffi_string_result(|| {
-        if version.is_null() {
-            return None;
-        }
-        let version = CStr::from_ptr(version).to_str().ok()?;
+        // SAFETY: Required by this export's C ABI contract.
+        let version = unsafe { input(version)? };
         Some(
             version_tuple_impl(version)
                 .map(|value| value.join(","))
@@ -163,13 +167,11 @@ pub unsafe extern "C" fn rust_version_tuple(version: *const c_char) -> *mut c_ch
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
 /// that the pointer is non-null and points to a valid null-terminated UTF-8 C string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_version_sort_key(version: *const c_char) -> *mut c_char {
     ffi_string_result(|| {
-        if version.is_null() {
-            return None;
-        }
-        let version = CStr::from_ptr(version).to_str().ok()?;
+        // SAFETY: Required by this export's C ABI contract.
+        let version = unsafe { input(version)? };
         Some(
             version_sort_key_impl(version)
                 .map(|value| value.join(","))
@@ -182,13 +184,11 @@ pub unsafe extern "C" fn rust_version_sort_key(version: *const c_char) -> *mut c
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
 /// that the pointer is non-null and points to a valid null-terminated UTF-8 C string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_normalize_machine_arch(machine: *const c_char) -> *mut c_char {
     ffi_string_result(|| {
-        if machine.is_null() {
-            return None;
-        }
-        let machine = CStr::from_ptr(machine).to_str().ok()?;
+        // SAFETY: Required by this export's C ABI contract.
+        let machine = unsafe { input(machine)? };
         Some(normalize_machine_arch_impl(machine))
     })
 }
@@ -196,20 +196,30 @@ pub unsafe extern "C" fn rust_normalize_machine_arch(machine: *const c_char) -> 
 /// # Safety
 ///
 /// `api_url` must point to a valid null-terminated UTF-8 C string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_release_list_api_from_latest(api_url: *const c_char) -> *mut c_char {
-    ffi_string_result(|| Some(release_list_api_from_latest(input(api_url)?)))
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let api_url = unsafe { input(api_url)? };
+        Some(release_list_api_from_latest(api_url))
+    })
 }
 
 /// # Safety
 ///
 /// Both pointers must point to valid null-terminated UTF-8 C strings.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_format_download_proxy_url(
     proxy: *const c_char,
     url: *const c_char,
 ) -> *mut c_char {
-    ffi_string_result(|| Some(format_download_proxy_url(input(proxy)?, input(url)?)))
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let proxy = unsafe { input(proxy)? };
+        // SAFETY: Required by this export's C ABI contract.
+        let url = unsafe { input(url)? };
+        Some(format_download_proxy_url(proxy, url))
+    })
 }
 
 /// Returns `1` for a downloadable ZIP, `0` for a valid non-downloadable
@@ -218,14 +228,16 @@ pub unsafe extern "C" fn rust_format_download_proxy_url(
 /// # Safety
 ///
 /// Both pointers must point to valid null-terminated UTF-8 C strings.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_is_downloadable_archive(
     name: *const c_char,
     url: *const c_char,
 ) -> i32 {
     catch_unwind(|| {
-        let name = input(name).ok_or(())?;
-        let url = input(url).ok_or(())?;
+        // SAFETY: Required by this export's C ABI contract.
+        let name = unsafe { input(name) }.ok_or(())?;
+        // SAFETY: Required by this export's C ABI contract.
+        let url = unsafe { input(url) }.ok_or(())?;
         Ok::<i32, ()>(i32::from(is_downloadable_archive(name, url)))
     })
     .ok()
@@ -237,11 +249,13 @@ pub unsafe extern "C" fn rust_is_downloadable_archive(
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
 /// that the pointer is null or was returned by this library as an owned C string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rust_free_string(ptr: *mut c_char) {
     let _ = catch_unwind(|| {
         if !ptr.is_null() {
-            let _ = CString::from_raw(ptr);
+            // SAFETY: Required by this export's C ABI contract, and null is
+            // rejected above.
+            let _ = unsafe { CString::from_raw(ptr) };
         }
     });
 }
@@ -269,12 +283,10 @@ mod tests {
                 rust_clean_display_title(std::ptr::null(), empty.as_ptr(), empty.as_ptr())
                     .is_null()
             );
-            assert!(rust_clean_display_title(
-                invalid_utf8.as_ptr(),
-                empty.as_ptr(),
-                empty.as_ptr(),
-            )
-            .is_null());
+            assert!(
+                rust_clean_display_title(invalid_utf8.as_ptr(), empty.as_ptr(), empty.as_ptr(),)
+                    .is_null()
+            );
         }
     }
 
