@@ -241,7 +241,20 @@ def _coerce_releases(payload: object) -> list[dict[str, Any]]:
     return []
 
 
-def _latest_release_for_current(
+def _py_is_release_version(version: object) -> bool:
+    return _py_version_sort_key(version) is not None
+
+
+def _py_is_preview_version(version: object) -> bool:
+    match = VERSION_RE.match(_py_normalize_version_tag(version))
+    return bool(match and match.group(4) is not None)
+
+
+def _py_is_stable_version(version: object) -> bool:
+    return _py_is_release_version(version) and not _py_is_preview_version(version)
+
+
+def _py_latest_release_for_current(
     current_version: str,
     releases: list[dict[str, Any]],
     *,
@@ -250,19 +263,19 @@ def _latest_release_for_current(
     valid_releases = [
         release
         for release in releases
-        if not release.get("draft") and version_sort_key(release.get("tag_name")) is not None
+        if not release.get("draft") and _py_version_sort_key(release.get("tag_name")) is not None
     ]
     if not valid_releases:
         return {}
 
-    latest_any = max(valid_releases, key=lambda release: version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0))
+    latest_any = max(valid_releases, key=lambda release: _py_version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0))
     stable_releases = [
         release
         for release in valid_releases
-        if is_stable_version(release.get("tag_name"))
+        if _py_is_stable_version(release.get("tag_name"))
     ]
     latest_stable = (
-        max(stable_releases, key=lambda release: version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0))
+        max(stable_releases, key=lambda release: _py_version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0))
         if stable_releases
         else {}
     )
@@ -270,6 +283,43 @@ def _latest_release_for_current(
     if include_preview:
         return latest_any
     return latest_stable
+
+
+def _latest_release_for_current(
+    current_version: str,
+    releases: list[dict[str, Any]],
+    *,
+    include_preview: bool = False,
+) -> dict[str, Any]:
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "current_version": str(current_version),
+        "include_preview": bool(include_preview),
+        "releases": [
+            {
+                "tag_name": str(r.get("tag_name") or ""),
+                "draft": bool(r.get("draft")),
+                "prerelease": bool(r.get("prerelease")),
+            }
+            for r in releases
+            if isinstance(r, dict)
+        ]
+    }
+    completed, response = rust_backend.try_select_release(request)
+    if completed and response is not None:
+        status = response.get("status")
+        if status == "selected":
+            selected_index = response.get("selected_index")
+            if isinstance(selected_index, int) and not isinstance(selected_index, bool) and 0 <= selected_index < len(releases):
+                selected = releases[selected_index]
+                if not selected.get("draft") and is_release_version(selected.get("tag_name")):
+                    # Validate basic stable eligibility if not including preview
+                    if include_preview or is_stable_version(selected.get("tag_name")):
+                        return selected
+        elif status == "no_match":
+            return {}
+            
+    return _py_latest_release_for_current(current_version, releases, include_preview=include_preview)
 
 
 def _py_normalize_machine_arch(machine: object) -> str:
@@ -420,21 +470,21 @@ def _is_downloadable_archive(asset: dict[str, Any]) -> bool:
     return _py_is_downloadable_archive(asset)
 
 
-def _score_asset_for_target(asset: dict[str, Any], target: dict[str, str]) -> int:
-    if not _is_downloadable_archive(asset):
+def _py_score_asset_for_target(asset: dict[str, Any], target: dict[str, str]) -> int:
+    if not _py_is_downloadable_archive(asset):
         return -1
 
     text = _asset_text(asset)
-    tokens = _asset_tokens(text)
+    tokens = _py_asset_tokens(text)
     target_platform = str(target.get("platform") or "")
     target_arch = str(target.get("arch") or "")
 
-    windows_asset = _asset_has_windows(tokens)
-    macos_asset = _asset_has_macos(tokens)
-    linux_asset = _asset_has_linux(tokens)
-    x64_asset = _asset_has_x64(text, tokens)
-    arm64_asset = _asset_has_arm64(text, tokens)
-    universal_asset = _asset_has_universal(tokens)
+    windows_asset = _py_asset_has_windows(tokens)
+    macos_asset = _py_asset_has_macos(tokens)
+    linux_asset = _py_asset_has_linux(tokens)
+    x64_asset = _py_asset_has_x64(text, tokens)
+    arm64_asset = _py_asset_has_arm64(text, tokens)
+    universal_asset = _py_asset_has_universal(tokens)
 
     if target_platform == "windows":
         if macos_asset or linux_asset or not windows_asset:
@@ -476,7 +526,40 @@ def _score_asset_for_target(asset: dict[str, Any], target: dict[str, str]) -> in
     return platform_score + arch_score
 
 
-def select_update_asset(
+def _score_asset_for_target(asset: dict[str, Any], target: dict[str, str]) -> int:
+    # Reuse the coarse selection ABI with a single descriptor instead of
+    # exporting a second, tiny scoring symbol.
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "target": {
+            "platform": str(target.get("platform") or ""),
+            "arch": str(target.get("arch") or ""),
+        },
+        "assets": [
+            {
+                "original_index": 0,
+                "name": str(asset.get("name") or ""),
+                "label": str(asset.get("label") or ""),
+                "browser_download_url": str(
+                    asset.get("browser_download_url") or ""
+                ),
+                "content_type": str(asset.get("content_type") or ""),
+            }
+        ],
+    }
+    completed, response = rust_backend.try_select_update_asset(request)
+    if completed and response is not None:
+        scores = response.get("scores")
+        if isinstance(scores, list) and len(scores) == 1:
+            score_entry = scores[0]
+            if isinstance(score_entry, dict):
+                score = score_entry.get("score")
+                if isinstance(score, int) and not isinstance(score, bool):
+                    return score
+    return _py_score_asset_for_target(asset, target)
+
+
+def _py_select_update_asset(
     release: dict[str, Any] | None,
     *,
     target: dict[str, str] | None = None,
@@ -492,7 +575,7 @@ def select_update_asset(
     for index, asset in enumerate(assets):
         if not isinstance(asset, dict):
             continue
-        score = _score_asset_for_target(asset, target)
+        score = _py_score_asset_for_target(asset, target)
         if score < 0:
             continue
         scored_assets.append((score, -index, asset))
@@ -507,6 +590,69 @@ def select_update_asset(
         "content_type": str(selected.get("content_type") or ""),
         "platform": str(target.get("platform") or ""),
         "arch": str(target.get("arch") or ""),
+    }
+
+
+def select_update_asset(
+    release: dict[str, Any] | None,
+    *,
+    target: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(release, dict):
+        return None
+    resolved_target = target or detect_update_target()
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        return None
+
+    request_assets: list[dict[str, object]] = []
+    assets_by_index: dict[int, dict[str, Any]] = {}
+    for original_index, asset in enumerate(assets):
+        if not isinstance(asset, dict):
+            continue
+        request_assets.append(
+            {
+                "original_index": original_index,
+                "name": str(asset.get("name") or ""),
+                "label": str(asset.get("label") or ""),
+                "browser_download_url": str(
+                    asset.get("browser_download_url") or ""
+                ),
+                "content_type": str(asset.get("content_type") or ""),
+            }
+        )
+        assets_by_index[original_index] = asset
+
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "target": {
+            "platform": str(resolved_target.get("platform") or ""),
+            "arch": str(resolved_target.get("arch") or ""),
+        },
+        "assets": request_assets,
+    }
+    completed, response = rust_backend.try_select_update_asset(request)
+    if not completed or response is None:
+        return _py_select_update_asset(release, target=resolved_target)
+    status = response.get("status")
+    if status == "no_match":
+        return None
+    if status != "selected":
+        return _py_select_update_asset(release, target=resolved_target)
+
+    selected_index = response.get("selected_index")
+    if not isinstance(selected_index, int) or isinstance(selected_index, bool):
+        return _py_select_update_asset(release, target=resolved_target)
+    selected = assets_by_index.get(selected_index)
+    if selected is None:
+        return _py_select_update_asset(release, target=resolved_target)
+    return {
+        "name": str(selected.get("name") or ""),
+        "browser_download_url": str(selected.get("browser_download_url") or ""),
+        "size": _coerce_asset_size(selected),
+        "content_type": str(selected.get("content_type") or ""),
+        "platform": str(resolved_target.get("platform") or ""),
+        "arch": str(resolved_target.get("arch") or ""),
     }
 
 

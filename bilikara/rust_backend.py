@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import platform
 import sys
 from pathlib import Path
@@ -26,6 +27,8 @@ PHASE1_CAPABILITIES = (
     "format_download_proxy_url",
     "is_downloadable_archive",
 )
+
+PHASE2_CAPABILITIES = ("select_update_asset", "select_release")
 
 
 def _rust_library_name() -> str:
@@ -123,6 +126,16 @@ _SYMBOLS = {
         "rust_is_downloadable_archive",
         [ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_int,
+    ),
+    "select_update_asset": (
+        "rust_select_update_asset",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "select_release": (
+        "rust_select_release",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
     ),
 }
 
@@ -486,3 +499,179 @@ def is_downloadable_archive(name: str, url: str) -> bool | None:
         return None
     except Exception:
         return None
+
+
+def _asset_selection_request_indices(request: object) -> list[int] | None:
+    if not isinstance(request, dict):
+        return None
+    schema_version = request.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
+        return None
+
+    target = request.get("target")
+    if not isinstance(target, dict):
+        return None
+    if not isinstance(target.get("platform"), str) or not isinstance(
+        target.get("arch"), str
+    ):
+        return None
+
+    assets = request.get("assets")
+    if not isinstance(assets, list):
+        return None
+
+    indices: list[int] = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            return None
+        original_index = asset.get("original_index")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or original_index < 0
+            or (indices and original_index <= indices[-1])
+        ):
+            return None
+        for key in ("name", "label", "browser_download_url", "content_type"):
+            if not isinstance(asset.get(key), str):
+                return None
+        indices.append(original_index)
+    return indices
+
+
+def _valid_asset_selection_response(
+    response: object,
+    request_indices: list[int],
+) -> bool:
+    if not isinstance(response, dict):
+        return False
+
+    schema_version = response.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
+        return False
+
+    status = response.get("status")
+    if status not in {"selected", "no_match"}:
+        return False
+
+    scores = response.get("scores")
+    if not isinstance(scores, list) or len(scores) != len(request_indices):
+        return False
+
+    parsed_scores: list[tuple[int, int]] = []
+    for expected_index, item in zip(request_indices, scores):
+        if not isinstance(item, dict):
+            return False
+        original_index = item.get("original_index")
+        score = item.get("score")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or original_index != expected_index
+            or isinstance(score, bool)
+            or not isinstance(score, int)
+        ):
+            return False
+        parsed_scores.append((original_index, score))
+
+    nonnegative_scores = [item for item in parsed_scores if item[1] >= 0]
+    selected_index = response.get("selected_index")
+    if status == "no_match":
+        return selected_index is None and not nonnegative_scores
+
+    if (
+        isinstance(selected_index, bool)
+        or not isinstance(selected_index, int)
+        or not nonnegative_scores
+    ):
+        return False
+    highest_score = max(score for _, score in nonnegative_scores)
+    expected_selected_index = next(
+        original_index
+        for original_index, score in nonnegative_scores
+        if score == highest_score
+    )
+    return selected_index == expected_selected_index
+
+
+def try_select_update_asset(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call the coarse native asset selector and validate its complete response.
+
+    ``(False, None)`` means the native feature was unavailable or its request,
+    call, or response failed validation. A successful ``no_match`` decision is
+    returned as ``(True, response)`` so it cannot be confused with FFI failure.
+    JSON escaping carries interior NUL characters safely through the C string.
+    """
+
+    request_indices = _asset_selection_request_indices(request)
+    if (
+        request_indices is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("select_update_asset", False)
+    ):
+        return False, None
+
+    try:
+        request_json = json.dumps(
+            request,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        pointer = _rust_lib.rust_select_update_asset(request_json)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_asset_selection_response(response, request_indices):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def try_select_release(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    if (
+        _rust_lib is None
+        or not _CAPABILITIES.get("select_release", False)
+    ):
+        return False, None
+
+    try:
+        request_json = json.dumps(
+            request,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        pointer = _rust_lib.rust_select_release(request_json)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        
+        if not isinstance(response, dict):
+            return False, None
+        
+        schema_version = response.get("schema_version")
+        if isinstance(schema_version, bool) or schema_version != 1:
+            return False, None
+            
+        status = response.get("status")
+        if status not in {"selected", "no_match"}:
+            return False, None
+            
+        if status == "selected":
+            selected_index = response.get("selected_index")
+            if isinstance(selected_index, bool) or not isinstance(selected_index, int) or selected_index < 0:
+                return False, None
+        elif status == "no_match":
+            selected_index = response.get("selected_index")
+            if selected_index is not None:
+                return False, None
+                
+        return True, response
+    except Exception:
+        return False, None

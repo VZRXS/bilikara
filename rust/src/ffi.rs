@@ -3,6 +3,7 @@ use std::os::raw::c_char;
 use std::panic::{UnwindSafe, catch_unwind};
 
 use crate::archive::is_downloadable_archive;
+use crate::asset_selection::select_update_asset_json;
 use crate::asset_tokens::{
     asset_tokens, has_arm64, has_linux, has_macos, has_universal, has_windows, has_x64,
 };
@@ -245,6 +246,41 @@ pub unsafe extern "C" fn rust_is_downloadable_archive(
     .unwrap_or(-1)
 }
 
+/// Selects the best update asset from a schema-v1 JSON request.
+///
+/// The returned owned string is a schema-v1 JSON response and must be released
+/// with [`rust_free_string`]. A null result means that the pointer/UTF-8 input,
+/// JSON syntax, request schema, asset-index ordering, response serialization, or
+/// Rust call failed. A valid request with no eligible asset returns a concrete
+/// `no_match` response rather than null.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_select_update_asset(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        select_update_asset_json(request_json)
+    })
+}
+
+/// Selects the best release version from a schema-v1 JSON request.
+///
+/// Returns an owned JSON string that must be freed.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_select_release(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        let request_json = unsafe { input(request_json)? };
+        crate::release_selection::select_release_json(request_json)
+    })
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
@@ -341,6 +377,84 @@ mod tests {
                 rust_is_downloadable_archive(name.as_ptr(), invalid_utf8.as_ptr()),
                 -1
             );
+        }
+    }
+
+    #[test]
+    fn asset_selection_export_returns_owned_json() {
+        let request = CString::new(
+            r#"{"schema_version":1,"target":{"platform":"windows","arch":"x64"},"assets":[{"original_index":0,"name":"bilikara-windows-x64.zip","label":"","browser_download_url":"https://example/file.zip","content_type":"application/zip"}]}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            let result = rust_select_update_asset(request.as_ptr());
+            assert!(!result.is_null());
+            let response = CStr::from_ptr(result).to_str().unwrap();
+            assert!(response.contains(r#""status":"selected""#));
+            assert!(response.contains(r#""selected_index":0"#));
+            rust_free_string(result);
+        }
+    }
+
+    #[test]
+    fn asset_selection_export_rejects_invalid_ffi_and_json_inputs() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_json = CString::new("not json").unwrap();
+        let unsupported_schema = CString::new(
+            r#"{"schema_version":2,"target":{"platform":"windows","arch":"x64"},"assets":[]}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            assert!(rust_select_update_asset(std::ptr::null()).is_null());
+            assert!(rust_select_update_asset(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_select_update_asset(invalid_json.as_ptr()).is_null());
+            assert!(rust_select_update_asset(unsupported_schema.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn select_release_export_rejects_invalid_ffi_and_json_inputs() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_json = CString::new("not json").unwrap();
+        let unsupported_schema = CString::new(
+            r#"{"schema_version":2,"current_version":"v0.7.0","include_preview":false,"releases":[]}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            assert!(rust_select_release(std::ptr::null()).is_null());
+            assert!(rust_select_release(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_select_release(invalid_json.as_ptr()).is_null());
+            assert!(rust_select_release(unsupported_schema.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn select_release_export_returns_owned_json() {
+        let request_selected = CString::new(
+            r#"{"schema_version":1,"current_version":"v0.7.0","include_preview":false,"releases":[{"tag_name":"v0.8.0","draft":false,"prerelease":false}]}"#,
+        )
+        .unwrap();
+        let request_no_match = CString::new(
+            r#"{"schema_version":1,"current_version":"v0.7.0","include_preview":false,"releases":[]}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            let result_selected = rust_select_release(request_selected.as_ptr());
+            assert!(!result_selected.is_null());
+            let response_selected = CStr::from_ptr(result_selected).to_str().unwrap();
+            assert!(response_selected.contains(r#""status":"selected""#));
+            assert!(response_selected.contains(r#""selected_index":0"#));
+            rust_free_string(result_selected);
+
+            let result_no_match = rust_select_release(request_no_match.as_ptr());
+            assert!(!result_no_match.is_null());
+            let response_no_match = CStr::from_ptr(result_no_match).to_str().unwrap();
+            assert!(response_no_match.contains(r#""status":"no_match""#));
+            rust_free_string(result_no_match);
         }
     }
 }
