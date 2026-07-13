@@ -2950,6 +2950,8 @@ def fetch_dash_playurl(
             "backup_urls": [str(u).strip() for u in backup_urls if u],
             "codec_id": codec_id,
             "codec_name": codec_map.get(codec_id, f"codec_{codec_id}"),
+            "codecs": str(video.get("codecs") or ""),
+            "mime_type": str(video.get("mimeType") or video.get("mime_type") or ""),
             "width": int(video.get("width") or 0),
             "height": int(video.get("height") or 0),
             "quality_id": int(video.get("id") or 0),
@@ -2984,7 +2986,11 @@ def fetch_dash_playurl(
                 flac_info = {
                     "url": flac_url,
                     "backup_urls": [str(u).strip() for u in flac_backup if u],
+                    "quality_id": int(flac_audio.get("id") or 30251),
                     "bandwidth": int(flac_audio.get("bandwidth") or 0),
+                    "codecs": str(flac_audio.get("codecs") or "flac"),
+                    "mime_type": str(flac_audio.get("mimeType") or flac_audio.get("mime_type") or "audio/flac"),
+                    "codec_name": "flac",
                 }
 
     dolby_info = None
@@ -3000,7 +3006,11 @@ def fetch_dash_playurl(
                 dolby_info = {
                     "url": dolby_url,
                     "backup_urls": [str(u).strip() for u in dolby_backup if u],
+                    "quality_id": int(dolby_audio.get("id") or 30250),
                     "bandwidth": int(dolby_audio.get("bandwidth") or 0),
+                    "codecs": str(dolby_audio.get("codecs") or "ec-3"),
+                    "mime_type": str(dolby_audio.get("mimeType") or dolby_audio.get("mime_type") or "audio/mp4"),
+                    "codec_name": "eac3",
                 }
                 break
 

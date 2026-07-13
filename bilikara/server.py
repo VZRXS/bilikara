@@ -1546,6 +1546,24 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True})
                 return
+            if route == "/api/player/diagnostic":
+                event = {
+                    "event": str(body.get("event") or "")[:40],
+                    "item_id": str(body.get("item_id") or "")[:80],
+                    "media_kind": str(body.get("media_kind") or "")[:20],
+                    "current_time": body.get("current_time"),
+                    "duration": body.get("duration"),
+                    "ready_state": body.get("ready_state"),
+                    "network_state": body.get("network_state"),
+                    "paused": bool(body.get("paused")),
+                    "ended": bool(body.get("ended")),
+                    "error_code": body.get("error_code"),
+                    "error_message": str(body.get("error_message") or "")[:500],
+                    "url_basename": str(body.get("url_basename") or "")[:255],
+                }
+                print(f"[player-media] {json.dumps(event, ensure_ascii=False, sort_keys=True)}", flush=True)
+                self._write_json({"ok": True})
+                return
             if route == "/api/rating/log":
                 message = str(body.get("message") or "").strip()
                 if message:

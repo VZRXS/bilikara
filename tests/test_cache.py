@@ -2006,6 +2006,218 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
 
+class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.cache_dir = root / "cache"
+        self.cache_dir.mkdir()
+        self.log_path = root / "downkyi.log"
+        self.store = PlaylistStore(root / "state.json", root / "backup.json")
+        self.store.add_session_user("diagnostic-user")
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _manager(self):
+        return CacheManager(self.store, max_cache_items=3)
+
+    @staticmethod
+    def _probe_payload(kind: str, duration: str | None) -> dict:
+        stream = {
+            "codec_type": kind,
+            "codec_name": "h264" if kind == "video" else "aac",
+            "codec_tag_string": "avc1" if kind == "video" else "mp4a",
+            "start_time": "0.000000",
+        }
+        file_format = {"format_name": "mov,mp4,m4a", "start_time": "0.000000"}
+        if duration is not None:
+            stream["duration"] = duration
+            file_format["duration"] = duration
+        return {"streams": [stream], "format": file_format}
+
+    def test_downkyi_diagnostics_redact_signed_urls_and_cookie(self):
+        safe = CacheManager._safe_url_summary(
+            "https://upos.example.com/path/video.m4s?deadline=123&token=secret"
+        )
+        command = CacheManager._redacted_command_for_log([
+            "aria2c",
+            "https://upos.example.com/path/video.m4s?token=secret",
+            "--header",
+            "Cookie: SESSDATA=secret",
+        ])
+        self.assertEqual(safe, "https://upos.example.com/video.m4s")
+        self.assertEqual(command[1], "https://upos.example.com/video.m4s")
+        self.assertEqual(command[3], "Cookie: <redacted>")
+        self.assertNotIn("secret", json.dumps(command))
+
+    def test_aria2_output_diagnostics_lists_control_and_numbered_files(self):
+        target = self.cache_dir / "song" / "video-p1"
+        target.mkdir(parents=True)
+        expected = target / "video-p1.mp4"
+        expected.write_bytes(b"old")
+        (target / "video-p1.mp4.aria2").write_bytes(b"control")
+        (target / "video-p1.1.mp4").write_bytes(b"new")
+
+        result = CacheManager._aria2_output_diagnostics(target, expected)
+
+        self.assertTrue(result["expected_exists"])
+        self.assertEqual(result["aria2_files"], ["video-p1.mp4.aria2"])
+        self.assertEqual(result["numbered_alternatives"], ["video-p1.1.mp4"])
+        self.assertEqual(
+            [entry["name"] for entry in result["files"]],
+            ["video-p1.1.mp4", "video-p1.mp4", "video-p1.mp4.aria2"],
+        )
+
+    def test_validate_media_file_returns_structured_probe_metadata(self):
+        media = self.cache_dir / "song" / "video.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"media")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(self._probe_payload("video", "120.5")),
+                    stderr="",
+                )):
+                    result = manager._validate_media_file(
+                        Path("/tools/ffprobe"),
+                        Path("/tools/ffmpeg"),
+                        media,
+                        label="视频轨 P1",
+                        required_streams={"video"},
+                        log_path=self.log_path,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(result["path"], str(media))
+        self.assertEqual(result["size"], 5)
+        self.assertEqual(result["format_name"], "mov,mp4,m4a")
+        self.assertEqual(result["duration"], 120.5)
+        self.assertEqual(result["start_time"], 0.0)
+        self.assertEqual(result["streams"][0]["codec_name"], "h264")
+        self.assertEqual(result["streams"][0]["codec_tag_string"], "avc1")
+
+    @unittest.expectedFailure
+    def test_validation_error_prevents_cache_result_acceptance(self):
+        media = self.cache_dir / "song" / "audio.m4a"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"media")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")), patch(
+                    "bilikara.cache.subprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps(self._probe_payload("video", "120")),
+                        stderr="",
+                    ),
+                ):
+                    with self.assertRaisesRegex(DownloadCommandError, "音轨 P1"):
+                        manager._validate_cache_result(
+                            "song",
+                            {"validation_files": [{
+                                "path": media,
+                                "label": "音轨 P1",
+                                "required_streams": {"audio"},
+                            }]},
+                            Path("/tools/ffmpeg"),
+                            self.log_path,
+                        )
+            finally:
+                manager.shutdown()
+
+    @unittest.expectedFailure
+    def test_ffprobe_missing_duration_is_rejected(self):
+        self._assert_duration_rejected("audio", None, expected=120)
+
+    @unittest.expectedFailure
+    def test_audio_significantly_shorter_than_expected_is_rejected(self):
+        self._assert_duration_rejected("audio", "87", expected=243)
+
+    @unittest.expectedFailure
+    def test_video_significantly_shorter_than_expected_is_rejected(self):
+        self._assert_duration_rejected("video", "87", expected=243)
+
+    def _assert_duration_rejected(self, kind: str, actual: str | None, *, expected: float) -> None:
+        extension = ".mp4" if kind == "video" else ".m4a"
+        media = self.cache_dir / "song" / f"track{extension}"
+        media.parent.mkdir(parents=True, exist_ok=True)
+        media.write_bytes(b"media")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(self._probe_payload(kind, actual)),
+                    stderr="",
+                )):
+                    with self.assertRaisesRegex(DownloadCommandError, "时长"):
+                        manager._validate_media_file(
+                            Path("/tools/ffprobe"),
+                            Path("/tools/ffmpeg"),
+                            media,
+                            label=("视频轨" if kind == "video" else "音轨") + " P1",
+                            required_streams={kind},
+                            log_path=self.log_path,
+                            diagnostic_context={"expected_duration": expected},
+                        )
+            finally:
+                manager.shutdown()
+
+    @unittest.expectedFailure
+    def test_aria2_control_file_after_success_is_rejected(self):
+        self._assert_aria2_output_rejected(["video-p1.mp4", "video-p1.mp4.aria2"])
+
+    @unittest.expectedFailure
+    def test_stale_expected_output_plus_new_numbered_output_is_rejected(self):
+        self._assert_aria2_output_rejected(["video-p1.mp4", "video-p1.1.mp4"])
+
+    @unittest.expectedFailure
+    def test_multiple_matching_media_outputs_are_rejected(self):
+        self._assert_aria2_output_rejected(["video-p1.mp4", "other.mp4"])
+
+    def _assert_aria2_output_rejected(self, names: list[str]) -> None:
+        target = self.cache_dir / "song" / "video-p1"
+        target.mkdir(parents=True)
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                def fake_run(*_args, **_kwargs):
+                    for index, name in enumerate(names, start=1):
+                        (target / name).write_bytes(b"x" * index)
+
+                with patch.object(manager, "_run_item_command", side_effect=fake_run):
+                    with self.assertRaises(DownloadCommandError):
+                        manager._download_stream_with_aria2c(
+                            "song",
+                            Path("/tools/aria2c"),
+                            Path("/tools/ffmpeg"),
+                            target,
+                            self.log_path,
+                            urls=["https://upos.example/video.m4s?token=secret"],
+                            out_name="video-p1.mp4",
+                            cookie="SESSDATA=secret",
+                            stage_label="下载视频轨 P1",
+                            track_key="video-p1",
+                            stream_kind="video",
+                            page=1,
+                            cid=123,
+                        )
+            finally:
+                manager.shutdown()
+
 class CacheManagerBBDownRegressionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()
@@ -2254,7 +2466,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
 
         downloaded_tracks = []
 
-        def mock_download_aria2c(item_id, binary_path, ffmpeg_path, target_dir, log_path, urls, out_name, cookie, stage_label, track_key, stream_kind):
+        def mock_download_aria2c(item_id, binary_path, ffmpeg_path, target_dir, log_path, urls, out_name, cookie, stage_label, track_key, stream_kind, **_kwargs):
             downloaded_tracks.append({
                 "urls": urls,
                 "out_name": out_name,

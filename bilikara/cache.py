@@ -1640,12 +1640,27 @@ class CacheManager:
                 "label": f"视频轨 P{video_page}",
                 "path": video_file,
                 "required_streams": {"video"},
+                "stream_kind": "video",
+                "page": video_page,
+                "cid": self._cid_for_validation(item, video_page),
+                "expected_duration": self._duration_for_page(item, video_page),
+                "download_source": download_source,
+                "stream_metadata": video_track.get("stream_metadata") or {},
             },
             *[
                 {
                     "label": f"音轨 P{page}",
                     "path": audio_file,
                     "required_streams": {"audio"},
+                    "stream_kind": "audio",
+                    "page": page,
+                    "cid": self._cid_for_validation(item, page),
+                    "expected_duration": self._duration_for_page(item, page),
+                    "download_source": download_source,
+                    "stream_metadata": next(
+                        (track.get("stream_metadata") or {} for track in audio_tracks if int(track["page"]) == page),
+                        {},
+                    ),
                 }
                 for page, audio_file, _label in audio_files
             ],
@@ -2022,6 +2037,34 @@ class CacheManager:
 
         raise RuntimeError(f"无法解析 P{page} 的 cid，不能下载对应音频")
 
+    @staticmethod
+    def _duration_for_page(item, page: int) -> float | None:
+        for pages_attr, durations_attr in (
+            ("selected_pages", "selected_durations"),
+            ("available_pages", "available_durations"),
+        ):
+            pages = list(getattr(item, pages_attr, None) or [])
+            durations = list(getattr(item, durations_attr, None) or [])
+            try:
+                index = pages.index(page)
+            except ValueError:
+                continue
+            if index >= len(durations):
+                continue
+            try:
+                duration = float(durations[index])
+            except (TypeError, ValueError):
+                continue
+            if duration > 0:
+                return duration
+        return None
+
+    def _cid_for_validation(self, item, page: int) -> int:
+        try:
+            return self._cid_for_page(item, page)
+        except RuntimeError:
+            return 0
+
     def _dash_max_quality_id(self, video_quality: str) -> int:
         quality_id_map = {
             "360P 流畅": 16,
@@ -2124,6 +2167,7 @@ class CacheManager:
             video_target_dir,
             f"下载视频轨 P{video_page}",
             "video",
+            (dash_streams.get("video") or [{}])[0],
         ))
 
         for track in audio_tracks:
@@ -2166,6 +2210,7 @@ class CacheManager:
                 audio_target_dir,
                 f"下载音轨 P{page}",
                 "audio",
+                preferred_audio or {},
             ))
 
         result_paths: dict[str, Path] = {}
@@ -2173,7 +2218,8 @@ class CacheManager:
         executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bilikara-downkyi-track")
 
         def _download_track(args: tuple) -> tuple[str, Path]:
-            track, urls, out_name, target_dir, stage_label, stream_kind = args
+            track, urls, out_name, target_dir, stage_label, stream_kind, stream_metadata = args
+            track["stream_metadata"] = dict(stream_metadata)
             return str(track["key"]), self._download_stream_with_aria2c(
                 item_id, binary_path, ffmpeg_path, target_dir, log_path,
                 urls=urls,
@@ -2182,6 +2228,9 @@ class CacheManager:
                 stage_label=stage_label,
                 track_key=self._download_track_key(stream_kind, int(track["page"])),
                 stream_kind=stream_kind,
+                page=int(track["page"]),
+                cid=self._cid_for_page(item, int(track["page"])),
+                stream_metadata=stream_metadata,
             )
 
         future_to_track = {
@@ -2256,6 +2305,72 @@ class CacheManager:
             return urls
         return []
 
+    @staticmethod
+    def _safe_url_summary(url: object) -> str:
+        raw = str(url or "").strip()
+        if not raw:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(raw)
+        except ValueError:
+            return "<invalid-url>"
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return "<non-http-url>"
+        basename = Path(urllib.parse.unquote(parsed.path)).name or "/"
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{parsed.hostname}{port}/{basename}"
+
+    @classmethod
+    def _redacted_command_for_log(cls, command: list[str]) -> list[str]:
+        redacted: list[str] = []
+        previous = ""
+        for argument in command:
+            value = str(argument)
+            if previous == "--header" and value.lower().startswith("cookie:"):
+                redacted.append("Cookie: <redacted>")
+            elif value.startswith(("http://", "https://")):
+                redacted.append(cls._safe_url_summary(value))
+            else:
+                redacted.append(value)
+            previous = value
+        return redacted
+
+    @staticmethod
+    def _aria2_output_diagnostics(target_dir: Path, expected_path: Path) -> dict[str, object]:
+        entries: list[dict[str, object]] = []
+        try:
+            paths = sorted(target_dir.iterdir(), key=lambda path: path.name)
+        except OSError:
+            paths = []
+        for path in paths:
+            try:
+                if not path.is_file():
+                    continue
+                stat_result = path.stat()
+            except OSError:
+                continue
+            suffix = path.suffix.lower()
+            media_like = suffix in MEDIA_EXTENSIONS or suffix in AUDIO_EXTENSIONS
+            control_file = path.name.endswith(".aria2")
+            numbered_alternative = bool(re.search(r"\.\d+\.[^.]+$", path.name))
+            if not (media_like or control_file or numbered_alternative):
+                continue
+            entries.append({
+                "name": path.name,
+                "size": stat_result.st_size,
+                "mtime_ns": stat_result.st_mtime_ns,
+                "media_like": media_like,
+                "aria2_control": control_file,
+                "numbered_alternative": numbered_alternative,
+            })
+        return {
+            "expected_output": str(expected_path),
+            "expected_exists": expected_path.exists(),
+            "files": entries,
+            "aria2_files": [entry["name"] for entry in entries if entry["aria2_control"]],
+            "numbered_alternatives": [entry["name"] for entry in entries if entry["numbered_alternative"]],
+        }
+
     def _download_stream_with_aria2c(
         self,
         item_id: str,
@@ -2270,6 +2385,9 @@ class CacheManager:
         stage_label: str,
         track_key: str,
         stream_kind: str,
+        page: int = 0,
+        cid: int = 0,
+        stream_metadata: dict[str, object] | None = None,
     ) -> Path:
         if not urls:
             raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
@@ -2277,6 +2395,29 @@ class CacheManager:
         download_urls = [str(url).strip() for url in urls if str(url).strip()]
         if not download_urls:
             raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
+
+        expected_path = target_dir / out_name
+        metadata = stream_metadata or {}
+        selection_summary = {
+            "event": "downkyi_track_selected",
+            "item_id": item_id,
+            "page": page,
+            "cid": cid,
+            "stream_kind": stream_kind,
+            "quality_id": int(metadata.get("quality_id") or 0),
+            "codec_name": str(metadata.get("codec_name") or ""),
+            "codec_string": str(metadata.get("codecs") or ""),
+            "mime_type": str(metadata.get("mime_type") or ""),
+            "bandwidth": int(metadata.get("bandwidth") or 0),
+            "primary_url": self._safe_url_summary(download_urls[0]),
+            "backup_url_count": max(0, len(download_urls) - 1),
+            "expected_output": str(expected_path),
+        }
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] media_diagnostic: "
+            f"{json.dumps(selection_summary, ensure_ascii=False, sort_keys=True)}",
+        )
 
         command = [
             self._tool_arg_path(binary_path),
@@ -2302,19 +2443,51 @@ class CacheManager:
         if user_agent:
             command.extend(["--header", f"User-Agent: {user_agent}"])
 
-        self._run_item_command(
-            item_id,
-            command,
-            ffmpeg_path,
-            log_path,
-            stage_label=stage_label,
-            stream_kind=stream_kind,
-            target_dir=target_dir,
-            track_key=track_key,
-            tool_dir=binary_path.parent,
-            silent=True,
-            is_preallocated=True,
-        )
+        try:
+            self._run_item_command(
+                item_id,
+                command,
+                ffmpeg_path,
+                log_path,
+                stage_label=stage_label,
+                stream_kind=stream_kind,
+                target_dir=target_dir,
+                track_key=track_key,
+                tool_dir=binary_path.parent,
+                silent=True,
+                is_preallocated=True,
+            )
+        except Exception as exc:
+            output_summary = self._aria2_output_diagnostics(target_dir, expected_path)
+            output_summary.update(
+                event="aria2_output",
+                item_id=item_id,
+                exit_code=getattr(exc, "return_code", None),
+                stream_kind=stream_kind,
+                page=page,
+                cid=cid,
+            )
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] media_diagnostic: "
+                f"{json.dumps(output_summary, ensure_ascii=False, sort_keys=True)}",
+            )
+            raise
+        else:
+            output_summary = self._aria2_output_diagnostics(target_dir, expected_path)
+            output_summary.update(
+                event="aria2_output",
+                item_id=item_id,
+                exit_code=0,
+                stream_kind=stream_kind,
+                page=page,
+                cid=cid,
+            )
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] media_diagnostic: "
+                f"{json.dumps(output_summary, ensure_ascii=False, sort_keys=True)}",
+            )
 
         allowed_extensions = MEDIA_EXTENSIONS if stream_kind == "video" else AUDIO_EXTENSIONS
         self._raise_if_retry_requested(item_id)
@@ -2410,9 +2583,10 @@ class CacheManager:
         silent: bool = True,
         is_preallocated: bool = False,
     ) -> None:
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}")
+        safe_command = self._redacted_command_for_log(command)
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(safe_command, ensure_ascii=False)}")
         if not silent:
-            _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(command, ensure_ascii=False)}")
+            _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(safe_command, ensure_ascii=False)}")
         target_bytes_state = {"value": 0}
         monitor_stop = threading.Event()
 
@@ -2500,10 +2674,17 @@ class CacheManager:
         if not self._should_cache(item_id):
             raise CacheCancelledError(self._outside_window_message())
 
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] process_exit: "
+            f"{json.dumps({'stage': stage_label, 'exit_code': return_code}, ensure_ascii=False, sort_keys=True)}",
+        )
         if return_code != 0:
             if not silent:
                 _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
-            raise DownloadCommandError(last_message)
+            error = DownloadCommandError(last_message)
+            error.return_code = return_code
+            raise error
 
         self._update_download_track_progress(
             item_id,
@@ -2762,6 +2943,7 @@ class CacheManager:
         )
 
         failure_count = 0
+        validation_metadata: list[dict[str, object]] = []
         for entry in validation_files:
             self._raise_if_retry_requested(item_id)
             if not isinstance(entry, dict):
@@ -2774,14 +2956,16 @@ class CacheManager:
                     raise DownloadCommandError(f"缓存校验失败: {label} 路径无效")
                 if not isinstance(required_streams, set):
                     required_streams = set(required_streams or [])
-                self._validate_media_file(
+                metadata = self._validate_media_file(
                     ffprobe_path,
                     ffmpeg_path,
                     path,
                     label=label,
                     required_streams={str(stream) for stream in required_streams},
                     log_path=log_path,
+                    diagnostic_context={**entry, "item_id": item_id},
                 )
+                validation_metadata.append(metadata)
             except CacheCancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -2792,6 +2976,8 @@ class CacheManager:
                     f"{self._compact_probe_error(str(exc))}",
                 )
 
+        cache_result["validation_metadata"] = validation_metadata
+        cache_result["validation_failure_count"] = failure_count
         if failure_count:
             self._append_log_line(
                 log_path,
@@ -2809,7 +2995,8 @@ class CacheManager:
         label: str,
         required_streams: set[str],
         log_path: Path,
-    ) -> None:
+        diagnostic_context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         if not media_path.exists():
             raise DownloadCommandError(f"缓存校验失败: {label} 文件不存在")
         size = media_path.stat().st_size
@@ -2877,6 +3064,64 @@ class CacheManager:
             f"[{self._log_timestamp()}] ffprobe validate {label}: ok "
             f"(streams={stream_label}, duration={duration_label}, size={size})",
         )
+
+        file_format = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+        normalized_streams = [
+            {
+                "codec_type": str(stream.get("codec_type") or ""),
+                "codec_name": str(stream.get("codec_name") or ""),
+                "codec_tag_string": str(stream.get("codec_tag_string") or ""),
+                "duration": self._optional_probe_float(stream.get("duration")),
+                "start_time": self._optional_probe_float(stream.get("start_time")),
+            }
+            for stream in streams
+            if isinstance(stream, dict)
+        ]
+        metadata: dict[str, object] = {
+            "path": str(media_path),
+            "size": size,
+            "format_name": str(file_format.get("format_name") or ""),
+            "duration": duration,
+            "start_time": self._optional_probe_float(file_format.get("start_time")),
+            "streams": normalized_streams,
+        }
+        context = diagnostic_context or {}
+        if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
+            selected = context.get("stream_metadata") if isinstance(context.get("stream_metadata"), dict) else {}
+            summary = {
+                "event": "downkyi_track_probe",
+                "item_id": str(context.get("item_id") or ""),
+                "page": int(context.get("page") or 0),
+                "cid": int(context.get("cid") or 0),
+                "stream_kind": str(context.get("stream_kind") or ""),
+                "quality_id": int(selected.get("quality_id") or 0),
+                "codec_name": str(selected.get("codec_name") or ""),
+                "codec_string": str(selected.get("codecs") or ""),
+                "bandwidth": int(selected.get("bandwidth") or 0),
+                "expected_output": str(media_path),
+                "actual_output": str(media_path),
+                "file_size": size,
+                "aria2_control_files": [
+                    candidate.name
+                    for candidate in media_path.parent.glob("*.aria2")
+                    if candidate.is_file()
+                ],
+                "ffprobe": metadata,
+            }
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] media_diagnostic: "
+                f"{json.dumps(summary, ensure_ascii=False, sort_keys=True)}",
+            )
+        return metadata
+
+    @staticmethod
+    def _optional_probe_float(value: object) -> float | None:
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return result if result == result else None
 
     @staticmethod
     def _probe_duration(payload: dict[str, object]) -> float | None:

@@ -6411,6 +6411,51 @@ function settleSplitPlayerSeek(video, audio, force = false) {
   return true;
 }
 
+function mediaUrlBasename(media) {
+  const source = String(media?.currentSrc || media?.src || "");
+  if (!source) {
+    return "";
+  }
+  try {
+    const parsed = new URL(source, window.location.href);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    return decodeURIComponent(parts[parts.length - 1] || "");
+  } catch {
+    return "";
+  }
+}
+
+function reportMediaDiagnostic(itemId, mediaKind, media, eventName) {
+  if (!media) {
+    return;
+  }
+  const mediaError = media.error;
+  const payload = {
+    event: eventName,
+    item_id: String(itemId || ""),
+    media_kind: mediaKind,
+    current_time: Number.isFinite(media.currentTime) ? Number(media.currentTime) : null,
+    duration: Number.isFinite(media.duration) ? Number(media.duration) : null,
+    ready_state: Number(media.readyState || 0),
+    network_state: Number(media.networkState || 0),
+    paused: Boolean(media.paused),
+    ended: Boolean(media.ended),
+    error_code: mediaError ? Number(mediaError.code || 0) : null,
+    error_message: mediaError ? String(mediaError.message || "") : "",
+    url_basename: mediaUrlBasename(media),
+  };
+  console.info("[player-media]", payload);
+  apiPost("/api/player/diagnostic", payload).catch(() => {});
+}
+
+function attachSplitPlayerDiagnostics(itemId, video, audio) {
+  const eventNames = ["loadedmetadata", "canplay", "waiting", "stalled", "suspend", "error", "ended"];
+  eventNames.forEach((eventName) => {
+    video.addEventListener(eventName, () => reportMediaDiagnostic(itemId, "video", video, eventName));
+    audio.addEventListener(eventName, () => reportMediaDiagnostic(itemId, "audio", audio, eventName));
+  });
+}
+
 function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
   if (!video || !audio) {
     return;
@@ -7007,6 +7052,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
+  attachSplitPlayerDiagnostics(currentItem.id, video, audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -7325,6 +7371,7 @@ function renderPlayer(currentItem, playbackMode) {
 
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
+  attachSplitPlayerDiagnostics(currentItem.id, video, audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {

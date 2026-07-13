@@ -761,6 +761,58 @@ class PlaylistExportRouteTest(unittest.TestCase):
         self.assertEqual(writes[0], {"ok": True, "data": {"history": [], "session_played": []}})
 
 
+class MediaRangeEvidenceTest(unittest.TestCase):
+    @staticmethod
+    def _serve(payload: bytes, range_header: str = "") -> tuple[int, dict[str, str], bytes]:
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.headers = {"Range": range_header} if range_header else {}
+        handler.wfile = io.BytesIO()
+        response: dict[str, object] = {"status": 0, "headers": {}}
+        handler.send_response = lambda status: response.update(status=int(status))
+        handler.send_header = lambda name, value: response["headers"].__setitem__(name, value)
+        handler.end_headers = lambda: None
+        with TemporaryDirectory() as tmpdir:
+            media = Path(tmpdir) / "track.bin"
+            media.write_bytes(payload)
+            handler._stream_file(media, content_type="application/octet-stream", allow_ranges=True)
+        return int(response["status"]), dict(response["headers"]), handler.wfile.getvalue()
+
+    def test_open_ended_range_returns_requested_tail(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=4-")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 4-9/10")
+        self.assertEqual(headers["Content-Length"], "6")
+        self.assertEqual(body, b"456789")
+
+    @unittest.expectedFailure
+    def test_suffix_range_returns_final_bytes(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=-4")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 6-9/10")
+        self.assertEqual(headers["Content-Length"], "4")
+        self.assertEqual(body, b"6789")
+
+    @unittest.expectedFailure
+    def test_unsatisfiable_range_returns_416(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=99-")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
+    @unittest.expectedFailure
+    def test_invalid_range_does_not_fall_back_to_full_response(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=invalid")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
+    @unittest.expectedFailure
+    def test_multiple_ranges_are_rejected(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=0-1,4-5")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
 class UpdateRouteTest(unittest.TestCase):
     def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
