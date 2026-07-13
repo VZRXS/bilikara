@@ -327,15 +327,54 @@ def _py_asset_has_arm64(text: str, tokens: set[str]) -> bool:
 def _py_asset_has_universal(tokens: set[str]) -> bool:
     return bool(tokens & {"universal", "universal2"})
 
-def _asset_tokens(text):
-    value=rust_backend.asset_tokens(text); return _py_asset_tokens(text) if value is None else value
-def _fb(value,fallback): return fallback if value is None else value
-def _asset_has_windows(t): return _fb(rust_backend.asset_has_windows(t),_py_asset_has_windows(t))
-def _asset_has_macos(t): return _fb(rust_backend.asset_has_macos(t),_py_asset_has_macos(t))
-def _asset_has_linux(t): return _fb(rust_backend.asset_has_linux(t),_py_asset_has_linux(t))
-def _asset_has_x64(s,t): return _fb(rust_backend.asset_has_x64(s,t),_py_asset_has_x64(s,t))
-def _asset_has_arm64(s,t): return _fb(rust_backend.asset_has_arm64(t),_py_asset_has_arm64(s,t))
-def _asset_has_universal(t): return _fb(rust_backend.asset_has_universal(t),_py_asset_has_universal(t))
+
+def _asset_tokens(text: str) -> set[str]:
+    rust_result = rust_backend.asset_tokens(text)
+    if rust_result is not None:
+        return rust_result
+    return _py_asset_tokens(text)
+
+
+def _asset_has_windows(tokens: set[str]) -> bool:
+    rust_result = rust_backend.asset_has_windows(tokens)
+    if rust_result is not None:
+        return rust_result
+    return _py_asset_has_windows(tokens)
+
+
+def _asset_has_macos(tokens: set[str]) -> bool:
+    rust_result = rust_backend.asset_has_macos(tokens)
+    if rust_result is not None:
+        return rust_result
+    return _py_asset_has_macos(tokens)
+
+
+def _asset_has_linux(tokens: set[str]) -> bool:
+    rust_result = rust_backend.asset_has_linux(tokens)
+    if rust_result is not None:
+        return rust_result
+    return _py_asset_has_linux(tokens)
+
+
+def _asset_has_x64(text: str, tokens: set[str]) -> bool:
+    rust_result = rust_backend.asset_has_x64(text, tokens)
+    if rust_result is not None:
+        return rust_result
+    return _py_asset_has_x64(text, tokens)
+
+
+def _asset_has_arm64(text: str, tokens: set[str]) -> bool:
+    rust_result = rust_backend.asset_has_arm64(tokens)
+    if rust_result is not None:
+        return rust_result
+    return _py_asset_has_arm64(text, tokens)
+
+
+def _asset_has_universal(tokens: set[str]) -> bool:
+    rust_result = rust_backend.asset_has_universal(tokens)
+    if rust_result is not None:
+        return rust_result
+    return _py_asset_has_universal(tokens)
 
 
 def _coerce_asset_size(asset: dict[str, Any]) -> int:

@@ -26,22 +26,62 @@ class FakeHTTPResponse:
 
 class UpdateCheckTest(unittest.TestCase):
     def test_asset_token_rust_equivalence_and_false_results(self):
-        if not rust_backend.backend_status()["loaded"]: self.skipTest("Rust dynamic library is not available")
-        cases=["bilikara-windows-x64.zip","bilikara-win64.zip","bilikara-windows-arm64.zip","bilikara-macos-arm64.zip","bilikara-darwin-aarch64.zip","bilikara-macos-universal2.zip","bilikara-linux-x86_64.zip","application.zip","app.zip","osx.zip","unknown.zip","WIN32.ZIP","mixed---punctuation___x64.zip","","歌曲"]
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+        cases = [
+            "bilikara-windows-x64.zip",
+            "bilikara-win64.zip",
+            "bilikara-windows-arm64.zip",
+            "bilikara-macos-arm64.zip",
+            "bilikara-darwin-aarch64.zip",
+            "bilikara-macos-universal2.zip",
+            "bilikara-linux-x86_64.zip",
+            "application.zip",
+            "app.zip",
+            "osx.zip",
+            "unknown.zip",
+            "WIN32.ZIP",
+            "mixed---punctuation___x64.zip",
+            "repeated////separators----x64",
+            "",
+            "歌曲",
+            "windows\x00arm64",
+        ]
         for text in cases:
             with self.subTest(text=text):
-                tokens=rust_backend.asset_tokens(text); self.assertIsNotNone(tokens); self.assertEqual(tokens,updater._py_asset_tokens(text))
-                checks=[(rust_backend.asset_has_windows,updater._py_asset_has_windows),(rust_backend.asset_has_macos,updater._py_asset_has_macos),(rust_backend.asset_has_linux,updater._py_asset_has_linux),(rust_backend.asset_has_arm64,lambda t: updater._py_asset_has_arm64(text,t)),(rust_backend.asset_has_universal,updater._py_asset_has_universal)]
-                for native,python in checks:
-                    result=native(tokens); self.assertIsNotNone(result); self.assertEqual(result,python(tokens))
-                result=rust_backend.asset_has_x64(text.lower(),tokens); self.assertIsNotNone(result); self.assertEqual(result,updater._py_asset_has_x64(text.lower(),tokens))
-        self.assertEqual(rust_backend.asset_tokens(""),set())
+                tokens = rust_backend.asset_tokens(text)
+                self.assertIsNotNone(tokens)
+                self.assertEqual(tokens, updater._py_asset_tokens(text))
+                assert tokens is not None
+                checks = [
+                    (rust_backend.asset_has_windows, updater._py_asset_has_windows),
+                    (rust_backend.asset_has_macos, updater._py_asset_has_macos),
+                    (rust_backend.asset_has_linux, updater._py_asset_has_linux),
+                    (
+                        rust_backend.asset_has_arm64,
+                        lambda value: updater._py_asset_has_arm64(text, value),
+                    ),
+                    (rust_backend.asset_has_universal, updater._py_asset_has_universal),
+                ]
+                for native, python in checks:
+                    result = native(tokens)
+                    self.assertIsNotNone(result)
+                    self.assertEqual(result, python(tokens))
+                result = rust_backend.asset_has_x64(text.lower(), tokens)
+                self.assertIsNotNone(result)
+                self.assertEqual(
+                    result,
+                    updater._py_asset_has_x64(text.lower(), tokens),
+                )
+        self.assertEqual(rust_backend.asset_tokens(""), set())
         self.assertFalse(rust_backend.asset_has_windows({"unknown"}))
 
     def test_asset_missing_symbol_uses_python_fallback(self):
-        caps=dict(rust_backend._CAPABILITIES); caps["asset_has_windows"]=False
-        with patch("bilikara.rust_backend._CAPABILITIES",caps):
-            self.assertIsNone(rust_backend.asset_has_windows({"windows"})); self.assertTrue(updater._asset_has_windows({"windows"}))
+        capabilities = dict(rust_backend._CAPABILITIES)
+        capabilities["asset_has_windows"] = False
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(rust_backend.asset_has_windows({"windows"}))
+            self.assertTrue(updater._asset_has_windows({"windows"}))
 
     def test_machine_arch_python_fallback(self):
         with patch("bilikara.updater.rust_backend.normalize_machine_arch", return_value=None):

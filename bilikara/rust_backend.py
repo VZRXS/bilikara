@@ -74,6 +74,18 @@ _SYMBOLS = {
     "asset_has_universal": ("rust_asset_has_universal", [ctypes.c_char_p]),
 }
 
+# Asset tokens use the grammar ``[a-z0-9]+``.  The FFI therefore transports a
+# token set as sorted, newline-separated ASCII: newline can never occur inside
+# a valid token, and an empty string represents a valid empty set.
+_ASSET_CLASSIFIER_SYMBOLS = {
+    "asset_has_windows": "rust_asset_has_windows",
+    "asset_has_macos": "rust_asset_has_macos",
+    "asset_has_linux": "rust_asset_has_linux",
+    "asset_has_x64": "rust_asset_has_x64",
+    "asset_has_arm64": "rust_asset_has_arm64",
+    "asset_has_universal": "rust_asset_has_universal",
+}
+
 
 def _empty_capabilities() -> dict[str, bool]:
     return {capability: False for capability in _SYMBOLS}
@@ -260,22 +272,97 @@ def normalize_machine_arch(machine: str) -> str | None:
     except Exception:
         return None
 
+
 def asset_tokens(text: str) -> set[str] | None:
-    if _rust_lib is None or not _CAPABILITIES["asset_tokens"]: return None
+    if _rust_lib is None or not _CAPABILITIES["asset_tokens"]:
+        return None
     try:
-        value=_read_rust_string(_rust_lib.rust_asset_tokens(text.encode()))
-        return None if value is None else set(filter(None,value.splitlines()))
-    except Exception: return None
-def _asset_bool(capability: str, *values: str) -> bool | None:
-    if _rust_lib is None or not _CAPABILITIES[capability]: return None
+        # NUL is a delimiter under the Python token grammar, but cannot be
+        # embedded in a C string. Replacing it with newline preserves that
+        # boundary without creating a valid token character.
+        encoded_text = str(text).replace("\x00", "\n").encode("utf-8")
+        value = _read_rust_string(_rust_lib.rust_asset_tokens(encoded_text))
+        if value is None:
+            return None
+        return {token for token in value.splitlines() if token}
+    except Exception:
+        return None
+
+
+def _asset_token_payload(tokens: set[str]) -> str | None:
+    normalized_tokens = {str(token) for token in tokens}
+    if any(
+        not token or not token.isascii() or not token.isalnum()
+        for token in normalized_tokens
+    ):
+        return None
+    return "\n".join(sorted(normalized_tokens))
+
+
+def _call_asset_classifier(
+    capability: str,
+    arguments: tuple[str, ...],
+) -> bool | None:
+    symbol_name = _ASSET_CLASSIFIER_SYMBOLS.get(capability)
+    if (
+        symbol_name is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get(capability, False)
+    ):
+        return None
     try:
-        value=_read_rust_string(getattr(_rust_lib,"rust_"+capability)(*(v.encode() for v in values)))
-        return True if value=="1" else False if value=="0" else None
-    except Exception: return None
-def _payload(t:set[str])->str: return "\n".join(sorted(t))
-def asset_has_windows(t): return _asset_bool("asset_has_windows",_payload(t))
-def asset_has_macos(t): return _asset_bool("asset_has_macos",_payload(t))
-def asset_has_linux(t): return _asset_bool("asset_has_linux",_payload(t))
-def asset_has_x64(s,t): return _asset_bool("asset_has_x64",s,_payload(t))
-def asset_has_arm64(t): return _asset_bool("asset_has_arm64",_payload(t))
-def asset_has_universal(t): return _asset_bool("asset_has_universal",_payload(t))
+        symbol = getattr(_rust_lib, symbol_name)
+        encoded_arguments = tuple(
+            argument.replace("\x00", "\n").encode("utf-8")
+            for argument in arguments
+        )
+        value = _read_rust_string(symbol(*encoded_arguments))
+        if value == "1":
+            return True
+        if value == "0":
+            return False
+        return None
+    except Exception:
+        return None
+
+
+def asset_has_windows(tokens: set[str]) -> bool | None:
+    payload = _asset_token_payload(tokens)
+    if payload is None:
+        return None
+    return _call_asset_classifier("asset_has_windows", (payload,))
+
+
+def asset_has_macos(tokens: set[str]) -> bool | None:
+    payload = _asset_token_payload(tokens)
+    if payload is None:
+        return None
+    return _call_asset_classifier("asset_has_macos", (payload,))
+
+
+def asset_has_linux(tokens: set[str]) -> bool | None:
+    payload = _asset_token_payload(tokens)
+    if payload is None:
+        return None
+    return _call_asset_classifier("asset_has_linux", (payload,))
+
+
+def asset_has_x64(text: str, tokens: set[str]) -> bool | None:
+    payload = _asset_token_payload(tokens)
+    if payload is None:
+        return None
+    return _call_asset_classifier("asset_has_x64", (str(text), payload))
+
+
+def asset_has_arm64(tokens: set[str]) -> bool | None:
+    payload = _asset_token_payload(tokens)
+    if payload is None:
+        return None
+    return _call_asset_classifier("asset_has_arm64", (payload,))
+
+
+def asset_has_universal(tokens: set[str]) -> bool | None:
+    payload = _asset_token_payload(tokens)
+    if payload is None:
+        return None
+    return _call_asset_classifier("asset_has_universal", (payload,))
