@@ -2,7 +2,9 @@ import io
 import json
 import os
 import queue
+import shutil
 import ssl
+import subprocess
 import sys
 import unittest
 import urllib.error
@@ -2204,6 +2206,111 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                                 "stream_kind": "audio",
                             },
                         )
+            finally:
+                manager.shutdown()
+
+    def test_downkyi_video_is_copy_remuxed_with_faststart(self):
+        media = self.cache_dir / "song" / ".attempt-test" / "video-p1.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"raw-video")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            Path(command[-1]).write_bytes(b"normalized-video")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", side_effect=fake_run):
+                    manager._normalize_downkyi_media_file(
+                        Path("/tools/ffmpeg"), media, label="视频轨 P1",
+                        stream_kind="video", log_path=self.log_path,
+                    )
+                self.assertEqual(media.read_bytes(), b"normalized-video")
+            finally:
+                manager.shutdown()
+        command = captured["command"]
+        self.assertEqual(command[command.index("-map") + 1], "0:v:0")
+        self.assertIn("+faststart", command)
+        self.assertIn("copy", command)
+
+    def test_downkyi_flac_remux_preserves_flac_container(self):
+        media = self.cache_dir / "song" / ".attempt-test" / "audio-p1.flac"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"raw-flac")
+        captured = {}
+
+        def fake_run(command, **_kwargs):
+            captured["command"] = command
+            Path(command[-1]).write_bytes(b"normalized-flac")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", side_effect=fake_run):
+                    manager._normalize_downkyi_media_file(
+                        Path("/tools/ffmpeg"), media, label="音轨 P1",
+                        stream_kind="audio", log_path=self.log_path,
+                    )
+            finally:
+                manager.shutdown()
+        command = captured["command"]
+        self.assertTrue(command[-1].endswith(".flac"))
+        self.assertEqual(command[command.index("-map") + 1], "0:a:0")
+        self.assertNotIn("-movflags", command)
+
+    def test_downkyi_remux_failure_keeps_raw_file_and_rejects_cache(self):
+        media = self.cache_dir / "song" / ".attempt-test" / "audio-p1.m4a"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"truncated-raw")
+        failed = SimpleNamespace(returncode=1, stdout="", stderr="partial file: unexpected EOF")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", return_value=failed):
+                    with self.assertRaisesRegex(DownloadCommandError, "unexpected EOF"):
+                        manager._normalize_downkyi_media_file(
+                            Path("/tools/ffmpeg"), media, label="音轨 P1",
+                            stream_kind="audio", log_path=self.log_path,
+                        )
+                self.assertEqual(media.read_bytes(), b"truncated-raw")
+                self.assertEqual(list(media.parent.glob("*.normalized-*")), [])
+            finally:
+                manager.shutdown()
+
+    def test_real_ffmpeg_remuxes_fragmented_mp4_when_available(self):
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        if not ffmpeg or not ffprobe:
+            self.skipTest("ffmpeg/ffprobe unavailable")
+        media = self.cache_dir / "song" / ".attempt-test" / "video-p1.mp4"
+        media.parent.mkdir(parents=True)
+        generated = subprocess.run([
+            ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+            "color=c=black:s=64x64:r=10:d=1", "-an", "-c:v", "mpeg4",
+            "-movflags", "frag_keyframe+empty_moov", str(media),
+        ], capture_output=True, text=True, check=False)
+        if generated.returncode != 0:
+            self.skipTest(f"fixture generation unavailable: {generated.stderr[:120]}")
+        before = media.stat().st_size
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                manager._normalize_downkyi_media_file(
+                    Path(ffmpeg), media, label="视频轨 P1",
+                    stream_kind="video", log_path=self.log_path,
+                )
+                probe = subprocess.run([
+                    ffprobe, "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=nw=1:nk=1", str(media),
+                ], capture_output=True, text=True, check=False)
+                self.assertEqual(probe.returncode, 0, probe.stderr)
+                self.assertGreater(float(probe.stdout.strip()), 0.8)
+                self.assertGreater(media.stat().st_size, 0)
+                self.assertGreater(before, 0)
             finally:
                 manager.shutdown()
 

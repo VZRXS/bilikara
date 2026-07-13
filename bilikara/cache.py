@@ -1193,6 +1193,8 @@ class CacheManager:
             )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
+            if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+                self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
             self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
@@ -2955,6 +2957,107 @@ class CacheManager:
     #         self._record_item_activity(item.id)
     #         variant_files.append((variant_id, label, variant_path))
     #     return variant_files
+
+    def _normalize_downkyi_cache_result(
+        self,
+        cache_result: dict[str, object],
+        ffmpeg_path: Path,
+        log_path: Path,
+    ) -> None:
+        validation_files = cache_result.get("validation_files")
+        if not isinstance(validation_files, list):
+            raise DownloadCommandError("缓存规范化失败: 缺少媒体文件清单")
+        for entry in validation_files:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            if not isinstance(path, Path):
+                raise DownloadCommandError("缓存规范化失败: 媒体路径无效")
+            self._normalize_downkyi_media_file(
+                ffmpeg_path,
+                path,
+                label=str(entry.get("label") or "媒体文件"),
+                stream_kind=str(entry.get("stream_kind") or ""),
+                log_path=log_path,
+            )
+
+    def _normalize_downkyi_media_file(
+        self,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        stream_kind: str,
+        log_path: Path,
+    ) -> None:
+        if not media_path.exists() or media_path.stat().st_size <= 0:
+            raise DownloadCommandError(f"缓存规范化失败: {label} 原始文件不可用")
+        normalized_path = media_path.with_name(
+            f".{media_path.stem}.normalized-{uuid.uuid4().hex}{media_path.suffix}"
+        )
+        command = [
+            self._tool_arg_path(ffmpeg_path),
+            "-v",
+            "error",
+            "-xerror",
+            "-y",
+            "-fflags",
+            "+genpts",
+            "-i",
+            self._tool_arg_path(media_path),
+            "-map",
+            "0:v:0" if stream_kind == "video" else "0:a:0",
+            "-c",
+            "copy",
+            "-avoid_negative_ts",
+            "make_zero",
+        ]
+        if media_path.suffix.lower() != ".flac":
+            command.extend(["-movflags", "+faststart"])
+        command.append(self._tool_arg_path(normalized_path))
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] command: {json.dumps(command, ensure_ascii=False)}",
+        )
+        try:
+            process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+                command,
+                shell=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=180,
+                cwd=self._tool_arg_path(BB_DOWN_DIR),
+                env=self._tool_process_env(ffmpeg_path),
+                **self._hidden_process_kwargs(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            normalized_path.unlink(missing_ok=True)
+            raise DownloadCommandError(f"缓存规范化失败: {label}: FFmpeg remux 超时") from exc
+        if process.returncode != 0 or not normalized_path.exists() or normalized_path.stat().st_size <= 0:
+            normalized_path.unlink(missing_ok=True)
+            message = (process.stderr or process.stdout or "").strip() or f"ffmpeg 退出码 {process.returncode}"
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] remux {label}: failed: {self._compact_probe_error(message)}",
+            )
+            raise DownloadCommandError(
+                f"缓存规范化失败: {label}: {self._compact_probe_error(message)}"
+            )
+        raw_size = media_path.stat().st_size
+        normalized_size = normalized_path.stat().st_size
+        try:
+            os.replace(normalized_path, media_path)
+        except OSError as exc:
+            normalized_path.unlink(missing_ok=True)
+            raise DownloadCommandError(f"缓存规范化失败: {label}: 无法替换临时文件: {exc}") from exc
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] media_diagnostic: "
+            f"{json.dumps({'event': 'downkyi_track_remuxed', 'path': str(media_path), 'stream_kind': stream_kind, 'raw_size': raw_size, 'remuxed_size': normalized_size}, ensure_ascii=False, sort_keys=True)}",
+        )
 
     @staticmethod
     def _final_path_for_attempt(path: Path) -> Path:
