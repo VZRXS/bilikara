@@ -60,11 +60,19 @@ def _dedupe_urls(urls: list[str]) -> list[str]:
     return result
 
 
-def _release_list_api_from_latest(api_url: str) -> str:
+def _py_release_list_api_from_latest(api_url: str) -> str:
     url = str(api_url or "").strip()
     if url.endswith("/latest"):
         return url.rsplit("/", 1)[0]
     return ""
+
+
+def _release_list_api_from_latest(api_url: str) -> str:
+    api_url_text = str(api_url or "")
+    rust_result = rust_backend.release_list_api_from_latest(api_url_text)
+    if rust_result is not None:
+        return rust_result
+    return _py_release_list_api_from_latest(api_url)
 
 
 def _latest_release_api_urls() -> list[str]:
@@ -79,7 +87,7 @@ def _release_list_api_urls() -> list[str]:
     return _dedupe_urls([APP_RELEASES_API, *APP_RELEASES_API_FALLBACKS, *derived_fallbacks])
 
 
-def _format_download_proxy_url(proxy: str, url: str) -> str:
+def _py_format_download_proxy_url(proxy: str, url: str) -> str:
     proxy = str(proxy or "").strip()
     url = str(url or "").strip()
     if not proxy or not url:
@@ -91,6 +99,15 @@ def _format_download_proxy_url(proxy: str, url: str) -> str:
         return proxy.replace("{url}", url)
     separator = "" if proxy.endswith(("/", "=", "?", "&")) else "/"
     return f"{proxy}{separator}{url}"
+
+
+def _format_download_proxy_url(proxy: str, url: str) -> str:
+    proxy_text = str(proxy or "")
+    url_text = str(url or "")
+    rust_result = rust_backend.format_download_proxy_url(proxy_text, url_text)
+    if rust_result is not None:
+        return rust_result
+    return _py_format_download_proxy_url(proxy, url)
 
 
 def _download_url_candidates(url: str) -> list[str]:

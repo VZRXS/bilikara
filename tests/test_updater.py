@@ -25,6 +25,90 @@ class FakeHTTPResponse:
 
 
 class UpdateCheckTest(unittest.TestCase):
+    def test_url_utilities_use_python_fallback(self):
+        with patch(
+            "bilikara.updater.rust_backend.release_list_api_from_latest",
+            return_value=None,
+        ), patch(
+            "bilikara.updater.rust_backend.format_download_proxy_url",
+            return_value=None,
+        ):
+            self.assertEqual(
+                updater._release_list_api_from_latest(
+                    " https://api.example/releases/latest "
+                ),
+                "https://api.example/releases",
+            )
+            self.assertEqual(
+                updater._format_download_proxy_url(
+                    "https://proxy/?url={url_encoded}",
+                    "https://example/歌曲 a.zip",
+                ),
+                updater._py_format_download_proxy_url(
+                    "https://proxy/?url={url_encoded}",
+                    "https://example/歌曲 a.zip",
+                ),
+            )
+
+    def test_url_utilities_rust_match_python(self):
+        capabilities = rust_backend.backend_status()["capabilities"]
+        if not capabilities["release_list_api_from_latest"] or not capabilities[
+            "format_download_proxy_url"
+        ]:
+            self.skipTest("Rust URL utility symbols are not available")
+
+        latest_cases = [
+            "https://api.example/releases/latest",
+            " https://api.example/releases/latest ",
+            "https://api.example/releases/latest/",
+            "",
+            "歌曲/latest",
+        ]
+        for api_url in latest_cases:
+            with self.subTest(api_url=api_url):
+                rust_result = rust_backend.release_list_api_from_latest(api_url)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(
+                    rust_result,
+                    updater._py_release_list_api_from_latest(api_url),
+                )
+
+        proxy_cases = [
+            ("https://proxy/{url}", "https://example/a.zip"),
+            ("https://proxy/?url={url_encoded}", "https://example/歌曲 a.zip?x=1&y=2"),
+            ("https://proxy", "https://example/a.zip"),
+            ("https://proxy/", "https://example/a.zip"),
+            ("", "https://example/a.zip"),
+            ("https://proxy", ""),
+        ]
+        for proxy, url in proxy_cases:
+            with self.subTest(proxy=proxy, url=url):
+                rust_result = rust_backend.format_download_proxy_url(proxy, url)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(
+                    rust_result,
+                    updater._py_format_download_proxy_url(proxy, url),
+                )
+
+    def test_url_utilities_missing_symbol_and_nul_fall_back(self):
+        capabilities = dict(rust_backend._CAPABILITIES)
+        capabilities["format_download_proxy_url"] = False
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(
+                rust_backend.format_download_proxy_url("https://proxy", "https://example")
+            )
+            self.assertEqual(
+                updater._format_download_proxy_url("https://proxy", "https://example"),
+                "https://proxy/https://example",
+            )
+        self.assertIsNone(
+            rust_backend.format_download_proxy_url("https://proxy", "a\x00b")
+        )
+        self.assertEqual(
+            updater._format_download_proxy_url("https://proxy", "a\x00b"),
+            updater._py_format_download_proxy_url("https://proxy", "a\x00b"),
+        )
+
     def test_asset_token_rust_equivalence_and_false_results(self):
         if not rust_backend.backend_status()["loaded"]:
             self.skipTest("Rust dynamic library is not available")

@@ -72,6 +72,14 @@ _SYMBOLS = {
     "asset_has_x64": ("rust_asset_has_x64", [ctypes.c_char_p, ctypes.c_char_p]),
     "asset_has_arm64": ("rust_asset_has_arm64", [ctypes.c_char_p]),
     "asset_has_universal": ("rust_asset_has_universal", [ctypes.c_char_p]),
+    "release_list_api_from_latest": (
+        "rust_release_list_api_from_latest",
+        [ctypes.c_char_p],
+    ),
+    "format_download_proxy_url": (
+        "rust_format_download_proxy_url",
+        [ctypes.c_char_p, ctypes.c_char_p],
+    ),
 }
 
 # Asset tokens use the grammar ``[a-z0-9]+``.  The FFI therefore transports a
@@ -366,3 +374,35 @@ def asset_has_universal(tokens: set[str]) -> bool | None:
     if payload is None:
         return None
     return _call_asset_classifier("asset_has_universal", (payload,))
+
+
+def release_list_api_from_latest(api_url: str) -> str | None:
+    if (
+        _rust_lib is None
+        or not _CAPABILITIES["release_list_api_from_latest"]
+        or "\x00" in api_url
+    ):
+        return None
+    try:
+        pointer = _rust_lib.rust_release_list_api_from_latest(api_url.encode("utf-8"))
+        return _read_rust_string(pointer)
+    except Exception:
+        return None
+
+
+def format_download_proxy_url(proxy: str, url: str) -> str | None:
+    if (
+        _rust_lib is None
+        or not _CAPABILITIES["format_download_proxy_url"]
+        or "\x00" in proxy
+        or "\x00" in url
+    ):
+        return None
+    try:
+        pointer = _rust_lib.rust_format_download_proxy_url(
+            proxy.encode("utf-8"),
+            url.encode("utf-8"),
+        )
+        return _read_rust_string(pointer)
+    except Exception:
+        return None

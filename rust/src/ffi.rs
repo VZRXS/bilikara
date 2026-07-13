@@ -8,6 +8,7 @@ use crate::asset_tokens::{
 use crate::filename::safe_filename_impl;
 use crate::platform::normalize_machine_arch_impl;
 use crate::title_cleanup::clean_display_title_impl;
+use crate::url_utils::{format_download_proxy_url, release_list_api_from_latest};
 use crate::version::{normalize_version_tag_impl, version_sort_key_impl, version_tuple_impl};
 
 #[no_mangle]
@@ -193,6 +194,25 @@ pub unsafe extern "C" fn rust_normalize_machine_arch(machine: *const c_char) -> 
 
 /// # Safety
 ///
+/// `api_url` must point to a valid null-terminated UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn rust_release_list_api_from_latest(api_url: *const c_char) -> *mut c_char {
+    ffi_string_result(|| Some(release_list_api_from_latest(input(api_url)?)))
+}
+
+/// # Safety
+///
+/// Both pointers must point to valid null-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn rust_format_download_proxy_url(
+    proxy: *const c_char,
+    url: *const c_char,
+) -> *mut c_char {
+    ffi_string_result(|| Some(format_download_proxy_url(input(proxy)?, input(url)?)))
+}
+
+/// # Safety
+///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
 /// that the pointer is null or was returned by this library as an owned C string.
 #[no_mangle]
@@ -255,6 +275,20 @@ mod tests {
         unsafe {
             assert!(rust_normalize_machine_arch(std::ptr::null()).is_null());
             assert!(rust_normalize_machine_arch(invalid_utf8.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn url_exports_reject_invalid_ffi_inputs() {
+        let empty = CString::new("").unwrap();
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        unsafe {
+            assert!(rust_release_list_api_from_latest(std::ptr::null()).is_null());
+            assert!(rust_release_list_api_from_latest(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_format_download_proxy_url(std::ptr::null(), empty.as_ptr()).is_null());
+            assert!(
+                rust_format_download_proxy_url(empty.as_ptr(), invalid_utf8.as_ptr()).is_null()
+            );
         }
     }
 }
