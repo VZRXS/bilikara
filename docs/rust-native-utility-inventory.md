@@ -170,3 +170,116 @@ After those groups, all reviewed candidates are either already migrated or
 intentionally deferred above. Phase 1 does not include scoring, selection,
 runtime detection, filesystem/path traversal checks, downloader behavior,
 network calls, persistence, scheduling, or UI/rendering.
+
+## Final Phase-1 architecture
+
+Phase 1 is complete with one Cargo crate, one `bilikara_rust` `cdylib`, and the
+following domain modules:
+
+```text
+rust/src/
+├── archive.rs
+├── asset_tokens.rs
+├── ffi.rs
+├── filename.rs
+├── lib.rs
+├── platform.rs
+├── title_cleanup.rs
+├── url_utils.rs
+└── version.rs
+```
+
+`ffi.rs` is the sole owner of raw C pointers, `CStr`/`CString` conversion,
+panic containment, failure sentinels, and Rust-owned string freeing. Domain
+modules contain pure transformations and their unit tests. `lib.rs` only
+declares modules and re-exports the ABI.
+
+### C ABI, version, and compatibility
+
+ABI version `1` is additive: new symbols may be added without changing the
+version. The version changes only if an existing symbol's signature, ownership
+rule, success value, or failure meaning changes.
+
+The final exports are:
+
+```text
+rust_backend_abi_version
+rust_clean_display_title
+rust_safe_filename
+rust_normalize_version_tag
+rust_version_tuple
+rust_version_sort_key
+rust_normalize_machine_arch
+rust_asset_tokens
+rust_asset_has_windows
+rust_asset_has_macos
+rust_asset_has_linux
+rust_asset_has_x64
+rust_asset_has_arm64
+rust_asset_has_universal
+rust_release_list_api_from_latest
+rust_format_download_proxy_url
+rust_is_downloadable_archive
+rust_free_string
+```
+
+Every pointer-accepting export validates null and UTF-8 input and is contained
+by `catch_unwind`. String results are Rust-owned and must be released through
+`rust_free_string`. `rust_backend_abi_version` takes no pointers, allocates
+nothing, and returns `0` only if its protected operation fails.
+
+### Python capabilities and fallback conventions
+
+`bilikara.rust_backend` detects these independently usable capabilities:
+
+```text
+title_cleanup
+safe_filename
+normalize_version_tag
+version_tuple
+version_sort_key
+normalize_machine_arch
+asset_tokens
+asset_has_windows
+asset_has_macos
+asset_has_linux
+asset_has_x64
+asset_has_arm64
+asset_has_universal
+release_list_api_from_latest
+format_download_proxy_url
+is_downloadable_archive
+```
+
+A missing symbol disables only its capability. A missing library, incompatible
+ABI, null result, invalid UTF-8 result, call exception, or documented failure
+sentinel causes the Python caller to use its preserved `_py_*` implementation.
+Normal source execution never requires Cargo or the library. Release packaging
+still uses `BILIKARA_REQUIRE_RUST_LIB=1` to reject an omitted native library.
+
+Optional parses use tri-state results: `(True, value)` means Rust completed a
+valid parse, `(True, None)` means Rust completed and rejected the syntax, and
+`(False, None)` means the backend could not complete the call. Boolean archive
+recognition uses `1` for true, `0` for a valid false, and `-1` for failure.
+These conventions prevent invalid input or false from being mistaken for a
+fallback condition.
+
+Asset tokens use sorted newline-separated ASCII at the FFI boundary. Their
+grammar is `[a-z0-9]+`, so a token cannot contain newline; an empty payload is
+a successful empty set. Classifier results use Rust-owned strings `"1"` and
+`"0"`, with null or any other payload treated as failure.
+
+### Criteria for future migration
+
+Future native work should start in a later phase only when a cohesive domain
+has enough parsing, validation, safety, or reuse value to justify an FFI call.
+It must preserve Python APIs and fallbacks, expose independently detectable
+capabilities, distinguish invalid values from backend failures, and keep all
+I/O and mutable policy in Python unless that later phase explicitly changes
+the boundary.
+
+The intentionally deferred helpers in the audit remain deferred. In
+particular, release and asset scoring/selection, URL candidate order, Bilibili
+short-link resolution, cache quality/source defaults, track/download planning,
+path traversal checks, persistent schema adapters, rendering utilities, and
+all filesystem/network/subprocess/thread behavior are not part of Phase 1.
