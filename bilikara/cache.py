@@ -53,6 +53,11 @@ from .store import PlaylistStore
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
 AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp3", ".flac", ".ogg", ".opus", ".wav"}
 PROGRESS_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
+ARIA2_PROGRESS_RE = re.compile(
+    r"\[#\w+\s+([0-9.]+)([A-Za-z]*)/([0-9.]+)([A-Za-z]+)"
+    r"\(([0-9.]+)%\)",
+    re.IGNORECASE,
+)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re.IGNORECASE)
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
@@ -2455,6 +2460,7 @@ class CacheManager:
             "--min-split-size=5M",
             f"--max-connection-per-server={connections}",
             "--file-allocation=none",
+            "--human-readable=false",
             "--summary-interval=1",
             "--console-log-level=notice",
         ]
@@ -2481,6 +2487,8 @@ class CacheManager:
                 tool_dir=binary_path.parent,
                 silent=True,
                 is_preallocated=False,
+                progress_from_output=True,
+                mark_done_on_exit=False,
             )
             exit_code = 0
         except Exception as exc:
@@ -2512,6 +2520,16 @@ class CacheManager:
         except Exception:
             self._safe_rmtree(attempt_dir)
             raise
+        final_size = expected_path.stat().st_size
+        self._update_download_track_progress(
+            item_id,
+            track_key=track_key,
+            target_dir=attempt_dir,
+            current_bytes=final_size,
+            target_bytes=final_size,
+            done=True,
+            measure_path=False,
+        )
         return expected_path
 
     @staticmethod
@@ -2629,12 +2647,16 @@ class CacheManager:
         tool_dir: Path | None = None,
         silent: bool = True,
         is_preallocated: bool = False,
+        progress_from_output: bool = False,
+        mark_done_on_exit: bool = True,
     ) -> None:
         safe_command = self._redacted_command_for_log(command)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] command: {json.dumps(safe_command, ensure_ascii=False)}")
         if not silent:
             _debug_print(f"[bilikara-cache] [{stage_label}] command: {json.dumps(safe_command, ensure_ascii=False)}")
         target_bytes_state = {"value": 0}
+        current_bytes_state = {"value": 0}
+        progress_percent_state: dict[str, float | None] = {"value": None}
         monitor_stop = threading.Event()
 
         process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
@@ -2658,6 +2680,7 @@ class CacheManager:
             target_dir=target_dir,
             target_bytes=0,
             is_preallocated=is_preallocated,
+            measure_path=not progress_from_output,
         )
         monitor = threading.Thread(
             target=self._monitor_download_track_progress,
@@ -2668,7 +2691,10 @@ class CacheManager:
                 "track_key": track_key,
                 "target_dir": target_dir,
                 "target_bytes_state": target_bytes_state,
+                "current_bytes_state": current_bytes_state if progress_from_output else None,
+                "progress_percent_state": progress_percent_state if progress_from_output else None,
                 "is_preallocated": is_preallocated,
+                "measure_path": not progress_from_output,
             },
             daemon=True,
         )
@@ -2684,17 +2710,29 @@ class CacheManager:
                     _debug_print(f"[bilikara-cache] [{stage_label}] {line}")
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
                 self._record_item_activity(item_id)
-                progress = self._extract_progress(line)
-                target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
+                aria2_progress = self._aria2_progress_bytes(line) if progress_from_output else None
+                if aria2_progress is not None:
+                    downloaded_bytes, target_bytes, progress = aria2_progress
+                    current_bytes_state["value"] = max(
+                        current_bytes_state["value"],
+                        downloaded_bytes,
+                    )
+                    progress_percent_state["value"] = progress
+                else:
+                    downloaded_bytes = None
+                    progress = self._extract_progress(line)
+                    target_bytes = self._selected_stream_size_hint_bytes(line, stream_kind)
                 if target_bytes:
                     target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
                 self._update_download_track_progress(
                     item_id,
                     track_key=track_key,
                     target_dir=target_dir,
+                    current_bytes=downloaded_bytes,
                     target_bytes=target_bytes_state["value"],
                     progress_percent=progress,
                     is_preallocated=is_preallocated,
+                    measure_path=not progress_from_output,
                 )
                 if self.stop_event.is_set():
                     self._terminate_process(process)
@@ -2733,14 +2771,15 @@ class CacheManager:
             error.return_code = return_code
             raise error
 
-        self._update_download_track_progress(
-            item_id,
-            track_key=track_key,
-            target_dir=target_dir,
-            target_bytes=target_bytes_state["value"],
-            done=True,
-            is_preallocated=is_preallocated,
-        )
+        if mark_done_on_exit:
+            self._update_download_track_progress(
+                item_id,
+                track_key=track_key,
+                target_dir=target_dir,
+                target_bytes=target_bytes_state["value"],
+                done=True,
+                is_preallocated=is_preallocated,
+            )
         self._record_item_activity(item_id)
         self._raise_if_retry_requested(item_id)
 
@@ -3633,30 +3672,9 @@ class CacheManager:
     def _selected_stream_size_hint_bytes(line: str, stream_kind: str) -> int:
         normalized_line = str(line or "").strip()
 
-        # Check for aria2c progress line, e.g. [#23e8fe 96KiB/2.3MiB(3%)] or [#23e8fe 96K/2.3M(3%)]
-        aria2c_match = re.search(
-            r"\[#\w+\s+[0-9.]+[a-zA-Z]*/([0-9.]+)([a-zA-Z]+)\(",
-            normalized_line,
-            re.IGNORECASE,
-        )
-        if aria2c_match:
-            amount, unit = aria2c_match.groups()
-            try:
-                value = float(amount)
-            except (TypeError, ValueError):
-                return 0
-            unit_upper = str(unit or "").upper()
-            if unit_upper.startswith("T"):
-                multiplier = 1024 ** 4
-            elif unit_upper.startswith("G"):
-                multiplier = 1024 ** 3
-            elif unit_upper.startswith("M"):
-                multiplier = 1024 ** 2
-            elif unit_upper.startswith("K"):
-                multiplier = 1024 ** 1
-            else:
-                multiplier = 1
-            return max(0, int(value * multiplier))
+        aria2_progress = CacheManager._aria2_progress_bytes(normalized_line)
+        if aria2_progress is not None:
+            return aria2_progress[1]
 
         expected_prefix = "[视频]" if stream_kind == "video" else "[音频]"
         if expected_prefix not in normalized_line:
@@ -3673,6 +3691,39 @@ class CacheManager:
         if unit_index is None:
             return 0
         return max(0, int(value * (1024 ** unit_index)))
+
+    @staticmethod
+    def _aria2_size_bytes(amount: object, unit: object) -> int:
+        try:
+            value = float(amount)
+        except (TypeError, ValueError):
+            return 0
+        unit_upper = str(unit or "").upper()
+        if unit_upper.startswith("T"):
+            multiplier = 1024 ** 4
+        elif unit_upper.startswith("G"):
+            multiplier = 1024 ** 3
+        elif unit_upper.startswith("M"):
+            multiplier = 1024 ** 2
+        elif unit_upper.startswith("K"):
+            multiplier = 1024
+        else:
+            multiplier = 1
+        return max(0, int(value * multiplier))
+
+    @classmethod
+    def _aria2_progress_bytes(cls, line: object) -> tuple[int, int, float] | None:
+        match = ARIA2_PROGRESS_RE.search(str(line or "").strip())
+        if not match:
+            return None
+        current_amount, current_unit, total_amount, total_unit, percent_text = match.groups()
+        current_bytes = cls._aria2_size_bytes(current_amount, current_unit)
+        target_bytes = cls._aria2_size_bytes(total_amount, total_unit)
+        try:
+            percent = float(percent_text)
+        except (TypeError, ValueError):
+            return None
+        return current_bytes, target_bytes, max(0.0, min(percent, 100.0))
 
     @staticmethod
     def _format_stage_bytes(value: object) -> str:
@@ -3734,10 +3785,12 @@ class CacheManager:
         *,
         track_key: str,
         target_dir: Path,
+        current_bytes: int | None = None,
         target_bytes: int | None = None,
         progress_percent: float | None = None,
         done: bool = False,
         is_preallocated: bool = False,
+        measure_path: bool = True,
     ) -> None:
         with self.lock:
             tracks = self.item_download_progress.get(item_id)
@@ -3765,12 +3818,19 @@ class CacheManager:
             # Calculate current_bytes using progress_percent if available to avoid pre-allocated disk size issue
             t_bytes = int(track.get("target_bytes") or 0)
             p_percent = track.get("progress_percent")
-            if is_preallocated and p_percent is not None and t_bytes > 0:
-                current_bytes = int(t_bytes * (float(p_percent) / 100.0))
+            if current_bytes is not None:
+                measured_bytes = max(
+                    int(track.get("current_bytes") or 0),
+                    max(0, int(current_bytes or 0)),
+                )
+            elif is_preallocated and p_percent is not None and t_bytes > 0:
+                measured_bytes = int(t_bytes * (float(p_percent) / 100.0))
+            elif measure_path:
+                measured_bytes = self._path_size(target_dir)
             else:
-                current_bytes = self._path_size(target_dir)
+                measured_bytes = int(track.get("current_bytes") or 0)
 
-            track["current_bytes"] = max(0, int(current_bytes or 0))
+            track["current_bytes"] = max(0, int(measured_bytes or 0))
 
             if done:
                 track["target_bytes"] = int(track.get("current_bytes") or 0)
@@ -3895,15 +3955,21 @@ class CacheManager:
         track_key: str,
         target_dir: Path,
         target_bytes_state: dict[str, int],
+        current_bytes_state: dict[str, int] | None = None,
+        progress_percent_state: dict[str, float | None] | None = None,
         is_preallocated: bool = False,
+        measure_path: bool = True,
     ) -> None:
         while not stop_event.wait(1.0):
             self._update_download_track_progress(
                 item_id,
                 track_key=track_key,
                 target_dir=target_dir,
+                current_bytes=(current_bytes_state or {}).get("value"),
                 target_bytes=target_bytes_state.get("value", 0),
+                progress_percent=(progress_percent_state or {}).get("value"),
                 is_preallocated=is_preallocated,
+                measure_path=measure_path,
             )
             if process.poll() is not None:
                 return

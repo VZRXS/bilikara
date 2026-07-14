@@ -68,6 +68,51 @@ class CacheManagerOutputTest(unittest.TestCase):
             int(163.5 * 1024 * 1024),
         )
 
+    def test_aria2_progress_reads_exact_raw_byte_counts(self):
+        self.assertEqual(
+            CacheManager._aria2_progress_bytes(
+                "[#23e8fe 1048576B/10485760B(10%) CN:8 DL:524288B]"
+            ),
+            (1048576, 10485760, 10.0),
+        )
+
+    def test_aria2_progress_does_not_use_sparse_file_logical_size(self):
+        with TemporaryDirectory() as tmpdir, patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            root = Path(tmpdir)
+            store = PlaylistStore(root / "state.json", root / "backup.json")
+            manager = CacheManager(store, max_cache_items=1)
+            try:
+                attempt = root / ".attempt-test"
+                attempt.mkdir()
+                sparse = attempt / "video.mp4"
+                with sparse.open("wb") as handle:
+                    handle.seek(10 * 1024 * 1024 - 1)
+                    handle.write(b"x")
+                self.assertEqual(sparse.stat().st_size, 10 * 1024 * 1024)
+
+                manager._begin_download_progress("song", [{
+                    "key": "video-p1",
+                    "label": "视频轨P1",
+                    "order": 0,
+                }])
+                manager._update_download_track_progress(
+                    "song",
+                    track_key="video-p1",
+                    target_dir=attempt,
+                    current_bytes=1024 * 1024,
+                    target_bytes=10 * 1024 * 1024,
+                    progress_percent=10,
+                    measure_path=False,
+                )
+                progress = manager.item_download_progress["song"]["video-p1"]
+                self.assertEqual(progress["current_bytes"], 1024 * 1024)
+                self.assertEqual(progress["target_bytes"], 10 * 1024 * 1024)
+                self.assertEqual(progress["progress_percent"], 10)
+            finally:
+                manager.shutdown()
+
     def test_structured_stage_message_prefers_tracked_bytes(self):
         self.assertEqual(
             CacheManager._structured_stage_message("下载视频轨 P1", 32 * 1024 * 1024, 64 * 1024 * 1024),
