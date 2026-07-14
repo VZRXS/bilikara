@@ -140,11 +140,20 @@ jobs:
         with:
           node-version: 20
 
-      - name: Build Tauri App
+      - name: Build Tauri App on Windows
+        if: runner.os == 'Windows'
         run: |
           npm ci
           npm exec -- tauri icon static/pic/icon.png
           npm run build
+
+      - name: Build Tauri App on macOS
+        if: runner.os == 'macOS'
+        run: |
+          npm ci
+          npm exec -- tauri icon static/pic/icon.png
+          npm run build:rust
+          npm exec -- tauri build --bundles app -- --locked
 
       - name: Inject Tauri into Windows Bundle
         if: runner.os == 'Windows'
