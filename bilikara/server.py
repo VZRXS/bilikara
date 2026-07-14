@@ -824,6 +824,13 @@ atexit.register(CONTEXT.shutdown)
 class BilikaraHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def do_HEAD(self) -> None:  # noqa: N802
+        route = urlparse(self.path).path
+        if route.startswith("/media/"):
+            self._serve_media(route, head_only=True)
+            return
+        self._serve_static(route, head_only=True)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         route = parsed.path
@@ -1546,6 +1553,24 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True})
                 return
+            if route == "/api/player/diagnostic":
+                event = {
+                    "event": str(body.get("event") or "")[:40],
+                    "item_id": str(body.get("item_id") or "")[:80],
+                    "media_kind": str(body.get("media_kind") or "")[:20],
+                    "current_time": body.get("current_time"),
+                    "duration": body.get("duration"),
+                    "ready_state": body.get("ready_state"),
+                    "network_state": body.get("network_state"),
+                    "paused": bool(body.get("paused")),
+                    "ended": bool(body.get("ended")),
+                    "error_code": body.get("error_code"),
+                    "error_message": str(body.get("error_message") or "")[:500],
+                    "url_basename": str(body.get("url_basename") or "")[:255],
+                }
+                print(f"[player-media] {json.dumps(event, ensure_ascii=False, sort_keys=True)}", flush=True)
+                self._write_json({"ok": True})
+                return
             if route == "/api/rating/log":
                 message = str(body.get("message") or "").strip()
                 if message:
@@ -1801,7 +1826,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         match = BVID_IN_TEXT_RE.search(raw_url)
         return match.group(0) if match else ""
 
-    def _serve_static(self, route: str) -> None:
+    def _serve_static(self, route: str, *, head_only: bool = False) -> None:
         if route in {"", "/"}:
             relative = "index.html"
         elif route in {"/remote", "/remote/"}:
@@ -1816,9 +1841,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             static_path,
             content_type=self._guess_type(static_path),
             cache_control="no-store",
+            head_only=head_only,
         )
 
-    def _serve_media(self, route: str) -> None:
+    def _serve_media(self, route: str, *, head_only: bool = False) -> None:
         # relative = route.removeprefix("/media/")  # Python 3.9+
         prefix = "/media/"
         relative = route[len(prefix):] if route.startswith(prefix) else route
@@ -1831,6 +1857,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             media_path,
             content_type=self._guess_type(media_path),
             allow_ranges=True,
+            head_only=head_only,
         )
 
     def _read_json_body(self) -> dict:
@@ -1978,6 +2005,29 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"\n")
         self.wfile.flush()
 
+    @staticmethod
+    def _parse_single_byte_range(range_header: str, file_size: int) -> tuple[int, int]:
+        match = RANGE_RE.fullmatch(str(range_header or "").strip())
+        if not match or file_size <= 0:
+            raise ValueError("invalid or unsatisfiable byte range")
+        start_text, end_text = match.groups()
+        if not start_text and not end_text:
+            raise ValueError("empty byte range")
+        if not start_text:
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise ValueError("invalid suffix byte range")
+            return max(0, file_size - suffix_length), file_size - 1
+        start = int(start_text)
+        if start >= file_size:
+            raise ValueError("byte range starts beyond EOF")
+        if not end_text:
+            return start, file_size - 1
+        end = int(end_text)
+        if end < start:
+            raise ValueError("byte range end precedes start")
+        return start, min(end, file_size - 1)
+
     def _stream_file(
         self,
         file_path: Path,
@@ -1985,48 +2035,58 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         content_type: str,
         allow_ranges: bool = False,
         cache_control: str | None = None,
+        head_only: bool = False,
     ) -> None:
-        file_size = file_path.stat().st_size
-        range_header = self.headers.get("Range", "")
-        if allow_ranges and range_header:
-            match = RANGE_RE.fullmatch(range_header.strip())
-            if match:
-                start_str, end_str = match.groups()
-                start = int(start_str) if start_str else 0
-                end = int(end_str) if end_str else file_size - 1
-                end = min(end, file_size - 1)
-                if start <= end:
-                    self.send_response(HTTPStatus.PARTIAL_CONTENT)
-                    self.send_header("Content-Type", content_type)
+        with file_path.open("rb") as handle:
+            file_size = os.fstat(handle.fileno()).st_size
+            range_header = self.headers.get("Range", "")
+            if allow_ranges and range_header:
+                try:
+                    start, end = self._parse_single_byte_range(range_header, file_size)
+                except (TypeError, ValueError):
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.send_header("Content-Length", "0")
                     self.send_header("Accept-Ranges", "bytes")
-                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
-                    self.send_header("Content-Length", str(end - start + 1))
                     if cache_control:
                         self.send_header("Cache-Control", cache_control)
                     self.end_headers()
-                    with file_path.open("rb") as handle:
-                        handle.seek(start)
-                        remaining = end - start + 1
-                        try:
-                            while remaining > 0:
-                                chunk = handle.read(min(64 * 1024, remaining))
-                                if not chunk:
-                                    break
-                                self.wfile.write(chunk)
-                                remaining -= len(chunk)
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            pass
                     return
 
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(file_size))
-        if cache_control:
-            self.send_header("Cache-Control", cache_control)
-        if allow_ranges:
-            self.send_header("Accept-Ranges", "bytes")
-        self.end_headers()
-        with file_path.open("rb") as handle:
+                content_length = end - start + 1
+                self.send_response(HTTPStatus.PARTIAL_CONTENT)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header("Content-Length", str(content_length))
+                if cache_control:
+                    self.send_header("Cache-Control", cache_control)
+                self.end_headers()
+                if head_only:
+                    return
+                handle.seek(start)
+                remaining = content_length
+                try:
+                    while remaining > 0:
+                        chunk = handle.read(min(64 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(file_size))
+            if cache_control:
+                self.send_header("Cache-Control", cache_control)
+            if allow_ranges:
+                self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            if head_only:
+                return
             try:
                 while True:
                     chunk = handle.read(64 * 1024)
