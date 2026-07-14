@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from bilikara.cache import CacheManager, DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_YTDLP, DownloadCommandError, VIDEO_QUALITY_CHOICES
 from bilikara.models import PlaylistItem
@@ -1124,8 +1124,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_force_retry_preempts_other_active_cache(self):
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+    def test_force_retry_current_item_uses_urgent_lane_without_preempting_active_cache(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 target = self.make_item("song-a")
@@ -1141,9 +1145,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 fake_process = SimpleNamespace(poll=lambda: 0)
                 with manager.lock:
                     manager.desired_ids = {"song-a", "song-b"}
+                    manager.ordered_desired_ids = ["song-a", "song-b"]
                     manager.active_item_id = "song-b"
                     manager.active_process = fake_process
-                with patch.object(manager, "_enqueue_retry_front") as enqueue_front_mock, patch.object(
+                with patch.object(manager, "_start_urgent_cache") as urgent_cache_mock, patch.object(
                     manager, "_terminate_process"
                 ) as terminate_mock:
                     manager.retry_item("song-a", force=True)
@@ -1151,9 +1156,131 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     self.assertIsNotNone(retried)
                     self.assertEqual(retried.cache_status, "pending")
                     self.assertEqual(retried.cache_message, "准备重新下载")
-                    self.assertEqual(manager.cache_interrupted_messages["song-b"], "等待当前歌曲重新下载")
-                    enqueue_front_mock.assert_called_once_with("song-a", requeue_after="song-b")
-                    terminate_mock.assert_called_once_with(fake_process)
+                    self.assertNotIn("song-b", manager.cache_interrupted_messages)
+                    urgent_cache_mock.assert_called_once_with("song-a")
+                    terminate_mock.assert_not_called()
+                    self.assertEqual(manager.active_item_id, "song-b")
+            finally:
+                manager.shutdown()
+
+    def test_urgent_current_retry_runs_concurrently_with_normal_cache_worker(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            target = self.make_item("song-a")
+            active = self.make_item("song-b")
+            self.store.add_item(target, requester_name="cache-test-user")
+            self.store.add_item(active, requester_name="cache-test-user")
+            self.store.update_item(
+                "song-a",
+                cache_status="failed",
+                cache_message="缓存失败",
+                persist_backup=False,
+            )
+            urgent_started = threading.Event()
+            release_urgent = threading.Event()
+
+            def fake_cache_item(item_id, allow_refresh_retry=True):
+                self.assertEqual(item_id, "song-a")
+                urgent_started.set()
+                self.assertTrue(release_urgent.wait(2))
+                return False
+
+            fake_process = SimpleNamespace(
+                poll=lambda: None,
+                terminate=lambda: None,
+                wait=lambda timeout=None: None,
+                kill=lambda: None,
+            )
+            try:
+                with manager.lock:
+                    manager.desired_ids = {"song-a", "song-b"}
+                    manager.ordered_desired_ids = ["song-a", "song-b"]
+                    manager.pending_ids = {"song-b"}
+                    manager.active_item_id = "song-b"
+                    manager.active_process = fake_process
+                with patch.object(manager, "_cache_item", side_effect=fake_cache_item), patch.object(
+                    manager, "_terminate_process"
+                ) as terminate_mock:
+                    manager.retry_item("song-a", force=True)
+                    self.assertTrue(urgent_started.wait(2))
+                    with manager.lock:
+                        self.assertEqual(manager.active_item_id, "song-b")
+                        self.assertIn("song-a", manager.urgent_cache_ids)
+                        self.assertIn("song-b", manager.pending_ids)
+                    terminate_mock.assert_not_called()
+                    release_urgent.set()
+                    worker = manager.urgent_workers.get("song-a")
+                    self.assertIsNotNone(worker)
+                    worker.join(timeout=2)
+                    self.assertFalse(worker.is_alive())
+                    with manager.lock:
+                        self.assertNotIn("song-a", manager.urgent_cache_ids)
+                        self.assertEqual(manager.active_item_id, "song-b")
+            finally:
+                release_urgent.set()
+                manager.shutdown()
+
+    def test_normal_cache_priority_remains_single_lane(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
+                self.store.add_item(self.make_item("song-b"), requester_name="cache-test-user")
+                fake_process = SimpleNamespace(
+                    poll=lambda: None,
+                    terminate=lambda: None,
+                    wait=lambda timeout=None: None,
+                    kill=lambda: None,
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-a", "song-b"}
+                    manager.pending_ids = {"song-a", "song-b"}
+                    manager.active_item_id = "song-b"
+                    manager.active_process = fake_process
+
+                with patch.object(manager, "_start_urgent_cache") as urgent_cache_mock, patch.object(
+                    manager, "_terminate_process"
+                ) as terminate_mock:
+                    manager._prioritize_cache_window(
+                        self.store.list_items(),
+                        {"song-a", "song-b"},
+                    )
+
+                urgent_cache_mock.assert_not_called()
+                terminate_mock.assert_called_once_with(fake_process)
+                self.assertNotIn("song-a", manager.urgent_cache_ids)
+            finally:
+                manager.shutdown()
+
+    def test_active_process_registry_isolates_concurrent_items(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            process_a = Mock()
+            process_b = Mock()
+            try:
+                manager._register_active_process("song-a", process_a)
+                manager._register_active_process("song-b", process_b)
+                with manager.lock:
+                    self.assertEqual(manager._active_processes_locked("song-a"), [process_a])
+                    self.assertEqual(manager._active_processes_locked("song-b"), [process_b])
+                    self.assertCountEqual(
+                        manager._active_processes_locked(),
+                        [process_a, process_b],
+                    )
+                manager._unregister_active_process(process_a)
+                manager._unregister_active_process(process_b)
             finally:
                 manager.shutdown()
 

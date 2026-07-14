@@ -147,6 +147,8 @@ class CacheManager:
         self.tasks: "queue.Queue[str]" = queue.Queue()
         self.pending_ids: set[str] = set()
         self.requeued_active_ids: set[str] = set()
+        self.urgent_cache_ids: set[str] = set()
+        self.urgent_workers: dict[str, threading.Thread] = {}
         self.desired_ids: set[str] = set()
         self.ordered_desired_ids: list[str] = []
         self.stop_event = threading.Event()
@@ -161,6 +163,7 @@ class CacheManager:
         self.ffmpeg_prepare_lock = threading.Lock()
         self.active_process: subprocess.Popen[str] | None = None
         self.active_processes: set[subprocess.Popen[str]] = set()
+        self.active_process_item_ids: dict[subprocess.Popen[str], str] = {}
         self.active_item_id: str | None = None
         self.item_activity_at: dict[str, float] = {}
         self.item_stage_progress_signatures: dict[str, str] = {}
@@ -206,6 +209,7 @@ class CacheManager:
     def diagnostic_snapshot(self) -> dict[str, Any]:
         with self.lock:
             active_item_id = self.active_item_id or ""
+            urgent_item_ids = list(self.urgent_cache_ids)
             pending_ids = list(self.pending_ids)
             desired_ids = list(self.ordered_desired_ids)
             binary_state = self.binary_state
@@ -251,6 +255,7 @@ class CacheManager:
             },
             "tasks": {
                 "active_item_id": active_item_id,
+                "urgent_item_ids": urgent_item_ids,
                 "pending_item_ids": pending_ids,
                 "desired_item_ids": desired_ids,
                 "queued_worker_tasks": self.tasks.qsize(),
@@ -800,6 +805,8 @@ class CacheManager:
             self.cache_interrupted_messages.clear()
             self.pending_ids.clear()
             self.requeued_active_ids.clear()
+            self.urgent_cache_ids.clear()
+            self.urgent_workers.clear()
             self.desired_ids.clear()
             self.ordered_desired_ids.clear()
         for item in self.store.list_items():
@@ -825,10 +832,16 @@ class CacheManager:
                 return
             self.stop_event.set()
             processes = self._active_processes_locked()
+            urgent_workers = list(self.urgent_workers.values())
             if self.bbdown_login_process is not None:
                 processes.append(self.bbdown_login_process)
                 self.bbdown_login_process = None
         self._terminate_processes(processes, wait=True)
+        current_thread = threading.current_thread()
+        for worker in urgent_workers:
+            if worker is current_thread:
+                continue
+            worker.join(timeout=5.0)
         self._clear_cache_root()
         with self.lock:
             self.item_activity_at.clear()
@@ -836,6 +849,9 @@ class CacheManager:
             self.item_download_progress.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
+            self.urgent_cache_ids.clear()
+            self.urgent_workers.clear()
+            self.active_process_item_ids.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -852,8 +868,11 @@ class CacheManager:
     def clear_runtime_cache(self) -> None:
         with self.lock:
             processes = self._active_processes_locked()
+            urgent_workers = list(self.urgent_workers.values())
             self.pending_ids.clear()
             self.requeued_active_ids.clear()
+            self.urgent_cache_ids.clear()
+            self.urgent_workers.clear()
             self.desired_ids.clear()
             self.ordered_desired_ids.clear()
             self.retry_requested_ids.clear()
@@ -863,6 +882,7 @@ class CacheManager:
             self.item_download_progress.clear()
             self.active_process = None
             self.active_processes.clear()
+            self.active_process_item_ids.clear()
             self.active_item_id = None
             while True:
                 try:
@@ -870,6 +890,11 @@ class CacheManager:
                 except queue.Empty:
                     break
         self._terminate_processes(processes)
+        current_thread = threading.current_thread()
+        for worker in urgent_workers:
+            if worker is current_thread:
+                continue
+            worker.join(timeout=5.0)
         self._clear_cache_root()
 
     def retry_item(self, item_id: str, *, force: bool = False) -> None:
@@ -887,11 +912,32 @@ class CacheManager:
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
 
+        is_current_item = self.store.is_current_item(item_id)
         with self.lock:
             active_processes = self._active_processes_locked(item_id)
-            preempted_item_id = self.active_item_id if force and self.active_item_id != item_id else None
+            target_is_primary_active = self.active_item_id == item_id
+            target_is_urgent_active = item_id in self.urgent_cache_ids
+            primary_active_item_id = self.active_item_id
+            start_concurrent_current_retry = bool(
+                force
+                and is_current_item
+                and primary_active_item_id
+                and primary_active_item_id != item_id
+                and not target_is_urgent_active
+            )
+            preempted_item_id = (
+                primary_active_item_id
+                if force
+                and primary_active_item_id != item_id
+                and not start_concurrent_current_retry
+                else None
+            )
             preempted_processes = self._active_processes_locked(preempted_item_id) if preempted_item_id else []
-            in_flight = item_id in self.pending_ids or self.active_item_id == item_id
+            in_flight = bool(
+                target_is_primary_active
+                or target_is_urgent_active
+                or (item_id in self.pending_ids and not start_concurrent_current_retry)
+            )
             if in_flight:
                 self.retry_requested_ids.add(item_id)
             if preempted_item_id:
@@ -914,6 +960,14 @@ class CacheManager:
             return
 
         self._remove_cache_dir(item_id)
+        if start_concurrent_current_retry:
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] starting concurrent current-item retry while "
+                f"item={primary_active_item_id} continues caching",
+            )
+            self._start_urgent_cache(item_id)
+            return
         if preempted_item_id:
             download_source = self._current_download_source()
             self._append_log_line(
@@ -975,10 +1029,73 @@ class CacheManager:
 
     def enqueue(self, item_id: str) -> None:
         with self.lock:
-            if item_id in self.pending_ids or self.stop_event.is_set():
+            if (
+                item_id in self.pending_ids
+                or item_id in self.urgent_cache_ids
+                or self.stop_event.is_set()
+            ):
                 return
             self.pending_ids.add(item_id)
         self.tasks.put(item_id)
+
+    def _remove_queued_item(self, item_id: str) -> None:
+        with self.lock:
+            retained: list[str] = []
+            while True:
+                try:
+                    queued_id = self.tasks.get_nowait()
+                except queue.Empty:
+                    break
+                if queued_id != item_id:
+                    retained.append(queued_id)
+                self.tasks.task_done()
+            for queued_id in retained:
+                self.tasks.put(queued_id)
+
+    def _start_urgent_cache(self, item_id: str) -> None:
+        self._remove_queued_item(item_id)
+        with self.lock:
+            if self.stop_event.is_set() or item_id in self.urgent_cache_ids:
+                return
+            self.urgent_cache_ids.add(item_id)
+            self.pending_ids.add(item_id)
+            worker = threading.Thread(
+                target=self._urgent_cache_worker,
+                args=(item_id,),
+                name=f"bilikara-current-cache-{item_id}",
+                daemon=True,
+            )
+            self.urgent_workers[item_id] = worker
+        worker.start()
+
+    def _urgent_cache_worker(self, item_id: str) -> None:
+        should_resync = False
+        try:
+            should_resync = self._cache_item(item_id)
+        except Exception as exc:  # noqa: BLE001
+            _debug_print(f"[bilikara-cache] Unexpected urgent-cache error for item {item_id}: {exc}")
+            try:
+                download_source = self._current_download_source()
+                log_path = self._item_log_path(item_id, download_source)
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] Unexpected urgent-cache error: {exc}",
+                )
+                self.store.update_item(
+                    item_id,
+                    cache_status="failed",
+                    cache_message=f"缓存发生意外错误: {exc}",
+                    persist_backup=False,
+                )
+            except Exception:
+                pass
+        finally:
+            with self.lock:
+                self.urgent_cache_ids.discard(item_id)
+                self.urgent_workers.pop(item_id, None)
+                self.pending_ids.discard(item_id)
+        if should_resync and not self.stop_event.is_set():
+            self.sync_with_playlist()
 
     def _enqueue_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
         with self.lock:
@@ -1016,6 +1133,7 @@ class CacheManager:
             if self.stop_event.is_set():
                 return
             active_item_id = self.active_item_id
+            urgent_cache_ids = set(self.urgent_cache_ids)
             drained: list[str] = []
             while True:
                 try:
@@ -1031,7 +1149,7 @@ class CacheManager:
             drained_set = set(drained)
             reordered: list[str] = []
             for item_id in ordered_ids:
-                if item_id == active_item_id:
+                if item_id == active_item_id or item_id in urgent_cache_ids:
                     continue
                 if item_id in drained_set or item_id in self.pending_ids:
                     reordered.append(item_id)
@@ -1059,7 +1177,10 @@ class CacheManager:
         with self.lock:
             active_item_id = self.active_item_id
             active_processes = self._active_processes_locked(active_item_id)
+            urgent_cache_ids = set(self.urgent_cache_ids)
         if not active_item_id or active_item_id not in desired_ids:
+            return
+        if ordered_cache_ids[0] in urgent_cache_ids:
             return
         if active_item_id == ordered_cache_ids[0]:
             return
@@ -1114,8 +1235,15 @@ class CacheManager:
                 with self.lock:
                     if self.active_item_id == item_id:
                         self.active_item_id = None
-                        self.active_process = None
-                        self.active_processes.clear()
+                    item_processes = [
+                        process
+                        for process, process_item_id in self.active_process_item_ids.items()
+                        if process_item_id == item_id
+                    ]
+                    for process in item_processes:
+                        self.active_processes.discard(process)
+                        self.active_process_item_ids.pop(process, None)
+                    self.active_process = next(iter(self.active_processes), None)
                     if item_id in self.requeued_active_ids:
                         self.requeued_active_ids.discard(item_id)
                     else:
@@ -5676,6 +5804,10 @@ class CacheManager:
         with self.lock:
             if self.stop_event.is_set():
                 return False
+            if item_id in self.urgent_cache_ids:
+                return item_id in self.desired_ids
+            if item_id == self.active_item_id:
+                return item_id in self.desired_ids
             if not self.ordered_desired_ids:
                 return item_id in self.desired_ids
             return item_id == self.ordered_desired_ids[0]
@@ -5687,22 +5819,37 @@ class CacheManager:
         if item_id and item_id not in desired_ids:
             self._terminate_processes(processes)
     def _active_processes_locked(self, item_id: str | None = None) -> list[subprocess.Popen[str]]:
-        if item_id is not None and self.active_item_id != item_id:
-            return []
-        processes = list(self.active_processes)
-        if not processes and self.active_process is not None:
-            processes = [self.active_process]
+        if item_id is None:
+            processes = list(self.active_processes)
+        else:
+            processes = [
+                process
+                for process in self.active_processes
+                if self.active_process_item_ids.get(process) == item_id
+            ]
+        try:
+            legacy_process_is_registered = self.active_process in self.active_process_item_ids
+        except TypeError:
+            legacy_process_is_registered = False
+        if (
+            self.active_process is not None
+            and self.active_process not in processes
+            and (item_id is None or self.active_item_id == item_id)
+            and not legacy_process_is_registered
+        ):
+            processes.append(self.active_process)
         return processes
 
     def _register_active_process(self, item_id: str, process: subprocess.Popen[str]) -> None:
         with self.lock:
-            self.active_item_id = item_id
             self.active_process = process
             self.active_processes.add(process)
+            self.active_process_item_ids[process] = item_id
 
     def _unregister_active_process(self, process: subprocess.Popen[str]) -> None:
         with self.lock:
             self.active_processes.discard(process)
+            self.active_process_item_ids.pop(process, None)
             if self.active_process is process:
                 self.active_process = next(iter(self.active_processes), None)
 
