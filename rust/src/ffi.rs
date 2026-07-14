@@ -281,6 +281,21 @@ pub unsafe extern "C" fn rust_select_release(request_json: *const c_char) -> *mu
     })
 }
 
+/// Selects matching video pages from a schema-v1 JSON request.
+///
+/// Returns an owned JSON string that must be freed with [`rust_free_string`].
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_select_media_pages(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        let request_json = unsafe { input(request_json)? };
+        crate::media_page_selection::select_media_pages_json(request_json)
+    })
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
@@ -455,6 +470,51 @@ mod tests {
             let response_no_match = CStr::from_ptr(result_no_match).to_str().unwrap();
             assert!(response_no_match.contains(r#""status":"no_match""#));
             rust_free_string(result_no_match);
+        }
+    }
+
+    #[test]
+    fn select_media_pages_export_rejects_invalid_inputs() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_json = CString::new("not json").unwrap();
+        let unsupported_schema = CString::new(
+            r#"{"schema_version":2,"preferred_page":1,"tolerance_seconds":3,"pages":[]}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            assert!(rust_select_media_pages(std::ptr::null()).is_null());
+            assert!(rust_select_media_pages(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_select_media_pages(invalid_json.as_ptr()).is_null());
+            assert!(rust_select_media_pages(unsupported_schema.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn select_media_pages_export_returns_owned_json() {
+        let request_selected = CString::new(
+            r#"{"schema_version":1,"preferred_page":1,"tolerance_seconds":3,"pages":[{"original_index":0,"page":1,"cid":101,"duration":300,"part":"P1"}]}"#,
+        )
+        .unwrap();
+        let request_no_match = CString::new(
+            r#"{"schema_version":1,"preferred_page":1,"tolerance_seconds":3,"pages":[]}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            let res_sel = rust_select_media_pages(request_selected.as_ptr());
+            assert!(!res_sel.is_null());
+            let str_sel = CStr::from_ptr(res_sel).to_str().unwrap();
+            assert!(str_sel.contains(r#""status":"selected""#));
+            assert!(str_sel.contains(r#""selected_indices":[0]"#));
+            rust_free_string(res_sel);
+
+            let res_nomatch = rust_select_media_pages(request_no_match.as_ptr());
+            assert!(!res_nomatch.is_null());
+            let str_nomatch = CStr::from_ptr(res_nomatch).to_str().unwrap();
+            assert!(str_nomatch.contains(r#""status":"no_match""#));
+            assert!(str_nomatch.contains(r#""selected_indices":[]"#));
+            rust_free_string(res_nomatch);
         }
     }
 }

@@ -28,7 +28,7 @@ PHASE1_CAPABILITIES = (
     "is_downloadable_archive",
 )
 
-PHASE2_CAPABILITIES = ("select_update_asset", "select_release")
+PHASE2_CAPABILITIES = ("select_update_asset", "select_release", "select_media_pages")
 
 
 def _rust_library_name() -> str:
@@ -134,6 +134,11 @@ _SYMBOLS = {
     ),
     "select_release": (
         "rust_select_release",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "select_media_pages": (
+        "rust_select_media_pages",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -675,3 +680,76 @@ def try_select_release(
         return True, response
     except Exception:
         return False, None
+
+
+def try_select_media_pages(
+    request: dict[str, Any],
+) -> tuple[bool, dict[str, Any] | None]:
+    if (
+        _rust_lib is None
+        or not _CAPABILITIES.get("select_media_pages", False)
+    ):
+        return False, None
+
+    try:
+        pages = request.get("pages")
+        if not isinstance(pages, list):
+            return False, None
+
+        original_indices: set[int] = set()
+        last_index: int | None = None
+        for page in pages:
+            if not isinstance(page, dict):
+                return False, None
+            idx = page.get("original_index")
+            if isinstance(idx, bool) or not isinstance(idx, int) or idx < 0:
+                return False, None
+            if last_index is not None and idx <= last_index:
+                return False, None
+            last_index = idx
+            original_indices.add(idx)
+
+        request_json = json.dumps(
+            request,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        pointer = _rust_lib.rust_select_media_pages(request_json)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not isinstance(response, dict):
+            return False, None
+
+        schema_version = response.get("schema_version")
+        if isinstance(schema_version, bool) or schema_version != 1:
+            return False, None
+
+        status = response.get("status")
+        if status not in {"selected", "no_match"}:
+            return False, None
+
+        selected_indices = response.get("selected_indices")
+        if not isinstance(selected_indices, list):
+            return False, None
+
+        seen_selected: set[int] = set()
+        for idx in selected_indices:
+            if isinstance(idx, bool) or not isinstance(idx, int):
+                return False, None
+            if idx not in original_indices or idx in seen_selected:
+                return False, None
+            seen_selected.add(idx)
+
+        if status == "no_match":
+            if len(pages) != 0 or len(selected_indices) != 0:
+                return False, None
+        elif status == "selected":
+            if len(pages) == 0 or len(selected_indices) == 0:
+                return False, None
+
+        return True, response
+    except Exception:
+        return False, None
+

@@ -15,6 +15,7 @@ import time
 from .config import BILIBILI_HEADERS, GATCHA_KEYWORDS
 from dataclasses import dataclass
 from .models import PlaylistItem
+from . import rust_backend
 import bilikara.config as cfg  
 from .lark_pool_client import append_lark_pool_entries_in_background
 
@@ -2509,7 +2510,49 @@ def parse_video_pages(data: dict) -> list[VideoPage]:
     return pages
 
 
-def select_matching_pages(
+def _py_cluster_spread(cluster: list[VideoPage]) -> int:
+    if not cluster:
+        return 10**9
+    durations = [page.duration for page in cluster]
+    return max(durations) - min(durations)
+
+
+def _py_cluster_representative_duration(cluster: list[VideoPage]) -> float:
+    if not cluster:
+        return 0.0
+    return sum(page.duration for page in cluster) / len(cluster)
+
+
+def _py_preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> VideoPage:
+    for page in pages:
+        if page.page == preferred_page:
+            return page
+    return pages[0]
+
+
+def _py_is_better_cluster(candidate: list[VideoPage], current: list[VideoPage], preferred_page: int) -> bool:
+    if len(candidate) != len(current):
+        return len(candidate) > len(current)
+
+    candidate_duration = _py_cluster_representative_duration(candidate)
+    current_duration = _py_cluster_representative_duration(current)
+    if candidate_duration != current_duration:
+        return candidate_duration > current_duration
+
+    candidate_has_preferred = any(page.page == preferred_page for page in candidate)
+    current_has_preferred = any(page.page == preferred_page for page in current)
+    if candidate_has_preferred != current_has_preferred:
+        return candidate_has_preferred
+
+    candidate_spread = _py_cluster_spread(candidate)
+    current_spread = _py_cluster_spread(current)
+    if candidate_spread != current_spread:
+        return candidate_spread < current_spread
+
+    return [page.page for page in candidate] < [page.page for page in current]
+
+
+def _py_select_matching_pages(
     pages: list[VideoPage],
     *,
     preferred_page: int,
@@ -2526,54 +2569,76 @@ def select_matching_pages(
         while current.duration - sorted_pages[left].duration > tolerance_seconds:
             left += 1
         candidate = sorted_pages[left : right + 1]
-        if _is_better_cluster(candidate, best_cluster, preferred_page):
+        if _py_is_better_cluster(candidate, best_cluster, preferred_page):
             best_cluster = list(candidate)
 
     if len(best_cluster) <= 1:
-        return best_cluster or [_preferred_or_first_page(pages, preferred_page)]
+        return best_cluster or [_py_preferred_or_first_page(pages, preferred_page)]
     return sorted(best_cluster, key=lambda item: item.page)
 
 
+def select_matching_pages(
+    pages: list[VideoPage],
+    *,
+    preferred_page: int,
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> list[VideoPage]:
+    descriptors = []
+    for idx, page in enumerate(pages):
+        if not isinstance(page, VideoPage):
+            return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+        descriptors.append({
+            "original_index": idx,
+            "page": int(page.page),
+            "cid": int(page.cid),
+            "duration": int(page.duration),
+            "part": str(page.part or ""),
+        })
+
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "preferred_page": int(preferred_page),
+        "tolerance_seconds": int(tolerance_seconds),
+        "pages": descriptors,
+    }
+
+    completed, response = rust_backend.try_select_media_pages(request)
+    if completed and response is not None:
+        status = response.get("status")
+        if status == "selected":
+            selected_indices = response.get("selected_indices")
+            if isinstance(selected_indices, list):
+                result = []
+                for idx in selected_indices:
+                    if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(pages):
+                        result.append(pages[idx])
+                    else:
+                        return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+                return result
+        elif status == "no_match":
+            return []
+
+    return _py_select_matching_pages(
+        pages,
+        preferred_page=preferred_page,
+        tolerance_seconds=tolerance_seconds,
+    )
+
+
 def _is_better_cluster(candidate: list[VideoPage], current: list[VideoPage], preferred_page: int) -> bool:
-    if len(candidate) != len(current):
-        return len(candidate) > len(current)
-
-    candidate_duration = _cluster_representative_duration(candidate)
-    current_duration = _cluster_representative_duration(current)
-    if candidate_duration != current_duration:
-        return candidate_duration > current_duration
-
-    candidate_has_preferred = any(page.page == preferred_page for page in candidate)
-    current_has_preferred = any(page.page == preferred_page for page in current)
-    if candidate_has_preferred != current_has_preferred:
-        return candidate_has_preferred
-
-    candidate_spread = _cluster_spread(candidate)
-    current_spread = _cluster_spread(current)
-    if candidate_spread != current_spread:
-        return candidate_spread < current_spread
-
-    return [page.page for page in candidate] < [page.page for page in current]
+    return _py_is_better_cluster(candidate, current, preferred_page)
 
 
 def _cluster_spread(cluster: list[VideoPage]) -> int:
-    if not cluster:
-        return 10**9
-    durations = [page.duration for page in cluster]
-    return max(durations) - min(durations)
+    return _py_cluster_spread(cluster)
 
 
 def _cluster_representative_duration(cluster: list[VideoPage]) -> float:
-    if not cluster:
-        return 0.0
-    return sum(page.duration for page in cluster) / len(cluster)
+    return _py_cluster_representative_duration(cluster)
 
 
 def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> VideoPage:
-    for page in pages:
-        if page.page == preferred_page:
-            return page
-    return pages[0]
+    return _py_preferred_or_first_page(pages, preferred_page)
 
 
 def _variant_id(page: int, label: str, index: int) -> str:
