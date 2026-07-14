@@ -524,6 +524,11 @@ const elements = {
   gatchaTitle: document.getElementById("gatcha-title"),
 };
 
+const historyExportGuard = window.BilikaraExportGuard.createExportGuard([
+  elements.historyExportImageButton,
+  elements.historyExportCsvButton,
+]);
+
 function createClientId() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") {
     return window.crypto.randomUUID();
@@ -2133,20 +2138,22 @@ elements.openRatingButton?.addEventListener("click", () => {
 });
 
 async function exportHistory(format) {
-  const source = selectedHistoryExportSource();
-  const pageSize = selectedHistoryExportPageSize();
-  const sourceLabel = source === "played" ? t("history.playedSource") : t("history.allSource");
-  setAppMessage(format === "csv"
-    ? t("remote.exportingCsv", { source: sourceLabel })
-    : t("remote.exportingImagePaged", { source: sourceLabel, count: pageSize }));
-  try {
-    await downloadHistoryExport(format, source, pageSize);
+  return historyExportGuard.run(async () => {
+    const source = selectedHistoryExportSource();
+    const pageSize = selectedHistoryExportPageSize();
+    const sourceLabel = source === "played" ? t("history.playedSource") : t("history.allSource");
     setAppMessage(format === "csv"
-      ? t("history.csvDownloadStarted", { source: sourceLabel })
-      : t("history.imageDownloadStarted", { source: sourceLabel }));
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
+      ? t("remote.exportingCsv", { source: sourceLabel })
+      : t("remote.exportingImagePaged", { source: sourceLabel, count: pageSize }));
+    try {
+      await downloadHistoryExport(format, source, pageSize);
+      setAppMessage(format === "csv"
+        ? t("history.csvDownloadStarted", { source: sourceLabel })
+        : t("history.imageDownloadStarted", { source: sourceLabel }));
+    } catch (error) {
+      setAppMessage(error.message, true);
+    }
+  });
 }
 
 async function submitAddRequest(url, position, options = {}) {

@@ -512,6 +512,11 @@ const elements = {
   gatchaUidMessage: document.getElementById("gatcha-uid-message"),
 };
 
+const historyExportGuard = window.BilikaraExportGuard.createExportGuard([
+  elements.confirmOk,
+  elements.confirmSecondary,
+]);
+
 function setFormMessage(message, isError = false) {
   elements.formMessage.textContent = message;
   elements.formMessage.style.color = isError ? "var(--red)" : "var(--muted)";
@@ -550,6 +555,10 @@ function setMessageForSource(source, message, isError = false) {
         el.classList.toggle("is-error", Boolean(isError));
       });
     }
+    return;
+  }
+  if (source === "gatcha") {
+    setGatchaMessage(message, isError);
     return;
   }
   // Default fallback (e.g. "history" or others)
@@ -8519,7 +8528,7 @@ function renderBindingOption(inputType, name, entry, checked) {
 function openBindingModal(intent, payload) {
   const pages = Array.isArray(payload?.pages) ? payload.pages : [];
   if (!pages.length) {
-    setFormMessage(t("binding.readFailed"), true);
+    setMessageForSource(intent?.source || "request-form", t("binding.readFailed"), true);
     return;
   }
   state.bindingIntent = {
@@ -8857,11 +8866,11 @@ async function confirmBindingModal() {
   const source = intent.source || "request-form";
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
-    setFormMessage(t("binding.selectVideoPart"), true);
+    setMessageForSource(source, t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
-    setFormMessage(t("binding.selectAudioPart"), true);
+    setMessageForSource(source, t("binding.selectAudioPart"), true);
     return;
   }
 
@@ -8891,7 +8900,7 @@ async function confirmBindingModal() {
       setGatchaMessage(t("gatcha.nozomi"));
     }
     const message = intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail");
-    setFormMessage(message);
+    setMessageForSource(source, message);
     setAppMessage(message);
     render();
   } catch (error) {
@@ -8919,6 +8928,7 @@ async function confirmBindingModal() {
         position: intent.position || "tail",
         requesterName: intent.requesterName || selectedRequesterName(),
         preserveInput: intent.preserveInput,
+        source,
         selectedVideoPage,
         selectedAudioPages,
         message: duplicateConfirmMessage(
@@ -8931,11 +8941,7 @@ async function confirmBindingModal() {
       });
       return;
     }
-    if (source === "gatcha") {
-      setGatchaMessage(error.message, true);
-    } else {
-      setFormMessage(error.message, true);
-    }
+    setMessageForSource(source, error.message, true);
   } finally {
     if (button) {
       button.disabled = false;
@@ -9034,6 +9040,7 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
           position,
           requesterName,
           preserveInput: false,
+          source,
         },
         error.payload?.binding,
       );
@@ -9046,6 +9053,7 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
         position,
         requesterName,
         preserveInput: false,
+        source,
         message: duplicateConfirmMessage(
           error.payload?.duplicate_item,
           error.payload?.session_entry,
@@ -9348,18 +9356,20 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
 }
 
 async function exportHistory(format, source = "played", pageSize = 200) {
-  const normalizedSource = normalizedHistoryExportSource(source);
-  const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
-  const sourceLabel = historyExportSourceLabel(normalizedSource);
-  try {
-    await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
-    closeConfirm();
-    setAppMessage(format === "csv"
-      ? t("history.csvDownloadStarted", { source: sourceLabel })
-      : t("history.imageDownloadStarted", { source: sourceLabel }));
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
+  return historyExportGuard.run(async () => {
+    const normalizedSource = normalizedHistoryExportSource(source);
+    const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
+    const sourceLabel = historyExportSourceLabel(normalizedSource);
+    try {
+      await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
+      closeConfirm();
+      setAppMessage(format === "csv"
+        ? t("history.csvDownloadStarted", { source: sourceLabel })
+        : t("history.imageDownloadStarted", { source: sourceLabel }));
+    } catch (error) {
+      setAppMessage(error.message, true);
+    }
+  });
 }
 
 function diagnosticBrowserInfo() {
@@ -11185,6 +11195,7 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "duplicate-add" && intent.url) {
+      const source = intent.source || "request-form";
       state.data = await submitAddRequest(intent.url, intent.position || "tail", {
         requesterName: intent.requesterName || selectedRequesterName(),
         allowRepeat: true,
@@ -11197,12 +11208,14 @@ elements.confirmOk.addEventListener("click", async () => {
       } else {
         elements.urlInput.value = "";
       }
-      setFormMessage(intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail"));
+      const message = intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail");
+      setMessageForSource(source, message);
+      setAppMessage(message);
       render();
     }
   } catch (error) {
     if (intent?.type === "duplicate-add") {
-      setFormMessage(error.message, true);
+      setMessageForSource(intent.source || "request-form", error.message, true);
     } else {
       setAppMessage(error.message, true);
     }

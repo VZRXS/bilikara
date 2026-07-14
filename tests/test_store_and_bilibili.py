@@ -401,15 +401,62 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.session_played_file.parent, self.session_archive_dir)
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a"])
         self.assertEqual(payload["items"][0]["cover_url"], "https://example.com/a.jpg")
+        self.assertIsNone(payload["items"][0]["ended_at"])
 
         self.store.advance_to_next()
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
+        self.assertIsInstance(payload["items"][0]["ended_at"], float)
+        self.assertIsNone(payload["items"][1]["ended_at"])
         self.assertEqual(payload["items"][1]["display_title"], "title-b - P1")
         self.assertEqual(payload["items"][1]["requester_name"], "B")
         self.assertEqual(payload["items"][1]["cover_url"], "https://example.com/b.jpg")
         exported = self.store.session_played_snapshot()
         self.assertEqual(exported[-1]["cover_url"], "https://example.com/b.jpg")
+
+    def test_session_played_records_exact_end_timestamp_when_current_item_changes(self):
+        with patch("bilikara.store.time.time", return_value=1000.25):
+            self.add_item("a", requester_name="A", song_key="song-a")
+        self.add_item("b", requester_name="B", song_key="song-b")
+        self.mark_started("a")
+
+        with patch("bilikara.store.time.time", return_value=1012.75):
+            self.store.advance_to_next()
+
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertEqual(payload["items"][0]["played_at"], 1000.25)
+        self.assertEqual(payload["items"][0]["ended_at"], 1012.75)
+        self.assertEqual(payload["items"][1]["played_at"], 1012.75)
+        self.assertIsNone(payload["items"][1]["ended_at"])
+        self.assertEqual(self.store.session_played_snapshot()[0]["ended_at"], 1012.75)
+
+    def test_session_played_end_timestamp_is_recorded_when_unstarted_item_is_skipped(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+
+        with patch("bilikara.store.time.time", return_value=2025.5):
+            self.store.advance_to_next()
+
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertEqual(payload["items"][0]["ended_at"], 2025.5)
+        self.assertEqual(self.store.session_history, [])
+
+    def test_restore_backup_accepts_session_entries_without_end_timestamp(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        played_payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        played_payload["items"][0].pop("ended_at")
+        self.store.session_played_file.write_text(
+            json.dumps(played_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+
+        self.assertTrue(restored_store.restore_backup())
+        self.assertIsNone(restored_store.session_played[0].ended_at)
 
     def test_session_played_threshold_reached_persists_and_exports(self):
         self.add_item("a", requester_name="A")
