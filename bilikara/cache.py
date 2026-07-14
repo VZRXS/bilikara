@@ -63,6 +63,8 @@ STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
 CACHE_RETENTION_BUFFER_ITEMS = 3
 MAX_PARALLEL_TRACK_DOWNLOADS = 4
+DOWNKYI_TRACK_MAX_ATTEMPTS = 10
+DOWNKYI_TRACK_RETRY_WAIT_SECONDS = 3.0
 try:
     ARIA2_CONNECTIONS_PER_TRACK = max(
         1,
@@ -503,10 +505,13 @@ class CacheManager:
             track_payloads.append(
                 {
                     "key": str(track.get("key") or ""),
-                    "label": str(track.get("label") or ""),
+                    "label": self._download_track_progress_label(track),
                     "current_bytes": display_current,
                     "target_bytes": target_bytes,
                     "done": bool(track.get("done")),
+                    "phase": str(track.get("phase") or ""),
+                    "attempt": int(track.get("attempt") or 0),
+                    "max_attempts": int(track.get("max_attempts") or 0),
                 }
             )
 
@@ -1198,9 +1203,11 @@ class CacheManager:
             )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-            if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            downkyi_tracks_prevalidated = bool(cache_result.get("downkyi_tracks_prevalidated"))
+            if download_source == DOWNLOAD_SOURCE_DOWNKYI and not downkyi_tracks_prevalidated:
                 self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
-            self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
+            if not downkyi_tracks_prevalidated:
+                self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
             if download_source == DOWNLOAD_SOURCE_DOWNKYI:
@@ -1550,6 +1557,7 @@ class CacheManager:
                 dash_streams=dash_streams,
                 video_track=video_track,
                 audio_tracks=audio_tracks,
+                validate_tracks=True,
             )
         else:
             result_paths = {}
@@ -1696,7 +1704,7 @@ class CacheManager:
             #     for _variant_id, label, path in variant_files
             # ],
         ]
-        return {
+        result = {
             "video_file": video_file,
             "video_relative_path": str(video_file.relative_to(CACHE_DIR)),
             "video_media_url": self._build_media_url(str(video_file.relative_to(CACHE_DIR))),
@@ -1704,13 +1712,25 @@ class CacheManager:
             "selected_audio_variant_id": selected_audio_variant_id,
             "validation_files": validation_files,
         }
+        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            validation_metadata = [
+                dict(track.get("validation_metadata") or {})
+                for track in download_tracks
+                if isinstance(track.get("validation_metadata"), dict)
+            ]
+            if len(validation_metadata) != len(download_tracks):
+                raise DownloadCommandError("缓存校验失败: DownKyi 轨道缺少独立校验结果")
+            result["validation_metadata"] = validation_metadata
+            result["validation_failure_count"] = 0
+            result["downkyi_tracks_prevalidated"] = True
+        return result
 
     @staticmethod
     def _preferred_download_exception(exceptions: list[Exception]) -> Exception:
         def priority(exc: Exception) -> int:
             if isinstance(exc, CacheCancelledError) and str(exc) == RETRY_REQUESTED_MESSAGE:
                 return 0
-            if isinstance(exc, CacheCancelledError):
+            if not isinstance(exc, CacheCancelledError):
                 return 1
             return 2
 
@@ -2164,6 +2184,7 @@ class CacheManager:
         dash_streams: dict,
         video_track: dict,
         audio_tracks: list[dict],
+        validate_tracks: bool = False,
     ) -> dict[str, Path]:
         item_id = item.id
         cookie = effective_bilibili_cookie()
@@ -2180,7 +2201,11 @@ class CacheManager:
         video_target_dir = item_dir / f"video-p{video_page}"
         video_target_dir.mkdir(parents=True, exist_ok=True)
 
-        track_args: list[tuple[dict, list[str], str, Path, str, str]] = []
+        ffprobe_path = self._ffprobe_path_for_ffmpeg(ffmpeg_path) if validate_tracks else None
+        if validate_tracks and not ffprobe_path:
+            raise DownloadCommandError("缓存校验失败: DownKyi 下载需要可用的 ffprobe")
+
+        track_args: list[tuple[dict, list[str], str, Path, str, str, dict[str, object]]] = []
         track_args.append((
             video_track,
             video_urls,
@@ -2241,17 +2266,143 @@ class CacheManager:
         def _download_track(args: tuple) -> tuple[str, Path]:
             track, urls, out_name, target_dir, stage_label, stream_kind, stream_metadata = args
             track["stream_metadata"] = dict(stream_metadata)
-            return str(track["key"]), self._download_stream_with_aria2c(
-                item_id, binary_path, ffmpeg_path, target_dir, log_path,
-                urls=urls,
-                out_name=out_name,
-                cookie=cookie,
-                stage_label=stage_label,
-                track_key=self._download_track_key(stream_kind, int(track["page"])),
-                stream_kind=stream_kind,
-                page=int(track["page"]),
-                cid=self._cid_for_page(item, int(track["page"])),
-                stream_metadata=stream_metadata,
+            track_key = str(track["key"])
+            page = int(track["page"])
+            cid = self._cid_for_page(item, page)
+            validation_label = f"{'视频轨' if stream_kind == 'video' else '音轨'} P{page}"
+            max_attempts = DOWNKYI_TRACK_MAX_ATTEMPTS if validate_tracks else 1
+            last_error = "未知错误"
+
+            for attempt in range(1, max_attempts + 1):
+                if validate_tracks:
+                    self._raise_if_retry_requested(item_id)
+                    self._raise_if_priority_shift(item_id)
+                if attempt > 1:
+                    self._reset_download_track_progress(item_id, track_key)
+                self._set_download_track_phase(
+                    item_id,
+                    track_key,
+                    phase="downloading",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] media_diagnostic: "
+                    f"{json.dumps({'event': 'downkyi_track_attempt', 'item_id': item_id, 'track_key': track_key, 'stream_kind': stream_kind, 'page': page, 'attempt': attempt, 'max_attempts': max_attempts, 'status': 'start'}, ensure_ascii=False, sort_keys=True)}",
+                )
+                media_path: Path | None = None
+                try:
+                    media_path = self._download_stream_with_aria2c(
+                        item_id, binary_path, ffmpeg_path, target_dir, log_path,
+                        urls=urls,
+                        out_name=out_name,
+                        cookie=cookie,
+                        stage_label=stage_label,
+                        track_key=track_key,
+                        stream_kind=stream_kind,
+                        page=page,
+                        cid=cid,
+                        stream_metadata=stream_metadata,
+                        mark_done=not validate_tracks,
+                    )
+                    if validate_tracks:
+                        self._set_download_track_phase(
+                            item_id,
+                            track_key,
+                            phase="validating",
+                            attempt=attempt,
+                            max_attempts=max_attempts,
+                        )
+                        self._normalize_downkyi_media_file(
+                            ffmpeg_path,
+                            media_path,
+                            label=validation_label,
+                            stream_kind=stream_kind,
+                            log_path=log_path,
+                        )
+                        assert ffprobe_path is not None
+                        validation_entry: dict[str, object] = {
+                            "label": validation_label,
+                            "path": media_path,
+                            "required_streams": {stream_kind},
+                            "stream_kind": stream_kind,
+                            "page": page,
+                            "cid": cid,
+                            "expected_duration": self._duration_for_page(item, page),
+                            "download_source": DOWNLOAD_SOURCE_DOWNKYI,
+                            "stream_metadata": dict(stream_metadata),
+                        }
+                        metadata = self._validate_media_file(
+                            ffprobe_path,
+                            ffmpeg_path,
+                            media_path,
+                            label=validation_label,
+                            required_streams={stream_kind},
+                            log_path=log_path,
+                            diagnostic_context={**validation_entry, "item_id": item_id},
+                        )
+                        metadata.update({
+                            "label": validation_label,
+                            "page": page,
+                            "stream_kind": stream_kind,
+                            "expected_duration": self._optional_probe_float(
+                                validation_entry.get("expected_duration")
+                            ),
+                        })
+                        track["validation_metadata"] = metadata
+                        final_size = media_path.stat().st_size
+                        self._update_download_track_progress(
+                            item_id,
+                            track_key=track_key,
+                            target_dir=media_path.parent,
+                            current_bytes=final_size,
+                            target_bytes=final_size,
+                            done=True,
+                            measure_path=False,
+                        )
+                        self._set_download_track_phase(
+                            item_id,
+                            track_key,
+                            phase="ready",
+                            attempt=attempt,
+                            max_attempts=max_attempts,
+                        )
+                    self._append_log_line(
+                        log_path,
+                        f"[{self._log_timestamp()}] media_diagnostic: "
+                        f"{json.dumps({'event': 'downkyi_track_attempt', 'item_id': item_id, 'track_key': track_key, 'stream_kind': stream_kind, 'page': page, 'attempt': attempt, 'max_attempts': max_attempts, 'status': 'ok'}, ensure_ascii=False, sort_keys=True)}",
+                    )
+                    return track_key, media_path
+                except CacheCancelledError:
+                    if media_path is not None:
+                        self._safe_rmtree(media_path.parent)
+                    self._set_download_track_phase(
+                        item_id,
+                        track_key,
+                        phase="retrying",
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                    )
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    last_error = self._compact_probe_error(str(exc)) or type(exc).__name__
+                    if media_path is not None:
+                        self._safe_rmtree(media_path.parent)
+                    self._append_log_line(
+                        log_path,
+                        f"[{self._log_timestamp()}] media_diagnostic: "
+                        f"{json.dumps({'event': 'downkyi_track_attempt', 'item_id': item_id, 'track_key': track_key, 'stream_kind': stream_kind, 'page': page, 'attempt': attempt, 'max_attempts': max_attempts, 'status': 'failed', 'error': last_error}, ensure_ascii=False, sort_keys=True)}",
+                    )
+                    if attempt >= max_attempts:
+                        raise DownloadCommandError(
+                            f"{validation_label} 已尝试 {max_attempts} 次仍失败: {last_error}"
+                        ) from exc
+                    if self.stop_event.wait(DOWNKYI_TRACK_RETRY_WAIT_SECONDS):
+                        raise CacheCancelledError("缓存已停止") from exc
+
+            raise DownloadCommandError(
+                f"{validation_label} 已尝试 {max_attempts} 次仍失败: {last_error}"
             )
 
         future_to_track = {
@@ -2409,6 +2560,7 @@ class CacheManager:
         page: int = 0,
         cid: int = 0,
         stream_metadata: dict[str, object] | None = None,
+        mark_done: bool = True,
     ) -> Path:
         if not urls:
             raise DownloadCommandError(f"{stage_label}: 没有可用的下载地址")
@@ -2454,7 +2606,7 @@ class CacheManager:
             "--continue=false",
             "--auto-file-renaming=false",
             "--allow-overwrite=false",
-            "--max-tries=10",
+            "--max-tries=1",
             "--retry-wait=3",
             f"--split={connections}",
             "--min-split-size=5M",
@@ -2527,7 +2679,7 @@ class CacheManager:
             target_dir=attempt_dir,
             current_bytes=final_size,
             target_bytes=final_size,
-            done=True,
+            done=mark_done,
             measure_path=False,
         )
         return expected_path
@@ -2767,7 +2919,7 @@ class CacheManager:
         if return_code != 0:
             if not silent:
                 _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
-            error = DownloadCommandError(last_message)
+            error = DownloadCommandError(f"{stage_label}: {last_message}")
             error.return_code = return_code
             raise error
 
@@ -3768,6 +3920,9 @@ class CacheManager:
                     "target_bytes": 0,
                     "progress_percent": None,
                     "done": False,
+                    "phase": "waiting",
+                    "attempt": 0,
+                    "max_attempts": 0,
                 }
                 for track in tracks
                 if str(track.get("key") or "")
@@ -3778,6 +3933,53 @@ class CacheManager:
         with self.lock:
             self.item_stage_progress_signatures.pop(item_id, None)
             self.item_download_progress.pop(item_id, None)
+
+    def _reset_download_track_progress(self, item_id: str, track_key: str) -> None:
+        with self.lock:
+            tracks = self.item_download_progress.get(item_id)
+            if not tracks or track_key not in tracks:
+                return
+            track = tracks[track_key]
+            track["current_bytes"] = 0
+            track["target_bytes"] = 0
+            track["progress_percent"] = None
+            track["done"] = False
+            self.item_stage_progress_signatures.pop(item_id, None)
+        self._publish_download_progress(item_id)
+
+    def _set_download_track_phase(
+        self,
+        item_id: str,
+        track_key: str,
+        *,
+        phase: str,
+        attempt: int,
+        max_attempts: int,
+    ) -> None:
+        with self.lock:
+            tracks = self.item_download_progress.get(item_id)
+            if not tracks or track_key not in tracks:
+                return
+            track = tracks[track_key]
+            track["phase"] = str(phase or "")
+            track["attempt"] = max(0, int(attempt or 0))
+            track["max_attempts"] = max(0, int(max_attempts or 0))
+            self.item_stage_progress_signatures.pop(item_id, None)
+        self._publish_download_progress(item_id)
+
+    @staticmethod
+    def _download_track_progress_label(track: dict[str, object]) -> str:
+        label = str(track.get("label") or "轨道")
+        phase = str(track.get("phase") or "")
+        attempt = max(0, int(track.get("attempt") or 0))
+        max_attempts = max(0, int(track.get("max_attempts") or 0))
+        if phase == "validating":
+            return f"{label}（校验中）"
+        if phase == "retrying" and attempt > 0 and max_attempts > 0:
+            return f"{label}（第 {attempt}/{max_attempts} 次失败）"
+        if phase == "downloading" and attempt > 1 and max_attempts > 0:
+            return f"{label}（重试 {attempt}/{max_attempts}）"
+        return label
 
     def _update_download_track_progress(
         self,
@@ -3934,7 +4136,7 @@ class CacheManager:
             lines = [f"总计：{cls._format_stage_bytes(total_current)} / 估算中"]
 
         for track in sorted_tracks:
-            label = str(track.get("label") or "轨道")
+            label = cls._download_track_progress_label(track)
             current_bytes = max(0, int(track.get("current_bytes") or 0))
             target_bytes = max(0, int(track.get("target_bytes") or 0))
             if target_bytes > 0:

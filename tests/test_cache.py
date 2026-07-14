@@ -6,6 +6,7 @@ import shutil
 import ssl
 import subprocess
 import sys
+import threading
 import unittest
 import urllib.error
 import zipfile
@@ -148,6 +149,21 @@ class CacheManagerOutputTest(unittest.TestCase):
         self.assertEqual(
             CacheManager._structured_download_message(tracks),
             "总计：40.0 MB / 80.0 MB\n视频轨P1：32.0 MB / 64.0 MB\n音轨P1：8.0 MB / 16.0 MB",
+        )
+
+    def test_download_track_label_reports_validation_and_retry_phase(self):
+        base = {"label": "音轨P2", "attempt": 3, "max_attempts": 10}
+        self.assertEqual(
+            CacheManager._download_track_progress_label({**base, "phase": "validating"}),
+            "音轨P2（校验中）",
+        )
+        self.assertEqual(
+            CacheManager._download_track_progress_label({**base, "phase": "retrying"}),
+            "音轨P2（第 3/10 次失败）",
+        )
+        self.assertEqual(
+            CacheManager._download_track_progress_label({**base, "phase": "downloading"}),
+            "音轨P2（重试 3/10）",
         )
 
     def test_force_refresh_hint_matches_upgrade_message(self):
@@ -852,6 +868,75 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_downkyi_prevalidated_tracks_skip_later_batch_remux_and_validation(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                item = self.make_item("song-downkyi")
+                item.selected_pages = [1]
+                item.selected_cids = [item.cid]
+                item.selected_durations = [120]
+                item.video_page = 1
+                self.store.add_item(item, requester_name="cache-test-user")
+                manager.download_source = DOWNLOAD_SOURCE_DOWNKYI
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+
+                def prevalidated_result(*_args, **_kwargs):
+                    item_dir = self.cache_dir / item.id
+                    video = item_dir / "video-p1" / ".attempt-video" / "video-p1.mp4"
+                    audio = item_dir / "audio-p1" / ".attempt-audio" / "audio-p1.m4a"
+                    video.parent.mkdir(parents=True)
+                    audio.parent.mkdir(parents=True)
+                    video.write_bytes(b"video")
+                    audio.write_bytes(b"audio")
+                    return {
+                        "video_file": video,
+                        "video_relative_path": str(video.relative_to(self.cache_dir)),
+                        "video_media_url": f"/media/{video.relative_to(self.cache_dir).as_posix()}",
+                        "audio_variants": [{
+                            "id": "p1",
+                            "label": "P1",
+                            "page": 1,
+                            "audio_url": f"/media/{audio.relative_to(self.cache_dir).as_posix()}",
+                        }],
+                        "selected_audio_variant_id": "p1",
+                        "validation_files": [{"path": video}, {"path": audio}],
+                        "validation_metadata": [{"path": str(video)}, {"path": str(audio)}],
+                        "validation_failure_count": 0,
+                        "downkyi_tracks_prevalidated": True,
+                    }
+
+                with patch.object(
+                    manager, "_ensure_downloader", return_value=Path("/tools/aria2c")
+                ), patch.object(
+                    manager, "_ensure_ffmpeg", return_value=Path("/tools/ffmpeg")
+                ), patch.object(
+                    manager, "_download_selected_streams", side_effect=prevalidated_result
+                ), patch.object(
+                    manager, "_normalize_downkyi_cache_result"
+                ) as normalize_mock, patch.object(
+                    manager, "_validate_cache_result"
+                ) as validate_mock:
+                    self.assertTrue(
+                        manager._cache_item_multi(item.id, item, allow_refresh_retry=False)
+                    )
+
+                normalize_mock.assert_not_called()
+                validate_mock.assert_not_called()
+                cached = self.store.get_item(item.id)
+                self.assertIsNotNone(cached)
+                self.assertEqual(cached.cache_status, "ready")
+                self.assertNotIn(".attempt-", cached.video_media_url)
+                self.assertNotIn(".attempt-", cached.audio_variants[0]["audio_url"])
+            finally:
+                manager.shutdown()
+
     def test_worker_resyncs_ready_cache_after_pending_bookkeeping(self):
         worker_loop = CacheManager._worker_loop
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
@@ -973,6 +1058,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertLess(command.index("https://backup.example/video.m4s"), command.index("--dir"))
                 self.assertNotIn("--referer", command)
                 self.assertIn("--continue=false", command)
+                self.assertIn("--max-tries=1", command)
+                self.assertIn("--human-readable=false", command)
                 self.assertIn("--auto-file-renaming=false", command)
                 self.assertIn("--allow-overwrite=false", command)
                 self.assertNotIn("--continue=true", command)
@@ -2685,6 +2772,28 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    @staticmethod
+    def _single_downkyi_item(item_id: str = "single-p-item") -> PlaylistItem:
+        return PlaylistItem(
+            id=item_id,
+            original_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+            bvid="BV1xx411c7mD",
+            aid=123,
+            cid=111,
+            page=1,
+            title="Single P Video",
+            part_title="P1",
+            display_title="Single P Video",
+            cover_url="",
+            embed_url="",
+            selected_pages=[1],
+            selected_cids=[111],
+            selected_durations=[120],
+            selected_parts=["P1"],
+            video_page=1,
+        )
+
     def test_downkyi_multi_page_audio_resolves_correct_cids_and_urls(self):
         item = PlaylistItem(
             id="multi-p-item",
@@ -2776,10 +2885,11 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
 
         self.assertEqual(resolved_cids, [111, 111, 222, 333])
         self.assertEqual(len(downloaded_tracks), 4)
-        self.assertEqual(downloaded_tracks[0]["urls"][0], "video-cid-111.m4s")
-        self.assertEqual(downloaded_tracks[1]["urls"][0], "audio-cid-111.m4s")
-        self.assertEqual(downloaded_tracks[2]["urls"][0], "audio-cid-222.m4s")
-        self.assertEqual(downloaded_tracks[3]["urls"][0], "audio-cid-333.m4s")
+        downloads_by_name = {entry["out_name"]: entry for entry in downloaded_tracks}
+        self.assertEqual(downloads_by_name["video-p1.mp4"]["urls"][0], "video-cid-111.m4s")
+        self.assertEqual(downloads_by_name["audio-p1.m4a"]["urls"][0], "audio-cid-111.m4s")
+        self.assertEqual(downloads_by_name["audio-p2.m4a"]["urls"][0], "audio-cid-222.m4s")
+        self.assertEqual(downloads_by_name["audio-p3.m4a"]["urls"][0], "audio-cid-333.m4s")
 
         self.assertTrue(log_path.exists())
         log_content = log_path.read_text(encoding="utf-8")
@@ -2842,6 +2952,194 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertEqual(resolved_cids, [111, 111])
+
+    def test_downkyi_validates_finished_track_without_waiting_for_other_downloads(self):
+        item = self._single_downkyi_item("async-validation")
+        video_validated = threading.Event()
+        download_counts = {"video": 0, "audio": 0}
+
+        def fake_download(_item_id, _binary, _ffmpeg, target_dir, _log, **kwargs):
+            kind = kwargs["stream_kind"]
+            download_counts[kind] += 1
+            if kind == "audio":
+                self.assertTrue(video_validated.wait(2), "audio waited for video validation")
+            attempt = Path(target_dir) / f".attempt-{kind}-{download_counts[kind]}"
+            attempt.mkdir(parents=True)
+            path = attempt / kwargs["out_name"]
+            path.write_bytes(kind.encode("ascii"))
+            return path
+
+        def fake_validate(_ffprobe, _ffmpeg, media_path, **kwargs):
+            if kwargs["diagnostic_context"]["stream_kind"] == "video":
+                video_validated.set()
+            return {
+                "path": str(media_path),
+                "size": media_path.stat().st_size,
+                "format_name": "mov,mp4,m4a",
+                "duration": 120.0,
+                "start_time": 0.0,
+                "streams": [],
+            }
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                with patch.object(manager, "_resolve_dash_streams", return_value={
+                    "audio": [{"url": "audio.m4s", "backup_urls": [], "quality_id": 30280}],
+                }), patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")
+                ), patch.object(
+                    manager, "_download_stream_with_aria2c", side_effect=fake_download
+                ), patch.object(
+                    manager, "_normalize_downkyi_media_file"
+                ), patch.object(
+                    manager, "_validate_media_file", side_effect=fake_validate
+                ):
+                    result = manager._download_dash_streams_with_aria2c(
+                        item=item,
+                        binary_path=Path("/tools/aria2c"),
+                        ffmpeg_path=Path("/tools/ffmpeg"),
+                        item_dir=self.cache_dir / item.id,
+                        log_path=Path(self.temp_dir.name) / "async.log",
+                        dash_streams={
+                            "video": [{"url": "video.m4s", "backup_urls": [], "quality_id": 32}],
+                        },
+                        video_track={"key": "video-p1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
+                        audio_tracks=[{"key": "audio-p1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                        validate_tracks=True,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(set(result), {"video-p1", "audio-p1"})
+        self.assertEqual(download_counts, {"video": 1, "audio": 1})
+        self.assertTrue(video_validated.is_set())
+
+    def test_downkyi_retries_only_failed_track_and_caps_total_attempts_at_ten(self):
+        item = self._single_downkyi_item("track-retry")
+        download_counts = {"video": 0, "audio": 0}
+        validation_counts = {"video": 0, "audio": 0}
+
+        def fake_download(_item_id, _binary, _ffmpeg, target_dir, _log, **kwargs):
+            kind = kwargs["stream_kind"]
+            download_counts[kind] += 1
+            attempt = Path(target_dir) / f".attempt-{kind}-{download_counts[kind]}"
+            attempt.mkdir(parents=True)
+            path = attempt / kwargs["out_name"]
+            path.write_bytes(kind.encode("ascii"))
+            return path
+
+        def fake_validate(_ffprobe, _ffmpeg, media_path, **kwargs):
+            kind = kwargs["diagnostic_context"]["stream_kind"]
+            validation_counts[kind] += 1
+            if kind == "audio" and validation_counts[kind] == 1:
+                raise DownloadCommandError("audio packet truncated")
+            return {
+                "path": str(media_path),
+                "size": media_path.stat().st_size,
+                "format_name": "mov,mp4,m4a",
+                "duration": 120.0,
+                "start_time": 0.0,
+                "streams": [],
+            }
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None), patch(
+            "bilikara.cache.DOWNKYI_TRACK_RETRY_WAIT_SECONDS", 0
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                with patch.object(manager, "_resolve_dash_streams", return_value={
+                    "audio": [{"url": "audio.m4s", "backup_urls": [], "quality_id": 30280}],
+                }), patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")
+                ), patch.object(
+                    manager, "_download_stream_with_aria2c", side_effect=fake_download
+                ), patch.object(
+                    manager, "_normalize_downkyi_media_file"
+                ), patch.object(
+                    manager, "_validate_media_file", side_effect=fake_validate
+                ):
+                    manager._download_dash_streams_with_aria2c(
+                        item=item,
+                        binary_path=Path("/tools/aria2c"),
+                        ffmpeg_path=Path("/tools/ffmpeg"),
+                        item_dir=self.cache_dir / item.id,
+                        log_path=Path(self.temp_dir.name) / "retry.log",
+                        dash_streams={
+                            "video": [{"url": "video.m4s", "backup_urls": [], "quality_id": 32}],
+                        },
+                        video_track={"key": "video-p1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
+                        audio_tracks=[{"key": "audio-p1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                        validate_tracks=True,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(download_counts, {"video": 1, "audio": 2})
+        self.assertEqual(validation_counts, {"video": 1, "audio": 2})
+
+    def test_downkyi_track_failure_stops_after_ten_total_attempts(self):
+        item = self._single_downkyi_item("track-retry-limit")
+        download_counts = {"video": 0, "audio": 0}
+
+        def fake_download(_item_id, _binary, _ffmpeg, target_dir, _log, **kwargs):
+            kind = kwargs["stream_kind"]
+            download_counts[kind] += 1
+            if kind == "audio":
+                raise DownloadCommandError("CDN connection reset")
+            attempt = Path(target_dir) / ".attempt-video"
+            attempt.mkdir(parents=True, exist_ok=True)
+            path = attempt / kwargs["out_name"]
+            path.write_bytes(b"video")
+            return path
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None), patch(
+            "bilikara.cache.DOWNKYI_TRACK_RETRY_WAIT_SECONDS", 0
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                with patch.object(manager, "_resolve_dash_streams", return_value={
+                    "audio": [{"url": "audio.m4s", "backup_urls": [], "quality_id": 30280}],
+                }), patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")
+                ), patch.object(
+                    manager, "_download_stream_with_aria2c", side_effect=fake_download
+                ), patch.object(
+                    manager, "_normalize_downkyi_media_file"
+                ), patch.object(
+                    manager, "_validate_media_file", return_value={
+                        "path": "video", "size": 5, "format_name": "mp4", "duration": 120.0,
+                        "start_time": 0.0, "streams": [],
+                    }
+                ):
+                    with self.assertRaisesRegex(DownloadCommandError, "已尝试 10 次仍失败"):
+                        manager._download_dash_streams_with_aria2c(
+                            item=item,
+                            binary_path=Path("/tools/aria2c"),
+                            ffmpeg_path=Path("/tools/ffmpeg"),
+                            item_dir=self.cache_dir / item.id,
+                            log_path=Path(self.temp_dir.name) / "retry-limit.log",
+                            dash_streams={
+                                "video": [{"url": "video.m4s", "backup_urls": [], "quality_id": 32}],
+                            },
+                            video_track={"key": "video-p1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
+                            audio_tracks=[{"key": "audio-p1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                            validate_tracks=True,
+                        )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(download_counts["audio"], 10)
+        self.assertEqual(download_counts["video"], 1)
 
     def test_downkyi_missing_cid_mapping_fails_clear(self):
         item = PlaylistItem(
