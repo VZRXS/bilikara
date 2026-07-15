@@ -38,11 +38,41 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-packaging.txt
 
-      - name: Run unit tests
-        run: python -m unittest discover -s tests -v
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup repository Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+
+      - name: Rust Checks and Build
+        run: |
+          cd rust
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+          cargo build --release --locked
+          cd ../src-tauri
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+          cargo build --release --locked
+          cd ..
 
       - name: Compile Python files
-        run: python -m compileall bilikara tests server.py start_bilikara.py build_bundle.py
+        run: |
+          python -m compileall -q bilikara
+          python -m py_compile start_bilikara.py build_bundle.py
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+        env:
+          BILIKARA_REQUIRE_RUST_LIB: "1"
 
   bundle:
     name: Bundle (${{ matrix.label }})
@@ -90,22 +120,42 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-packaging.txt
 
+      - name: Setup repository Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          rustc --version
+
+      - name: Build Rust Backend Library
+        run: |
+          cd rust
+          cargo build --release --locked
+          cd ..
+
       - name: Build app bundle
         run: python build_bundle.py
+        env:
+          BILIKARA_REQUIRE_RUST_LIB: "1"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build Tauri App
+      - name: Build Tauri App on Windows
+        if: runner.os == 'Windows'
         run: |
-          npm install
-          npx tauri icon static/pic/icon.png
+          npm ci
+          npm exec -- tauri icon static/pic/icon.png
           npm run build
+
+      - name: Build Tauri App on macOS
+        if: runner.os == 'macOS'
+        run: |
+          npm ci
+          npm exec -- tauri icon static/pic/icon.png
+          npm run build:rust
+          npm exec -- tauri build --bundles app -- --locked
 
       - name: Inject Tauri into Windows Bundle
         if: runner.os == 'Windows'
