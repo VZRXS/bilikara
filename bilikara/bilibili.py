@@ -512,6 +512,13 @@ class VideoPage:
     part: str
 
 
+@dataclass(frozen=True)
+class AudioBindingDecision:
+    mode: str
+    selected_indices: tuple[int, ...]
+    automatic_video_index: int | None
+
+
 class BilibiliError(RuntimeError):
     pass
 
@@ -2647,41 +2654,135 @@ def _variant_id(page: int, label: str, index: int) -> str:
     return f"p{max(int(page), 1)}_{suffix}"
 
 
-def _part_keyword_match(part: str) -> bool:
+def _py_part_keyword_match(part: str) -> bool:
     normalized = str(part or "").strip().lower()
     return any(keyword in normalized for keyword in ("on", "off", "人声", "原唱", "伴奏"))
 
 
-def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
+def _py_is_auto_dual_audio_pair(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> bool:
     if len(pages) != 2:
         return False
-    if not any(_part_keyword_match(page.part) for page in pages):
+    if not any(_py_part_keyword_match(page.part) for page in pages):
         return False
-    if abs(pages[0].duration - pages[1].duration) > DURATION_TOLERANCE_SECONDS:
+    if abs(pages[0].duration - pages[1].duration) > tolerance_seconds:
         return False
     return True
 
 
-def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+def _py_auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
     if len(pages) != 2:
         return None
     first_page, second_page = sorted(pages, key=lambda page: page.page)
     if (
         first_page.page == 1
         and second_page.page == 2
-        and not _part_keyword_match(first_page.part)
-        and _part_keyword_match(second_page.part)
+        and not _py_part_keyword_match(first_page.part)
+        and _py_part_keyword_match(second_page.part)
     ):
         return second_page.page
     return None
 
 
-def _requires_manual_binding(pages: list[VideoPage]) -> bool:
+def _py_requires_manual_binding(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> bool:
     if len(pages) > 2:
         return True
-    if len(pages) == 2 and not _is_auto_dual_audio_pair(pages):
+    if len(pages) == 2 and not _py_is_auto_dual_audio_pair(
+        pages, tolerance_seconds
+    ):
         return True
     return False
+
+
+def _py_decide_audio_binding(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> AudioBindingDecision | None:
+    if not pages:
+        return None
+    if len(pages) == 1:
+        return AudioBindingDecision(
+            mode="single",
+            selected_indices=(0,),
+            automatic_video_index=None,
+        )
+    if not _py_is_auto_dual_audio_pair(pages, tolerance_seconds):
+        return AudioBindingDecision(
+            mode="manual_required",
+            selected_indices=(),
+            automatic_video_index=None,
+        )
+
+    automatic_video_page = _py_auto_dual_audio_video_page(pages)
+    automatic_video_index = next(
+        (
+            index
+            for index, page in enumerate(pages)
+            if page.page == automatic_video_page
+        ),
+        None,
+    )
+    return AudioBindingDecision(
+        mode="automatic",
+        selected_indices=(0, 1),
+        automatic_video_index=automatic_video_index,
+    )
+
+
+def _part_keyword_match(part: str) -> bool:
+    return _py_part_keyword_match(part)
+
+
+def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
+    return _py_is_auto_dual_audio_pair(pages)
+
+
+def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+    return _py_auto_dual_audio_video_page(pages)
+
+
+def _requires_manual_binding(pages: list[VideoPage]) -> bool:
+    return _py_requires_manual_binding(pages)
+
+
+def decide_audio_binding(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> AudioBindingDecision | None:
+    descriptors: list[dict[str, object]] = []
+    for original_index, page in enumerate(pages):
+        if not isinstance(page, VideoPage):
+            return _py_decide_audio_binding(pages, tolerance_seconds)
+        descriptors.append(
+            {
+                "original_index": original_index,
+                "page": int(page.page),
+                "duration": int(page.duration),
+                "part": str(page.part or ""),
+            }
+        )
+
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "tolerance_seconds": int(tolerance_seconds),
+        "pages": descriptors,
+    }
+    completed, response = rust_backend.try_decide_audio_binding(request)
+    if completed and response is not None:
+        if response["status"] == "no_match":
+            return None
+        return AudioBindingDecision(
+            mode=str(response["mode"]),
+            selected_indices=tuple(response["selected_indices"]),
+            automatic_video_index=response["automatic_video_index"],
+        )
+
+    return _py_decide_audio_binding(pages, tolerance_seconds)
 
 
 def _normalize_selected_pages(raw_pages: object) -> list[int]:
@@ -2737,7 +2838,10 @@ def fetch_video_item(
         raise BilibiliError("视频没有可播放的分 P 信息")
 
     preferred_page = min(reference.page, len(pages))
-    manual_selection = _requires_manual_binding(pages)
+    binding_decision = decide_audio_binding(pages)
+    if binding_decision is None:
+        raise BilibiliError("视频没有可播放的分 P 信息")
+    manual_selection = binding_decision.mode == "manual_required"
     if manual_selection and selected_video_page is None and not selected_audio_pages:
         raise ManualBindingRequiredError(
             title=str(data.get("title") or "").strip(),
@@ -2760,11 +2864,9 @@ def fetch_video_item(
             raise BilibiliError("选择的音频分P无效")
         selected_pages = [available_pages_by_number[page] for page in normalized_audio_pages]
     else:
-        if _is_auto_dual_audio_pair(pages):
-            selected_pages = list(pages)
-            auto_video_page = _auto_dual_audio_video_page(pages)
-        else:
-            selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+        selected_pages = [pages[index] for index in binding_decision.selected_indices]
+        if binding_decision.automatic_video_index is not None:
+            auto_video_page = pages[binding_decision.automatic_video_index].page
         if selected_video_page is not None or normalized_audio_pages:
             raise BilibiliError("当前视频不需要手动绑定分P")
 

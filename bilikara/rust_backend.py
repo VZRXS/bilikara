@@ -28,7 +28,12 @@ PHASE1_CAPABILITIES = (
     "is_downloadable_archive",
 )
 
-PHASE2_CAPABILITIES = ("select_update_asset", "select_release", "select_media_pages")
+PHASE2_CAPABILITIES = (
+    "select_update_asset",
+    "select_release",
+    "select_media_pages",
+    "decide_audio_binding",
+)
 
 
 def _rust_library_name() -> str:
@@ -139,6 +144,11 @@ _SYMBOLS = {
     ),
     "select_media_pages": (
         "rust_select_media_pages",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "decide_audio_binding": (
+        "rust_decide_audio_binding",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -753,3 +763,159 @@ def try_select_media_pages(
     except Exception:
         return False, None
 
+
+def _audio_binding_request_indices(request: object) -> list[int] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "tolerance_seconds",
+        "pages",
+    }:
+        return None
+
+    schema_version = request.get("schema_version")
+    tolerance_seconds = request.get("tolerance_seconds")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or isinstance(tolerance_seconds, bool)
+        or not isinstance(tolerance_seconds, int)
+        or tolerance_seconds < 0
+        or tolerance_seconds > 2**63 - 1
+    ):
+        return None
+
+    pages = request.get("pages")
+    if not isinstance(pages, list):
+        return None
+
+    indices: list[int] = []
+    for page in pages:
+        if not isinstance(page, dict) or set(page) != {
+            "original_index",
+            "page",
+            "duration",
+            "part",
+        }:
+            return None
+        original_index = page.get("original_index")
+        page_number = page.get("page")
+        duration = page.get("duration")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or original_index < 0
+            or original_index > 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+            or (indices and original_index <= indices[-1])
+            or isinstance(page_number, bool)
+            or not isinstance(page_number, int)
+            or not -(2**63) <= page_number <= 2**63 - 1
+            or isinstance(duration, bool)
+            or not isinstance(duration, int)
+            or not -(2**63) <= duration <= 2**63 - 1
+            or not isinstance(page.get("part"), str)
+        ):
+            return None
+        indices.append(original_index)
+    return indices
+
+
+def _valid_audio_binding_response(
+    response: object,
+    request_indices: list[int],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "mode",
+        "selected_indices",
+        "automatic_video_index",
+    }:
+        return False
+
+    schema_version = response.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
+        return False
+
+    status = response.get("status")
+    mode = response.get("mode")
+    selected_indices = response.get("selected_indices")
+    automatic_video_index = response.get("automatic_video_index")
+    if status not in {"decided", "no_match"} or not isinstance(
+        selected_indices, list
+    ):
+        return False
+
+    seen_indices: set[int] = set()
+    for original_index in selected_indices:
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or original_index < 0
+            or original_index not in request_indices
+            or original_index in seen_indices
+        ):
+            return False
+        seen_indices.add(original_index)
+
+    if status == "no_match":
+        return (
+            not request_indices
+            and mode is None
+            and selected_indices == []
+            and automatic_video_index is None
+        )
+
+    if mode == "single":
+        return (
+            len(request_indices) == 1
+            and selected_indices == request_indices
+            and automatic_video_index is None
+        )
+    if mode == "automatic":
+        if len(request_indices) != 2 or selected_indices != request_indices:
+            return False
+        if automatic_video_index is None:
+            return True
+        return (
+            not isinstance(automatic_video_index, bool)
+            and isinstance(automatic_video_index, int)
+            and automatic_video_index in selected_indices
+        )
+    if mode == "manual_required":
+        return (
+            len(request_indices) >= 2
+            and selected_indices == []
+            and automatic_video_index is None
+        )
+    return False
+
+
+def try_decide_audio_binding(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call the coarse native audio-binding decision and validate its response."""
+
+    request_indices = _audio_binding_request_indices(request)
+    if (
+        request_indices is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("decide_audio_binding", False)
+    ):
+        return False, None
+
+    try:
+        request_json = json.dumps(
+            request,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        pointer = _rust_lib.rust_decide_audio_binding(request_json)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_audio_binding_response(response, request_indices):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None

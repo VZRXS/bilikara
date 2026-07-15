@@ -296,6 +296,24 @@ pub unsafe extern "C" fn rust_select_media_pages(request_json: *const c_char) ->
     })
 }
 
+/// Decides audio-page pairing and binding from a schema-v1 JSON request.
+///
+/// Returns an owned JSON string that must be freed with [`rust_free_string`].
+/// A valid empty page list returns a concrete `no_match` response. Invalid
+/// pointers, UTF-8, JSON, schemas, or requests return null.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_decide_audio_binding(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::audio_binding::decide_audio_binding_json(request_json)
+    })
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
@@ -516,5 +534,47 @@ mod tests {
             assert!(str_nomatch.contains(r#""selected_indices":[]"#));
             rust_free_string(res_nomatch);
         }
+    }
+
+    #[test]
+    fn audio_binding_export_rejects_invalid_ffi_and_json_inputs() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_json = CString::new("not json").unwrap();
+        let unsupported_schema =
+            CString::new(r#"{"schema_version":2,"tolerance_seconds":3,"pages":[]}"#).unwrap();
+
+        unsafe {
+            assert!(rust_decide_audio_binding(std::ptr::null()).is_null());
+            assert!(rust_decide_audio_binding(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_decide_audio_binding(invalid_json.as_ptr()).is_null());
+            assert!(rust_decide_audio_binding(unsupported_schema.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn audio_binding_export_returns_owned_json_and_can_be_freed() {
+        let request = CString::new(
+            r#"{"schema_version":1,"tolerance_seconds":3,"pages":[{"original_index":0,"page":1,"duration":300,"part":"Instrumental"},{"original_index":1,"page":2,"duration":301,"part":"On Vocal"}]}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            let result = rust_decide_audio_binding(request.as_ptr());
+            assert!(!result.is_null());
+            let response = CStr::from_ptr(result).to_str().unwrap();
+            assert!(response.contains(r#""status":"decided""#));
+            assert!(response.contains(r#""mode":"automatic""#));
+            assert!(response.contains(r#""selected_indices":[0,1]"#));
+            assert!(response.contains(r#""automatic_video_index":1"#));
+            rust_free_string(result);
+        }
+    }
+
+    #[test]
+    fn audio_binding_export_uses_shared_panic_containment() {
+        let result = ffi_string_result(|| -> Option<String> {
+            panic!("simulated audio binding panic");
+        });
+        assert!(result.is_null());
     }
 }
