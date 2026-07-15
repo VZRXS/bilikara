@@ -18,3 +18,11 @@ pub use ffi::{
     rust_release_list_api_from_latest, rust_safe_filename, rust_select_media_pages,
     rust_select_release, rust_select_update_asset, rust_version_sort_key, rust_version_tuple,
 };
+pub use media_page_selection::{
+    MediaPageDescriptor, MediaPageSelection, MediaPageSelectionError, MediaPageSelectionRequest,
+    select_media_pages,
+};
+pub use release_selection::{
+    ReleaseCandidate, ReleaseSelection, ReleaseSelectionError, ReleaseSelectionRequest,
+    select_release,
+};

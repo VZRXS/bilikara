@@ -5,16 +5,14 @@ use crate::version::version_sort_key_impl;
 
 const SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseCandidate {
     pub tag_name: String,
     pub draft: bool,
     pub prerelease: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseSelectionRequest {
     pub current_version: String,
     pub include_preview: bool,
@@ -23,11 +21,19 @@ pub struct ReleaseSelectionRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ReleaseCandidateWire {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SelectionWireRequest {
     schema_version: u32,
     current_version: String,
     include_preview: bool,
-    releases: Vec<ReleaseCandidate>,
+    releases: Vec<ReleaseCandidateWire>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -130,10 +136,20 @@ pub(crate) fn select_release_json(request_json: &str) -> Option<String> {
         return None;
     }
 
+    let domain_releases = wire_req
+        .releases
+        .into_iter()
+        .map(|r| ReleaseCandidate {
+            tag_name: r.tag_name,
+            draft: r.draft,
+            prerelease: r.prerelease,
+        })
+        .collect();
+
     let req = ReleaseSelectionRequest {
         current_version: wire_req.current_version,
         include_preview: wire_req.include_preview,
-        releases: wire_req.releases,
+        releases: domain_releases,
     };
 
     let result = select_release(&req).ok()?;

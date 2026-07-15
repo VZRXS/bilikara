@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 regex = "1"
