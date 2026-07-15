@@ -163,6 +163,9 @@ const state = {
   localSeekSettleCallback: null,
   localPlayerVolume: 1,
   localPlayerMuted: false,
+  playbackFaultItemId: "",
+  playbackFaultRetryByItem: {},
+  mediaIssueEventsByKey: {},
   pendingPlaybackRestore: null,
   lastAppliedPlayerControlSeq: 0,
   lastReportedPlayerStatusSignature: "",
@@ -5696,6 +5699,26 @@ function currentItemIdFromData(data) {
   return String(data?.current_item?.id || "");
 }
 
+function durationSecondsForItemPage(item, page) {
+  if (!item) {
+    return 0;
+  }
+  const targetPage = Number(page || 0);
+  for (const [pagesKey, durationsKey] of [
+    ["selected_pages", "selected_durations"],
+    ["available_pages", "available_durations"],
+  ]) {
+    const pages = Array.isArray(item[pagesKey]) ? item[pagesKey] : [];
+    const durations = Array.isArray(item[durationsKey]) ? item[durationsKey] : [];
+    const index = pages.findIndex((candidate) => Number(candidate) === targetPage);
+    const duration = Number(durations[index] || 0);
+    if (index >= 0 && Number.isFinite(duration) && duration > 0) {
+      return duration;
+    }
+  }
+  return 0;
+}
+
 function durationSecondsForItem(item) {
   if (!item) {
     return 0;
@@ -6420,8 +6443,199 @@ function settleSplitPlayerSeek(video, audio, force = false) {
   return true;
 }
 
+function mediaUrlBasename(media) {
+  const source = String(media?.currentSrc || media?.src || "");
+  if (!source) {
+    return "";
+  }
+  try {
+    const parsed = new URL(source, window.location.href);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    return decodeURIComponent(parts[parts.length - 1] || "");
+  } catch {
+    return "";
+  }
+}
+
+function reportMediaDiagnostic(itemId, mediaKind, media, eventName) {
+  if (!media) {
+    return;
+  }
+  const mediaError = media.error;
+  const payload = {
+    event: eventName,
+    item_id: String(itemId || ""),
+    media_kind: mediaKind,
+    current_time: Number.isFinite(media.currentTime) ? Number(media.currentTime) : null,
+    duration: Number.isFinite(media.duration) ? Number(media.duration) : null,
+    ready_state: Number(media.readyState || 0),
+    network_state: Number(media.networkState || 0),
+    paused: Boolean(media.paused),
+    ended: Boolean(media.ended),
+    error_code: mediaError ? Number(mediaError.code || 0) : null,
+    error_message: mediaError ? String(mediaError.message || "") : "",
+    url_basename: mediaUrlBasename(media),
+  };
+  console.info("[player-media]", payload);
+  apiPost("/api/player/diagnostic", payload).catch(() => {});
+}
+
+function attachSplitPlayerDiagnostics(itemId, video, audio) {
+  const eventNames = ["loadedmetadata", "canplay", "waiting", "stalled", "suspend", "error", "ended"];
+  eventNames.forEach((eventName) => {
+    video.addEventListener(eventName, () => reportMediaDiagnostic(itemId, "video", video, eventName));
+    audio.addEventListener(eventName, () => reportMediaDiagnostic(itemId, "audio", audio, eventName));
+  });
+}
+
+function splitPlaybackMetrics(currentItem, video, audio) {
+  const videoPage = Number(currentItem?.video_page || currentItem?.page || 0);
+  const audioPage = audioVariantPageNumber(selectedAudioVariantForItem(currentItem));
+  return {
+    videoDuration: Number.isFinite(video?.duration) ? Number(video.duration) : null,
+    videoCurrentTime: Number.isFinite(video?.currentTime) ? Number(video.currentTime) : null,
+    audioDuration: Number.isFinite(audio?.duration) ? Number(audio.duration) : null,
+    audioCurrentTime: Number.isFinite(audio?.currentTime) ? Number(audio.currentTime) : null,
+    expectedDuration: durationSecondsForItemPage(currentItem, videoPage) || null,
+    expectedAudioDuration: durationSecondsForItemPage(currentItem, audioPage) || null,
+    videoPage,
+    audioPage,
+    avOffsetSeconds: currentAvOffsetSeconds(),
+  };
+}
+
+function pauseSplitPlaybackForFault(video, audio) {
+  state.localShouldBePlaying = false;
+  state.localSeekResumePending = false;
+  clearLocalPlayerSeekState();
+  if (video && !video.paused) {
+    video.pause();
+  }
+  if (audio && !audio.paused) {
+    audio.pause();
+  }
+  showMountedPlayerControls();
+}
+
+function handleSplitPlaybackFault(currentItem, video, audio, outcome, trigger) {
+  const itemId = String(currentItem?.id || "");
+  if (!itemId || !outcome?.fault) {
+    return;
+  }
+  const metrics = splitPlaybackMetrics(currentItem, video, audio);
+  state.playbackFaultItemId = itemId;
+  pauseSplitPlaybackForFault(video, audio);
+  console.error("[player-fault]", {
+    item_id: itemId,
+    trigger,
+    classification: outcome.classification,
+    ...metrics,
+  });
+  reportMediaDiagnostic(itemId, "video", video, `fault:${outcome.classification}`);
+  reportMediaDiagnostic(itemId, "audio", audio, `fault:${outcome.classification}`);
+
+  const retryStarted = Boolean(state.playbackFaultRetryByItem[itemId]);
+  setAppMessage(
+    retryStarted
+      ? t("service.playbackRepairHint")
+      : `${t("service.playbackRepairHint")} ${t("service.retryCurrentStarted")}`,
+    true,
+  );
+  if (retryStarted) {
+    return;
+  }
+  state.playbackFaultRetryByItem[itemId] = true;
+  apiPost("/api/cache/retry", { item_id: itemId, force: true })
+    .then((nextData) => {
+      state.data = nextData;
+      state.playbackFaultItemId = "";
+      Object.keys(state.mediaIssueEventsByKey)
+        .filter((key) => key.startsWith(`${itemId}:`))
+        .forEach((key) => delete state.mediaIssueEventsByKey[key]);
+      state.playerSignature = "";
+      render();
+    })
+    .catch((error) => {
+      setAppMessage(`${t("service.playbackRepairHint")}: ${error.message}`, true);
+    });
+}
+
+function recordSplitMediaIssue(currentItem, video, audio, mediaKind, media, eventName) {
+  const itemId = String(currentItem?.id || "");
+  if (!itemId || !media) {
+    return;
+  }
+  const key = `${itemId}:${mediaKind}`;
+  const now = Date.now();
+  const recent = (state.mediaIssueEventsByKey[key] || [])
+    .filter((timestamp) => now - timestamp <= 15000);
+  recent.push(now);
+  state.mediaIssueEventsByKey[key] = recent;
+  const health = window.BilikaraPlayerHealth;
+  const outcome = health?.classifyBuffering({
+    eventCount: recent.length,
+    readyState: media.readyState,
+    networkState: media.networkState,
+  });
+  if (outcome?.fault) {
+    handleSplitPlaybackFault(currentItem, video, audio, outcome, `${mediaKind}-${eventName}`);
+  }
+}
+
+function attachSplitPlaybackFaultHandlers(currentItem, video, audio) {
+  const health = window.BilikaraPlayerHealth;
+  [["video", video], ["audio", audio]].forEach(([mediaKind, media]) => {
+    media.addEventListener("error", () => {
+      const outcome = health?.classifyMediaError(mediaKind, media.error?.code || 0)
+        || { classification: `${mediaKind}-error`, fault: true };
+      handleSplitPlaybackFault(currentItem, video, audio, outcome, `${mediaKind}-error`);
+    });
+    ["waiting", "stalled"].forEach((eventName) => {
+      media.addEventListener(eventName, () => {
+        recordSplitMediaIssue(currentItem, video, audio, mediaKind, media, eventName);
+      });
+    });
+  });
+}
+
+async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
+  state.localShouldBePlaying = false;
+  state.localSeekResumePending = false;
+  audio.pause();
+  showMountedPlayerControls();
+  reportStatus();
+  const health = window.BilikaraPlayerHealth;
+  const metrics = splitPlaybackMetrics(currentItem, video, audio);
+  const outcome = health?.classifyVideoEnded(metrics)
+    || { classification: "normal-end", fault: false };
+  if (outcome.fault) {
+    handleSplitPlaybackFault(currentItem, video, audio, outcome, "video-ended");
+    return;
+  }
+  await handleLocalPlaybackEnded("media-ended");
+}
+
+function handleSplitAudioEnded(currentItem, video, audio) {
+  if (isSplitPlayerSeekSettling(video, audio)) {
+    return;
+  }
+  const health = window.BilikaraPlayerHealth;
+  const metrics = splitPlaybackMetrics(currentItem, video, audio);
+  const outcome = health?.classifyAudioEnded(metrics)
+    || { classification: "normal-end", fault: false };
+  if (outcome.fault) {
+    handleSplitPlaybackFault(currentItem, video, audio, outcome, "audio-ended");
+  }
+}
+
 function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
   if (!video || !audio) {
+    return;
+  }
+  if (audio.ended || (state.playbackFaultItemId && state.playerContext?.itemId === state.playbackFaultItemId)) {
+    if (!audio.paused) {
+      audio.pause();
+    }
     return;
   }
 
@@ -6879,6 +7093,10 @@ function renderAvSyncControls(playbackMode, playerSettings) {
 }
 
 function renderPlayer(currentItem, playbackMode) {
+  const currentItemId = String(currentItem?.id || "");
+  if (state.playbackFaultItemId && state.playbackFaultItemId !== currentItemId) {
+    state.playbackFaultItemId = "";
+  }
   handleRatingCurrentItemChange(currentItem);
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
@@ -7016,6 +7234,8 @@ function renderPlayer(currentItem, playbackMode) {
 
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
+  attachSplitPlayerDiagnostics(currentItem.id, video, audio);
+  attachSplitPlaybackFaultHandlers(currentItem, video, audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -7162,19 +7382,11 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("ended", async () => {
-    state.localShouldBePlaying = false;
-    state.localSeekResumePending = false;
-    audio.pause();
-    showMountedPlayerControls();
-    reportCurrentVideoStatus();
-    await handleLocalPlaybackEnded();
+    await handleSplitVideoEnded(currentItem, video, audio, reportCurrentVideoStatus);
   });
 
   audio.addEventListener("ended", () => {
-    if (isSplitPlayerSeekSettling(video, audio)) {
-      return;
-    }
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    handleSplitAudioEnded(currentItem, video, audio);
   });
 
   state.localPlayerSyncTimer = window.setInterval(() => {
@@ -7201,6 +7413,10 @@ function renderPlayer(currentItem, playbackMode) {
 }
 
 function renderPlayer(currentItem, playbackMode) {
+  const currentItemId = String(currentItem?.id || "");
+  if (state.playbackFaultItemId && state.playbackFaultItemId !== currentItemId) {
+    state.playbackFaultItemId = "";
+  }
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
@@ -7334,6 +7550,8 @@ function renderPlayer(currentItem, playbackMode) {
 
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
+  attachSplitPlayerDiagnostics(currentItem.id, video, audio);
+  attachSplitPlaybackFaultHandlers(currentItem, video, audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -7478,19 +7696,11 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("ended", async () => {
-    state.localShouldBePlaying = false;
-    state.localSeekResumePending = false;
-    audio.pause();
-    showMountedPlayerControls();
-    reportCurrentVideoStatus();
-    await handleLocalPlaybackEnded();
+    await handleSplitVideoEnded(currentItem, video, audio, reportCurrentVideoStatus);
   });
 
   audio.addEventListener("ended", () => {
-    if (isSplitPlayerSeekSettling(video, audio)) {
-      return;
-    }
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    handleSplitAudioEnded(currentItem, video, audio);
   });
 
   state.localPlayerSyncTimer = window.setInterval(() => {
@@ -9684,7 +9894,17 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
   state.localAdvanceInFlight = true;
   try {
     const previousData = state.data;
+    const previousItemId = currentItemIdFromData(previousData);
     state.data = await apiPost("/api/player/next");
+    if (previousItemId) {
+      delete state.playbackFaultRetryByItem[previousItemId];
+      Object.keys(state.mediaIssueEventsByKey)
+        .filter((key) => key.startsWith(`${previousItemId}:`))
+        .forEach((key) => delete state.mediaIssueEventsByKey[key]);
+      if (state.playbackFaultItemId === previousItemId) {
+        state.playbackFaultItemId = "";
+      }
+    }
     if (showTransition) {
       maybeShowSongTransitionOverlay(previousData, state.data, { force: true });
     }
@@ -9697,11 +9917,19 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
 }
 
 async function requestNextTrack() {
-  await handleLocalPlaybackEnded();
+  await handleLocalPlaybackEnded("manual-next");
 }
 
-async function handleLocalPlaybackEnded() {
+async function handleLocalPlaybackEnded(reason = "media-ended") {
   if (state.localAdvanceInFlight) {
+    return;
+  }
+  const currentItemId = currentItemIdFromData(state.data);
+  if (
+    window.BilikaraPlayerHealth?.shouldGuardAdvance(reason)
+    && currentItemId
+    && state.playbackFaultItemId === currentItemId
+  ) {
     return;
   }
   const delaySeconds = currentSongAdvanceDelaySeconds();
@@ -10417,10 +10645,23 @@ elements.queueNextButton.addEventListener("click", async (event) => {
 });
 
 elements.resortPlaylistButton?.addEventListener("click", async () => {
+  if (elements.resortPlaylistButton.disabled) {
+    return;
+  }
+
+  const prevText = elements.resortPlaylistButton.textContent;
+  elements.resortPlaylistButton.disabled = true;
+  elements.resortPlaylistButton.setAttribute("aria-busy", "true");
+  elements.resortPlaylistButton.textContent = t("gatcha.adding") || "处理中…";
+
   try {
     await resortPlaylistByCycle();
   } catch (error) {
     setAppMessage(error.message, true);
+  } finally {
+    elements.resortPlaylistButton.disabled = false;
+    elements.resortPlaylistButton.removeAttribute("aria-busy");
+    elements.resortPlaylistButton.textContent = prevText;
   }
 });
 
@@ -10955,7 +11196,7 @@ elements.playlist.addEventListener("click", async (event) => {
 
 elements.historyList.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
-  if (!button || button.dataset.action === "toggle-menu") {
+  if (!button || button.dataset.action === "toggle-menu" || button.disabled) {
     return;
   }
   const action = button.dataset.action;
@@ -10979,8 +11220,20 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!url) {
     return;
   }
-  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point, "history");
-  closeOpenMenus();
+
+  const prevText = button.textContent;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = t("search.adding");
+
+  try {
+    await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point, "history");
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = prevText;
+    closeOpenMenus();
+  }
 });
 
 elements.confirmCancel.addEventListener("click", () => {
@@ -11131,8 +11384,18 @@ elements.developerTagResetDeleteMid?.addEventListener("click", async () => {
 
 elements.confirmOk.addEventListener("click", async () => {
   const intent = state.confirmIntent;
-  if (!intent) {
+  if (!intent || elements.confirmOk.disabled) {
     return;
+  }
+
+  const prevOkText = elements.confirmOk.textContent;
+  elements.confirmOk.disabled = true;
+  elements.confirmOk.setAttribute("aria-busy", "true");
+  elements.confirmOk.textContent = t("gatcha.adding") || "处理中…";
+
+  if (elements.confirmSecondary) {
+    elements.confirmSecondary.disabled = true;
+    elements.confirmSecondary.setAttribute("aria-busy", "true");
   }
 
   try {
@@ -11218,6 +11481,14 @@ elements.confirmOk.addEventListener("click", async () => {
       setMessageForSource(intent.source || "request-form", error.message, true);
     } else {
       setAppMessage(error.message, true);
+    }
+  } finally {
+    elements.confirmOk.disabled = false;
+    elements.confirmOk.removeAttribute("aria-busy");
+    elements.confirmOk.textContent = prevOkText;
+    if (elements.confirmSecondary) {
+      elements.confirmSecondary.disabled = false;
+      elements.confirmSecondary.removeAttribute("aria-busy");
     }
   }
 });
@@ -11968,13 +12239,19 @@ elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
-  if (!state.gatchaCandidate) return;
+  if (!state.gatchaCandidate || elements.gatchaConfirmButton.disabled) return;
 
   const url = state.gatchaCandidate.url;
   const requesterName = validatedRequesterNameForAdd(setGatchaMessage);
   if (!requesterName) {
     return;
   }
+
+  const prevText = elements.gatchaConfirmButton.textContent;
+  elements.gatchaConfirmButton.disabled = true;
+  elements.gatchaConfirmButton.setAttribute("aria-busy", "true");
+  elements.gatchaConfirmButton.textContent = t("search.adding");
+
   setGatchaMessage(t("gatcha.nozomi"));
   try {
     state.data = await submitAddRequest(url, "tail", { requesterName });
@@ -12018,6 +12295,10 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
       return;
     }
     setGatchaMessage(error.message, true);
+  } finally {
+    elements.gatchaConfirmButton.disabled = false;
+    elements.gatchaConfirmButton.removeAttribute("aria-busy");
+    elements.gatchaConfirmButton.textContent = prevText;
   }
 });
 
