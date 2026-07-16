@@ -214,10 +214,11 @@ jobs:
 
       - name: Upload bundle to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.bundle-name.outputs.archive_name }}
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-preview.') }}
 
   mirror-release-r2:
     name: Mirror Release To R2
