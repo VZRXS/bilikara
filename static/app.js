@@ -1264,10 +1264,37 @@ function clientHeaders(extraHeaders = {}) {
   };
 }
 
+function localizedBBDownLoginMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "请使用哔哩哔哩 App 扫码登录" || raw.includes("扫码登录")) {
+    return t("service.scanWithBilibiliApp");
+  }
+  if (raw === "正在启动 BBDown 登录" || raw.includes("启动 BBDown 登录")) {
+    return t("service.startingBBDownLogin");
+  }
+  if (raw === "BBDown 已登录" || raw === "已登录") {
+    return t("service.bbdownLoggedIn");
+  }
+  if (raw === "BBDown 登录失败，请重试" || raw.includes("登录失败")) {
+    return t("service.bbdownLoginFailed");
+  }
+  if (raw === "未登录") {
+    return t("service.notLoggedIn");
+  }
+  return raw;
+}
+
 function localizedApiMessage(message) {
   const raw = String(message || "").trim();
   if (!raw) {
     return "";
+  }
+  const bbdownMessage = localizedBBDownLoginMessage(raw);
+  if (bbdownMessage && bbdownMessage !== raw) {
+    return bbdownMessage;
   }
   const gatchaMessage = localizedGatchaTaskMessage(raw);
   if (gatchaMessage && gatchaMessage !== raw) {
@@ -2595,7 +2622,7 @@ function formatSearchRating(value) {
 
 function searchResultRatingText(item) {
   const rating = searchResultRatingValue(item);
-  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
+  return rating == null ? t("search.ratingNone") : t("search.ratingValue", { rating: formatSearchRating(rating) });
 }
 
 function createSearchResultRatingStars(item) {
@@ -4246,11 +4273,23 @@ function localizedCacheMessage(message, cacheStatus = "") {
   if (raw.includes("开始缓存视频") || raw.includes("正在缓存")) {
     return t("cache.caching");
   }
-  if (status === "ready") {
-    return t("cache.ready");
-  }
   if (status === "failed" && raw === "缓存失败") {
     return t("cache.failed");
+  }
+  let localized = raw;
+  if (localized.includes("视频轨")) {
+    localized = localized.replace(/视频轨/g, t("cache.videoTrack"));
+  }
+  if (localized.includes("音轨")) {
+    localized = localized.replace(/音轨/g, t("cache.audioTrack"));
+  }
+  if (localized.includes("（校验中）") || localized.includes("(校验中)")) {
+    localized = localized.replace(/（校验中）|\(校验中\)/g, `(${t("status.validating")})`);
+  } else if (localized === "校验中") {
+    localized = t("status.validating");
+  }
+  if (localized !== raw) {
+    return localized;
   }
   return raw;
 }
@@ -4513,6 +4552,9 @@ function renderGatchaUidFace() {
   setTextContent(elements.gatchaTag, showUid ? t("gatcha.uidTag") : t("gatcha.tag"));
   setTextContent(elements.gatchaTitle, showUid ? t("gatcha.uidTitle") : t("gatcha.title"));
   setTextContent(elements.gatchaUidToggle, showUid ? t("gatcha.backToDraw") : t("gatcha.addUid"));
+  if (elements.gatchaConfirmButton && !elements.gatchaConfirmButton.disabled) {
+    elements.gatchaConfirmButton.textContent = t("gatcha.confirm");
+  }
   if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
     elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
@@ -5070,7 +5112,7 @@ function renderBBDownLogin(login) {
         setTextContent(elements.bbdownLoginQrText, qrText);
       }
       if (elements.bbdownLoginMessage) {
-        setTextContent(elements.bbdownLoginMessage, login?.message || t("service.qrPreparing"));
+        setTextContent(elements.bbdownLoginMessage, localizedBBDownLoginMessage(login?.message) || t("service.qrPreparing"));
         setClassToggle(elements.bbdownLoginMessage, "is-error", login?.state === "failed");
       }
     }
