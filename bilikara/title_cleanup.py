@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from . import rust_backend
+
 FULLWIDTH_BRACKET_RE = re.compile(r"【[^】]*】")
 EDGE_SEPARATOR_RE = re.compile(r"^[\s\-|｜/:：]+|[\s\-|｜/:：]+$")
 MULTISPACE_RE = re.compile(r"\s+")
@@ -36,7 +38,7 @@ def _clean_bracket_content(match: re.Match) -> str:
     return f"{full_block[0]}{cleaned_inner}{full_block[-1]}"
 
 
-def clean_display_title(
+def _py_clean_display_title(
     *,
     title: str = "",
     display_title: str = "",
@@ -50,6 +52,35 @@ def clean_display_title(
     cleaned = MULTISPACE_RE.sub(" ", cleaned).strip()
     cleaned = EDGE_SEPARATOR_RE.sub("", cleaned).strip()
     return cleaned or candidate.strip()
+
+
+def clean_display_title(
+    *,
+    title: str = "",
+    display_title: str = "",
+    part_title: str = "",
+) -> str:
+    title_sanitized = str(title or "").replace("\x00", "")
+    display_title_sanitized = str(display_title or "").replace("\x00", "")
+    part_title_sanitized = str(part_title or "").replace("\x00", "")
+
+    rust_result = rust_backend.clean_display_title(
+        title_sanitized,
+        display_title_sanitized,
+        part_title_sanitized,
+    )
+    if rust_result is not None:
+        return rust_result
+
+    return _py_clean_display_title(
+        title=title_sanitized,
+        display_title=display_title_sanitized,
+        part_title=part_title_sanitized,
+    )
+
+
+def rust_backend_status() -> dict[str, object]:
+    return rust_backend.backend_status()
 
 
 def _remove_part_suffix(display_title: str, part_title: str) -> str:

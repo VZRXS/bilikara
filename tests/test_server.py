@@ -761,6 +761,132 @@ class PlaylistExportRouteTest(unittest.TestCase):
         self.assertEqual(writes[0], {"ok": True, "data": {"history": [], "session_played": []}})
 
 
+class MediaRangeEvidenceTest(unittest.TestCase):
+    @staticmethod
+    def _serve(
+        payload: bytes,
+        range_header: str = "",
+        *,
+        head_only: bool = False,
+    ) -> tuple[int, dict[str, str], bytes]:
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.headers = {"Range": range_header} if range_header else {}
+        handler.wfile = io.BytesIO()
+        response: dict[str, object] = {"status": 0, "headers": {}}
+        handler.send_response = lambda status: response.update(status=int(status))
+        handler.send_header = lambda name, value: response["headers"].__setitem__(name, value)
+        handler.end_headers = lambda: None
+        with TemporaryDirectory() as tmpdir:
+            media = Path(tmpdir) / "track.bin"
+            media.write_bytes(payload)
+            handler._stream_file(
+                media,
+                content_type="application/octet-stream",
+                allow_ranges=True,
+                head_only=head_only,
+            )
+        return int(response["status"]), dict(response["headers"]), handler.wfile.getvalue()
+
+    def test_head_dispatches_media_without_body_mode(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = "/media/song/video.mp4?cache=1"
+        calls = []
+        handler._serve_media = lambda route, *, head_only=False: calls.append((route, head_only))
+        handler._serve_static = lambda route, *, head_only=False: self.fail("media HEAD routed to static")
+        handler.do_HEAD()
+        self.assertEqual(calls, [("/media/song/video.mp4", True)])
+
+    def test_full_response_without_range(self):
+        status, headers, body = self._serve(b"0123456789")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Length"], "10")
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertEqual(body, b"0123456789")
+
+    def test_first_and_middle_closed_ranges(self):
+        first = self._serve(b"0123456789", "bytes=0-0")
+        middle = self._serve(b"0123456789", "bytes=3-6")
+        self.assertEqual(first, (206, {
+            "Content-Type": "application/octet-stream",
+            "Accept-Ranges": "bytes",
+            "Content-Range": "bytes 0-0/10",
+            "Content-Length": "1",
+        }, b"0"))
+        self.assertEqual(middle[0], 206)
+        self.assertEqual(middle[1]["Content-Range"], "bytes 3-6/10")
+        self.assertEqual(middle[2], b"3456")
+
+    def test_closed_range_end_is_clamped_to_eof(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=8-999")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 8-9/10")
+        self.assertEqual(body, b"89")
+
+    def test_one_byte_file_ranges(self):
+        status, headers, body = self._serve(b"x", "bytes=-1")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 0-0/1")
+        self.assertEqual(body, b"x")
+
+    def test_empty_file_range_is_unsatisfiable(self):
+        status, headers, body = self._serve(b"", "bytes=0-")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */0")
+        self.assertEqual(body, b"")
+
+    def test_suffix_larger_than_file_returns_entire_file_as_partial(self):
+        status, headers, body = self._serve(b"0123", "bytes=-99")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 0-3/4")
+        self.assertEqual(body, b"0123")
+
+    def test_zero_suffix_and_reversed_range_are_rejected(self):
+        for range_header in ("bytes=-0", "bytes=5-4", "bytes=-"):
+            with self.subTest(range_header=range_header):
+                status, headers, body = self._serve(b"0123456789", range_header)
+                self.assertEqual(status, 416)
+                self.assertEqual(headers["Content-Range"], "bytes */10")
+                self.assertEqual(body, b"")
+
+    def test_head_range_has_get_headers_without_body(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=2-5", head_only=True)
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 2-5/10")
+        self.assertEqual(headers["Content-Length"], "4")
+        self.assertEqual(body, b"")
+
+    def test_open_ended_range_returns_requested_tail(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=4-")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 4-9/10")
+        self.assertEqual(headers["Content-Length"], "6")
+        self.assertEqual(body, b"456789")
+
+    def test_suffix_range_returns_final_bytes(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=-4")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 6-9/10")
+        self.assertEqual(headers["Content-Length"], "4")
+        self.assertEqual(body, b"6789")
+
+    def test_unsatisfiable_range_returns_416(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=99-")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
+    def test_invalid_range_does_not_fall_back_to_full_response(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=invalid")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
+    def test_multiple_ranges_are_rejected(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=0-1,4-5")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
 class UpdateRouteTest(unittest.TestCase):
     def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)

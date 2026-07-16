@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import bilikara.updater as updater
+from bilikara import rust_backend
 from bilikara.updater import AppUpdateManager, check_for_update, fetch_latest_release, is_auto_update_supported, is_newer_version, select_update_asset, version_tuple
 
 
@@ -24,6 +25,381 @@ class FakeHTTPResponse:
 
 
 class UpdateCheckTest(unittest.TestCase):
+    def test_archive_recognition_rust_matches_python(self):
+        capabilities = rust_backend.backend_status()["capabilities"]
+        if not capabilities["is_downloadable_archive"]:
+            self.skipTest("Rust archive recognition symbol is not available")
+        cases = [
+            {"name": "bilikara.zip", "browser_download_url": "https://example/file.zip"},
+            {"name": "BILIKARA.ZIP", "browser_download_url": "https://example/download"},
+            {"name": "download", "browser_download_url": "https://example/file.zip?token=1"},
+            {"name": "file.zip.sha256", "browser_download_url": "https://example/file.zip"},
+            {"name": "file.sig", "browser_download_url": "https://example/file.zip"},
+            {"name": "歌曲.zip", "browser_download_url": "https://example/download"},
+            {"name": "file.tar.gz", "browser_download_url": "https://example/file.tar.gz"},
+            {"name": "file.zip", "browser_download_url": ""},
+        ]
+        for asset in cases:
+            with self.subTest(asset=asset):
+                rust_result = rust_backend.is_downloadable_archive(
+                    str(asset["name"]),
+                    str(asset["browser_download_url"]),
+                )
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(rust_result, updater._py_is_downloadable_archive(asset))
+
+        self.assertFalse(
+            rust_backend.is_downloadable_archive(
+                "readme.txt",
+                "https://example/readme.txt",
+            )
+        )
+
+    def test_archive_recognition_falls_back_on_failure(self):
+        with patch(
+            "bilikara.updater.rust_backend.is_downloadable_archive",
+            return_value=None,
+        ):
+            asset = {
+                "name": "bilikara.zip",
+                "browser_download_url": "https://example/download",
+            }
+            self.assertTrue(updater._is_downloadable_archive(asset))
+
+        capabilities = dict(rust_backend._CAPABILITIES)
+        capabilities["is_downloadable_archive"] = False
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(
+                rust_backend.is_downloadable_archive(
+                    "bilikara.zip",
+                    "https://example/download",
+                )
+            )
+        self.assertIsNone(
+            rust_backend.is_downloadable_archive(
+                "bilikara\x00.zip",
+                "https://example/download",
+            )
+        )
+
+    def test_url_utilities_use_python_fallback(self):
+        with patch(
+            "bilikara.updater.rust_backend.release_list_api_from_latest",
+            return_value=None,
+        ), patch(
+            "bilikara.updater.rust_backend.format_download_proxy_url",
+            return_value=None,
+        ):
+            self.assertEqual(
+                updater._release_list_api_from_latest(
+                    " https://api.example/releases/latest "
+                ),
+                "https://api.example/releases",
+            )
+            self.assertEqual(
+                updater._format_download_proxy_url(
+                    "https://proxy/?url={url_encoded}",
+                    "https://example/歌曲 a.zip",
+                ),
+                updater._py_format_download_proxy_url(
+                    "https://proxy/?url={url_encoded}",
+                    "https://example/歌曲 a.zip",
+                ),
+            )
+
+    def test_url_utilities_rust_match_python(self):
+        capabilities = rust_backend.backend_status()["capabilities"]
+        if not capabilities["release_list_api_from_latest"] or not capabilities[
+            "format_download_proxy_url"
+        ]:
+            self.skipTest("Rust URL utility symbols are not available")
+
+        latest_cases = [
+            "https://api.example/releases/latest",
+            " https://api.example/releases/latest ",
+            "https://api.example/releases/latest/",
+            "",
+            "歌曲/latest",
+        ]
+        for api_url in latest_cases:
+            with self.subTest(api_url=api_url):
+                rust_result = rust_backend.release_list_api_from_latest(api_url)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(
+                    rust_result,
+                    updater._py_release_list_api_from_latest(api_url),
+                )
+
+        proxy_cases = [
+            ("https://proxy/{url}", "https://example/a.zip"),
+            ("https://proxy/?url={url_encoded}", "https://example/歌曲 a.zip?x=1&y=2"),
+            ("https://proxy", "https://example/a.zip"),
+            ("https://proxy/", "https://example/a.zip"),
+            ("", "https://example/a.zip"),
+            ("https://proxy", ""),
+        ]
+        for proxy, url in proxy_cases:
+            with self.subTest(proxy=proxy, url=url):
+                rust_result = rust_backend.format_download_proxy_url(proxy, url)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(
+                    rust_result,
+                    updater._py_format_download_proxy_url(proxy, url),
+                )
+
+    def test_url_utilities_missing_symbol_and_nul_fall_back(self):
+        capabilities = dict(rust_backend._CAPABILITIES)
+        capabilities["format_download_proxy_url"] = False
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(
+                rust_backend.format_download_proxy_url("https://proxy", "https://example")
+            )
+            self.assertEqual(
+                updater._format_download_proxy_url("https://proxy", "https://example"),
+                "https://proxy/https://example",
+            )
+        self.assertIsNone(
+            rust_backend.format_download_proxy_url("https://proxy", "a\x00b")
+        )
+        self.assertEqual(
+            updater._format_download_proxy_url("https://proxy", "a\x00b"),
+            updater._py_format_download_proxy_url("https://proxy", "a\x00b"),
+        )
+
+    def test_asset_token_rust_equivalence_and_false_results(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+        cases = [
+            "bilikara-windows-x64.zip",
+            "bilikara-win64.zip",
+            "bilikara-windows-arm64.zip",
+            "bilikara-macos-arm64.zip",
+            "bilikara-darwin-aarch64.zip",
+            "bilikara-macos-universal2.zip",
+            "bilikara-linux-x86_64.zip",
+            "application.zip",
+            "app.zip",
+            "osx.zip",
+            "unknown.zip",
+            "WIN32.ZIP",
+            "mixed---punctuation___x64.zip",
+            "repeated////separators----x64",
+            "",
+            "歌曲",
+            "windows\x00arm64",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                tokens = rust_backend.asset_tokens(text)
+                self.assertIsNotNone(tokens)
+                self.assertEqual(tokens, updater._py_asset_tokens(text))
+                assert tokens is not None
+                checks = [
+                    (rust_backend.asset_has_windows, updater._py_asset_has_windows),
+                    (rust_backend.asset_has_macos, updater._py_asset_has_macos),
+                    (rust_backend.asset_has_linux, updater._py_asset_has_linux),
+                    (
+                        rust_backend.asset_has_arm64,
+                        lambda value: updater._py_asset_has_arm64(text, value),
+                    ),
+                    (rust_backend.asset_has_universal, updater._py_asset_has_universal),
+                ]
+                for native, python in checks:
+                    result = native(tokens)
+                    self.assertIsNotNone(result)
+                    self.assertEqual(result, python(tokens))
+                result = rust_backend.asset_has_x64(text.lower(), tokens)
+                self.assertIsNotNone(result)
+                self.assertEqual(
+                    result,
+                    updater._py_asset_has_x64(text.lower(), tokens),
+                )
+        self.assertEqual(rust_backend.asset_tokens(""), set())
+        self.assertFalse(rust_backend.asset_has_windows({"unknown"}))
+
+    def test_asset_missing_symbol_uses_python_fallback(self):
+        capabilities = dict(rust_backend._CAPABILITIES)
+        capabilities["asset_has_windows"] = False
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(rust_backend.asset_has_windows({"windows"}))
+            self.assertTrue(updater._asset_has_windows({"windows"}))
+
+    def test_machine_arch_python_fallback(self):
+        with patch("bilikara.updater.rust_backend.normalize_machine_arch", return_value=None):
+            self.assertEqual(updater.normalize_machine_arch("  AMD64 "), "x64")
+            self.assertEqual(updater.normalize_machine_arch(None), "unknown")
+
+    def test_machine_arch_rust_matches_python(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        cases = [
+            "amd64",
+            "AMD64",
+            "x86_64",
+            "x64",
+            "arm64",
+            "ARM64",
+            "aarch64",
+            "i386",
+            "i686",
+            "x86",
+            "  AMD64 ",
+            "",
+            "riscv64",
+            "unknown123",
+            "ＲＩＳＣＶ 64",
+        ]
+        for machine in cases:
+            with self.subTest(machine=machine):
+                rust_result = rust_backend.normalize_machine_arch(machine)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(rust_result, updater._py_normalize_machine_arch(machine))
+
+    def test_machine_arch_missing_symbol_falls_back(self):
+        capabilities = rust_backend._empty_capabilities()
+        with patch("bilikara.rust_backend._CAPABILITIES", capabilities):
+            self.assertIsNone(rust_backend.normalize_machine_arch("AMD64"))
+            self.assertEqual(updater.normalize_machine_arch("AMD64"), "x64")
+
+    def test_detect_update_target_keeps_python_platform_detection(self):
+        with patch("bilikara.updater.platform_module.system", return_value="Linux"), patch(
+            "bilikara.updater.platform_module.machine", return_value="AMD64"
+        ), patch("bilikara.updater.sys.platform", "linux"):
+            target = updater.detect_update_target()
+        self.assertEqual(target["platform"], "linux")
+        self.assertEqual(target["arch"], "x64")
+        self.assertEqual(target["machine"], "AMD64")
+
+    def test_version_helpers_use_python_fallback_without_rust(self):
+        with patch("bilikara.updater.rust_backend.normalize_version_tag", return_value=None), patch(
+            "bilikara.updater.rust_backend.try_version_tuple", return_value=(False, None)
+        ), patch(
+            "bilikara.updater.rust_backend.try_version_sort_key", return_value=(False, None)
+        ):
+            self.assertEqual(updater.normalize_version_tag("  v1.2.3  "), "v1.2.3")
+            self.assertEqual(updater.version_tuple("v1.2.3-preview.4"), (1, 2, 3))
+            self.assertEqual(updater.version_sort_key("v1.2.3-preview.4"), (1, 2, 3, 0, 4))
+
+    def test_version_rust_matches_python(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        cases = [
+            "v0.4.1",
+            "0.4.1",
+            "  v10.20.30-preview.4  ",
+            "V1.2.3-PREVIEW.9",
+            "v0.4.1-2-gabc123",
+            "dev",
+            "",
+            "v999999999999999999999.2.3",
+        ]
+        for version in cases:
+            with self.subTest(version=version):
+                normalized = rust_backend.normalize_version_tag(version)
+                self.assertIsNotNone(normalized)
+                self.assertEqual(normalized, updater._py_normalize_version_tag(version))
+                completed, rust_tuple = rust_backend.try_version_tuple(version)
+                py_tuple = updater._py_version_tuple(version)
+                self.assertTrue(completed)
+                if py_tuple is not None:
+                    self.assertIsNotNone(rust_tuple)
+                self.assertEqual(rust_tuple, py_tuple)
+                completed, rust_sort_key = rust_backend.try_version_sort_key(version)
+                self.assertTrue(completed)
+                self.assertEqual(rust_sort_key, updater._py_version_sort_key(version))
+
+    def test_direct_rust_invalid_version_is_not_backend_failure(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        completed, result = rust_backend.try_version_tuple("dev")
+        self.assertTrue(completed)
+        self.assertIsNone(result)
+        completed, result = rust_backend.try_version_sort_key("v0.7.0-2-gabc123")
+        self.assertTrue(completed)
+        self.assertIsNone(result)
+
+    def test_stable_version_sorts_after_preview(self):
+        self.assertGreater(
+            updater.version_sort_key("v0.7.0"),
+            updater.version_sort_key("v0.7.0-preview.999"),
+        )
+
+    def test_safe_filename_python_cases(self):
+        long_name = f"{'a' * 300}.zip"
+        cases = [
+            ("bilikara-v0.7.0.zip", "fallback.zip", "bilikara-v0.7.0.zip"),
+            ("歌ってみた.zip", "fallback.zip", "zip"),
+            ("卡拉OK更新包.zip", "fallback.zip", "OK-.zip"),
+            ("karaoke🎤mix.zip", "fallback.zip", "karaoke-mix.zip"),
+            ('bad<>:"/\\|?*name.zip', "fallback.zip", "bad-name.zip"),
+            ("  update.zip  ", "fallback.zip", "update.zip"),
+            ("part///name.zip", "fallback.zip", "part-name.zip"),
+            ("CON", "fallback.zip", "CON"),
+            ("...", "fallback.zip", "fallback.zip"),
+            ("", "fallback.zip", "fallback.zip"),
+            ("abc\x00def.zip", "fallback.zip", "abc-def.zip"),
+            ("unchanged_name-1.2.zip", "fallback.zip", "unchanged_name-1.2.zip"),
+            (long_name, "fallback.zip", long_name),
+        ]
+
+        for name, fallback, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(updater._py_safe_filename(name, fallback), expected)
+
+    def test_safe_filename_uses_python_fallback_without_rust(self):
+        with patch("bilikara.updater.rust_backend.safe_filename", return_value=None):
+            self.assertEqual(updater._safe_filename("歌名 / demo.zip"), "demo.zip")
+
+    def test_safe_filename_falls_back_on_null_result(self):
+        null_library = type(
+            "NullLibrary",
+            (),
+            {
+                "rust_safe_filename": lambda self, *args: None,
+                "rust_free_string": lambda self, *args: None,
+            },
+        )()
+        capabilities = rust_backend._empty_capabilities()
+        capabilities["safe_filename"] = True
+        with patch("bilikara.rust_backend._rust_lib", null_library), patch(
+            "bilikara.rust_backend._CAPABILITIES", capabilities
+        ):
+            self.assertEqual(updater._safe_filename("歌名 / demo.zip"), "demo.zip")
+
+    def test_safe_filename_preserves_non_string_fallback_behavior(self):
+        fallback = object()
+        self.assertIs(updater._safe_filename("...", fallback), fallback)
+
+    def test_safe_filename_rust_matches_python(self):
+        if not rust_backend.backend_status()["loaded"]:
+            self.skipTest("Rust dynamic library is not available")
+
+        long_name = f"{'a' * 300}.zip"
+        cases = [
+            ("bilikara-v0.7.0.zip", "fallback.zip"),
+            ("歌ってみた.zip", "fallback.zip"),
+            ("卡拉OK更新包.zip", "fallback.zip"),
+            ("karaoke🎤mix.zip", "fallback.zip"),
+            ('bad<>:"/\\|?*name.zip', "fallback.zip"),
+            ("  update.zip  ", "fallback.zip"),
+            ("part///name.zip", "fallback.zip"),
+            ("CON", "fallback.zip"),
+            ("...", "fallback.zip"),
+            ("", "fallback.zip"),
+            ("abc\x00def.zip", "fallback.zip"),
+            ("unchanged_name-1.2.zip", "fallback.zip"),
+            (long_name, "fallback.zip"),
+        ]
+
+        for name, fallback in cases:
+            with self.subTest(name=name):
+                rust_result = rust_backend.safe_filename(name, fallback)
+                self.assertIsNotNone(rust_result)
+                self.assertEqual(rust_result, updater._py_safe_filename(name, fallback))
+
     def test_version_tuple_accepts_release_tags(self):
         self.assertEqual(version_tuple("v0.4.1"), (0, 4, 1))
         self.assertEqual(version_tuple("0.4.1"), (0, 4, 1))

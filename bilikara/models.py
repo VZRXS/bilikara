@@ -126,6 +126,7 @@ class SessionPlayedEntry:
     cid: int
     page: int
     played_at: float
+    ended_at: float | None = None
     owner_mid: int = 0
     owner_name: str = ""
     owner_url: str = ""
