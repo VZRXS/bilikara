@@ -1,0 +1,6 @@
+# Exact stable baseline verified for reproducible edition-2024 builds in both
+# the native utility crate and the Tauri application crate.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

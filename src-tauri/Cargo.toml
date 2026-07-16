@@ -3,7 +3,8 @@ name = "bilikara"
 version = "1.0.0"
 description = "Bilikara Tauri MVP"
 authors = ["VZRXS"]
-edition = "2021"
+edition = "2024"
+rust-version = "1.88"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
+import shutil
 import struct
+import subprocess
 import zipfile
 from datetime import datetime
 from functools import lru_cache
@@ -278,9 +281,25 @@ def _qr_quiet_zone_pixels(matrix: list[list[bool]], size: int) -> int:
     return quiet * cell
 
 
+def _hidden_process_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+
+    kwargs: dict[str, Any] = {"creationflags": 0x08000000}
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= 0x00000001
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
+@lru_cache(maxsize=2)
 def _find_system_font(*, bold: bool = False) -> str | None:
-    import shutil
-    import subprocess
+    # Keep separate normal/bold cache entries so a future fontconfig pattern can
+    # distinguish them without bringing back one subprocess per font size/page.
+    del bold
 
     if not shutil.which("fc-list"):
         return None
@@ -292,6 +311,8 @@ def _find_system_font(*, bold: bool = False) -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            stdin=subprocess.DEVNULL,
+            **_hidden_process_kwargs(),
         )
         if result.returncode == 0 and result.stdout:
             for line in result.stdout.splitlines():

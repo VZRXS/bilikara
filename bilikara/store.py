@@ -1081,10 +1081,20 @@ class PlaylistStore:
         self.history.insert(0, entry)
 
     def _archive_current_item_unlocked(self) -> None:
-        if not self.current_item or not self.current_item_started:
+        if not self.current_item:
+            return
+        self._mark_session_played_ended_unlocked(self.current_item.id)
+        if not self.current_item_started:
             return
         self._record_session_request_unlocked(self.current_item)
         self._record_history_unlocked(self.current_item)
+
+    def _mark_session_played_ended_unlocked(self, item_id: str) -> bool:
+        for entry in reversed(self.session_played):
+            if entry.item_id == item_id and entry.ended_at is None:
+                entry.ended_at = time.time()
+                return True
+        return False
 
     def _record_session_request_unlocked(self, item: PlaylistItem) -> None:
         now = time.time()

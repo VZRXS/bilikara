@@ -2,10 +2,15 @@
   "name": "bilikara-tauri",
   "version": "1.0.0",
   "author": "VZRXS",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "build:rust": "cd rust && cargo build --release --locked",
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "dev:rust": "npm run build:rust && tauri dev",
+    "build": "npm run build:rust && tauri build -- --locked"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2"

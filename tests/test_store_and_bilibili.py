@@ -401,15 +401,62 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.session_played_file.parent, self.session_archive_dir)
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a"])
         self.assertEqual(payload["items"][0]["cover_url"], "https://example.com/a.jpg")
+        self.assertIsNone(payload["items"][0]["ended_at"])
 
         self.store.advance_to_next()
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
+        self.assertIsInstance(payload["items"][0]["ended_at"], float)
+        self.assertIsNone(payload["items"][1]["ended_at"])
         self.assertEqual(payload["items"][1]["display_title"], "title-b - P1")
         self.assertEqual(payload["items"][1]["requester_name"], "B")
         self.assertEqual(payload["items"][1]["cover_url"], "https://example.com/b.jpg")
         exported = self.store.session_played_snapshot()
         self.assertEqual(exported[-1]["cover_url"], "https://example.com/b.jpg")
+
+    def test_session_played_records_exact_end_timestamp_when_current_item_changes(self):
+        with patch("bilikara.store.time.time", return_value=1000.25):
+            self.add_item("a", requester_name="A", song_key="song-a")
+        self.add_item("b", requester_name="B", song_key="song-b")
+        self.mark_started("a")
+
+        with patch("bilikara.store.time.time", return_value=1012.75):
+            self.store.advance_to_next()
+
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertEqual(payload["items"][0]["played_at"], 1000.25)
+        self.assertEqual(payload["items"][0]["ended_at"], 1012.75)
+        self.assertEqual(payload["items"][1]["played_at"], 1012.75)
+        self.assertIsNone(payload["items"][1]["ended_at"])
+        self.assertEqual(self.store.session_played_snapshot()[0]["ended_at"], 1012.75)
+
+    def test_session_played_end_timestamp_is_recorded_when_unstarted_item_is_skipped(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+
+        with patch("bilikara.store.time.time", return_value=2025.5):
+            self.store.advance_to_next()
+
+        payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        self.assertEqual(payload["items"][0]["ended_at"], 2025.5)
+        self.assertEqual(self.store.session_history, [])
+
+    def test_restore_backup_accepts_session_entries_without_end_timestamp(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        played_payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
+        played_payload["items"][0].pop("ended_at")
+        self.store.session_played_file.write_text(
+            json.dumps(played_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+
+        self.assertTrue(restored_store.restore_backup())
+        self.assertIsNone(restored_store.session_played[0].ended_at)
 
     def test_session_played_threshold_reached_persists_and_exports(self):
         self.add_item("a", requester_name="A")
@@ -2173,6 +2220,171 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_parts, ["P1 main", "P3 chorus"])
         self.assertEqual(item.available_pages, [1, 2, 3])
         self.assertEqual(item.selected_audio_variant_id, "p1_p1_main")
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_single_page_preserves_model_fields(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "single page",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "main track", "duration": 300}
+                ],
+            },
+        }
+
+        item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
+
+        self.assertFalse(item.manual_selection)
+        self.assertEqual(item.page, 1)
+        self.assertEqual(item.cid, 456)
+        self.assertEqual(item.video_page, 1)
+        self.assertEqual(item.selected_pages, [1])
+        self.assertEqual(item.selected_cids, [456])
+        self.assertEqual(item.selected_durations, [300])
+        self.assertEqual(item.selected_parts, ["main track"])
+        self.assertEqual(item.selected_audio_variant_id, "p1_main_track")
+        self.assertIn("cid=456", item.embed_url)
+        self.assertIn("page=1", item.embed_url)
+        self.assertTrue(item.resolved_url.endswith("?p=1"))
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_rejects_invalid_manual_page_references(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "manual pages",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "P1", "duration": 300},
+                    {"cid": 789, "page": 2, "part": "P2", "duration": 310},
+                    {"cid": 999, "page": 3, "part": "P3", "duration": 320},
+                ],
+            },
+        }
+
+        with self.assertRaisesRegex(BilibiliError, "选择的视频分P无效"):
+            fetch_video_item(
+                "https://www.bilibili.com/video/BV1xx411c7mD",
+                selected_video_page=9,
+                selected_audio_pages=[1],
+            )
+        with self.assertRaisesRegex(BilibiliError, "选择的音频分P无效"):
+            fetch_video_item(
+                "https://www.bilibili.com/video/BV1xx411c7mD",
+                selected_video_page=2,
+                selected_audio_pages=[1, 9],
+            )
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_calculates_audio_binding_once(self, mock_request_json):
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "automatic pair",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "plain", "duration": 300},
+                    {"cid": 789, "page": 2, "part": "off vocal", "duration": 301},
+                ],
+            },
+        }
+
+        with (
+            patch.object(
+                bilibili_module,
+                "decide_audio_binding",
+                wraps=bilibili_module.decide_audio_binding,
+            ) as decide,
+            patch.object(
+                bilibili_module,
+                "_is_auto_dual_audio_pair",
+                side_effect=AssertionError("legacy pair helper called from fetch_video_item"),
+            ),
+            patch.object(
+                bilibili_module,
+                "_auto_dual_audio_video_page",
+                side_effect=AssertionError("legacy video helper called from fetch_video_item"),
+            ),
+            patch.object(
+                bilibili_module,
+                "_requires_manual_binding",
+                side_effect=AssertionError("legacy manual helper called from fetch_video_item"),
+            ),
+        ):
+            item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
+
+        decide.assert_called_once()
+        self.assertEqual(item.selected_pages, [1, 2])
+        self.assertEqual(item.video_page, 2)
+
+    @patch("bilikara.bilibili.request_json")
+    def test_fetch_video_item_native_and_forced_python_outputs_match(self, mock_request_json):
+        if not bilibili_module.rust_backend._CAPABILITIES.get(
+            "decide_audio_binding", False
+        ):
+            self.skipTest("Rust audio-binding capability is unavailable")
+        mock_request_json.return_value = {
+            "code": 0,
+            "data": {
+                "aid": 123,
+                "bvid": "BV1xx411c7mD",
+                "title": "automatic pair",
+                "pic": "https://example.com/cover.jpg",
+                "owner": {"mid": 1, "name": "up"},
+                "pages": [
+                    {"cid": 456, "page": 1, "part": "plain", "duration": 300},
+                    {"cid": 789, "page": 2, "part": "off vocal", "duration": 301},
+                ],
+            },
+        }
+
+        with patch.object(
+            bilibili_module,
+            "_py_decide_audio_binding",
+            side_effect=AssertionError("Python fallback was called"),
+        ):
+            native_item = fetch_video_item(
+                "https://www.bilibili.com/video/BV1xx411c7mD"
+            )
+        with patch.object(
+            bilibili_module.rust_backend,
+            "try_decide_audio_binding",
+            return_value=(False, None),
+        ):
+            python_item = fetch_video_item(
+                "https://www.bilibili.com/video/BV1xx411c7mD"
+            )
+
+        fields = (
+            "resolved_url",
+            "page",
+            "cid",
+            "video_page",
+            "part_title",
+            "display_title",
+            "embed_url",
+            "selected_pages",
+            "selected_cids",
+            "selected_durations",
+            "selected_parts",
+            "selected_audio_variant_id",
+            "manual_selection",
+        )
+        self.assertEqual(
+            {field: getattr(native_item, field) for field in fields},
+            {field: getattr(python_item, field) for field in fields},
+        )
 
     def test_fetch_gatcha_videos_for_uid_retries_once_on_412(self):
         if not hasattr(bilibili_module, "_fetch_gatcha_videos_for_uid"):
