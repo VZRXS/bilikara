@@ -314,6 +314,27 @@ pub unsafe extern "C" fn rust_decide_audio_binding(request_json: *const c_char) 
     })
 }
 
+/// Plans ordered updater download candidates from a schema-v1 JSON request.
+///
+/// Returns an owned JSON string that must be freed with [`rust_free_string`].
+/// A valid request whose inputs normalize to no URLs returns a concrete `empty`
+/// response. Invalid pointers, UTF-8, JSON, schemas, source kinds, or indices
+/// return null.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_plan_update_download_candidates(
+    request_json: *const c_char,
+) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::download_candidate_planning::plan_update_download_candidates_json(request_json)
+    })
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
@@ -574,6 +595,67 @@ mod tests {
     fn audio_binding_export_uses_shared_panic_containment() {
         let result = ffi_string_result(|| -> Option<String> {
             panic!("simulated audio binding panic");
+        });
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn update_download_planning_export_rejects_invalid_ffi_and_wire_inputs() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_json = CString::new("not json").unwrap();
+        let unsupported_schema =
+            CString::new(r#"{"schema_version":2,"candidates":[],"proxy":null}"#).unwrap();
+        let invalid_source = CString::new(
+            r#"{"schema_version":1,"candidates":[{"original_index":0,"url":"x","source":"unknown"}],"proxy":null}"#,
+        )
+        .unwrap();
+        let invalid_indices = CString::new(
+            r#"{"schema_version":1,"candidates":[{"original_index":1,"url":"a","source":"primary"},{"original_index":1,"url":"b","source":"mirror"}],"proxy":null}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            assert!(rust_plan_update_download_candidates(std::ptr::null()).is_null());
+            assert!(rust_plan_update_download_candidates(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_plan_update_download_candidates(invalid_json.as_ptr()).is_null());
+            assert!(rust_plan_update_download_candidates(unsupported_schema.as_ptr()).is_null());
+            assert!(rust_plan_update_download_candidates(invalid_source.as_ptr()).is_null());
+            assert!(rust_plan_update_download_candidates(invalid_indices.as_ptr()).is_null());
+        }
+    }
+
+    #[test]
+    fn update_download_planning_export_returns_owned_empty_and_planned_json() {
+        let empty = CString::new(r#"{"schema_version":1,"candidates":[],"proxy":null}"#).unwrap();
+        let planned = CString::new(
+            r#"{"schema_version":1,"candidates":[{"original_index":0,"url":"https://example/app.zip","source":"primary"}],"proxy":{"template":"https://proxy/{url}","proxy_first":true}}"#,
+        )
+        .unwrap();
+
+        unsafe {
+            for _ in 0..20 {
+                let result = rust_plan_update_download_candidates(empty.as_ptr());
+                assert!(!result.is_null());
+                let response = CStr::from_ptr(result).to_str().unwrap();
+                assert!(response.contains(r#""status":"empty""#));
+                assert!(response.contains(r#""candidates":[]"#));
+                rust_free_string(result);
+            }
+
+            let result = rust_plan_update_download_candidates(planned.as_ptr());
+            assert!(!result.is_null());
+            let response = CStr::from_ptr(result).to_str().unwrap();
+            assert!(response.contains(r#""status":"planned""#));
+            assert!(response.contains(r#""route":"proxy""#));
+            assert!(response.contains(r#""route":"direct""#));
+            rust_free_string(result);
+        }
+    }
+
+    #[test]
+    fn update_download_planning_export_uses_shared_panic_containment() {
+        let result = ffi_string_result(|| -> Option<String> {
+            panic!("simulated update download planning panic");
         });
         assert!(result.is_null());
     }

@@ -150,6 +150,7 @@ When completing a task, agents must report:
 | `src/lib.rs` | Domain API exports (`rlib`) and FFI C-ABI entrypoints (`cdylib`). |
 | `src/media_page_selection.rs` | Pure matching and ranking algorithm for video pages. |
 | `src/audio_binding.rs` | Dual-audio and instrumental variant pairing policy. |
+| `src/download_candidate_planning.rs` | Pure updater download URL construction, source labeling, ordering, and deduplication policy. |
 | `src/release_selection.rs` | Semantic version sorting and release filtering rules. |
 | `src/asset_selection.rs` | Update package scoring by platform and architecture. |
 | `src/ffi.rs` | FFI wrapper utilities, memory safety helpers, panic containment. |

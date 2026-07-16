@@ -256,9 +256,8 @@ Remaining risks:
 
 ### 5. Quality and stream ranking
 
-Status: next candidate, not started. No quality/stream selection, download
-planning, BBDown, aria2, cache, or FFmpeg work was begun as part of the audio
-binding migration.
+Status: deferred, not started. No quality/stream selection, BBDown, aria2,
+cache, or FFmpeg work was begun as part of download-candidate planning.
 
 Current Python ownership:
 
@@ -312,48 +311,99 @@ Recommended order: only after page and binding domains.
 
 ### 6. Download candidate planning
 
-Current Python ownership:
+Status: **partially implemented for updater candidates only**. Phase 2 remains
+**4/8 complete**; recommended-sequence item 5 does not count as complete until
+the cache/media-tool semantics have a proven cohesive model or are migrated as
+a separately justified domain.
 
-- `bilikara/updater.py`: `_dedupe_urls`, `_download_url_candidates`;
-- `bilikara/cache.py`: `_dash_stream_urls`, `_tool_fallback_url`, fallback asset
-  helpers, and selected pure portions of URL/source planning;
-- `_download_tool_asset`, `_download_url`, downloader commands, and retry loops
-  are explicitly excluded.
+Migrated Python ownership:
 
-Input/output model: primary URLs, mirrors, proxy configuration, proxy-first
-flag, source kind, and explicit platform/architecture facts; output an ordered,
-deduplicated candidate list with reason/source labels.
+- `bilikara/updater.py`: `_dedupe_urls`, `_latest_release_api_urls`,
+  `_release_list_api_urls`, and `_download_url_candidates` now adapt explicit
+  immutable inputs and invoke one updater-only plan operation.
+- Complete independently executable references remain as `_py_dedupe_urls`,
+  `_py_latest_release_api_urls`, `_py_release_list_api_urls`,
+  `_py_download_url_candidates`, and
+  `_py_plan_update_download_candidates`.
+- `bilikara/rust_backend.py` owns the independently detected
+  `plan_update_download_candidates` capability and validates the complete
+  native response before `updater.py` uses it.
 
-Dependencies: Phase-1 proxy URL formatting and explicit configuration values.
-No function may read environment variables or global config inside Rust.
+Typed domain model:
 
-User-visible policy: proxy-first ordering, direct fallback, mirror priority,
-duplicate removal, and possibly tool-source preference. Separate APIs may be
-needed if updater and media-tool semantics are not actually identical.
+- Input: `UpdateDownloadPlanRequest { candidates:
+  Vec<UpdateCandidateInput>, proxy: Option<UpdateDownloadProxy> }`.
+- Each input carries `original_index`, URL, and an explicit `Primary`, `Mirror`,
+  or `DerivedMirror` source.
+- Output: `UpdateDownloadPlan { candidates: Vec<PlannedUpdateCandidate> }`;
+  each planned candidate carries the originating input index/source, a
+  `Direct` or `Proxy` route, and the normalized URL.
+- Duplicate typed input indices are invalid. Empty or whitespace-only inputs
+  produce a valid empty plan.
+- The typed domain has no serde derives, raw pointers, Python, Tauri, I/O,
+  configuration, or mutable state dependencies. It reuses the Phase-1
+  `url_utils::format_download_proxy_url` transformation.
 
-Proposed Rust structures:
+JSON FFI schema:
 
-```text
-Candidate { url, source, priority }
-DownloadPlanRequest { primary, mirrors, proxy, proxy_first }
-DownloadPlan { candidates }
-```
+- Additive ABI-v1 export:
+  `rust_plan_update_download_candidates(request_json) -> owned response JSON or
+  null`.
+- Request fields are exactly `schema_version`, `candidates`, and nullable
+  `proxy`. Candidate indices must be strictly increasing on the wire; sources
+  are `primary`, `mirror`, or `derived_mirror`.
+- Response fields are exactly `schema_version`, `status`, and `candidates`.
+  Status is `planned` or `empty`; route is `direct` or `proxy`.
+- Malformed pointers, UTF-8, JSON, schemas, enums, fields, or indices return
+  null. A valid empty plan is a concrete `empty` response.
 
-Proposed FFI:
+Preserved updater policy and validation:
 
-```text
-rust_plan_download_candidates(request_json) -> owned response JSON or null
-```
+- URLs are trimmed; empty values are removed; the first occurrence wins; and
+  relative primary/mirror/derived-mirror order remains stable.
+- Proxy formatting preserves `{url_encoded}`, `{url}`, and suffix-separator
+  behavior. An empty proxy or proxy output equal to the direct URL adds no
+  candidate. Explicit `proxy_first` controls direct/proxy order.
+- Python recomputes the only permissible plan from the request and rejects an
+  unknown status/source/route, unknown fields, Boolean or out-of-range indices,
+  source/index mismatches, empty or untrimmed URLs, duplicates, invented URLs,
+  impossible proxy relationships, count violations, or ordering changes.
+- Missing library/symbol, ABI incompatibility, null response, panic, malformed
+  JSON, or any validation failure executes the complete Python reference.
+- Python still performs every HTTP request, retry, timeout, download,
+  installation, error translation, and state update.
 
-Python fallback: retain ordered candidate construction; Python performs every
-request, retry, timeout, and error translation.
+Cohesion decision and deferred code:
 
-Golden tests: empty URLs, duplicate direct/proxy URLs, placeholder proxies,
-proxy-first both ways, mirror stability, Unicode URLs, and current retry-order
-fixtures. Tests must assert planning only and mock all network entry points.
+- Updater and cache/media-tool planning were **not unified**. `_dash_stream_urls`
+  flattens every stream's direct and backup URLs and currently preserves
+  duplicates; preferred-audio construction has a separate raw direct/backup
+  path. `_tool_fallback_url` synthesizes a name-based bucket URL, while
+  `_download_tool_asset` uses fixed primary-first ordering and different
+  trimming semantics. None has updater proxy transformation or `proxy_first`.
+- Therefore `_dash_stream_urls`, preferred-audio URL construction,
+  `_tool_fallback_url`, `_fallback_tool_asset`, `_download_tool_asset`, and all
+  cache/media downloader call sites remain unchanged in Python. A generic
+  `rust_plan_download_candidates` export would misleadingly imply semantics
+  that the audit did not establish.
 
-Risk: medium-to-high. Although pure, ordering controls which external source is
-tried first and therefore affects reliability and privacy expectations.
+Test coverage:
+
+- Typed Rust, wire, and FFI tests cover empty input, trimming, stable
+  deduplication, source/index identity, both proxy orders and placeholders,
+  suffix separators, equal/repeated proxy results, mirror order, cross-source
+  duplicates, Unicode/encoded URLs, invalid requests, determinism, null/UTF-8,
+  malformed JSON/schema/enums/indices, allocation/free repetition, and panic
+  containment.
+- Python golden-policy tests exercise only `_py_*` references. Backend tests
+  cover capability isolation and every fallback/validation class. Strict-native
+  fixed and generated fixtures compare the real release Rust library with the
+  Python policy without permitting fallback.
+
+Remaining risk: ordering controls which external source is contacted first.
+The strict reconstruction validator and complete fallback bound this risk for
+the migrated updater path. Cache/media-tool semantics remain deliberately
+deferred rather than silently changed.
 
 Recommended order: after update selection and only after updater/tool planners
 are shown to share a stable schema.

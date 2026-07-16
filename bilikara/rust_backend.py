@@ -4,6 +4,7 @@ import ctypes
 import json
 import platform
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,10 @@ PHASE2_CAPABILITIES = (
     "select_release",
     "select_media_pages",
     "decide_audio_binding",
+    "plan_update_download_candidates",
 )
+
+MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS = 4096
 
 
 def _rust_library_name() -> str:
@@ -149,6 +153,11 @@ _SYMBOLS = {
     ),
     "decide_audio_binding": (
         "rust_decide_audio_binding",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "plan_update_download_candidates": (
+        "rust_plan_update_download_candidates",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -915,6 +924,230 @@ def try_decide_audio_binding(
             return False, None
         response = json.loads(response_json)
         if not _valid_audio_binding_response(response, request_indices):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _update_download_plan_request(
+    request: object,
+) -> tuple[list[dict[str, object]], dict[str, object] | None] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "candidates",
+        "proxy",
+    }:
+        return None
+    schema_version = request.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
+        return None
+
+    raw_candidates = request.get("candidates")
+    if (
+        not isinstance(raw_candidates, list)
+        or len(raw_candidates) > MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS
+    ):
+        return None
+
+    candidates: list[dict[str, object]] = []
+    previous_index: int | None = None
+    max_index = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+    for candidate in raw_candidates:
+        if not isinstance(candidate, dict) or set(candidate) != {
+            "original_index",
+            "url",
+            "source",
+        }:
+            return None
+        original_index = candidate.get("original_index")
+        url = candidate.get("url")
+        source = candidate.get("source")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or original_index < 0
+            or original_index > max_index
+            or (previous_index is not None and original_index <= previous_index)
+            or not isinstance(url, str)
+            or source not in {"primary", "mirror", "derived_mirror"}
+        ):
+            return None
+        previous_index = original_index
+        candidates.append(
+            {
+                "original_index": original_index,
+                "url": url,
+                "source": source,
+            }
+        )
+
+    raw_proxy = request.get("proxy")
+    proxy: dict[str, object] | None
+    if raw_proxy is None:
+        proxy = None
+    elif (
+        isinstance(raw_proxy, dict)
+        and set(raw_proxy) == {"template", "proxy_first"}
+        and isinstance(raw_proxy.get("template"), str)
+        and isinstance(raw_proxy.get("proxy_first"), bool)
+    ):
+        proxy = {
+            "template": raw_proxy["template"],
+            "proxy_first": raw_proxy["proxy_first"],
+        }
+    else:
+        return None
+    return candidates, proxy
+
+
+def _py_format_proxy_for_validation(proxy: str, url: str) -> str:
+    proxy = proxy.strip()
+    url = url.strip()
+    if not proxy or not url:
+        return ""
+    encoded_url = urllib.parse.quote(url, safe="")
+    if "{url_encoded}" in proxy:
+        return proxy.replace("{url_encoded}", encoded_url)
+    if "{url}" in proxy:
+        return proxy.replace("{url}", url)
+    separator = "" if proxy.endswith(("/", "=", "?", "&")) else "/"
+    return f"{proxy}{separator}{url}"
+
+
+def _expected_update_download_candidates(
+    candidates: list[dict[str, object]],
+    proxy: dict[str, object] | None,
+) -> list[dict[str, object]]:
+    expected: list[dict[str, object]] = []
+    seen_urls: set[str] = set()
+    for candidate in candidates:
+        direct_url = str(candidate["url"]).strip()
+        if not direct_url:
+            continue
+        proxy_url = (
+            _py_format_proxy_for_validation(str(proxy["template"]), direct_url)
+            if proxy is not None
+            else ""
+        )
+        if proxy_url.strip() == direct_url:
+            proxy_url = ""
+        routes = (
+            (("proxy", proxy_url), ("direct", direct_url))
+            if proxy is not None and proxy["proxy_first"] is True
+            else (("direct", direct_url), ("proxy", proxy_url))
+        )
+        for route, raw_url in routes:
+            url = raw_url.strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            expected.append(
+                {
+                    "input_index": candidate["original_index"],
+                    "source": candidate["source"],
+                    "route": route,
+                    "url": url,
+                }
+            )
+    return expected
+
+
+def _valid_update_download_plan_response(
+    response: object,
+    candidates: list[dict[str, object]],
+    proxy: dict[str, object] | None,
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "candidates",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    status = response.get("status")
+    planned = response.get("candidates")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or status not in {"planned", "empty"}
+        or not isinstance(planned, list)
+        or len(planned) > len(candidates) * 2
+    ):
+        return False
+
+    parsed: list[dict[str, object]] = []
+    seen_urls: set[str] = set()
+    request_by_index = {
+        candidate["original_index"]: candidate for candidate in candidates
+    }
+    for candidate in planned:
+        if not isinstance(candidate, dict) or set(candidate) != {
+            "input_index",
+            "source",
+            "route",
+            "url",
+        }:
+            return False
+        input_index = candidate.get("input_index")
+        source = candidate.get("source")
+        route = candidate.get("route")
+        url = candidate.get("url")
+        if (
+            isinstance(input_index, bool)
+            or not isinstance(input_index, int)
+            or input_index not in request_by_index
+            or source not in {"primary", "mirror", "derived_mirror"}
+            or source != request_by_index[input_index]["source"]
+            or route not in {"direct", "proxy"}
+            or not isinstance(url, str)
+            or not url
+            or url != url.strip()
+            or url in seen_urls
+            or (route == "proxy" and proxy is None)
+        ):
+            return False
+        seen_urls.add(url)
+        parsed.append(
+            {
+                "input_index": input_index,
+                "source": source,
+                "route": route,
+                "url": url,
+            }
+        )
+
+    expected = _expected_update_download_candidates(candidates, proxy)
+    if parsed != expected:
+        return False
+    return (status == "empty" and not parsed) or (status == "planned" and bool(parsed))
+
+
+def try_plan_update_download_candidates(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call and strictly validate updater-only candidate planning."""
+
+    validated_request = _update_download_plan_request(request)
+    if (
+        validated_request is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("plan_update_download_candidates", False)
+    ):
+        return False, None
+    candidates, proxy = validated_request
+    try:
+        request_json = json.dumps(
+            request,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        pointer = _rust_lib.rust_plan_update_download_candidates(request_json)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_update_download_plan_response(response, candidates, proxy):
             return False, None
         return True, response
     except Exception:

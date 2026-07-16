@@ -279,6 +279,7 @@ Missing optional symbols disable only their matching capabilities.
 | --- | --- | --- |
 | `media_page_selection` | `rust_select_media_pages` / `select_media_pages` | Implemented and locally stabilized. Cross-platform confirmation remains for the PR to `dev`. Python retains Bilibili adaptation, object mapping, and fallback. |
 | `audio_binding` | `rust_decide_audio_binding` / `decide_audio_binding` | Implemented only after the strict media-page gate passed. Python retains model construction, errors, manual selection, URLs, and fallback. |
+| `download_candidate_planning` (updater-only) | `rust_plan_update_download_candidates` / `plan_update_download_candidates` | Partially implements Phase 2 recommended-sequence item 5 for updater helpers only. Python retains complete `_py_*` references and all I/O. Cache/media-tool URL planning remains Python because its duplicate, source, fallback, and ordering semantics do not match updater proxy planning. Phase 2 remains 4/8 complete. |
 
 Audio binding transports only original index, page number, duration, and part
 label. It does not transport CID or arbitrary Bilibili metadata. The Rust
@@ -286,9 +287,10 @@ domain preserves the existing broad keyword substring policy and returns
 `single`, `automatic`, `manual_required`, or domain-level `no_match`.
 
 Variant-ID construction remains entirely in Python and was not consolidated.
-Quality/stream ranking is the next candidate, but no ranking, download
-planning, BBDown, aria2, cache, playlist, mobile plugin, or FFmpeg migration
-was started here.
+Updater-only download candidate planning is now implemented without advancing
+Phase 2 beyond 4/8 because the cache/media-tool half is intentionally deferred.
+No quality/stream ranking, cache planning, playlist ordering, BBDown, aria2,
+mobile plugin, or FFmpeg migration was started.
 
 ### Criteria for future migration
 
@@ -300,7 +302,9 @@ I/O and mutable policy in Python unless that later phase explicitly changes
 the boundary.
 
 The intentionally deferred helpers in the audit remain deferred. In
-particular, release and asset scoring/selection, URL candidate order, Bilibili
-short-link resolution, cache quality/source defaults, track/download planning,
-path traversal checks, persistent schema adapters, rendering utilities, and
-all filesystem/network/subprocess/thread behavior are not part of Phase 1.
+particular, release and asset scoring/selection, cache/media-tool URL candidate
+order, Bilibili short-link resolution, cache quality/source defaults,
+track/download planning, path traversal checks, persistent schema adapters,
+rendering utilities, and all filesystem/network/subprocess/thread behavior are
+not part of Phase 1. Updater-only candidate planning is the later partial
+Phase-2 domain documented above.

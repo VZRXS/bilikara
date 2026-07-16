@@ -462,6 +462,39 @@ class UpdateCheckTest(unittest.TestCase):
             "https://mirror.example/releases/latest",
         ])
 
+    def test_update_api_candidate_helpers_preserve_primary_mirror_and_derived_order(self):
+        with patch("bilikara.updater.APP_RELEASE_API", " https://api.example/releases/latest "), patch(
+            "bilikara.updater.APP_RELEASE_API_FALLBACKS",
+            (
+                "https://mirror-b.example/releases/latest",
+                "https://mirror-a.example/releases/latest",
+                "https://api.example/releases/latest",
+            ),
+        ), patch(
+            "bilikara.updater.APP_RELEASES_API",
+            "https://api.example/releases",
+        ), patch(
+            "bilikara.updater.APP_RELEASES_API_FALLBACKS",
+            ("https://explicit.example/releases",),
+        ):
+            self.assertEqual(
+                updater._latest_release_api_urls(),
+                [
+                    "https://api.example/releases/latest",
+                    "https://mirror-b.example/releases/latest",
+                    "https://mirror-a.example/releases/latest",
+                ],
+            )
+            self.assertEqual(
+                updater._release_list_api_urls(),
+                [
+                    "https://api.example/releases",
+                    "https://explicit.example/releases",
+                    "https://mirror-b.example/releases",
+                    "https://mirror-a.example/releases",
+                ],
+            )
+
     def test_download_url_candidates_supports_proxy_template(self):
         with patch("bilikara.updater.APP_UPDATE_DOWNLOAD_PROXY", "https://mirror.example/{url_encoded}"), patch(
             "bilikara.updater.APP_UPDATE_DOWNLOAD_PROXY_FIRST",
