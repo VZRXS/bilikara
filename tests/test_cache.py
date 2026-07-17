@@ -1616,6 +1616,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "browser_download_url": "https://github.example/yt-dlp.exe",
                     },
                     target_path,
+                    tool="ytdlp",
                 )
         finally:
             manager.shutdown()
@@ -2738,7 +2739,7 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     "browser_download_url": "https://github.example.com/test_tool_asset"
                 }
                 with self.assertRaisesRegex(RuntimeError, "tool asset test_tool_asset download failed") as ctx:
-                    manager._download_tool_asset(asset, target_file)
+                    manager._download_tool_asset(asset, target_file, tool="bbdown")
                 
                 err_msg = str(ctx.exception)
                 self.assertIn("test_tool_asset", err_msg)

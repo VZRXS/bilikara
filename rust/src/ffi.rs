@@ -335,6 +335,46 @@ pub unsafe extern "C" fn rust_plan_update_download_candidates(
     })
 }
 
+/// Plans ordered media primary/backup URL candidates from schema-v1 JSON.
+///
+/// Returns an owned JSON string that must be freed with [`rust_free_string`].
+/// Valid inputs that produce no candidates return an `empty` response; invalid
+/// pointers, UTF-8, JSON, schemas, modes, stream kinds, or indices return null.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_plan_media_download_candidates(
+    request_json: *const c_char,
+) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::media_download_candidate_planning::plan_media_download_candidates_json(request_json)
+    })
+}
+
+/// Plans ordered tool primary/fallback URL candidates from schema-v1 JSON.
+///
+/// Returns an owned JSON string that must be freed with [`rust_free_string`].
+/// Valid supplied assets with no usable URL return an `empty` response; invalid
+/// or unsupported requests return null and therefore use the Python reference.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_plan_tool_download_candidates(
+    request_json: *const c_char,
+) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::tool_download_candidate_planning::plan_tool_download_candidates_json(request_json)
+    })
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
@@ -656,6 +696,76 @@ mod tests {
     fn update_download_planning_export_uses_shared_panic_containment() {
         let result = ffi_string_result(|| -> Option<String> {
             panic!("simulated update download planning panic");
+        });
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn media_download_planning_export_rejects_invalid_inputs_and_returns_owned_json() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_json = CString::new("not json").unwrap();
+        let unsupported_schema = CString::new(
+            r#"{"schema_version":2,"mode":"dash_streams","stream_kind":"video","streams":[]}"#,
+        )
+        .unwrap();
+        let empty = CString::new(
+            r#"{"schema_version":1,"mode":"dash_streams","stream_kind":"video","streams":[]}"#,
+        )
+        .unwrap();
+        let planned = CString::new(
+            r#"{"schema_version":1,"mode":"dash_streams","stream_kind":"audio","streams":[{"original_index":0,"primary_url":" a ","backup_urls":["b"]}]}"#,
+        )
+        .unwrap();
+        unsafe {
+            assert!(rust_plan_media_download_candidates(std::ptr::null()).is_null());
+            assert!(rust_plan_media_download_candidates(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_plan_media_download_candidates(invalid_json.as_ptr()).is_null());
+            assert!(rust_plan_media_download_candidates(unsupported_schema.as_ptr()).is_null());
+            for request in [&empty, &planned] {
+                for _ in 0..10 {
+                    let result = rust_plan_media_download_candidates(request.as_ptr());
+                    assert!(!result.is_null());
+                    rust_free_string(result);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tool_download_planning_export_rejects_invalid_inputs_and_returns_owned_json() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_json = CString::new("not json").unwrap();
+        let invalid_enum = CString::new(
+            r#"{"schema_version":1,"tool":"unknown","asset":{"mode":"supplied","name":"a","primary_url":""},"fallback_bases":[]}"#,
+        )
+        .unwrap();
+        let empty = CString::new(
+            r#"{"schema_version":1,"tool":"bbdown","asset":{"mode":"supplied","name":"a","primary_url":""},"fallback_bases":[]}"#,
+        )
+        .unwrap();
+        let planned = CString::new(
+            r#"{"schema_version":1,"tool":"ytdlp","asset":{"mode":"supplied","name":"yt-dlp","primary_url":"https://primary"},"fallback_bases":[{"original_index":0,"base_url":"https://mirror"}]}"#,
+        )
+        .unwrap();
+        unsafe {
+            assert!(rust_plan_tool_download_candidates(std::ptr::null()).is_null());
+            assert!(rust_plan_tool_download_candidates(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_plan_tool_download_candidates(invalid_json.as_ptr()).is_null());
+            assert!(rust_plan_tool_download_candidates(invalid_enum.as_ptr()).is_null());
+            for request in [&empty, &planned] {
+                for _ in 0..10 {
+                    let result = rust_plan_tool_download_candidates(request.as_ptr());
+                    assert!(!result.is_null());
+                    rust_free_string(result);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn new_download_planners_use_shared_panic_containment() {
+        let result = ffi_string_result(|| -> Option<String> {
+            panic!("simulated candidate planning panic");
         });
         assert!(result.is_null());
     }

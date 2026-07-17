@@ -5,10 +5,12 @@ mod audio_binding;
 mod download_candidate_planning;
 mod ffi;
 mod filename;
+mod media_download_candidate_planning;
 mod media_page_selection;
 mod platform;
 mod release_selection;
 mod title_cleanup;
+mod tool_download_candidate_planning;
 mod url_utils;
 mod version;
 
@@ -26,9 +28,15 @@ pub use ffi::{
     rust_asset_has_windows, rust_asset_has_x64, rust_asset_tokens, rust_backend_abi_version,
     rust_clean_display_title, rust_decide_audio_binding, rust_format_download_proxy_url,
     rust_free_string, rust_is_downloadable_archive, rust_normalize_machine_arch,
-    rust_normalize_version_tag, rust_plan_update_download_candidates,
+    rust_normalize_version_tag, rust_plan_media_download_candidates,
+    rust_plan_tool_download_candidates, rust_plan_update_download_candidates,
     rust_release_list_api_from_latest, rust_safe_filename, rust_select_media_pages,
     rust_select_release, rust_select_update_asset, rust_version_sort_key, rust_version_tuple,
+};
+pub use media_download_candidate_planning::{
+    MediaCandidateSource, MediaDownloadPlan, MediaDownloadPlanError, MediaDownloadPlanMode,
+    MediaDownloadPlanRequest, MediaStreamKind, MediaStreamUrlInput, PlannedMediaCandidate,
+    plan_media_download_candidates,
 };
 pub use media_page_selection::{
     MediaPageDescriptor, MediaPageSelection, MediaPageSelectionError, MediaPageSelectionRequest,
@@ -37,4 +45,9 @@ pub use media_page_selection::{
 pub use release_selection::{
     ReleaseCandidate, ReleaseSelection, ReleaseSelectionError, ReleaseSelectionRequest,
     select_release,
+};
+pub use tool_download_candidate_planning::{
+    PlannedToolCandidate, ToolAssetInput, ToolCandidateSource, ToolDownloadPlan,
+    ToolDownloadPlanError, ToolDownloadPlanRequest, ToolFallbackBaseInput, ToolKind, ToolTarget,
+    plan_tool_download_candidates,
 };

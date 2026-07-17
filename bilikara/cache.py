@@ -48,6 +48,7 @@ from .config import (
     YTDLP_RELEASE_API,
 )
 from .bilibili import BilibiliError, effective_bilibili_cookie, fetch_dash_playurl
+from . import rust_backend
 from .store import PlaylistStore
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
@@ -2369,8 +2370,7 @@ class CacheManager:
                 preferred_audio = dolby_audio
 
             if preferred_audio:
-                audio_urls = [preferred_audio["url"]]
-                audio_urls.extend(preferred_audio.get("backup_urls") or [])
+                audio_urls = self._preferred_audio_urls(preferred_audio)
             else:
                 audio_urls = self._dash_stream_urls(page_dash_streams, "audio")
             if not audio_urls:
@@ -2578,7 +2578,7 @@ class CacheManager:
         return result_paths
 
     @staticmethod
-    def _dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
+    def _py_dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
         if stream_kind == "video":
             streams = dash_streams.get("video") or []
             urls = []
@@ -2604,6 +2604,62 @@ class CacheManager:
                         urls.append(backup_url)
             return urls
         return []
+
+    @staticmethod
+    def _dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
+        if stream_kind not in {"video", "audio"}:
+            return CacheManager._py_dash_stream_urls(dash_streams, stream_kind)
+        streams = dash_streams.get(stream_kind) or []
+        request = {
+            "schema_version": 1,
+            "mode": "dash_streams",
+            "stream_kind": stream_kind,
+            "streams": [
+                {
+                    "original_index": index,
+                    "primary_url": str(stream.get("url") or ""),
+                    "backup_urls": [
+                        str(backup) for backup in (stream.get("backup_urls") or [])
+                    ],
+                }
+                for index, stream in enumerate(streams)
+            ],
+        }
+        completed, response = rust_backend.try_plan_media_download_candidates(request)
+        if completed and response is not None:
+            return [candidate["url"] for candidate in response["candidates"]]
+        return CacheManager._py_dash_stream_urls(dash_streams, stream_kind)
+
+    @staticmethod
+    def _py_preferred_audio_urls(preferred_audio: dict) -> list[str]:
+        urls = [preferred_audio["url"]]
+        urls.extend(preferred_audio.get("backup_urls") or [])
+        return urls
+
+    @staticmethod
+    def _preferred_audio_urls(preferred_audio: dict) -> list[str]:
+        primary_url = preferred_audio["url"]
+        backup_urls = list(preferred_audio.get("backup_urls") or [])
+        if not isinstance(primary_url, str) or not all(
+            isinstance(url, str) for url in backup_urls
+        ):
+            return CacheManager._py_preferred_audio_urls(preferred_audio)
+        request = {
+            "schema_version": 1,
+            "mode": "preferred_audio",
+            "stream_kind": "audio",
+            "streams": [
+                {
+                    "original_index": 0,
+                    "primary_url": primary_url,
+                    "backup_urls": backup_urls,
+                }
+            ],
+        }
+        completed, response = rust_backend.try_plan_media_download_candidates(request)
+        if completed and response is not None:
+            return [candidate["url"] for candidate in response["candidates"]]
+        return CacheManager._py_preferred_audio_urls(preferred_audio)
 
     @staticmethod
     def _safe_url_summary(url: object) -> str:
@@ -4450,7 +4506,7 @@ class CacheManager:
 
             try:
                 # 1. Download to temporary archive
-                self._download_tool_asset(asset, tmp_archive)
+                self._download_tool_asset(asset, tmp_archive, tool="bbdown")
 
                 # 2. Validate downloaded archive
                 archive_name = asset["name"]
@@ -4635,17 +4691,17 @@ class CacheManager:
         YTDLP_DIR.mkdir(parents=True, exist_ok=True)
         name = str(asset.get("name") or target_path.name)
         download_url = str(asset.get("browser_download_url") or "")
-        if not download_url and not self._tool_fallback_url(name):
+        if not download_url and not self._tool_fallback_url(name, tool="ytdlp"):
             raise RuntimeError("yt-dlp release asset missing download URL")
         if name.lower().endswith((".zip", ".tar.gz", ".tgz")):
             archive_path = YTDLP_DIR / name
-            self._download_tool_asset(asset, archive_path)
+            self._download_tool_asset(asset, archive_path, tool="ytdlp")
             try:
                 self._extract_tool_binary_from_archive(archive_path, YTDLP_DIR, target_path.name)
             finally:
                 archive_path.unlink(missing_ok=True)
         else:
-            self._download_tool_asset(asset, target_path)
+            self._download_tool_asset(asset, target_path, tool="ytdlp")
 
     def _install_aria2c(self, target_path: Path) -> None:
         system, arch = self._current_platform_tokens()
@@ -4663,10 +4719,10 @@ class CacheManager:
         ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
         name = str(asset.get("name") or "aria2c.zip")
         download_url = str(asset.get("browser_download_url") or "")
-        if not download_url and not self._tool_fallback_url(name):
+        if not download_url and not self._tool_fallback_url(name, tool="aria2c"):
             raise RuntimeError("aria2 release asset missing download URL")
         archive_path = ARIA2C_DIR / name
-        self._download_tool_asset(asset, archive_path)
+        self._download_tool_asset(asset, archive_path, tool="aria2c")
         try:
             self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
         finally:
@@ -4862,28 +4918,98 @@ class CacheManager:
             return json.loads(response.read().decode("utf-8"))
 
     @staticmethod
-    def _fallback_tool_asset(name: str) -> dict[str, str]:
-        if not TOOL_ASSET_BASE_URL:
+    def _py_tool_fallback_url(name: str, base_url: str) -> str:
+        if not base_url or not name:
+            return ""
+        return f"{base_url}/{urllib.parse.quote(name)}"
+
+    @staticmethod
+    def _py_fallback_tool_asset(name: str, base_url: str) -> dict[str, str]:
+        if not base_url:
             raise RuntimeError("tool asset fallback base URL is not configured")
         return {
             "name": name,
-            "browser_download_url": f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}",
+            "browser_download_url": CacheManager._py_tool_fallback_url(
+                name, base_url
+            ),
         }
 
     @staticmethod
-    def _tool_fallback_url(name: str) -> str:
-        if not TOOL_ASSET_BASE_URL or not name:
-            return ""
-        return f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}"
-
-    def _download_tool_asset(self, asset: dict, target_path: Path) -> None:
-        name = str(asset.get("name") or target_path.name)
+    def _py_tool_download_candidates(
+        asset: dict,
+        target_name: str,
+        fallback_base_urls: list[str],
+    ) -> list[str]:
+        name = str(asset.get("name") or target_name)
         primary_url = str(asset.get("browser_download_url") or "")
-        fallback_url = self._tool_fallback_url(name)
+        fallback_urls = [
+            CacheManager._py_tool_fallback_url(name, base_url)
+            for base_url in fallback_base_urls
+        ]
         urls: list[str] = []
-        for url in (primary_url, fallback_url):
+        for url in [primary_url, *fallback_urls]:
             if url and url not in urls:
                 urls.append(url)
+        return urls
+
+    @staticmethod
+    def _plan_tool_download_candidates(
+        tool: str,
+        asset: dict,
+        target_name: str,
+        fallback_base_urls: list[str],
+    ) -> list[str]:
+        name = str(asset.get("name") or target_name)
+        primary_url = str(asset.get("browser_download_url") or "")
+        request = {
+            "schema_version": 1,
+            "tool": tool,
+            "asset": {
+                "mode": "supplied",
+                "name": name,
+                "primary_url": primary_url,
+            },
+            "fallback_bases": [
+                {"original_index": index, "base_url": base_url}
+                for index, base_url in enumerate(fallback_base_urls)
+            ],
+        }
+        completed, response = rust_backend.try_plan_tool_download_candidates(request)
+        if completed and response is not None:
+            return [candidate["url"] for candidate in response["candidates"]]
+        return CacheManager._py_tool_download_candidates(
+            asset, target_name, fallback_base_urls
+        )
+
+    @staticmethod
+    def _tool_fallback_url(name: str, *, tool: str = "bbdown") -> str:
+        urls = CacheManager._plan_tool_download_candidates(
+            tool,
+            {"name": name, "browser_download_url": ""},
+            name,
+            [TOOL_ASSET_BASE_URL],
+        )
+        return urls[0] if urls else ""
+
+    @staticmethod
+    def _fallback_tool_asset(name: str) -> dict[str, str]:
+        urls = CacheManager._plan_tool_download_candidates(
+            "bbdown",
+            {"name": name, "browser_download_url": ""},
+            name,
+            [TOOL_ASSET_BASE_URL],
+        )
+        if not urls:
+            return CacheManager._py_fallback_tool_asset(name, TOOL_ASSET_BASE_URL)
+        return {"name": name, "browser_download_url": urls[0]}
+
+    def _download_tool_asset(
+        self, asset: dict, target_path: Path, *, tool: str = "bbdown"
+    ) -> None:
+        name = str(asset.get("name") or target_path.name)
+        urls = self._plan_tool_download_candidates(
+            tool, asset, target_path.name, [TOOL_ASSET_BASE_URL]
+        )
         if not urls:
             raise RuntimeError(f"tool asset {name} missing download URL")
 
@@ -4924,6 +5050,15 @@ class CacheManager:
 
     def _bbdown_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
+        return self._default_tool_fallback_asset("bbdown", system, arch)
+
+    @staticmethod
+    def _py_default_tool_fallback_asset(
+        tool: str,
+        system: str,
+        arch: str,
+        fallback_base_url: str,
+    ) -> dict[str, str]:
         asset_names = {
             ("windows", "x64"): "BBDown_1.6.3_20240814_win-x64.zip",
             ("windows", "x86"): "BBDown_1.6.3_20240814_win-x64.zip",
@@ -4933,27 +5068,73 @@ class CacheManager:
             ("linux", "x64"): "BBDown_1.6.3_20240814_linux-x64.zip",
             ("linux", "arm64"): "BBDown_1.6.3_20240814_linux-arm64.zip",
         }
-        name = asset_names.get((system, arch))
-        if not name:
-            raise RuntimeError(f"no BBDown tool fallback asset for {system}/{arch}")
-        return self._fallback_tool_asset(name)
+        if tool == "bbdown":
+            name = asset_names.get((system, arch))
+            if not name:
+                raise RuntimeError(f"no BBDown tool fallback asset for {system}/{arch}")
+            if not fallback_base_url:
+                raise RuntimeError("tool asset fallback base URL is not configured")
+            url = CacheManager._py_tool_fallback_url(name, fallback_base_url)
+        elif tool == "ytdlp":
+            if system == "windows":
+                if arch == "arm64":
+                    name = "yt-dlp_arm64.exe"
+                elif arch == "x86":
+                    name = "yt-dlp_x86.exe"
+                else:
+                    name = "yt-dlp.exe"
+            elif system == "darwin":
+                name = "yt-dlp_macos"
+            elif system == "linux":
+                name = "yt-dlp_linux"
+            else:
+                name = "yt-dlp"
+            if not fallback_base_url:
+                raise RuntimeError("tool asset fallback base URL is not configured")
+            url = CacheManager._py_tool_fallback_url(name, fallback_base_url)
+        elif tool == "aria2c":
+            if system != "windows":
+                raise RuntimeError(f"no aria2c fallback asset for {system}/{arch}")
+            name = CacheManager._aria2_windows_fallback_asset_name(arch)
+            url = (
+                "https://github.com/aria2/aria2/releases/download/release-1.37.0/"
+                f"{urllib.parse.quote(name)}"
+            )
+        else:
+            raise RuntimeError(f"unknown tool candidate planner: {tool}")
+        return {"name": name, "browser_download_url": url}
+
+    @staticmethod
+    def _default_tool_fallback_asset(
+        tool: str,
+        system: str,
+        arch: str,
+    ) -> dict[str, str]:
+        request = {
+            "schema_version": 1,
+            "tool": tool,
+            "asset": {
+                "mode": "default_for_target",
+                "platform": system,
+                "arch": arch,
+            },
+            "fallback_bases": [
+                {"original_index": 0, "base_url": TOOL_ASSET_BASE_URL}
+            ],
+        }
+        completed, response = rust_backend.try_plan_tool_download_candidates(request)
+        if completed and response is not None and response["candidates"]:
+            return {
+                "name": response["asset_name"],
+                "browser_download_url": response["candidates"][0]["url"],
+            }
+        return CacheManager._py_default_tool_fallback_asset(
+            tool, system, arch, TOOL_ASSET_BASE_URL
+        )
 
     def _ytdlp_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
-        if system == "windows":
-            if arch == "arm64":
-                name = "yt-dlp_arm64.exe"
-            elif arch == "x86":
-                name = "yt-dlp_x86.exe"
-            else:
-                name = "yt-dlp.exe"
-        elif system == "darwin":
-            name = "yt-dlp_macos"
-        elif system == "linux":
-            name = "yt-dlp_linux"
-        else:
-            name = "yt-dlp"
-        return self._fallback_tool_asset(name)
+        return self._default_tool_fallback_asset("ytdlp", system, arch)
 
     @staticmethod
     def _aria2_windows_fallback_asset_name(arch: str) -> str:
@@ -4973,13 +5154,7 @@ class CacheManager:
 
     def _aria2_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
-        if system != "windows":
-            raise RuntimeError(f"no aria2c fallback asset for {system}/{arch}")
-        name = self._aria2_windows_fallback_asset_name(arch)
-        return {
-            "name": name,
-            "browser_download_url": f"https://github.com/aria2/aria2/releases/download/release-1.37.0/{urllib.parse.quote(name)}",
-        }
+        return self._default_tool_fallback_asset("aria2c", system, arch)
 
     def _select_ytdlp_asset(self, release: dict) -> dict:
         system, arch = self._current_platform_tokens()

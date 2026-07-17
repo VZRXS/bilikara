@@ -35,9 +35,14 @@ PHASE2_CAPABILITIES = (
     "select_media_pages",
     "decide_audio_binding",
     "plan_update_download_candidates",
+    "plan_media_download_candidates",
+    "plan_tool_download_candidates",
 )
 
 MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS = 4096
+MAX_MEDIA_DOWNLOAD_STREAM_INPUTS = 4096
+MAX_MEDIA_DOWNLOAD_CANDIDATES = 16384
+MAX_TOOL_FALLBACK_BASES = 256
 
 
 def _rust_library_name() -> str:
@@ -158,6 +163,16 @@ _SYMBOLS = {
     ),
     "plan_update_download_candidates": (
         "rust_plan_update_download_candidates",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "plan_media_download_candidates": (
+        "rust_plan_media_download_candidates",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "plan_tool_download_candidates": (
+        "rust_plan_tool_download_candidates",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -1148,6 +1163,456 @@ def try_plan_update_download_candidates(
             return False, None
         response = json.loads(response_json)
         if not _valid_update_download_plan_response(response, candidates, proxy):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _media_download_plan_request(
+    request: object,
+) -> tuple[str, str, list[dict[str, object]]] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "mode",
+        "stream_kind",
+        "streams",
+    }:
+        return None
+    schema_version = request.get("schema_version")
+    mode = request.get("mode")
+    stream_kind = request.get("stream_kind")
+    streams = request.get("streams")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(mode, str)
+        or mode not in {"dash_streams", "preferred_audio"}
+        or not isinstance(stream_kind, str)
+        or stream_kind not in {"video", "audio"}
+        or not isinstance(streams, list)
+        or len(streams) > MAX_MEDIA_DOWNLOAD_STREAM_INPUTS
+        or (mode == "preferred_audio" and (stream_kind != "audio" or len(streams) > 1))
+    ):
+        return None
+
+    validated: list[dict[str, object]] = []
+    previous_index: int | None = None
+    candidate_count = 0
+    max_index = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+    for stream in streams:
+        if not isinstance(stream, dict) or set(stream) != {
+            "original_index",
+            "primary_url",
+            "backup_urls",
+        }:
+            return None
+        original_index = stream.get("original_index")
+        primary_url = stream.get("primary_url")
+        backup_urls = stream.get("backup_urls")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or original_index < 0
+            or original_index > max_index
+            or (previous_index is not None and original_index <= previous_index)
+            or not isinstance(primary_url, str)
+            or not isinstance(backup_urls, list)
+            or not all(isinstance(url, str) for url in backup_urls)
+        ):
+            return None
+        candidate_count += 1 + len(backup_urls)
+        if candidate_count > MAX_MEDIA_DOWNLOAD_CANDIDATES:
+            return None
+        previous_index = original_index
+        validated.append(
+            {
+                "original_index": original_index,
+                "primary_url": primary_url,
+                "backup_urls": list(backup_urls),
+            }
+        )
+    return str(mode), str(stream_kind), validated
+
+
+def _expected_media_download_candidates(
+    mode: str,
+    streams: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    expected: list[dict[str, object]] = []
+    for stream in streams:
+        values = [("primary", None, stream["primary_url"])]
+        values.extend(
+            ("backup", backup_index, url)
+            for backup_index, url in enumerate(stream["backup_urls"])
+        )
+        for source, backup_index, raw_url in values:
+            url = str(raw_url).strip() if mode == "dash_streams" else str(raw_url)
+            if mode == "dash_streams" and not url:
+                continue
+            expected.append(
+                {
+                    "stream_index": stream["original_index"],
+                    "source": source,
+                    "backup_index": backup_index,
+                    "url": url,
+                }
+            )
+    return expected
+
+
+def _valid_media_download_plan_response(
+    response: object,
+    mode: str,
+    streams: list[dict[str, object]],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "candidates",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    status = response.get("status")
+    candidates = response.get("candidates")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(status, str)
+        or status not in {"planned", "empty"}
+        or not isinstance(candidates, list)
+        or len(candidates) > sum(1 + len(stream["backup_urls"]) for stream in streams)
+    ):
+        return False
+
+    request_by_index = {stream["original_index"]: stream for stream in streams}
+    parsed: list[dict[str, object]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or set(candidate) != {
+            "stream_index",
+            "source",
+            "backup_index",
+            "url",
+        }:
+            return False
+        stream_index = candidate.get("stream_index")
+        source = candidate.get("source")
+        backup_index = candidate.get("backup_index")
+        url = candidate.get("url")
+        if (
+            isinstance(stream_index, bool)
+            or not isinstance(stream_index, int)
+            or stream_index not in request_by_index
+            or not isinstance(source, str)
+            or source not in {"primary", "backup"}
+            or not isinstance(url, str)
+            or (mode == "dash_streams" and (not url or url != url.strip()))
+        ):
+            return False
+        if source == "primary":
+            if backup_index is not None:
+                return False
+        elif (
+            isinstance(backup_index, bool)
+            or not isinstance(backup_index, int)
+            or backup_index < 0
+            or backup_index >= len(request_by_index[stream_index]["backup_urls"])
+        ):
+            return False
+        parsed.append(
+            {
+                "stream_index": stream_index,
+                "source": source,
+                "backup_index": backup_index,
+                "url": url,
+            }
+        )
+    expected = _expected_media_download_candidates(mode, streams)
+    return parsed == expected and (
+        (status == "empty" and not parsed) or (status == "planned" and bool(parsed))
+    )
+
+
+def try_plan_media_download_candidates(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call and strictly validate media primary/backup URL planning."""
+
+    validated = _media_download_plan_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("plan_media_download_candidates", False)
+    ):
+        return False, None
+    mode, _stream_kind, streams = validated
+    try:
+        payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        pointer = _rust_lib.rust_plan_media_download_candidates(payload)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_media_download_plan_response(response, mode, streams):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _tool_download_plan_request(
+    request: object,
+) -> tuple[str, dict[str, object], list[dict[str, object]]] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "tool",
+        "asset",
+        "fallback_bases",
+    }:
+        return None
+    schema_version = request.get("schema_version")
+    tool = request.get("tool")
+    asset = request.get("asset")
+    fallback_bases = request.get("fallback_bases")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(tool, str)
+        or tool not in {"bbdown", "ytdlp", "aria2c"}
+        or not isinstance(asset, dict)
+        or not isinstance(fallback_bases, list)
+        or len(fallback_bases) > MAX_TOOL_FALLBACK_BASES
+    ):
+        return None
+    mode = asset.get("mode")
+    if mode == "supplied":
+        if (
+            set(asset) != {"mode", "name", "primary_url"}
+            or not isinstance(asset.get("name"), str)
+            or not asset["name"]
+            or not isinstance(asset.get("primary_url"), str)
+        ):
+            return None
+    elif mode == "default_for_target":
+        if (
+            set(asset) != {"mode", "platform", "arch"}
+            or not isinstance(asset.get("platform"), str)
+            or not isinstance(asset.get("arch"), str)
+        ):
+            return None
+    else:
+        return None
+
+    validated_bases: list[dict[str, object]] = []
+    previous_index: int | None = None
+    max_index = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+    for fallback in fallback_bases:
+        if not isinstance(fallback, dict) or set(fallback) != {
+            "original_index",
+            "base_url",
+        }:
+            return None
+        original_index = fallback.get("original_index")
+        base_url = fallback.get("base_url")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or original_index < 0
+            or original_index > max_index
+            or (previous_index is not None and original_index <= previous_index)
+            or not isinstance(base_url, str)
+        ):
+            return None
+        previous_index = original_index
+        validated_bases.append(
+            {"original_index": original_index, "base_url": base_url}
+        )
+    return str(tool), dict(asset), validated_bases
+
+
+def _default_tool_asset_name(tool: str, platform_name: str, arch: str) -> str | None:
+    if tool == "bbdown":
+        return {
+            ("windows", "x64"): "BBDown_1.6.3_20240814_win-x64.zip",
+            ("windows", "x86"): "BBDown_1.6.3_20240814_win-x64.zip",
+            ("windows", "arm64"): "BBDown_1.6.3_20240814_win-arm64.zip",
+            ("darwin", "x64"): "BBDown_1.6.3_20240814_osx-x64.zip",
+            ("darwin", "arm64"): "BBDown_1.6.3_20240814_osx-arm64.zip",
+            ("linux", "x64"): "BBDown_1.6.3_20240814_linux-x64.zip",
+            ("linux", "arm64"): "BBDown_1.6.3_20240814_linux-arm64.zip",
+        }.get((platform_name, arch))
+    if tool == "ytdlp":
+        if platform_name == "windows":
+            if arch == "arm64":
+                return "yt-dlp_arm64.exe"
+            if arch == "x86":
+                return "yt-dlp_x86.exe"
+            return "yt-dlp.exe"
+        if platform_name == "darwin":
+            return "yt-dlp_macos"
+        if platform_name == "linux":
+            return "yt-dlp_linux"
+        return "yt-dlp"
+    if tool == "aria2c" and platform_name == "windows":
+        return (
+            "aria2-1.37.0-win-32bit-build1.zip"
+            if arch == "x86"
+            else "aria2-1.37.0-win-64bit-build1.zip"
+        )
+    return None
+
+
+def _expected_tool_download_plan(
+    tool: str,
+    asset: dict[str, object],
+    fallback_bases: list[dict[str, object]],
+) -> tuple[str, list[dict[str, object]]] | None:
+    if asset["mode"] == "supplied":
+        asset_name = str(asset["name"])
+        primary_url = str(asset["primary_url"])
+        primary_source = "supplied_primary"
+    else:
+        asset_name = _default_tool_asset_name(
+            tool, str(asset["platform"]), str(asset["arch"])
+        )
+        if asset_name is None:
+            return None
+        if tool == "aria2c":
+            primary_url = (
+                "https://github.com/aria2/aria2/releases/download/"
+                f"release-1.37.0/{urllib.parse.quote(asset_name)}"
+            )
+            primary_source = "built_in_primary"
+        else:
+            primary_url = ""
+            primary_source = "supplied_primary"
+
+    expected: list[dict[str, object]] = []
+    seen: set[str] = set()
+    if primary_url:
+        seen.add(primary_url)
+        expected.append(
+            {
+                "source": primary_source,
+                "fallback_index": None,
+                "url": primary_url,
+            }
+        )
+    quoted_name = urllib.parse.quote(asset_name)
+    for fallback in fallback_bases:
+        base_url = str(fallback["base_url"])
+        if not base_url:
+            continue
+        url = f"{base_url}/{quoted_name}"
+        if url in seen:
+            continue
+        seen.add(url)
+        expected.append(
+            {
+                "source": "configured_fallback",
+                "fallback_index": fallback["original_index"],
+                "url": url,
+            }
+        )
+    if asset["mode"] == "default_for_target" and tool in {"bbdown", "ytdlp"} and not expected:
+        return None
+    return asset_name, expected
+
+
+def _valid_tool_download_plan_response(
+    response: object,
+    tool: str,
+    expected_asset_name: str,
+    expected_candidates: list[dict[str, object]],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "tool",
+        "asset_name",
+        "candidates",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    status = response.get("status")
+    candidates = response.get("candidates")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(status, str)
+        or status not in {"planned", "empty"}
+        or response.get("tool") != tool
+        or response.get("asset_name") != expected_asset_name
+        or not isinstance(candidates, list)
+        or len(candidates) > len(expected_candidates)
+    ):
+        return False
+    parsed: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or set(candidate) != {
+            "source",
+            "fallback_index",
+            "url",
+        }:
+            return False
+        source = candidate.get("source")
+        fallback_index = candidate.get("fallback_index")
+        url = candidate.get("url")
+        if (
+            not isinstance(source, str)
+            or source
+            not in {"supplied_primary", "built_in_primary", "configured_fallback"}
+            or not isinstance(url, str)
+            or not url
+            or url in seen
+        ):
+            return False
+        if source == "configured_fallback":
+            if isinstance(fallback_index, bool) or not isinstance(fallback_index, int):
+                return False
+        elif fallback_index is not None:
+            return False
+        seen.add(url)
+        parsed.append(
+            {"source": source, "fallback_index": fallback_index, "url": url}
+        )
+    return parsed == expected_candidates and (
+        (status == "empty" and not parsed) or (status == "planned" and bool(parsed))
+    )
+
+
+def try_plan_tool_download_candidates(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call and strictly validate tool asset candidate planning."""
+
+    validated = _tool_download_plan_request(request)
+    if validated is None:
+        return False, None
+    tool, asset, fallback_bases = validated
+    expected = _expected_tool_download_plan(tool, asset, fallback_bases)
+    if (
+        expected is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("plan_tool_download_candidates", False)
+    ):
+        return False, None
+    expected_asset_name, expected_candidates = expected
+    try:
+        payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        pointer = _rust_lib.rust_plan_tool_download_candidates(payload)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_tool_download_plan_response(
+            response, tool, expected_asset_name, expected_candidates
+        ):
             return False, None
         return True, response
     except Exception:

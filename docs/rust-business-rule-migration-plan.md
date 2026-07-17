@@ -311,10 +311,9 @@ Recommended order: only after page and binding domains.
 
 ### 6. Download candidate planning
 
-Status: **partially implemented for updater candidates only**. Phase 2 remains
-**4/8 complete**; recommended-sequence item 5 does not count as complete until
-the cache/media-tool semantics have a proven cohesive model or are migrated as
-a separately justified domain.
+Status: **completed**. Phase 2 is **5/8 complete**. Item 5 uses three precise
+typed domains because updater, media, and tool planners have materially
+different normalization, duplication, source, and ordering semantics.
 
 Migrated Python ownership:
 
@@ -328,6 +327,13 @@ Migrated Python ownership:
 - `bilikara/rust_backend.py` owns the independently detected
   `plan_update_download_candidates` capability and validates the complete
   native response before `updater.py` uses it.
+- `bilikara/cache.py`: `_dash_stream_urls`, preferred-audio URL flattening,
+  `_tool_fallback_url`, tool fallback-asset construction, and
+  `_download_tool_asset` now adapt explicit immutable values into one media or
+  tool plan call. Complete `_py_*` references remain independently executable.
+- Runtime platform/architecture and `TOOL_ASSET_BASE_URL` remain Python-owned
+  facts and are passed explicitly. Tool release asset selection remains in the
+  existing selection policy and is not part of candidate planning.
 
 Typed domain model:
 
@@ -343,6 +349,25 @@ Typed domain model:
 - The typed domain has no serde derives, raw pointers, Python, Tauri, I/O,
   configuration, or mutable state dependencies. It reuses the Phase-1
   `url_utils::format_download_proxy_url` transformation.
+- Media input is `MediaDownloadPlanRequest { mode, stream_kind, streams }`.
+  Each `MediaStreamUrlInput` carries an original stream index, primary URL,
+  and ordered backups. Output candidates carry stream index, `Primary` or
+  `Backup` source, optional backup index, and URL.
+- Media `DashStreams` mode trims and removes empty URLs while preserving every
+  duplicate. `PreferredAudio` mode accepts at most one audio descriptor and
+  preserves the raw strings, empties, duplicates, and order used by the
+  existing special path. Choosing that descriptor remains Python Item 6
+  policy and was not migrated.
+- Tool input is `ToolDownloadPlanRequest { tool, asset, fallback_bases }`.
+  `ToolAssetInput` is either a supplied asset name/primary URL or a
+  `DefaultForTarget` with explicit platform/architecture. Output includes the
+  resolved asset name and candidates labeled `SuppliedPrimary`,
+  `BuiltInPrimary`, or `ConfiguredFallback`, with the originating fallback
+  index where applicable.
+- Tool planning preserves primary-first order, constructs name-based fallback
+  URLs using the existing `urllib.parse.quote`-equivalent rules (including
+  slash preservation), skips empty configured bases, and performs exact-string
+  stable first-occurrence deduplication without trimming.
 
 JSON FFI schema:
 
@@ -356,6 +381,18 @@ JSON FFI schema:
   Status is `planned` or `empty`; route is `direct` or `proxy`.
 - Malformed pointers, UTF-8, JSON, schemas, enums, fields, or indices return
   null. A valid empty plan is a concrete `empty` response.
+- Additive ABI-v1 media export:
+  `rust_plan_media_download_candidates(request_json)`. Request fields are
+  exactly `schema_version`, `mode`, `stream_kind`, and `streams`; response
+  fields are exactly `schema_version`, `status`, and `candidates`.
+- Additive ABI-v1 tool export:
+  `rust_plan_tool_download_candidates(request_json)`. Request fields are
+  exactly `schema_version`, `tool`, tagged `asset`, and `fallback_bases`;
+  response fields are exactly `schema_version`, `status`, `tool`,
+  `asset_name`, and `candidates`.
+- Both exports return Rust-owned JSON freed by `rust_free_string`, contain
+  panics, reject null/invalid UTF-8/malformed JSON/unsupported schema or enums,
+  and return concrete `empty` responses for valid empty plans.
 
 Preserved updater policy and validation:
 
@@ -373,19 +410,23 @@ Preserved updater policy and validation:
 - Python still performs every HTTP request, retry, timeout, download,
   installation, error translation, and state update.
 
-Cohesion decision and deferred code:
+Cohesion decision and completed boundary:
 
-- Updater and cache/media-tool planning were **not unified**. `_dash_stream_urls`
-  flattens every stream's direct and backup URLs and currently preserves
-  duplicates; preferred-audio construction has a separate raw direct/backup
-  path. `_tool_fallback_url` synthesizes a name-based bucket URL, while
-  `_download_tool_asset` uses fixed primary-first ordering and different
-  trimming semantics. None has updater proxy transformation or `proxy_first`.
-- Therefore `_dash_stream_urls`, preferred-audio URL construction,
-  `_tool_fallback_url`, `_fallback_tool_asset`, `_download_tool_asset`, and all
-  cache/media downloader call sites remain unchanged in Python. A generic
-  `rust_plan_download_candidates` export would misleadingly imply semantics
-  that the audit did not establish.
+- Updater, media, and tool planning were intentionally **not unified into one
+  schema**. The updater domain trims/deduplicates globally and supports proxy
+  transformation; media preserves duplicates and has two normalization modes;
+  tools use name-derived fallbacks and exact-string deduplication.
+- The remaining pure candidate construction is covered by the three domains.
+  Bilibili response parsing still constructs typed stream descriptors while
+  handling an HTTP response; it is response adaptation rather than candidate
+  ordering. FFmpeg/ffprobe have no download-URL candidate helper: their source
+  discovery is filesystem/runtime I/O.
+- HTTP, retries, timeout/error handling, redirect behavior, aria2/BBDown/
+  yt-dlp/FFmpeg/ffprobe command construction and execution, extraction,
+  filesystem publication, cache workers/mutation, cancellation, and download
+  loops remain Python.
+- Tool release asset scoring/selection and preferred-audio/video stream
+  selection remain deferred ranking policy. No Item 6 work was started.
 
 Test coverage:
 
@@ -399,14 +440,21 @@ Test coverage:
   cover capability isolation and every fallback/validation class. Strict-native
   fixed and generated fixtures compare the real release Rust library with the
   Python policy without permitting fallback.
+- Media coverage includes primary/backup flattening, raw preferred audio,
+  duplicate preservation, empty/whitespace strings, Unicode/encoded URLs,
+  stream/backup identity, modes, invalid indices, ordering, and determinism.
+- Tool coverage includes supplied and built-in primaries, multiple configured
+  bases, platform/architecture mappings, unsupported targets, name encoding,
+  empty bases, exact duplicate removal, tool/source/index identity, strict
+  native validation, allocation/free repetition, and fallback behavior.
 
 Remaining risk: ordering controls which external source is contacted first.
-The strict reconstruction validator and complete fallback bound this risk for
-the migrated updater path. Cache/media-tool semantics remain deliberately
-deferred rather than silently changed.
+The strict reconstruction validators and complete independent references bound
+this risk for all three domains. Cross-platform release-gate confirmation and
+production variation in externally supplied URL strings remain the residual
+risks; neither can move I/O or mutable state into Rust.
 
-Recommended order: after update selection and only after updater/tool planners
-are shown to share a stable schema.
+Recommended order: complete; proceed to Item 6 only as a separate migration.
 
 ### 7. Playlist ordering and deduplication
 
@@ -515,7 +563,7 @@ Recommended order: late, after pure planning has been extracted from mutation.
 2. Release filtering and stable/preview selection.
 3. Media-page matching and ranking.
 4. Audio variant pairing and binding decisions.
-5. Download candidate planning, if updater/tool schemas can be unified safely.
+5. Download candidate planning using separate cohesive schemas where required.
 6. Quality and stream ranking.
 7. Cache planning calculations after mutation-free extraction.
 8. Playlist ordering and deduplication after mutation-free extraction.
