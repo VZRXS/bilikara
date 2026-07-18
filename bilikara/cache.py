@@ -438,7 +438,7 @@ class CacheManager:
         return self.media_capabilities_snapshot()
 
     @staticmethod
-    def _quality_from_choice_index(index: object) -> str | None:
+    def _py_quality_from_choice_index(index: object) -> str | None:
         try:
             normalized_index = int(index)
         except (TypeError, ValueError):
@@ -448,11 +448,46 @@ class CacheManager:
         return None
 
     @staticmethod
-    def _optional_video_quality(video_quality: object) -> str | None:
+    def _py_optional_video_quality(video_quality: object) -> str | None:
         value = str(video_quality or "").strip()
         if value in VIDEO_QUALITY_CHOICES:
             return value
         return None
+
+    @staticmethod
+    def _native_quality_policy(
+        video_quality: object,
+        quality_cap: object = "",
+        choice_index: int | None = None,
+    ) -> dict[str, Any] | None:
+        request = {
+            "schema_version": 1,
+            "raw_quality": str(video_quality or ""),
+            "raw_cap": str(quality_cap or ""),
+            "choice_index": choice_index,
+        }
+        completed, response = rust_backend.try_decide_quality_policy(request)
+        return response if completed else None
+
+    @staticmethod
+    def _quality_from_choice_index(index: object) -> str | None:
+        try:
+            normalized_index = int(index)
+        except (TypeError, ValueError):
+            normalized_index = None
+        response = CacheManager._native_quality_policy(
+            "", choice_index=normalized_index
+        )
+        if response is not None:
+            return response["indexed_quality"]
+        return CacheManager._py_quality_from_choice_index(index)
+
+    @staticmethod
+    def _optional_video_quality(video_quality: object) -> str | None:
+        response = CacheManager._native_quality_policy(video_quality)
+        if response is not None:
+            return response["optional_quality"]
+        return CacheManager._py_optional_video_quality(video_quality)
 
     def enrich_snapshot(
         self,
@@ -667,11 +702,18 @@ class CacheManager:
         return bounded
 
     @staticmethod
-    def _normalize_video_quality(video_quality: object) -> str:
+    def _py_normalize_video_quality(video_quality: object) -> str:
         value = str(video_quality or "").strip()
         if value in VIDEO_QUALITY_CHOICES:
             return value
         return DEFAULT_VIDEO_QUALITY
+
+    @staticmethod
+    def _normalize_video_quality(video_quality: object) -> str:
+        response = CacheManager._native_quality_policy(video_quality)
+        if response is not None:
+            return str(response["normalized_quality"])
+        return CacheManager._py_normalize_video_quality(video_quality)
 
     @staticmethod
     def _normalize_download_source(download_source: object) -> str:
@@ -2066,8 +2108,10 @@ class CacheManager:
         )
 
     @staticmethod
-    def _ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
-        quality = CacheManager._optional_video_quality(quality_cap) or CacheManager._normalize_video_quality(video_quality)
+    def _py_ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
+        quality = CacheManager._py_optional_video_quality(
+            quality_cap
+        ) or CacheManager._py_normalize_video_quality(video_quality)
         if "360" in quality:
             return 360
         if "480" in quality:
@@ -2081,6 +2125,13 @@ class CacheManager:
         if "8K" in quality:
             return 4320
         return 1080
+
+    @staticmethod
+    def _ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
+        response = CacheManager._native_quality_policy(video_quality, quality_cap)
+        if response is not None:
+            return int(response["effective_max_height"])
+        return CacheManager._py_ytdlp_max_height(video_quality, quality_cap)
 
     @staticmethod
     def _ytdlp_browser_cookie_source() -> str:
@@ -2235,7 +2286,8 @@ class CacheManager:
         except RuntimeError:
             return 0
 
-    def _dash_max_quality_id(self, video_quality: str) -> int:
+    @staticmethod
+    def _py_dash_max_quality_id(video_quality: str) -> int:
         quality_id_map = {
             "360P 流畅": 16,
             "480P 清晰": 32,
@@ -2251,15 +2303,28 @@ class CacheManager:
         }
         return quality_id_map.get(video_quality, 80)
 
-    def _select_dash_video_stream(
-        self,
+    @staticmethod
+    def _dash_max_quality_id(video_quality: str) -> int:
+        if not isinstance(video_quality, str):
+            return CacheManager._py_dash_max_quality_id(video_quality)
+        response = CacheManager._native_quality_policy(video_quality)
+        if response is not None:
+            return int(response["dash_max_quality_id"])
+        return CacheManager._py_dash_max_quality_id(video_quality)
+
+    @staticmethod
+    def _py_select_dash_video_stream(
         video_streams: list[dict],
         *,
         max_quality_id: int,
         codec_filter: str | None = None,
         avc_quality_cap: str = "",
     ) -> dict | None:
-        max_avc_quality_id = self._dash_max_quality_id(avc_quality_cap) if avc_quality_cap else 0
+        max_avc_quality_id = (
+            CacheManager._py_dash_max_quality_id(avc_quality_cap)
+            if avc_quality_cap
+            else 0
+        )
         candidates = []
         for stream in video_streams:
             quality_id = stream.get("quality_id", 0)
@@ -2283,7 +2348,54 @@ class CacheManager:
         candidates.sort(key=lambda s: (-s.get("quality_id", 0), -s.get("bandwidth", 0)))
         return candidates[0]
 
-    def _select_dash_audio_stream(self, audio_streams: list[dict], *, audio_hires: bool = True) -> dict | None:
+    @staticmethod
+    def _select_dash_video_stream(
+        video_streams: list[dict],
+        *,
+        max_quality_id: int,
+        codec_filter: str | None = None,
+        avc_quality_cap: str = "",
+    ) -> dict | None:
+        try:
+            streams = [
+                {
+                    "original_index": index,
+                    "quality_id": stream.get("quality_id", 0),
+                    "bandwidth": stream.get("bandwidth", 0),
+                    "codec": stream.get("codec_name", ""),
+                }
+                for index, stream in enumerate(video_streams)
+            ]
+            max_avc_quality_id = (
+                CacheManager._dash_max_quality_id(avc_quality_cap)
+                if avc_quality_cap
+                else None
+            )
+            request = {
+                "schema_version": 1,
+                "max_quality_id": max_quality_id,
+                "codec_filter": codec_filter,
+                "max_avc_quality_id": max_avc_quality_id,
+                "streams": streams,
+            }
+            completed, response = rust_backend.try_select_video_stream(request)
+            if completed and response is not None:
+                if response["status"] == "no_match":
+                    return None
+                return video_streams[response["selected_index"]]
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+        return CacheManager._py_select_dash_video_stream(
+            video_streams,
+            max_quality_id=max_quality_id,
+            codec_filter=codec_filter,
+            avc_quality_cap=avc_quality_cap,
+        )
+
+    @staticmethod
+    def _py_select_dash_audio_stream(
+        audio_streams: list[dict], *, audio_hires: bool = True
+    ) -> dict | None:
         if not audio_streams:
             return None
         candidates = list(audio_streams)
@@ -2301,6 +2413,86 @@ class CacheManager:
                 candidates = list(audio_streams)
         candidates.sort(key=lambda s: quality_order.get(s.get("quality_id", 0), 99))
         return candidates[0]
+
+    @staticmethod
+    def _select_dash_audio_stream(
+        audio_streams: list[dict], *, audio_hires: bool = True
+    ) -> dict | None:
+        try:
+            request = {
+                "schema_version": 1,
+                "audio_hires": audio_hires,
+                "regular_streams": [
+                    {
+                        "original_index": index,
+                        "quality_id": stream.get("quality_id", 0),
+                        "bandwidth": stream.get("bandwidth", 0),
+                    }
+                    for index, stream in enumerate(audio_streams)
+                ],
+            }
+            completed, response = rust_backend.try_select_audio_stream(request)
+            if completed and response is not None:
+                selected_index = response["selected_index"]
+                return None if selected_index is None else audio_streams[selected_index]
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+        return CacheManager._py_select_dash_audio_stream(
+            audio_streams, audio_hires=audio_hires
+        )
+
+    @staticmethod
+    def _py_select_preferred_dash_audio(
+        best_audio: list[dict],
+        flac_audio: dict | None,
+        dolby_audio: dict | None,
+        *,
+        audio_hires: bool,
+    ) -> dict | None:
+        preferred_audio = best_audio[0] if best_audio else None
+        if flac_audio and audio_hires:
+            preferred_audio = flac_audio
+        if dolby_audio and audio_hires:
+            preferred_audio = dolby_audio
+        return preferred_audio
+
+    @staticmethod
+    def _select_preferred_dash_audio(
+        best_audio: list[dict],
+        flac_audio: dict | None,
+        dolby_audio: dict | None,
+        *,
+        audio_hires: bool,
+    ) -> dict | None:
+        try:
+            request = {
+                "schema_version": 1,
+                "audio_hires": audio_hires,
+                "regular_candidates": [
+                    {"original_index": index} for index in range(len(best_audio))
+                ],
+                "flac_available": bool(flac_audio),
+                "dolby_available": bool(dolby_audio),
+            }
+            completed, response = rust_backend.try_select_preferred_audio_source(request)
+            if completed and response is not None:
+                source = response["preferred_source"]
+                if source == "dolby":
+                    return dolby_audio
+                if source == "flac":
+                    return flac_audio
+                if source == "regular":
+                    selected_index = response["selected_regular_index"]
+                    return best_audio[selected_index]
+                return None
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+        return CacheManager._py_select_preferred_dash_audio(
+            best_audio,
+            flac_audio,
+            dolby_audio,
+            audio_hires=audio_hires,
+        )
 
     def _download_dash_streams_with_aria2c(
         self,
@@ -2363,11 +2555,12 @@ class CacheManager:
             best_audio = page_dash_streams.get("audio") or []
             flac_audio = page_dash_streams.get("flac")
             dolby_audio = page_dash_streams.get("dolby")
-            preferred_audio = best_audio[0] if best_audio else None
-            if flac_audio and audio_hires:
-                preferred_audio = flac_audio
-            if dolby_audio and audio_hires:
-                preferred_audio = dolby_audio
+            preferred_audio = self._select_preferred_dash_audio(
+                best_audio,
+                flac_audio,
+                dolby_audio,
+                audio_hires=audio_hires,
+            )
 
             if preferred_audio:
                 audio_urls = self._preferred_audio_urls(preferred_audio)
@@ -2961,13 +3154,20 @@ class CacheManager:
         self._terminate_processes(active_processes)
 
     @staticmethod
-    def _video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
-        normalized_quality = CacheManager._normalize_video_quality(video_quality)
+    def _py_video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
+        normalized_quality = CacheManager._py_normalize_video_quality(video_quality)
         start_index = VIDEO_QUALITY_CHOICES.index(normalized_quality)
-        cap_quality = CacheManager._optional_video_quality(quality_cap)
+        cap_quality = CacheManager._py_optional_video_quality(quality_cap)
         if cap_quality:
             start_index = max(start_index, VIDEO_QUALITY_CHOICES.index(cap_quality))
         return ",".join(VIDEO_QUALITY_CHOICES[start_index:])
+
+    @staticmethod
+    def _video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
+        response = CacheManager._native_quality_policy(video_quality, quality_cap)
+        if response is not None:
+            return ",".join(response["bbdown_quality_order"])
+        return CacheManager._py_video_quality_priority(video_quality, quality_cap)
 
     def _run_item_command(
         self,

@@ -55,13 +55,13 @@ No other helper is approved for Phase 1. The tables below document why.
 
 | Helpers reviewed | Category / dependencies | Pure | Decision and reason |
 | --- | --- | --- | --- |
-| `_quality_from_choice_index`, `_optional_video_quality`, `_normalize_video_quality` | quality label validation/defaulting | yes | Intentionally defer. They are tiny Python membership checks and the default is cache policy; FFI overhead exceeds the work. |
+| `_quality_from_choice_index`, `_optional_video_quality`, `_normalize_video_quality` | quality label validation/defaulting | yes | Excluded from Phase 1; migrated together with consumer decisions as Phase 2 Item 6 `quality_policy`, with complete `_py_*` references. |
 | `_normalize_download_source`, `_current_download_source`, `_download_source_label` | source normalization/label policy | yes | Excluded: source preference and cache policy. |
 | `_bounded_cache_items` | integer coercion/clamping | yes | Defer: trivial scalar coercion tied to cache policy. |
 | `_variant_id`, `_download_track_key`, `_download_track_label`, `_part_label_for_page` | download-track identifiers/labels | yes | Defer: tiny helpers embedded in download planning; `_variant_id` should first be consolidated with `bilibili.py`. |
 | `_page_url`, `_build_media_url` | URL composition | yes | Defer: each is a trivial operation in downloader/local-serving code, not a reusable URL parsing domain. |
 | `_normalize_output_line`, `_extract_progress`, `_compact_probe_error`, `_format_stage_bytes` | subprocess output cleanup/parsing | core yes | Excluded from this phase because their primary purpose is subprocess/progress handling. |
-| `_dash_max_quality_id`, `_video_quality_priority`, format selectors and stream selectors | quality lookup/ranking | yes | Excluded: download policy, scoring, ranking, and selection. |
+| `_dash_max_quality_id`, `_video_quality_priority`, `_ytdlp_max_height`, and stream selectors | quality lookup/ranking | yes | Excluded from Phase 1; deterministic decisions migrated as Phase 2 Item 6. BBDown/yt-dlp syntax and all execution remain Python. |
 | `_dash_stream_urls`, `_current_platform_tokens`, release asset-name helpers | response adapters/platform selection | mostly | Excluded from Phase 1. The pure URL flattening and fallback asset construction were later migrated as Phase 2 Item 5; runtime detection and dictionary adaptation remain Python. |
 | All command, downloader, archive extraction, file lookup, path-size, process, worker, retry, cache-window, and filesystem helpers | I/O, subprocess, state, scheduling, policy | no/mixed | Outside Phase 1 by definition. |
 
@@ -282,6 +282,10 @@ Missing optional symbols disable only their matching capabilities.
 | `download_candidate_planning` (updater) | `rust_plan_update_download_candidates` / `plan_update_download_candidates` | Implements updater API/direct/proxy construction with trimming, stable deduplication, explicit sources/routes, and complete Python fallback. |
 | `media_download_candidate_planning` | `rust_plan_media_download_candidates` / `plan_media_download_candidates` | Implements DASH primary/backup flattening and preferred-audio URL flattening. DASH trims/drops empties and preserves duplicates; preferred audio preserves raw strings and duplicates. Python retains descriptor selection, all I/O, and complete `_py_*` references. |
 | `tool_download_candidate_planning` | `rust_plan_tool_download_candidates` / `plan_tool_download_candidates` | Implements supplied/built-in primary plus configured fallback ordering, tool/target fallback asset identity, name quoting, and exact stable deduplication for BBDown, yt-dlp, and aria2c. Python retains runtime detection, asset scoring, downloads, installation, and complete `_py_*` references. |
+| `quality_policy` | `rust_decide_quality_policy` / `decide_quality_policy` | Implements active-label normalization, all historical DASH quality IDs, choice-index mapping, AVC-cap evaluation, yt-dlp maximum-height intent, and BBDown ordered quality intent. Python retains configuration, selector/argument syntax, and complete `_py_*` references. |
+| `video_stream_ranking` | `rust_select_video_stream` / `select_video_stream` | Implements exact codec/quality/AVC filtering, current two fallback stages, descending quality/bandwidth ranking, stable ties, and selected/ranked original indices. Python retains DASH fetching, stream dictionaries, URLs, and fallback. |
+| `audio_stream_ranking` | `rust_select_audio_stream` / `select_audio_stream` | Implements only regular audio quality ordering and Hi-Res filtering/fallback. Bandwidth remains intentionally irrelevant and equal quality preserves input order. Python retains DASH fetching, stream dictionaries, and complete fallback. |
+| `preferred_audio_source_binding` | `rust_select_preferred_audio_source` / `select_preferred_audio_source` | Implements preferred-source binding without regular ranking: the first supplied regular candidate is retained, then FLAC and Dolby override it in that order only when Hi-Res is enabled. Python retains object mapping, URLs, file extension/application, and complete fallback. |
 
 Audio binding transports only original index, page number, duration, and part
 label. It does not transport CID or arbitrary Bilibili metadata. The Rust
@@ -289,11 +293,11 @@ domain preserves the existing broad keyword substring policy and returns
 `single`, `automatic`, `manual_required`, or domain-level `no_match`.
 
 Variant-ID construction remains entirely in Python and was not consolidated.
-Phase 2 Item 5 is complete and Phase 2 is 5/8. The three candidate domains are
-separate because their normalization, duplicate, source, and ordering policies
-are intentionally different. No quality/stream ranking, cache planning,
-playlist ordering, downloader execution, mobile plugin, or FFmpeg migration
-was started.
+Phase 2 Items 5 and 6 are complete and Phase 2 is 6/8. Candidate planning,
+quality policy, video ranking, regular-audio ranking, and preferred-source
+binding remain separate because their normalization, fallback, and ordering
+policies are intentionally different. No cache planning, playlist ordering,
+downloader execution, mobile plugin, or FFmpeg migration was started.
 
 ### Criteria for future migration
 
@@ -305,9 +309,8 @@ I/O and mutable policy in Python unless that later phase explicitly changes
 the boundary.
 
 The intentionally deferred helpers in the audit remain deferred. In
-particular, release and asset scoring/selection, Bilibili short-link
-resolution, cache quality/source defaults, stream ranking, cache-window and
-playlist planning, path traversal checks, persistent schema adapters,
-rendering utilities, and all filesystem/network/subprocess/thread behavior are
-not part of Phase 1. Updater, media, and tool candidate planning are the later
-completed Phase-2 Item 5 domains documented above.
+particular, Bilibili short-link resolution, download-source defaults,
+cache-window and playlist planning, path traversal checks, persistent schema
+adapters, rendering utilities, and all filesystem/network/subprocess/thread
+behavior are not part of Phase 1. Candidate planning and quality/stream ranking
+are the later completed Phase-2 Items 5 and 6 documented above.
