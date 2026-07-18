@@ -59,7 +59,10 @@ class PlaylistStore:
             self.session_started_at
         )
         self.session_played: list[SessionPlayedEntry] = []
-        self._previous_session_file = self._latest_previous_session_file_unlocked()
+        (
+            self._previous_session_file,
+            self._previous_session_count,
+        ) = self._latest_previous_session_file_unlocked()
         self.updated_at = time.time()
         self._restore_persistent_state()
         self._save_session()
@@ -115,7 +118,7 @@ class PlaylistStore:
             item.requester_name = normalized_requester
             item.queue_slot_type = "priority" if position == "next" else "cycle"
             if self.current_item is None:
-                self._previous_session_file = None
+                self._clear_previous_session_unlocked()
                 self.current_item = item
                 self.current_item_started = False
                 self._record_session_played_unlocked(item)
@@ -468,7 +471,7 @@ class PlaylistStore:
             ]
             self.current_item_started = False
             self._restore_session_played_from_backup_unlocked(payload)
-            self._previous_session_file = None
+            self._clear_previous_session_unlocked()
             self._rebuild_cycle_items_unlocked()
             self._touch(persist_backup=False)
             return True
@@ -480,7 +483,7 @@ class PlaylistStore:
             self.playlist = []
             if existed:
                 self._start_new_session_played_unlocked()
-            self._previous_session_file = None
+            self._clear_previous_session_unlocked()
             self.backup_file.unlink(missing_ok=True)
             self._touch(persist_backup=False)
             return existed
@@ -499,7 +502,7 @@ class PlaylistStore:
             self.history = []
             self.session_history = []
             self.session_users = []
-            self._previous_session_file = None
+            self._clear_previous_session_unlocked()
             self.updated_at = time.time()
             self._delete_runtime_json_files_unlocked()
         self._notify_change()
@@ -529,12 +532,12 @@ class PlaylistStore:
             payload = self._read_json_payload_unlocked(candidate)
             entries = self._session_played_entries_from_payload(payload)
             if not payload or not entries:
-                self._previous_session_file = None
+                self._clear_previous_session_unlocked()
                 return False
             self.session_played_file = candidate
             self.session_started_at = self._session_started_at_from_payload(payload, {})
             self.session_played = entries
-            self._previous_session_file = None
+            self._clear_previous_session_unlocked()
             self._touch(persist_backup=False)
             return True
 
@@ -886,9 +889,9 @@ class PlaylistStore:
             / f"played-{self._session_file_label(timestamp)}.json"
         )
 
-    def _latest_previous_session_file_unlocked(self) -> Path | None:
+    def _latest_previous_session_file_unlocked(self) -> tuple[Path | None, int]:
         if not self.session_archive_dir.exists():
-            return None
+            return None, 0
         try:
             candidates = sorted(
                 self.session_archive_dir.glob("played-*.json"),
@@ -896,14 +899,19 @@ class PlaylistStore:
                 reverse=True,
             )
         except OSError:
-            return None
+            return None, 0
         for candidate in candidates:
             if candidate == self.session_played_file:
                 continue
             payload = self._read_json_payload_unlocked(candidate)
-            if self._session_played_entries_from_payload(payload):
-                return candidate
-        return None
+            entries = self._session_played_entries_from_payload(payload)
+            if entries:
+                return candidate, len(entries)
+        return None, 0
+
+    def _clear_previous_session_unlocked(self) -> None:
+        self._previous_session_file = None
+        self._previous_session_count = 0
 
     @staticmethod
     def _session_started_at_from_payload(
@@ -1234,17 +1242,11 @@ class PlaylistStore:
         }
 
     def _previous_session_summary_unlocked(self) -> dict[str, Any]:
-        candidate = self._previous_session_file
-        if candidate is None:
-            return {"available": False}
-        payload = self._read_json_payload_unlocked(candidate)
-        entries = self._session_played_entries_from_payload(payload)
-        if not payload or not entries:
-            self._previous_session_file = None
+        if self._previous_session_file is None:
             return {"available": False}
         return {
             "available": True,
-            "item_count": len(entries),
+            "item_count": self._previous_session_count,
         }
 
     def _validate_requester_name_unlocked(self, requester_name: str) -> str:
