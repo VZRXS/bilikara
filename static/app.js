@@ -133,6 +133,9 @@ const state = {
   audioVariantBarItemId: "",
   backupBannerShown: false,
   backupBannerDismissed: false,
+  backupBannerMode: "",
+  previousSessionPromptChecked: false,
+  previousSessionPromptEligible: false,
   backupBannerTimer: null,
   backupBannerCountdownTimer: null,
   backupBannerDeadline: 0,
@@ -328,8 +331,9 @@ const elements = {
   sessionUserList: document.getElementById("session-user-list"),
   sessionUserTrash: document.getElementById("session-user-trash"),
   backupBanner: document.getElementById("backup-banner"),
+  backupTitle: document.getElementById("backup-title"),
   backupText: document.getElementById("backup-text"),
-  discardBackupButton: document.getElementById("discard-backup-button"),
+  backupActionButton: document.getElementById("backup-action-button"),
   dismissBackupButton: document.getElementById("dismiss-backup-button"),
   listTag: document.getElementById("list-tag"),
   listTitle: document.getElementById("list-title"),
@@ -836,6 +840,12 @@ async function loadTranslations() {
         "top.mobileRemote": "手机点歌",
         "remote.qrLoading": "正在生成二维码...",
         "player.empty": "把 Bilibili 视频链接加入点歌列表后，这里会开始播放。",
+        "backup.previousSessionTag": "上一场",
+        "backup.previousSessionDetected": "检测到上一场记录，共 {count} 首。",
+        "backup.continuePreviousSession": "继续上一场",
+        "backup.previousSessionContinued": "已继续上一场。",
+        "backup.previousSessionUnavailable": "上一场记录已不可用。",
+        "gatcha.adding": "处理中",
       },
     };
   }
@@ -4655,6 +4665,7 @@ function render() {
   renderHistory(data.history || []);
   renderBackupBanner(
     data.backup,
+    data.previous_session,
     Boolean(currentItem),
     data.playlist.length,
     Boolean(data.session_flags?.auto_restored_backup),
@@ -8360,24 +8371,64 @@ function badgeAnimationDelay(itemId) {
   return `${-phase}s`;
 }
 
-function renderBackupBanner(backup, hasCurrentItem, queueLength, autoRestoredBackup) {
-  if (!backup?.available || !autoRestoredBackup) {
+function renderBackupBanner(
+  backup,
+  previousSession,
+  hasCurrentItem,
+  queueLength,
+  autoRestoredBackup,
+) {
+  if (!state.previousSessionPromptChecked) {
+    state.previousSessionPromptChecked = true;
+    state.previousSessionPromptEligible = Boolean(
+      previousSession?.available
+      && !autoRestoredBackup
+      && !hasCurrentItem
+      && queueLength === 0
+    );
+  } else if (state.previousSessionPromptEligible && (hasCurrentItem || queueLength > 0)) {
+    state.previousSessionPromptEligible = false;
+  }
+
+  let mode = "";
+  if (backup?.available && autoRestoredBackup) {
+    mode = "auto_restored";
+  } else if (state.previousSessionPromptEligible && previousSession?.available) {
+    mode = "previous_session";
+  }
+
+  if (!mode) {
     clearBackupBannerTimer();
+    state.backupBannerMode = "";
     elements.backupBanner.classList.add("hidden");
     updateBackupDismissButton();
     return;
   }
 
+  if (state.backupBannerMode !== mode) {
+    state.backupBannerMode = mode;
+    state.backupBannerShown = false;
+  }
   if (!state.backupBannerShown) {
     state.backupBannerShown = true;
     state.backupBannerDismissed = false;
     startBackupBannerTimer();
   }
 
-  if (hasCurrentItem || queueLength > 0) {
+  if (mode === "previous_session") {
+    elements.backupTitle.textContent = t("backup.previousSessionTag");
+    elements.backupText.textContent = t("backup.previousSessionDetected", {
+      count: previousSession.item_count,
+    });
+    elements.backupActionButton.textContent = t("backup.continuePreviousSession");
+  } else if (hasCurrentItem || queueLength > 0) {
+    elements.backupTitle.textContent = t("backup.tag");
     elements.backupText.textContent = t("backup.restored", { count: backup.playlist_count });
+    elements.backupActionButton.textContent = t("backup.clear");
   } else {
+    elements.backupTitle.textContent = t("backup.tag");
     elements.backupText.textContent = t("backup.localDetected", { count: backup.playlist_count });
+    elements.backupActionButton.textContent = t("backup.clear");
   }
 
   elements.backupBanner.classList.toggle("hidden", state.backupBannerDismissed);
@@ -9330,6 +9381,21 @@ async function discardBackup() {
     render();
   } catch (error) {
     setAppMessage(error.message, true);
+  }
+}
+
+async function continuePreviousSession() {
+  try {
+    state.data = await apiPost("/api/session/continue-previous");
+    state.previousSessionPromptEligible = false;
+    dismissBackupBanner();
+    setAppMessage(t("backup.previousSessionContinued"));
+    render();
+  } catch (error) {
+    const message = String(error.message || "").trim() === "没有可继续的上一场记录"
+      ? t("backup.previousSessionUnavailable")
+      : error.message;
+    setAppMessage(message, true);
   }
 }
 
@@ -10711,8 +10777,25 @@ elements.copyRemoteUrlButton.addEventListener("click", async () => {
   await copyRemoteUrl();
 });
 
-elements.discardBackupButton.addEventListener("click", async () => {
-  await discardBackup();
+elements.backupActionButton.addEventListener("click", async () => {
+  if (elements.backupActionButton.disabled) {
+    return;
+  }
+  const previousText = elements.backupActionButton.textContent;
+  elements.backupActionButton.disabled = true;
+  elements.backupActionButton.setAttribute("aria-busy", "true");
+  elements.backupActionButton.textContent = t("gatcha.adding");
+  try {
+    if (state.backupBannerMode === "previous_session") {
+      await continuePreviousSession();
+    } else {
+      await discardBackup();
+    }
+  } finally {
+    elements.backupActionButton.disabled = false;
+    elements.backupActionButton.removeAttribute("aria-busy");
+    elements.backupActionButton.textContent = previousText;
+  }
 });
 
 elements.dismissBackupButton.addEventListener("click", () => {

@@ -760,6 +760,39 @@ class PlaylistExportRouteTest(unittest.TestCase):
         self.assertEqual(removed_keys, ["BVSONG:p1"])
         self.assertEqual(writes[0], {"ok": True, "data": {"history": [], "session_played": []}})
 
+    def test_continue_previous_session_route_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        continued: list[bool] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            continue_previous_session=lambda: continued.append(True) or True,
+            snapshot=lambda: {
+                "previous_session": {"available": False},
+                "session_played": [{"item_id": "previous"}],
+            },
+        )
+
+        handler.path = "/api/session/continue-previous"
+        handler.headers = {}
+        handler._read_json_body = lambda: {}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(continued, [True])
+        self.assertEqual(
+            writes[0],
+            {
+                "ok": True,
+                "data": {
+                    "previous_session": {"available": False},
+                    "session_played": [{"item_id": "previous"}],
+                },
+            },
+        )
+
 
 class MediaRangeEvidenceTest(unittest.TestCase):
     @staticmethod

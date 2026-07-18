@@ -485,6 +485,57 @@ class PlaylistStoreTest(unittest.TestCase):
 
         self.assertEqual(restored_store.session_played, [])
 
+    def test_previous_session_can_be_continued_when_queue_backup_is_empty(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        self.mark_started("a")
+        original_played_file = self.store.session_played_file
+        self.assertTrue(self.store.advance_to_next())
+        self.assertFalse(self.backup_file.exists())
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+        snapshot = restored_store.snapshot()
+        self.assertFalse(snapshot["backup"]["available"])
+        self.assertTrue(snapshot["previous_session"]["available"])
+        self.assertEqual(snapshot["previous_session"]["item_count"], 1)
+        self.assertEqual(restored_store.session_played, [])
+
+        self.assertTrue(restored_store.continue_previous_session())
+        self.assertEqual(restored_store.session_played_file, original_played_file)
+        self.assertEqual(
+            [entry.item_id for entry in restored_store.session_played], ["a"]
+        )
+        self.assertFalse(restored_store.snapshot()["previous_session"]["available"])
+
+        restored_store.add_item(
+            self.make_item("b", song_key="song-b"), requester_name="B"
+        )
+        payload = json.loads(original_played_file.read_text(encoding="utf-8"))
+        self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
+
+    def test_previous_session_cannot_be_continued_after_new_queue_starts(self):
+        self.add_item("a", requester_name="A", song_key="song-a")
+        self.mark_started("a")
+        self.assertTrue(self.store.advance_to_next())
+
+        restored_store = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+        restored_store.add_item(
+            self.make_item("b", song_key="song-b"), requester_name="B"
+        )
+
+        self.assertFalse(restored_store.continue_previous_session())
+        self.assertFalse(restored_store.snapshot()["previous_session"]["available"])
+        self.assertEqual(
+            [entry.item_id for entry in restored_store.session_played], ["b"]
+        )
+
     def test_restore_backup_continues_existing_played_session_archive(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
@@ -501,6 +552,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertTrue(restored_store.restore_backup())
         self.assertEqual(restored_store.session_played_file, original_played_file)
         self.assertEqual([entry.item_id for entry in restored_store.session_played], ["a"])
+        self.assertFalse(restored_store.snapshot()["previous_session"]["available"])
 
         restored_store.mark_item_playback_started("a")
         restored_store.advance_to_next()

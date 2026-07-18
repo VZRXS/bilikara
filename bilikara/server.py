@@ -589,6 +589,9 @@ class AppContext:
         self.cache_manager.sync_with_playlist()
         return restored
 
+    def continue_previous_session(self) -> bool:
+        return self.store.continue_previous_session()
+
     def discard_backup(self) -> bool:
         discarded = self.store.discard_backup()
         if discarded:
@@ -1672,6 +1675,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/backup/discard":
                 CONTEXT.discard_backup()
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/session/continue-previous":
+                if not CONTEXT.continue_previous_session():
+                    raise ValueError("没有可继续的上一场记录")
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/player/reset":
