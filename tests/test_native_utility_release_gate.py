@@ -35,6 +35,9 @@ EXPECTED_PHASE2_CAPABILITIES = {
     "plan_update_download_candidates",
     "plan_media_download_candidates",
     "plan_tool_download_candidates",
+    "decide_quality_policy",
+    "select_video_stream",
+    "select_audio_stream",
 }
 
 
@@ -160,6 +163,61 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
             [candidate["url"] for candidate in tool_plan["candidates"]],
             ["https://primary/yt-dlp", "https://mirror/yt-dlp"],
         )
+        completed, quality = rust_backend.try_decide_quality_policy(
+            {
+                "schema_version": 1,
+                "raw_quality": "1080P 高帧率",
+                "raw_cap": "720P 高清",
+                "choice_index": 2,
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(quality["effective_max_height"], 720)
+        self.assertEqual(quality["dash_max_quality_id"], 116)
+
+        completed, video = rust_backend.try_select_video_stream(
+            {
+                "schema_version": 1,
+                "max_quality_id": 80,
+                "codec_filter": "avc",
+                "max_avc_quality_id": 64,
+                "streams": [
+                    {
+                        "original_index": 0,
+                        "quality_id": 80,
+                        "bandwidth": 100,
+                        "codec": "hevc",
+                    },
+                    {
+                        "original_index": 1,
+                        "quality_id": 64,
+                        "bandwidth": 200,
+                        "codec": "avc",
+                    },
+                ],
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(video["selected_index"], 1)
+        self.assertEqual(video["reason"], "preferred")
+
+        completed, audio = rust_backend.try_select_audio_stream(
+            {
+                "schema_version": 1,
+                "audio_hires": True,
+                "regular_streams": [
+                    {
+                        "original_index": 0,
+                        "quality_id": 30280,
+                        "bandwidth": 0,
+                    }
+                ],
+                "flac_available": True,
+                "dolby_available": True,
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(audio["preferred_source"], "dolby")
 
     def test_phase1_capability_documentation_matches_backend_symbols(self):
         self.assertEqual(set(rust_backend.PHASE1_CAPABILITIES), EXPECTED_PHASE1_CAPABILITIES)

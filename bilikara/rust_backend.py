@@ -37,12 +37,18 @@ PHASE2_CAPABILITIES = (
     "plan_update_download_candidates",
     "plan_media_download_candidates",
     "plan_tool_download_candidates",
+    "decide_quality_policy",
+    "select_video_stream",
+    "select_audio_stream",
 )
 
 MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS = 4096
 MAX_MEDIA_DOWNLOAD_STREAM_INPUTS = 4096
 MAX_MEDIA_DOWNLOAD_CANDIDATES = 16384
 MAX_TOOL_FALLBACK_BASES = 256
+MAX_STREAM_RANKING_INPUTS = 512
+MAX_CODEC_STRING_BYTES = 256
+MAX_QUALITY_LABEL_BYTES = 256
 
 
 def _rust_library_name() -> str:
@@ -173,6 +179,21 @@ _SYMBOLS = {
     ),
     "plan_tool_download_candidates": (
         "rust_plan_tool_download_candidates",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "decide_quality_policy": (
+        "rust_decide_quality_policy",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "select_video_stream": (
+        "rust_select_video_stream",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "select_audio_stream": (
+        "rust_select_audio_stream",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -1613,6 +1634,471 @@ def try_plan_tool_download_candidates(
         if not _valid_tool_download_plan_response(
             response, tool, expected_asset_name, expected_candidates
         ):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+_ACTIVE_VIDEO_QUALITIES = (
+    "1080P 高帧率",
+    "1080P 高清",
+    "720P 高清",
+    "480P 清晰",
+    "360P 流畅",
+)
+_DEFAULT_VIDEO_QUALITY = _ACTIVE_VIDEO_QUALITIES[0]
+_DASH_QUALITY_IDS = {
+    "360P 流畅": 16,
+    "480P 清晰": 32,
+    "720P 高清": 64,
+    "720P 60帧": 74,
+    "1080P 高清": 80,
+    "1080P 高码率": 112,
+    "1080P 高帧率": 116,
+    "4K 超清": 120,
+    "HDR 真彩": 125,
+    "杜比视界": 126,
+    "8K 超高清": 127,
+}
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+_USIZE_MAX = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+
+
+def _bounded_utf8_string(value: object, max_bytes: int) -> str | None:
+    if not isinstance(value, str) or len(value.encode("utf-8")) > max_bytes:
+        return None
+    return value
+
+
+def _quality_policy_request(request: object) -> dict[str, object] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "raw_quality",
+        "raw_cap",
+        "choice_index",
+    }:
+        return None
+    schema_version = request.get("schema_version")
+    raw_quality = _bounded_utf8_string(
+        request.get("raw_quality"), MAX_QUALITY_LABEL_BYTES
+    )
+    raw_cap = _bounded_utf8_string(request.get("raw_cap"), MAX_QUALITY_LABEL_BYTES)
+    choice_index = request.get("choice_index")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or raw_quality is None
+        or raw_cap is None
+        or (
+            choice_index is not None
+            and (
+                isinstance(choice_index, bool)
+                or not isinstance(choice_index, int)
+                or not _I64_MIN <= choice_index <= _I64_MAX
+            )
+        )
+    ):
+        return None
+    return {
+        "schema_version": 1,
+        "raw_quality": raw_quality,
+        "raw_cap": raw_cap,
+        "choice_index": choice_index,
+    }
+
+
+def _expected_quality_policy(request: dict[str, object]) -> dict[str, object]:
+    raw_quality = str(request["raw_quality"])
+    raw_cap = str(request["raw_cap"])
+    stripped_quality = raw_quality.strip()
+    stripped_cap = raw_cap.strip()
+    optional_quality = (
+        stripped_quality if stripped_quality in _ACTIVE_VIDEO_QUALITIES else None
+    )
+    normalized_quality = optional_quality or _DEFAULT_VIDEO_QUALITY
+    optional_cap = stripped_cap if stripped_cap in _ACTIVE_VIDEO_QUALITIES else None
+    choice_index = request["choice_index"]
+    indexed_quality = (
+        _ACTIVE_VIDEO_QUALITIES[choice_index]
+        if isinstance(choice_index, int)
+        and not isinstance(choice_index, bool)
+        and 0 <= choice_index < len(_ACTIVE_VIDEO_QUALITIES)
+        else None
+    )
+    effective_quality = optional_cap or normalized_quality
+    if "360" in effective_quality:
+        max_height = 360
+    elif "480" in effective_quality:
+        max_height = 480
+    elif "720" in effective_quality:
+        max_height = 720
+    elif "1080" in effective_quality:
+        max_height = 1080
+    elif "4K" in effective_quality:
+        max_height = 2160
+    elif "8K" in effective_quality:
+        max_height = 4320
+    else:
+        max_height = 1080
+    start_index = _ACTIVE_VIDEO_QUALITIES.index(normalized_quality)
+    if optional_cap:
+        start_index = max(start_index, _ACTIVE_VIDEO_QUALITIES.index(optional_cap))
+    return {
+        "schema_version": 1,
+        "status": "decided",
+        "normalized_quality": normalized_quality,
+        "optional_quality": optional_quality,
+        "optional_cap": optional_cap,
+        "indexed_quality": indexed_quality,
+        "dash_max_quality_id": _DASH_QUALITY_IDS.get(raw_quality, 80),
+        "effective_max_height": max_height,
+        "bbdown_quality_order": list(_ACTIVE_VIDEO_QUALITIES[start_index:]),
+    }
+
+
+def _valid_quality_policy_response(
+    response: object, request: dict[str, object]
+) -> bool:
+    return isinstance(response, dict) and response == _expected_quality_policy(request)
+
+
+def try_decide_quality_policy(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call and strictly reconstruct the canonical quality-policy decision."""
+
+    validated = _quality_policy_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("decide_quality_policy", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        pointer = _rust_lib.rust_decide_quality_policy(payload)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_quality_policy_response(response, validated):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _video_stream_request(
+    request: object,
+) -> dict[str, object] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "max_quality_id",
+        "codec_filter",
+        "max_avc_quality_id",
+        "streams",
+    }:
+        return None
+    schema_version = request.get("schema_version")
+    max_quality_id = request.get("max_quality_id")
+    max_avc_quality_id = request.get("max_avc_quality_id")
+    codec_filter = request.get("codec_filter")
+    streams = request.get("streams")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or isinstance(max_quality_id, bool)
+        or not isinstance(max_quality_id, int)
+        or not _I64_MIN <= max_quality_id <= _I64_MAX
+        or (
+            max_avc_quality_id is not None
+            and (
+                isinstance(max_avc_quality_id, bool)
+                or not isinstance(max_avc_quality_id, int)
+                or not _I64_MIN <= max_avc_quality_id <= _I64_MAX
+            )
+        )
+        or (
+            codec_filter is not None
+            and _bounded_utf8_string(codec_filter, MAX_CODEC_STRING_BYTES) is None
+        )
+        or not isinstance(streams, list)
+        or len(streams) > MAX_STREAM_RANKING_INPUTS
+    ):
+        return None
+    validated_streams: list[dict[str, object]] = []
+    previous_index: int | None = None
+    for stream in streams:
+        if not isinstance(stream, dict) or set(stream) != {
+            "original_index",
+            "quality_id",
+            "bandwidth",
+            "codec",
+        }:
+            return None
+        original_index = stream.get("original_index")
+        quality_id = stream.get("quality_id")
+        bandwidth = stream.get("bandwidth")
+        codec = _bounded_utf8_string(stream.get("codec"), MAX_CODEC_STRING_BYTES)
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or not 0 <= original_index <= _USIZE_MAX
+            or (previous_index is not None and original_index <= previous_index)
+            or isinstance(quality_id, bool)
+            or not isinstance(quality_id, int)
+            or not _I64_MIN <= quality_id <= _I64_MAX
+            or isinstance(bandwidth, bool)
+            or not isinstance(bandwidth, int)
+            or not _I64_MIN <= bandwidth <= _I64_MAX
+            or codec is None
+        ):
+            return None
+        previous_index = original_index
+        validated_streams.append(
+            {
+                "original_index": original_index,
+                "quality_id": quality_id,
+                "bandwidth": bandwidth,
+                "codec": codec,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "max_quality_id": max_quality_id,
+        "codec_filter": codec_filter,
+        "max_avc_quality_id": max_avc_quality_id,
+        "streams": validated_streams,
+    }
+
+
+def _expected_video_stream_selection(request: dict[str, object]) -> dict[str, object]:
+    streams = list(request["streams"])
+    if not streams:
+        return {
+            "schema_version": 1,
+            "status": "no_match",
+            "selected_index": None,
+            "ranked_indices": [],
+            "reason": None,
+        }
+    max_quality_id = int(request["max_quality_id"])
+    codec_filter = request["codec_filter"]
+    max_avc_quality_id = request["max_avc_quality_id"]
+    candidates = [
+        stream
+        for stream in streams
+        if int(stream["quality_id"]) <= max_quality_id
+        and (not codec_filter or stream["codec"] == codec_filter)
+        and not (
+            codec_filter == "avc"
+            and isinstance(max_avc_quality_id, int)
+            and max_avc_quality_id != 0
+            and int(stream["quality_id"]) > max_avc_quality_id
+        )
+    ]
+    if candidates:
+        reason = "preferred"
+    else:
+        candidates = [
+            stream
+            for stream in streams
+            if int(stream["quality_id"]) <= max_quality_id
+        ]
+        if candidates:
+            reason = "quality_fallback"
+        else:
+            candidates = streams
+            reason = "uncapped_fallback"
+    ranked = sorted(
+        candidates,
+        key=lambda stream: (-int(stream["quality_id"]), -int(stream["bandwidth"])),
+    )
+    ranked_indices = [stream["original_index"] for stream in ranked]
+    return {
+        "schema_version": 1,
+        "status": "selected",
+        "selected_index": ranked_indices[0],
+        "ranked_indices": ranked_indices,
+        "reason": reason,
+    }
+
+
+def _valid_video_stream_response(
+    response: object, request: dict[str, object]
+) -> bool:
+    return isinstance(response, dict) and response == _expected_video_stream_selection(
+        request
+    )
+
+
+def try_select_video_stream(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call and strictly reconstruct DASH video ranking."""
+
+    validated = _video_stream_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("select_video_stream", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        pointer = _rust_lib.rust_select_video_stream(payload)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_video_stream_response(response, validated):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _audio_stream_request(request: object) -> dict[str, object] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "audio_hires",
+        "regular_streams",
+        "flac_available",
+        "dolby_available",
+    }:
+        return None
+    schema_version = request.get("schema_version")
+    audio_hires = request.get("audio_hires")
+    flac_available = request.get("flac_available")
+    dolby_available = request.get("dolby_available")
+    streams = request.get("regular_streams")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(audio_hires, bool)
+        or not isinstance(flac_available, bool)
+        or not isinstance(dolby_available, bool)
+        or not isinstance(streams, list)
+        or len(streams) > MAX_STREAM_RANKING_INPUTS
+    ):
+        return None
+    validated_streams: list[dict[str, object]] = []
+    previous_index: int | None = None
+    for stream in streams:
+        if not isinstance(stream, dict) or set(stream) != {
+            "original_index",
+            "quality_id",
+            "bandwidth",
+        }:
+            return None
+        original_index = stream.get("original_index")
+        quality_id = stream.get("quality_id")
+        bandwidth = stream.get("bandwidth")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or not 0 <= original_index <= _USIZE_MAX
+            or (previous_index is not None and original_index <= previous_index)
+            or isinstance(quality_id, bool)
+            or not isinstance(quality_id, int)
+            or not _I64_MIN <= quality_id <= _I64_MAX
+            or isinstance(bandwidth, bool)
+            or not isinstance(bandwidth, int)
+            or not _I64_MIN <= bandwidth <= _I64_MAX
+        ):
+            return None
+        previous_index = original_index
+        validated_streams.append(
+            {
+                "original_index": original_index,
+                "quality_id": quality_id,
+                "bandwidth": bandwidth,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "audio_hires": audio_hires,
+        "regular_streams": validated_streams,
+        "flac_available": flac_available,
+        "dolby_available": dolby_available,
+    }
+
+
+def _expected_audio_stream_selection(request: dict[str, object]) -> dict[str, object]:
+    streams = list(request["regular_streams"])
+    audio_hires = bool(request["audio_hires"])
+    candidates = streams
+    regular_reason: str | None = "hires_enabled" if streams and audio_hires else None
+    if streams and not audio_hires:
+        standard = [
+            stream for stream in streams if stream["quality_id"] not in {30250, 30251}
+        ]
+        if standard:
+            candidates = standard
+            regular_reason = "standard_only"
+        else:
+            regular_reason = "hires_only_fallback"
+    quality_order = {30250: 0, 30251: 1, 30280: 2, 30232: 3, 30216: 4}
+    ranked = sorted(
+        candidates,
+        key=lambda stream: quality_order.get(stream["quality_id"], 99),
+    )
+    ranked_indices = [stream["original_index"] for stream in ranked]
+    selected_regular_index = ranked_indices[0] if ranked_indices else None
+    if audio_hires and request["dolby_available"]:
+        preferred_source = "dolby"
+    elif audio_hires and request["flac_available"]:
+        preferred_source = "flac"
+    elif selected_regular_index is not None:
+        preferred_source = "regular"
+    else:
+        preferred_source = None
+    return {
+        "schema_version": 1,
+        "status": "selected" if preferred_source else "no_match",
+        "selected_regular_index": selected_regular_index,
+        "ranked_regular_indices": ranked_indices,
+        "regular_reason": regular_reason,
+        "preferred_source": preferred_source,
+    }
+
+
+def _valid_audio_stream_response(
+    response: object, request: dict[str, object]
+) -> bool:
+    return isinstance(response, dict) and response == _expected_audio_stream_selection(
+        request
+    )
+
+
+def try_select_audio_stream(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call and strictly reconstruct DASH audio ranking and source preference."""
+
+    validated = _audio_stream_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("select_audio_stream", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        pointer = _rust_lib.rust_select_audio_stream(payload)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_audio_stream_response(response, validated):
             return False, None
         return True, response
     except Exception:

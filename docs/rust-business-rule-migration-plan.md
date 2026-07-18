@@ -254,62 +254,86 @@ Remaining risks:
 - Variant-ID construction is still duplicated in Python and was outside this
   migration's scope.
 
-### 5. Quality and stream ranking
+### 6. Quality and stream ranking
 
-Status: deferred, not started. No quality/stream selection, BBDown, aria2,
-cache, or FFmpeg work was begun as part of download-candidate planning.
+Status: **completed**. Phase 2 is **6/8 complete**. Item 6 uses three typed
+domains so quality normalization, video ranking, and audio ranking retain their
+different invariants instead of being hidden behind a generic scorer.
 
-Current Python ownership:
+Migrated Python helpers and ownership:
 
-- `bilikara/cache.py`
-- `_quality_from_choice_index`
-- `_optional_video_quality`
-- `_normalize_video_quality`
-- `_dash_max_quality_id`
-- `_video_quality_priority`
-- `_select_dash_video_stream`
-- `_select_dash_audio_stream`
-- `_ytdlp_max_height` and `_ytdlp_format_selector` consume the policy but
-  command creation remains Python.
+- `bilikara/cache.py` retains complete independent references named
+  `_py_quality_from_choice_index`, `_py_optional_video_quality`,
+  `_py_normalize_video_quality`, `_py_dash_max_quality_id`,
+  `_py_video_quality_priority`, `_py_ytdlp_max_height`,
+  `_py_select_dash_video_stream`, `_py_select_dash_audio_stream`, and
+  `_py_select_preferred_dash_audio`.
+- Their public wrappers adapt immutable strings, integers, codec names, source
+  availability, and original indices; each calls one native operation and maps
+  accepted indices back to the original dictionaries. Any unavailable or
+  invalid native result invokes the complete corresponding `_py_*` policy.
+- Python still reads cache/client configuration under its existing locks,
+  fetches DASH metadata, owns URLs, creates BBDown and yt-dlp syntax, performs
+  downloads, runs subprocesses, validates files, and mutates cache state.
 
-Input/output model: explicit quality preference, codec constraints, Hi-Res
-flag, AVC cap, and normalized stream descriptors; output selected stream index
-and a reason/rank vector. Python retains URLs, cookies, and download commands.
-
-Dependencies: current quality constants, codec aliases, quality IDs, bandwidth,
-and audio-quality ordering.
-
-User-visible policy: maximum resolution, codec fallback, AVC caps, Hi-Res/Dolby
-preference, and fallback when requested streams are unavailable.
-
-Proposed Rust structures:
+Typed domain APIs:
 
 ```text
-VideoStream { index, quality_id, bandwidth, codec }
-AudioStream { index, quality_id, bandwidth }
-StreamPolicy { max_quality_id, codec, avc_cap, allow_hires }
-StreamSelection { selected_index, ranked_indices, reason }
+decide_quality_policy(QualityPolicyRequest) -> QualityPolicyDecision
+select_video_stream(VideoStreamSelectionRequest) -> VideoStreamSelection
+select_audio_stream(AudioStreamSelectionRequest) -> AudioStreamSelection
 ```
 
-Proposed FFI:
+- `quality_policy` represents all historical Bilibili quality-ID labels while
+  restricting configurable normalized choices to the current five labels. It
+  returns normalized/optional/indexed quality identities, the exact raw-label
+  DASH cap, effective yt-dlp maximum height, and ordered BBDown quality labels.
+- `video_stream_ranking` receives original index, quality ID, integer bandwidth,
+  and exact codec identity. It preserves the three current stages: constrained
+  codec/quality/AVC selection, quality-only fallback, then uncapped fallback.
+  Each chosen stage ranks descending quality ID, descending bandwidth, then
+  stable original input order. Unknown codec strings retain exact identity;
+  Bilibili's `7 -> avc`, `12 -> hevc`, and `13 -> av1` metadata normalization
+  remains in the Python API parser.
+- `audio_stream_ranking` ranks regular audio by the existing fixed order
+  Dolby 30250, FLAC 30251, 192K 30280, 132K 30232, and 64K 30216. Bandwidth is
+  deliberately ignored and original input order breaks ties. With Hi-Res off,
+  Dolby/FLAC entries in the regular list are removed when a standard entry
+  exists, but an all-Hi-Res regular list is retained as the existing fallback.
+  Separate preferred sources remain Dolby, then FLAC, then selected regular
+  audio when Hi-Res is enabled; separate Hi-Res sources are unavailable when it
+  is disabled.
+
+Additive ABI-v1 JSON exports and capabilities:
 
 ```text
-rust_rank_media_streams(request_json) -> owned response JSON or null
+rust_decide_quality_policy / decide_quality_policy
+rust_select_video_stream / select_video_stream
+rust_select_audio_stream / select_audio_stream
 ```
 
-Python fallback: retain current selectors as a single policy group and validate
-that selected indices refer to supplied streams before using Rust output.
+All three return Rust-owned JSON freed by `rust_free_string`, reject null,
+invalid UTF-8, malformed JSON, unsupported schemas, unknown fields, and invalid
+or duplicate wire indices, and distinguish valid `no_match` from FFI failure.
+The Python backend caps stream counts and UTF-8 label/codec lengths, rejects
+Boolean-as-integer and out-of-range values, and reconstructs the entire expected
+decision/ranking before accepting it. Selected and ranked indices, reasons,
+quality/codec caps, preferred source, and order must match exactly.
 
-Golden tests: every quality label/ID, cap boundaries, codec requested/missing,
-bandwidth ties, Dolby/FLAC preference, Hi-Res disabled, empty streams, and
-current BBDown/yt-dlp/DASH policy regressions without executing commands.
+Tests cover typed Rust policy, wire adapters, FFI panic/null/UTF-8/schema and
+repeated allocation/free behavior; independent Python golden references;
+missing-library/symbol/ABI and malicious native responses; and strict-native
+fixed/generated equivalence across qualities, caps, codecs, permutations,
+fallback stages, bandwidth ties, Dolby, FLAC, and Hi-Res combinations. Existing
+cache command regressions confirm that only policy decisions changed ownership.
 
-Risk: high. Small ranking changes affect bandwidth, compatibility, and media
-quality, while several download sources consume related policy differently.
+Remaining risk: source metadata can contain malformed scalar values. Such
+requests fail closed to the original Python policy, preserving its behavior.
+Cross-platform CI remains necessary because the JSON ABI is loaded through
+platform-specific dynamic libraries. Downloader-specific selector strings and
+arguments intentionally remain Python adapters rather than canonical policy.
 
-Recommended order: only after page and binding domains.
-
-### 6. Download candidate planning
+### 5. Download candidate planning
 
 Status: **completed**. Phase 2 is **5/8 complete**. Item 5 uses three precise
 typed domains because updater, media, and tool planners have materially
@@ -356,8 +380,8 @@ Typed domain model:
 - Media `DashStreams` mode trims and removes empty URLs while preserving every
   duplicate. `PreferredAudio` mode accepts at most one audio descriptor and
   preserves the raw strings, empties, duplicates, and order used by the
-  existing special path. Choosing that descriptor remains Python Item 6
-  policy and was not migrated.
+  existing special path. Preferred audio descriptor selection is now owned by
+  the separate Item 6 audio-ranking domain; URL flattening remains Item 5.
 - Tool input is `ToolDownloadPlanRequest { tool, asset, fallback_bases }`.
   `ToolAssetInput` is either a supplied asset name/primary URL or a
   `DefaultForTarget` with explicit platform/architecture. Output includes the
@@ -425,8 +449,9 @@ Cohesion decision and completed boundary:
   yt-dlp/FFmpeg/ffprobe command construction and execution, extraction,
   filesystem publication, cache workers/mutation, cancellation, and download
   loops remain Python.
-- Tool release asset scoring/selection and preferred-audio/video stream
-  selection remain deferred ranking policy. No Item 6 work was started.
+- Tool release asset scoring stays in its existing typed selection domain.
+  Preferred-audio/video stream selection is separate from candidate URLs and
+  is now completed by the Item 6 ranking domains above.
 
 Test coverage:
 
@@ -454,7 +479,8 @@ this risk for all three domains. Cross-platform release-gate confirmation and
 production variation in externally supplied URL strings remain the residual
 risks; neither can move I/O or mutable state into Rust.
 
-Recommended order: complete; proceed to Item 6 only as a separate migration.
+Recommended order: complete; Item 6 was subsequently implemented as a separate
+migration without redesigning these candidate schemas.
 
 ### 7. Playlist ordering and deduplication
 

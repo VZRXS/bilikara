@@ -375,6 +375,59 @@ pub unsafe extern "C" fn rust_plan_tool_download_candidates(
     })
 }
 
+/// Decides normalized quality, DASH, BBDown, and yt-dlp policy from schema-v1 JSON.
+///
+/// The returned owned JSON string must be freed with [`rust_free_string`].
+/// Invalid pointers, UTF-8, JSON, or schemas return null.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_decide_quality_policy(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::quality_policy::decide_quality_policy_json(request_json)
+    })
+}
+
+/// Selects and ranks a DASH video stream from schema-v1 JSON.
+///
+/// A valid empty stream list returns `no_match`; invalid pointers, UTF-8, JSON,
+/// schemas, or indices return null. The owned result must be freed with
+/// [`rust_free_string`].
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_select_video_stream(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::video_stream_ranking::select_video_stream_json(request_json)
+    })
+}
+
+/// Selects and ranks DASH regular audio and its preferred source from schema-v1 JSON.
+///
+/// A valid request without an eligible source returns `no_match`; invalid
+/// pointers, UTF-8, JSON, schemas, or indices return null. The owned result must
+/// be freed with [`rust_free_string`].
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_select_audio_stream(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::audio_stream_ranking::select_audio_stream_json(request_json)
+    })
+}
+
 /// # Safety
 ///
 /// This function is unsafe because it dereferences a raw pointer. The caller must ensure
@@ -766,6 +819,119 @@ mod tests {
     fn new_download_planners_use_shared_panic_containment() {
         let result = ffi_string_result(|| -> Option<String> {
             panic!("simulated candidate planning panic");
+        });
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn quality_policy_export_rejects_invalid_inputs_and_repeatedly_frees_owned_json() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let malformed = CString::new("not json").unwrap();
+        let unsupported = CString::new(
+            r#"{"schema_version":2,"raw_quality":"","raw_cap":"","choice_index":null}"#,
+        )
+        .unwrap();
+        let valid = CString::new(
+            r#"{"schema_version":1,"raw_quality":"720P 高清","raw_cap":"","choice_index":2}"#,
+        )
+        .unwrap();
+        unsafe {
+            assert!(rust_decide_quality_policy(std::ptr::null()).is_null());
+            assert!(rust_decide_quality_policy(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_decide_quality_policy(malformed.as_ptr()).is_null());
+            assert!(rust_decide_quality_policy(unsupported.as_ptr()).is_null());
+            for _ in 0..20 {
+                let result = rust_decide_quality_policy(valid.as_ptr());
+                assert!(!result.is_null());
+                let response = CStr::from_ptr(result).to_str().unwrap();
+                assert!(response.contains(r#""status":"decided""#));
+                assert!(response.contains(r#""effective_max_height":720"#));
+                rust_free_string(result);
+            }
+        }
+    }
+
+    #[test]
+    fn video_stream_export_distinguishes_no_match_and_rejects_invalid_indices() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let empty = CString::new(
+            r#"{"schema_version":1,"max_quality_id":80,"codec_filter":null,"max_avc_quality_id":null,"streams":[]}"#,
+        )
+        .unwrap();
+        let duplicate = CString::new(
+            r#"{"schema_version":1,"max_quality_id":80,"codec_filter":null,"max_avc_quality_id":null,"streams":[{"original_index":0,"quality_id":80,"bandwidth":1,"codec":"avc"},{"original_index":0,"quality_id":64,"bandwidth":1,"codec":"hevc"}]}"#,
+        )
+        .unwrap();
+        let unknown_codec = CString::new(
+            r#"{"schema_version":1,"max_quality_id":80,"codec_filter":"codec_99","max_avc_quality_id":null,"streams":[{"original_index":0,"quality_id":80,"bandwidth":1,"codec":"codec_99"}]}"#,
+        )
+        .unwrap();
+        unsafe {
+            assert!(rust_select_video_stream(std::ptr::null()).is_null());
+            assert!(rust_select_video_stream(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_select_video_stream(duplicate.as_ptr()).is_null());
+            let result = rust_select_video_stream(empty.as_ptr());
+            assert!(!result.is_null());
+            assert!(
+                CStr::from_ptr(result)
+                    .to_str()
+                    .unwrap()
+                    .contains(r#""status":"no_match""#)
+            );
+            rust_free_string(result);
+            let result = rust_select_video_stream(unknown_codec.as_ptr());
+            assert!(!result.is_null());
+            assert!(
+                CStr::from_ptr(result)
+                    .to_str()
+                    .unwrap()
+                    .contains(r#""selected_index":0"#)
+            );
+            rust_free_string(result);
+        }
+    }
+
+    #[test]
+    fn audio_stream_export_distinguishes_no_match_and_repeats_allocation_free() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let empty = CString::new(
+            r#"{"schema_version":1,"audio_hires":true,"regular_streams":[],"flac_available":false,"dolby_available":false}"#,
+        )
+        .unwrap();
+        let selected = CString::new(
+            r#"{"schema_version":1,"audio_hires":true,"regular_streams":[{"original_index":0,"quality_id":30280,"bandwidth":0}],"flac_available":true,"dolby_available":true}"#,
+        )
+        .unwrap();
+        unsafe {
+            assert!(rust_select_audio_stream(std::ptr::null()).is_null());
+            assert!(rust_select_audio_stream(invalid_utf8.as_ptr()).is_null());
+            let result = rust_select_audio_stream(empty.as_ptr());
+            assert!(!result.is_null());
+            assert!(
+                CStr::from_ptr(result)
+                    .to_str()
+                    .unwrap()
+                    .contains(r#""status":"no_match""#)
+            );
+            rust_free_string(result);
+            for _ in 0..20 {
+                let result = rust_select_audio_stream(selected.as_ptr());
+                assert!(!result.is_null());
+                assert!(
+                    CStr::from_ptr(result)
+                        .to_str()
+                        .unwrap()
+                        .contains(r#""preferred_source":"dolby""#)
+                );
+                rust_free_string(result);
+            }
+        }
+    }
+
+    #[test]
+    fn quality_and_stream_exports_use_shared_panic_containment() {
+        let result = ffi_string_result(|| -> Option<String> {
+            panic!("simulated quality and stream ranking panic");
         });
         assert!(result.is_null());
     }
