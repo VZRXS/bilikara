@@ -62,7 +62,7 @@ No other helper is approved for Phase 1. The tables below document why.
 | `_page_url`, `_build_media_url` | URL composition | yes | Defer: each is a trivial operation in downloader/local-serving code, not a reusable URL parsing domain. |
 | `_normalize_output_line`, `_extract_progress`, `_compact_probe_error`, `_format_stage_bytes` | subprocess output cleanup/parsing | core yes | Excluded from this phase because their primary purpose is subprocess/progress handling. |
 | `_dash_max_quality_id`, `_video_quality_priority`, format selectors and stream selectors | quality lookup/ranking | yes | Excluded: download policy, scoring, ranking, and selection. |
-| `_dash_stream_urls`, `_current_platform_tokens`, release asset-name helpers | response adapters/platform selection | mostly | Excluded: source/download planning or heterogeneous dictionaries. |
+| `_dash_stream_urls`, `_current_platform_tokens`, release asset-name helpers | response adapters/platform selection | mostly | Excluded from Phase 1. The pure URL flattening and fallback asset construction were later migrated as Phase 2 Item 5; runtime detection and dictionary adaptation remain Python. |
 | All command, downloader, archive extraction, file lookup, path-size, process, worker, retry, cache-window, and filesystem helpers | I/O, subprocess, state, scheduling, policy | no/mixed | Outside Phase 1 by definition. |
 
 ### `bilikara/config.py`
@@ -137,8 +137,8 @@ No other helper is approved for Phase 1. The tables below document why.
 | Helpers reviewed | Category / dependencies | Pure | Decision and reason |
 | --- | --- | --- | --- |
 | `_release_list_api_from_latest`, `_format_download_proxy_url` | URL syntax/composition | yes | **Migrate now** as `url_utils.rs`. |
-| `_dedupe_urls`, `_latest_release_api_urls`, `_release_list_api_urls` | ordered fallback construction | yes | Defer/exclude: ordered fallback and source preference policy. The pure URL transform used inside is migrated separately. |
-| `_download_url_candidates` | ordered proxy/direct candidates | yes | Explicitly excluded: ordered download fallback policy. |
+| `_dedupe_urls`, `_latest_release_api_urls`, `_release_list_api_urls` | ordered fallback construction | yes | Excluded from Phase 1; later migrated as the updater portion of Phase 2 Item 5. |
+| `_download_url_candidates` | ordered proxy/direct candidates | yes | Excluded from Phase 1; later migrated as the updater portion of Phase 2 Item 5. |
 | Version, architecture, asset-token, safe-filename helpers | normalization/parsing | yes | Already migrated; Python fallbacks retained. |
 | `is_release_version`, `is_preview_version`, `is_stable_version`, `is_newer_version` | classification/comparison | yes | Intentionally remain Python composition over migrated parse results; migration would duplicate trivial policy. |
 | `_asset_text` | release asset dictionary → text | yes | Defer: Python dictionary adapter; no useful native work. |
@@ -279,6 +279,9 @@ Missing optional symbols disable only their matching capabilities.
 | --- | --- | --- |
 | `media_page_selection` | `rust_select_media_pages` / `select_media_pages` | Implemented and locally stabilized. Cross-platform confirmation remains for the PR to `dev`. Python retains Bilibili adaptation, object mapping, and fallback. |
 | `audio_binding` | `rust_decide_audio_binding` / `decide_audio_binding` | Implemented only after the strict media-page gate passed. Python retains model construction, errors, manual selection, URLs, and fallback. |
+| `download_candidate_planning` (updater) | `rust_plan_update_download_candidates` / `plan_update_download_candidates` | Implements updater API/direct/proxy construction with trimming, stable deduplication, explicit sources/routes, and complete Python fallback. |
+| `media_download_candidate_planning` | `rust_plan_media_download_candidates` / `plan_media_download_candidates` | Implements DASH primary/backup flattening and preferred-audio URL flattening. DASH trims/drops empties and preserves duplicates; preferred audio preserves raw strings and duplicates. Python retains descriptor selection, all I/O, and complete `_py_*` references. |
+| `tool_download_candidate_planning` | `rust_plan_tool_download_candidates` / `plan_tool_download_candidates` | Implements supplied/built-in primary plus configured fallback ordering, tool/target fallback asset identity, name quoting, and exact stable deduplication for BBDown, yt-dlp, and aria2c. Python retains runtime detection, asset scoring, downloads, installation, and complete `_py_*` references. |
 
 Audio binding transports only original index, page number, duration, and part
 label. It does not transport CID or arbitrary Bilibili metadata. The Rust
@@ -286,9 +289,11 @@ domain preserves the existing broad keyword substring policy and returns
 `single`, `automatic`, `manual_required`, or domain-level `no_match`.
 
 Variant-ID construction remains entirely in Python and was not consolidated.
-Quality/stream ranking is the next candidate, but no ranking, download
-planning, BBDown, aria2, cache, playlist, mobile plugin, or FFmpeg migration
-was started here.
+Phase 2 Item 5 is complete and Phase 2 is 5/8. The three candidate domains are
+separate because their normalization, duplicate, source, and ordering policies
+are intentionally different. No quality/stream ranking, cache planning,
+playlist ordering, downloader execution, mobile plugin, or FFmpeg migration
+was started.
 
 ### Criteria for future migration
 
@@ -300,7 +305,9 @@ I/O and mutable policy in Python unless that later phase explicitly changes
 the boundary.
 
 The intentionally deferred helpers in the audit remain deferred. In
-particular, release and asset scoring/selection, URL candidate order, Bilibili
-short-link resolution, cache quality/source defaults, track/download planning,
-path traversal checks, persistent schema adapters, rendering utilities, and
-all filesystem/network/subprocess/thread behavior are not part of Phase 1.
+particular, release and asset scoring/selection, Bilibili short-link
+resolution, cache quality/source defaults, stream ranking, cache-window and
+playlist planning, path traversal checks, persistent schema adapters,
+rendering utilities, and all filesystem/network/subprocess/thread behavior are
+not part of Phase 1. Updater, media, and tool candidate planning are the later
+completed Phase-2 Item 5 domains documented above.

@@ -27,6 +27,16 @@ EXPECTED_PHASE1_CAPABILITIES = {
     "is_downloadable_archive",
 }
 
+EXPECTED_PHASE2_CAPABILITIES = {
+    "select_update_asset",
+    "select_release",
+    "select_media_pages",
+    "decide_audio_binding",
+    "plan_update_download_candidates",
+    "plan_media_download_candidates",
+    "plan_tool_download_candidates",
+}
+
 
 class FakeFunction:
     def __init__(self, result=None):
@@ -61,6 +71,7 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
             )
         )
         self.assertTrue(all(status["capabilities"].values()))
+        self.assertEqual(set(rust_backend.PHASE2_CAPABILITIES), EXPECTED_PHASE2_CAPABILITIES)
 
         # These are Rust-only backend calls. None/False completion sentinels
         # fail the gate instead of silently reaching the public Python fallback.
@@ -89,6 +100,65 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
                 "bilikara.zip",
                 "https://example/bilikara.zip",
             )
+        )
+        completed, plan = rust_backend.try_plan_update_download_candidates(
+            {
+                "schema_version": 1,
+                "candidates": [
+                    {
+                        "original_index": 0,
+                        "url": "https://example/app.zip",
+                        "source": "primary",
+                    }
+                ],
+                "proxy": {
+                    "template": "https://proxy/{url}",
+                    "proxy_first": True,
+                },
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(
+            [candidate["route"] for candidate in plan["candidates"]],
+            ["proxy", "direct"],
+        )
+        completed, media_plan = rust_backend.try_plan_media_download_candidates(
+            {
+                "schema_version": 1,
+                "mode": "dash_streams",
+                "stream_kind": "video",
+                "streams": [
+                    {
+                        "original_index": 0,
+                        "primary_url": " primary ",
+                        "backup_urls": ["backup", "primary"],
+                    }
+                ],
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(
+            [candidate["url"] for candidate in media_plan["candidates"]],
+            ["primary", "backup", "primary"],
+        )
+        completed, tool_plan = rust_backend.try_plan_tool_download_candidates(
+            {
+                "schema_version": 1,
+                "tool": "ytdlp",
+                "asset": {
+                    "mode": "supplied",
+                    "name": "yt-dlp",
+                    "primary_url": "https://primary/yt-dlp",
+                },
+                "fallback_bases": [
+                    {"original_index": 0, "base_url": "https://mirror"}
+                ],
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(
+            [candidate["url"] for candidate in tool_plan["candidates"]],
+            ["https://primary/yt-dlp", "https://mirror/yt-dlp"],
         )
 
     def test_phase1_capability_documentation_matches_backend_symbols(self):
