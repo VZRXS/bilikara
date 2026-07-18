@@ -256,9 +256,10 @@ Remaining risks:
 
 ### 6. Quality and stream ranking
 
-Status: **completed**. Phase 2 is **6/8 complete**. Item 6 uses three typed
-domains so quality normalization, video ranking, and audio ranking retain their
-different invariants instead of being hidden behind a generic scorer.
+Status: **completed**. Phase 2 is **6/8 complete**. Item 6 uses four typed
+domains so quality normalization, video ranking, regular-audio ranking, and
+preferred-audio source binding retain their different invariants instead of
+being hidden behind a generic scorer.
 
 Migrated Python helpers and ownership:
 
@@ -282,6 +283,7 @@ Typed domain APIs:
 decide_quality_policy(QualityPolicyRequest) -> QualityPolicyDecision
 select_video_stream(VideoStreamSelectionRequest) -> VideoStreamSelection
 select_audio_stream(AudioStreamSelectionRequest) -> AudioStreamSelection
+select_preferred_audio_source(PreferredAudioSourceRequest) -> PreferredAudioSourceSelection
 ```
 
 - `quality_policy` represents all historical Bilibili quality-ID labels while
@@ -300,9 +302,11 @@ select_audio_stream(AudioStreamSelectionRequest) -> AudioStreamSelection
   deliberately ignored and original input order breaks ties. With Hi-Res off,
   Dolby/FLAC entries in the regular list are removed when a standard entry
   exists, but an all-Hi-Res regular list is retained as the existing fallback.
-  Separate preferred sources remain Dolby, then FLAC, then selected regular
-  audio when Hi-Res is enabled; separate Hi-Res sources are unavailable when it
-  is disabled.
+- `preferred_audio_source_binding` deliberately does not receive quality IDs or
+  bandwidth and never ranks regular audio. It preserves the first supplied
+  regular candidate exactly; with Hi-Res enabled FLAC overrides regular and
+  Dolby overrides FLAC, while with Hi-Res disabled both separate sources are
+  ignored. This is distinct from `_select_dash_audio_stream` ranking policy.
 
 Additive ABI-v1 JSON exports and capabilities:
 
@@ -310,22 +314,25 @@ Additive ABI-v1 JSON exports and capabilities:
 rust_decide_quality_policy / decide_quality_policy
 rust_select_video_stream / select_video_stream
 rust_select_audio_stream / select_audio_stream
+rust_select_preferred_audio_source / select_preferred_audio_source
 ```
 
-All three return Rust-owned JSON freed by `rust_free_string`, reject null,
+All four return Rust-owned JSON freed by `rust_free_string`, reject null,
 invalid UTF-8, malformed JSON, unsupported schemas, unknown fields, and invalid
 or duplicate wire indices, and distinguish valid `no_match` from FFI failure.
 The Python backend caps stream counts and UTF-8 label/codec lengths, rejects
 Boolean-as-integer and out-of-range values, and reconstructs the entire expected
 decision/ranking before accepting it. Selected and ranked indices, reasons,
-quality/codec caps, preferred source, and order must match exactly.
+quality/codec caps, preferred source, first-regular identity, and order must
+match exactly.
 
 Tests cover typed Rust policy, wire adapters, FFI panic/null/UTF-8/schema and
 repeated allocation/free behavior; independent Python golden references;
 missing-library/symbol/ABI and malicious native responses; and strict-native
 fixed/generated equivalence across qualities, caps, codecs, permutations,
-fallback stages, bandwidth ties, Dolby, FLAC, and Hi-Res combinations. Existing
-cache command regressions confirm that only policy decisions changed ownership.
+fallback stages, bandwidth ties, unsorted regular-audio inputs, object identity,
+Dolby, FLAC, and Hi-Res combinations. Existing cache command regressions
+confirm that only policy decisions changed ownership.
 
 Remaining risk: source metadata can contain malformed scalar values. Such
 requests fail closed to the original Python policy, preserving its behavior.

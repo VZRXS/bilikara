@@ -2430,12 +2430,10 @@ class CacheManager:
                     }
                     for index, stream in enumerate(audio_streams)
                 ],
-                "flac_available": False,
-                "dolby_available": False,
             }
             completed, response = rust_backend.try_select_audio_stream(request)
             if completed and response is not None:
-                selected_index = response["selected_regular_index"]
+                selected_index = response["selected_index"]
                 return None if selected_index is None else audio_streams[selected_index]
         except (AttributeError, IndexError, TypeError, ValueError):
             pass
@@ -2470,18 +2468,13 @@ class CacheManager:
             request = {
                 "schema_version": 1,
                 "audio_hires": audio_hires,
-                "regular_streams": [
-                    {
-                        "original_index": index,
-                        "quality_id": stream.get("quality_id", 0),
-                        "bandwidth": stream.get("bandwidth", 0),
-                    }
-                    for index, stream in enumerate(best_audio)
+                "regular_candidates": [
+                    {"original_index": index} for index in range(len(best_audio))
                 ],
                 "flac_available": bool(flac_audio),
                 "dolby_available": bool(dolby_audio),
             }
-            completed, response = rust_backend.try_select_audio_stream(request)
+            completed, response = rust_backend.try_select_preferred_audio_source(request)
             if completed and response is not None:
                 source = response["preferred_source"]
                 if source == "dolby":

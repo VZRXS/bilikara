@@ -17,8 +17,6 @@ pub struct AudioStreamDescriptor {
 pub struct AudioStreamSelectionRequest {
     pub audio_hires: bool,
     pub regular_streams: Vec<AudioStreamDescriptor>,
-    pub flac_available: bool,
-    pub dolby_available: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,20 +26,12 @@ pub enum AudioRegularReason {
     HiresOnlyFallback,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreferredAudioSource {
-    Regular,
-    Flac,
-    Dolby,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioStreamSelection {
     Selected {
-        selected_regular_index: Option<usize>,
-        ranked_regular_indices: Vec<usize>,
-        regular_reason: Option<AudioRegularReason>,
-        preferred_source: PreferredAudioSource,
+        selected_index: usize,
+        ranked_indices: Vec<usize>,
+        reason: AudioRegularReason,
     },
     NoMatch,
 }
@@ -76,7 +66,7 @@ pub fn select_audio_stream(
 
     let mut ranked: Vec<(usize, &AudioStreamDescriptor)> =
         request.regular_streams.iter().enumerate().collect();
-    let regular_reason = if request.audio_hires {
+    let reason = if request.audio_hires {
         (!ranked.is_empty()).then_some(AudioRegularReason::HiresEnabled)
     } else {
         let standard: Vec<_> = ranked
@@ -92,29 +82,17 @@ pub fn select_audio_stream(
         }
     };
     ranked.sort_by_key(|(position, stream)| (quality_rank(stream.quality_id), *position));
-    let ranked_regular_indices: Vec<usize> = ranked
+    let ranked_indices: Vec<usize> = ranked
         .iter()
         .map(|(_, stream)| stream.original_index)
         .collect();
-    let selected_regular_index = ranked_regular_indices.first().copied();
-    let preferred_source = if request.audio_hires && request.dolby_available {
-        Some(PreferredAudioSource::Dolby)
-    } else if request.audio_hires && request.flac_available {
-        Some(PreferredAudioSource::Flac)
-    } else if selected_regular_index.is_some() {
-        Some(PreferredAudioSource::Regular)
-    } else {
-        None
-    };
-
-    Ok(match preferred_source {
-        Some(preferred_source) => AudioStreamSelection::Selected {
-            selected_regular_index,
-            ranked_regular_indices,
-            regular_reason,
-            preferred_source,
+    Ok(match (ranked_indices.first().copied(), reason) {
+        (Some(selected_index), Some(reason)) => AudioStreamSelection::Selected {
+            selected_index,
+            ranked_indices,
+            reason,
         },
-        None => AudioStreamSelection::NoMatch,
+        _ => AudioStreamSelection::NoMatch,
     })
 }
 
@@ -132,8 +110,6 @@ struct AudioStreamWireRequest {
     schema_version: u32,
     audio_hires: bool,
     regular_streams: Vec<AudioStreamWireDescriptor>,
-    flac_available: bool,
-    dolby_available: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,21 +128,12 @@ enum WireRegularReason {
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum WirePreferredSource {
-    Regular,
-    Flac,
-    Dolby,
-}
-
-#[derive(Debug, Serialize)]
 struct AudioStreamWireResponse {
     schema_version: u32,
     status: WireStatus,
-    selected_regular_index: Option<usize>,
-    ranked_regular_indices: Vec<usize>,
-    regular_reason: Option<WireRegularReason>,
-    preferred_source: Option<WirePreferredSource>,
+    selected_index: Option<usize>,
+    ranked_indices: Vec<usize>,
+    reason: Option<WireRegularReason>,
 }
 
 pub(crate) fn select_audio_stream_json(request_json: &str) -> Option<String> {
@@ -190,37 +157,28 @@ pub(crate) fn select_audio_stream_json(request_json: &str) -> Option<String> {
                 bandwidth: stream.bandwidth,
             })
             .collect(),
-        flac_available: wire.flac_available,
-        dolby_available: wire.dolby_available,
     };
     let response = match select_audio_stream(&request).ok()? {
         AudioStreamSelection::NoMatch => AudioStreamWireResponse {
             schema_version: SCHEMA_VERSION,
             status: WireStatus::NoMatch,
-            selected_regular_index: None,
-            ranked_regular_indices: vec![],
-            regular_reason: None,
-            preferred_source: None,
+            selected_index: None,
+            ranked_indices: vec![],
+            reason: None,
         },
         AudioStreamSelection::Selected {
-            selected_regular_index,
-            ranked_regular_indices,
-            regular_reason,
-            preferred_source,
+            selected_index,
+            ranked_indices,
+            reason,
         } => AudioStreamWireResponse {
             schema_version: SCHEMA_VERSION,
             status: WireStatus::Selected,
-            selected_regular_index,
-            ranked_regular_indices,
-            regular_reason: regular_reason.map(|reason| match reason {
+            selected_index: Some(selected_index),
+            ranked_indices,
+            reason: Some(match reason {
                 AudioRegularReason::HiresEnabled => WireRegularReason::HiresEnabled,
                 AudioRegularReason::StandardOnly => WireRegularReason::StandardOnly,
                 AudioRegularReason::HiresOnlyFallback => WireRegularReason::HiresOnlyFallback,
-            }),
-            preferred_source: Some(match preferred_source {
-                PreferredAudioSource::Regular => WirePreferredSource::Regular,
-                PreferredAudioSource::Flac => WirePreferredSource::Flac,
-                PreferredAudioSource::Dolby => WirePreferredSource::Dolby,
             }),
         },
     };
@@ -243,8 +201,6 @@ mod tests {
         AudioStreamSelectionRequest {
             audio_hires: hires,
             regular_streams: streams,
-            flac_available: false,
-            dolby_available: false,
         }
     }
 
@@ -257,10 +213,9 @@ mod tests {
         assert_eq!(
             select_audio_stream(&request(vec![stream(4, 30280, 1)], true)).unwrap(),
             AudioStreamSelection::Selected {
-                selected_regular_index: Some(4),
-                ranked_regular_indices: vec![4],
-                regular_reason: Some(AudioRegularReason::HiresEnabled),
-                preferred_source: PreferredAudioSource::Regular,
+                selected_index: 4,
+                ranked_indices: vec![4],
+                reason: AudioRegularReason::HiresEnabled,
             }
         );
     }
@@ -280,10 +235,9 @@ mod tests {
         assert_eq!(
             result,
             AudioStreamSelection::Selected {
-                selected_regular_index: Some(2),
-                ranked_regular_indices: vec![2, 3, 1, 0],
-                regular_reason: Some(AudioRegularReason::HiresEnabled),
-                preferred_source: PreferredAudioSource::Regular,
+                selected_index: 2,
+                ranked_indices: vec![2, 3, 1, 0],
+                reason: AudioRegularReason::HiresEnabled,
             }
         );
     }
@@ -298,10 +252,9 @@ mod tests {
         assert_eq!(
             result,
             AudioStreamSelection::Selected {
-                selected_regular_index: Some(8),
-                ranked_regular_indices: vec![8, 3],
-                regular_reason: Some(AudioRegularReason::HiresEnabled),
-                preferred_source: PreferredAudioSource::Regular,
+                selected_index: 8,
+                ranked_indices: vec![8, 3],
+                reason: AudioRegularReason::HiresEnabled,
             }
         );
     }
@@ -320,10 +273,9 @@ mod tests {
         assert_eq!(
             result,
             AudioStreamSelection::Selected {
-                selected_regular_index: Some(2),
-                ranked_regular_indices: vec![2],
-                regular_reason: Some(AudioRegularReason::StandardOnly),
-                preferred_source: PreferredAudioSource::Regular,
+                selected_index: 2,
+                ranked_indices: vec![2],
+                reason: AudioRegularReason::StandardOnly,
             }
         );
     }
@@ -338,54 +290,10 @@ mod tests {
         assert_eq!(
             result,
             AudioStreamSelection::Selected {
-                selected_regular_index: Some(1),
-                ranked_regular_indices: vec![1, 0],
-                regular_reason: Some(AudioRegularReason::HiresOnlyFallback),
-                preferred_source: PreferredAudioSource::Regular,
+                selected_index: 1,
+                ranked_indices: vec![1, 0],
+                reason: AudioRegularReason::HiresOnlyFallback,
             }
-        );
-    }
-
-    #[test]
-    fn preferred_source_is_dolby_then_flac_then_regular() {
-        let mut req = request(vec![stream(0, 30280, 1)], true);
-        req.flac_available = true;
-        assert!(matches!(
-            select_audio_stream(&req).unwrap(),
-            AudioStreamSelection::Selected {
-                preferred_source: PreferredAudioSource::Flac,
-                ..
-            }
-        ));
-        req.dolby_available = true;
-        assert!(matches!(
-            select_audio_stream(&req).unwrap(),
-            AudioStreamSelection::Selected {
-                preferred_source: PreferredAudioSource::Dolby,
-                ..
-            }
-        ));
-        req.audio_hires = false;
-        assert!(matches!(
-            select_audio_stream(&req).unwrap(),
-            AudioStreamSelection::Selected {
-                preferred_source: PreferredAudioSource::Regular,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn separate_hires_sources_are_unavailable_when_hires_is_disabled() {
-        let req = AudioStreamSelectionRequest {
-            audio_hires: false,
-            regular_streams: vec![],
-            flac_available: true,
-            dolby_available: true,
-        };
-        assert_eq!(
-            select_audio_stream(&req).unwrap(),
-            AudioStreamSelection::NoMatch
         );
     }
 
@@ -409,7 +317,18 @@ mod tests {
     #[test]
     fn wire_rejects_invalid_schema_and_duplicate_indices() {
         assert!(select_audio_stream_json("not json").is_none());
-        assert!(select_audio_stream_json(r#"{"schema_version":2,"audio_hires":true,"regular_streams":[],"flac_available":false,"dolby_available":false}"#).is_none());
-        assert!(select_audio_stream_json(r#"{"schema_version":1,"audio_hires":true,"regular_streams":[{"original_index":0,"quality_id":30280,"bandwidth":1},{"original_index":0,"quality_id":30232,"bandwidth":1}],"flac_available":false,"dolby_available":false}"#).is_none());
+        assert!(
+            select_audio_stream_json(
+                r#"{"schema_version":2,"audio_hires":true,"regular_streams":[]}"#
+            )
+            .is_none()
+        );
+        assert!(select_audio_stream_json(r#"{"schema_version":1,"audio_hires":true,"regular_streams":[{"original_index":0,"quality_id":30280,"bandwidth":1},{"original_index":0,"quality_id":30232,"bandwidth":1}]}"#).is_none());
+        assert!(
+            select_audio_stream_json(
+                r#"{"schema_version":1,"audio_hires":true,"regular_streams":[],"extra":true}"#
+            )
+            .is_none()
+        );
     }
 }

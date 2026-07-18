@@ -284,7 +284,8 @@ Missing optional symbols disable only their matching capabilities.
 | `tool_download_candidate_planning` | `rust_plan_tool_download_candidates` / `plan_tool_download_candidates` | Implements supplied/built-in primary plus configured fallback ordering, tool/target fallback asset identity, name quoting, and exact stable deduplication for BBDown, yt-dlp, and aria2c. Python retains runtime detection, asset scoring, downloads, installation, and complete `_py_*` references. |
 | `quality_policy` | `rust_decide_quality_policy` / `decide_quality_policy` | Implements active-label normalization, all historical DASH quality IDs, choice-index mapping, AVC-cap evaluation, yt-dlp maximum-height intent, and BBDown ordered quality intent. Python retains configuration, selector/argument syntax, and complete `_py_*` references. |
 | `video_stream_ranking` | `rust_select_video_stream` / `select_video_stream` | Implements exact codec/quality/AVC filtering, current two fallback stages, descending quality/bandwidth ranking, stable ties, and selected/ranked original indices. Python retains DASH fetching, stream dictionaries, URLs, and fallback. |
-| `audio_stream_ranking` | `rust_select_audio_stream` / `select_audio_stream` | Implements regular audio quality ordering, Hi-Res filtering/fallback, and Dolby/FLAC/regular source preference. Bandwidth remains intentionally irrelevant. Python retains DASH fetching, URL planning, file extension/application, and fallback. |
+| `audio_stream_ranking` | `rust_select_audio_stream` / `select_audio_stream` | Implements only regular audio quality ordering and Hi-Res filtering/fallback. Bandwidth remains intentionally irrelevant and equal quality preserves input order. Python retains DASH fetching, stream dictionaries, and complete fallback. |
+| `preferred_audio_source_binding` | `rust_select_preferred_audio_source` / `select_preferred_audio_source` | Implements preferred-source binding without regular ranking: the first supplied regular candidate is retained, then FLAC and Dolby override it in that order only when Hi-Res is enabled. Python retains object mapping, URLs, file extension/application, and complete fallback. |
 
 Audio binding transports only original index, page number, duration, and part
 label. It does not transport CID or arbitrary Bilibili metadata. The Rust
@@ -293,10 +294,10 @@ domain preserves the existing broad keyword substring policy and returns
 
 Variant-ID construction remains entirely in Python and was not consolidated.
 Phase 2 Items 5 and 6 are complete and Phase 2 is 6/8. Candidate planning,
-quality policy, video ranking, and audio ranking remain separate because their
-normalization, duplicate, fallback, and ordering policies are intentionally
-different. No cache planning, playlist ordering, downloader execution, mobile
-plugin, or FFmpeg migration was started.
+quality policy, video ranking, regular-audio ranking, and preferred-source
+binding remain separate because their normalization, fallback, and ordering
+policies are intentionally different. No cache planning, playlist ordering,
+downloader execution, mobile plugin, or FFmpeg migration was started.
 
 ### Criteria for future migration
 

@@ -38,6 +38,7 @@ EXPECTED_PHASE2_CAPABILITIES = {
     "decide_quality_policy",
     "select_video_stream",
     "select_audio_stream",
+    "select_preferred_audio_source",
 }
 
 
@@ -212,12 +213,27 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
                         "bandwidth": 0,
                     }
                 ],
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(audio["selected_index"], 0)
+        self.assertEqual(audio["ranked_indices"], [0])
+
+        completed, preferred_audio = rust_backend.try_select_preferred_audio_source(
+            {
+                "schema_version": 1,
+                "audio_hires": True,
+                "regular_candidates": [
+                    {"original_index": 0},
+                    {"original_index": 1},
+                ],
                 "flac_available": True,
                 "dolby_available": True,
             }
         )
         self.assertTrue(completed)
-        self.assertEqual(audio["preferred_source"], "dolby")
+        self.assertEqual(preferred_audio["preferred_source"], "dolby")
+        self.assertEqual(preferred_audio["selected_regular_index"], 0)
 
     def test_phase1_capability_documentation_matches_backend_symbols(self):
         self.assertEqual(set(rust_backend.PHASE1_CAPABILITIES), EXPECTED_PHASE1_CAPABILITIES)

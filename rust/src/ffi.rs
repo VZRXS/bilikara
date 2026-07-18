@@ -410,7 +410,7 @@ pub unsafe extern "C" fn rust_select_video_stream(request_json: *const c_char) -
     })
 }
 
-/// Selects and ranks DASH regular audio and its preferred source from schema-v1 JSON.
+/// Selects and ranks regular DASH audio from schema-v1 JSON.
 ///
 /// A valid request without an eligible source returns `no_match`; invalid
 /// pointers, UTF-8, JSON, schemas, or indices return null. The owned result must
@@ -425,6 +425,26 @@ pub unsafe extern "C" fn rust_select_audio_stream(request_json: *const c_char) -
         // SAFETY: Required by this export's C ABI contract.
         let request_json = unsafe { input(request_json)? };
         crate::audio_stream_ranking::select_audio_stream_json(request_json)
+    })
+}
+
+/// Binds a preferred audio source without ranking regular audio candidates.
+///
+/// A valid request without an eligible source returns `no_match`; invalid
+/// pointers, UTF-8, JSON, schemas, or indices return null. The owned result must
+/// be freed with [`rust_free_string`].
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_select_preferred_audio_source(
+    request_json: *const c_char,
+) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::preferred_audio_source_binding::select_preferred_audio_source_json(request_json)
     })
 }
 
@@ -894,12 +914,10 @@ mod tests {
     #[test]
     fn audio_stream_export_distinguishes_no_match_and_repeats_allocation_free() {
         let invalid_utf8 = [0xff_u8 as c_char, 0];
-        let empty = CString::new(
-            r#"{"schema_version":1,"audio_hires":true,"regular_streams":[],"flac_available":false,"dolby_available":false}"#,
-        )
-        .unwrap();
+        let empty = CString::new(r#"{"schema_version":1,"audio_hires":true,"regular_streams":[]}"#)
+            .unwrap();
         let selected = CString::new(
-            r#"{"schema_version":1,"audio_hires":true,"regular_streams":[{"original_index":0,"quality_id":30280,"bandwidth":0}],"flac_available":true,"dolby_available":true}"#,
+            r#"{"schema_version":1,"audio_hires":true,"regular_streams":[{"original_index":0,"quality_id":30280,"bandwidth":0}]}"#,
         )
         .unwrap();
         unsafe {
@@ -921,8 +939,54 @@ mod tests {
                     CStr::from_ptr(result)
                         .to_str()
                         .unwrap()
-                        .contains(r#""preferred_source":"dolby""#)
+                        .contains(r#""selected_index":0"#)
                 );
+                rust_free_string(result);
+            }
+        }
+    }
+
+    #[test]
+    fn preferred_audio_source_export_validates_input_and_repeats_allocation_free() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let malformed = CString::new("not json").unwrap();
+        let unsupported = CString::new(
+            r#"{"schema_version":2,"audio_hires":true,"regular_candidates":[],"flac_available":false,"dolby_available":false}"#,
+        )
+        .unwrap();
+        let duplicate = CString::new(
+            r#"{"schema_version":1,"audio_hires":true,"regular_candidates":[{"original_index":0},{"original_index":0}],"flac_available":false,"dolby_available":false}"#,
+        )
+        .unwrap();
+        let empty = CString::new(
+            r#"{"schema_version":1,"audio_hires":false,"regular_candidates":[],"flac_available":true,"dolby_available":true}"#,
+        )
+        .unwrap();
+        let selected = CString::new(
+            r#"{"schema_version":1,"audio_hires":true,"regular_candidates":[{"original_index":3},{"original_index":8}],"flac_available":true,"dolby_available":true}"#,
+        )
+        .unwrap();
+        unsafe {
+            assert!(rust_select_preferred_audio_source(std::ptr::null()).is_null());
+            assert!(rust_select_preferred_audio_source(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_select_preferred_audio_source(malformed.as_ptr()).is_null());
+            assert!(rust_select_preferred_audio_source(unsupported.as_ptr()).is_null());
+            assert!(rust_select_preferred_audio_source(duplicate.as_ptr()).is_null());
+            let result = rust_select_preferred_audio_source(empty.as_ptr());
+            assert!(!result.is_null());
+            assert!(
+                CStr::from_ptr(result)
+                    .to_str()
+                    .unwrap()
+                    .contains(r#""status":"no_match""#)
+            );
+            rust_free_string(result);
+            for _ in 0..20 {
+                let result = rust_select_preferred_audio_source(selected.as_ptr());
+                assert!(!result.is_null());
+                let response = CStr::from_ptr(result).to_str().unwrap();
+                assert!(response.contains(r#""preferred_source":"dolby""#));
+                assert!(response.contains(r#""selected_regular_index":3"#));
                 rust_free_string(result);
             }
         }

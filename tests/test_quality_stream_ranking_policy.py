@@ -115,36 +115,86 @@ class StreamRankingReferenceTest(unittest.TestCase):
             high_only[1],
         )
 
-    def test_python_preferred_audio_reference_is_dolby_flac_regular(self):
-        regular = {"quality_id": 30280}
+    def test_python_preferred_audio_reference_preserves_first_regular(self):
+        regular = [
+            {"quality_id": 30216, "bandwidth": 1, "url": "first"},
+            {"quality_id": 30280, "bandwidth": 999, "url": "second"},
+        ]
         flac = {"quality_id": 30251}
         dolby = {"quality_id": 30250}
+        for hires in (False, True):
+            self.assertIs(
+                CacheManager._py_select_preferred_dash_audio(
+                    regular, None, None, audio_hires=hires
+                ),
+                regular[0],
+            )
         self.assertIs(
             CacheManager._py_select_preferred_dash_audio(
-                [regular], flac, dolby, audio_hires=True
-            ),
-            dolby,
-        )
-        self.assertIs(
-            CacheManager._py_select_preferred_dash_audio(
-                [regular], flac, None, audio_hires=True
+                regular, flac, None, audio_hires=True
             ),
             flac,
         )
         self.assertIs(
             CacheManager._py_select_preferred_dash_audio(
-                [regular], flac, dolby, audio_hires=False
+                regular, flac, None, audio_hires=False
             ),
-            regular,
+            regular[0],
+        )
+        self.assertIs(
+            CacheManager._py_select_preferred_dash_audio(
+                regular, flac, dolby, audio_hires=True
+            ),
+            dolby,
+        )
+        self.assertIs(
+            CacheManager._py_select_preferred_dash_audio(
+                regular, flac, dolby, audio_hires=False
+            ),
+            regular[0],
+        )
+
+    def test_python_preferred_audio_reference_handles_empty_regular(self):
+        flac = {"quality_id": 30251}
+        dolby = {"quality_id": 30250}
+        self.assertIs(
+            CacheManager._py_select_preferred_dash_audio(
+                [], flac, None, audio_hires=True
+            ),
+            flac,
+        )
+        self.assertIs(
+            CacheManager._py_select_preferred_dash_audio(
+                [], None, dolby, audio_hires=True
+            ),
+            dolby,
+        )
+        self.assertIsNone(
+            CacheManager._py_select_preferred_dash_audio(
+                [], flac, dolby, audio_hires=False
+            )
+        )
+        self.assertIsNone(
+            CacheManager._py_select_preferred_dash_audio(
+                [], None, None, audio_hires=True
+            )
         )
 
     def test_public_stream_wrappers_fall_back_completely(self):
         video = [{"quality_id": 80, "bandwidth": 1, "codec_name": "avc"}]
         audio = [{"quality_id": 30280, "bandwidth": 1}]
+        unsorted_audio = [
+            {"quality_id": 30216, "bandwidth": 1, "url": "first"},
+            {"quality_id": 30280, "bandwidth": 999, "url": "second"},
+        ]
         with patch.object(
             rust_backend, "try_select_video_stream", return_value=(False, None)
         ), patch.object(
             rust_backend, "try_select_audio_stream", return_value=(False, None)
+        ), patch.object(
+            rust_backend,
+            "try_select_preferred_audio_source",
+            return_value=(False, None),
         ), patch.object(
             CacheManager,
             "_py_select_dash_video_stream",
@@ -153,7 +203,11 @@ class StreamRankingReferenceTest(unittest.TestCase):
             CacheManager,
             "_py_select_dash_audio_stream",
             wraps=CacheManager._py_select_dash_audio_stream,
-        ) as audio_fallback:
+        ) as audio_fallback, patch.object(
+            CacheManager,
+            "_py_select_preferred_dash_audio",
+            wraps=CacheManager._py_select_preferred_dash_audio,
+        ) as preferred_fallback:
             self.assertIs(
                 CacheManager._select_dash_video_stream(video, max_quality_id=80),
                 video[0],
@@ -162,8 +216,15 @@ class StreamRankingReferenceTest(unittest.TestCase):
                 CacheManager._select_dash_audio_stream(audio, audio_hires=True),
                 audio[0],
             )
+            self.assertIs(
+                CacheManager._select_preferred_dash_audio(
+                    unsorted_audio, None, None, audio_hires=False
+                ),
+                unsorted_audio[0],
+            )
             video_fallback.assert_called_once()
             audio_fallback.assert_called_once()
+            preferred_fallback.assert_called_once()
 
 
 class NativeQualityStreamEquivalenceTest(unittest.TestCase):
@@ -175,6 +236,7 @@ class NativeQualityStreamEquivalenceTest(unittest.TestCase):
             "decide_quality_policy",
             "select_video_stream",
             "select_audio_stream",
+            "select_preferred_audio_source",
         }
         if not status["loaded"] or not all(capabilities.get(name) for name in required):
             if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
@@ -246,7 +308,10 @@ class NativeQualityStreamEquivalenceTest(unittest.TestCase):
                     CacheManager._py_select_dash_audio_stream(streams, audio_hires=hires),
                 )
 
-        regular = {"quality_id": 30280, "bandwidth": 0}
+        regular = [
+            {"quality_id": 30216, "bandwidth": 1, "url": "first"},
+            {"quality_id": 30280, "bandwidth": 999, "url": "second"},
+        ]
         flac = {"quality_id": 30251, "bandwidth": 1}
         dolby = {"quality_id": 30250, "bandwidth": 1}
         for hires, flac_value, dolby_value in itertools.product(
@@ -254,10 +319,10 @@ class NativeQualityStreamEquivalenceTest(unittest.TestCase):
         ):
             self.assertIs(
                 CacheManager._select_preferred_dash_audio(
-                    [regular], flac_value, dolby_value, audio_hires=hires
+                    regular, flac_value, dolby_value, audio_hires=hires
                 ),
                 CacheManager._py_select_preferred_dash_audio(
-                    [regular], flac_value, dolby_value, audio_hires=hires
+                    regular, flac_value, dolby_value, audio_hires=hires
                 ),
             )
 

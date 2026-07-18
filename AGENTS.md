@@ -155,7 +155,8 @@ When completing a task, agents must report:
 | `src/tool_download_candidate_planning.rs` | Pure BBDown, yt-dlp, and aria2c asset fallback construction, labeling, ordering, and deduplication policy. |
 | `src/quality_policy.rs` | Pure quality-label/ID normalization plus BBDown and yt-dlp preference intent. |
 | `src/video_stream_ranking.rs` | Pure DASH video codec, quality, bandwidth, AVC-cap, fallback, and stable ranking policy. |
-| `src/audio_stream_ranking.rs` | Pure DASH audio quality, Hi-Res, Dolby, FLAC, and stable source-selection policy. |
+| `src/audio_stream_ranking.rs` | Pure regular DASH audio quality ordering, Hi-Res filtering/fallback, and stable ties. |
+| `src/preferred_audio_source_binding.rs` | Pure first-regular, FLAC, and Dolby preferred-audio source binding without regular ranking. |
 | `src/release_selection.rs` | Semantic version sorting and release filtering rules. |
 | `src/asset_selection.rs` | Update package scoring by platform and architecture. |
 | `src/ffi.rs` | FFI wrapper utilities, memory safety helpers, panic containment. |

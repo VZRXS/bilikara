@@ -40,6 +40,7 @@ PHASE2_CAPABILITIES = (
     "decide_quality_policy",
     "select_video_stream",
     "select_audio_stream",
+    "select_preferred_audio_source",
 )
 
 MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS = 4096
@@ -194,6 +195,11 @@ _SYMBOLS = {
     ),
     "select_audio_stream": (
         "rust_select_audio_stream",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "select_preferred_audio_source": (
+        "rust_select_preferred_audio_source",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -1969,21 +1975,15 @@ def _audio_stream_request(request: object) -> dict[str, object] | None:
         "schema_version",
         "audio_hires",
         "regular_streams",
-        "flac_available",
-        "dolby_available",
     }:
         return None
     schema_version = request.get("schema_version")
     audio_hires = request.get("audio_hires")
-    flac_available = request.get("flac_available")
-    dolby_available = request.get("dolby_available")
     streams = request.get("regular_streams")
     if (
         isinstance(schema_version, bool)
         or schema_version != 1
         or not isinstance(audio_hires, bool)
-        or not isinstance(flac_available, bool)
-        or not isinstance(dolby_available, bool)
         or not isinstance(streams, list)
         or len(streams) > MAX_STREAM_RANKING_INPUTS
     ):
@@ -2025,8 +2025,6 @@ def _audio_stream_request(request: object) -> dict[str, object] | None:
         "schema_version": 1,
         "audio_hires": audio_hires,
         "regular_streams": validated_streams,
-        "flac_available": flac_available,
-        "dolby_available": dolby_available,
     }
 
 
@@ -2050,22 +2048,13 @@ def _expected_audio_stream_selection(request: dict[str, object]) -> dict[str, ob
         key=lambda stream: quality_order.get(stream["quality_id"], 99),
     )
     ranked_indices = [stream["original_index"] for stream in ranked]
-    selected_regular_index = ranked_indices[0] if ranked_indices else None
-    if audio_hires and request["dolby_available"]:
-        preferred_source = "dolby"
-    elif audio_hires and request["flac_available"]:
-        preferred_source = "flac"
-    elif selected_regular_index is not None:
-        preferred_source = "regular"
-    else:
-        preferred_source = None
+    selected_index = ranked_indices[0] if ranked_indices else None
     return {
         "schema_version": 1,
-        "status": "selected" if preferred_source else "no_match",
-        "selected_regular_index": selected_regular_index,
-        "ranked_regular_indices": ranked_indices,
-        "regular_reason": regular_reason,
-        "preferred_source": preferred_source,
+        "status": "selected" if selected_index is not None else "no_match",
+        "selected_index": selected_index,
+        "ranked_indices": ranked_indices,
+        "reason": regular_reason,
     }
 
 
@@ -2080,7 +2069,7 @@ def _valid_audio_stream_response(
 def try_select_audio_stream(
     request: dict[str, object],
 ) -> tuple[bool, dict[str, Any] | None]:
-    """Call and strictly reconstruct DASH audio ranking and source preference."""
+    """Call and strictly reconstruct regular DASH audio ranking."""
 
     validated = _audio_stream_request(request)
     if (
@@ -2099,6 +2088,113 @@ def try_select_audio_stream(
             return False, None
         response = json.loads(response_json)
         if not _valid_audio_stream_response(response, validated):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _preferred_audio_source_request(request: object) -> dict[str, object] | None:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "audio_hires",
+        "regular_candidates",
+        "flac_available",
+        "dolby_available",
+    }:
+        return None
+    schema_version = request.get("schema_version")
+    audio_hires = request.get("audio_hires")
+    candidates = request.get("regular_candidates")
+    flac_available = request.get("flac_available")
+    dolby_available = request.get("dolby_available")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(audio_hires, bool)
+        or not isinstance(candidates, list)
+        or len(candidates) > MAX_STREAM_RANKING_INPUTS
+        or not isinstance(flac_available, bool)
+        or not isinstance(dolby_available, bool)
+    ):
+        return None
+    validated_candidates: list[dict[str, int]] = []
+    previous_index: int | None = None
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or set(candidate) != {"original_index"}:
+            return None
+        original_index = candidate.get("original_index")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or not 0 <= original_index <= _USIZE_MAX
+            or (previous_index is not None and original_index <= previous_index)
+        ):
+            return None
+        previous_index = original_index
+        validated_candidates.append({"original_index": original_index})
+    return {
+        "schema_version": 1,
+        "audio_hires": audio_hires,
+        "regular_candidates": validated_candidates,
+        "flac_available": flac_available,
+        "dolby_available": dolby_available,
+    }
+
+
+def _expected_preferred_audio_source_selection(
+    request: dict[str, object],
+) -> dict[str, object]:
+    candidates = list(request["regular_candidates"])
+    selected_regular_index = (
+        candidates[0]["original_index"] if candidates else None
+    )
+    if request["audio_hires"] and request["dolby_available"]:
+        preferred_source = "dolby"
+    elif request["audio_hires"] and request["flac_available"]:
+        preferred_source = "flac"
+    elif selected_regular_index is not None:
+        preferred_source = "regular"
+    else:
+        preferred_source = None
+    return {
+        "schema_version": 1,
+        "status": "selected" if preferred_source is not None else "no_match",
+        "preferred_source": preferred_source,
+        "selected_regular_index": selected_regular_index,
+    }
+
+
+def _valid_preferred_audio_source_response(
+    response: object, request: dict[str, object]
+) -> bool:
+    return isinstance(response, dict) and response == (
+        _expected_preferred_audio_source_selection(request)
+    )
+
+
+def try_select_preferred_audio_source(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call and strictly reconstruct preferred DASH audio source binding."""
+
+    validated = _preferred_audio_source_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("select_preferred_audio_source", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        pointer = _rust_lib.rust_select_preferred_audio_source(payload)
+        response_json = _read_rust_string(pointer)
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_preferred_audio_source_response(response, validated):
             return False, None
         return True, response
     except Exception:
