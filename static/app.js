@@ -23,6 +23,7 @@ const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.sear
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
 const projectUrl = "https://github.com/VZRXS/bilikara";
+let windowFrameController = null;
 
 function openExternalUrl(url) {
   if (window.__TAURI__) {
@@ -802,6 +803,7 @@ function setLanguage(language) {
   writeLocalPreference(storageKeys.language, nextLanguage);
   invalidateLanguageSensitiveRenderCache();
   applyStaticI18n();
+  windowFrameController?.refreshLabels();
   renderLanguageSwitch();
   render();
 }
@@ -845,6 +847,10 @@ async function loadTranslations() {
         "backup.continuePreviousSession": "继续上一场",
         "backup.previousSessionContinued": "已继续上一场。",
         "backup.previousSessionUnavailable": "上一场记录已不可用。",
+        "window.minimize": "最小化",
+        "window.maximize": "最大化",
+        "window.restore": "还原",
+        "window.close": "关闭",
         "gatcha.adding": "处理中",
       },
     };
@@ -919,6 +925,11 @@ function canTogglePlayerFullscreen() {
 }
 
 function tauriAppWindow() {
+  const detector = window.BilikaraWindowFrame?.detectTauriWindow;
+  if (typeof detector === "function") {
+    return detector(window);
+  }
+
   const tauriWebviewWindow = window.__TAURI__?.webviewWindow;
   if (typeof tauriWebviewWindow?.getCurrentWebviewWindow === "function") {
     try {
@@ -937,6 +948,23 @@ function tauriAppWindow() {
     }
   }
   return null;
+}
+
+function initializeTauriWindowFrame() {
+  const api = window.BilikaraWindowFrame;
+  if (!api || typeof api.createController !== "function") {
+    return false;
+  }
+  windowFrameController = api.createController({
+    root: window,
+    document,
+    appWindow: tauriAppWindow(),
+    translate: t,
+    onError(error) {
+      console.warn("Window frame action failed:", error);
+    },
+  });
+  return windowFrameController.initialize();
 }
 
 function tauriInvoke() {
@@ -11722,6 +11750,7 @@ document.addEventListener("visibilitychange", () => {
 
 function handleFullscreenChange() {
   const isFullscreen = isPlayerPanelFullscreen();
+  windowFrameController?.setFullscreen(isFullscreen);
   if (!isFullscreen) {
     hideFullscreenRequestToast();
     if (hasLocalAdvanceDelayOverlay()) {
@@ -12492,6 +12521,7 @@ elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
 async function startPolling() {
   hydrateLocalPreferences();
   await loadTranslations();
+  initializeTauriWindowFrame();
   renderLayoutMode();
   try {
     await reportMediaCapabilities();
