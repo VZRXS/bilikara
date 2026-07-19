@@ -185,17 +185,17 @@ python start_bilikara.py
 
 **Tauri 桌面壳**
 
-构建 Tauri 桌面壳需要安装 Node.js 和 Rust 工具链。开发模式可运行：
+构建 Tauri 桌面壳需要安装 Node.js 20 或更高版本，以及 Rust 工具链。仓库提供 `.nvmrc`，使用 nvm 时可先运行 `nvm use`。开发模式可运行：
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
 构建桌面壳可运行：
 
 ```bash
-npm install
+npm ci
 npm run build
 ```
 

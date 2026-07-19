@@ -108,12 +108,26 @@ def _is_path_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 class DuplicateSessionRequestError(ValueError):
     def __init__(self, item, session_entry=None, active_item=None) -> None:
         self.item = item
         self.session_entry = session_entry
         self.active_item = active_item
         super().__init__(f"本次已经点过《{item.display_title}》")
+
+
+class SessionUserAlreadyExistsError(ValueError):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__("该用户已存在")
 
 
 class AppContext:
@@ -374,14 +388,23 @@ class AppContext:
                 "session_id": self.remote_identities.snapshot_session_id(),
             }
 
-    def register_remote_identity(self, name: str) -> tuple[str, dict[str, object]]:
+    def register_remote_identity(self, name: str, *, claim: bool = False) -> tuple[str, dict[str, object]]:
         with self._remote_identity_lock:
-            self.store.add_session_user(name)
             normalized = self.store.normalize_session_user_name(name)
+            if not normalized:
+                raise ValueError("用户名不能为空")
+            newly_added = False
+            if self.store.has_session_user(normalized):
+                if not claim:
+                    raise SessionUserAlreadyExistsError(normalized)
+            else:
+                self.store.add_session_user(normalized)
+                newly_added = True
             try:
                 token = self.remote_identities.issue(normalized)
             except Exception:
-                self.store.remove_session_user(normalized)
+                if newly_added:
+                    self.store.remove_session_user(normalized)
                 raise
             return token, {
                 "registered": True,
@@ -428,14 +451,24 @@ class AppContext:
         video_quality: str | None = None,
         audio_hires: bool | None = None,
         download_source: str | None = None,
+        reset_offset_on_next: bool | None = None,
     ) -> None:
         self.cache_manager.set_cache_policy(
             max_cache_items=max_cache_items,
             video_quality=video_quality,
             audio_hires=audio_hires,
             download_source=download_source,
+            reset_offset_on_next=reset_offset_on_next,
         )
         self._notify_state_changed()
+
+    def cache_downloader_status(self, download_source: str) -> dict[str, object]:
+        return self.cache_manager.downloader_status(download_source)
+
+    def prepare_cache_downloader(self, download_source: str) -> dict[str, object]:
+        result = self.cache_manager.prepare_downloader(download_source)
+        self._notify_state_changed()
+        return result
 
     def set_client_media_capabilities(self, payload: dict[str, object]) -> dict[str, object]:
         result = self.cache_manager.set_client_media_capabilities(payload)
@@ -555,6 +588,9 @@ class AppContext:
         self.auto_restored_backup = restored or self.auto_restored_backup
         self.cache_manager.sync_with_playlist()
         return restored
+
+    def continue_previous_session(self) -> bool:
+        return self.store.continue_previous_session()
 
     def discard_backup(self) -> bool:
         discarded = self.store.discard_backup()
@@ -791,6 +827,13 @@ atexit.register(CONTEXT.shutdown)
 class BilikaraHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def do_HEAD(self) -> None:  # noqa: N802
+        route = urlparse(self.path).path
+        if route.startswith("/media/"):
+            self._serve_media(route, head_only=True)
+            return
+        self._serve_static(route, head_only=True)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         route = parsed.path
@@ -949,6 +992,50 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json({"ok": False, "error": str(e)})
             return
+        if route == "/api/played-sessions":
+            try:
+                sessions = []
+                if PLAYED_SESSION_DIR.exists():
+                    for f in PLAYED_SESSION_DIR.glob("played-*.json"):
+                        stem = f.stem
+                        if stem.startswith("played-"):
+                            stem = stem[7:]
+                        parts = stem.split("_")
+                        if len(parts) == 2:
+                            date_part, time_part = parts
+                            date_splits = date_part.split("-")
+                            time_splits = time_part.split("-")
+                            if len(date_splits) == 3 and len(time_splits) >= 2:
+                                try:
+                                    year = int(date_splits[0])
+                                    month = int(date_splits[1])
+                                    day = int(date_splits[2])
+                                    hour = int(time_splits[0])
+                                    minute = int(time_splits[1])
+                                    sessions.append({
+                                        "id": f.name,
+                                        "year": year,
+                                        "month": month,
+                                        "day": day,
+                                        "hour": hour,
+                                        "minute": minute,
+                                    })
+                                    continue
+                                except ValueError:
+                                    pass
+                        sessions.append({
+                            "id": f.name,
+                            "year": 0,
+                            "month": 0,
+                            "day": 0,
+                            "hour": 0,
+                            "minute": 0,
+                        })
+                sessions.sort(key=lambda x: x["id"], reverse=True)
+                self._write_json({"ok": True, "data": sessions})
+            except Exception as e:
+                self._write_json({"ok": False, "error": str(e)})
+            return
         if route in ("/api/playlist/export", "/api/history/export"):
             query = parse_qs(urlparse(self.path).query)
             export_format = str(query.get("format", ["csv"])[0] or "csv").strip().lower()
@@ -972,6 +1059,23 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "time_header": "播放时间",
                 },
             }
+            if export_source.startswith("played-") and export_source.endswith(".json"):
+                safe_name = "".join(c for c in export_source if c.isalnum() or c in "-_.")
+                session_file = PLAYED_SESSION_DIR / safe_name
+                if session_file.exists() and session_file.is_file():
+                    def read_session_file():
+                        try:
+                            with open(session_file, "r", encoding="utf-8") as rf:
+                                data = json.load(rf)
+                                return data.get("items") or []
+                        except Exception:
+                            return []
+                    source_settings[export_source] = {
+                        "items": read_session_file,
+                        "filename": Path(safe_name).stem,
+                        "title": "bilikara 歌单导出",
+                        "time_header": "播放时间",
+                    }
             if export_source not in source_settings:
                 self._write_json({"ok": False, "error": "source must be history or played"}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -1043,7 +1147,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 return
             if route == "/api/remote-identity/register":
-                token, identity = CONTEXT.register_remote_identity(str(body.get("name") or ""))
+                token, identity = CONTEXT.register_remote_identity(
+                    str(body.get("name") or ""),
+                    claim=bool(body.get("claim")),
+                )
                 self._write_json(
                     {"ok": True, "data": identity},
                     headers={"Set-Cookie": self._remote_identity_cookie(token)},
@@ -1071,6 +1178,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "on",
                 }
                 self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
+                return
+            if route == "/api/app/open-url":
+                url_to_open = str(body.get("url", "")).strip()
+                if url_to_open.startswith(("http://", "https://")):
+                    threading.Thread(
+                        target=lambda: webbrowser.open(url_to_open),
+                        daemon=True
+                    ).start()
+                    self._write_json({"ok": True})
+                else:
+                    self._write_json({"ok": False, "error": "invalid url"}, status=HTTPStatus.BAD_REQUEST)
                 return
             if route == "/api/playlist/add":
                 self._handle_add(body)
@@ -1438,6 +1556,24 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True})
                 return
+            if route == "/api/player/diagnostic":
+                event = {
+                    "event": str(body.get("event") or "")[:40],
+                    "item_id": str(body.get("item_id") or "")[:80],
+                    "media_kind": str(body.get("media_kind") or "")[:20],
+                    "current_time": body.get("current_time"),
+                    "duration": body.get("duration"),
+                    "ready_state": body.get("ready_state"),
+                    "network_state": body.get("network_state"),
+                    "paused": bool(body.get("paused")),
+                    "ended": bool(body.get("ended")),
+                    "error_code": body.get("error_code"),
+                    "error_message": str(body.get("error_message") or "")[:500],
+                    "url_basename": str(body.get("url_basename") or "")[:255],
+                }
+                print(f"[player-media] {json.dumps(event, ensure_ascii=False, sort_keys=True)}", flush=True)
+                self._write_json({"ok": True})
+                return
             if route == "/api/rating/log":
                 message = str(body.get("message") or "").strip()
                 if message:
@@ -1491,11 +1627,26 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     },
                 })
                 return
+            if route == "/api/cache-downloader/status":
+                download_source = body.get("download_source")
+                if not isinstance(download_source, str):
+                    raise ValueError("download_source 必须是字符串")
+                result = CONTEXT.cache_downloader_status(download_source)
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/cache-downloader/prepare":
+                download_source = body.get("download_source")
+                if not isinstance(download_source, str):
+                    raise ValueError("download_source 必须是字符串")
+                result = CONTEXT.prepare_cache_downloader(download_source)
+                self._write_json({"ok": True, "data": result})
+                return
             if route == "/api/cache-policy":
                 max_cache_items = body.get("max_cache_items") if "max_cache_items" in body else None
                 video_quality = body.get("video_quality") if "video_quality" in body else None
                 audio_hires = body.get("audio_hires") if "audio_hires" in body else None
                 download_source = body.get("download_source") if "download_source" in body else None
+                reset_offset_on_next = body.get("reset_offset_on_next") if "reset_offset_on_next" in body else None
                 if max_cache_items is not None and not isinstance(max_cache_items, int):
                     raise ValueError("max_cache_items 必须是整数")
                 if video_quality is not None and not isinstance(video_quality, str):
@@ -1504,13 +1655,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     raise ValueError("audio_hires 必须是布尔值")
                 if download_source is not None and not isinstance(download_source, str):
                     raise ValueError("download_source 必须是字符串")
-                if max_cache_items is None and video_quality is None and audio_hires is None and download_source is None:
+                if reset_offset_on_next is not None and not isinstance(reset_offset_on_next, bool):
+                    raise ValueError("reset_offset_on_next 必须是布尔值")
+                if max_cache_items is None and video_quality is None and audio_hires is None and download_source is None and reset_offset_on_next is None:
                     raise ValueError("没有可更新的缓存策略")
                 CONTEXT.set_cache_policy(
                     max_cache_items=max_cache_items,
                     video_quality=video_quality,
                     audio_hires=audio_hires,
                     download_source=download_source,
+                    reset_offset_on_next=reset_offset_on_next,
                 )
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
@@ -1521,6 +1675,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/backup/discard":
                 CONTEXT.discard_backup()
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
+            if route == "/api/session/continue-previous":
+                if not CONTEXT.continue_previous_session():
+                    raise ValueError("没有可继续的上一场记录")
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/player/reset":
@@ -1602,6 +1761,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 },
                 status=HTTPStatus.CONFLICT,
             )
+        except SessionUserAlreadyExistsError as exc:
+            self._write_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": "session_user_already_exists",
+                    "name": exc.name,
+                },
+                status=HTTPStatus.CONFLICT,
+            )
         except ValueError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001
@@ -1665,7 +1834,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         match = BVID_IN_TEXT_RE.search(raw_url)
         return match.group(0) if match else ""
 
-    def _serve_static(self, route: str) -> None:
+    def _serve_static(self, route: str, *, head_only: bool = False) -> None:
         if route in {"", "/"}:
             relative = "index.html"
         elif route in {"/remote", "/remote/"}:
@@ -1680,9 +1849,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             static_path,
             content_type=self._guess_type(static_path),
             cache_control="no-store",
+            head_only=head_only,
         )
 
-    def _serve_media(self, route: str) -> None:
+    def _serve_media(self, route: str, *, head_only: bool = False) -> None:
         # relative = route.removeprefix("/media/")  # Python 3.9+
         prefix = "/media/"
         relative = route[len(prefix):] if route.startswith(prefix) else route
@@ -1695,6 +1865,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             media_path,
             content_type=self._guess_type(media_path),
             allow_ranges=True,
+            head_only=head_only,
         )
 
     def _read_json_body(self) -> dict:
@@ -1842,6 +2013,29 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"\n")
         self.wfile.flush()
 
+    @staticmethod
+    def _parse_single_byte_range(range_header: str, file_size: int) -> tuple[int, int]:
+        match = RANGE_RE.fullmatch(str(range_header or "").strip())
+        if not match or file_size <= 0:
+            raise ValueError("invalid or unsatisfiable byte range")
+        start_text, end_text = match.groups()
+        if not start_text and not end_text:
+            raise ValueError("empty byte range")
+        if not start_text:
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise ValueError("invalid suffix byte range")
+            return max(0, file_size - suffix_length), file_size - 1
+        start = int(start_text)
+        if start >= file_size:
+            raise ValueError("byte range starts beyond EOF")
+        if not end_text:
+            return start, file_size - 1
+        end = int(end_text)
+        if end < start:
+            raise ValueError("byte range end precedes start")
+        return start, min(end, file_size - 1)
+
     def _stream_file(
         self,
         file_path: Path,
@@ -1849,48 +2043,58 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         content_type: str,
         allow_ranges: bool = False,
         cache_control: str | None = None,
+        head_only: bool = False,
     ) -> None:
-        file_size = file_path.stat().st_size
-        range_header = self.headers.get("Range", "")
-        if allow_ranges and range_header:
-            match = RANGE_RE.fullmatch(range_header.strip())
-            if match:
-                start_str, end_str = match.groups()
-                start = int(start_str) if start_str else 0
-                end = int(end_str) if end_str else file_size - 1
-                end = min(end, file_size - 1)
-                if start <= end:
-                    self.send_response(HTTPStatus.PARTIAL_CONTENT)
-                    self.send_header("Content-Type", content_type)
+        with file_path.open("rb") as handle:
+            file_size = os.fstat(handle.fileno()).st_size
+            range_header = self.headers.get("Range", "")
+            if allow_ranges and range_header:
+                try:
+                    start, end = self._parse_single_byte_range(range_header, file_size)
+                except (TypeError, ValueError):
+                    self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                    self.send_header("Content-Range", f"bytes */{file_size}")
+                    self.send_header("Content-Length", "0")
                     self.send_header("Accept-Ranges", "bytes")
-                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
-                    self.send_header("Content-Length", str(end - start + 1))
                     if cache_control:
                         self.send_header("Cache-Control", cache_control)
                     self.end_headers()
-                    with file_path.open("rb") as handle:
-                        handle.seek(start)
-                        remaining = end - start + 1
-                        try:
-                            while remaining > 0:
-                                chunk = handle.read(min(64 * 1024, remaining))
-                                if not chunk:
-                                    break
-                                self.wfile.write(chunk)
-                                remaining -= len(chunk)
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            pass
                     return
 
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(file_size))
-        if cache_control:
-            self.send_header("Cache-Control", cache_control)
-        if allow_ranges:
-            self.send_header("Accept-Ranges", "bytes")
-        self.end_headers()
-        with file_path.open("rb") as handle:
+                content_length = end - start + 1
+                self.send_response(HTTPStatus.PARTIAL_CONTENT)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header("Content-Length", str(content_length))
+                if cache_control:
+                    self.send_header("Cache-Control", cache_control)
+                self.end_headers()
+                if head_only:
+                    return
+                handle.seek(start)
+                remaining = content_length
+                try:
+                    while remaining > 0:
+                        chunk = handle.read(min(64 * 1024, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                return
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(file_size))
+            if cache_control:
+                self.send_header("Cache-Control", cache_control)
+            if allow_ranges:
+                self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            if head_only:
+                return
             try:
                 while True:
                     chunk = handle.read(64 * 1024)

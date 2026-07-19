@@ -1,8 +1,14 @@
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
 from PIL import Image, ImageDraw, ImageFont
+
+import bilikara.playlist_export as playlist_export
 from bilikara.playlist_export import (
+    _find_system_font,
+    _hidden_process_kwargs,
     _load_font,
     _select_font_for_char,
     _measure_text_with_fallback,
@@ -11,6 +17,42 @@ from bilikara.playlist_export import (
 )
 
 class PlaylistExportTest(unittest.TestCase):
+    def tearDown(self):
+        _find_system_font.cache_clear()
+
+    def test_find_system_font_is_cached_by_weight(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout="/fonts/example.ttf: Example\n",
+        )
+        _find_system_font.cache_clear()
+        with patch("bilikara.playlist_export.shutil.which", return_value="fc-list"), patch(
+            "bilikara.playlist_export.subprocess.run",
+            return_value=completed,
+        ) as run:
+            self.assertEqual(_find_system_font(bold=False), "/fonts/example.ttf")
+            self.assertEqual(_find_system_font(bold=False), "/fonts/example.ttf")
+            self.assertEqual(_find_system_font(bold=True), "/fonts/example.ttf")
+            self.assertEqual(_find_system_font(bold=True), "/fonts/example.ttf")
+
+        self.assertEqual(run.call_count, 2)
+
+    def test_hidden_process_kwargs_prevent_windows_console(self):
+        startupinfo = SimpleNamespace(dwFlags=0, wShowWindow=None)
+        startupinfo_cls = Mock(return_value=startupinfo)
+        with patch("bilikara.playlist_export.os.name", "nt"), patch.object(
+            playlist_export.subprocess,
+            "STARTUPINFO",
+            startupinfo_cls,
+            create=True,
+        ):
+            kwargs = _hidden_process_kwargs()
+
+        self.assertEqual(kwargs["creationflags"], 0x08000000)
+        self.assertEqual(startupinfo.dwFlags & 0x00000001, 0x00000001)
+        self.assertEqual(startupinfo.wShowWindow, 0)
+        self.assertIs(kwargs["startupinfo"], startupinfo)
+
     def test_load_font_returns_list_of_fonts(self):
         fonts = _load_font(ImageFont, 24)
         self.assertIsInstance(fonts, list)

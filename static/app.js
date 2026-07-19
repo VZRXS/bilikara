@@ -23,6 +23,17 @@ const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.sear
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
 const projectUrl = "https://github.com/VZRXS/bilikara";
+
+function openExternalUrl(url) {
+  if (window.__TAURI__) {
+    apiPost("/api/app/open-url", { url }).catch((err) => {
+      console.error("Failed to open URL via backend:", err);
+      window.location.href = url;
+    });
+  } else {
+    window.open(url, "_blank");
+  }
+}
 const developerTagResetFieldKeys = [
   "tag_1",
   "tag_2",
@@ -102,6 +113,7 @@ const state = {
   listFlipTimer: null,
   listFlipFrame: null,
   cacheSettingsOpen: false,
+  cacheAdvancedOpen: false,
   displaySettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
@@ -121,6 +133,9 @@ const state = {
   audioVariantBarItemId: "",
   backupBannerShown: false,
   backupBannerDismissed: false,
+  backupBannerMode: "",
+  previousSessionPromptChecked: false,
+  previousSessionPromptEligible: false,
   backupBannerTimer: null,
   backupBannerCountdownTimer: null,
   backupBannerDeadline: 0,
@@ -151,6 +166,9 @@ const state = {
   localSeekSettleCallback: null,
   localPlayerVolume: 1,
   localPlayerMuted: false,
+  playbackFaultItemId: "",
+  playbackFaultRetryByItem: {},
+  mediaIssueEventsByKey: {},
   pendingPlaybackRestore: null,
   lastAppliedPlayerControlSeq: 0,
   lastReportedPlayerStatusSignature: "",
@@ -255,6 +273,8 @@ const elements = {
   cacheSettings: document.getElementById("cache-settings"),
   cacheSettingsToggle: document.getElementById("cache-settings-toggle"),
   cachePanel: document.getElementById("cache-panel"),
+  cacheAdvancedInlineView: document.getElementById("cache-advanced-inline-view"),
+  cachePanelAdvancedTrigger: document.getElementById("cache-panel-advanced-trigger"),
   cacheUsageDetail: document.getElementById("cache-usage-detail"),
   cachePanelVersion: document.getElementById("cache-panel-version"),
   bbdownStatusRow: document.getElementById("bbdown-status-row"),
@@ -274,6 +294,7 @@ const elements = {
   cacheQualitySelect: document.getElementById("cache-quality-select"),
   cacheDownloadSourceSelect: document.getElementById("cache-download-source-select"),
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
+  resetOffsetCheckbox: document.getElementById("reset-offset-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
   playerResetButton: document.getElementById("player-reset-button"),
@@ -310,8 +331,9 @@ const elements = {
   sessionUserList: document.getElementById("session-user-list"),
   sessionUserTrash: document.getElementById("session-user-trash"),
   backupBanner: document.getElementById("backup-banner"),
+  backupTitle: document.getElementById("backup-title"),
   backupText: document.getElementById("backup-text"),
-  discardBackupButton: document.getElementById("discard-backup-button"),
+  backupActionButton: document.getElementById("backup-action-button"),
   dismissBackupButton: document.getElementById("dismiss-backup-button"),
   listTag: document.getElementById("list-tag"),
   listTitle: document.getElementById("list-title"),
@@ -497,6 +519,11 @@ const elements = {
   gatchaUidMessage: document.getElementById("gatcha-uid-message"),
 };
 
+const historyExportGuard = window.BilikaraExportGuard.createExportGuard([
+  elements.confirmOk,
+  elements.confirmSecondary,
+]);
+
 function setFormMessage(message, isError = false) {
   elements.formMessage.textContent = message;
   elements.formMessage.style.color = isError ? "var(--red)" : "var(--muted)";
@@ -508,6 +535,41 @@ function setSearchMessage(message, isError = false) {
   }
   elements.searchMessage.textContent = message || "";
   elements.searchMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setMessageForSource(source, message, isError = false) {
+  if (source === "search") {
+    setSearchMessage(message, isError);
+    return;
+  }
+  if (source === "lark") {
+    setLarkSearchMessage(message, isError);
+    return;
+  }
+  if (source === "modalFollow") {
+    setFollowBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalFavlist") {
+    setFavlistBrowseMessage(message, isError);
+    return;
+  }
+  if (source === "modalBrowse") {
+    const msgElements = elements.searchModalOtherView?.querySelectorAll(".tag-browser-message");
+    if (msgElements && msgElements.length > 0) {
+      msgElements.forEach((el) => {
+        el.textContent = message || "";
+        el.classList.toggle("is-error", Boolean(isError));
+      });
+    }
+    return;
+  }
+  if (source === "gatcha") {
+    setGatchaMessage(message, isError);
+    return;
+  }
+  // Default fallback (e.g. "history" or others)
+  setFormMessage(message, isError);
 }
 
 function setAppMessage(message, isError = false) {
@@ -778,6 +840,12 @@ async function loadTranslations() {
         "top.mobileRemote": "手机点歌",
         "remote.qrLoading": "正在生成二维码...",
         "player.empty": "把 Bilibili 视频链接加入点歌列表后，这里会开始播放。",
+        "backup.previousSessionTag": "上一场",
+        "backup.previousSessionDetected": "检测到上一场记录，共 {count} 首。",
+        "backup.continuePreviousSession": "继续上一场",
+        "backup.previousSessionContinued": "已继续上一场。",
+        "backup.previousSessionUnavailable": "上一场记录已不可用。",
+        "gatcha.adding": "处理中",
       },
     };
   }
@@ -852,40 +920,18 @@ function canTogglePlayerFullscreen() {
 
 function tauriAppWindow() {
   const tauriWebviewWindow = window.__TAURI__?.webviewWindow;
-  if (tauriWebviewWindow) {
-    if (typeof tauriWebviewWindow.getCurrentWebviewWindow === "function") {
-      try {
-        return tauriWebviewWindow.getCurrentWebviewWindow();
-      } catch {
-        return null;
-      }
-    }
-    if (typeof tauriWebviewWindow.getCurrent === "function") {
-      try {
-        return tauriWebviewWindow.getCurrent();
-      } catch {
-        return null;
-      }
+  if (typeof tauriWebviewWindow?.getCurrentWebviewWindow === "function") {
+    try {
+      return tauriWebviewWindow.getCurrentWebviewWindow();
+    } catch {
+      // Try the Tauri v2 window API below.
     }
   }
 
   const tauriWindow = window.__TAURI__?.window;
-  if (!tauriWindow) {
-    return null;
-  }
-  if (tauriWindow.appWindow) {
-    return tauriWindow.appWindow;
-  }
-  if (typeof tauriWindow.getCurrentWindow === "function") {
+  if (typeof tauriWindow?.getCurrentWindow === "function") {
     try {
       return tauriWindow.getCurrentWindow();
-    } catch {
-      return null;
-    }
-  }
-  if (typeof tauriWindow.getCurrent === "function") {
-    try {
-      return tauriWindow.getCurrent();
     } catch {
       return null;
     }
@@ -894,10 +940,7 @@ function tauriAppWindow() {
 }
 
 function tauriInvoke() {
-  return window.__TAURI__?.tauri?.invoke
-    || window.__TAURI__?.core?.invoke
-    || window.__TAURI__?.invoke
-    || null;
+  return window.__TAURI__?.core?.invoke || null;
 }
 
 async function setTauriWindowFullscreen(enabled) {
@@ -1231,10 +1274,37 @@ function clientHeaders(extraHeaders = {}) {
   };
 }
 
+function localizedBBDownLoginMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "请使用哔哩哔哩 App 扫码登录" || raw.includes("扫码登录")) {
+    return t("service.scanWithBilibiliApp");
+  }
+  if (raw === "正在启动 BBDown 登录" || raw.includes("启动 BBDown 登录")) {
+    return t("service.startingBBDownLogin");
+  }
+  if (raw === "BBDown 已登录" || raw === "已登录") {
+    return t("service.bbdownLoggedIn");
+  }
+  if (raw === "BBDown 登录失败，请重试" || raw.includes("登录失败")) {
+    return t("service.bbdownLoginFailed");
+  }
+  if (raw === "未登录") {
+    return t("service.notLoggedIn");
+  }
+  return raw;
+}
+
 function localizedApiMessage(message) {
   const raw = String(message || "").trim();
   if (!raw) {
     return "";
+  }
+  const bbdownMessage = localizedBBDownLoginMessage(raw);
+  if (bbdownMessage && bbdownMessage !== raw) {
+    return bbdownMessage;
   }
   const gatchaMessage = localizedGatchaTaskMessage(raw);
   if (gatchaMessage && gatchaMessage !== raw) {
@@ -1752,6 +1822,19 @@ async function fetchState() {
   state.data = payload.data;
   maybeShowIncomingRequestToast(previousData, state.data);
   maybeShowSongTransitionOverlay(previousData, state.data);
+
+  if (previousData) {
+    const previousId = currentItemIdFromData(previousData);
+    const nextId = currentItemIdFromData(state.data);
+    if (previousId !== nextId && nextId) {
+      if (state.data?.cache_policy?.reset_offset_on_next) {
+        if (currentAvOffsetMs() !== 0) {
+          setAvOffset(0).catch((err) => console.warn("自动重置 Offset 失败:", err));
+        }
+      }
+    }
+  }
+
   syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
   if (!state.localOffsetRestoreApplied) {
     const rememberedOffset = rememberedAvOffsetMs();
@@ -2093,7 +2176,7 @@ function openBilikaraSecretModal() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = projectUrl;
+    openExternalUrl(projectUrl);
     return;
   }
   if (elements.bilikaraSecretInput) {
@@ -2126,7 +2209,7 @@ async function verifyBilikaraSecret() {
     return;
   }
   if (selectedRequesterName() !== developerModeRequesterName) {
-    window.location.href = projectUrl;
+    openExternalUrl(projectUrl);
     return;
   }
   const bilikaraSecret = String(elements.bilikaraSecretInput?.value || "").trim();
@@ -2549,7 +2632,7 @@ function formatSearchRating(value) {
 
 function searchResultRatingText(item) {
   const rating = searchResultRatingValue(item);
-  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
+  return rating == null ? t("search.ratingNone") : t("search.ratingValue", { rating: formatSearchRating(rating) });
 }
 
 function createSearchResultRatingStars(item) {
@@ -4200,11 +4283,23 @@ function localizedCacheMessage(message, cacheStatus = "") {
   if (raw.includes("开始缓存视频") || raw.includes("正在缓存")) {
     return t("cache.caching");
   }
-  if (status === "ready") {
-    return t("cache.ready");
-  }
   if (status === "failed" && raw === "缓存失败") {
     return t("cache.failed");
+  }
+  let localized = raw;
+  if (localized.includes("视频轨")) {
+    localized = localized.replace(/视频轨/g, t("cache.videoTrack"));
+  }
+  if (localized.includes("音轨")) {
+    localized = localized.replace(/音轨/g, t("cache.audioTrack"));
+  }
+  if (localized.includes("（校验中）") || localized.includes("(校验中)")) {
+    localized = localized.replace(/（校验中）|\(校验中\)/g, `(${t("status.validating")})`);
+  } else if (localized === "校验中") {
+    localized = t("status.validating");
+  }
+  if (localized !== raw) {
+    return localized;
   }
   return raw;
 }
@@ -4467,6 +4562,9 @@ function renderGatchaUidFace() {
   setTextContent(elements.gatchaTag, showUid ? t("gatcha.uidTag") : t("gatcha.tag"));
   setTextContent(elements.gatchaTitle, showUid ? t("gatcha.uidTitle") : t("gatcha.title"));
   setTextContent(elements.gatchaUidToggle, showUid ? t("gatcha.backToDraw") : t("gatcha.addUid"));
+  if (elements.gatchaConfirmButton && !elements.gatchaConfirmButton.disabled) {
+    elements.gatchaConfirmButton.textContent = t("gatcha.confirm");
+  }
   if (elements.gatchaUidToggle?.getAttribute("aria-pressed") !== String(showUid)) {
     elements.gatchaUidToggle.setAttribute("aria-pressed", String(showUid));
   }
@@ -4567,6 +4665,7 @@ function render() {
   renderHistory(data.history || []);
   renderBackupBanner(
     data.backup,
+    data.previous_session,
     Boolean(currentItem),
     data.playlist.length,
     Boolean(data.session_flags?.auto_restored_backup),
@@ -4908,7 +5007,7 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   }
 
   setTextContent(elements.cacheChipMeta, cacheChipMeta);
-  setTextContent(elements.cacheUsageDetail, cacheUsageDetail);
+  renderCacheUsageDetail(cacheUsageDetail);
   renderCacheSlider(cachePolicy);
   renderAdvanceDelaySlider(state.data?.player_settings);
   renderCachePolicyControls(cachePolicy);
@@ -5024,7 +5123,7 @@ function renderBBDownLogin(login) {
         setTextContent(elements.bbdownLoginQrText, qrText);
       }
       if (elements.bbdownLoginMessage) {
-        setTextContent(elements.bbdownLoginMessage, login?.message || t("service.qrPreparing"));
+        setTextContent(elements.bbdownLoginMessage, localizedBBDownLoginMessage(login?.message) || t("service.qrPreparing"));
         setClassToggle(elements.bbdownLoginMessage, "is-error", login?.state === "failed");
       }
     }
@@ -5216,6 +5315,7 @@ function renderCachePolicyControls(cachePolicy) {
     ];
   const currentQuality = String(cachePolicy?.video_quality || choices[0]?.value || "1080P 高码率");
   const audioHires = Boolean(cachePolicy?.audio_hires);
+  const resetOffsetOnNext = Boolean(cachePolicy?.reset_offset_on_next);
   const rawSourceChoices = Array.isArray(cachePolicy?.download_source_choices)
     ? cachePolicy.download_source_choices
     : [];
@@ -5232,7 +5332,7 @@ function renderCachePolicyControls(cachePolicy) {
     }).filter((choice) => choice.value)
     : [
       { value: "bbdown", label: "BBDown" },
-      { value: "ytdlp", label: "yt-dlp" },
+      { value: "downkyi", label: "Downkyi (aria2c)" },
     ];
   const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
   const signature = JSON.stringify({
@@ -5241,7 +5341,9 @@ function renderCachePolicyControls(cachePolicy) {
     sourceChoices,
     currentDownloadSource,
     audioHires,
+    resetOffsetOnNext,
     saving: state.cachePolicySaving,
+    downloadSourcePreparing: state.downloadSourcePreparing,
   });
 
   if (signature === state.cachePolicyControlRenderSignature) {
@@ -5278,12 +5380,17 @@ function renderCachePolicyControls(cachePolicy) {
       elements.cacheDownloadSourceSelect.dataset.choicesSignature = choicesSignature;
     }
     elements.cacheDownloadSourceSelect.value = currentDownloadSource;
-    elements.cacheDownloadSourceSelect.disabled = state.cachePolicySaving;
+    elements.cacheDownloadSourceSelect.disabled = state.cachePolicySaving || state.downloadSourcePreparing;
   }
 
   if (elements.cacheHiresCheckbox) {
     elements.cacheHiresCheckbox.checked = audioHires;
     elements.cacheHiresCheckbox.disabled = state.cachePolicySaving;
+  }
+
+  if (elements.resetOffsetCheckbox) {
+    elements.resetOffsetCheckbox.checked = resetOffsetOnNext;
+    elements.resetOffsetCheckbox.disabled = state.cachePolicySaving;
   }
 }
 
@@ -5293,6 +5400,13 @@ function syncCachePanelVisibility(options = {}) {
     elements.cacheSettingsToggle.setAttribute("aria-expanded", expanded);
   }
   setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen);
+  if (!state.cacheSettingsOpen) {
+    state.cacheAdvancedOpen = false;
+  }
+  setClassToggle(elements.cacheAdvancedInlineView, "hidden", !state.cacheAdvancedOpen);
+  if (elements.cachePanelAdvancedTrigger) {
+    elements.cachePanelAdvancedTrigger.setAttribute("aria-expanded", String(state.cacheAdvancedOpen));
+  }
   maybeStartBBDownLogin(state.data?.bbdown?.login, {
     force: Boolean(options.forceLoginRefresh),
   });
@@ -5636,6 +5750,26 @@ function queuedNextItem() {
 
 function currentItemIdFromData(data) {
   return String(data?.current_item?.id || "");
+}
+
+function durationSecondsForItemPage(item, page) {
+  if (!item) {
+    return 0;
+  }
+  const targetPage = Number(page || 0);
+  for (const [pagesKey, durationsKey] of [
+    ["selected_pages", "selected_durations"],
+    ["available_pages", "available_durations"],
+  ]) {
+    const pages = Array.isArray(item[pagesKey]) ? item[pagesKey] : [];
+    const durations = Array.isArray(item[durationsKey]) ? item[durationsKey] : [];
+    const index = pages.findIndex((candidate) => Number(candidate) === targetPage);
+    const duration = Number(durations[index] || 0);
+    if (index >= 0 && Number.isFinite(duration) && duration > 0) {
+      return duration;
+    }
+  }
+  return 0;
 }
 
 function durationSecondsForItem(item) {
@@ -6362,8 +6496,199 @@ function settleSplitPlayerSeek(video, audio, force = false) {
   return true;
 }
 
+function mediaUrlBasename(media) {
+  const source = String(media?.currentSrc || media?.src || "");
+  if (!source) {
+    return "";
+  }
+  try {
+    const parsed = new URL(source, window.location.href);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    return decodeURIComponent(parts[parts.length - 1] || "");
+  } catch {
+    return "";
+  }
+}
+
+function reportMediaDiagnostic(itemId, mediaKind, media, eventName) {
+  if (!media) {
+    return;
+  }
+  const mediaError = media.error;
+  const payload = {
+    event: eventName,
+    item_id: String(itemId || ""),
+    media_kind: mediaKind,
+    current_time: Number.isFinite(media.currentTime) ? Number(media.currentTime) : null,
+    duration: Number.isFinite(media.duration) ? Number(media.duration) : null,
+    ready_state: Number(media.readyState || 0),
+    network_state: Number(media.networkState || 0),
+    paused: Boolean(media.paused),
+    ended: Boolean(media.ended),
+    error_code: mediaError ? Number(mediaError.code || 0) : null,
+    error_message: mediaError ? String(mediaError.message || "") : "",
+    url_basename: mediaUrlBasename(media),
+  };
+  console.info("[player-media]", payload);
+  apiPost("/api/player/diagnostic", payload).catch(() => {});
+}
+
+function attachSplitPlayerDiagnostics(itemId, video, audio) {
+  const eventNames = ["loadedmetadata", "canplay", "waiting", "stalled", "suspend", "error", "ended"];
+  eventNames.forEach((eventName) => {
+    video.addEventListener(eventName, () => reportMediaDiagnostic(itemId, "video", video, eventName));
+    audio.addEventListener(eventName, () => reportMediaDiagnostic(itemId, "audio", audio, eventName));
+  });
+}
+
+function splitPlaybackMetrics(currentItem, video, audio) {
+  const videoPage = Number(currentItem?.video_page || currentItem?.page || 0);
+  const audioPage = audioVariantPageNumber(selectedAudioVariantForItem(currentItem));
+  return {
+    videoDuration: Number.isFinite(video?.duration) ? Number(video.duration) : null,
+    videoCurrentTime: Number.isFinite(video?.currentTime) ? Number(video.currentTime) : null,
+    audioDuration: Number.isFinite(audio?.duration) ? Number(audio.duration) : null,
+    audioCurrentTime: Number.isFinite(audio?.currentTime) ? Number(audio.currentTime) : null,
+    expectedDuration: durationSecondsForItemPage(currentItem, videoPage) || null,
+    expectedAudioDuration: durationSecondsForItemPage(currentItem, audioPage) || null,
+    videoPage,
+    audioPage,
+    avOffsetSeconds: currentAvOffsetSeconds(),
+  };
+}
+
+function pauseSplitPlaybackForFault(video, audio) {
+  state.localShouldBePlaying = false;
+  state.localSeekResumePending = false;
+  clearLocalPlayerSeekState();
+  if (video && !video.paused) {
+    video.pause();
+  }
+  if (audio && !audio.paused) {
+    audio.pause();
+  }
+  showMountedPlayerControls();
+}
+
+function handleSplitPlaybackFault(currentItem, video, audio, outcome, trigger) {
+  const itemId = String(currentItem?.id || "");
+  if (!itemId || !outcome?.fault) {
+    return;
+  }
+  const metrics = splitPlaybackMetrics(currentItem, video, audio);
+  state.playbackFaultItemId = itemId;
+  pauseSplitPlaybackForFault(video, audio);
+  console.error("[player-fault]", {
+    item_id: itemId,
+    trigger,
+    classification: outcome.classification,
+    ...metrics,
+  });
+  reportMediaDiagnostic(itemId, "video", video, `fault:${outcome.classification}`);
+  reportMediaDiagnostic(itemId, "audio", audio, `fault:${outcome.classification}`);
+
+  const retryStarted = Boolean(state.playbackFaultRetryByItem[itemId]);
+  setAppMessage(
+    retryStarted
+      ? t("service.playbackRepairHint")
+      : `${t("service.playbackRepairHint")} ${t("service.retryCurrentStarted")}`,
+    true,
+  );
+  if (retryStarted) {
+    return;
+  }
+  state.playbackFaultRetryByItem[itemId] = true;
+  apiPost("/api/cache/retry", { item_id: itemId, force: true })
+    .then((nextData) => {
+      state.data = nextData;
+      state.playbackFaultItemId = "";
+      Object.keys(state.mediaIssueEventsByKey)
+        .filter((key) => key.startsWith(`${itemId}:`))
+        .forEach((key) => delete state.mediaIssueEventsByKey[key]);
+      state.playerSignature = "";
+      render();
+    })
+    .catch((error) => {
+      setAppMessage(`${t("service.playbackRepairHint")}: ${error.message}`, true);
+    });
+}
+
+function recordSplitMediaIssue(currentItem, video, audio, mediaKind, media, eventName) {
+  const itemId = String(currentItem?.id || "");
+  if (!itemId || !media) {
+    return;
+  }
+  const key = `${itemId}:${mediaKind}`;
+  const now = Date.now();
+  const recent = (state.mediaIssueEventsByKey[key] || [])
+    .filter((timestamp) => now - timestamp <= 15000);
+  recent.push(now);
+  state.mediaIssueEventsByKey[key] = recent;
+  const health = window.BilikaraPlayerHealth;
+  const outcome = health?.classifyBuffering({
+    eventCount: recent.length,
+    readyState: media.readyState,
+    networkState: media.networkState,
+  });
+  if (outcome?.fault) {
+    handleSplitPlaybackFault(currentItem, video, audio, outcome, `${mediaKind}-${eventName}`);
+  }
+}
+
+function attachSplitPlaybackFaultHandlers(currentItem, video, audio) {
+  const health = window.BilikaraPlayerHealth;
+  [["video", video], ["audio", audio]].forEach(([mediaKind, media]) => {
+    media.addEventListener("error", () => {
+      const outcome = health?.classifyMediaError(mediaKind, media.error?.code || 0)
+        || { classification: `${mediaKind}-error`, fault: true };
+      handleSplitPlaybackFault(currentItem, video, audio, outcome, `${mediaKind}-error`);
+    });
+    ["waiting", "stalled"].forEach((eventName) => {
+      media.addEventListener(eventName, () => {
+        recordSplitMediaIssue(currentItem, video, audio, mediaKind, media, eventName);
+      });
+    });
+  });
+}
+
+async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
+  state.localShouldBePlaying = false;
+  state.localSeekResumePending = false;
+  audio.pause();
+  showMountedPlayerControls();
+  reportStatus();
+  const health = window.BilikaraPlayerHealth;
+  const metrics = splitPlaybackMetrics(currentItem, video, audio);
+  const outcome = health?.classifyVideoEnded(metrics)
+    || { classification: "normal-end", fault: false };
+  if (outcome.fault) {
+    handleSplitPlaybackFault(currentItem, video, audio, outcome, "video-ended");
+    return;
+  }
+  await handleLocalPlaybackEnded("media-ended");
+}
+
+function handleSplitAudioEnded(currentItem, video, audio) {
+  if (isSplitPlayerSeekSettling(video, audio)) {
+    return;
+  }
+  const health = window.BilikaraPlayerHealth;
+  const metrics = splitPlaybackMetrics(currentItem, video, audio);
+  const outcome = health?.classifyAudioEnded(metrics)
+    || { classification: "normal-end", fault: false };
+  if (outcome.fault) {
+    handleSplitPlaybackFault(currentItem, video, audio, outcome, "audio-ended");
+  }
+}
+
 function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
   if (!video || !audio) {
+    return;
+  }
+  if (audio.ended || (state.playbackFaultItemId && state.playerContext?.itemId === state.playbackFaultItemId)) {
+    if (!audio.paused) {
+      audio.pause();
+    }
     return;
   }
 
@@ -6821,6 +7146,10 @@ function renderAvSyncControls(playbackMode, playerSettings) {
 }
 
 function renderPlayer(currentItem, playbackMode) {
+  const currentItemId = String(currentItem?.id || "");
+  if (state.playbackFaultItemId && state.playbackFaultItemId !== currentItemId) {
+    state.playbackFaultItemId = "";
+  }
   handleRatingCurrentItemChange(currentItem);
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
@@ -6958,6 +7287,8 @@ function renderPlayer(currentItem, playbackMode) {
 
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
+  attachSplitPlayerDiagnostics(currentItem.id, video, audio);
+  attachSplitPlaybackFaultHandlers(currentItem, video, audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -7104,19 +7435,11 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("ended", async () => {
-    state.localShouldBePlaying = false;
-    state.localSeekResumePending = false;
-    audio.pause();
-    showMountedPlayerControls();
-    reportCurrentVideoStatus();
-    await handleLocalPlaybackEnded();
+    await handleSplitVideoEnded(currentItem, video, audio, reportCurrentVideoStatus);
   });
 
   audio.addEventListener("ended", () => {
-    if (isSplitPlayerSeekSettling(video, audio)) {
-      return;
-    }
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    handleSplitAudioEnded(currentItem, video, audio);
   });
 
   state.localPlayerSyncTimer = window.setInterval(() => {
@@ -7143,6 +7466,10 @@ function renderPlayer(currentItem, playbackMode) {
 }
 
 function renderPlayer(currentItem, playbackMode) {
+  const currentItemId = String(currentItem?.id || "");
+  if (state.playbackFaultItemId && state.playbackFaultItemId !== currentItemId) {
+    state.playbackFaultItemId = "";
+  }
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
@@ -7276,6 +7603,8 @@ function renderPlayer(currentItem, playbackMode) {
 
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
+  attachSplitPlayerDiagnostics(currentItem.id, video, audio);
+  attachSplitPlaybackFaultHandlers(currentItem, video, audio);
   showMountedPlayerControls();
 
   const reportCurrentVideoStatus = () => {
@@ -7420,19 +7749,11 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   video.addEventListener("ended", async () => {
-    state.localShouldBePlaying = false;
-    state.localSeekResumePending = false;
-    audio.pause();
-    showMountedPlayerControls();
-    reportCurrentVideoStatus();
-    await handleLocalPlaybackEnded();
+    await handleSplitVideoEnded(currentItem, video, audio, reportCurrentVideoStatus);
   });
 
   audio.addEventListener("ended", () => {
-    if (isSplitPlayerSeekSettling(video, audio)) {
-      return;
-    }
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    handleSplitAudioEnded(currentItem, video, audio);
   });
 
   state.localPlayerSyncTimer = window.setInterval(() => {
@@ -7940,6 +8261,23 @@ function formatCacheUsage(cachePolicy) {
   return t("service.cacheUsageDetail", { usage, count: cachedItemCount });
 }
 
+function renderCacheUsageDetail(detailText) {
+  if (!elements.cacheUsageDetail) {
+    return;
+  }
+  const lines = String(detailText || "").split(/\n+/);
+  const usageLine = lines.shift() || "";
+  const countLine = lines.join(" ").trim();
+  const usageEl = elements.cacheUsageDetail.querySelector(".cache-usage-size");
+  const countEl = elements.cacheUsageDetail.querySelector(".cache-usage-count");
+  if (!usageEl || !countEl) {
+    setTextContent(elements.cacheUsageDetail, detailText);
+    return;
+  }
+  setTextContent(usageEl, usageLine);
+  setTextContent(countEl, countLine);
+}
+
 function cacheProgressPercentForItem(item) {
   if (!item || item.cache_status !== "downloading") {
     return null;
@@ -8033,24 +8371,64 @@ function badgeAnimationDelay(itemId) {
   return `${-phase}s`;
 }
 
-function renderBackupBanner(backup, hasCurrentItem, queueLength, autoRestoredBackup) {
-  if (!backup?.available || !autoRestoredBackup) {
+function renderBackupBanner(
+  backup,
+  previousSession,
+  hasCurrentItem,
+  queueLength,
+  autoRestoredBackup,
+) {
+  if (!state.previousSessionPromptChecked) {
+    state.previousSessionPromptChecked = true;
+    state.previousSessionPromptEligible = Boolean(
+      previousSession?.available
+      && !autoRestoredBackup
+      && !hasCurrentItem
+      && queueLength === 0
+    );
+  } else if (state.previousSessionPromptEligible && (hasCurrentItem || queueLength > 0)) {
+    state.previousSessionPromptEligible = false;
+  }
+
+  let mode = "";
+  if (backup?.available && autoRestoredBackup) {
+    mode = "auto_restored";
+  } else if (state.previousSessionPromptEligible && previousSession?.available) {
+    mode = "previous_session";
+  }
+
+  if (!mode) {
     clearBackupBannerTimer();
+    state.backupBannerMode = "";
     elements.backupBanner.classList.add("hidden");
     updateBackupDismissButton();
     return;
   }
 
+  if (state.backupBannerMode !== mode) {
+    state.backupBannerMode = mode;
+    state.backupBannerShown = false;
+  }
   if (!state.backupBannerShown) {
     state.backupBannerShown = true;
     state.backupBannerDismissed = false;
     startBackupBannerTimer();
   }
 
-  if (hasCurrentItem || queueLength > 0) {
+  if (mode === "previous_session") {
+    elements.backupTitle.textContent = t("backup.previousSessionTag");
+    elements.backupText.textContent = t("backup.previousSessionDetected", {
+      count: previousSession.item_count,
+    });
+    elements.backupActionButton.textContent = t("backup.continuePreviousSession");
+  } else if (hasCurrentItem || queueLength > 0) {
+    elements.backupTitle.textContent = t("backup.tag");
     elements.backupText.textContent = t("backup.restored", { count: backup.playlist_count });
+    elements.backupActionButton.textContent = t("backup.clear");
   } else {
+    elements.backupTitle.textContent = t("backup.tag");
     elements.backupText.textContent = t("backup.localDetected", { count: backup.playlist_count });
+    elements.backupActionButton.textContent = t("backup.clear");
   }
 
   elements.backupBanner.classList.toggle("hidden", state.backupBannerDismissed);
@@ -8453,7 +8831,7 @@ function renderBindingOption(inputType, name, entry, checked) {
 function openBindingModal(intent, payload) {
   const pages = Array.isArray(payload?.pages) ? payload.pages : [];
   if (!pages.length) {
-    setFormMessage(t("binding.readFailed"), true);
+    setMessageForSource(intent?.source || "request-form", t("binding.readFailed"), true);
     return;
   }
   state.bindingIntent = {
@@ -8791,12 +9169,20 @@ async function confirmBindingModal() {
   const source = intent.source || "request-form";
   const { selectedVideoPage, selectedAudioPages } = currentBindingSelection();
   if (!selectedVideoPage) {
-    setFormMessage(t("binding.selectVideoPart"), true);
+    setMessageForSource(source, t("binding.selectVideoPart"), true);
     return;
   }
   if (!selectedAudioPages.length) {
-    setFormMessage(t("binding.selectAudioPart"), true);
+    setMessageForSource(source, t("binding.selectAudioPart"), true);
     return;
+  }
+
+  const button = elements.bindingModalConfirm;
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
   }
 
   try {
@@ -8817,7 +9203,7 @@ async function confirmBindingModal() {
       setGatchaMessage(t("gatcha.nozomi"));
     }
     const message = intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail");
-    setFormMessage(message);
+    setMessageForSource(source, message);
     setAppMessage(message);
     render();
   } catch (error) {
@@ -8845,6 +9231,7 @@ async function confirmBindingModal() {
         position: intent.position || "tail",
         requesterName: intent.requesterName || selectedRequesterName(),
         preserveInput: intent.preserveInput,
+        source,
         selectedVideoPage,
         selectedAudioPages,
         message: duplicateConfirmMessage(
@@ -8857,10 +9244,11 @@ async function confirmBindingModal() {
       });
       return;
     }
-    if (source === "gatcha") {
-      setGatchaMessage(error.message, true);
-    } else {
-      setFormMessage(error.message, true);
+    setMessageForSource(source, error.message, true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
     }
   }
 }
@@ -8874,6 +9262,16 @@ async function handleAdd(position, anchorPoint) {
   const requesterName = validatedRequesterNameForAdd();
   if (!requesterName) {
     return;
+  }
+
+  const button = position === "next"
+    ? elements.queueNextButton
+    : elements.addForm?.querySelector('button[type="submit"]');
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
   }
 
   setFormMessage(t("request.parsing"));
@@ -8914,19 +9312,27 @@ async function handleAdd(position, anchorPoint) {
       return;
     }
     setFormMessage(error.message, true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
-async function handleAddByUrl(url, position, anchorPoint) {
+async function handleAddByUrl(url, position, anchorPoint, source = "search") {
   const requesterName = validatedRequesterNameForAdd();
   if (!requesterName) {
     return;
   }
-  setFormMessage(t("history.addingFromHistory"));
+  const isHistory = source === "history";
+  setMessageForSource(source, isHistory ? t("history.addingFromHistory") : t("request.parsing"));
   try {
     state.data = await submitAddRequest(url, position, { requesterName });
-    const message = position === "next" ? t("history.addedNext") : t("history.addedTail");
-    setFormMessage(message);
+    const message = isHistory
+      ? (position === "next" ? t("history.addedNext") : t("history.addedTail"))
+      : (position === "next" ? t("request.addedNext") : t("request.addedTail"));
+    setMessageForSource(source, message);
     setAppMessage(message);
     render();
   } catch (error) {
@@ -8937,6 +9343,7 @@ async function handleAddByUrl(url, position, anchorPoint) {
           position,
           requesterName,
           preserveInput: false,
+          source,
         },
         error.payload?.binding,
       );
@@ -8949,18 +9356,19 @@ async function handleAddByUrl(url, position, anchorPoint) {
         position,
         requesterName,
         preserveInput: false,
+        source,
         message: duplicateConfirmMessage(
           error.payload?.duplicate_item,
           error.payload?.session_entry,
           error.payload?.active_item,
         ),
-        x: anchorPoint?.x ?? anchorPointForEvent({}, elements.historyList).x,
-        y: anchorPoint?.y ?? anchorPointForEvent({}, elements.historyList).y,
+        x: anchorPoint?.x ?? anchorPointForEvent({}, isHistory ? elements.historyList : elements.addForm).x,
+        y: anchorPoint?.y ?? anchorPointForEvent({}, isHistory ? elements.historyList : elements.addForm).y,
       });
-      setFormMessage(t("request.duplicateHint"));
+      setMessageForSource(source, t("request.duplicateHint"));
       return;
     }
-    setFormMessage(error.message, true);
+    setMessageForSource(source, error.message, true);
   }
 }
 
@@ -8973,6 +9381,21 @@ async function discardBackup() {
     render();
   } catch (error) {
     setAppMessage(error.message, true);
+  }
+}
+
+async function continuePreviousSession() {
+  try {
+    state.data = await apiPost("/api/session/continue-previous");
+    state.previousSessionPromptEligible = false;
+    dismissBackupBanner();
+    setAppMessage(t("backup.previousSessionContinued"));
+    render();
+  } catch (error) {
+    const message = String(error.message || "").trim() === "没有可继续的上一场记录"
+      ? t("backup.previousSessionUnavailable")
+      : error.message;
+    setAppMessage(message, true);
   }
 }
 
@@ -9017,11 +9440,29 @@ function filenameFromContentDisposition(header, fallback) {
 }
 
 function normalizedHistoryExportSource(source) {
-  return String(source || "").trim().toLowerCase() === "history" ? "history" : "played";
+  const val = String(source || "").trim();
+  if (val.toLowerCase() === "history") {
+    return "history";
+  }
+  if (val.toLowerCase().startsWith("played-") && val.toLowerCase().endsWith(".json")) {
+    return val;
+  }
+  return "played";
 }
 
 function historyExportSourceLabel(source) {
-  return normalizedHistoryExportSource(source) === "history" ? t("history.allSource") : t("history.playedSource");
+  const normalized = normalizedHistoryExportSource(source);
+  if (elements.confirmSource) {
+    const opt = [...elements.confirmSource.options].find((o) => o.value === normalized);
+    if (opt) {
+      const parent = opt.parentElement;
+      if (parent && parent.tagName.toLowerCase() === "optgroup") {
+        return `${parent.label} ${opt.textContent}`;
+      }
+      return opt.textContent;
+    }
+  }
+  return normalized === "history" ? t("history.allSource") : t("history.playedSource");
 }
 
 function selectedConfirmHistoryExportSource(intent) {
@@ -9051,6 +9492,143 @@ function updateConfirmHistoryExportPageSize() {
   }
   state.confirmIntent.pageSize = selectedConfirmHistoryExportPageSize(state.confirmIntent);
   state.confirmPopoverRenderSignature = "";
+}
+
+async function loadPlayedSessions() {
+  if (!elements.confirmSource) return;
+  try {
+    const response = await fetch("/api/played-sessions", {
+      headers: clientHeaders(),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const res = await response.json();
+    if (res && res.ok && Array.isArray(res.data)) {
+      const currentVal = elements.confirmSource.value;
+      elements.confirmSource.replaceChildren();
+
+      // 1. 本场记录
+      const playedOpt = document.createElement("option");
+      playedOpt.value = "played";
+      playedOpt.textContent = t("history.playedSource") || "本场记录";
+      playedOpt.dataset.i18n = "history.playedSource";
+      elements.confirmSource.appendChild(playedOpt);
+
+      // 2. 全部历史
+      const historyOpt = document.createElement("option");
+      historyOpt.value = "history";
+      historyOpt.textContent = t("history.allSource") || "全部历史";
+      historyOpt.dataset.i18n = "history.allSource";
+      elements.confirmSource.appendChild(historyOpt);
+
+      // 3. 历史场次 (限制显示最近 10 场)
+      const rawSessions = res.data;
+      const displaySessions = rawSessions.slice(0, 10);
+
+      // Helper to parse filename as fallback if backend returns old model
+      const parseSessionId = (id) => {
+        let stem = id || "";
+        if (stem.startsWith("played-")) {
+          stem = stem.substring(7);
+        }
+        if (stem.endsWith(".json")) {
+          stem = stem.substring(0, stem.length - 5);
+        }
+        const parts = stem.split("_");
+        if (parts.length === 2) {
+          const dateParts = parts[0].split("-");
+          const timeParts = parts[1].split("-");
+          if (dateParts.length === 3 && timeParts.length >= 2) {
+            const year = parseInt(dateParts[0], 10);
+            const month = parseInt(dateParts[1], 10);
+            const day = parseInt(dateParts[2], 10);
+            const hour = parseInt(timeParts[0], 10);
+            const minute = parseInt(timeParts[1], 10);
+            if (!isNaN(year) && !isNaN(month) && !isNaN(day) && !isNaN(hour) && !isNaN(minute)) {
+              return { year, month, day, hour, minute };
+            }
+          }
+        }
+        return null;
+      };
+
+      // Group displaySessions by year and month
+      const groups = [];
+      displaySessions.forEach(session => {
+        const parsed = (session.year > 0 && session.month > 0)
+          ? session
+          : (parseSessionId(session.id) || { year: 0, month: 0, day: 0, hour: 0, minute: 0 });
+
+        let groupLabel = "";
+        if (parsed.year > 0 && parsed.month > 0) {
+          const lang = state.language || "zh";
+          if (lang === "en") {
+            const monthNames = [
+              "January", "February", "March", "April", "May", "June",
+              "July", "August", "September", "October", "November", "December"
+            ];
+            groupLabel = `${monthNames[parsed.month - 1]} ${parsed.year}`;
+          } else {
+            groupLabel = `${parsed.year} 年 ${parsed.month} 月`;
+          }
+        } else {
+          groupLabel = t("history.otherSessions") || "其他场次";
+        }
+
+        let group = groups.find(g => g.label === groupLabel);
+        if (!group) {
+          group = { label: groupLabel, options: [] };
+          groups.push(group);
+        }
+
+        // Format day and time: "x日 xx:xx" or "Day x, xx:xx"
+        let optionText = "";
+        if (parsed.day > 0) {
+          const lang = state.language || "zh";
+          const paddedHour = String(parsed.hour).padStart(2, "0");
+          const paddedMinute = String(parsed.minute).padStart(2, "0");
+          if (lang === "en") {
+            optionText = `Day ${parsed.day}, ${paddedHour}:${paddedMinute}`;
+          } else {
+            optionText = `${parsed.day} 日 ${paddedHour}:${paddedMinute}`;
+          }
+        } else {
+          optionText = session.id;
+        }
+
+        group.options.push({ value: session.id, text: optionText });
+      });
+
+      // Append groups to select element
+      groups.forEach(group => {
+        const optGroup = document.createElement("optgroup");
+        optGroup.label = group.label;
+        group.options.forEach(optData => {
+          const opt = document.createElement("option");
+          opt.value = optData.value;
+          opt.textContent = optData.text;
+          optGroup.appendChild(opt);
+        });
+        elements.confirmSource.appendChild(optGroup);
+      });
+
+      // 4. (仅显示最近 10 场) note
+      if (rawSessions.length > 10) {
+        const noteOpt = document.createElement("option");
+        noteOpt.disabled = true;
+        noteOpt.textContent = t("history.onlyRecentTen") || "（仅显示最近 10 场）";
+        noteOpt.dataset.i18n = "history.onlyRecentTen";
+        elements.confirmSource.appendChild(noteOpt);
+      }
+
+      if ([...elements.confirmSource.options].some(opt => opt.value === currentVal)) {
+        elements.confirmSource.value = currentVal;
+      }
+    }
+  } catch (error) {
+    console.error("加载场次列表失败:", error);
+  }
 }
 
 async function downloadHistoryExport(format, source = "played", pageSize = 200) {
@@ -9096,18 +9674,20 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
 }
 
 async function exportHistory(format, source = "played", pageSize = 200) {
-  const normalizedSource = normalizedHistoryExportSource(source);
-  const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
-  const sourceLabel = historyExportSourceLabel(normalizedSource);
-  try {
-    await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
-    closeConfirm();
-    setAppMessage(format === "csv"
-      ? t("history.csvDownloadStarted", { source: sourceLabel })
-      : t("history.imageDownloadStarted", { source: sourceLabel }));
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
+  return historyExportGuard.run(async () => {
+    const normalizedSource = normalizedHistoryExportSource(source);
+    const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
+    const sourceLabel = historyExportSourceLabel(normalizedSource);
+    try {
+      await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
+      closeConfirm();
+      setAppMessage(format === "csv"
+        ? t("history.csvDownloadStarted", { source: sourceLabel })
+        : t("history.imageDownloadStarted", { source: sourceLabel }));
+    } catch (error) {
+      setAppMessage(error.message, true);
+    }
+  });
 }
 
 function diagnosticBrowserInfo() {
@@ -9422,7 +10002,17 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
   state.localAdvanceInFlight = true;
   try {
     const previousData = state.data;
+    const previousItemId = currentItemIdFromData(previousData);
     state.data = await apiPost("/api/player/next");
+    if (previousItemId) {
+      delete state.playbackFaultRetryByItem[previousItemId];
+      Object.keys(state.mediaIssueEventsByKey)
+        .filter((key) => key.startsWith(`${previousItemId}:`))
+        .forEach((key) => delete state.mediaIssueEventsByKey[key]);
+      if (state.playbackFaultItemId === previousItemId) {
+        state.playbackFaultItemId = "";
+      }
+    }
     if (showTransition) {
       maybeShowSongTransitionOverlay(previousData, state.data, { force: true });
     }
@@ -9435,11 +10025,19 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
 }
 
 async function requestNextTrack() {
-  await handleLocalPlaybackEnded();
+  await handleLocalPlaybackEnded("manual-next");
 }
 
-async function handleLocalPlaybackEnded() {
+async function handleLocalPlaybackEnded(reason = "media-ended") {
   if (state.localAdvanceInFlight) {
+    return;
+  }
+  const currentItemId = currentItemIdFromData(state.data);
+  if (
+    window.BilikaraPlayerHealth?.shouldGuardAdvance(reason)
+    && currentItemId
+    && state.playbackFaultItemId === currentItemId
+  ) {
     return;
   }
   const delaySeconds = currentSongAdvanceDelaySeconds();
@@ -9511,6 +10109,116 @@ async function setAdvanceDelay(delaySeconds) {
     state.advanceDelaySaving = false;
     if (state.data) {
       renderAdvanceDelaySlider(state.data.player_settings);
+    }
+  }
+}
+
+function isDownkyiDownloadSource(downloadSource) {
+  return String(downloadSource || "").trim().toLowerCase() === "downkyi";
+}
+
+function currentCacheDownloadSource() {
+  return String(state.data?.cache_policy?.download_source || "bbdown");
+}
+
+function restoreCacheDownloadSourceSelect() {
+  if (elements.cacheDownloadSourceSelect) {
+    elements.cacheDownloadSourceSelect.value = currentCacheDownloadSource();
+  }
+}
+
+function aria2cPrepareConfirmMessage(status) {
+  const path = String(status?.manual_path || status?.path || "tools/aria2c");
+  const url = String(status?.install_url || "https://github.com/aria2/aria2/releases");
+  if (status?.auto_prepare_supported) {
+    return t("service.aria2cDownloadConfirm", { path });
+  }
+  return t("service.aria2cInstallRequired", { path, url });
+}
+
+async function setDownloadSourcePreference(downloadSource, selectedLabel) {
+  if (!downloadSource || downloadSource === currentCacheDownloadSource()) {
+    return;
+  }
+
+  if (isDownkyiDownloadSource(downloadSource)) {
+    state.downloadSourcePreparing = true;
+    renderCachePolicyControls(state.data?.cache_policy);
+    let status = null;
+    try {
+      status = await apiPost("/api/cache-downloader/status", { download_source: downloadSource });
+    } catch (error) {
+      restoreCacheDownloadSourceSelect();
+      setAppMessage(error.message, true);
+      return;
+    } finally {
+      state.downloadSourcePreparing = false;
+      if (state.data) {
+        renderCachePolicyControls(state.data.cache_policy);
+      }
+    }
+
+    if (!status?.ready) {
+      if (status?.auto_prepare_supported) {
+        await prepareDownloadSourceAndApply({
+          type: "prepare-download-source",
+          downloadSource,
+          selectedLabel,
+          canPrepare: true,
+        });
+        return;
+      }
+      restoreCacheDownloadSourceSelect();
+      openConfirm({
+        type: "prepare-download-source",
+        downloadSource,
+        selectedLabel,
+        canPrepare: false,
+        message: aria2cPrepareConfirmMessage(status),
+        primaryLabel: t("common.confirm"),
+        anchorElementId: "cache-download-source-select",
+        anchorAlign: "end",
+        anchorGap: 8,
+      });
+      return;
+    }
+  }
+
+  await setCachePolicyPreference(
+    { download_source: downloadSource },
+    t("service.downloadSourceUpdated", { source: selectedLabel }),
+  );
+}
+
+async function prepareDownloadSourceAndApply(intent) {
+  const downloadSource = String(intent?.downloadSource || "").trim();
+  if (!downloadSource) {
+    closeConfirm();
+    return;
+  }
+  if (!intent?.canPrepare) {
+    closeConfirm();
+    restoreCacheDownloadSourceSelect();
+    setAppMessage(intent?.message || t("service.aria2cInstallRequired", { path: "tools/aria2c", url: "https://github.com/aria2/aria2/releases" }), true);
+    return;
+  }
+
+  state.downloadSourcePreparing = true;
+  renderCachePolicyControls(state.data?.cache_policy);
+  setAppMessage(t("service.aria2cPreparing"));
+  try {
+    await apiPost("/api/cache-downloader/prepare", { download_source: downloadSource });
+    state.data = await apiPost("/api/cache-policy", { download_source: downloadSource });
+    closeConfirm();
+    setAppMessage(t("service.downloadSourceUpdated", { source: intent.selectedLabel || downloadSource }));
+    render();
+  } catch (error) {
+    restoreCacheDownloadSourceSelect();
+    setAppMessage(error.message, true);
+  } finally {
+    state.downloadSourcePreparing = false;
+    if (state.data) {
+      renderCachePolicyControls(state.data.cache_policy);
     }
   }
 }
@@ -9686,21 +10394,25 @@ elements.searchResults.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
 
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "search");
     hideSearchResults();
     setSearchMessage("");
     elements.searchQuery.value = "";
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -9796,17 +10508,21 @@ elements.larkSearchResults?.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "lark");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -9899,32 +10615,80 @@ elements.sessionUserList.addEventListener("dragover", (e) => {
   if (!draggedSessionUser) return;
   e.dataTransfer.dropEffect = "move";
 
-  const draggableElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge:not(.dragging)")];
-  draggableElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
+  const allElements = [...elements.sessionUserList.querySelectorAll(".session-user-badge")];
+  const draggableElements = allElements.filter(el => el !== draggedSessionUser);
+  allElements.forEach(el => el.classList.remove("drop-before", "drop-after"));
 
-  let afterElement = null;
-  for (const child of draggableElements) {
+  if (allElements.length === 0) {
+    state.sessionUserDragTarget = null;
+    state.sessionUserDragAfter = false;
+    return;
+  }
+
+  let closestElement = null;
+  let minDistance = Infinity;
+
+  for (const child of allElements) {
     const box = child.getBoundingClientRect();
-    if (e.clientY < box.bottom && e.clientY > box.top) {
-      if (e.clientX < box.left + box.width / 2) {
-        afterElement = child;
-        break;
-      }
-    } else if (e.clientY < box.top) {
-      afterElement = child;
-      break;
+    const centerX = box.left + box.width / 2;
+    const centerY = box.top + box.height / 2;
+    const distance = (e.clientX - centerX) ** 2 + (e.clientY - centerY) ** 2;
+    if (distance < minDistance) {
+      minDistance = distance;
+      closestElement = child;
     }
   }
 
-  state.sessionUserDragTarget = afterElement;
-  state.sessionUserDragAfter = afterElement == null;
+  if (closestElement) {
+    const box = closestElement.getBoundingClientRect();
+    const isAfter = e.clientX >= box.left + box.width / 2;
 
-  if (afterElement == null) {
-    if (draggableElements.length > 0) {
-      draggableElements[draggableElements.length - 1].classList.add("drop-after");
+    if (closestElement === draggedSessionUser) {
+      if (isAfter) {
+        const next = draggedSessionUser.nextElementSibling;
+        if (next && next.classList.contains("session-user-badge")) {
+          state.sessionUserDragTarget = next;
+          state.sessionUserDragAfter = false;
+          next.classList.add("drop-before");
+        } else {
+          state.sessionUserDragTarget = null;
+          state.sessionUserDragAfter = true;
+          draggedSessionUser.classList.add("drop-after");
+        }
+      } else {
+        state.sessionUserDragTarget = draggedSessionUser;
+        state.sessionUserDragAfter = false;
+        const prev = draggedSessionUser.previousElementSibling;
+        if (prev && prev.classList.contains("session-user-badge")) {
+          prev.classList.add("drop-after");
+        } else {
+          draggedSessionUser.classList.add("drop-before");
+        }
+      }
+    } else {
+      if (isAfter) {
+        if (closestElement.nextElementSibling === draggedSessionUser) {
+          state.sessionUserDragTarget = draggedSessionUser;
+          state.sessionUserDragAfter = false;
+          closestElement.classList.add("drop-after");
+        } else {
+          const idx = draggableElements.indexOf(closestElement);
+          if (idx !== -1 && idx < draggableElements.length - 1) {
+            state.sessionUserDragTarget = draggableElements[idx + 1];
+            state.sessionUserDragAfter = false;
+            draggableElements[idx + 1].classList.add("drop-before");
+          } else {
+            state.sessionUserDragTarget = null;
+            state.sessionUserDragAfter = true;
+            closestElement.classList.add("drop-after");
+          }
+        }
+      } else {
+        state.sessionUserDragTarget = closestElement;
+        state.sessionUserDragAfter = false;
+        closestElement.classList.add("drop-before");
+      }
     }
-  } else {
-    afterElement.classList.add("drop-before");
   }
 });
 
@@ -9989,10 +10753,23 @@ elements.queueNextButton.addEventListener("click", async (event) => {
 });
 
 elements.resortPlaylistButton?.addEventListener("click", async () => {
+  if (elements.resortPlaylistButton.disabled) {
+    return;
+  }
+
+  const prevText = elements.resortPlaylistButton.textContent;
+  elements.resortPlaylistButton.disabled = true;
+  elements.resortPlaylistButton.setAttribute("aria-busy", "true");
+  elements.resortPlaylistButton.textContent = t("gatcha.adding") || "处理中…";
+
   try {
     await resortPlaylistByCycle();
   } catch (error) {
     setAppMessage(error.message, true);
+  } finally {
+    elements.resortPlaylistButton.disabled = false;
+    elements.resortPlaylistButton.removeAttribute("aria-busy");
+    elements.resortPlaylistButton.textContent = prevText;
   }
 });
 
@@ -10000,8 +10777,25 @@ elements.copyRemoteUrlButton.addEventListener("click", async () => {
   await copyRemoteUrl();
 });
 
-elements.discardBackupButton.addEventListener("click", async () => {
-  await discardBackup();
+elements.backupActionButton.addEventListener("click", async () => {
+  if (elements.backupActionButton.disabled) {
+    return;
+  }
+  const previousText = elements.backupActionButton.textContent;
+  elements.backupActionButton.disabled = true;
+  elements.backupActionButton.setAttribute("aria-busy", "true");
+  elements.backupActionButton.textContent = t("gatcha.adding");
+  try {
+    if (state.backupBannerMode === "previous_session") {
+      await continuePreviousSession();
+    } else {
+      await discardBackup();
+    }
+  } finally {
+    elements.backupActionButton.disabled = false;
+    elements.backupActionButton.removeAttribute("aria-busy");
+    elements.backupActionButton.textContent = previousText;
+  }
 });
 
 elements.dismissBackupButton.addEventListener("click", () => {
@@ -10043,6 +10837,11 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
     syncDisplayPanelVisibility();
   }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
+});
+
+elements.cachePanelAdvancedTrigger?.addEventListener("click", () => {
+  state.cacheAdvancedOpen = !state.cacheAdvancedOpen;
+  syncCachePanelVisibility();
 });
 
 elements.displaySettingsToggle?.addEventListener("click", () => {
@@ -10117,10 +10916,7 @@ elements.cacheDownloadSourceSelect?.addEventListener("change", async (event) => 
     return;
   }
   const selectedLabel = event.target.selectedOptions?.[0]?.textContent || downloadSource;
-  await setCachePolicyPreference(
-    { download_source: downloadSource },
-    t("service.downloadSourceUpdated", { source: selectedLabel }),
-  );
+  await setDownloadSourcePreference(downloadSource, selectedLabel);
 });
 
 elements.cacheHiresCheckbox?.addEventListener("change", async (event) => {
@@ -10131,6 +10927,17 @@ elements.cacheHiresCheckbox?.addEventListener("change", async (event) => {
   await setCachePolicyPreference(
     { audio_hires: audioHires },
     audioHires ? t("service.hiresEnabled") : t("service.hiresDisabled"),
+  );
+});
+
+elements.resetOffsetCheckbox?.addEventListener("change", async (event) => {
+  const resetOffset = Boolean(event.target.checked);
+  if (resetOffset === Boolean(state.data?.cache_policy?.reset_offset_on_next)) {
+    return;
+  }
+  await setCachePolicyPreference(
+    { reset_offset_on_next: resetOffset },
+    resetOffset ? t("service.resetOffsetEnabled") : t("service.resetOffsetDisabled"),
   );
 });
 
@@ -10237,6 +11044,9 @@ elements.clearHistoryButton?.addEventListener("click", (event) => {
 
 elements.historyExportButton?.addEventListener("click", (event) => {
   const point = anchorPointForEvent(event, elements.historyExportButton);
+  loadPlayedSessions().catch((err) => {
+    console.warn("加载历史场次失败:", err);
+  });
   openConfirm({
     type: "export-history",
     source: "played",
@@ -10254,6 +11064,11 @@ elements.historyExportButton?.addEventListener("click", (event) => {
 elements.historyToggleButton.addEventListener("click", () => {
   state.listView = state.listView === "history" ? "queue" : "history";
   render();
+  if (state.listView === "history") {
+    loadPlayedSessions().catch((err) => {
+      console.warn("加载历史场次失败:", err);
+    });
+  }
 });
 
 elements.playerFullscreenButton?.addEventListener("click", async () => {
@@ -10506,7 +11321,7 @@ elements.playlist.addEventListener("click", async (event) => {
 
 elements.historyList.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
-  if (!button || button.dataset.action === "toggle-menu") {
+  if (!button || button.dataset.action === "toggle-menu" || button.disabled) {
     return;
   }
   const action = button.dataset.action;
@@ -10530,8 +11345,20 @@ elements.historyList.addEventListener("click", async (event) => {
   if (!url) {
     return;
   }
-  await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point);
-  closeOpenMenus();
+
+  const prevText = button.textContent;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = t("search.adding");
+
+  try {
+    await handleAddByUrl(url, action === "history-next" ? "next" : "tail", point, "history");
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = prevText;
+    closeOpenMenus();
+  }
 });
 
 elements.confirmCancel.addEventListener("click", () => {
@@ -10682,8 +11509,18 @@ elements.developerTagResetDeleteMid?.addEventListener("click", async () => {
 
 elements.confirmOk.addEventListener("click", async () => {
   const intent = state.confirmIntent;
-  if (!intent) {
+  if (!intent || elements.confirmOk.disabled) {
     return;
+  }
+
+  const prevOkText = elements.confirmOk.textContent;
+  elements.confirmOk.disabled = true;
+  elements.confirmOk.setAttribute("aria-busy", "true");
+  elements.confirmOk.textContent = t("gatcha.adding") || "处理中…";
+
+  if (elements.confirmSecondary) {
+    elements.confirmSecondary.disabled = true;
+    elements.confirmSecondary.setAttribute("aria-busy", "true");
   }
 
   try {
@@ -10709,6 +11546,10 @@ elements.confirmOk.addEventListener("click", async () => {
     }
     if (intent.type === "install-app-update") {
       await installAppUpdate(Boolean(intent.includePreview));
+      return;
+    }
+    if (intent.type === "prepare-download-source") {
+      await prepareDownloadSourceAndApply(intent);
       return;
     }
     if (intent.type === "open-release" && intent.releaseUrl) {
@@ -10742,6 +11583,7 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "duplicate-add" && intent.url) {
+      const source = intent.source || "request-form";
       state.data = await submitAddRequest(intent.url, intent.position || "tail", {
         requesterName: intent.requesterName || selectedRequesterName(),
         allowRepeat: true,
@@ -10754,14 +11596,24 @@ elements.confirmOk.addEventListener("click", async () => {
       } else {
         elements.urlInput.value = "";
       }
-      setFormMessage(intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail"));
+      const message = intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail");
+      setMessageForSource(source, message);
+      setAppMessage(message);
       render();
     }
   } catch (error) {
     if (intent?.type === "duplicate-add") {
-      setFormMessage(error.message, true);
+      setMessageForSource(intent.source || "request-form", error.message, true);
     } else {
       setAppMessage(error.message, true);
+    }
+  } finally {
+    elements.confirmOk.disabled = false;
+    elements.confirmOk.removeAttribute("aria-busy");
+    elements.confirmOk.textContent = prevOkText;
+    if (elements.confirmSecondary) {
+      elements.confirmSecondary.disabled = false;
+      elements.confirmSecondary.removeAttribute("aria-busy");
     }
   }
 });
@@ -10779,6 +11631,7 @@ document.addEventListener("click", (event) => {
       event.target.closest("#current-cache-retry-button") ||
       event.target.closest("#player-reset-button") ||
       event.target.closest("#update-check-button") ||
+      event.target.closest("#cache-download-source-select") ||
       event.target.closest("#add-form") ||
       event.target.closest("#gatcha-uid-form") ||
       event.target.closest("#modal-follow-uid-form") ||
@@ -11337,17 +12190,21 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
 
 elements.searchModalOtherView?.addEventListener("click", async (event) => {
   const target = searchResultRequestTarget(event, elements.searchModalOtherView);
-  if (!target?.url) {
+  if (!target?.url || (target.button && target.button.disabled)) {
     return;
   }
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalBrowse");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -11418,18 +12275,22 @@ elements.followSongResults?.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
 
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalFollow");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -11473,18 +12334,22 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
   if (!target) {
     return;
   }
-  if (!target.url) {
+  if (!target.url || (target.button && target.button.disabled)) {
     return;
   }
 
+  let originalText = "";
   if (target.button) {
     target.button.disabled = true;
+    originalText = target.button.textContent;
+    target.button.textContent = t("search.adding") || "添加中...";
   }
   try {
-    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor));
+    await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "modalFavlist");
   } finally {
     if (target.button) {
       target.button.disabled = false;
+      target.button.textContent = originalText;
     }
   }
 });
@@ -11499,13 +12364,19 @@ elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
-  if (!state.gatchaCandidate) return;
+  if (!state.gatchaCandidate || elements.gatchaConfirmButton.disabled) return;
 
   const url = state.gatchaCandidate.url;
   const requesterName = validatedRequesterNameForAdd(setGatchaMessage);
   if (!requesterName) {
     return;
   }
+
+  const prevText = elements.gatchaConfirmButton.textContent;
+  elements.gatchaConfirmButton.disabled = true;
+  elements.gatchaConfirmButton.setAttribute("aria-busy", "true");
+  elements.gatchaConfirmButton.textContent = t("search.adding");
+
   setGatchaMessage(t("gatcha.nozomi"));
   try {
     state.data = await submitAddRequest(url, "tail", { requesterName });
@@ -11549,6 +12420,10 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
       return;
     }
     setGatchaMessage(error.message, true);
+  } finally {
+    elements.gatchaConfirmButton.disabled = false;
+    elements.gatchaConfirmButton.removeAttribute("aria-busy");
+    elements.gatchaConfirmButton.textContent = prevText;
   }
 });
 

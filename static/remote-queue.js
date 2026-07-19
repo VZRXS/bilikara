@@ -64,6 +64,9 @@
       noteNode.classList.toggle("hidden", !noteText);
       node.querySelector(".queue-main").classList.toggle("is-compact", !noteText);
       node.querySelector(".queue-state").textContent = queueStateLabel(item);
+      if (typeof syncQueueItemRetryButton === "function") {
+        syncQueueItemRetryButton(node, item);
+      }
       node.querySelectorAll("button[data-action]").forEach((button) => {
         button.dataset.id = item.id;
       });
@@ -198,6 +201,11 @@
         payload: { item_id: itemId },
         message: typeof t === "function" ? t("remote.playNowSuccess") : "remote.playNowSuccess",
       },
+      "retry-cache": {
+        url: "/api/cache/retry",
+        payload: { item_id: itemId, force: true },
+        message: typeof t === "function" ? t("cache.retryStarted") : "cache.retryStarted",
+      },
     };
 
     const target = actionMap[action];
@@ -207,6 +215,13 @@
 
     if (action === "remove" && !window.confirm(typeof t === "function" ? t("list.removeConfirm") : "list.removeConfirm")) {
       return;
+    }
+
+    if (action === "retry-cache") {
+      const confirmText = typeof t === "function" ? t("cache.retryConfirm") : "确定要重新缓存吗？";
+      if (!window.confirm(confirmText)) {
+        return;
+      }
     }
 
     try {
