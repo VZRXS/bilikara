@@ -147,13 +147,14 @@ class PlayerHealthLogicTest(unittest.TestCase):
         })
         self.assertFalse(result["fault"])
 
-    def test_repeated_waiting_with_insufficient_data_is_fault(self):
+    def test_repeated_waiting_with_insufficient_data_is_transient(self):
         result = self.call("classifyBuffering", {
             "eventCount": 3,
             "readyState": 1,
             "networkState": 2,
         })
-        self.assertTrue(result["fault"])
+        self.assertFalse(result["fault"])
+        self.assertTrue(result["transient"])
         self.assertEqual(result["classification"], "media-repeated-buffering")
 
     def test_single_waiting_event_is_not_fault(self):
@@ -185,6 +186,25 @@ class PlayerHealthLogicTest(unittest.TestCase):
         self.assertIn("playbackFaultRetryByItem[itemId] = true", self.app_source)
         self.assertIn('apiPost("/api/cache/retry", { item_id: itemId, force: true })', self.app_source)
         self.assertIn("if (retryStarted)", self.app_source)
+
+    def test_app_ignores_buffering_events_during_intentional_seek(self):
+        start = self.app_source.index("function recordSplitMediaIssue")
+        end = self.app_source.index("function attachSplitPlaybackFaultHandlers", start)
+        handler_source = self.app_source[start:end]
+        self.assertIn("isSplitPlayerSeekSettling(video, audio)", handler_source)
+
+    def test_offset_changes_use_seek_settling_instead_of_direct_force_sync(self):
+        start = self.app_source.index("async function setAvOffset")
+        end = self.app_source.index("function updateCacheSliderFill", start)
+        handler_source = self.app_source[start:end]
+        self.assertIn("resyncMountedLocalPlayerForOffsetChange()", handler_source)
+        self.assertNotIn("syncMountedLocalPlayer(true)", handler_source)
+
+    def test_remote_offset_snapshot_uses_seek_settling(self):
+        start = self.app_source.index("async function fetchState")
+        end = self.app_source.index("function renderSignatureForData", start)
+        handler_source = self.app_source[start:end]
+        self.assertIn("resyncMountedLocalPlayerForOffsetChange()", handler_source)
 
     def test_app_manual_next_uses_unguarded_reason(self):
         self.assertIn('handleLocalPlaybackEnded("manual-next")', self.app_source)
