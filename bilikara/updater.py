@@ -479,7 +479,7 @@ def _latest_release_for_current(
                         return selected
         elif status == "no_match":
             return {}
-            
+
     return _py_latest_release_for_current(current_version, releases, include_preview=include_preview)
 
 

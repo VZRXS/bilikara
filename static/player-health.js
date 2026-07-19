@@ -90,7 +90,10 @@
     const repeatedUnavailable = eventCount >= 3 && readyState < 3;
     return {
       classification: noSource ? "media-no-source" : "media-repeated-buffering",
-      fault: noSource || repeatedUnavailable,
+      // waiting/stalled also fire during ordinary buffering and intentional
+      // audio resyncs. Only a hard no-source state justifies redownloading.
+      fault: noSource,
+      transient: repeatedUnavailable && !noSource,
       eventCount,
       readyState,
       networkState,

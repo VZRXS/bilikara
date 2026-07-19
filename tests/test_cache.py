@@ -2716,7 +2716,7 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                 raise UnicodeEncodeError("ascii", s, 0, 1, "ordinal not in range")
             def flush(self):
                 pass
-        
+
         with patch("sys.stdout", UnicodeErrorStdout()):
             _debug_print("Hello 世界")
             self.assertIn(b"Hello ??", fake_buffer.getvalue())
@@ -2730,7 +2730,7 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                 raise ConnectionError(f"failed to connect to {url}")
 
             target_file = Path(self.temp_dir.name) / "test_tool"
-            
+
             with patch("bilikara.cache.TOOL_ASSET_BASE_URL", "https://mirror.example.com"), patch.object(
                 manager, "_download_url", side_effect=fake_download_url
             ):
@@ -2740,7 +2740,7 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                 }
                 with self.assertRaisesRegex(RuntimeError, "tool asset test_tool_asset download failed") as ctx:
                     manager._download_tool_asset(asset, target_file, tool="bbdown")
-                
+
                 err_msg = str(ctx.exception)
                 self.assertIn("test_tool_asset", err_msg)
                 self.assertIn("https://github.example.com/test_tool_asset", err_msg)
@@ -2759,9 +2759,9 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
         bbdown_dir.mkdir(parents=True, exist_ok=True)
         version_file = bbdown_dir / "VERSION"
-        
+
         invalid_zip_content = b"<html><body>Proxy Error</body></html>"
-        
+
         def fake_download_url(url, path):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(invalid_zip_content)
@@ -2796,11 +2796,11 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
         bbdown_dir.mkdir(parents=True, exist_ok=True)
         version_file = bbdown_dir / "VERSION"
         version_file.write_text("v1.6.2", encoding="utf-8")
-        
+
         suffix = ".exe" if os.name == "nt" else ""
         existing_binary = bbdown_dir / f"BBDown{suffix}"
         existing_binary.write_bytes(b"existing-binary-content")
-        
+
         data_file = bbdown_dir / "BBDown.data"
         data_file.write_text("user-data", encoding="utf-8")
 
@@ -2833,17 +2833,17 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
 
                 self.assertTrue(existing_binary.exists())
                 self.assertEqual(existing_binary.read_bytes(), b"existing-binary-content")
-                
+
                 self.assertTrue(data_file.exists())
                 self.assertEqual(data_file.read_text(encoding="utf-8"), "user-data")
-                
+
                 self.assertEqual(version_file.read_text(encoding="utf-8").strip(), "v1.6.2")
             finally:
                 manager.shutdown()
 
     def test_worker_loop_handles_unexpected_exception(self):
         log_dir = Path(self.temp_dir.name) / "logs"
-        
+
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
@@ -2862,23 +2862,23 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     embed_url="https://player.bilibili.com/player.html?aid=123",
                 )
                 self.store.add_item(item, requester_name="cache-test-user")
-                
+
                 with patch.object(manager, "_cache_item", side_effect=RuntimeError("unexpected crash")):
                     manager.tasks.put("song-err")
                     manager.tasks.join()
-                
+
                 import time
                 time.sleep(0.1)
-                
+
                 refreshed = self.store.get_item("song-err")
                 self.assertEqual(refreshed.cache_status, "failed")
                 self.assertIn("缓存发生意外错误: unexpected crash", refreshed.cache_message)
-                
+
                 manager.sync_with_playlist()
                 self.assertEqual(manager.tasks.qsize(), 0)
                 refreshed = self.store.get_item("song-err")
                 self.assertEqual(refreshed.cache_status, "failed")
-                
+
                 log_path = manager._item_log_path("song-err")
                 self.assertTrue(log_path.exists())
                 log_content = log_path.read_text(encoding="utf-8")

@@ -1869,7 +1869,7 @@ async function fetchState() {
     refreshRetryButtons();
   }
   if (previousOffsetMs !== currentAvOffsetMs()) {
-    syncMountedLocalPlayer(true);
+    resyncMountedLocalPlayerForOffsetChange();
   }
 }
 
@@ -6618,6 +6618,9 @@ function recordSplitMediaIssue(currentItem, video, audio, mediaKind, media, even
   if (!itemId || !media) {
     return;
   }
+  if (isSplitPlayerSeekSettling(video, audio)) {
+    return;
+  }
   const key = `${itemId}:${mediaKind}`;
   const now = Date.now();
   const recent = (state.mediaIssueEventsByKey[key] || [])
@@ -6753,6 +6756,17 @@ function syncMountedLocalPlayer(forceSeek = false) {
     return;
   }
   syncSplitPlayer(video, audio, currentAvOffsetSeconds(), forceSeek);
+}
+
+function resyncMountedLocalPlayerForOffsetChange() {
+  const { video, audio } = activeLocalPlayerElements();
+  if (!video || !audio) {
+    return;
+  }
+  beginSplitPlayerSeek(video, audio, {
+    resumeAfterSeek: !video.paused || state.localShouldBePlaying,
+    targetTime: Number(video.currentTime || 0),
+  });
 }
 
 function applyStoredVolumeToSinglePlayer(video) {
@@ -10257,7 +10271,7 @@ async function setAvOffset(offsetMs) {
     if (elements.avOffsetInput) {
       elements.avOffsetInput.value = String(boundedOffsetMs);
     }
-    syncMountedLocalPlayer(true);
+    syncMountedLocalPlayer(false);
     return;
   }
 
@@ -10267,7 +10281,7 @@ async function setAvOffset(offsetMs) {
   if (elements.avOffsetInput) {
     elements.avOffsetInput.value = String(boundedOffsetMs);
   }
-  syncMountedLocalPlayer(true);
+  resyncMountedLocalPlayerForOffsetChange();
   state.avOffsetSaving = true;
   renderAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   try {
@@ -10277,7 +10291,7 @@ async function setAvOffset(offsetMs) {
     }
     state.data = nextData;
     render();
-    syncMountedLocalPlayer(true);
+    syncMountedLocalPlayer(false);
   } catch (error) {
     if (requestSeq !== state.avOffsetSaveSeq) {
       return;
@@ -10285,6 +10299,7 @@ async function setAvOffset(offsetMs) {
     state.localAvOffsetMs = previousOffsetMs;
     state.avOffsetEchoSuppressUntil = 0;
     writeLocalPreference(storageKeys.avOffsetMs, previousOffsetMs);
+    resyncMountedLocalPlayerForOffsetChange();
     setAppMessage(error.message, true);
     render();
   } finally {

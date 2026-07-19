@@ -52,7 +52,7 @@ class TestMediaPageSelectionPolicy(unittest.TestCase):
 
     def test_tolerance_boundary_cases(self):
         p1 = VideoPage(page=1, cid=101, duration=300, part="P1")
-        
+
         # 1 unit below tolerance (diff 2, tol 3)
         p2_below = VideoPage(page=2, cid=102, duration=302, part="P2")
         selected_below = _py_select_matching_pages([p1, p2_below], preferred_page=1, tolerance_seconds=3)

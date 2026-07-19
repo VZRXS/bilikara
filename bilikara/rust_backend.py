@@ -717,18 +717,18 @@ def try_select_release(
         if response_json is None:
             return False, None
         response = json.loads(response_json)
-        
+
         if not isinstance(response, dict):
             return False, None
-        
+
         schema_version = response.get("schema_version")
         if isinstance(schema_version, bool) or schema_version != 1:
             return False, None
-            
+
         status = response.get("status")
         if status not in {"selected", "no_match"}:
             return False, None
-            
+
         if status == "selected":
             selected_index = response.get("selected_index")
             if isinstance(selected_index, bool) or not isinstance(selected_index, int) or selected_index < 0:
@@ -737,7 +737,7 @@ def try_select_release(
             selected_index = response.get("selected_index")
             if selected_index is not None:
                 return False, None
-                
+
         return True, response
     except Exception:
         return False, None

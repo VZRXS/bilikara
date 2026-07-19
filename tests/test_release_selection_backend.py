@@ -22,11 +22,11 @@ class TestReleaseSelectionBackend(unittest.TestCase):
     def _mock_rust_response(self, response_json, capabilities=None):
         if capabilities is None:
             capabilities = {"select_release": True}
-        
+
         patcher_cap = patch.dict(rust_backend._CAPABILITIES, capabilities)
         patcher_cap.start()
         self.addCleanup(patcher_cap.stop)
-        
+
         # Ensure _rust_lib is not None first
         class DummyLib:
             pass
@@ -135,7 +135,7 @@ class TestReleaseSelectionBackend(unittest.TestCase):
         patcher_cap = patch.dict(rust_backend._CAPABILITIES, {"select_release": True})
         patcher_cap.start()
         self.addCleanup(patcher_cap.stop)
-        
+
         if rust_backend._rust_lib is None:
             class DummyLib:
                 pass
@@ -162,7 +162,7 @@ class TestReleaseSelectionBackend(unittest.TestCase):
                     "BILIKARA_REQUIRE_RUST_LIB=1 but native select_release is unavailable"
                 )
             self.skipTest("Rust backend not available")
-        
+
         releases = [
             {"tag_name": "v0.8.0", "draft": False, "id": 1},
             {"tag_name": "v0.9.0-preview.1", "draft": False, "id": 2},
