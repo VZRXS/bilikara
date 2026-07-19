@@ -120,6 +120,8 @@ class WindowFrameTest(unittest.TestCase):
             document: doc,
             console: { warn() {} },
             addEventListener(name, listener) { rootListeners[name] = listener; },
+            setTimeout(callback) { rootListeners.resizeTimeout = callback; return 1; },
+            clearTimeout() { delete rootListeners.resizeTimeout; },
           };
           const calls = { minimize: 0, toggleMaximize: 0, close: 0, isMaximized: 0 };
           let maximized = false;
@@ -175,6 +177,9 @@ class WindowFrameTest(unittest.TestCase):
 
           maximized = true;
           rootListeners.resize();
+          rootListeners.resize();
+          const resizeCallsBeforeTimeout = calls.isMaximized;
+          rootListeners.resizeTimeout();
           await new Promise(resolve => setImmediate(resolve));
           const externallyMaximizedState = {
             label: doc.elements["tauri-window-maximize"].attributes["aria-label"],
@@ -188,6 +193,44 @@ class WindowFrameTest(unittest.TestCase):
           controller.setFullscreen(true);
           const fullscreenClass = doc.documentElement.classList.contains("tauri-window-fullscreen");
           controller.setFullscreen(false);
+
+          const raceDoc = documentFixture();
+          let resolveFirstSync;
+          let resolveSecondSync;
+          let syncQueryCount = 0;
+          const raceWindow = {
+            async minimize() {},
+            async toggleMaximize() {},
+            isMaximized() {
+              syncQueryCount += 1;
+              return new Promise(resolve => {
+                if (syncQueryCount === 1) { resolveFirstSync = resolve; }
+                else { resolveSecondSync = resolve; }
+              });
+            },
+            async close() {},
+          };
+          const raceController = api.createController({
+            root: {
+              document: raceDoc,
+              addEventListener() {},
+              setTimeout,
+              clearTimeout,
+            },
+            document: raceDoc,
+            appWindow: raceWindow,
+            translate(key) { return labels[key]; },
+          });
+          raceController.initialize();
+          const latestSync = raceController.syncMaximized();
+          resolveSecondSync(true);
+          await latestSync;
+          resolveFirstSync(false);
+          await new Promise(resolve => setImmediate(resolve));
+          const raceState = {
+            label: raceDoc.elements["tauri-window-maximize"].attributes["aria-label"],
+            pressed: raceDoc.elements["tauri-window-maximize"].attributes["aria-pressed"],
+          };
 
           process.stdout.write(JSON.stringify({
             browserEnabled,
@@ -205,8 +248,13 @@ class WindowFrameTest(unittest.TestCase):
             maximizedState,
             restoredState,
             externallyMaximizedState,
+            resizeDebounce: {
+              beforeTimeout: resizeCallsBeforeTimeout,
+              afterTimeout: calls.isMaximized,
+            },
             calls,
             fullscreenClass,
+            raceState,
             labels: {
               minimize: doc.elements["tauri-window-minimize"].attributes["aria-label"],
               close: doc.elements["tauri-window-close"].attributes["aria-label"],
@@ -248,9 +296,11 @@ class WindowFrameTest(unittest.TestCase):
             result["externallyMaximizedState"],
             {"label": "Restore", "pressed": "true", "classActive": True},
         )
+        self.assertEqual(result["resizeDebounce"], {"beforeTimeout": 3, "afterTimeout": 4})
         self.assertEqual(result["calls"]["toggleMaximize"], 2)
         self.assertEqual(result["calls"]["close"], 1)
         self.assertTrue(result["fullscreenClass"])
+        self.assertEqual(result["raceState"], {"label": "Restore", "pressed": "true"})
         self.assertEqual(result["labels"], {"minimize": "Minimize", "close": "Close"})
         self.assertEqual(result["unhandledRejections"], 0)
 

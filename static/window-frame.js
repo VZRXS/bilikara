@@ -63,6 +63,8 @@
     } : {};
     let enabled = false;
     let maximized = false;
+    let maximizedSyncSequence = 0;
+    let resizeSyncTimeout = null;
 
     function reportError(error) {
       try {
@@ -110,8 +112,12 @@
       if (!enabled) {
         return false;
       }
+      const syncSequence = ++maximizedSyncSequence;
       try {
-        applyMaximized(await appWindow.isMaximized());
+        const nextMaximized = await appWindow.isMaximized();
+        if (syncSequence === maximizedSyncSequence) {
+          applyMaximized(nextMaximized);
+        }
         return true;
       } catch (error) {
         reportError(error);
@@ -184,7 +190,13 @@
       });
       if (host && typeof host.addEventListener === "function") {
         host.addEventListener("resize", () => {
-          void syncMaximized();
+          if (resizeSyncTimeout !== null) {
+            host.clearTimeout(resizeSyncTimeout);
+          }
+          resizeSyncTimeout = host.setTimeout(() => {
+            resizeSyncTimeout = null;
+            void syncMaximized();
+          }, 100);
         });
       }
       refreshLabels();
