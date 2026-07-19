@@ -102,6 +102,49 @@ class FileServingPathSecurityTest(unittest.TestCase):
         self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
 
 
+class FileServingPathSecurityTest(unittest.TestCase):
+    @staticmethod
+    def make_handler():
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        streams = []
+        handler._write_json = lambda payload, status=None: writes.append({"payload": payload, "status": status})
+        handler._stream_file = lambda path, **kwargs: streams.append(path)
+        return handler, writes, streams
+
+    def test_media_route_rejects_sibling_directory_with_cache_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cache_dir = root / "cache"
+            sibling_dir = root / "cache_secret"
+            cache_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.mp4").write_bytes(b"secret")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.CACHE_DIR", cache_dir):
+                handler._serve_media("/media/../cache_secret/secret.mp4")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
+
+    def test_static_route_rejects_sibling_directory_with_static_prefix(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            static_dir = root / "static"
+            sibling_dir = root / "static_secret"
+            static_dir.mkdir()
+            sibling_dir.mkdir()
+            (sibling_dir / "secret.js").write_text("secret", encoding="utf-8")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.STATIC_DIR", static_dir):
+                handler._serve_static("/../static_secret/secret.js")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
+
+
 class AppContextRemoteAccessTest(unittest.TestCase):
     def make_context(self, *, host: str = "0.0.0.0", port: int = 8080) -> AppContext:
         context = AppContext.__new__(AppContext)
@@ -182,6 +225,26 @@ class AppContextRemoteIdentityTest(unittest.TestCase):
             self.assertEqual(context.store.snapshot()["session_users"], ["VZRXS"])
             context.remove_session_user("VZRXS")
             self.assertFalse(context.remote_identity_snapshot(token)["registered"])
+
+    def test_register_existing_identity_succeeds(self):
+        with TemporaryDirectory() as tmpdir:
+            context = self.make_context(Path(tmpdir))
+
+            # Register "Kevin" for the first time
+            token1, registered1 = context.register_remote_identity("Kevin")
+            self.assertEqual(registered1["name"], "Kevin")
+            self.assertEqual(context.store.snapshot()["session_users"], ["Kevin"])
+
+            # Register "Kevin" again without claiming (should fail)
+            with self.assertRaises(server_module.SessionUserAlreadyExistsError):
+                context.register_remote_identity("Kevin", claim=False)
+
+            # Register "Kevin" again with claim=True (should succeed)
+            token2, registered2 = context.register_remote_identity("Kevin", claim=True)
+            self.assertEqual(registered2["name"], "Kevin")
+            self.assertNotEqual(token1, token2)
+            self.assertEqual(context.store.snapshot()["session_users"], ["Kevin"])  # No duplicate entries
+            self.assertTrue(context.remote_identity_snapshot(token2)["registered"])
 
     def test_cookie_is_persistent_and_lan_http_compatible(self):
         cookie = BilikaraHandler._remote_identity_cookie("token")
@@ -697,6 +760,165 @@ class PlaylistExportRouteTest(unittest.TestCase):
         self.assertEqual(removed_keys, ["BVSONG:p1"])
         self.assertEqual(writes[0], {"ok": True, "data": {"history": [], "session_played": []}})
 
+    def test_continue_previous_session_route_returns_fresh_snapshot(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        continued: list[bool] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            continue_previous_session=lambda: continued.append(True) or True,
+            snapshot=lambda: {
+                "previous_session": {"available": False},
+                "session_played": [{"item_id": "previous"}],
+            },
+        )
+
+        handler.path = "/api/session/continue-previous"
+        handler.headers = {}
+        handler._read_json_body = lambda: {}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(continued, [True])
+        self.assertEqual(
+            writes[0],
+            {
+                "ok": True,
+                "data": {
+                    "previous_session": {"available": False},
+                    "session_played": [{"item_id": "previous"}],
+                },
+            },
+        )
+
+
+class MediaRangeEvidenceTest(unittest.TestCase):
+    @staticmethod
+    def _serve(
+        payload: bytes,
+        range_header: str = "",
+        *,
+        head_only: bool = False,
+    ) -> tuple[int, dict[str, str], bytes]:
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.headers = {"Range": range_header} if range_header else {}
+        handler.wfile = io.BytesIO()
+        response: dict[str, object] = {"status": 0, "headers": {}}
+        handler.send_response = lambda status: response.update(status=int(status))
+        handler.send_header = lambda name, value: response["headers"].__setitem__(name, value)
+        handler.end_headers = lambda: None
+        with TemporaryDirectory() as tmpdir:
+            media = Path(tmpdir) / "track.bin"
+            media.write_bytes(payload)
+            handler._stream_file(
+                media,
+                content_type="application/octet-stream",
+                allow_ranges=True,
+                head_only=head_only,
+            )
+        return int(response["status"]), dict(response["headers"]), handler.wfile.getvalue()
+
+    def test_head_dispatches_media_without_body_mode(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = "/media/song/video.mp4?cache=1"
+        calls = []
+        handler._serve_media = lambda route, *, head_only=False: calls.append((route, head_only))
+        handler._serve_static = lambda route, *, head_only=False: self.fail("media HEAD routed to static")
+        handler.do_HEAD()
+        self.assertEqual(calls, [("/media/song/video.mp4", True)])
+
+    def test_full_response_without_range(self):
+        status, headers, body = self._serve(b"0123456789")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Length"], "10")
+        self.assertEqual(headers["Accept-Ranges"], "bytes")
+        self.assertEqual(body, b"0123456789")
+
+    def test_first_and_middle_closed_ranges(self):
+        first = self._serve(b"0123456789", "bytes=0-0")
+        middle = self._serve(b"0123456789", "bytes=3-6")
+        self.assertEqual(first, (206, {
+            "Content-Type": "application/octet-stream",
+            "Accept-Ranges": "bytes",
+            "Content-Range": "bytes 0-0/10",
+            "Content-Length": "1",
+        }, b"0"))
+        self.assertEqual(middle[0], 206)
+        self.assertEqual(middle[1]["Content-Range"], "bytes 3-6/10")
+        self.assertEqual(middle[2], b"3456")
+
+    def test_closed_range_end_is_clamped_to_eof(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=8-999")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 8-9/10")
+        self.assertEqual(body, b"89")
+
+    def test_one_byte_file_ranges(self):
+        status, headers, body = self._serve(b"x", "bytes=-1")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 0-0/1")
+        self.assertEqual(body, b"x")
+
+    def test_empty_file_range_is_unsatisfiable(self):
+        status, headers, body = self._serve(b"", "bytes=0-")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */0")
+        self.assertEqual(body, b"")
+
+    def test_suffix_larger_than_file_returns_entire_file_as_partial(self):
+        status, headers, body = self._serve(b"0123", "bytes=-99")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 0-3/4")
+        self.assertEqual(body, b"0123")
+
+    def test_zero_suffix_and_reversed_range_are_rejected(self):
+        for range_header in ("bytes=-0", "bytes=5-4", "bytes=-"):
+            with self.subTest(range_header=range_header):
+                status, headers, body = self._serve(b"0123456789", range_header)
+                self.assertEqual(status, 416)
+                self.assertEqual(headers["Content-Range"], "bytes */10")
+                self.assertEqual(body, b"")
+
+    def test_head_range_has_get_headers_without_body(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=2-5", head_only=True)
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 2-5/10")
+        self.assertEqual(headers["Content-Length"], "4")
+        self.assertEqual(body, b"")
+
+    def test_open_ended_range_returns_requested_tail(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=4-")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 4-9/10")
+        self.assertEqual(headers["Content-Length"], "6")
+        self.assertEqual(body, b"456789")
+
+    def test_suffix_range_returns_final_bytes(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=-4")
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["Content-Range"], "bytes 6-9/10")
+        self.assertEqual(headers["Content-Length"], "4")
+        self.assertEqual(body, b"6789")
+
+    def test_unsatisfiable_range_returns_416(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=99-")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
+    def test_invalid_range_does_not_fall_back_to_full_response(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=invalid")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
+
+    def test_multiple_ranges_are_rejected(self):
+        status, headers, body = self._serve(b"0123456789", "bytes=0-1,4-5")
+        self.assertEqual(status, 416)
+        self.assertEqual(headers["Content-Range"], "bytes */10")
+        self.assertEqual(body, b"")
 
 class UpdateRouteTest(unittest.TestCase):
     def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):
@@ -907,6 +1129,48 @@ class DiagnosticRouteTest(unittest.TestCase):
 
         self.assertEqual(writes[0]["status"], server_module.HTTPStatus.FORBIDDEN)
         self.assertEqual(writes[0]["payload"], {"ok": False, "error": "forbidden"})
+
+
+class CacheDownloaderRouteTest(unittest.TestCase):
+    def test_cache_downloader_status_route_returns_tool_status(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        checked: list[str] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            cache_downloader_status=lambda download_source: checked.append(download_source) or {"ready": False},
+        )
+
+        handler.path = "/api/cache-downloader/status"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"download_source": "downkyi"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(checked, ["downkyi"])
+        self.assertEqual(writes[0], {"ok": True, "data": {"ready": False}})
+
+    def test_cache_downloader_prepare_route_returns_tool_status(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        prepared: list[str] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            prepare_cache_downloader=lambda download_source: prepared.append(download_source) or {"ready": True},
+        )
+
+        handler.path = "/api/cache-downloader/prepare"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"download_source": "downkyi"}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(prepared, ["downkyi"])
+        self.assertEqual(writes[0], {"ok": True, "data": {"ready": True}})
 
 
 class PlayerResetRouteTest(unittest.TestCase):

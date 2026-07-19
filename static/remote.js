@@ -52,7 +52,7 @@ const categoryBrowseDefinitionsRaw = [
   { key: "touhouProject", tags: ["东方project"] },
   { key: "macross", tags: ["マクロス", "超时空要塞"] },
   { key: "gundam", tags: ["高达系列"] },
-  { key: "longRunning", tags: ["名探偵コナン"] },
+  { key: "longRunning", tags: ["名探偵コナン","NARUTO","ナルト","BLEACH","ONE PIECE","火影忍者","海贼王","銀魂","银魂","家庭教師ヒットマンREBORN!","家庭教师","鬼滅の刃","鬼灭之刃","呪術廻戦","咒术回战","ジョジョの奇妙な冒険","ドラゴンボール","聖闘士星矢","幽☆遊☆白書","THE FIRST SLAM DUNK","FAIRY TAIL"] },
 ];
 const categoryBrowseFullFieldTags = new Set([
   "Hololive",
@@ -93,6 +93,28 @@ const categoryBrowseFullFieldTags = new Set([
   "WHITE ALBUM2",
   "HoneyWorks",
   "超时空要塞",
+  "东方project",
+  "マクロス",
+  "NARUTO",
+  "ナルト",
+  "BLEACH",
+  "ONE PIECE",
+  "火影忍者",
+  "海贼王",
+  "銀魂",
+  "银魂",
+  "家庭教師ヒットマンREBORN!",
+  "家庭教师",
+  "鬼滅の刃",
+  "鬼灭之刃",
+  "呪術廻戦",
+  "咒术回战",
+  "ジョジョの奇妙な冒険",
+  "ドラゴンボール",
+  "聖闘士星矢",
+  "幽☆遊☆白書",
+  "THE FIRST SLAM DUNK",
+  "FAIRY TAIL",
 ].map(categoryBrowseTagKey));
 const categoryBrowseImageUrls = [
   "/pic/cat_1.png",
@@ -161,6 +183,7 @@ const state = {
   disconnectSent: false,
   data: null,
   submitting: false,
+  retryActivityById: {},
   listView: "queue",
   openQueueMenuId: null,
   openHistoryMenuId: null,
@@ -208,7 +231,7 @@ const state = {
   gatchaTaskLastMessageSignature: "",
   gatchaTaskWatchStartedAt: Date.now() / 1000,
   followBrowseVisible: false,
-  larkSearchVisible: false,
+  larkSearchVisible: true,
   larkSearchLoading: false,
   larkSearchSeq: 0,
   searchModalOpen: false,
@@ -523,6 +546,11 @@ const elements = {
   gatchaTitle: document.getElementById("gatcha-title"),
 };
 
+const historyExportGuard = window.BilikaraExportGuard.createExportGuard([
+  elements.historyExportImageButton,
+  elements.historyExportCsvButton,
+]);
+
 function createClientId() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") {
     return window.crypto.randomUUID();
@@ -537,10 +565,37 @@ function clientHeaders(extraHeaders = {}) {
   };
 }
 
+function localizedBBDownLoginMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (raw === "请使用哔哩哔哩 App 扫码登录" || raw.includes("扫码登录")) {
+    return t("service.scanWithBilibiliApp");
+  }
+  if (raw === "正在启动 BBDown 登录" || raw.includes("启动 BBDown 登录")) {
+    return t("service.startingBBDownLogin");
+  }
+  if (raw === "BBDown 已登录" || raw === "已登录") {
+    return t("service.bbdownLoggedIn");
+  }
+  if (raw === "BBDown 登录失败，请重试" || raw.includes("登录失败")) {
+    return t("service.bbdownLoginFailed");
+  }
+  if (raw === "未登录") {
+    return t("service.notLoggedIn");
+  }
+  return raw;
+}
+
 function localizedApiMessage(message) {
   const raw = String(message || "").trim();
   if (!raw) {
     return "";
+  }
+  const bbdownMessage = localizedBBDownLoginMessage(raw);
+  if (bbdownMessage && bbdownMessage !== raw) {
+    return bbdownMessage;
   }
   const gatchaMessage = localizedGatchaTaskMessage(raw);
   if (gatchaMessage && gatchaMessage !== raw) {
@@ -1049,11 +1104,23 @@ function localizedCacheMessage(message, cacheStatus = "") {
   if (raw.includes("开始缓存视频") || raw.includes("正在缓存")) {
     return t("cache.caching");
   }
-  if (status === "ready") {
-    return t("cache.ready");
-  }
   if (status === "failed" && raw === "缓存失败") {
     return t("cache.failed");
+  }
+  let localized = raw;
+  if (localized.includes("视频轨")) {
+    localized = localized.replace(/视频轨/g, t("cache.videoTrack"));
+  }
+  if (localized.includes("音轨")) {
+    localized = localized.replace(/音轨/g, t("cache.audioTrack"));
+  }
+  if (localized.includes("（校验中）") || localized.includes("(校验中)")) {
+    localized = localized.replace(/（校验中）|\(校验中\)/g, `(${t("status.validating")})`);
+  } else if (localized === "校验中") {
+    localized = t("status.validating");
+  }
+  if (localized !== raw) {
+    return localized;
   }
   return raw;
 }
@@ -1473,6 +1540,28 @@ async function submitRemoteIdentity(event) {
       elements.remoteIdentityInput.value = "";
     }
   } catch (error) {
+    if (error.code === "session_user_already_exists") {
+      const confirmClaim = confirm(
+        t("remoteIdentity.confirmClaim", { name }) || `该用户 "${name}" 已存在，是否认领该身份？`
+      );
+      if (confirmClaim) {
+        try {
+          state.remoteIdentitySaving = true;
+          renderRemoteIdentity();
+          const identity = await apiPost("/api/remote-identity/register", { name, claim: true });
+          applyRemoteIdentity(identity);
+          if (elements.remoteIdentityInput) {
+            elements.remoteIdentityInput.value = "";
+          }
+          return;
+        } catch (innerError) {
+          state.remoteIdentitySaving = false;
+          state.remoteIdentityError = innerError?.message || t("error.requestFailed");
+          renderRemoteIdentity();
+          return;
+        }
+      }
+    }
     state.remoteIdentitySaving = false;
     state.remoteIdentityError = error?.message || t("error.requestFailed");
     renderRemoteIdentity();
@@ -1984,7 +2073,6 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   const { currentSeconds, durationSeconds } = currentPlaybackClockSeconds();
   const bvid = String(currentItem?.bvid || "").trim();
   const playId = String(currentItem?.id || bvid).trim();
-
   // Detect song transition: when the current playId changes, move the
   // previous song's pending auto-rating into the flush queue, then flush
   // the queue head (the oldest un-rated song). Songs that the user already
@@ -2054,8 +2142,7 @@ function filenameFromContentDisposition(headerValue, fallback) {
 }
 
 function selectedHistoryExportSource() {
-  const source = String(elements.historyExportSource?.value || "played").trim().toLowerCase();
-  return source === "history" ? "history" : "played";
+  return String(elements.historyExportSource?.value || "played").trim();
 }
 
 function selectedHistoryExportPageSize() {
@@ -2065,7 +2152,7 @@ function selectedHistoryExportPageSize() {
 
 async function downloadHistoryExport(format, source = selectedHistoryExportSource(), pageSize = selectedHistoryExportPageSize()) {
   const normalizedFormat = String(format || "").trim().toLowerCase();
-  const normalizedSource = source === "history" ? "history" : "played";
+  const normalizedSource = source;
   const requestedPageSize = Number.parseInt(String(pageSize || "200"), 10);
   const normalizedPageSize = [200, 150, 100, 80, 60, 50].includes(requestedPageSize) ? requestedPageSize : 200;
   if (!["csv", "image"].includes(normalizedFormat)) {
@@ -2091,7 +2178,7 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     throw new Error(message);
   }
   const blob = await response.blob();
-  const sourceName = normalizedSource === "played" ? "played" : "history";
+  const sourceName = normalizedSource.startsWith("played") ? "played" : "history";
   const fallback = normalizedFormat === "csv" ? `bilikara-${sourceName}.csv` : `bilikara-${sourceName}.png`;
   const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
   const downloadUrl = URL.createObjectURL(blob);
@@ -2112,20 +2199,22 @@ elements.openRatingButton?.addEventListener("click", () => {
 });
 
 async function exportHistory(format) {
-  const source = selectedHistoryExportSource();
-  const pageSize = selectedHistoryExportPageSize();
-  const sourceLabel = source === "played" ? t("history.playedSource") : t("history.allSource");
-  setAppMessage(format === "csv"
-    ? t("remote.exportingCsv", { source: sourceLabel })
-    : t("remote.exportingImagePaged", { source: sourceLabel, count: pageSize }));
-  try {
-    await downloadHistoryExport(format, source, pageSize);
+  return historyExportGuard.run(async () => {
+    const source = selectedHistoryExportSource();
+    const pageSize = selectedHistoryExportPageSize();
+    const sourceLabel = source === "played" ? t("history.playedSource") : t("history.allSource");
     setAppMessage(format === "csv"
-      ? t("history.csvDownloadStarted", { source: sourceLabel })
-      : t("history.imageDownloadStarted", { source: sourceLabel }));
-  } catch (error) {
-    setAppMessage(error.message, true);
-  }
+      ? t("remote.exportingCsv", { source: sourceLabel })
+      : t("remote.exportingImagePaged", { source: sourceLabel, count: pageSize }));
+    try {
+      await downloadHistoryExport(format, source, pageSize);
+      setAppMessage(format === "csv"
+        ? t("history.csvDownloadStarted", { source: sourceLabel })
+        : t("history.imageDownloadStarted", { source: sourceLabel }));
+    } catch (error) {
+      setAppMessage(error.message, true);
+    }
+  });
 }
 
 async function submitAddRequest(url, position, options = {}) {
@@ -2762,7 +2851,7 @@ function formatSearchRating(value) {
 
 function searchResultRatingText(item) {
   const rating = searchResultRatingValue(item);
-  return rating == null ? "评分:暂无" : `评分:${formatSearchRating(rating)}/5`;
+  return rating == null ? t("search.ratingNone") : t("search.ratingValue", { rating: formatSearchRating(rating) });
 }
 
 function createSearchResultRatingStars(item) {
@@ -4435,6 +4524,9 @@ function renderGatchaUidView() {
   if (elements.gatchaTitle) {
     elements.gatchaTitle.textContent = showUid ? t("gatcha.uidTitle") : t("gatcha.title");
   }
+  if (elements.gatchaConfirmButton && !elements.gatchaConfirmButton.disabled) {
+    elements.gatchaConfirmButton.textContent = t("gatcha.confirm");
+  }
   if (elements.gatchaButton) {
     elements.gatchaButton.disabled = false;
     elements.gatchaButton.textContent = t("gatcha.title");
@@ -4544,7 +4636,7 @@ function renderCurrentItem(current, playbackMode) {
     } catch (error) {
       console.warn("Rating prompt update failed in renderCurrentItem:", error);
     }
-    elements.currentCacheState.classList.remove("hidden");
+    syncCurrentCacheState(current);
 
     if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
       if (!state.autoRefreshTimer) {
@@ -4555,8 +4647,6 @@ function renderCurrentItem(current, playbackMode) {
       state.autoRefreshTimer = null;
     }
 
-    elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
-    elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
     elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     return;
   }
@@ -4574,9 +4664,7 @@ function renderCurrentItem(current, playbackMode) {
       elements.currentOwner.textContent = "";
       elements.currentOwner.classList.add("hidden");
     }
-    elements.currentCacheState.textContent = "";
-    elements.currentCacheState.classList.add("hidden");
-    elements.currentCacheState.classList.remove("ready", "failed");
+    syncCurrentCacheState(null);
     elements.currentMeta.textContent = t("remote.noCurrentHint");
   }
 }
@@ -5515,6 +5603,15 @@ async function confirmBindingSheet() {
 
   state.submitting = true;
   setMessageForSource(source, intent.position === "next" ? t("remote.bindingAddingNext") : t("remote.bindingAddingTail"));
+
+  const button = elements.bindingSheetConfirm;
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
+  }
+
   try {
     const result = await submitAddRequestWithDuplicateConfirm(
       intent.url,
@@ -5561,6 +5658,10 @@ async function confirmBindingSheet() {
     setAppMessage(error.message, true);
   } finally {
     state.submitting = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
@@ -5969,6 +6070,8 @@ function syncQueueItemCacheStatus(node, item) {
     stateNode.textContent = stateText;
   }
   node.classList.toggle("ready", item.cache_status === "ready");
+
+  syncQueueItemRetryButton(node, item);
 }
 
 function queueNoteText(item) {
@@ -6011,6 +6114,99 @@ function queueStateLabel(item) {
   }
   return t("status.waiting");
 }
+
+function shouldShowRetryButton(item) {
+  if (!item) return false;
+  const itemId = String(item.id || "");
+  if (!itemId) return false;
+  if (item.cache_status === "ready") {
+    delete state.retryActivityById[itemId];
+    return false;
+  }
+  if (item.cache_status === "failed") {
+    delete state.retryActivityById[itemId];
+    return true;
+  }
+  if (item.cache_status !== "downloading") {
+    delete state.retryActivityById[itemId];
+    return false;
+  }
+  const now = Date.now() / 1000;
+  const lastActivity = Number(item.cache_activity_at || 0);
+  const cacheSizeBytes = Number(item.cache_size_bytes || 0);
+  const cacheProgress = Number(item.cache_progress || 0);
+  const cacheMessage = String(item.cache_message || "");
+  const previous = state.retryActivityById[itemId];
+
+  const hasFreshActivity = !previous
+    || lastActivity > Number(previous.lastActivity || 0)
+    || cacheSizeBytes > Number(previous.cacheSizeBytes || 0)
+    || cacheProgress > Number(previous.cacheProgress || 0)
+    || cacheMessage !== String(previous.cacheMessage || "");
+
+  const observedAt = hasFreshActivity ? now : Number(previous?.observedAt || 0);
+
+  state.retryActivityById[itemId] = {
+    observedAt,
+    lastActivity,
+    cacheSizeBytes,
+    cacheProgress,
+    cacheMessage,
+  };
+
+  if (observedAt <= 0) return false;
+  return now - observedAt >= 5; // stalledRetrySeconds = 5
+}
+
+function syncQueueItemRetryButton(node, item) {
+  if (!node || !item) return;
+  const retryBtn = node.querySelector(".queue-retry-button");
+  if (retryBtn) {
+    const visible = shouldShowRetryButton(item);
+    retryBtn.classList.toggle("hidden", !visible);
+  }
+}
+
+function syncCurrentCacheState(current) {
+  if (!elements.currentCacheState) return;
+  if (!current) {
+    const textNode = elements.currentCacheState.querySelector(".cache-state-text");
+    if (textNode) textNode.textContent = "";
+    else elements.currentCacheState.textContent = "";
+    const retryBtn = elements.currentCacheState.querySelector("#current-cache-retry");
+    if (retryBtn) retryBtn.classList.add("hidden");
+    elements.currentCacheState.classList.add("hidden");
+    elements.currentCacheState.classList.remove("ready", "failed");
+    return;
+  }
+
+  elements.currentCacheState.classList.remove("hidden");
+  elements.currentCacheState.classList.toggle("ready", current.cache_status === "ready");
+  elements.currentCacheState.classList.toggle("failed", current.cache_status === "failed");
+
+  const label = currentCacheStateLabel(current);
+  const textNode = elements.currentCacheState.querySelector(".cache-state-text");
+  if (textNode) {
+    if (textNode.textContent !== label) {
+      textNode.textContent = label;
+    }
+  } else {
+    elements.currentCacheState.textContent = label;
+  }
+
+  const retryBtn = elements.currentCacheState.querySelector("#current-cache-retry");
+  if (retryBtn) {
+    const showRetry = shouldShowRetryButton(current);
+    retryBtn.classList.toggle("hidden", !showRetry);
+    if (showRetry) {
+      retryBtn.dataset.id = current.id;
+    } else {
+      delete retryBtn.dataset.id;
+    }
+  }
+}
+
+
 
 function currentCacheStateLabel(item) {
   if (!item) {
@@ -6107,8 +6303,15 @@ function paintCurrentPlaybackClock() {
   if (!text || !elements.currentCacheState) {
     return;
   }
-  if (elements.currentCacheState.textContent !== text) {
-    elements.currentCacheState.textContent = text;
+  const textNode = elements.currentCacheState.querySelector(".cache-state-text");
+  if (textNode) {
+    if (textNode.textContent !== text) {
+      textNode.textContent = text;
+    }
+  } else {
+    if (elements.currentCacheState.textContent !== text) {
+      elements.currentCacheState.textContent = text;
+    }
   }
   try {
     maybeUpdateRemoteRatingPrompt(state.data?.current_item);
@@ -6126,9 +6329,7 @@ function renderCurrentPlaybackState(current) {
       clearPlayerControlStatusSync();
     }
     clearCurrentPlaybackClock();
-    if (elements.currentCacheState) {
-      elements.currentCacheState.textContent = currentCacheStateLabel(current);
-    }
+    syncCurrentCacheState(current);
     return;
   }
 
@@ -6141,9 +6342,7 @@ function renderCurrentPlaybackState(current) {
   const waitingForHostStatus = playerControlStatusSyncPending(current, playerStatus);
   if (!(durationSeconds > 0) || (!currentSeconds && isPaused)) {
     clearCurrentPlaybackClock();
-    if (elements.currentCacheState) {
-      elements.currentCacheState.textContent = currentCacheStateLabel(current);
-    }
+    syncCurrentCacheState(current);
     return;
   }
 
@@ -6268,6 +6467,17 @@ async function submitRequest(position) {
 
   state.submitting = true;
   setFormMessage(position === "next" ? t("remote.addingNext") : t("remote.addingTail"));
+
+  const button = position === "next"
+    ? elements.addNextButton
+    : elements.requestForm?.querySelector('button[type="submit"]');
+  let originalText = "";
+  if (button) {
+    button.disabled = true;
+    originalText = button.textContent;
+    button.textContent = t("search.adding") || "添加中...";
+  }
+
   try {
     const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
     if (result.cancelled) {
@@ -6294,6 +6504,10 @@ async function submitRequest(position) {
     setFormMessage(error.message, true);
   } finally {
     state.submitting = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
@@ -6508,10 +6722,18 @@ elements.searchForm.addEventListener("submit", async (event) => {
 
 elements.searchResults.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
-  await addByUrl(String(button.dataset.url || ""), "tail", "search");
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = t("search.adding") || "添加中...";
+  try {
+    await addByUrl(String(button.dataset.url || ""), "tail", "search");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
 });
 
 elements.searchLibraryOpen?.addEventListener("click", () => {
@@ -6596,18 +6818,25 @@ elements.searchModalLarkResults?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalSearch");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
@@ -6653,18 +6882,25 @@ elements.favlistSongResults?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalFavlist");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
@@ -6798,18 +7034,25 @@ elements.searchModalOtherView?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalBrowse");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
@@ -6898,10 +7141,18 @@ elements.larkSearchForm?.addEventListener("submit", async (event) => {
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
-  await addByUrl(String(button.dataset.url || ""), "tail", "lark");
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = t("search.adding") || "添加中...";
+  try {
+    await addByUrl(String(button.dataset.url || ""), "tail", "lark");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
 });
 
 elements.followBrowseToggle?.addEventListener("click", () => {
@@ -6992,18 +7243,21 @@ elements.modalFollowSearchForm?.addEventListener("submit", async (event) => {
 
 elements.followSongResults?.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-url]");
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
   const url = String(button.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  const originalText = button.textContent;
   button.disabled = true;
+  button.textContent = t("search.adding") || "添加中...";
   try {
     await addByUrl(url, "tail", "follow");
   } finally {
     button.disabled = false;
+    button.textContent = originalText;
   }
 });
 
@@ -7013,18 +7267,25 @@ elements.modalFollowSongResults?.addEventListener("click", async (event) => {
     return;
   }
   const button = target.closest("button[data-url]");
+  if (button && button.disabled) {
+    return;
+  }
   const url = String(target.dataset.url || button?.dataset.url || "").trim();
   if (!url) {
     return;
   }
+  let originalText = "";
   if (button) {
+    originalText = button.textContent;
     button.disabled = true;
+    button.textContent = t("search.adding") || "添加中...";
   }
   try {
     await addByUrl(url, "tail", "modalFollow");
   } finally {
     if (button) {
       button.disabled = false;
+      button.textContent = originalText;
     }
   }
 });
@@ -7543,6 +7804,29 @@ elements.historyViewButton.addEventListener("click", () => {
   render();
 });
 
+elements.currentCacheState?.addEventListener("click", async (event) => {
+  const retryBtn = event.target.closest("#current-cache-retry");
+  if (!retryBtn) {
+    return;
+  }
+  event.stopPropagation();
+  const itemId = retryBtn.dataset.id;
+  if (!itemId) {
+    return;
+  }
+  const confirmed = window.confirm(t("cache.retryConfirm") || "确定要重新缓存吗？");
+  if (!confirmed) {
+    return;
+  }
+  try {
+    state.data = await apiPost("/api/cache/retry", { item_id: itemId, force: true });
+    setFormMessage(t("cache.retryStarted"));
+    render();
+  } catch (error) {
+    setFormMessage(error.message, true);
+  }
+});
+
 elements.historyExportImageButton?.addEventListener("click", async () => {
   await exportHistory("image");
 });
@@ -7641,6 +7925,8 @@ window.addEventListener("pagehide", clearViewportScaleResetTimers);
 window.addEventListener("pagehide", disconnectClient);
 window.addEventListener("beforeunload", disconnectClient);
 
+let floatingControlBackdropIgnoreUntil = 0;
+
 function makeElementDraggable(element, onClick) {
   let startX = 0;
   let startY = 0;
@@ -7648,7 +7934,19 @@ function makeElementDraggable(element, onClick) {
   let initialTop = 0;
   let isDragging = false;
   let moved = false;
-  let suppressNextClick = false;
+  let suppressClickUntil = 0;
+  let pctX = null;
+  let pctY = null;
+
+  const invokeClick = () => {
+    if (typeof onClick === "function") {
+      onClick();
+    }
+  };
+
+  const suppressNextClick = () => {
+    suppressClickUntil = Date.now() + 450;
+  };
 
   const dragStart = (e) => {
     if (e.type === "mousedown" && e.button !== 0) {
@@ -7669,12 +7967,11 @@ function makeElementDraggable(element, onClick) {
 
     isDragging = true;
     moved = false;
-    suppressNextClick = false;
 
     if (e.type === "touchstart") {
       document.addEventListener("touchmove", dragMove, { passive: false });
-      document.addEventListener("touchend", dragEnd);
-      document.addEventListener("touchcancel", dragEnd);
+      document.addEventListener("touchend", dragEnd, { passive: false });
+      document.addEventListener("touchcancel", dragCancel);
     } else {
       document.addEventListener("mousemove", dragMove);
       document.addEventListener("mouseup", dragEnd);
@@ -7688,6 +7985,9 @@ function makeElementDraggable(element, onClick) {
     let currentY = 0;
 
     if (e.type === "touchmove") {
+      if (e.cancelable) {
+        e.preventDefault();
+      }
       currentX = e.touches[0].clientX;
       currentY = e.touches[0].clientY;
     } else {
@@ -7720,72 +8020,80 @@ function makeElementDraggable(element, onClick) {
       element.style.top = `${newTop}px`;
       element.style.bottom = "auto";
       element.style.right = "auto";
+
+      pctX = maxLeft > 0 ? newLeft / maxLeft : 1.0;
+      pctY = maxTop > 0 ? newTop / maxTop : 1.0;
     }
+  };
+
+  const clearDragListeners = () => {
+    document.removeEventListener("touchmove", dragMove);
+    document.removeEventListener("touchend", dragEnd);
+    document.removeEventListener("touchcancel", dragCancel);
+    document.removeEventListener("mousemove", dragMove);
+    document.removeEventListener("mouseup", dragEnd);
   };
 
   const dragEnd = (e) => {
     isDragging = false;
     element.classList.remove("dragging");
+    clearDragListeners();
 
-    if (e.type === "touchend" || e.type === "touchcancel") {
-      document.removeEventListener("touchmove", dragMove);
-      document.removeEventListener("touchend", dragEnd);
-      document.removeEventListener("touchcancel", dragEnd);
-    } else {
-      document.removeEventListener("mousemove", dragMove);
-      document.removeEventListener("mouseup", dragEnd);
+    if (e.type === "touchend" && e.cancelable) {
+      e.preventDefault();
     }
 
-    suppressNextClick = e.type !== "touchcancel" && moved;
-  };
-
-  const handleClick = (e) => {
-    if (suppressNextClick) {
-      suppressNextClick = false;
-      e.preventDefault();
-      e.stopPropagation();
+    if (moved) {
+      suppressNextClick();
       return;
     }
-    if (typeof onClick === "function") {
-      onClick();
-    }
+
+    invokeClick();
+    suppressNextClick();
   };
 
+  function dragCancel() {
+    isDragging = false;
+    moved = false;
+    element.classList.remove("dragging");
+    clearDragListeners();
+    suppressNextClick();
+  }
+
+  element.addEventListener("click", (event) => {
+    if (Date.now() < suppressClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    invokeClick();
+  });
   element.addEventListener("mousedown", dragStart);
   element.addEventListener("touchstart", dragStart);
-  element.addEventListener("click", handleClick);
 
   window.addEventListener("resize", () => {
-    const rect = element.getBoundingClientRect();
-    let currentLeft = rect.left;
-    let currentTop = rect.top;
-
+    if (pctX === null || pctY === null) {
+      return;
+    }
     const maxLeft = window.innerWidth - element.offsetWidth;
     const maxTop = window.innerHeight - element.offsetHeight;
-
-    if (currentLeft > maxLeft || currentTop > maxTop) {
-      const nextLeft = Math.max(0, Math.min(currentLeft, maxLeft));
-      const nextTop = Math.max(0, Math.min(currentTop, maxTop));
-      element.style.left = `${nextLeft}px`;
-      element.style.top = `${nextTop}px`;
-      element.style.bottom = "auto";
-      element.style.right = "auto";
-    }
+    const nextLeft = Math.max(0, Math.min(pctX * maxLeft, maxLeft));
+    const nextTop = Math.max(0, Math.min(pctY * maxTop, maxTop));
+    element.style.left = `${nextLeft}px`;
+    element.style.top = `${nextTop}px`;
+    element.style.bottom = "auto";
+    element.style.right = "auto";
   });
 }
 
 function showFloatingControlOverlay() {
   if (!elements.floatingControlOverlay) return;
+  const wasHidden = elements.floatingControlOverlay.classList.contains("hidden");
   elements.floatingControlOverlay.classList.remove("closing");
   elements.floatingControlOverlay.classList.remove("hidden");
   document.body.style.overflow = "hidden";
-
-  if (elements.floatingControlTrigger && elements.floatingControlCard) {
-    const triggerRect = elements.floatingControlTrigger.getBoundingClientRect();
-    const cardRect = elements.floatingControlCard.getBoundingClientRect();
-    const originX = (triggerRect.left + triggerRect.width / 2) - cardRect.left;
-    const originY = (triggerRect.top + triggerRect.height / 2) - cardRect.top;
-    elements.floatingControlCard.style.transformOrigin = `${originX}px ${originY}px`;
+  if (wasHidden) {
+    floatingControlBackdropIgnoreUntil = Date.now() + 450;
   }
 }
 
@@ -7814,7 +8122,18 @@ function initFloatingControlConsole() {
   elements.floatingControlClose?.addEventListener("click", () => {
     hideFloatingControlOverlay();
   });
-  elements.floatingControlBackdrop?.addEventListener("click", () => {
+  elements.floatingControlOverlay?.addEventListener("click", (event) => {
+    if (Date.now() < floatingControlBackdropIgnoreUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+  elements.floatingControlBackdrop?.addEventListener("click", (event) => {
+    if (Date.now() < floatingControlBackdropIgnoreUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     hideFloatingControlOverlay();
   });
 }

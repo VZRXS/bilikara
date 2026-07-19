@@ -121,7 +121,14 @@
           </div>
           <button type="button" id="open-rating-button" class="ghost-button hidden" data-i18n="remote.rate">评分</button>
         </div>
-        <p id="current-cache-state" class="queue-state current-cache-state hidden"></p>
+        <div id="current-cache-state" class="queue-state current-cache-state hidden">
+          <span class="cache-state-text"></span>
+          <button type="button" id="current-cache-retry" class="current-cache-retry hidden" title="重新缓存" aria-label="重新缓存" data-i18n-title="cache.retryDownload" data-i18n-aria-label="cache.retryDownload">
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14">
+              <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+            </svg>
+          </button>
+        </div>
         <p id="current-meta" class="muted"></p>
         <div id="audio-variant-bar" class="audio-variant-bar hidden"></div>
         <div id="player-control-panel" class="player-control-panel hidden">
@@ -619,6 +626,11 @@
                 <span class="queue-requester hidden"></span>
               </div>
               <div class="queue-actions-wrap">
+                <button type="button" class="queue-retry-button hidden" data-action="retry-cache" title="重新缓存" aria-label="重新缓存" data-i18n-title="cache.retryDownload" data-i18n-aria-label="cache.retryDownload">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
+                    <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"/>
+                  </svg>
+                </button>
                 <button type="button" class="menu-toggle" data-action="toggle-menu" aria-label="更多操作" data-i18n-aria-label="common.moreActions">
                   <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16">
                     <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" fill="currentColor"/>
@@ -792,6 +804,7 @@
       </div>
     </div>
 
+    <script src="/export-guard.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
   </body>

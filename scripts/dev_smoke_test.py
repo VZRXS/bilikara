@@ -175,7 +175,7 @@ class SmokeRunner:
     def check_static_pages(self) -> None:
         print_header("Static pages and assets")
         static_bodies: dict[str, bytes] = {}
-        for path in ["/", "/remote", "/app.js", "/styles.css", "/remote.js", "/remote.css", "/remote-queue.js"]:
+        for path in ["/", "/remote", "/app.js", "/player-health.js", "/styles.css", "/remote.js", "/remote.css", "/remote-queue.js"]:
             body = self.http_get(path, expect_json=False)
             static_bodies[path] = body
             print_ok(f"GET {path} ({len(body)} bytes)")
@@ -220,6 +220,16 @@ class SmokeRunner:
                 "/api/gatcha/refresh",
                 "/api/gatcha/favlist",
                 "/api/app/update",
+                "handleSplitPlaybackFault",
+                "handleSplitAudioEnded",
+                "handleSplitVideoEnded",
+                "audio.ended",
+            ],
+            "/player-health.js": [
+                "classifyAudioEnded",
+                "classifyVideoEnded",
+                "classifyMediaError",
+                "shouldGuardAdvance",
             ],
             "/remote.js": [
                 "fetchGatchaBrowse",

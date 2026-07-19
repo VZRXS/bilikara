@@ -10,3 +10,5 @@ APP_VERSION
 bilikara-api/
 src-tauri/target/
 node_modules/
+rust/target/
+src-tauri/gen/

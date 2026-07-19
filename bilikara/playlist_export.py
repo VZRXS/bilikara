@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import re
+import shutil
 import struct
+import subprocess
 import zipfile
 from datetime import datetime
 from functools import lru_cache
@@ -53,7 +56,7 @@ def playlist_csv_bytes(items: list[dict[str, Any]], *, time_header: str = "点�
                 "UP 主": _text(entry.get("owner_name")),
                 "UP 主 UID": _text(entry.get("owner_mid")),
                 "点歌次数": _request_count(entry),
-                time_header: _format_time(entry.get("requested_at")),
+                time_header: _format_time(entry.get("requested_at") or entry.get("played_at")),
                 "视频链接": _text(entry.get("resolved_url")),
                 "原始链接": _text(entry.get("original_url")),
                 "分P/版本": _text(entry.get("part_title")),
@@ -183,7 +186,7 @@ def _render_playlist_page(
             _video_id(entry),
             _text(entry.get("requester_name")) or "-",
             _text(entry.get("owner_name")) or "-",
-            _format_time(entry.get("requested_at"), short=True),
+            _format_time(entry.get("requested_at") or entry.get("played_at"), short=True),
         ]
         cursor_x = table_x + 24
         for col_index, ((_, col_w), value) in enumerate(zip(columns, values)):
@@ -278,9 +281,25 @@ def _qr_quiet_zone_pixels(matrix: list[list[bool]], size: int) -> int:
     return quiet * cell
 
 
+def _hidden_process_kwargs() -> dict[str, Any]:
+    if os.name != "nt":
+        return {}
+
+    kwargs: dict[str, Any] = {"creationflags": 0x08000000}
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= 0x00000001
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
+@lru_cache(maxsize=2)
 def _find_system_font(*, bold: bool = False) -> str | None:
-    import shutil
-    import subprocess
+    # Keep separate normal/bold cache entries so a future fontconfig pattern can
+    # distinguish them without bringing back one subprocess per font size/page.
+    del bold
 
     if not shutil.which("fc-list"):
         return None
@@ -292,6 +311,8 @@ def _find_system_font(*, bold: bool = False) -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            stdin=subprocess.DEVNULL,
+            **_hidden_process_kwargs(),
         )
         if result.returncode == 0 and result.stdout:
             for line in result.stdout.splitlines():
@@ -718,7 +739,11 @@ def _load_font(font_module: Any, size: int, *, bold: bool = False) -> list[Any]:
 
 
 def _calculate_time_range(items: list[dict[str, Any]]) -> str:
-    times = [float(item.get("requested_at") or 0) for item in items if item.get("requested_at")]
+    times = [
+        float(item.get("requested_at") or item.get("played_at") or 0)
+        for item in items
+        if item.get("requested_at") or item.get("played_at")
+    ]
     if not times:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
     start_dt = datetime.fromtimestamp(min(times))
@@ -831,7 +856,7 @@ def _items_in_export_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _playlist_export_sort_key(index: int, entry: dict[str, Any]) -> tuple[int, float | int, int]:
-    timestamp = _timestamp(entry.get("requested_at"))
+    timestamp = _timestamp(entry.get("requested_at") or entry.get("played_at"))
     if timestamp is None:
         return (1, index, index)
     return (0, timestamp, index)

@@ -15,6 +15,7 @@ import time
 from .config import BILIBILI_HEADERS, GATCHA_KEYWORDS
 from dataclasses import dataclass
 from .models import PlaylistItem
+from . import rust_backend
 import bilikara.config as cfg  
 from .lark_pool_client import append_lark_pool_entries_in_background
 
@@ -509,6 +510,13 @@ class VideoPage:
     cid: int
     duration: int
     part: str
+
+
+@dataclass(frozen=True)
+class AudioBindingDecision:
+    mode: str
+    selected_indices: tuple[int, ...]
+    automatic_video_index: int | None
 
 
 class BilibiliError(RuntimeError):
@@ -2509,7 +2517,49 @@ def parse_video_pages(data: dict) -> list[VideoPage]:
     return pages
 
 
-def select_matching_pages(
+def _py_cluster_spread(cluster: list[VideoPage]) -> int:
+    if not cluster:
+        return 10**9
+    durations = [page.duration for page in cluster]
+    return max(durations) - min(durations)
+
+
+def _py_cluster_representative_duration(cluster: list[VideoPage]) -> float:
+    if not cluster:
+        return 0.0
+    return sum(page.duration for page in cluster) / len(cluster)
+
+
+def _py_preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> VideoPage:
+    for page in pages:
+        if page.page == preferred_page:
+            return page
+    return pages[0]
+
+
+def _py_is_better_cluster(candidate: list[VideoPage], current: list[VideoPage], preferred_page: int) -> bool:
+    if len(candidate) != len(current):
+        return len(candidate) > len(current)
+
+    candidate_duration = _py_cluster_representative_duration(candidate)
+    current_duration = _py_cluster_representative_duration(current)
+    if candidate_duration != current_duration:
+        return candidate_duration > current_duration
+
+    candidate_has_preferred = any(page.page == preferred_page for page in candidate)
+    current_has_preferred = any(page.page == preferred_page for page in current)
+    if candidate_has_preferred != current_has_preferred:
+        return candidate_has_preferred
+
+    candidate_spread = _py_cluster_spread(candidate)
+    current_spread = _py_cluster_spread(current)
+    if candidate_spread != current_spread:
+        return candidate_spread < current_spread
+
+    return [page.page for page in candidate] < [page.page for page in current]
+
+
+def _py_select_matching_pages(
     pages: list[VideoPage],
     *,
     preferred_page: int,
@@ -2526,54 +2576,76 @@ def select_matching_pages(
         while current.duration - sorted_pages[left].duration > tolerance_seconds:
             left += 1
         candidate = sorted_pages[left : right + 1]
-        if _is_better_cluster(candidate, best_cluster, preferred_page):
+        if _py_is_better_cluster(candidate, best_cluster, preferred_page):
             best_cluster = list(candidate)
 
     if len(best_cluster) <= 1:
-        return best_cluster or [_preferred_or_first_page(pages, preferred_page)]
+        return best_cluster or [_py_preferred_or_first_page(pages, preferred_page)]
     return sorted(best_cluster, key=lambda item: item.page)
 
 
+def select_matching_pages(
+    pages: list[VideoPage],
+    *,
+    preferred_page: int,
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> list[VideoPage]:
+    descriptors = []
+    for idx, page in enumerate(pages):
+        if not isinstance(page, VideoPage):
+            return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+        descriptors.append({
+            "original_index": idx,
+            "page": int(page.page),
+            "cid": int(page.cid),
+            "duration": int(page.duration),
+            "part": str(page.part or ""),
+        })
+
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "preferred_page": int(preferred_page),
+        "tolerance_seconds": int(tolerance_seconds),
+        "pages": descriptors,
+    }
+
+    completed, response = rust_backend.try_select_media_pages(request)
+    if completed and response is not None:
+        status = response.get("status")
+        if status == "selected":
+            selected_indices = response.get("selected_indices")
+            if isinstance(selected_indices, list):
+                result = []
+                for idx in selected_indices:
+                    if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(pages):
+                        result.append(pages[idx])
+                    else:
+                        return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+                return result
+        elif status == "no_match":
+            return []
+
+    return _py_select_matching_pages(
+        pages,
+        preferred_page=preferred_page,
+        tolerance_seconds=tolerance_seconds,
+    )
+
+
 def _is_better_cluster(candidate: list[VideoPage], current: list[VideoPage], preferred_page: int) -> bool:
-    if len(candidate) != len(current):
-        return len(candidate) > len(current)
-
-    candidate_duration = _cluster_representative_duration(candidate)
-    current_duration = _cluster_representative_duration(current)
-    if candidate_duration != current_duration:
-        return candidate_duration > current_duration
-
-    candidate_has_preferred = any(page.page == preferred_page for page in candidate)
-    current_has_preferred = any(page.page == preferred_page for page in current)
-    if candidate_has_preferred != current_has_preferred:
-        return candidate_has_preferred
-
-    candidate_spread = _cluster_spread(candidate)
-    current_spread = _cluster_spread(current)
-    if candidate_spread != current_spread:
-        return candidate_spread < current_spread
-
-    return [page.page for page in candidate] < [page.page for page in current]
+    return _py_is_better_cluster(candidate, current, preferred_page)
 
 
 def _cluster_spread(cluster: list[VideoPage]) -> int:
-    if not cluster:
-        return 10**9
-    durations = [page.duration for page in cluster]
-    return max(durations) - min(durations)
+    return _py_cluster_spread(cluster)
 
 
 def _cluster_representative_duration(cluster: list[VideoPage]) -> float:
-    if not cluster:
-        return 0.0
-    return sum(page.duration for page in cluster) / len(cluster)
+    return _py_cluster_representative_duration(cluster)
 
 
 def _preferred_or_first_page(pages: list[VideoPage], preferred_page: int) -> VideoPage:
-    for page in pages:
-        if page.page == preferred_page:
-            return page
-    return pages[0]
+    return _py_preferred_or_first_page(pages, preferred_page)
 
 
 def _variant_id(page: int, label: str, index: int) -> str:
@@ -2582,41 +2654,135 @@ def _variant_id(page: int, label: str, index: int) -> str:
     return f"p{max(int(page), 1)}_{suffix}"
 
 
-def _part_keyword_match(part: str) -> bool:
+def _py_part_keyword_match(part: str) -> bool:
     normalized = str(part or "").strip().lower()
     return any(keyword in normalized for keyword in ("on", "off", "人声", "原唱", "伴奏"))
 
 
-def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
+def _py_is_auto_dual_audio_pair(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> bool:
     if len(pages) != 2:
         return False
-    if not any(_part_keyword_match(page.part) for page in pages):
+    if not any(_py_part_keyword_match(page.part) for page in pages):
         return False
-    if abs(pages[0].duration - pages[1].duration) > DURATION_TOLERANCE_SECONDS:
+    if abs(pages[0].duration - pages[1].duration) > tolerance_seconds:
         return False
     return True
 
 
-def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+def _py_auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
     if len(pages) != 2:
         return None
     first_page, second_page = sorted(pages, key=lambda page: page.page)
     if (
         first_page.page == 1
         and second_page.page == 2
-        and not _part_keyword_match(first_page.part)
-        and _part_keyword_match(second_page.part)
+        and not _py_part_keyword_match(first_page.part)
+        and _py_part_keyword_match(second_page.part)
     ):
         return second_page.page
     return None
 
 
-def _requires_manual_binding(pages: list[VideoPage]) -> bool:
+def _py_requires_manual_binding(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> bool:
     if len(pages) > 2:
         return True
-    if len(pages) == 2 and not _is_auto_dual_audio_pair(pages):
+    if len(pages) == 2 and not _py_is_auto_dual_audio_pair(
+        pages, tolerance_seconds
+    ):
         return True
     return False
+
+
+def _py_decide_audio_binding(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> AudioBindingDecision | None:
+    if not pages:
+        return None
+    if len(pages) == 1:
+        return AudioBindingDecision(
+            mode="single",
+            selected_indices=(0,),
+            automatic_video_index=None,
+        )
+    if not _py_is_auto_dual_audio_pair(pages, tolerance_seconds):
+        return AudioBindingDecision(
+            mode="manual_required",
+            selected_indices=(),
+            automatic_video_index=None,
+        )
+
+    automatic_video_page = _py_auto_dual_audio_video_page(pages)
+    automatic_video_index = next(
+        (
+            index
+            for index, page in enumerate(pages)
+            if page.page == automatic_video_page
+        ),
+        None,
+    )
+    return AudioBindingDecision(
+        mode="automatic",
+        selected_indices=(0, 1),
+        automatic_video_index=automatic_video_index,
+    )
+
+
+def _part_keyword_match(part: str) -> bool:
+    return _py_part_keyword_match(part)
+
+
+def _is_auto_dual_audio_pair(pages: list[VideoPage]) -> bool:
+    return _py_is_auto_dual_audio_pair(pages)
+
+
+def _auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+    return _py_auto_dual_audio_video_page(pages)
+
+
+def _requires_manual_binding(pages: list[VideoPage]) -> bool:
+    return _py_requires_manual_binding(pages)
+
+
+def decide_audio_binding(
+    pages: list[VideoPage],
+    tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+) -> AudioBindingDecision | None:
+    descriptors: list[dict[str, object]] = []
+    for original_index, page in enumerate(pages):
+        if not isinstance(page, VideoPage):
+            return _py_decide_audio_binding(pages, tolerance_seconds)
+        descriptors.append(
+            {
+                "original_index": original_index,
+                "page": int(page.page),
+                "duration": int(page.duration),
+                "part": str(page.part or ""),
+            }
+        )
+
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "tolerance_seconds": int(tolerance_seconds),
+        "pages": descriptors,
+    }
+    completed, response = rust_backend.try_decide_audio_binding(request)
+    if completed and response is not None:
+        if response["status"] == "no_match":
+            return None
+        return AudioBindingDecision(
+            mode=str(response["mode"]),
+            selected_indices=tuple(response["selected_indices"]),
+            automatic_video_index=response["automatic_video_index"],
+        )
+
+    return _py_decide_audio_binding(pages, tolerance_seconds)
 
 
 def _normalize_selected_pages(raw_pages: object) -> list[int]:
@@ -2672,7 +2838,10 @@ def fetch_video_item(
         raise BilibiliError("视频没有可播放的分 P 信息")
 
     preferred_page = min(reference.page, len(pages))
-    manual_selection = _requires_manual_binding(pages)
+    binding_decision = decide_audio_binding(pages)
+    if binding_decision is None:
+        raise BilibiliError("视频没有可播放的分 P 信息")
+    manual_selection = binding_decision.mode == "manual_required"
     if manual_selection and selected_video_page is None and not selected_audio_pages:
         raise ManualBindingRequiredError(
             title=str(data.get("title") or "").strip(),
@@ -2695,11 +2864,9 @@ def fetch_video_item(
             raise BilibiliError("选择的音频分P无效")
         selected_pages = [available_pages_by_number[page] for page in normalized_audio_pages]
     else:
-        if _is_auto_dual_audio_pair(pages):
-            selected_pages = list(pages)
-            auto_video_page = _auto_dual_audio_video_page(pages)
-        else:
-            selected_pages = select_matching_pages(pages, preferred_page=preferred_page)
+        selected_pages = [pages[index] for index in binding_decision.selected_indices]
+        if binding_decision.automatic_video_index is not None:
+            auto_video_page = pages[binding_decision.automatic_video_index].page
         if selected_video_page is not None or normalized_audio_pages:
             raise BilibiliError("当前视频不需要手动绑定分P")
 
@@ -2873,10 +3040,10 @@ def fetch_dash_playurl(
 
     Returns:
         Dict with keys:
-          - "video": list of dicts with "url", "backup_url", "codec_id", "codec_name", "width", "height"
-          - "audio": list of dicts with "url", "backup_url", "bandwidth"
-          - "flac": dict or None with "url", "backup_url" if Hi-Res FLAC available
-          - "dolby": dict or None with "url", "backup_url" if Dolby Atmos available
+          - "video": list of dicts with "url", "backup_urls", "codec_id", "codec_name", "width", "height"
+          - "audio": list of dicts with "url", "backup_urls", "bandwidth"
+          - "flac": dict or None with "url", "backup_urls" if Hi-Res FLAC available
+          - "dolby": dict or None with "url", "backup_urls" if Dolby Atmos available
     """
     if not bvid and not avid:
         raise BilibiliError("bvid 和 avid 至少需要提供一个")
@@ -2903,6 +3070,8 @@ def fetch_dash_playurl(
     api_url = f"https://api.bilibili.com/x/player/wbi/playurl?{query_string}"
 
     payload = request_json(api_url)
+    if not isinstance(payload, dict):
+        raise BilibiliError("播放地址响应格式异常")
     code = int(payload.get("code") or 0) if isinstance(payload.get("code"), (int, float)) else 0
     if code != 0:
         message = str(payload.get("message") or "获取播放地址失败")
@@ -2948,6 +3117,8 @@ def fetch_dash_playurl(
             "backup_urls": [str(u).strip() for u in backup_urls if u],
             "codec_id": codec_id,
             "codec_name": codec_map.get(codec_id, f"codec_{codec_id}"),
+            "codecs": str(video.get("codecs") or ""),
+            "mime_type": str(video.get("mimeType") or video.get("mime_type") or ""),
             "width": int(video.get("width") or 0),
             "height": int(video.get("height") or 0),
             "quality_id": int(video.get("id") or 0),
@@ -2982,7 +3153,11 @@ def fetch_dash_playurl(
                 flac_info = {
                     "url": flac_url,
                     "backup_urls": [str(u).strip() for u in flac_backup if u],
+                    "quality_id": int(flac_audio.get("id") or 30251),
                     "bandwidth": int(flac_audio.get("bandwidth") or 0),
+                    "codecs": str(flac_audio.get("codecs") or "flac"),
+                    "mime_type": str(flac_audio.get("mimeType") or flac_audio.get("mime_type") or "audio/flac"),
+                    "codec_name": "flac",
                 }
 
     dolby_info = None
@@ -2998,7 +3173,11 @@ def fetch_dash_playurl(
                 dolby_info = {
                     "url": dolby_url,
                     "backup_urls": [str(u).strip() for u in dolby_backup if u],
+                    "quality_id": int(dolby_audio.get("id") or 30250),
                     "bandwidth": int(dolby_audio.get("bandwidth") or 0),
+                    "codecs": str(dolby_audio.get("codecs") or "ec-3"),
+                    "mime_type": str(dolby_audio.get("mimeType") or dolby_audio.get("mime_type") or "audio/mp4"),
+                    "codec_name": "eac3",
                 }
                 break
 

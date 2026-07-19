@@ -3426,16 +3426,16 @@ body.remote-identity-modal-open {
   color: var(--ink);
   box-shadow: var(--rating-card-shadow);
   transform-origin: center;
-  animation: scale-from-center-card 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: scale-from-center-card 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .rating-modal.closing .rating-card {
-  animation: scale-to-center-card 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: scale-to-center-card 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes scale-from-center-card {
   from {
-    transform: scale(0.01);
+    transform: scale(0.75);
     opacity: 0;
   }
 
@@ -3452,7 +3452,7 @@ body.remote-identity-modal-open {
   }
 
   to {
-    transform: scale(0.01);
+    transform: scale(0.75);
     opacity: 0;
   }
 }
@@ -3812,35 +3812,12 @@ body.remote-identity-modal-open {
   background: var(--modal-card-bg);
   color: var(--ink);
   box-shadow: var(--floating-control-card-shadow);
-  animation: scale-from-trigger-card 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: center;
+  animation: scale-from-center-card 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .floating-control-overlay.closing .floating-control-card {
-  animation: scale-to-trigger-card 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-@keyframes scale-from-trigger-card {
-  from {
-    transform: scale(0.01);
-    opacity: 0;
-  }
-
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-
-@keyframes scale-to-trigger-card {
-  from {
-    transform: scale(1);
-    opacity: 1;
-  }
-
-  to {
-    transform: scale(0.01);
-    opacity: 0;
-  }
+  animation: scale-to-center-card 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes fade-in-backdrop {
@@ -4418,4 +4395,50 @@ body.remote-identity-modal-open {
 :root:is([data-theme="dark"], [data-theme="blue"]) option {
   background: var(--dark-option-bg);
   color: var(--ink);
+}
+
+.queue-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.queue-retry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+  padding: 0;
+  vertical-align: middle;
+}
+.queue-retry-button:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--accent);
+}
+
+.current-cache-retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  padding: 0;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.current-cache-retry:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
