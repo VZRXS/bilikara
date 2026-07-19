@@ -5,6 +5,7 @@ from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
 from datetime import datetime
 import json
+import math
 import os
 import platform
 import queue
@@ -66,6 +67,7 @@ CACHE_RETENTION_BUFFER_ITEMS = 3
 MAX_PARALLEL_TRACK_DOWNLOADS = 4
 DOWNKYI_TRACK_MAX_ATTEMPTS = 10
 DOWNKYI_TRACK_RETRY_WAIT_SECONDS = 3.0
+SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS = 2.0
 try:
     ARIA2_CONNECTIONS_PER_TRACK = max(
         1,
@@ -1855,7 +1857,6 @@ class CacheManager:
                     "stream_kind": "audio",
                     "page": page,
                     "cid": self._cid_for_validation(item, page),
-                    "expected_duration": self._duration_for_page(item, page),
                     "download_source": download_source,
                     "stream_metadata": next(
                         (track.get("stream_metadata") or {} for track in audio_tracks if int(track["page"]) == page),
@@ -2635,6 +2636,16 @@ class CacheManager:
                             attempt=attempt,
                             max_attempts=max_attempts,
                         )
+                        assert ffprobe_path is not None
+                        source_audio_duration = None
+                        if stream_kind == "audio":
+                            source_audio_duration = self._probe_original_audio_duration(
+                                ffprobe_path,
+                                ffmpeg_path,
+                                media_path,
+                                label=validation_label,
+                                log_path=log_path,
+                            )
                         self._normalize_downkyi_media_file(
                             ffmpeg_path,
                             media_path,
@@ -2642,7 +2653,6 @@ class CacheManager:
                             stream_kind=stream_kind,
                             log_path=log_path,
                         )
-                        assert ffprobe_path is not None
                         validation_entry: dict[str, object] = {
                             "label": validation_label,
                             "path": media_path,
@@ -2650,10 +2660,13 @@ class CacheManager:
                             "stream_kind": stream_kind,
                             "page": page,
                             "cid": cid,
-                            "expected_duration": self._duration_for_page(item, page),
                             "download_source": DOWNLOAD_SOURCE_DOWNKYI,
                             "stream_metadata": dict(stream_metadata),
                         }
+                        if stream_kind == "video":
+                            validation_entry["expected_duration"] = self._duration_for_page(item, page)
+                        if source_audio_duration is not None:
+                            validation_entry["source_audio_duration"] = source_audio_duration
                         metadata = self._validate_media_file(
                             ffprobe_path,
                             ffmpeg_path,
@@ -2669,6 +2682,9 @@ class CacheManager:
                             "stream_kind": stream_kind,
                             "expected_duration": self._optional_probe_float(
                                 validation_entry.get("expected_duration")
+                            ),
+                            "source_audio_duration": self._optional_probe_float(
+                                validation_entry.get("source_audio_duration")
                             ),
                         })
                         track["validation_metadata"] = metadata
@@ -3812,6 +3828,9 @@ class CacheManager:
                         "page": int(entry.get("page") or 0),
                         "stream_kind": str(entry.get("stream_kind") or ""),
                         "expected_duration": self._optional_probe_float(entry.get("expected_duration")),
+                        "source_audio_duration": self._optional_probe_float(
+                            entry.get("source_audio_duration")
+                        ),
                     }
                 )
                 validation_metadata.append(metadata)
@@ -3828,7 +3847,6 @@ class CacheManager:
                     f"[{self._log_timestamp()}] ffprobe validate {label}: failed: {message}",
                 )
 
-        validation_errors.extend(self._duration_pair_errors(validation_metadata))
         cache_result["validation_metadata"] = validation_metadata
         cache_result["validation_failure_count"] = len(validation_errors)
         if validation_errors:
@@ -3840,17 +3858,15 @@ class CacheManager:
             raise DownloadCommandError("；".join(validation_errors))
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ffprobe validate: ok")
 
-    def _validate_media_file(
+    def _probe_media_payload(
         self,
         ffprobe_path: Path,
         ffmpeg_path: Path,
         media_path: Path,
         *,
         label: str,
-        required_streams: set[str],
         log_path: Path,
-        diagnostic_context: dict[str, object] | None = None,
-    ) -> dict[str, object]:
+    ) -> tuple[int, dict[str, object]]:
         if not media_path.exists():
             raise DownloadCommandError(f"缓存校验失败: {label} 文件不存在")
         size = media_path.stat().st_size
@@ -3892,7 +3908,49 @@ class CacheManager:
             payload = json.loads(process.stdout or "{}")
         except json.JSONDecodeError as exc:
             raise DownloadCommandError(f"缓存校验失败: {label}: ffprobe 输出无法解析") from exc
+        if not isinstance(payload, dict):
+            raise DownloadCommandError(f"缓存校验失败: {label}: ffprobe 输出结构无效")
+        return size, payload
 
+    def _probe_original_audio_duration(
+        self,
+        ffprobe_path: Path,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        log_path: Path,
+    ) -> float:
+        _size, payload = self._probe_media_payload(
+            ffprobe_path,
+            ffmpeg_path,
+            media_path,
+            label=f"{label} 原始音轨",
+            log_path=log_path,
+        )
+        duration = self._probe_stream_duration(payload, "audio")
+        if duration is None:
+            raise DownloadCommandError(f"缓存校验失败: {label} 原始音轨未报告有效时长")
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] ffprobe source audio {label}: duration={duration:.6f}s",
+        )
+        return duration
+
+    def _validate_media_file(
+        self,
+        ffprobe_path: Path,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        required_streams: set[str],
+        log_path: Path,
+        diagnostic_context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        size, payload = self._probe_media_payload(
+            ffprobe_path, ffmpeg_path, media_path, label=label, log_path=log_path
+        )
         streams = payload.get("streams")
         if not isinstance(streams, list) or not streams:
             raise DownloadCommandError(f"缓存校验失败: {label}: 未识别到媒体流")
@@ -3910,7 +3968,13 @@ class CacheManager:
                 f"缓存校验失败: {label}: 缺少 {missing_label} 流，实际为 {detected_label}"
             )
 
-        duration = self._probe_duration(payload)
+        primary_stream_kind = next(iter(required_streams)) if len(required_streams) == 1 else None
+        stream_duration = (
+            self._probe_stream_duration(payload, primary_stream_kind)
+            if primary_stream_kind is not None
+            else None
+        )
+        duration = stream_duration or self._probe_duration(payload)
         context = diagnostic_context or {}
         expected_duration = self._optional_probe_float(context.get("expected_duration"))
         if expected_duration is not None and expected_duration > 0 and duration is None:
@@ -3923,6 +3987,23 @@ class CacheManager:
                 raise DownloadCommandError(
                     f"缓存校验失败: {label} 时长异常，预期约 {expected_duration:.0f} 秒，"
                     f"实际 {duration:.0f} 秒"
+                )
+        if "source_audio_duration" in context:
+            source_audio_duration = self._optional_probe_float(context.get("source_audio_duration"))
+            if (
+                required_streams != {"audio"}
+                or source_audio_duration is None
+                or source_audio_duration <= 0
+            ):
+                raise DownloadCommandError(f"缓存校验失败: {label} 原始音轨时长上下文无效")
+            if stream_duration is None:
+                raise DownloadCommandError(f"缓存校验失败: {label} 未报告音频流时长")
+            difference = abs(stream_duration - source_audio_duration)
+            if difference > SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS:
+                raise DownloadCommandError(
+                    f"缓存校验失败: {label} 与原始音轨时长不一致，"
+                    f"原始 {source_audio_duration:.3f} 秒，实际 {stream_duration:.3f} 秒，"
+                    f"相差 {difference:.3f} 秒"
                 )
         if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
             self._validate_demux_file(
@@ -3949,6 +4030,8 @@ class CacheManager:
                 "codec_tag_string": str(stream.get("codec_tag_string") or ""),
                 "duration": self._optional_probe_float(stream.get("duration")),
                 "start_time": self._optional_probe_float(stream.get("start_time")),
+                "duration_ts": stream.get("duration_ts"),
+                "time_base": str(stream.get("time_base") or ""),
             }
             for stream in streams
             if isinstance(stream, dict)
@@ -3976,6 +4059,7 @@ class CacheManager:
                 "expected_output": str(media_path),
                 "actual_output": str(media_path),
                 "file_size": size,
+                "source_audio_duration": self._optional_probe_float(context.get("source_audio_duration")),
                 "aria2_control_files": [
                     candidate.name
                     for candidate in media_path.parent.glob("*.aria2")
@@ -3993,41 +4077,6 @@ class CacheManager:
     @staticmethod
     def _duration_tolerance(expected_duration: float) -> float:
         return max(3.0, expected_duration * 0.02)
-
-    @classmethod
-    def _duration_pair_errors(cls, metadata: list[dict[str, object]]) -> list[str]:
-        videos = [entry for entry in metadata if entry.get("stream_kind") == "video"]
-        audios = [entry for entry in metadata if entry.get("stream_kind") == "audio"]
-        errors: list[str] = []
-        for audio in audios:
-            audio_duration = cls._optional_probe_float(audio.get("duration"))
-            if audio_duration is None:
-                continue
-            audio_page = int(audio.get("page") or 0)
-            audio_expected = cls._optional_probe_float(audio.get("expected_duration"))
-            for video in videos:
-                video_duration = cls._optional_probe_float(video.get("duration"))
-                if video_duration is None:
-                    continue
-                video_page = int(video.get("page") or 0)
-                video_expected = cls._optional_probe_float(video.get("expected_duration"))
-                expected_match = (
-                    audio_expected is not None
-                    and video_expected is not None
-                    and abs(audio_expected - video_expected)
-                    <= cls._duration_tolerance(max(audio_expected, video_expected))
-                )
-                if audio_page != video_page and not expected_match:
-                    continue
-                tolerance = cls._duration_tolerance(video_duration)
-                if audio_duration + tolerance < video_duration:
-                    label = str(audio.get("label") or f"音轨 P{audio_page}")
-                    errors.append(
-                        f"缓存校验失败: {label} 比视频轨明显更短，"
-                        f"视频 {video_duration:.0f} 秒，音频 {audio_duration:.0f} 秒"
-                    )
-                break
-        return errors
 
     @staticmethod
     def _discard_invalid_media(media_path: Path) -> None:
@@ -4091,31 +4140,68 @@ class CacheManager:
 
     @staticmethod
     def _optional_probe_float(value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
         try:
             result = float(value)
         except (TypeError, ValueError):
             return None
-        return result if result == result else None
+        return result if math.isfinite(result) else None
 
-    @staticmethod
-    def _probe_duration(payload: dict[str, object]) -> float | None:
-        candidates: list[object] = []
-        file_format = payload.get("format")
-        if isinstance(file_format, dict):
-            candidates.append(file_format.get("duration"))
+    @classmethod
+    def _probe_stream_duration(
+        cls,
+        payload: dict[str, object],
+        stream_kind: str,
+    ) -> float | None:
+        streams = payload.get("streams")
+        if not isinstance(streams, list):
+            return None
+        for stream in streams:
+            if (
+                not isinstance(stream, dict)
+                or str(stream.get("codec_type") or "").strip() != stream_kind
+            ):
+                continue
+            duration = cls._optional_probe_float(stream.get("duration"))
+            if duration is not None and duration > 0:
+                return duration
+            duration_ts = cls._optional_probe_float(stream.get("duration_ts"))
+            time_base = str(stream.get("time_base") or "").strip()
+            if duration_ts is None or duration_ts <= 0 or "/" not in time_base:
+                continue
+            numerator_text, denominator_text = time_base.split("/", 1)
+            numerator = cls._optional_probe_float(numerator_text)
+            denominator = cls._optional_probe_float(denominator_text)
+            if (
+                numerator is None
+                or numerator <= 0
+                or denominator is None
+                or denominator <= 0
+            ):
+                continue
+            reconstructed = duration_ts * numerator / denominator
+            if math.isfinite(reconstructed) and reconstructed > 0:
+                return reconstructed
+        return None
+
+    @classmethod
+    def _probe_duration(cls, payload: dict[str, object]) -> float | None:
         streams = payload.get("streams")
         if isinstance(streams, list):
-            candidates.extend(
-                stream.get("duration")
+            stream_kinds = [
+                str(stream.get("codec_type") or "").strip()
                 for stream in streams
                 if isinstance(stream, dict)
-            )
-        for candidate in candidates:
-            try:
-                duration = float(candidate)
-            except (TypeError, ValueError):
-                continue
-            if duration > 0:
+            ]
+            for stream_kind in stream_kinds:
+                duration = cls._probe_stream_duration(payload, stream_kind)
+                if duration is not None:
+                    return duration
+        file_format = payload.get("format")
+        if isinstance(file_format, dict):
+            duration = cls._optional_probe_float(file_format.get("duration"))
+            if duration is not None and duration > 0:
                 return duration
         return None
 
