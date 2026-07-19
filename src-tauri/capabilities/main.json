@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "main",
-  "description": "Allow the local Bilikara backend page to use the main window fullscreen and custom frame APIs.",
+  "description": "Allow the local Bilikara backend page to use the main window fullscreen API.",
   "windows": [
     "main"
   ],
@@ -13,11 +13,6 @@
   },
   "permissions": [
     "core:default",
-    "core:window:allow-set-fullscreen",
-    "core:window:allow-minimize",
-    "core:window:allow-toggle-maximize",
-    "core:window:allow-close",
-    "core:window:allow-start-dragging",
-    "core:window:allow-is-maximized"
+    "core:window:allow-set-fullscreen"
   ]
 }

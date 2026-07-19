@@ -16,7 +16,6 @@
         "label": "main",
         "fullscreen": false,
         "height": 768,
-        "decorations": false,
         "resizable": true,
         "title": "bilikara",
         "width": 1024,
