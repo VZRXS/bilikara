@@ -406,11 +406,72 @@ class AppContextRatingSubmissionTest(unittest.TestCase):
 
 
 class BilikaraHandlerLocalClientTest(unittest.TestCase):
-    def test_ipv4_mapped_loopback_is_local_client(self):
+    @staticmethod
+    def make_handler(peer_host, local_host="127.0.0.1"):
         handler = BilikaraHandler.__new__(BilikaraHandler)
-        handler.client_address = ("::ffff:127.0.0.1", 54321)
+        handler.client_address = (peer_host, 54321)
+        handler.connection = SimpleNamespace(getsockname=lambda: (local_host, 8080))
+        return handler
 
+    def test_loopback_clients_are_allowed(self):
+        for host in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            with self.subTest(host=host):
+                self.assertTrue(self.make_handler(host)._is_local_client())
+
+    def test_matching_concrete_local_socket_is_allowed(self):
+        handler = self.make_handler("192.168.1.20", "192.168.1.20")
         self.assertTrue(handler._is_local_client())
+
+    def test_other_lan_client_is_rejected(self):
+        handler = self.make_handler("192.168.1.35", "192.168.1.20")
+        self.assertFalse(handler._is_local_client())
+
+    def test_unspecified_local_socket_rejects_non_loopback_peer(self):
+        handler = self.make_handler("192.168.1.20", "0.0.0.0")
+        self.assertFalse(handler._is_local_client())
+
+    def test_malformed_peer_is_rejected(self):
+        handler = self.make_handler("not-an-ip", "192.168.1.20")
+        self.assertFalse(handler._is_local_client())
+
+    def test_missing_connection_is_rejected(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.client_address = ("192.168.1.20", 54321)
+        self.assertFalse(handler._is_local_client())
+
+    def test_getsockname_failure_is_rejected(self):
+        def fail_getsockname():
+            raise OSError("socket unavailable")
+
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.client_address = ("192.168.1.20", 54321)
+        handler.connection = SimpleNamespace(getsockname=fail_getsockname)
+        self.assertFalse(handler._is_local_client())
+
+
+class AddressArchitectureTest(unittest.TestCase):
+    def test_wildcard_bind_uses_loopback_for_local_ui(self):
+        self.assertEqual(server_module._local_ui_host("0.0.0.0"), "127.0.0.1")
+        self.assertEqual(server_module._local_ui_url("0.0.0.0", 8080), "http://127.0.0.1:8080")
+
+    def test_windows_remote_url_uses_selected_physical_adapter(self):
+        with (
+            patch.object(server_module.os, "name", "nt"),
+            patch("bilikara.server._detect_windows_physical_host", return_value="192.168.1.20"),
+        ):
+            urls = server_module._network_access_urls("0.0.0.0", 8080)
+
+        self.assertEqual(urls, ["http://192.168.1.20:8080"])
+
+    def test_explicit_host_is_honored_for_local_and_remote_urls(self):
+        self.assertEqual(
+            server_module._local_ui_url("192.168.1.20", 9090),
+            "http://192.168.1.20:9090",
+        )
+        self.assertEqual(
+            server_module._network_access_urls("192.168.1.20", 9090),
+            ["http://192.168.1.20:9090"],
+        )
 
 
 class AppContextPlayerStatusTest(unittest.TestCase):
@@ -580,7 +641,8 @@ class PlaylistExportRouteTest(unittest.TestCase):
         )
 
         handler.path = "/api/playlist/export?format=csv"
-        handler.headers = {}
+        handler.headers = {"Host": "127.0.0.1:8080"}
+        handler._is_local_client = lambda: self.fail("playlist export must not depend on local authorization")
         handler._write_download = lambda payload, content_type, filename: writes.append(
             {
                 "payload": payload,
@@ -1053,6 +1115,80 @@ class UpdateRouteTest(unittest.TestCase):
         self.assertEqual(writes[0], {"ok": True, "data": {"state": "checking", "include_preview": True}})
 
 
+class DownloadResponseTest(unittest.TestCase):
+    @staticmethod
+    def make_handler():
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.status = None
+        handler.response_headers = {}
+        handler.send_response = lambda status: setattr(handler, "status", status)
+        handler.send_header = lambda name, value: handler.response_headers.__setitem__(name, value)
+        handler.end_headers = lambda: None
+        handler.wfile = io.BytesIO()
+        return handler
+
+    def assert_download_response(self, content_type, filename, payload):
+        handler = self.make_handler()
+
+        self.assertTrue(
+            handler._write_download(payload, content_type=content_type, filename=filename)
+        )
+
+        self.assertEqual(handler.status, server_module.HTTPStatus.OK)
+        self.assertEqual(handler.response_headers["Content-Type"], content_type)
+        self.assertEqual(handler.response_headers["Content-Length"], str(len(payload)))
+        self.assertEqual(
+            handler.response_headers["Content-Disposition"],
+            f'attachment; filename="{filename}"',
+        )
+        self.assertEqual(handler.response_headers["Cache-Control"], "no-store")
+        self.assertEqual(handler.wfile.getvalue(), payload)
+
+    def test_csv_download_headers_and_body_length(self):
+        self.assert_download_response(
+            "text/csv; charset=utf-8",
+            "bilikara-played.csv",
+            b"column\r\nvalue\r\n",
+        )
+
+    def test_image_download_headers_and_body_length(self):
+        self.assert_download_response(
+            "image/png",
+            "bilikara-played.png",
+            b"\x89PNG\r\n\x1a\n",
+        )
+
+    def test_export_stage_logs_headers_and_body(self):
+        handler = self.make_handler()
+        events = []
+        context = {
+            "started_at": server_module.time.monotonic(),
+            "format": "csv",
+            "source": "played",
+            "item_count": 1,
+            "payload_size": 3,
+        }
+        handler._active_export_context = context
+        handler._log_export_stage = lambda stage, active_context, **kwargs: events.append(stage)
+
+        self.assertTrue(handler._write_download(b"csv", content_type="text/csv", filename="list.csv"))
+
+        self.assertEqual(events, ["export_headers_sent", "export_body_written"])
+
+    def test_download_disconnect_is_handled(self):
+        class BrokenWriter:
+            def write(self, payload):
+                raise BrokenPipeError("client closed")
+
+            def flush(self):
+                raise AssertionError("flush must not follow a failed write")
+
+        handler = self.make_handler()
+        handler.wfile = BrokenWriter()
+
+        self.assertFalse(handler._write_download(b"csv", content_type="text/csv", filename="list.csv"))
+
+
 class DiagnosticRouteTest(unittest.TestCase):
     @staticmethod
     def make_handler(path, body):
@@ -1060,6 +1196,7 @@ class DiagnosticRouteTest(unittest.TestCase):
         handler.path = path
         handler.headers = {}
         handler.client_address = ("127.0.0.1", 12345)
+        handler.connection = SimpleNamespace(getsockname=lambda: ("127.0.0.1", 8080))
         handler._read_json_body = lambda: body
         return handler
 
@@ -1115,6 +1252,7 @@ class DiagnosticRouteTest(unittest.TestCase):
     def test_diagnostic_routes_reject_non_local_clients(self):
         handler = self.make_handler("/api/diagnostics/markdown", {"browser": {}})
         handler.client_address = ("192.168.1.50", 12345)
+        handler.connection = SimpleNamespace(getsockname=lambda: ("192.168.1.20", 8080))
         writes = []
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
@@ -1129,6 +1267,34 @@ class DiagnosticRouteTest(unittest.TestCase):
 
         self.assertEqual(writes[0]["status"], server_module.HTTPStatus.FORBIDDEN)
         self.assertEqual(writes[0]["payload"], {"ok": False, "error": "forbidden"})
+
+    def test_same_machine_physical_endpoint_allows_markdown_and_package(self):
+        artifact = DiagnosticArtifact(markdown="# report", files={"system.json": b"{}"})
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: artifact,
+        )
+
+        markdown = self.make_handler("/api/diagnostics/markdown", {"browser": {}})
+        markdown.client_address = ("192.168.1.20", 12345)
+        markdown.connection = SimpleNamespace(getsockname=lambda: ("192.168.1.20", 8080))
+        markdown_writes = []
+        markdown._write_json = lambda payload, status=None: markdown_writes.append((payload, status))
+
+        package = self.make_handler("/api/diagnostics/package", {"browser": {}})
+        package.client_address = ("192.168.1.20", 12345)
+        package.connection = SimpleNamespace(getsockname=lambda: ("192.168.1.20", 8080))
+        package_downloads = []
+        package._write_download = lambda payload, *, content_type, filename: package_downloads.append(
+            (payload, content_type, filename)
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            markdown.do_POST()
+            package.do_POST()
+
+        self.assertEqual(markdown_writes[0][0]["data"]["markdown"], "# report")
+        self.assertEqual(package_downloads[0][1], "application/zip")
 
 
 class CacheDownloaderRouteTest(unittest.TestCase):
@@ -1196,7 +1362,7 @@ class PlayerResetRouteTest(unittest.TestCase):
 
 
 class CacheRetryRouteTest(unittest.TestCase):
-    def test_retry_current_item_forces_recache(self):
+    def test_explicit_force_retries_current_item_with_recache(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
         retries: list[dict] = []
@@ -1211,7 +1377,7 @@ class CacheRetryRouteTest(unittest.TestCase):
 
         handler.path = "/api/cache/retry"
         handler.headers = {}
-        handler._read_json_body = lambda: {"item_id": "current-song"}
+        handler._read_json_body = lambda: {"item_id": "current-song", "force": True}
         handler._write_json = lambda payload, status=None: writes.append(payload)
 
         with patch("bilikara.server.CONTEXT", context):
@@ -1219,6 +1385,27 @@ class CacheRetryRouteTest(unittest.TestCase):
 
         self.assertEqual(retries, [{"item_id": "current-song", "force": True}])
         self.assertEqual(writes[0], {"ok": True, "data": {"current_item": {"id": "current-song"}}})
+
+    def test_current_item_is_not_silently_forced(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        retries: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            retry_cache_item=lambda item_id, force=False: retries.append(
+                {"item_id": item_id, "force": force}
+            ),
+            snapshot=lambda: {"current_item": {"id": "current-song"}},
+        )
+
+        handler.path = "/api/cache/retry"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"item_id": "current-song"}
+        handler._write_json = lambda payload, status=None: None
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(retries, [{"item_id": "current-song", "force": False}])
 
     def test_retry_playlist_item_keeps_requested_force_flag(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
