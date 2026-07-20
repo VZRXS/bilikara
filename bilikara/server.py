@@ -4,11 +4,13 @@ import atexit
 from collections import deque
 from email.utils import formatdate
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
 import re
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -71,6 +73,7 @@ from .config import (
     REMOTE_IDENTITIES_FILE,
     STATE_FILE,
     STATIC_DIR,
+    _detect_windows_physical_host,
     ensure_directories,
 )
 from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
@@ -90,6 +93,35 @@ MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
 REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
 REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
+
+
+def _normalized_ip_address(value: object) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "%" in text:
+        text = text.split("%", 1)[0]
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _local_ui_host(bind_host: str) -> str:
+    if bind_host in {"0.0.0.0", "::"}:
+        return "127.0.0.1"
+    return bind_host
+
+
+def _local_ui_url(bind_host: str, port: int) -> str:
+    return f"http://{_url_host(_local_ui_host(bind_host))}:{port}"
 
 
 def _is_path_within(path: Path, root: Path) -> bool:
@@ -810,8 +842,7 @@ class AppContext:
         port: int,
         lan_urls: list[str],
     ) -> dict[str, object]:
-        browser_host = "127.0.0.1" if host == "0.0.0.0" else host
-        local_url = f"http://{browser_host}:{port}/remote"
+        local_url = f"{_local_ui_url(host, port)}/remote"
         preferred_url = lan_urls[0] if lan_urls else local_url
         return {
             "local_url": local_url,
@@ -1045,6 +1076,14 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 export_page_size = 200
             export_page_size = export_page_size if export_page_size in {200, 150, 100, 80, 60, 50} else 200
+            export_context = {
+                "started_at": time.monotonic(),
+                "format": export_format,
+                "source": export_source,
+                "item_count": 0,
+                "payload_size": 0,
+            }
+            self._log_export_stage("export_request_started", export_context)
             source_settings = {
                 "history": {
                     "items": lambda: CONTEXT.history_snapshot(),
@@ -1077,17 +1116,24 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         "time_header": "播放时间",
                     }
             if export_source not in source_settings:
+                self._log_export_stage("export_failed", export_context, error="invalid export source")
                 self._write_json({"ok": False, "error": "source must be history or played"}, status=HTTPStatus.BAD_REQUEST)
                 return
             settings = source_settings[export_source]
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             try:
                 history = settings["items"]()
+                export_context["item_count"] = len(history)
+                self._log_export_stage("export_snapshot_ready", export_context)
                 if export_format == "csv":
-                    self._write_download(
-                        playlist_csv_bytes(history, time_header=str(settings["time_header"])),
+                    payload = playlist_csv_bytes(history, time_header=str(settings["time_header"]))
+                    export_context["payload_size"] = len(payload)
+                    self._log_export_stage("export_payload_ready", export_context)
+                    self._write_export_download(
+                        payload,
                         content_type="text/csv; charset=utf-8",
                         filename=f"bilikara-{settings['filename']}-{timestamp}.csv",
+                        export_context=export_context,
                     )
                     return
                 if export_format == "image":
@@ -1099,10 +1145,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     )
                     suffix = Path(default_filename).suffix or ".png"
                     filename = f"bilikara-{settings['filename']}-{timestamp}{suffix}"
-                    self._write_download(payload, content_type=content_type, filename=filename)
+                    export_context["payload_size"] = len(payload)
+                    self._log_export_stage("export_payload_ready", export_context)
+                    self._write_export_download(
+                        payload,
+                        content_type=content_type,
+                        filename=filename,
+                        export_context=export_context,
+                    )
                     return
                 raise ValueError("format must be csv or image")
             except Exception as e:
+                self._log_export_stage("export_failed", export_context, error=f"{type(e).__name__}: {e}")
                 self._write_json({"ok": False, "error": str(e)}, status=HTTPStatus.BAD_REQUEST)
             return
         if route.startswith("/media/"):
@@ -1443,8 +1497,6 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/cache/retry":
                 self._require_id(body)
                 force = bool(body.get("force"))
-                if CONTEXT.is_current_item(body["item_id"]):
-                    force = True
                 CONTEXT.retry_cache_item(body["item_id"], force=force)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
@@ -1882,8 +1934,21 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             raise ValueError("缺少 item_id")
 
     def _is_local_client(self) -> bool:
-        host = self.client_address[0] if self.client_address else ""
-        return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
+        peer_host = self.client_address[0] if self.client_address else ""
+        try:
+            local_host = self.connection.getsockname()[0]
+        except (AttributeError, OSError, TypeError):
+            return False
+
+        peer_address = _normalized_ip_address(peer_host)
+        local_address = _normalized_ip_address(local_host)
+        if peer_address is None or local_address is None:
+            return False
+        if peer_address.is_loopback:
+            return True
+        if local_address.is_unspecified:
+            return False
+        return peer_address == local_address
 
     def _has_valid_shutdown_token(self) -> bool:
         expected = os.getenv("BILIKARA_SHUTDOWN_TOKEN", "").strip()
@@ -1963,17 +2028,73 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
         self.wfile.flush()
 
-    def _write_download(self, payload: bytes, *, content_type: str, filename: str) -> None:
+    def _log_export_stage(
+        self,
+        stage: str,
+        context: dict[str, object],
+        *,
+        error: str = "",
+    ) -> None:
+        try:
+            local_socket = self.connection.getsockname()
+        except (AttributeError, OSError, TypeError):
+            local_socket = None
+        record = {
+            "event": stage,
+            "format": context.get("format"),
+            "source": context.get("source"),
+            "item_count": context.get("item_count"),
+            "payload_size": context.get("payload_size"),
+            "elapsed_ms": round((time.monotonic() - float(context["started_at"])) * 1000, 1),
+            "client_address": getattr(self, "client_address", None),
+            "local_socket_address": local_socket,
+            "sys_frozen": bool(getattr(sys, "frozen", False)),
+            "request_path": str(getattr(self, "path", "")),
+        }
+        if error:
+            record["error"] = error
+        print("[playlist-export] " + json.dumps(record, ensure_ascii=False, default=str), flush=True)
+
+    def _write_export_download(
+        self,
+        payload: bytes,
+        *,
+        content_type: str,
+        filename: str,
+        export_context: dict[str, object],
+    ) -> bool:
+        self._active_export_context = export_context
+        try:
+            return self._write_download(payload, content_type=content_type, filename=filename)
+        finally:
+            self._active_export_context = None
+
+    def _write_download(self, payload: bytes, *, content_type: str, filename: str) -> bool:
         safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip("-") or "download.bin"
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Content-Disposition", f'attachment; filename="{safe_filename}"')
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Last-Modified", formatdate(timeval=None, localtime=False, usegmt=True))
-        self.end_headers()
-        self.wfile.write(payload)
-        self.wfile.flush()
+        export_context = getattr(self, "_active_export_context", None)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Disposition", f'attachment; filename="{safe_filename}"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Last-Modified", formatdate(timeval=None, localtime=False, usegmt=True))
+            self.end_headers()
+            if isinstance(export_context, dict):
+                self._log_export_stage("export_headers_sent", export_context)
+            self.wfile.write(payload)
+            self.wfile.flush()
+            if isinstance(export_context, dict):
+                self._log_export_stage("export_body_written", export_context)
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            if isinstance(export_context, dict):
+                self._log_export_stage(
+                    "export_failed",
+                    export_context,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            return False
 
     def _serve_events(self, client_id: str) -> None:
         self.send_response(HTTPStatus.OK)
@@ -2124,10 +2245,12 @@ def _serve(
     CONTEXT.bind_server(server, shutdown_on_last_client=shutdown_on_last_client)
     if CONTEXT.cache_manager.bbdown_login_status().get("logged_in"):
         CONTEXT.refresh_startup_gatcha_cache_in_background()
-    browser_host = "127.0.0.1" if host == "0.0.0.0" else host
-    url = f"http://{browser_host}:{actual_port}"
+    browser_host = _local_ui_host(host)
+    url = _local_ui_url(host, actual_port)
+    remote_urls = [f"{base}/remote" for base in _network_access_urls(host, actual_port)]
+    remote_url = remote_urls[0] if remote_urls else f"{url}/remote"
     print(f"{status_label} running on {url}", flush=True)
-    print(f"{status_label} mobile remote: {url}/remote", flush=True)
+    print(f"{status_label} mobile remote: {remote_url}", flush=True)
 
     if not auto_open_browser and not shutdown_on_last_client:
         print(
@@ -2221,10 +2344,17 @@ def _find_available_port(host: str, preferred_port: int) -> int:
 
 def _network_access_urls(host: str, port: int) -> list[str]:
     if host not in {"0.0.0.0", "::"}:
-        return []
+        address = _normalized_ip_address(host)
+        if address is None or address.is_loopback or address.is_unspecified:
+            return []
+        return [f"http://{_url_host(host)}:{port}"]
 
     candidates: list[str] = []
     seen: set[str] = set()
+    if os.name == "nt":
+        physical_host = _detect_windows_physical_host()
+        if physical_host:
+            return [f"http://{physical_host}:{port}"]
     try:
         addresses = socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET)
     except OSError:
