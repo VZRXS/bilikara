@@ -2150,7 +2150,16 @@ function selectedHistoryExportPageSize() {
   return [200, 150, 100, 80, 60, 50].includes(pageSize) ? pageSize : 200;
 }
 
-async function downloadHistoryExport(format, source = selectedHistoryExportSource(), pageSize = selectedHistoryExportPageSize()) {
+function triggerDirectDownload(url) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function downloadHistoryExport(format, source = selectedHistoryExportSource(), pageSize = selectedHistoryExportPageSize()) {
   const normalizedFormat = String(format || "").trim().toLowerCase();
   const normalizedSource = source;
   const requestedPageSize = Number.parseInt(String(pageSize || "200"), 10);
@@ -2163,33 +2172,7 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     source: normalizedSource,
     page_size: String(normalizedPageSize),
   });
-  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
-    cache: "no-store",
-    headers: clientHeaders(),
-  });
-  if (!response.ok) {
-    let message = t("history.exportFailed");
-    try {
-      const payload = await response.json();
-      message = payload.error || message;
-    } catch {
-      // Keep the generic message when the response is not JSON.
-    }
-    throw new Error(message);
-  }
-  const blob = await response.blob();
-  const sourceName = normalizedSource.startsWith("played") ? "played" : "history";
-  const fallback = normalizedFormat === "csv" ? `bilikara-${sourceName}.csv` : `bilikara-${sourceName}.png`;
-  const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
-  const downloadUrl = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = downloadUrl;
-  link.download = filename;
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+  triggerDirectDownload(`/api/playlist/export?${params.toString()}`);
 }
 
 elements.openRatingButton?.addEventListener("click", () => {
