@@ -169,6 +169,15 @@ def _default_host() -> str:
     override = os.getenv("BILIKARA_HOST", "").strip()
     if override:
         return override
+
+    # Preserve the preview.1 packaged-Windows behavior: the desktop shell and
+    # standalone bundle both open the concrete physical-adapter address.
+    if getattr(sys, "frozen", False) and os.name == "nt":
+        physical_host = _detect_windows_physical_host()
+        if physical_host:
+            return physical_host
+        return _detect_windows_bind_host()
+
     return "0.0.0.0"
 
 

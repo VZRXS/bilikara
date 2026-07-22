@@ -33,15 +33,12 @@ class ConfigPathTest(unittest.TestCase):
                         with patch.object(config.sys, "executable", str(fake_executable)):
                             self.assertEqual(config._default_app_home(), expected_home)
 
-    def test_windows_frozen_defaults_to_all_interfaces(self):
+    def test_windows_frozen_prefers_detected_physical_host(self):
         with patch.dict(os.environ, {}, clear=True):
             with patch.object(config.sys, "frozen", True, create=True):
                 with patch.object(config.os, "name", "nt"):
-                    with patch(
-                        "bilikara.config._detect_windows_physical_host",
-                        side_effect=AssertionError("bind selection must not inspect adapters"),
-                    ):
-                        self.assertEqual(config._default_host(), "0.0.0.0")
+                    with patch("bilikara.config._detect_windows_physical_host", return_value="192.168.31.8"):
+                        self.assertEqual(config._default_host(), "192.168.31.8")
 
     def test_windows_frozen_falls_back_to_all_interfaces_when_detection_fails(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -50,6 +47,14 @@ class ConfigPathTest(unittest.TestCase):
                     with patch("bilikara.config._detect_windows_physical_host", return_value=None):
                         with patch("bilikara.config._detect_windows_bind_host", return_value="0.0.0.0"):
                             self.assertEqual(config._default_host(), "0.0.0.0")
+
+    def test_windows_frozen_uses_legacy_detection_when_physical_host_is_missing(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(config.sys, "frozen", True, create=True):
+                with patch.object(config.os, "name", "nt"):
+                    with patch("bilikara.config._detect_windows_physical_host", return_value=None):
+                        with patch("bilikara.config._detect_windows_bind_host", return_value="192.168.31.9"):
+                            self.assertEqual(config._default_host(), "192.168.31.9")
 
     def test_source_default_also_binds_all_interfaces(self):
         with patch.dict(os.environ, {}, clear=True):

@@ -940,6 +940,23 @@ function tauriInvoke() {
   return window.__TAURI__?.core?.invoke || null;
 }
 
+async function saveTauriBackendDownload(path, body = null) {
+  if (!window.__TAURI__) {
+    return null;
+  }
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    throw new Error(t("history.exportFailed"));
+  }
+  return Boolean(await invoke("save_backend_download", {
+    request: {
+      path,
+      body,
+      clientId: state.clientId,
+    },
+  }));
+}
+
 async function setTauriWindowFullscreen(enabled) {
   const fullscreen = Boolean(enabled);
   const appWindow = tauriAppWindow();
@@ -9491,7 +9508,12 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
     source: normalizedSource,
     page_size: String(normalizedPageSize),
   });
-  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
+  const exportUrl = `/api/playlist/export?${params.toString()}`;
+  const tauriSaved = await saveTauriBackendDownload(exportUrl);
+  if (tauriSaved !== null) {
+    return tauriSaved;
+  }
+  const response = await fetch(exportUrl, {
     credentials: "same-origin",
   });
   if (!response.ok) {
@@ -9521,6 +9543,7 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+  return true;
 }
 
 async function exportHistory(format, source = "played", pageSize = 200) {
@@ -9529,7 +9552,10 @@ async function exportHistory(format, source = "played", pageSize = 200) {
     const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
     const sourceLabel = historyExportSourceLabel(normalizedSource);
     try {
-      await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
+      const saved = await downloadHistoryExport(format, normalizedSource, normalizedPageSize);
+      if (!saved) {
+        return;
+      }
       closeConfirm();
       setAppMessage(format === "csv"
         ? t("history.csvDownloadStarted", { source: sourceLabel })
@@ -9642,6 +9668,18 @@ async function downloadDiagnosticsPackage() {
   setDiagnosticsBusy(true);
   setAppMessage(t("service.diagnosticsGenerating"));
   try {
+    const tauriSaved = await saveTauriBackendDownload(
+      "/api/diagnostics/package",
+      JSON.stringify({ browser: diagnosticBrowserInfo() }),
+    );
+    if (tauriSaved !== null) {
+      if (tauriSaved) {
+        setAppMessage(t("service.diagnosticsDownloaded"));
+      } else {
+        setAppMessage("");
+      }
+      return;
+    }
     const response = await diagnosticResponse("/api/diagnostics/package");
     const blob = await response.blob();
     const filename = filenameFromContentDisposition(
@@ -9657,11 +9695,11 @@ async function downloadDiagnosticsPackage() {
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
-    setDiagnosticsBusy(false);
     setAppMessage(t("service.diagnosticsDownloaded"));
   } catch (error) {
-    setDiagnosticsBusy(false);
     setAppMessage(error?.message || t("service.diagnosticsFailed"), true);
+  } finally {
+    setDiagnosticsBusy(false);
   }
 }
 

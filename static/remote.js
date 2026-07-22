@@ -565,6 +565,23 @@ function clientHeaders(extraHeaders = {}) {
   };
 }
 
+async function saveTauriBackendDownload(path, body = null) {
+  if (!window.__TAURI__) {
+    return null;
+  }
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (typeof invoke !== "function") {
+    throw new Error(t("history.exportFailed"));
+  }
+  return Boolean(await invoke("save_backend_download", {
+    request: {
+      path,
+      body,
+      clientId: state.clientId,
+    },
+  }));
+}
+
 function localizedBBDownLoginMessage(message) {
   const raw = String(message || "").trim();
   if (!raw) {
@@ -2163,7 +2180,12 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     source: normalizedSource,
     page_size: String(normalizedPageSize),
   });
-  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
+  const exportUrl = `/api/playlist/export?${params.toString()}`;
+  const tauriSaved = await saveTauriBackendDownload(exportUrl);
+  if (tauriSaved !== null) {
+    return tauriSaved;
+  }
+  const response = await fetch(exportUrl, {
     credentials: "same-origin",
   });
   if (!response.ok) {
@@ -2193,6 +2215,7 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+  return true;
 }
 
 elements.openRatingButton?.addEventListener("click", () => {
@@ -2210,7 +2233,11 @@ async function exportHistory(format) {
       ? t("remote.exportingCsv", { source: sourceLabel })
       : t("remote.exportingImagePaged", { source: sourceLabel, count: pageSize }));
     try {
-      await downloadHistoryExport(format, source, pageSize);
+      const saved = await downloadHistoryExport(format, source, pageSize);
+      if (!saved) {
+        setAppMessage("");
+        return;
+      }
       setAppMessage(format === "csv"
         ? t("history.csvDownloadStarted", { source: sourceLabel })
         : t("history.imageDownloadStarted", { source: sourceLabel }));
