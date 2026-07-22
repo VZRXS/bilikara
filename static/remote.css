@@ -3513,35 +3513,6 @@ body.remote-identity-modal-open {
   color: var(--muted);
 }
 
-.rating-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin: 14px 0 0;
-  padding: 4px;
-  border: 1px solid rgba(0, 210, 255, 0.18);
-  border-radius: 12px;
-  background: rgba(2, 6, 23, 0.34);
-}
-
-.rating-tabs button {
-  min-height: 36px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: #94a3b8;
-  font-weight: 700;
-}
-
-.rating-tabs button.active {
-  background: rgba(0, 210, 255, 0.16);
-  color: #f8fafc;
-}
-
-.rating-tabs button:disabled {
-  opacity: 0.42;
-}
-
 .rating-media {
   display: grid;
   grid-template-columns: 128px 1fr;
@@ -4038,6 +4009,11 @@ body.remote-identity-modal-open {
   --theme-switch-button-bg: #13110f;
   --theme-switch-button-border: 1px solid rgba(246, 241, 235, 0.12);
   --theme-preview-active-border: var(--on-accent);
+  --rating-tab-bg: rgba(246, 241, 235, 0.06);
+  --rating-tab-border: 1px solid rgba(246, 241, 235, 0.14);
+  --rating-tab-color: var(--muted);
+  --rating-tab-active-bg: rgba(224, 108, 83, 0.2);
+  --rating-tab-active-color: var(--ink);
   --dark-control-rail-shadow: inset 0 0 0 1px rgba(246, 241, 235, 0.08);
   --dark-control-bg: rgba(48, 41, 37, 0.82);
   --dark-control-hover-bg: rgba(64, 55, 50, 0.95);
@@ -4245,6 +4221,11 @@ body.remote-identity-modal-open {
   --qr-popover-close-bg: rgba(30, 41, 59, 0.8);
   --theme-switch-button-bg: #050810;
   --theme-switch-button-border: 1px solid rgba(255, 255, 255, 0.14);
+  --rating-tab-bg: rgba(5, 8, 16, 0.54);
+  --rating-tab-border: 1px solid rgba(0, 210, 255, 0.22);
+  --rating-tab-color: var(--muted);
+  --rating-tab-active-bg: rgba(0, 210, 255, 0.18);
+  --rating-tab-active-color: var(--ink);
   --dark-control-rail-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   --dark-control-bg: rgba(30, 41, 59, 0.84);
   --dark-control-hover-bg: rgba(30, 41, 59, 0.96);
