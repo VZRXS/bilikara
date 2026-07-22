@@ -9479,16 +9479,7 @@ async function loadPlayedSessions() {
   }
 }
 
-function triggerDirectDownload(url) {
-  const link = document.createElement("a");
-  link.href = url;
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
-
-function downloadHistoryExport(format, source = "played", pageSize = 200) {
+async function downloadHistoryExport(format, source = "played", pageSize = 200) {
   const normalizedFormat = String(format || "").trim().toLowerCase();
   const normalizedSource = normalizedHistoryExportSource(source);
   const normalizedPageSize = normalizedHistoryExportPageSize(pageSize);
@@ -9500,7 +9491,36 @@ function downloadHistoryExport(format, source = "played", pageSize = 200) {
     source: normalizedSource,
     page_size: String(normalizedPageSize),
   });
-  triggerDirectDownload(`/api/playlist/export?${params.toString()}`);
+  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    let message = t("history.exportFailed");
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      // Keep the translated fallback for non-JSON failures.
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const fallbackFilename = normalizedFormat === "csv"
+    ? "bilikara-playlist.csv"
+    : "bilikara-playlist.png";
+  const filename = filenameFromContentDisposition(
+    response.headers.get("Content-Disposition"),
+    fallbackFilename,
+  );
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
 
 async function exportHistory(format, source = "played", pageSize = 200) {
