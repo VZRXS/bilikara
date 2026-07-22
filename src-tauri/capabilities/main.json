@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "main",
-  "description": "Allow the local Bilikara backend page to use fullscreen and native export save APIs.",
+  "description": "Allow the local Bilikara backend page to use native exports and control the host and stage windows.",
   "windows": [
     "main"
   ],
@@ -14,6 +14,10 @@
   },
   "permissions": [
     "core:default",
-    "core:window:allow-set-fullscreen"
+    "core:window:allow-set-fullscreen",
+    "allow-set-window-fullscreen",
+    "allow-get-stage-display-info",
+    "allow-open-stage-window",
+    "allow-close-stage-window"
   ]
 }

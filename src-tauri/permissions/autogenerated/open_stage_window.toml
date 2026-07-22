@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-stage-window"
+description = "Enables the open_stage_window command without any pre-configured scope."
+commands.allow = ["open_stage_window"]
+
+[[permission]]
+identifier = "deny-open-stage-window"
+description = "Denies the open_stage_window command without any pre-configured scope."
+commands.deny = ["open_stage_window"]

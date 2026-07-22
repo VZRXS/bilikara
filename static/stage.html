@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh" data-theme="light">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bilikara Stage</title>
+  <link rel="stylesheet" href="/stage.css" />
+</head>
+
+<body class="stage-body">
+  <main class="stage-shell" aria-label="Bilikara 大屏输出">
+    <div class="player-frame stage-frame" id="stage-frame">
+      <div class="empty-state stage-empty-state">
+        <p>正在等待预览屏连接…</p>
+      </div>
+    </div>
+    <button type="button" class="stage-fullscreen-hint" id="stage-fullscreen-hint">
+      点击进入全屏
+    </button>
+  </main>
+
+  <script src="/stage-sync.js"></script>
+  <script src="/stage-renderer.js"></script>
+  <script src="/stage.js"></script>
+</body>
+
+</html>

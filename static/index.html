@@ -129,6 +129,65 @@
             </div>
           </div>
         </div>
+        <div class="status-chip stage-status-chip" id="stage-settings">
+          <button type="button" class="status-chip-toggle" id="stage-settings-toggle" aria-expanded="false">
+            <span class="status-chip-label-row">
+              <span class="control-label" data-i18n="display.outputTitle">双屏 / 投屏</span>
+              <span class="stage-state-dot" id="stage-state-dot" aria-hidden="true"></span>
+            </span>
+            <div class="service-mode-summary" id="stage-output-summary" data-i18n="display.outputOff">已关闭</div>
+            <p class="cache-chip-meta" id="stage-output-meta" data-i18n="display.detectingDisplays">正在检测显示器</p>
+          </button>
+          <div class="cache-panel stage-output-panel hidden" id="stage-settings-panel">
+            <div class="stage-panel-heading">
+              <div class="stage-panel-heading-main">
+                <span class="stage-device-icon stage-output-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2.5" y="4" width="13" height="10" rx="1.5"></rect>
+                    <path d="M7 18h4M9 14v4"></path>
+                    <rect x="14.5" y="8" width="7" height="9" rx="1.4"></rect>
+                  </svg>
+                </span>
+                <div>
+                  <p class="cache-panel-label" data-i18n="display.outputPanelTitle">显示输出</p>
+                  <p class="cache-panel-hint" id="stage-output-status" data-i18n="display.stageOutputOff">未连接大屏</p>
+                </div>
+              </div>
+              <button type="button" class="stage-output-switch" id="stage-output-button" role="switch"
+                aria-checked="false" data-i18n-aria-label="display.toggleDualOutput">
+                <span class="stage-output-switch-thumb" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="stage-target-section">
+              <div class="stage-target-heading">
+                <div>
+                  <p class="cache-panel-label" data-i18n="display.targetTitle">输出目标</p>
+                </div>
+                <button type="button" class="icon-button stage-refresh-button" id="stage-refresh-button"
+                  data-i18n-title="display.refreshDisplays" data-i18n-aria-label="display.refreshDisplays"
+                  title="刷新显示器" aria-label="刷新显示器">↻</button>
+              </div>
+              <div class="stage-display-list" id="stage-display-list"></div>
+            </div>
+            <div class="stage-cast-placeholder" aria-disabled="true">
+              <span class="stage-device-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 18.5A1.5 1.5 0 0 1 5.5 20"></path>
+                  <path d="M4 14a6 6 0 0 1 6 6"></path>
+                  <path d="M4 9.5A10.5 10.5 0 0 1 14.5 20"></path>
+                  <path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-1"></path>
+                </svg>
+              </span>
+              <div>
+                <p class="cache-panel-label" data-i18n="display.wirelessCast">无线投屏</p>
+                <p class="cache-panel-hint" data-i18n="display.wirelessCastLater">暂未接入，后续在这里扩展</p>
+              </div>
+              <span class="stage-coming-soon" data-i18n="display.comingSoon">稍后支持</span>
+            </div>
+          </div>
+        </div>
         <div class="status-chip" id="cache-settings">
           <button type="button" class="status-chip-toggle" id="cache-settings-toggle" aria-expanded="false">
             <span class="status-chip-label-row">
@@ -1060,6 +1119,8 @@
   <script src="/jungle.js" defer></script>
   <script src="/export-guard.js" defer></script>
   <script src="/export-download.js" defer></script>
+  <script src="/stage-sync.js" defer></script>
+  <script src="/stage-renderer.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 
