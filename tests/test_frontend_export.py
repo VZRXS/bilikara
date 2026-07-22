@@ -17,7 +17,7 @@ class FrontendExportBehaviorTest(unittest.TestCase):
         end = source.index(next_marker, start)
         return source[start:end]
 
-    def test_playlist_export_uses_tauri_save_dialog_and_browser_blob_download(self):
+    def test_playlist_export_has_tauri_direct_attachment_and_loopback_blob_paths(self):
         for name, source in self.sources.items():
             with self.subTest(frontend=name):
                 export_source = self.function_source(
@@ -32,6 +32,8 @@ class FrontendExportBehaviorTest(unittest.TestCase):
                 self.assertIn("/api/playlist/export?", export_source)
                 self.assertIn("await saveTauriBackendDownload(exportUrl)", export_source)
                 self.assertIn("if (tauriSaved !== null)", export_source)
+                self.assertIn("exportDownload.isLoopbackHostname(window.location.hostname)", export_source)
+                self.assertIn("exportDownload.triggerAttachmentDownload(exportUrl)", export_source)
                 self.assertIn("await fetch(", export_source)
                 self.assertIn("await response.blob()", export_source)
                 self.assertIn("filenameFromContentDisposition(", export_source)
@@ -40,6 +42,10 @@ class FrontendExportBehaviorTest(unittest.TestCase):
                 self.assertIn("URL.revokeObjectURL(downloadUrl)", export_source)
                 self.assertLess(
                     export_source.index("await saveTauriBackendDownload(exportUrl)"),
+                    export_source.index("exportDownload.triggerAttachmentDownload(exportUrl)"),
+                )
+                self.assertLess(
+                    export_source.index("exportDownload.triggerAttachmentDownload(exportUrl)"),
                     export_source.index("await fetch(exportUrl"),
                 )
 
@@ -58,6 +64,11 @@ class FrontendExportBehaviorTest(unittest.TestCase):
 
     def test_diagnostics_package_uses_tauri_save_dialog_before_browser_blob(self):
         source = self.sources["host"]
+        response_source = self.function_source(
+            source,
+            "async function diagnosticResponse",
+            "async function copyTextWithFallback",
+        )
         download_source = self.function_source(
             source,
             "async function downloadDiagnosticsPackage",
@@ -68,6 +79,9 @@ class FrontendExportBehaviorTest(unittest.TestCase):
         self.assertIn("JSON.stringify({ browser: diagnosticBrowserInfo() })", download_source)
         self.assertIn("if (tauriSaved !== null)", download_source)
         self.assertIn('await diagnosticResponse("/api/diagnostics/package")', download_source)
+        self.assertIn('method: "POST"', response_source)
+        self.assertIn("await response.blob()", download_source)
+        self.assertNotIn("triggerAttachmentDownload", download_source)
         self.assertLess(
             download_source.index("await saveTauriBackendDownload("),
             download_source.index('await diagnosticResponse("/api/diagnostics/package")'),
@@ -83,6 +97,10 @@ class FrontendExportBehaviorTest(unittest.TestCase):
                 )
                 self.assertIn("historyExportGuard.run", export_source)
                 self.assertIn("await downloadHistoryExport", export_source)
+                self.assertLess(
+                    export_source.index("if (!saved)"),
+                    export_source.index('t("history.csvDownloadStarted"'),
+                )
                 download_source = self.function_source(
                     source,
                     "async function downloadHistoryExport",

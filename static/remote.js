@@ -2185,6 +2185,16 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
   if (tauriSaved !== null) {
     return tauriSaved;
   }
+  const exportDownload = window.BilikaraExportDownload;
+  if (!exportDownload
+    || typeof exportDownload.isLoopbackHostname !== "function"
+    || typeof exportDownload.triggerAttachmentDownload !== "function") {
+    throw new Error(t("history.exportFailed"));
+  }
+  if (!exportDownload.isLoopbackHostname(window.location.hostname)) {
+    exportDownload.triggerAttachmentDownload(exportUrl);
+    return true;
+  }
   const response = await fetch(exportUrl, {
     credentials: "same-origin",
   });
