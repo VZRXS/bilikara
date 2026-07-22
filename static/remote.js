@@ -2150,16 +2150,7 @@ function selectedHistoryExportPageSize() {
   return [200, 150, 100, 80, 60, 50].includes(pageSize) ? pageSize : 200;
 }
 
-function triggerDirectDownload(url) {
-  const link = document.createElement("a");
-  link.href = url;
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-}
-
-function downloadHistoryExport(format, source = selectedHistoryExportSource(), pageSize = selectedHistoryExportPageSize()) {
+async function downloadHistoryExport(format, source = selectedHistoryExportSource(), pageSize = selectedHistoryExportPageSize()) {
   const normalizedFormat = String(format || "").trim().toLowerCase();
   const normalizedSource = source;
   const requestedPageSize = Number.parseInt(String(pageSize || "200"), 10);
@@ -2172,7 +2163,36 @@ function downloadHistoryExport(format, source = selectedHistoryExportSource(), p
     source: normalizedSource,
     page_size: String(normalizedPageSize),
   });
-  triggerDirectDownload(`/api/playlist/export?${params.toString()}`);
+  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    let message = t("history.exportFailed");
+    try {
+      const payload = await response.json();
+      message = payload.error || message;
+    } catch {
+      // Keep the translated fallback for non-JSON failures.
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const fallbackFilename = normalizedFormat === "csv"
+    ? "bilikara-playlist.csv"
+    : "bilikara-playlist.png";
+  const filename = filenameFromContentDisposition(
+    response.headers.get("Content-Disposition"),
+    fallbackFilename,
+  );
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
 
 elements.openRatingButton?.addEventListener("click", () => {
