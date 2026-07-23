@@ -98,6 +98,20 @@ class StageSyncLogicTest(unittest.TestCase):
         )
         self.assertFalse(result)
 
+    def test_accepts_lower_sequence_from_a_different_master(self):
+        result = self.call(
+            "sync.acceptsEnvelope({protocol:1,senderId:'master',sequence:8},"
+            "{protocol:1,senderId:'new-master',sequence:7})"
+        )
+        self.assertTrue(result)
+
+    def test_rejects_messages_with_a_different_protocol(self):
+        result = self.call(
+            "sync.acceptsEnvelope({protocol:1,senderId:'master',sequence:8},"
+            "{protocol:2,senderId:'master',sequence:9})"
+        )
+        self.assertFalse(result)
+
     def test_scene_normalization_bounds_overlay_rows(self):
         result = self.call(
             "sync.normalizeScene({revision:2,itemId:'song',videoUrl:'/media.mp4',"
@@ -160,6 +174,14 @@ class StageSyncLogicTest(unittest.TestCase):
         self.assertIn('tauriInvoke("set_window_fullscreen"', stage_source)
         self.assertIn('"windows": [\n    "stage"', stage_capability)
         self.assertIn('"allow-set-window-fullscreen"', stage_capability)
+
+    def test_host_registers_storage_fallback_listener_only_once(self):
+        app_source = (self.repo_root / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("stageStorageListenerAttached: false", app_source)
+        self.assertIn("if (!state.stageStorageListenerAttached)", app_source)
+        self.assertIn(
+            'window.addEventListener("storage", handleStageStorageEvent)', app_source
+        )
 
 
 if __name__ == "__main__":

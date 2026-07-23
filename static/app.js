@@ -270,6 +270,7 @@ const state = {
   stageBroadcastTimer: null,
   stageStatusTimer: null,
   stageTopologyTimer: null,
+  stageStorageListenerAttached: false,
   stageTopologyBusy: false,
   stageTopologySignature: "",
   stageDisplayInfo: null,
@@ -1218,21 +1219,40 @@ function stageDisplayById(displayId) {
   return state.stageDisplayInfo?.displays?.find((display) => display.id === displayId) || null;
 }
 
-const stageDeviceIconMarkup = Object.freeze({
-  window: `
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-      stroke-linecap="round" stroke-linejoin="round">
-      <rect x="3" y="4" width="18" height="16" rx="2"></rect>
-      <path d="M3 8h18"></path>
-      <path d="M6.5 6h.01M9.5 6h.01"></path>
-    </svg>`,
-  monitor: `
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-      stroke-linecap="round" stroke-linejoin="round">
-      <rect x="2.5" y="3.5" width="19" height="14" rx="2"></rect>
-      <path d="M8 21h8M12 17.5V21"></path>
-    </svg>`,
+const stageDeviceIconShapes = Object.freeze({
+  window: [
+    ["rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }],
+    ["path", { d: "M3 8h18" }],
+    ["path", { d: "M6.5 6h.01M9.5 6h.01" }],
+  ],
+  monitor: [
+    ["rect", { x: "2.5", y: "3.5", width: "19", height: "14", rx: "2" }],
+    ["path", { d: "M8 21h8M12 17.5V21" }],
+  ],
 });
+
+function createStageDeviceIcon(iconType) {
+  const iconElement = document.createElement("span");
+  iconElement.className = "stage-device-icon";
+  iconElement.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const shapes = stageDeviceIconShapes[iconType] || stageDeviceIconShapes.monitor;
+  for (const [tagName, attributes] of shapes) {
+    const shape = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+    for (const [name, value] of Object.entries(attributes)) {
+      shape.setAttribute(name, value);
+    }
+    svg.append(shape);
+  }
+  iconElement.append(svg);
+  return iconElement;
+}
 
 function createStageDisplayOption({ id, name, detail, iconType, selectable, controller = false }) {
   const selected = id === state.stageSelectedDisplayId;
@@ -1244,10 +1264,7 @@ function createStageDisplayOption({ id, name, detail, iconType, selectable, cont
   button.disabled = state.stageControlBusy || !selectable || (state.stageEnabled && active);
   button.setAttribute("aria-pressed", String(selected));
 
-  const iconElement = document.createElement("span");
-  iconElement.className = "stage-device-icon";
-  iconElement.setAttribute("aria-hidden", "true");
-  iconElement.innerHTML = stageDeviceIconMarkup[iconType] || stageDeviceIconMarkup.monitor;
+  const iconElement = createStageDeviceIcon(iconType);
   const copy = document.createElement("span");
   copy.className = "stage-display-copy";
   const nameElement = document.createElement("span");
@@ -1393,6 +1410,18 @@ function handleStageEnvelope(candidate) {
   }
 }
 
+function handleStageStorageEvent(event) {
+  const sync = stageSyncApi();
+  if (!sync || event.key !== sync.storageKey || !event.newValue) {
+    return;
+  }
+  try {
+    handleStageEnvelope(JSON.parse(event.newValue));
+  } catch {
+    // Ignore malformed fallback messages.
+  }
+}
+
 function initializeStageController() {
   const sync = stageSyncApi();
   if (!sync || state.stageBroadcastTimer) {
@@ -1402,16 +1431,10 @@ function initializeStageController() {
     state.stageChannel = new BroadcastChannel(sync.channelName);
     state.stageChannel.addEventListener("message", (event) => handleStageEnvelope(event.data));
   }
-  window.addEventListener("storage", (event) => {
-    if (event.key !== sync.storageKey || !event.newValue) {
-      return;
-    }
-    try {
-      handleStageEnvelope(JSON.parse(event.newValue));
-    } catch {
-      // Ignore malformed fallback messages.
-    }
-  });
+  if (!state.stageStorageListenerAttached) {
+    window.addEventListener("storage", handleStageStorageEvent);
+    state.stageStorageListenerAttached = true;
+  }
   state.stageBroadcastTimer = window.setInterval(broadcastStageState, stageBroadcastIntervalMs);
   state.stageStatusTimer = window.setInterval(() => {
     if (
