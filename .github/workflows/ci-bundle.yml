@@ -78,6 +78,7 @@ jobs:
         run: python -m unittest discover -s tests -v
         env:
           BILIKARA_REQUIRE_RUST_LIB: "1"
+          BILIKARA_RUST_STRICT_EQUIVALENCE: "1"
 
   bundle:
     name: Bundle (${{ matrix.label }})

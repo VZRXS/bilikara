@@ -858,9 +858,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 ):
                     manager.reconcile_cache_state()
 
-                self.assertEqual(planner_mock.call_count, 2)
-                self.assertEqual(planned_statuses, ["pending", "pending"])
-                self.assertEqual(events, ["plan", "ensure:song-a", "plan", "apply"])
+                self.assertEqual(planner_mock.call_count, 1)
+                self.assertEqual(planned_statuses, ["pending"])
+                self.assertEqual(events, ["plan", "ensure:song-a", "apply"])
             finally:
                 manager.shutdown()
 
@@ -888,7 +888,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertTrue((self.cache_dir / "song-a").exists())
                 self.assertEqual(manager.desired_ids, {"song-a", "song-b", "song-c"})
                 self.assertEqual(manager.ordered_desired_ids, ["song-b", "song-c"])
-                self.assertEqual(planner_mock.call_count, 2)
+                self.assertEqual(planner_mock.call_count, 1)
             finally:
                 manager.shutdown()
 
@@ -960,7 +960,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_sync_plans_then_ensures_then_refreshes_priority_plan(self):
+    def test_sync_reuses_plan_when_ensure_keeps_priority_inputs_unchanged(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,
             "_worker_loop",
@@ -976,17 +976,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     retained_ids=("song-a", "song-b"),
                     preempt_ids=(),
                 )
-                priority_plan = CachePlan(
-                    desired_ids=("song-a", "song-b"),
-                    pending_order=("song-a", "song-b"),
-                    retained_ids=("song-a", "song-b"),
-                    preempt_ids=("song-b",),
-                )
                 events = []
 
                 def plan_snapshot(items):
                     events.append("plan")
-                    return state_plan if events.count("plan") == 1 else priority_plan
+                    return state_plan
 
                 with patch.object(
                     manager,
@@ -1009,8 +1003,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "plan",
                         "ensure:song-a",
                         "ensure:song-b",
-                        "plan",
-                        ("apply", priority_plan),
+                        ("apply", state_plan),
                     ],
                 )
                 apply_mock.assert_called_once()

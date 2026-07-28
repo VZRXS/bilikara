@@ -80,6 +80,13 @@ def _native_request(
 
 
 class UpdateAssetSelectionRustTest(unittest.TestCase):
+    def setUp(self) -> None:
+        strict_patcher = patch.dict(
+            os.environ, {"BILIKARA_RUST_STRICT_EQUIVALENCE": ""}, clear=False
+        )
+        strict_patcher.start()
+        self.addCleanup(strict_patcher.stop)
+
     def test_direct_rust_selection_returns_selected_index_and_score_vector(self) -> None:
         self._require_native_selection()
         release = {

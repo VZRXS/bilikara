@@ -61,8 +61,13 @@ const localPlayerSyncSeekCooldownMs = 750;
 let nowMs = 1000;
 Date.now = () => nowMs;
 const actions = [];
+let heldItemId = "";
 function syncSplitPlayerVolumeFromVideo() {{}}
 function isSplitPlayerSeekSettling() {{ return false; }}
+function shouldHoldCurrentItemForTransition(item) {{
+  const itemId = String(item?.id || item || "");
+  return Boolean(itemId && itemId === heldItemId);
+}}
 function reportSplitSyncDiagnostic(itemId, video, audio, action) {{ actions.push(action); }}
 function clampMediaTime(media, value) {{
   const lower = Math.max(0, Number(value || 0));
@@ -180,6 +185,25 @@ console.log(JSON.stringify({ action, videoPaused: video.paused, videoPauseCalls:
         self.assertTrue(result["videoPaused"])
         self.assertEqual(result["videoPauseCalls"], 1)
         self.assertEqual(result["audioPauseCalls"], 0)
+
+    def test_transition_hold_prevents_any_audio_or_video_start(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.paused = false; audio.paused = false; heldItemId = "item";
+const action = syncSplitPlayer(video, audio, 0, true);
+console.log(JSON.stringify({ action, shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused, audioPaused: audio.paused,
+  videoPlayCalls: video.playCalls, audioPlayCalls: audio.playCalls }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["action"], "transition-hold")
+        self.assertFalse(result["shouldPlay"])
+        self.assertTrue(result["videoPaused"])
+        self.assertTrue(result["audioPaused"])
+        self.assertEqual(result["videoPlayCalls"], 0)
+        self.assertEqual(result["audioPlayCalls"], 0)
 
     def test_positive_and_negative_delay_preserve_startup_boundaries(self):
         result = self.run_node(

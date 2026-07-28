@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import platform
 import sys
+import threading
+import time
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +65,132 @@ MAX_PLAYLIST_SESSION_USERS = 32
 MAX_PLAYLIST_STRING_BYTES = 512
 MAX_PLAYLIST_HISTORY_KEY_BYTES = 8192
 MAX_PLAYLIST_AUDIO_PAGES = 256
+
+RUST_STRICT_EQUIVALENCE_ENV = "BILIKARA_RUST_STRICT_EQUIVALENCE"
+RUST_TIMING_DIAGNOSTICS_ENV = "BILIKARA_RUST_TIMING_DIAGNOSTICS"
+_TIMING_LOCK = threading.Lock()
+_TIMING_DIAGNOSTICS: dict[str, dict[str, int | float]] = {}
+
+
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def strict_equivalence_enabled() -> bool:
+    """Return whether exact Rust/Python migration comparisons are enabled."""
+
+    return _env_enabled(RUST_STRICT_EQUIVALENCE_ENV)
+
+
+def timing_diagnostics_enabled() -> bool:
+    return _env_enabled(RUST_TIMING_DIAGNOSTICS_ENV)
+
+
+def _record_timing(capability: str, **values: int | float) -> None:
+    if not timing_diagnostics_enabled():
+        return
+    with _TIMING_LOCK:
+        metrics = _TIMING_DIAGNOSTICS.setdefault(capability, {})
+        for key, value in values.items():
+            metrics[key] = metrics.get(key, 0) + value
+
+
+def timing_diagnostics_snapshot(*, reset: bool = False) -> dict[str, dict[str, int | float]]:
+    """Return aggregated migration timings without emitting per-call logs."""
+
+    with _TIMING_LOCK:
+        snapshot = {
+            capability: dict(metrics)
+            for capability, metrics in sorted(_TIMING_DIAGNOSTICS.items())
+        }
+        if reset:
+            _TIMING_DIAGNOSTICS.clear()
+    return snapshot
+
+
+def python_fallback(capability: str, callback: Callable[[], Any]) -> Any:
+    """Run one lazy Python fallback and optionally account for its cost."""
+
+    if not timing_diagnostics_enabled():
+        return callback()
+    started = time.perf_counter()
+    try:
+        return callback()
+    finally:
+        _record_timing(
+            capability,
+            python_fallback_count=1,
+            python_fallback_elapsed_seconds=time.perf_counter() - started,
+        )
+
+
+def _call_json_capability(
+    capability: str,
+    symbol_name: str,
+    request: dict[str, object],
+) -> object | None:
+    """Encode, invoke, and decode one JSON FFI request with aggregate timing."""
+
+    _record_timing(capability, call_count=1)
+    if _rust_lib is None or not _CAPABILITIES.get(capability, False):
+        return None
+    try:
+        encode_started = time.perf_counter()
+        payload = json.dumps(
+            request,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        encode_elapsed = time.perf_counter() - encode_started
+
+        ffi_started = time.perf_counter()
+        pointer = getattr(_rust_lib, symbol_name)(payload)
+        response_json = _read_rust_string(pointer)
+        ffi_elapsed = time.perf_counter() - ffi_started
+        _record_timing(
+            capability,
+            rust_ffi_elapsed_seconds=ffi_elapsed,
+            json_encode_elapsed_seconds=encode_elapsed,
+        )
+        if response_json is None:
+            return None
+
+        decode_started = time.perf_counter()
+        response = json.loads(response_json)
+        _record_timing(
+            capability,
+            json_decode_elapsed_seconds=time.perf_counter() - decode_started,
+        )
+        return response
+    except Exception:
+        return None
+
+
+def _strict_equivalence_result(
+    capability: str,
+    response: dict[str, Any],
+    reference_factory: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    if not strict_equivalence_enabled():
+        return response
+
+    started = time.perf_counter()
+    reference = reference_factory()
+    mismatch = response != reference
+    _record_timing(
+        capability,
+        strict_equivalence_comparison_count=1,
+        strict_equivalence_mismatch_count=int(mismatch),
+        strict_reference_elapsed_seconds=time.perf_counter() - started,
+    )
+    if mismatch:
+        print(
+            f"[rust] strict equivalence mismatch for {capability}; using Python reference",
+            file=sys.stderr,
+            flush=True,
+        )
+        return reference
+    return response
 
 
 def _rust_library_name() -> str:
@@ -344,7 +474,7 @@ def backend_status() -> dict[str, object]:
     missing_capabilities = sorted(
         capability for capability, available in _CAPABILITIES.items() if not available
     )
-    return {
+    status: dict[str, object] = {
         "loaded": _rust_lib is not None,
         "fully_compatible": _rust_lib is not None and not missing_capabilities,
         "error": _RUST_LOAD_ERROR,
@@ -354,7 +484,12 @@ def backend_status() -> dict[str, object]:
         "abi_version": _ABI_VERSION,
         "expected_abi_version": EXPECTED_ABI_VERSION,
         "abi_compatible": _ABI_COMPATIBLE,
+        "strict_equivalence": strict_equivalence_enabled(),
+        "timing_diagnostics_enabled": timing_diagnostics_enabled(),
     }
+    if timing_diagnostics_enabled():
+        status["timing_diagnostics"] = timing_diagnostics_snapshot()
+    return status
 
 
 def clean_display_title(title: str, display_title: str, part_title: str) -> str | None:
@@ -599,14 +734,18 @@ def is_downloadable_archive(name: str, url: str) -> bool | None:
 
 
 def _asset_selection_request_indices(request: object) -> list[int] | None:
-    if not isinstance(request, dict):
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "target",
+        "assets",
+    }:
         return None
     schema_version = request.get("schema_version")
     if isinstance(schema_version, bool) or schema_version != 1:
         return None
 
     target = request.get("target")
-    if not isinstance(target, dict):
+    if not isinstance(target, dict) or set(target) != {"platform", "arch"}:
         return None
     if not isinstance(target.get("platform"), str) or not isinstance(
         target.get("arch"), str
@@ -619,7 +758,13 @@ def _asset_selection_request_indices(request: object) -> list[int] | None:
 
     indices: list[int] = []
     for asset in assets:
-        if not isinstance(asset, dict):
+        if not isinstance(asset, dict) or set(asset) != {
+            "original_index",
+            "name",
+            "label",
+            "browser_download_url",
+            "content_type",
+        }:
             return None
         original_index = asset.get("original_index")
         if (
@@ -640,7 +785,12 @@ def _valid_asset_selection_response(
     response: object,
     request_indices: list[int],
 ) -> bool:
-    if not isinstance(response, dict):
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "selected_index",
+        "scores",
+    }:
         return False
 
     schema_version = response.get("schema_version")
@@ -657,7 +807,7 @@ def _valid_asset_selection_response(
 
     parsed_scores: list[tuple[int, int]] = []
     for expected_index, item in zip(request_indices, scores):
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or set(item) != {"original_index", "score"}:
             return False
         original_index = item.get("original_index")
         score = item.get("score")
@@ -691,6 +841,35 @@ def _valid_asset_selection_response(
     return selected_index == expected_selected_index
 
 
+def _expected_asset_selection(request: dict[str, object]) -> dict[str, Any]:
+    from .updater import _py_score_asset_for_target
+
+    target = request["target"]
+    assets = request["assets"]
+    scores = [
+        {
+            "original_index": asset["original_index"],
+            "score": _py_score_asset_for_target(asset, target),
+        }
+        for asset in assets
+    ]
+    selectable = [entry for entry in scores if entry["score"] >= 0]
+    selected_index = None
+    if selectable:
+        highest = max(entry["score"] for entry in selectable)
+        selected_index = next(
+            entry["original_index"]
+            for entry in selectable
+            if entry["score"] == highest
+        )
+    return {
+        "schema_version": 1,
+        "status": "selected" if selected_index is not None else "no_match",
+        "selected_index": selected_index,
+        "scores": scores,
+    }
+
+
 def try_select_update_asset(
     request: dict[str, object],
 ) -> tuple[bool, dict[str, Any] | None]:
@@ -703,53 +882,59 @@ def try_select_update_asset(
     """
 
     request_indices = _asset_selection_request_indices(request)
-    if (
-        request_indices is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("select_update_asset", False)
-    ):
+    if request_indices is None:
         return False, None
-
-    try:
-        request_json = json.dumps(
-            request,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        pointer = _rust_lib.rust_select_update_asset(request_json)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_asset_selection_response(response, request_indices):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "select_update_asset", "rust_select_update_asset", request
+    )
+    if not _valid_asset_selection_response(response, request_indices):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "select_update_asset",
+        response,
+        lambda: _expected_asset_selection(request),
+    )
 
 
 def try_select_release(
     request: dict[str, object],
 ) -> tuple[bool, dict[str, Any] | None]:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "current_version",
+        "include_preview",
+        "releases",
+    }:
+        return False, None
+    schema_version = request.get("schema_version")
+    releases = request.get("releases")
     if (
-        _rust_lib is None
-        or not _CAPABILITIES.get("select_release", False)
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(request.get("current_version"), str)
+        or not isinstance(request.get("include_preview"), bool)
+        or not isinstance(releases, list)
+        or len(releases) > MAX_PLAYLIST_PLAN_ITEMS
     ):
         return False, None
-
-    try:
-        request_json = json.dumps(
-            request,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        pointer = _rust_lib.rust_select_release(request_json)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
+    for release in releases:
+        if (
+            not isinstance(release, dict)
+            or set(release) != {"tag_name", "draft", "prerelease"}
+            or not isinstance(release.get("tag_name"), str)
+            or not isinstance(release.get("draft"), bool)
+            or not isinstance(release.get("prerelease"), bool)
+        ):
             return False, None
-        response = json.loads(response_json)
 
-        if not isinstance(response, dict):
+    response = _call_json_capability("select_release", "rust_select_release", request)
+    try:
+        if not isinstance(response, dict) or set(response) != {
+            "schema_version",
+            "status",
+            "selected_index",
+        }:
             return False, None
 
         schema_version = response.get("schema_version")
@@ -762,14 +947,47 @@ def try_select_release(
 
         if status == "selected":
             selected_index = response.get("selected_index")
-            if isinstance(selected_index, bool) or not isinstance(selected_index, int) or selected_index < 0:
+            if (
+                isinstance(selected_index, bool)
+                or not isinstance(selected_index, int)
+                or selected_index < 0
+                or selected_index >= len(releases)
+            ):
                 return False, None
         elif status == "no_match":
             selected_index = response.get("selected_index")
             if selected_index is not None:
                 return False, None
 
-        return True, response
+        from .updater import _py_latest_release_for_current
+
+        def reference() -> dict[str, Any]:
+            releases = request.get("releases")
+            assert isinstance(releases, list)
+            selected = _py_latest_release_for_current(
+                str(request.get("current_version") or ""),
+                releases,
+                include_preview=bool(request.get("include_preview")),
+            )
+            selected_index = None
+            if selected:
+                selected_index = next(
+                    (
+                        index
+                        for index, release in enumerate(releases)
+                        if release is selected
+                    ),
+                    None,
+                )
+            return {
+                "schema_version": 1,
+                "status": "selected" if selected_index is not None else "no_match",
+                "selected_index": selected_index,
+            }
+
+        return True, _strict_equivalence_result(
+            "select_release", response, reference
+        )
     except Exception:
         return False, None
 
@@ -777,41 +995,70 @@ def try_select_release(
 def try_select_media_pages(
     request: dict[str, Any],
 ) -> tuple[bool, dict[str, Any] | None]:
-    if (
-        _rust_lib is None
-        or not _CAPABILITIES.get("select_media_pages", False)
-    ):
-        return False, None
-
     try:
+        if not isinstance(request, dict) or set(request) != {
+            "schema_version",
+            "preferred_page",
+            "tolerance_seconds",
+            "pages",
+        }:
+            return False, None
+        schema_version = request.get("schema_version")
+        preferred_page = request.get("preferred_page")
+        tolerance_seconds = request.get("tolerance_seconds")
+        if (
+            isinstance(schema_version, bool)
+            or schema_version != 1
+            or isinstance(preferred_page, bool)
+            or not isinstance(preferred_page, int)
+            or not -(2**63) <= preferred_page <= 2**63 - 1
+            or isinstance(tolerance_seconds, bool)
+            or not isinstance(tolerance_seconds, int)
+            or not 0 <= tolerance_seconds <= 2**63 - 1
+        ):
+            return False, None
         pages = request.get("pages")
-        if not isinstance(pages, list):
+        if not isinstance(pages, list) or len(pages) > MAX_PLAYLIST_PLAN_ITEMS:
             return False, None
 
         original_indices: set[int] = set()
         last_index: int | None = None
         for page in pages:
-            if not isinstance(page, dict):
+            if not isinstance(page, dict) or set(page) != {
+                "original_index",
+                "page",
+                "cid",
+                "duration",
+                "part",
+            }:
                 return False, None
             idx = page.get("original_index")
-            if isinstance(idx, bool) or not isinstance(idx, int) or idx < 0:
+            if (
+                isinstance(idx, bool)
+                or not isinstance(idx, int)
+                or idx < 0
+                or isinstance(page.get("page"), bool)
+                or not isinstance(page.get("page"), int)
+                or isinstance(page.get("cid"), bool)
+                or not isinstance(page.get("cid"), int)
+                or isinstance(page.get("duration"), bool)
+                or not isinstance(page.get("duration"), int)
+                or not isinstance(page.get("part"), str)
+            ):
                 return False, None
             if last_index is not None and idx <= last_index:
                 return False, None
             last_index = idx
             original_indices.add(idx)
 
-        request_json = json.dumps(
-            request,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        pointer = _rust_lib.rust_select_media_pages(request_json)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not isinstance(response, dict):
+        response = _call_json_capability(
+            "select_media_pages", "rust_select_media_pages", request
+        )
+        if not isinstance(response, dict) or set(response) != {
+            "schema_version",
+            "status",
+            "selected_indices",
+        }:
             return False, None
 
         schema_version = response.get("schema_version")
@@ -841,7 +1088,35 @@ def try_select_media_pages(
             if len(pages) == 0 or len(selected_indices) == 0:
                 return False, None
 
-        return True, response
+        from .bilibili import VideoPage, _py_select_matching_pages
+
+        def reference() -> dict[str, Any]:
+            source_pages = [
+                VideoPage(
+                    page=page["page"],
+                    cid=page.get("cid", 0),
+                    duration=page["duration"],
+                    part=page.get("part", ""),
+                )
+                for page in pages
+            ]
+            selected = _py_select_matching_pages(
+                source_pages,
+                preferred_page=int(request.get("preferred_page", 1)),
+                tolerance_seconds=int(request.get("tolerance_seconds", 0)),
+            )
+            selected_indices = [
+                pages[source_pages.index(page)]["original_index"] for page in selected
+            ]
+            return {
+                "schema_version": 1,
+                "status": "selected" if selected_indices else "no_match",
+                "selected_indices": selected_indices,
+            }
+
+        return True, _strict_equivalence_result(
+            "select_media_pages", response, reference
+        )
     except Exception:
         return False, None
 
@@ -978,29 +1253,56 @@ def try_decide_audio_binding(
     """Call the coarse native audio-binding decision and validate its response."""
 
     request_indices = _audio_binding_request_indices(request)
-    if (
-        request_indices is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("decide_audio_binding", False)
-    ):
+    if request_indices is None:
         return False, None
+    response = _call_json_capability(
+        "decide_audio_binding", "rust_decide_audio_binding", request
+    )
+    if not _valid_audio_binding_response(response, request_indices):
+        return False, None
+    assert isinstance(response, dict)
+    from .bilibili import VideoPage, _py_decide_audio_binding
 
-    try:
-        request_json = json.dumps(
-            request,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        pointer = _rust_lib.rust_decide_audio_binding(request_json)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_audio_binding_response(response, request_indices):
-            return False, None
-        return True, response
-    except Exception:
-        return False, None
+    def reference() -> dict[str, Any]:
+        pages = [
+            VideoPage(
+                page=page["page"],
+                cid=0,
+                duration=page["duration"],
+                part=page["part"],
+            )
+            for page in request["pages"]
+        ]
+        decision = _py_decide_audio_binding(
+            pages, int(request["tolerance_seconds"])
+        )
+        if decision is None:
+            return {
+                "schema_version": 1,
+                "status": "no_match",
+                "mode": None,
+                "selected_indices": [],
+                "automatic_video_index": None,
+            }
+        selected_indices = [
+            request_indices[index] for index in decision.selected_indices
+        ]
+        automatic_video_index = (
+            request_indices[decision.automatic_video_index]
+            if decision.automatic_video_index is not None
+            else None
+        )
+        return {
+            "schema_version": 1,
+            "status": "decided",
+            "mode": decision.mode,
+            "selected_indices": selected_indices,
+            "automatic_video_index": automatic_video_index,
+        }
+
+    return True, _strict_equivalence_result(
+        "decide_audio_binding", response, reference
+    )
 
 
 def _update_download_plan_request(
@@ -1149,11 +1451,15 @@ def _valid_update_download_plan_response(
     ):
         return False
 
-    parsed: list[dict[str, object]] = []
     seen_urls: set[str] = set()
     request_by_index = {
         candidate["original_index"]: candidate for candidate in candidates
     }
+    request_positions = {
+        candidate["original_index"]: position
+        for position, candidate in enumerate(candidates)
+    }
+    previous_order_key: tuple[int, int] | None = None
     for candidate in planned:
         if not isinstance(candidate, dict) or set(candidate) != {
             "input_index",
@@ -1180,20 +1486,43 @@ def _valid_update_download_plan_response(
             or (route == "proxy" and proxy is None)
         ):
             return False
-        seen_urls.add(url)
-        parsed.append(
-            {
-                "input_index": input_index,
-                "source": source,
-                "route": route,
-                "url": url,
-            }
+        request_candidate = request_by_index[input_index]
+        direct_url = str(request_candidate["url"]).strip()
+        expected_url = direct_url
+        if route == "proxy":
+            assert proxy is not None
+            expected_url = _py_format_proxy_for_validation(
+                str(proxy["template"]), direct_url
+            ).strip()
+        if not direct_url or not expected_url or url != expected_url:
+            return False
+        route_rank = int(
+            (route == "direct")
+            if proxy is not None and proxy["proxy_first"] is True
+            else (route == "proxy")
         )
-
-    expected = _expected_update_download_candidates(candidates, proxy)
-    if parsed != expected:
+        order_key = (request_positions[input_index], route_rank)
+        if previous_order_key is not None and order_key <= previous_order_key:
+            return False
+        previous_order_key = order_key
+        seen_urls.add(url)
+    expected_urls: set[str] = set()
+    for request_candidate in candidates:
+        direct_url = str(request_candidate["url"]).strip()
+        if not direct_url:
+            continue
+        expected_urls.add(direct_url)
+        if proxy is not None:
+            proxy_url = _py_format_proxy_for_validation(
+                str(proxy["template"]), direct_url
+            ).strip()
+            if proxy_url:
+                expected_urls.add(proxy_url)
+    if seen_urls != expected_urls:
         return False
-    return (status == "empty" and not parsed) or (status == "planned" and bool(parsed))
+    return (status == "empty" and not planned) or (
+        status == "planned" and bool(planned)
+    )
 
 
 def try_plan_update_download_candidates(
@@ -1202,29 +1531,32 @@ def try_plan_update_download_candidates(
     """Call and strictly validate updater-only candidate planning."""
 
     validated_request = _update_download_plan_request(request)
-    if (
-        validated_request is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("plan_update_download_candidates", False)
-    ):
+    if validated_request is None:
         return False, None
     candidates, proxy = validated_request
-    try:
-        request_json = json.dumps(
-            request,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        pointer = _rust_lib.rust_plan_update_download_candidates(request_json)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_update_download_plan_response(response, candidates, proxy):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "plan_update_download_candidates",
+        "rust_plan_update_download_candidates",
+        request,
+    )
+    if not _valid_update_download_plan_response(response, candidates, proxy):
         return False, None
+    assert isinstance(response, dict)
+
+    def reference() -> dict[str, Any]:
+        expected_candidates = _expected_update_download_candidates(candidates, proxy)
+        return {
+            "schema_version": 1,
+            "status": "planned" if expected_candidates else "empty",
+            "candidates": expected_candidates,
+        }
+
+    response = _strict_equivalence_result(
+        "plan_update_download_candidates",
+        response,
+        reference,
+    )
+    return True, response
 
 
 def _media_download_plan_request(
@@ -1344,7 +1676,11 @@ def _valid_media_download_plan_response(
         return False
 
     request_by_index = {stream["original_index"]: stream for stream in streams}
-    parsed: list[dict[str, object]] = []
+    seen_identities: set[tuple[int, str, int | None]] = set()
+    previous_order_key: tuple[int, int] | None = None
+    stream_positions = {
+        stream["original_index"]: position for position, stream in enumerate(streams)
+    }
     for candidate in candidates:
         if not isinstance(candidate, dict) or set(candidate) != {
             "stream_index",
@@ -1377,17 +1713,42 @@ def _valid_media_download_plan_response(
             or backup_index >= len(request_by_index[stream_index]["backup_urls"])
         ):
             return False
-        parsed.append(
-            {
-                "stream_index": stream_index,
-                "source": source,
-                "backup_index": backup_index,
-                "url": url,
-            }
+        identity = (stream_index, source, backup_index)
+        if identity in seen_identities:
+            return False
+        seen_identities.add(identity)
+        stream = request_by_index[stream_index]
+        raw_expected_url = (
+            stream["primary_url"]
+            if source == "primary"
+            else stream["backup_urls"][backup_index]
         )
-    expected = _expected_media_download_candidates(mode, streams)
-    return parsed == expected and (
-        (status == "empty" and not parsed) or (status == "planned" and bool(parsed))
+        expected_url = (
+            str(raw_expected_url).strip()
+            if mode == "dash_streams"
+            else str(raw_expected_url)
+        )
+        if url != expected_url:
+            return False
+        candidate_rank = 0 if source == "primary" else int(backup_index) + 1
+        order_key = (stream_positions[stream_index], candidate_rank)
+        if previous_order_key is not None and order_key <= previous_order_key:
+            return False
+        previous_order_key = order_key
+    expected_identities: set[tuple[int, str, int | None]] = set()
+    for stream in streams:
+        primary_url = str(stream["primary_url"])
+        if mode != "dash_streams" or primary_url.strip():
+            expected_identities.add((stream["original_index"], "primary", None))
+        for backup_index, backup_url in enumerate(stream["backup_urls"]):
+            if mode != "dash_streams" or str(backup_url).strip():
+                expected_identities.add(
+                    (stream["original_index"], "backup", backup_index)
+                )
+    if seen_identities != expected_identities:
+        return False
+    return (status == "empty" and not candidates) or (
+        status == "planned" and bool(candidates)
     )
 
 
@@ -1397,27 +1758,32 @@ def try_plan_media_download_candidates(
     """Call and strictly validate media primary/backup URL planning."""
 
     validated = _media_download_plan_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("plan_media_download_candidates", False)
-    ):
+    if validated is None:
         return False, None
     mode, _stream_kind, streams = validated
-    try:
-        payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        pointer = _rust_lib.rust_plan_media_download_candidates(payload)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_media_download_plan_response(response, mode, streams):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "plan_media_download_candidates",
+        "rust_plan_media_download_candidates",
+        request,
+    )
+    if not _valid_media_download_plan_response(response, mode, streams):
         return False, None
+    assert isinstance(response, dict)
+
+    def reference() -> dict[str, Any]:
+        expected_candidates = _expected_media_download_candidates(mode, streams)
+        return {
+            "schema_version": 1,
+            "status": "planned" if expected_candidates else "empty",
+            "candidates": expected_candidates,
+        }
+
+    response = _strict_equivalence_result(
+        "plan_media_download_candidates",
+        response,
+        reference,
+    )
+    return True, response
 
 
 def _tool_download_plan_request(
@@ -1583,7 +1949,8 @@ def _valid_tool_download_plan_response(
     response: object,
     tool: str,
     expected_asset_name: str,
-    expected_candidates: list[dict[str, object]],
+    asset: dict[str, object] | list[dict[str, object]],
+    fallback_bases: list[dict[str, object]] | None = None,
 ) -> bool:
     if not isinstance(response, dict) or set(response) != {
         "schema_version",
@@ -1604,11 +1971,34 @@ def _valid_tool_download_plan_response(
         or response.get("tool") != tool
         or response.get("asset_name") != expected_asset_name
         or not isinstance(candidates, list)
-        or len(candidates) > len(expected_candidates)
+        or len(candidates)
+        > (
+            len(asset)
+            if fallback_bases is None and isinstance(asset, list)
+            else len(fallback_bases or []) + 1
+        )
     ):
         return False
-    parsed: list[dict[str, object]] = []
+    if fallback_bases is None:
+        return (
+            isinstance(asset, list)
+            and candidates == asset
+            and (
+                (status == "empty" and not candidates)
+                or (status == "planned" and bool(candidates))
+            )
+        )
+    assert isinstance(asset, dict)
     seen: set[str] = set()
+    seen_identities: set[tuple[str, int | None]] = set()
+    fallback_positions = {
+        fallback["original_index"]: position
+        for position, fallback in enumerate(fallback_bases)
+    }
+    fallback_by_index = {
+        fallback["original_index"]: fallback for fallback in fallback_bases
+    }
+    previous_order_key = -1
     for candidate in candidates:
         if not isinstance(candidate, dict) or set(candidate) != {
             "source",
@@ -1629,16 +2019,60 @@ def _valid_tool_download_plan_response(
         ):
             return False
         if source == "configured_fallback":
-            if isinstance(fallback_index, bool) or not isinstance(fallback_index, int):
+            if (
+                isinstance(fallback_index, bool)
+                or not isinstance(fallback_index, int)
+                or fallback_index not in fallback_by_index
+            ):
                 return False
+            expected_url = (
+                f"{fallback_by_index[fallback_index]['base_url']}/"
+                f"{urllib.parse.quote(expected_asset_name)}"
+            )
+            order_key = fallback_positions[fallback_index] + 1
         elif fallback_index is not None:
             return False
+        else:
+            if asset["mode"] == "supplied":
+                expected_source = "supplied_primary"
+                expected_url = str(asset["primary_url"])
+            elif tool == "aria2c":
+                expected_source = "built_in_primary"
+                expected_url = (
+                    "https://github.com/aria2/aria2/releases/download/"
+                    f"release-1.37.0/{urllib.parse.quote(expected_asset_name)}"
+                )
+            else:
+                return False
+            if source != expected_source:
+                return False
+            order_key = 0
+        if url != expected_url or order_key <= previous_order_key:
+            return False
+        previous_order_key = order_key
+        identity = (source, fallback_index)
+        if identity in seen_identities:
+            return False
+        seen_identities.add(identity)
         seen.add(url)
-        parsed.append(
-            {"source": source, "fallback_index": fallback_index, "url": url}
+    expected_urls: set[str] = set()
+    if asset["mode"] == "supplied" and str(asset["primary_url"]):
+        expected_urls.add(str(asset["primary_url"]))
+    elif asset["mode"] == "default_for_target" and tool == "aria2c":
+        expected_urls.add(
+            "https://github.com/aria2/aria2/releases/download/"
+            f"release-1.37.0/{urllib.parse.quote(expected_asset_name)}"
         )
-    return parsed == expected_candidates and (
-        (status == "empty" and not parsed) or (status == "planned" and bool(parsed))
+    for fallback in fallback_bases:
+        base_url = str(fallback["base_url"])
+        if base_url:
+            expected_urls.add(
+                f"{base_url}/{urllib.parse.quote(expected_asset_name)}"
+            )
+    if seen != expected_urls:
+        return False
+    return (status == "empty" and not candidates) or (
+        status == "planned" and bool(candidates)
     )
 
 
@@ -1651,30 +2085,41 @@ def try_plan_tool_download_candidates(
     if validated is None:
         return False, None
     tool, asset, fallback_bases = validated
-    expected = _expected_tool_download_plan(tool, asset, fallback_bases)
-    if (
-        expected is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("plan_tool_download_candidates", False)
+    expected_asset_name = (
+        str(asset["name"])
+        if asset["mode"] == "supplied"
+        else _default_tool_asset_name(
+            tool, str(asset["platform"]), str(asset["arch"])
+        )
+    )
+    if expected_asset_name is None:
+        return False, None
+    response = _call_json_capability(
+        "plan_tool_download_candidates",
+        "rust_plan_tool_download_candidates",
+        request,
+    )
+    if not _valid_tool_download_plan_response(
+        response, tool, expected_asset_name, asset, fallback_bases
     ):
         return False, None
-    expected_asset_name, expected_candidates = expected
-    try:
-        payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        pointer = _rust_lib.rust_plan_tool_download_candidates(payload)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_tool_download_plan_response(
-            response, tool, expected_asset_name, expected_candidates
-        ):
-            return False, None
-        return True, response
-    except Exception:
-        return False, None
+    assert isinstance(response, dict)
+
+    def reference() -> dict[str, Any]:
+        expected = _expected_tool_download_plan(tool, asset, fallback_bases)
+        assert expected is not None
+        asset_name, expected_candidates = expected
+        return {
+            "schema_version": 1,
+            "status": "planned" if expected_candidates else "empty",
+            "tool": tool,
+            "asset_name": asset_name,
+            "candidates": expected_candidates,
+        }
+
+    return True, _strict_equivalence_result(
+        "plan_tool_download_candidates", response, reference
+    )
 
 
 _ACTIVE_VIDEO_QUALITIES = (
@@ -1798,7 +2243,91 @@ def _expected_quality_policy(request: dict[str, object]) -> dict[str, object]:
 def _valid_quality_policy_response(
     response: object, request: dict[str, object]
 ) -> bool:
-    return isinstance(response, dict) and response == _expected_quality_policy(request)
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "normalized_quality",
+        "optional_quality",
+        "optional_cap",
+        "indexed_quality",
+        "dash_max_quality_id",
+        "effective_max_height",
+        "bbdown_quality_order",
+    }:
+        return False
+    normalized = response.get("normalized_quality")
+    optional_quality = response.get("optional_quality")
+    optional_cap = response.get("optional_cap")
+    indexed_quality = response.get("indexed_quality")
+    order = response.get("bbdown_quality_order")
+    if (
+        response.get("schema_version") != 1
+        or isinstance(response.get("schema_version"), bool)
+        or response.get("status") != "decided"
+        or normalized not in _ACTIVE_VIDEO_QUALITIES
+        or optional_quality not in (None, *_ACTIVE_VIDEO_QUALITIES)
+        or optional_cap not in (None, *_ACTIVE_VIDEO_QUALITIES)
+        or indexed_quality not in (None, *_ACTIVE_VIDEO_QUALITIES)
+        or isinstance(response.get("dash_max_quality_id"), bool)
+        or not isinstance(response.get("dash_max_quality_id"), int)
+        or response.get("dash_max_quality_id") not in set(_DASH_QUALITY_IDS.values())
+        or isinstance(response.get("effective_max_height"), bool)
+        or response.get("effective_max_height") not in {360, 480, 720, 1080, 2160, 4320}
+        or not isinstance(order, list)
+        or not order
+        or len(set(order)) != len(order)
+        or any(value not in _ACTIVE_VIDEO_QUALITIES for value in order)
+    ):
+        return False
+    raw_quality = str(request["raw_quality"])
+    raw_cap = str(request["raw_cap"])
+    expected_optional_quality = (
+        raw_quality.strip()
+        if raw_quality.strip() in _ACTIVE_VIDEO_QUALITIES
+        else None
+    )
+    expected_normalized = expected_optional_quality or _DEFAULT_VIDEO_QUALITY
+    expected_optional_cap = (
+        raw_cap.strip() if raw_cap.strip() in _ACTIVE_VIDEO_QUALITIES else None
+    )
+    choice_index = request["choice_index"]
+    expected_indexed_quality = (
+        _ACTIVE_VIDEO_QUALITIES[choice_index]
+        if isinstance(choice_index, int)
+        and not isinstance(choice_index, bool)
+        and 0 <= choice_index < len(_ACTIVE_VIDEO_QUALITIES)
+        else None
+    )
+    effective_quality = expected_optional_cap or expected_normalized
+    expected_height = next(
+        (
+            height
+            for marker, height in (
+                ("360", 360),
+                ("480", 480),
+                ("720", 720),
+                ("1080", 1080),
+                ("4K", 2160),
+                ("8K", 4320),
+            )
+            if marker in effective_quality
+        ),
+        1080,
+    )
+    if (
+        normalized != expected_normalized
+        or optional_quality != expected_optional_quality
+        or optional_cap != expected_optional_cap
+        or indexed_quality != expected_indexed_quality
+        or response.get("dash_max_quality_id")
+        != _DASH_QUALITY_IDS.get(raw_quality, 80)
+        or response.get("effective_max_height") != expected_height
+    ):
+        return False
+    start_index = _ACTIVE_VIDEO_QUALITIES.index(normalized)
+    if optional_cap is not None:
+        start_index = max(start_index, _ACTIVE_VIDEO_QUALITIES.index(optional_cap))
+    return order == list(_ACTIVE_VIDEO_QUALITIES[start_index:])
 
 
 def try_decide_quality_policy(
@@ -1807,26 +2336,19 @@ def try_decide_quality_policy(
     """Call and strictly reconstruct the canonical quality-policy decision."""
 
     validated = _quality_policy_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("decide_quality_policy", False)
-    ):
+    if validated is None:
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        pointer = _rust_lib.rust_decide_quality_policy(payload)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_quality_policy_response(response, validated):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "decide_quality_policy", "rust_decide_quality_policy", validated
+    )
+    if not _valid_quality_policy_response(response, validated):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "decide_quality_policy",
+        response,
+        lambda: _expected_quality_policy(validated),
+    )
 
 
 def _video_stream_request(
@@ -1965,11 +2487,55 @@ def _expected_video_stream_selection(request: dict[str, object]) -> dict[str, ob
     }
 
 
+def _valid_stream_ranking_response(
+    response: object,
+    request_indices: list[int],
+    allowed_reasons: set[str],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "selected_index",
+        "ranked_indices",
+        "reason",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    status = response.get("status")
+    selected_index = response.get("selected_index")
+    ranked_indices = response.get("ranked_indices")
+    reason = response.get("reason")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or status not in {"selected", "no_match"}
+        or not isinstance(ranked_indices, list)
+        or len(ranked_indices) > len(request_indices)
+        or len(set(ranked_indices)) != len(ranked_indices)
+        or any(
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index not in request_indices
+            for index in ranked_indices
+        )
+    ):
+        return False
+    if status == "no_match":
+        return selected_index is None and ranked_indices == [] and reason is None
+    return (
+        bool(ranked_indices)
+        and selected_index == ranked_indices[0]
+        and reason in allowed_reasons
+    )
+
+
 def _valid_video_stream_response(
     response: object, request: dict[str, object]
 ) -> bool:
-    return isinstance(response, dict) and response == _expected_video_stream_selection(
-        request
+    return _valid_stream_ranking_response(
+        response,
+        [stream["original_index"] for stream in request["streams"]],
+        {"preferred", "quality_fallback", "uncapped_fallback"},
     )
 
 
@@ -1979,26 +2545,19 @@ def try_select_video_stream(
     """Call and strictly reconstruct DASH video ranking."""
 
     validated = _video_stream_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("select_video_stream", False)
-    ):
+    if validated is None:
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        pointer = _rust_lib.rust_select_video_stream(payload)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_video_stream_response(response, validated):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "select_video_stream", "rust_select_video_stream", validated
+    )
+    if not _valid_video_stream_response(response, validated):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "select_video_stream",
+        response,
+        lambda: _expected_video_stream_selection(validated),
+    )
 
 
 def _audio_stream_request(request: object) -> dict[str, object] | None:
@@ -2092,8 +2651,10 @@ def _expected_audio_stream_selection(request: dict[str, object]) -> dict[str, ob
 def _valid_audio_stream_response(
     response: object, request: dict[str, object]
 ) -> bool:
-    return isinstance(response, dict) and response == _expected_audio_stream_selection(
-        request
+    return _valid_stream_ranking_response(
+        response,
+        [stream["original_index"] for stream in request["regular_streams"]],
+        {"hires_enabled", "standard_only", "hires_only_fallback"},
     )
 
 
@@ -2103,26 +2664,19 @@ def try_select_audio_stream(
     """Call and strictly reconstruct regular DASH audio ranking."""
 
     validated = _audio_stream_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("select_audio_stream", False)
-    ):
+    if validated is None:
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        pointer = _rust_lib.rust_select_audio_stream(payload)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_audio_stream_response(response, validated):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "select_audio_stream", "rust_select_audio_stream", validated
+    )
+    if not _valid_audio_stream_response(response, validated):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "select_audio_stream",
+        response,
+        lambda: _expected_audio_stream_selection(validated),
+    )
 
 
 def _preferred_audio_source_request(request: object) -> dict[str, object] | None:
@@ -2199,9 +2753,38 @@ def _expected_preferred_audio_source_selection(
 def _valid_preferred_audio_source_response(
     response: object, request: dict[str, object]
 ) -> bool:
-    return isinstance(response, dict) and response == (
-        _expected_preferred_audio_source_selection(request)
-    )
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "preferred_source",
+        "selected_regular_index",
+    }:
+        return False
+    candidates = request["regular_candidates"]
+    candidate_indices = [candidate["original_index"] for candidate in candidates]
+    selected_regular_index = response.get("selected_regular_index")
+    preferred_source = response.get("preferred_source")
+    status = response.get("status")
+    if (
+        response.get("schema_version") != 1
+        or isinstance(response.get("schema_version"), bool)
+        or status not in {"selected", "no_match"}
+        or selected_regular_index
+        not in (None, *candidate_indices)
+        or preferred_source not in {None, "regular", "flac", "dolby"}
+    ):
+        return False
+    if selected_regular_index is not None and selected_regular_index != candidate_indices[0]:
+        return False
+    if status == "no_match":
+        return preferred_source is None and selected_regular_index is None
+    if preferred_source == "regular":
+        return selected_regular_index is not None
+    if preferred_source == "flac":
+        return bool(request["audio_hires"] and request["flac_available"])
+    if preferred_source == "dolby":
+        return bool(request["audio_hires"] and request["dolby_available"])
+    return False
 
 
 def try_select_preferred_audio_source(
@@ -2210,26 +2793,21 @@ def try_select_preferred_audio_source(
     """Call and strictly reconstruct preferred DASH audio source binding."""
 
     validated = _preferred_audio_source_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("select_preferred_audio_source", False)
-    ):
+    if validated is None:
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        pointer = _rust_lib.rust_select_preferred_audio_source(payload)
-        response_json = _read_rust_string(pointer)
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_preferred_audio_source_response(response, validated):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "select_preferred_audio_source",
+        "rust_select_preferred_audio_source",
+        validated,
+    )
+    if not _valid_preferred_audio_source_response(response, validated):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "select_preferred_audio_source",
+        response,
+        lambda: _expected_preferred_audio_source_selection(validated),
+    )
 
 
 def _cache_plan_request(request: object) -> dict[str, object] | None:
@@ -2406,7 +2984,33 @@ def _valid_cache_plan_response(
         or any(item_id != request["primary_active_item_id"] for item_id in preempt_ids)
     ):
         return False
-    return response == _expected_cache_plan(request)
+    expected_desired = known_ids[: min(len(known_ids), int(request["max_items"]))]
+    ready_by_id = {item["item_id"]: item["cache_ready"] for item in items}
+    expected_pending = [
+        item_id for item_id in expected_desired if not ready_by_id[item_id]
+    ]
+    expected_retained = list(expected_desired)
+    if int(request["max_items"]) > 0:
+        for item_id in known_ids[len(expected_desired) :]:
+            if len(expected_retained) >= len(expected_desired) + int(request["retention_limit"]):
+                break
+            if ready_by_id[item_id]:
+                expected_retained.append(item_id)
+    primary_id = request["primary_active_item_id"]
+    expected_preempt = []
+    if (
+        primary_id is not None
+        and expected_pending
+        and primary_id in expected_pending[1:]
+        and expected_pending[0] not in request["urgent_item_ids"]
+    ):
+        expected_preempt = [primary_id]
+    return (
+        desired_ids == expected_desired
+        and pending_order == expected_pending
+        and retained_ids == expected_retained
+        and preempt_ids == expected_preempt
+    )
 
 
 def try_plan_cache_window(
@@ -2415,25 +3019,17 @@ def try_plan_cache_window(
     """Call Rust and accept only the complete canonical cache plan."""
 
     validated = _cache_plan_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("plan_cache_window", False)
-    ):
+    if validated is None:
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        response_json = _read_rust_string(_rust_lib.rust_plan_cache_window(payload))
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_cache_plan_response(response, validated):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "plan_cache_window", "rust_plan_cache_window", validated
+    )
+    if not _valid_cache_plan_response(response, validated):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "plan_cache_window", response, lambda: _expected_cache_plan(validated)
+    )
 
 
 def _av_delay_request(request: object) -> dict[str, object] | None:
@@ -2485,43 +3081,78 @@ def try_apply_av_delay_action(
     """Call Rust and accept only the canonical AV-delay transition result."""
 
     validated = _av_delay_request(request)
+    if validated is None:
+        return False, None
+    response = _call_json_capability(
+        "apply_av_delay_action", "rust_apply_av_delay_action", validated
+    )
+    integer_fields = {
+        "schema_version",
+        "global_delay_ms",
+        "local_delay_ms",
+        "effective_delay_ms",
+    }
+    boolean_fields = {"locked", "has_local_adjustment", "lock_button_enabled"}
     if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("apply_av_delay_action", False)
+        not isinstance(response, dict)
+        or set(response) != integer_fields | boolean_fields
+        or any(
+            isinstance(response.get(field), bool)
+            or not isinstance(response.get(field), int)
+            for field in integer_fields
+        )
+        or any(not isinstance(response.get(field), bool) for field in boolean_fields)
+        or response.get("schema_version") != 1
+        or not -5000 <= int(response["global_delay_ms"]) <= 5000
+        or not -5000 <= int(response["effective_delay_ms"]) <= 5000
+        or response["effective_delay_ms"]
+        != response["global_delay_ms"] + response["local_delay_ms"]
+        or response["has_local_adjustment"] != (response["local_delay_ms"] != 0)
+        or response["lock_button_enabled"]
+        != bool(response["locked"] or response["effective_delay_ms"] != 0)
     ):
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        response_json = _read_rust_string(_rust_lib.rust_apply_av_delay_action(payload))
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        from .store import _py_apply_av_delay_action
+    state = validated["state"]
+    action = validated["action"]
+    assert isinstance(state, dict) and isinstance(action, dict)
+    expected_global = int(state["global_delay_ms"])
+    expected_local = int(state["local_delay_ms"])
+    expected_locked = bool(state["locked"])
+    action_type = str(action["type"])
 
-        expected = _py_apply_av_delay_action(validated["state"], validated["action"])
-        integer_fields = {
-            "schema_version",
-            "global_delay_ms",
-            "local_delay_ms",
-            "effective_delay_ms",
-        }
-        boolean_fields = {"locked", "has_local_adjustment", "lock_button_enabled"}
-        if (
-            not isinstance(response, dict)
-            or set(response) != integer_fields | boolean_fields
-            or any(
-                isinstance(response.get(field), bool)
-                or not isinstance(response.get(field), int)
-                for field in integer_fields
-            )
-            or any(not isinstance(response.get(field), bool) for field in boolean_fields)
-            or response != expected
-        ):
-            return False, None
-        return True, response
-    except Exception:
+    def bounded(value: int) -> int:
+        return max(-5000, min(5000, value))
+
+    if action_type == "set_effective":
+        expected_local = bounded(int(action["effective_delay_ms"])) - expected_global
+    elif action_type == "adjust":
+        expected_local = (
+            bounded(expected_global + expected_local + int(action["delta_ms"]))
+            - expected_global
+        )
+    elif action_type == "reset_local":
+        expected_local = 0
+    elif action_type == "toggle_lock" and expected_locked:
+        expected_local += expected_global
+        expected_global = 0
+        expected_locked = False
+    elif action_type == "toggle_lock" and expected_local != 0:
+        expected_global += expected_local
+        expected_local = 0
+        expected_locked = True
+    if (
+        response["global_delay_ms"] != expected_global
+        or response["local_delay_ms"] != expected_local
+        or response["locked"] != expected_locked
+    ):
         return False, None
+    from .store import _py_apply_av_delay_action
+
+    return True, _strict_equivalence_result(
+        "apply_av_delay_action",
+        response,
+        lambda: _py_apply_av_delay_action(validated["state"], validated["action"]),
+    )
 
 
 def _playlist_order_request(request: object) -> dict[str, object] | None:
@@ -2686,7 +3317,51 @@ def _valid_playlist_order_response(
         or set(ordered_ids) != set(known_ids)
     ):
         return False
-    return response == _expected_playlist_order(request)
+    users = list(request["session_users"])
+    current_requester = request["current_requester"]
+    if users and current_requester in users:
+        start = (users.index(current_requester) + 1) % len(users)
+        users = users[start:] + users[:start]
+    user_positions = {name: index for index, name in enumerate(users)}
+    requester_counts = {name: 0 for name in users}
+    cycle_keys: dict[str, tuple[int, int]] = {}
+    for item in items:
+        requester = item["requester_name"]
+        if item["slot_type"] != "cycle" or requester not in user_positions:
+            continue
+        cycle_keys[item["item_id"]] = (
+            requester_counts[requester],
+            user_positions[requester],
+        )
+        requester_counts[requester] += 1
+
+    expected_ids = [item["item_id"] for item in items]
+    if request["operation"] == "insert_cycle":
+        assert isinstance(candidate, dict)
+        requester = candidate["requester_name"]
+        if requester not in user_positions:
+            expected_ids.append(candidate["item_id"])
+        else:
+            candidate_key = (requester_counts[requester], user_positions[requester])
+            insert_at = 0
+            for index, item in enumerate(items):
+                existing_key = cycle_keys.get(item["item_id"])
+                if item["slot_type"] != "cycle" or existing_key is None or existing_key <= candidate_key:
+                    insert_at = index + 1
+            expected_ids.insert(insert_at, candidate["item_id"])
+    else:
+        cycle_positions: list[int] = []
+        sortable: list[tuple[tuple[int, int], int, str]] = []
+        for position, item in enumerate(items):
+            item_id = item["item_id"]
+            if item["slot_type"] != "cycle" or item_id not in cycle_keys:
+                continue
+            cycle_positions.append(position)
+            sortable.append((cycle_keys[item_id], item["original_index"], item_id))
+        sortable.sort(key=lambda entry: (entry[0][0], entry[0][1], entry[1]))
+        for position, (_, _, item_id) in zip(cycle_positions, sortable):
+            expected_ids[position] = item_id
+    return ordered_ids == expected_ids
 
 
 def try_plan_playlist_order(
@@ -2695,25 +3370,19 @@ def try_plan_playlist_order(
     """Call Rust and accept only the exact canonical playlist order."""
 
     validated = _playlist_order_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("plan_playlist_order", False)
-    ):
+    if validated is None:
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        response_json = _read_rust_string(_rust_lib.rust_plan_playlist_order(payload))
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_playlist_order_response(response, validated):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "plan_playlist_order", "rust_plan_playlist_order", validated
+    )
+    if not _valid_playlist_order_response(response, validated):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "plan_playlist_order",
+        response,
+        lambda: _expected_playlist_order(validated),
+    )
 
 
 def _playlist_duplicate_request(request: object) -> dict[str, object] | None:
@@ -2918,7 +3587,7 @@ def _valid_playlist_duplicate_response(
     }:
         return False
     schema_version = response.get("schema_version")
-    identity_key = response.get("identity_key")
+    response_identity_key = response.get("identity_key")
     active_duplicate_id = response.get("active_duplicate_id")
     history_duplicate_index = response.get("history_duplicate_index")
     active_ids = {
@@ -2930,8 +3599,8 @@ def _valid_playlist_duplicate_response(
     if (
         isinstance(schema_version, bool)
         or schema_version != 1
-        or not isinstance(identity_key, str)
-        or not identity_key
+        or not isinstance(response_identity_key, str)
+        or not response_identity_key
         or active_duplicate_id is not None
         and (not isinstance(active_duplicate_id, str) or active_duplicate_id not in active_ids)
         or history_duplicate_index is not None
@@ -2942,7 +3611,43 @@ def _valid_playlist_duplicate_response(
         )
     ):
         return False
-    return response == _expected_playlist_duplicate(request)
+    candidate = request["candidate"]
+    positive_pages = [
+        page for page in candidate["selected_audio_pages"] if page > 0
+    ]
+    audio_suffix = (
+        ":a" + "-".join(str(page) for page in positive_pages)
+        if positive_pages
+        else ""
+    )
+    prefix = candidate["bvid"] or f"aid:{candidate['aid']}"
+    expected_key = f"{prefix}:p{candidate['video_page']}{audio_suffix}"
+
+    def active_identity_key(identity: dict[str, object]) -> str:
+        pages = [page for page in identity["selected_audio_pages"] if page > 0]
+        suffix = ":a" + "-".join(str(page) for page in pages) if pages else ""
+        identity_prefix = identity["bvid"] or f"aid:{identity['aid']}"
+        return f"{identity_prefix}:p{identity['video_page']}{suffix}"
+
+    expected_active = None
+    active_values = (
+        ([request["current_item"]] if request["current_item"] else [])
+        + list(request["queued_items"])
+    )
+    for value in active_values:
+        if active_identity_key(value["identity"]) == expected_key:
+            expected_active = value["item_id"]
+            break
+    expected_history = None
+    for entry in request["history_entries"]:
+        if entry["key"] == expected_key:
+            expected_history = entry["original_index"]
+            break
+    return (
+        response_identity_key == expected_key
+        and active_duplicate_id == expected_active
+        and history_duplicate_index == expected_history
+    )
 
 
 def try_decide_playlist_duplicate(
@@ -2951,22 +3656,16 @@ def try_decide_playlist_duplicate(
     """Call Rust and accept only the exact canonical duplicate decision."""
 
     validated = _playlist_duplicate_request(request)
-    if (
-        validated is None
-        or _rust_lib is None
-        or not _CAPABILITIES.get("decide_playlist_duplicate", False)
-    ):
+    if validated is None:
         return False, None
-    try:
-        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        response_json = _read_rust_string(_rust_lib.rust_decide_playlist_duplicate(payload))
-        if response_json is None:
-            return False, None
-        response = json.loads(response_json)
-        if not _valid_playlist_duplicate_response(response, validated):
-            return False, None
-        return True, response
-    except Exception:
+    response = _call_json_capability(
+        "decide_playlist_duplicate", "rust_decide_playlist_duplicate", validated
+    )
+    if not _valid_playlist_duplicate_response(response, validated):
         return False, None
+    assert isinstance(response, dict)
+    return True, _strict_equivalence_result(
+        "decide_playlist_duplicate",
+        response,
+        lambda: _expected_playlist_duplicate(validated),
+    )

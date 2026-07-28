@@ -454,14 +454,20 @@ class AddressArchitectureTest(unittest.TestCase):
         self.assertEqual(server_module._local_ui_host("0.0.0.0"), "127.0.0.1")
         self.assertEqual(server_module._local_ui_url("0.0.0.0", 8080), "http://127.0.0.1:8080")
 
-    def test_windows_remote_url_uses_selected_physical_adapter(self):
+    def test_windows_remote_url_uses_ranked_system_addresses(self):
         with (
             patch.object(server_module.os, "name", "nt"),
-            patch("bilikara.server._detect_windows_physical_host", return_value="192.168.1.20"),
+            patch(
+                "bilikara.server.detect_lan_ipv4_addresses",
+                return_value=["192.168.1.20", "192.168.1.21"],
+            ),
         ):
             urls = server_module._network_access_urls("0.0.0.0", 8080)
 
-        self.assertEqual(urls, ["http://192.168.1.20:8080"])
+        self.assertEqual(
+            urls,
+            ["http://192.168.1.20:8080", "http://192.168.1.21:8080"],
+        )
 
     def test_container_runtime_does_not_publish_bridge_address(self):
         with (
@@ -477,14 +483,13 @@ class AddressArchitectureTest(unittest.TestCase):
         self.assertEqual(urls, [])
 
     def test_native_posix_remote_url_uses_lan_address(self):
-        resolved = [
-            (server_module.socket.AF_INET, server_module.socket.SOCK_STREAM, 6, "", ("192.168.1.20", 0)),
-            (server_module.socket.AF_INET, server_module.socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
-        ]
         with (
             patch.object(server_module.os, "name", "posix"),
             patch("bilikara.server._is_container_runtime", return_value=False),
-            patch("bilikara.server.socket.getaddrinfo", return_value=resolved),
+            patch(
+                "bilikara.server.detect_lan_ipv4_addresses",
+                return_value=["192.168.1.20"],
+            ),
         ):
             urls = server_module._network_access_urls("0.0.0.0", 8080)
 

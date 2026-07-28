@@ -587,14 +587,20 @@ class CacheManager:
         )
         if response is not None:
             return response["indexed_quality"]
-        return CacheManager._py_quality_from_choice_index(index)
+        return rust_backend.python_fallback(
+            "decide_quality_policy",
+            lambda: CacheManager._py_quality_from_choice_index(index),
+        )
 
     @staticmethod
     def _optional_video_quality(video_quality: object) -> str | None:
         response = CacheManager._native_quality_policy(video_quality)
         if response is not None:
             return response["optional_quality"]
-        return CacheManager._py_optional_video_quality(video_quality)
+        return rust_backend.python_fallback(
+            "decide_quality_policy",
+            lambda: CacheManager._py_optional_video_quality(video_quality),
+        )
 
     def enrich_snapshot(
         self,
@@ -696,7 +702,7 @@ class CacheManager:
             return
 
         fresh_items = self.store.list_items()
-        plan = self._plan_cache_snapshot(fresh_items)
+        plan, priority_state = self._stable_cache_plan_snapshot(fresh_items)
         desired_ids = set(plan.desired_ids)
         with self.lock:
             self.desired_ids = desired_ids
@@ -708,7 +714,11 @@ class CacheManager:
             item = fresh_by_id.get(item_id)
             if item:
                 self._ensure_item_cached(item)
-        priority_plan = self._plan_cache_snapshot(fresh_items)
+        priority_plan = (
+            plan
+            if self._cache_priority_state() == priority_state
+            else self._plan_cache_snapshot(fresh_items)
+        )
         self._apply_cache_plan_priority(fresh_items, priority_plan)
 
     def set_max_cache_items(self, max_cache_items: int) -> int:
@@ -1181,18 +1191,46 @@ class CacheManager:
                 item.item_id for item in descriptors if item.item_id in urgent_ids
             ),
         )
-        fallback = _py_plan_cache_window(request)
         completed, response = rust_backend.try_plan_cache_window(
             self._cache_plan_wire_request(request)
         )
         if not completed or response is None:
-            return fallback
+            return rust_backend.python_fallback(
+                "plan_cache_window", lambda: _py_plan_cache_window(request)
+            )
         return CachePlan(
             desired_ids=tuple(response["desired_ids"]),
             pending_order=tuple(response["pending_order"]),
             retained_ids=tuple(response["retained_ids"]),
             preempt_ids=tuple(response["preempt_ids"]),
         )
+
+    def _cache_priority_state(self) -> tuple[object, ...]:
+        """Return the mutable planner inputs that cache starts may change."""
+
+        with self.lock:
+            return (
+                self.active_item_id,
+                tuple(sorted(self.active_process_item_ids.items())),
+                tuple(sorted(self.urgent_cache_ids)),
+            )
+
+    def _stable_cache_plan_snapshot(
+        self, items: list[Any]
+    ) -> tuple[CachePlan, tuple[object, ...]]:
+        """Plan outside locks and retry only if mutable planner inputs changed."""
+
+        after = self._cache_priority_state()
+        for _attempt in range(3):
+            before = after
+            plan = self._plan_cache_snapshot(items)
+            after = self._cache_priority_state()
+            if before == after:
+                return plan, after
+        # Persistent churn is rare. The caller will see the sentinel and avoid
+        # reusing this final plan for its later priority/preemption phase.
+        after = ("unstable", *after)
+        return plan, after
 
     def _cache_window_plan(self, items: list[Any]) -> tuple[set[str], list[str]]:
         plan = self._plan_cache_snapshot(items)
@@ -1215,7 +1253,7 @@ class CacheManager:
 
     def sync_with_playlist(self) -> None:
         items = self.store.list_items()
-        plan = self._plan_cache_snapshot(items)
+        plan, priority_state = self._stable_cache_plan_snapshot(items)
         desired_ids = set(plan.desired_ids)
         retained_ids = set(plan.retained_ids)
         current_ids = {item.id for item in items}
@@ -1231,7 +1269,11 @@ class CacheManager:
                 self._ensure_item_cached(item)
             elif item.id not in retained_ids:
                 self._drop_item_cache(item.id, self._outside_window_message())
-        priority_plan = self._plan_cache_snapshot(items)
+        priority_plan = (
+            plan
+            if self._cache_priority_state() == priority_state
+            else self._plan_cache_snapshot(items)
+        )
         self._apply_cache_plan_priority(items, priority_plan)
 
     def enqueue(self, item_id: str) -> None:
@@ -2545,11 +2587,14 @@ class CacheManager:
                 return video_streams[response["selected_index"]]
         except (AttributeError, IndexError, TypeError, ValueError):
             pass
-        return CacheManager._py_select_dash_video_stream(
-            video_streams,
-            max_quality_id=max_quality_id,
-            codec_filter=codec_filter,
-            avc_quality_cap=avc_quality_cap,
+        return rust_backend.python_fallback(
+            "select_video_stream",
+            lambda: CacheManager._py_select_dash_video_stream(
+                video_streams,
+                max_quality_id=max_quality_id,
+                codec_filter=codec_filter,
+                avc_quality_cap=avc_quality_cap,
+            ),
         )
 
     @staticmethod
@@ -2597,8 +2642,11 @@ class CacheManager:
                 return None if selected_index is None else audio_streams[selected_index]
         except (AttributeError, IndexError, TypeError, ValueError):
             pass
-        return CacheManager._py_select_dash_audio_stream(
-            audio_streams, audio_hires=audio_hires
+        return rust_backend.python_fallback(
+            "select_audio_stream",
+            lambda: CacheManager._py_select_dash_audio_stream(
+                audio_streams, audio_hires=audio_hires
+            ),
         )
 
     @staticmethod
@@ -2647,11 +2695,14 @@ class CacheManager:
                 return None
         except (AttributeError, IndexError, TypeError, ValueError):
             pass
-        return CacheManager._py_select_preferred_dash_audio(
-            best_audio,
-            flac_audio,
-            dolby_audio,
-            audio_hires=audio_hires,
+        return rust_backend.python_fallback(
+            "select_preferred_audio_source",
+            lambda: CacheManager._py_select_preferred_dash_audio(
+                best_audio,
+                flac_audio,
+                dolby_audio,
+                audio_hires=audio_hires,
+            ),
         )
 
     def _download_dash_streams_with_aria2c(
@@ -2976,7 +3027,10 @@ class CacheManager:
     @staticmethod
     def _dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
         if stream_kind not in {"video", "audio"}:
-            return CacheManager._py_dash_stream_urls(dash_streams, stream_kind)
+            return rust_backend.python_fallback(
+                "plan_media_download_candidates",
+                lambda: CacheManager._py_dash_stream_urls(dash_streams, stream_kind),
+            )
         streams = dash_streams.get(stream_kind) or []
         request = {
             "schema_version": 1,
@@ -2996,7 +3050,10 @@ class CacheManager:
         completed, response = rust_backend.try_plan_media_download_candidates(request)
         if completed and response is not None:
             return [candidate["url"] for candidate in response["candidates"]]
-        return CacheManager._py_dash_stream_urls(dash_streams, stream_kind)
+        return rust_backend.python_fallback(
+            "plan_media_download_candidates",
+            lambda: CacheManager._py_dash_stream_urls(dash_streams, stream_kind),
+        )
 
     @staticmethod
     def _py_preferred_audio_urls(preferred_audio: dict) -> list[str]:
@@ -3011,7 +3068,10 @@ class CacheManager:
         if not isinstance(primary_url, str) or not all(
             isinstance(url, str) for url in backup_urls
         ):
-            return CacheManager._py_preferred_audio_urls(preferred_audio)
+            return rust_backend.python_fallback(
+                "plan_media_download_candidates",
+                lambda: CacheManager._py_preferred_audio_urls(preferred_audio),
+            )
         request = {
             "schema_version": 1,
             "mode": "preferred_audio",
@@ -3027,7 +3087,10 @@ class CacheManager:
         completed, response = rust_backend.try_plan_media_download_candidates(request)
         if completed and response is not None:
             return [candidate["url"] for candidate in response["candidates"]]
-        return CacheManager._py_preferred_audio_urls(preferred_audio)
+        return rust_backend.python_fallback(
+            "plan_media_download_candidates",
+            lambda: CacheManager._py_preferred_audio_urls(preferred_audio),
+        )
 
     @staticmethod
     def _safe_url_summary(url: object) -> str:
@@ -5422,8 +5485,11 @@ class CacheManager:
         completed, response = rust_backend.try_plan_tool_download_candidates(request)
         if completed and response is not None:
             return [candidate["url"] for candidate in response["candidates"]]
-        return CacheManager._py_tool_download_candidates(
-            asset, target_name, fallback_base_urls
+        return rust_backend.python_fallback(
+            "plan_tool_download_candidates",
+            lambda: CacheManager._py_tool_download_candidates(
+                asset, target_name, fallback_base_urls
+            ),
         )
 
     @staticmethod
@@ -5573,8 +5639,11 @@ class CacheManager:
                 "name": response["asset_name"],
                 "browser_download_url": response["candidates"][0]["url"],
             }
-        return CacheManager._py_default_tool_fallback_asset(
-            tool, system, arch, TOOL_ASSET_BASE_URL
+        return rust_backend.python_fallback(
+            "plan_tool_download_candidates",
+            lambda: CacheManager._py_default_tool_fallback_asset(
+                tool, system, arch, TOOL_ASSET_BASE_URL
+            ),
         )
 
     def _ytdlp_fallback_asset(self) -> dict[str, str]:

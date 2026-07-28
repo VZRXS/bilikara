@@ -2717,6 +2717,10 @@ class BilibiliParserTest(unittest.TestCase):
         }
 
         with patch.object(
+            bilibili_module.rust_backend,
+            "strict_equivalence_enabled",
+            return_value=False,
+        ), patch.object(
             bilibili_module,
             "_py_decide_audio_binding",
             side_effect=AssertionError("Python fallback was called"),

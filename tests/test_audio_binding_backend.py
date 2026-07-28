@@ -45,6 +45,11 @@ def decision_from_response(response: dict[str, object] | None) -> AudioBindingDe
 
 class AudioBindingBackendTest(unittest.TestCase):
     def setUp(self):
+        strict_patcher = patch.dict(
+            os.environ, {"BILIKARA_RUST_STRICT_EQUIVALENCE": ""}, clear=False
+        )
+        strict_patcher.start()
+        self.addCleanup(strict_patcher.stop)
         self.original_py_decide = bilibili._py_decide_audio_binding
 
     def _mock_rust_response(self, response_json: str, capabilities=None):

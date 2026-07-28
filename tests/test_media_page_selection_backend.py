@@ -9,6 +9,11 @@ from bilikara.bilibili import VideoPage, select_matching_pages
 
 class TestMediaPageSelectionBackend(unittest.TestCase):
     def setUp(self):
+        strict_patcher = patch.dict(
+            os.environ, {"BILIKARA_RUST_STRICT_EQUIVALENCE": ""}, clear=False
+        )
+        strict_patcher.start()
+        self.addCleanup(strict_patcher.stop)
         self.pages = [
             VideoPage(page=1, cid=101, duration=300, part="P1"),
             VideoPage(page=2, cid=102, duration=301, part="P2"),

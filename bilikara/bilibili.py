@@ -2593,7 +2593,14 @@ def select_matching_pages(
     descriptors = []
     for idx, page in enumerate(pages):
         if not isinstance(page, VideoPage):
-            return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+            return rust_backend.python_fallback(
+                "select_media_pages",
+                lambda: _py_select_matching_pages(
+                    pages,
+                    preferred_page=preferred_page,
+                    tolerance_seconds=tolerance_seconds,
+                ),
+            )
         descriptors.append({
             "original_index": idx,
             "page": int(page.page),
@@ -2620,15 +2627,25 @@ def select_matching_pages(
                     if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(pages):
                         result.append(pages[idx])
                     else:
-                        return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+                        return rust_backend.python_fallback(
+                            "select_media_pages",
+                            lambda: _py_select_matching_pages(
+                                pages,
+                                preferred_page=preferred_page,
+                                tolerance_seconds=tolerance_seconds,
+                            ),
+                        )
                 return result
         elif status == "no_match":
             return []
 
-    return _py_select_matching_pages(
-        pages,
-        preferred_page=preferred_page,
-        tolerance_seconds=tolerance_seconds,
+    return rust_backend.python_fallback(
+        "select_media_pages",
+        lambda: _py_select_matching_pages(
+            pages,
+            preferred_page=preferred_page,
+            tolerance_seconds=tolerance_seconds,
+        ),
     )
 
 
@@ -2757,7 +2774,10 @@ def decide_audio_binding(
     descriptors: list[dict[str, object]] = []
     for original_index, page in enumerate(pages):
         if not isinstance(page, VideoPage):
-            return _py_decide_audio_binding(pages, tolerance_seconds)
+            return rust_backend.python_fallback(
+                "decide_audio_binding",
+                lambda: _py_decide_audio_binding(pages, tolerance_seconds),
+            )
         descriptors.append(
             {
                 "original_index": original_index,
@@ -2782,7 +2802,10 @@ def decide_audio_binding(
             automatic_video_index=response["automatic_video_index"],
         )
 
-    return _py_decide_audio_binding(pages, tolerance_seconds)
+    return rust_backend.python_fallback(
+        "decide_audio_binding",
+        lambda: _py_decide_audio_binding(pages, tolerance_seconds),
+    )
 
 
 def _normalize_selected_pages(raw_pages: object) -> list[int]:

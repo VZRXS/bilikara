@@ -676,7 +676,12 @@ class PlaylistStore:
         }
         used_rust, result = rust_backend.try_apply_av_delay_action(request)
         if not used_rust or result is None:
-            result = _py_apply_av_delay_action(request["state"], request["action"])
+            result = rust_backend.python_fallback(
+                "apply_av_delay_action",
+                lambda: _py_apply_av_delay_action(
+                    request["state"], request["action"]
+                ),
+            )
         changed = (
             self.av_global_delay_ms != result["global_delay_ms"]
             or self.av_local_delay_ms != result["local_delay_ms"]
@@ -1150,12 +1155,13 @@ class PlaylistStore:
         candidate: PlaylistItem | None = None,
     ) -> PlaylistOrderPlan:
         request = self._playlist_order_request_unlocked(operation, candidate)
-        fallback = _py_plan_playlist_order(request)
         completed, response = rust_backend.try_plan_playlist_order(
             self._playlist_order_wire_request(request)
         )
         if not completed or response is None:
-            return fallback
+            return rust_backend.python_fallback(
+                "plan_playlist_order", lambda: _py_plan_playlist_order(request)
+            )
         return PlaylistOrderPlan(tuple(response["ordered_ids"]))
 
     def _apply_playlist_order_unlocked(
@@ -1624,12 +1630,14 @@ class PlaylistStore:
                 for index, entry in enumerate(history_entries or [])
             ),
         )
-        fallback = _py_decide_playlist_duplicate(request)
         completed, response = rust_backend.try_decide_playlist_duplicate(
             cls._playlist_duplicate_wire_request(request)
         )
         if not completed or response is None:
-            return fallback
+            return rust_backend.python_fallback(
+                "decide_playlist_duplicate",
+                lambda: _py_decide_playlist_duplicate(request),
+            )
         return PlaylistDuplicateDecision(
             identity_key=response["identity_key"],
             active_duplicate_id=response["active_duplicate_id"],

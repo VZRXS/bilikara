@@ -73,10 +73,10 @@ from .config import (
     REMOTE_IDENTITIES_FILE,
     STATE_FILE,
     STATIC_DIR,
-    _detect_windows_physical_host,
     ensure_directories,
 )
 from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
+from .networking import detect_lan_ipv4_addresses
 from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .remote_identity import RemoteIdentityStore
 from .store import PlaylistStore
@@ -2508,29 +2508,10 @@ def _network_access_urls(host: str, port: int) -> list[str]:
             return []
         return [f"http://{_url_host(host)}:{port}"]
 
-    candidates: list[str] = []
-    seen: set[str] = set()
-    if os.name == "nt":
-        physical_host = _detect_windows_physical_host()
-        if physical_host:
-            return [f"http://{physical_host}:{port}"]
-    elif _is_container_runtime():
+    if os.name != "nt" and _is_container_runtime():
         # Container bridge addresses (commonly 172.17/16) are not reachable
         # from the host's LAN and must never be advertised as mobile URLs.
         return []
-
-    try:
-        addresses = socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET)
-    except OSError:
-        addresses = []
-
-    for entry in addresses:
-        ip = entry[4][0]
-        if ip.startswith("127."):
-            continue
-        url = f"http://{ip}:{port}"
-        if url in seen:
-            continue
-        seen.add(url)
-        candidates.append(url)
-    return candidates
+    return [
+        f"http://{address}:{port}" for address in detect_lan_ipv4_addresses()
+    ]
