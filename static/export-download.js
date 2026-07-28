@@ -9,74 +9,91 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function (root) {
   "use strict";
 
-  const ATTACHMENT_FRAME_CLEANUP_DELAY_MS = 60_000;
-
-  function isLoopbackIpv4(address) {
-    const parts = String(address || "").split(".");
-    if (parts.length !== 4) {
-      return false;
+  function normalizedErrorMessage(error, fallback) {
+    if (typeof error === "string" && error.trim()) {
+      return error.trim();
     }
-    const octets = parts.map((part) => {
-      if (!/^\d{1,3}$/.test(part)) {
-        return NaN;
-      }
-      return Number.parseInt(part, 10);
-    });
-    return octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)
-      && octets[0] === 127;
+    if (error && typeof error.message === "string" && error.message.trim()) {
+      return error.message.trim();
+    }
+    return String(fallback || "").trim();
   }
 
-  function isLoopbackHostname(hostname) {
-    let normalized = String(hostname || "").trim().toLowerCase();
-    if (normalized.startsWith("[") && normalized.endsWith("]")) {
-      normalized = normalized.slice(1, -1);
+  function nativeDownloadStatus(result, fallback) {
+    const status = result && typeof result === "object" ? result.status : "";
+    if (status === "saved" || status === "cancelled") {
+      return status;
     }
-    normalized = normalized.replace(/\.$/, "");
-    if (normalized === "localhost" || normalized === "::1") {
-      return true;
-    }
-    if (isLoopbackIpv4(normalized)) {
-      return true;
-    }
-    if (!normalized.startsWith("::ffff:")) {
-      return false;
-    }
-
-    const mappedAddress = normalized.slice("::ffff:".length);
-    if (isLoopbackIpv4(mappedAddress)) {
-      return true;
-    }
-    const mappedWords = mappedAddress.split(":");
-    if (mappedWords.length !== 2 || mappedWords.some((word) => !/^[0-9a-f]{1,4}$/.test(word))) {
-      return false;
-    }
-    const highWord = Number.parseInt(mappedWords[0], 16);
-    return (highWord >> 8) === 127;
+    throw new Error(normalizedErrorMessage(null, fallback));
   }
 
-  function triggerAttachmentDownload(url, environment = {}) {
+  function filenameFromContentDisposition(headerValue, fallback) {
+    const value = String(headerValue || "");
+    const quotedMatch = value.match(/filename="([^"]+)"/i);
+    if (quotedMatch) {
+      return quotedMatch[1];
+    }
+    const plainMatch = value.match(/filename=([^;]+)/i);
+    return plainMatch ? plainMatch[1].trim() : fallback;
+  }
+
+  async function responseErrorMessage(response, fallback) {
+    try {
+      const payload = await response.json();
+      return normalizedErrorMessage(payload?.error, fallback);
+    } catch {
+      return normalizedErrorMessage(null, fallback);
+    }
+  }
+
+  async function downloadBrowserFile(url, options = {}, environment = {}) {
+    const fetchRef = environment.fetch || root?.fetch?.bind(root);
     const documentRef = environment.document || root?.document;
+    const urlRef = environment.URL || root?.URL;
     const schedule = environment.setTimeout || root?.setTimeout?.bind(root);
-    if (!documentRef?.body || typeof documentRef.createElement !== "function") {
-      throw new Error("attachment download requires a document body");
-    }
-    if (typeof schedule !== "function") {
-      throw new Error("attachment download requires setTimeout");
+    const fallbackMessage = String(options.fallbackMessage || "");
+    if (typeof fetchRef !== "function"
+      || !documentRef?.body
+      || typeof documentRef.createElement !== "function"
+      || typeof urlRef?.createObjectURL !== "function"
+      || typeof urlRef?.revokeObjectURL !== "function"
+      || typeof schedule !== "function") {
+      throw new Error(normalizedErrorMessage(null, fallbackMessage));
     }
 
-    const frame = documentRef.createElement("iframe");
-    frame.hidden = true;
-    frame.setAttribute("aria-hidden", "true");
-    frame.src = String(url || "");
-    documentRef.body.appendChild(frame);
-    schedule(() => {
-      frame.remove();
-    }, ATTACHMENT_FRAME_CLEANUP_DELAY_MS);
+    const response = await fetchRef(url, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: options.headers || {},
+    });
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, fallbackMessage));
+    }
+
+    const blob = await response.blob();
+    const filename = filenameFromContentDisposition(
+      response.headers?.get?.("Content-Disposition"),
+      options.fallbackFilename || "download.bin",
+    );
+    const downloadUrl = urlRef.createObjectURL(blob);
+    const link = documentRef.createElement("a");
+    try {
+      link.href = downloadUrl;
+      link.download = filename;
+      link.rel = "noopener";
+      documentRef.body.appendChild(link);
+      link.click();
+    } finally {
+      link.remove();
+      schedule(() => urlRef.revokeObjectURL(downloadUrl), 1000);
+    }
     return true;
   }
 
   return {
-    isLoopbackHostname,
-    triggerAttachmentDownload,
+    downloadBrowserFile,
+    filenameFromContentDisposition,
+    nativeDownloadStatus,
+    normalizedErrorMessage,
   };
 }));

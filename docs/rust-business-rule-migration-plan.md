@@ -42,7 +42,10 @@ Phase 2 must not contain:
 Python must gather runtime data, perform I/O, and apply returned decisions. Rust
 must only evaluate the supplied value model.
 
-## Candidate domains
+Current overall status: **Phase 2 complete (8/8)**. All eight domains listed
+below are implemented. No Phase-2 domain remains.
+
+## Completed Phase-2 domains
 
 ### 1. Update asset scoring and selection
 
@@ -122,8 +125,7 @@ Remaining risks:
 
 ### 3. Media-page matching and ranking
 
-Status: implemented and locally stabilized; cross-platform validation is
-required in the pull request to `dev`.
+Status: implemented and validated by the repository's native release gate.
 
 Ownership boundary:
 - `bilikara/bilibili.py` adapts `VideoPage` list into JSON descriptors and maps selected indices back to original `VideoPage` instances.
@@ -160,15 +162,12 @@ Test coverage:
   `BILIKARA_REQUIRE_RUST_LIB=1`, so native equivalence cannot silently skip or
   use `_py_select_matching_pages` as fallback.
 
-Remaining risks:
-- Cross-platform confirmation remains required in the pull request to `dev`;
-  local stabilization does not claim that PR validation has completed.
+Remaining risks are limited to future policy changes and are bounded by strict
+native-response validation plus complete Python fallback equivalence tests.
 
 ### 4. Audio variant pairing and binding decisions
 
-Status: implemented and locally stabilized after the full media-page Stage A
-gate passed. Cross-platform validation is required in the pull request to
-`dev`; that PR validation has not yet occurred.
+Status: implemented and validated after the full media-page gate passed.
 
 Ownership boundary:
 
@@ -249,100 +248,13 @@ Test coverage:
 
 Remaining risks:
 
-- Cross-platform PR checks for `dev` remain outstanding.
 - The deliberately broad English substring policy remains user-visible.
 - Variant-ID construction is still duplicated in Python and was outside this
   migration's scope.
 
-### 6. Quality and stream ranking
-
-Status: **completed**. Phase 2 is **6/8 complete**. Item 6 uses four typed
-domains so quality normalization, video ranking, regular-audio ranking, and
-preferred-audio source binding retain their different invariants instead of
-being hidden behind a generic scorer.
-
-Migrated Python helpers and ownership:
-
-- `bilikara/cache.py` retains complete independent references named
-  `_py_quality_from_choice_index`, `_py_optional_video_quality`,
-  `_py_normalize_video_quality`, `_py_dash_max_quality_id`,
-  `_py_video_quality_priority`, `_py_ytdlp_max_height`,
-  `_py_select_dash_video_stream`, `_py_select_dash_audio_stream`, and
-  `_py_select_preferred_dash_audio`.
-- Their public wrappers adapt immutable strings, integers, codec names, source
-  availability, and original indices; each calls one native operation and maps
-  accepted indices back to the original dictionaries. Any unavailable or
-  invalid native result invokes the complete corresponding `_py_*` policy.
-- Python still reads cache/client configuration under its existing locks,
-  fetches DASH metadata, owns URLs, creates BBDown and yt-dlp syntax, performs
-  downloads, runs subprocesses, validates files, and mutates cache state.
-
-Typed domain APIs:
-
-```text
-decide_quality_policy(QualityPolicyRequest) -> QualityPolicyDecision
-select_video_stream(VideoStreamSelectionRequest) -> VideoStreamSelection
-select_audio_stream(AudioStreamSelectionRequest) -> AudioStreamSelection
-select_preferred_audio_source(PreferredAudioSourceRequest) -> PreferredAudioSourceSelection
-```
-
-- `quality_policy` represents all historical Bilibili quality-ID labels while
-  restricting configurable normalized choices to the current five labels. It
-  returns normalized/optional/indexed quality identities, the exact raw-label
-  DASH cap, effective yt-dlp maximum height, and ordered BBDown quality labels.
-- `video_stream_ranking` receives original index, quality ID, integer bandwidth,
-  and exact codec identity. It preserves the three current stages: constrained
-  codec/quality/AVC selection, quality-only fallback, then uncapped fallback.
-  Each chosen stage ranks descending quality ID, descending bandwidth, then
-  stable original input order. Unknown codec strings retain exact identity;
-  Bilibili's `7 -> avc`, `12 -> hevc`, and `13 -> av1` metadata normalization
-  remains in the Python API parser.
-- `audio_stream_ranking` ranks regular audio by the existing fixed order
-  Dolby 30250, FLAC 30251, 192K 30280, 132K 30232, and 64K 30216. Bandwidth is
-  deliberately ignored and original input order breaks ties. With Hi-Res off,
-  Dolby/FLAC entries in the regular list are removed when a standard entry
-  exists, but an all-Hi-Res regular list is retained as the existing fallback.
-- `preferred_audio_source_binding` deliberately does not receive quality IDs or
-  bandwidth and never ranks regular audio. It preserves the first supplied
-  regular candidate exactly; with Hi-Res enabled FLAC overrides regular and
-  Dolby overrides FLAC, while with Hi-Res disabled both separate sources are
-  ignored. This is distinct from `_select_dash_audio_stream` ranking policy.
-
-Additive ABI-v1 JSON exports and capabilities:
-
-```text
-rust_decide_quality_policy / decide_quality_policy
-rust_select_video_stream / select_video_stream
-rust_select_audio_stream / select_audio_stream
-rust_select_preferred_audio_source / select_preferred_audio_source
-```
-
-All four return Rust-owned JSON freed by `rust_free_string`, reject null,
-invalid UTF-8, malformed JSON, unsupported schemas, unknown fields, and invalid
-or duplicate wire indices, and distinguish valid `no_match` from FFI failure.
-The Python backend caps stream counts and UTF-8 label/codec lengths, rejects
-Boolean-as-integer and out-of-range values, and reconstructs the entire expected
-decision/ranking before accepting it. Selected and ranked indices, reasons,
-quality/codec caps, preferred source, first-regular identity, and order must
-match exactly.
-
-Tests cover typed Rust policy, wire adapters, FFI panic/null/UTF-8/schema and
-repeated allocation/free behavior; independent Python golden references;
-missing-library/symbol/ABI and malicious native responses; and strict-native
-fixed/generated equivalence across qualities, caps, codecs, permutations,
-fallback stages, bandwidth ties, unsorted regular-audio inputs, object identity,
-Dolby, FLAC, and Hi-Res combinations. Existing cache command regressions
-confirm that only policy decisions changed ownership.
-
-Remaining risk: source metadata can contain malformed scalar values. Such
-requests fail closed to the original Python policy, preserving its behavior.
-Cross-platform CI remains necessary because the JSON ABI is loaded through
-platform-specific dynamic libraries. Downloader-specific selector strings and
-arguments intentionally remain Python adapters rather than canonical policy.
-
 ### 5. Download candidate planning
 
-Status: **completed**. Phase 2 is **5/8 complete**. Item 5 uses three precise
+Status: **completed**. Item 5 uses three precise
 typed domains because updater, media, and tool planners have materially
 different normalization, duplication, source, and ordering semantics.
 
@@ -486,111 +398,276 @@ this risk for all three domains. Cross-platform release-gate confirmation and
 production variation in externally supplied URL strings remain the residual
 risks; neither can move I/O or mutable state into Rust.
 
-Recommended order: complete; Item 6 was subsequently implemented as a separate
-migration without redesigning these candidate schemas.
+The domain was completed without redesigning these candidate schemas.
 
-### 7. Playlist ordering and deduplication
+### 6. Quality and stream ranking
 
-Current Python ownership:
+Status: **completed**. Item 6 uses four typed
+domains so quality normalization, video ranking, regular-audio ranking, and
+preferred-audio source binding retain their different invariants instead of
+being hidden behind a generic scorer.
 
-- `bilikara/store.py`
-- pure portions of `_insert_cycle_item_unlocked`,
-  `_rebuild_cycle_items_unlocked`, `_requester_cycle_state_unlocked`,
-  `_rotated_cycle_users_unlocked`, history/session dedupe-key logic, and queue
-  ordering;
-- all lock acquisition, model mutation, persistence, notifications, and public
-  store methods remain Python.
+Migrated Python helpers and ownership:
 
-Input/output model: immutable snapshots of users and queue items containing
-stable IDs, requester, priority/manual flags, and current position; response is
-an ordered list of existing IDs plus explicit dedupe decisions.
+- `bilikara/cache.py` retains complete independent references named
+  `_py_quality_from_choice_index`, `_py_optional_video_quality`,
+  `_py_normalize_video_quality`, `_py_dash_max_quality_id`,
+  `_py_video_quality_priority`, `_py_ytdlp_max_height`,
+  `_py_select_dash_video_stream`, `_py_select_dash_audio_stream`, and
+  `_py_select_preferred_dash_audio`.
+- Their public wrappers adapt immutable strings, integers, codec names, source
+  availability, and original indices; each calls one native operation and maps
+  accepted indices back to the original dictionaries. Any unavailable or
+  invalid native result invokes the complete corresponding `_py_*` policy.
+- Python still reads cache/client configuration under its existing locks,
+  fetches DASH metadata, owns URLs, creates BBDown and yt-dlp syntax, performs
+  downloads, runs subprocesses, validates files, and mutates cache state.
 
-Dependencies: playlist fairness and session-history semantics. The Rust layer
-must never receive live `PlaylistItem` objects or mutate the store.
-
-User-visible policy: requester rotation, priority placement, duplicate request
-handling, current-item retention, and stable ordering.
-
-Proposed Rust structures:
+Typed domain APIs:
 
 ```text
-QueueItem { id, requester, priority, manual, original_index }
-PlaylistPlanRequest { users, items, current_id, cycle_state }
-PlaylistPlan { ordered_ids, cycle_state, duplicate_ids }
+decide_quality_policy(QualityPolicyRequest) -> QualityPolicyDecision
+select_video_stream(VideoStreamSelectionRequest) -> VideoStreamSelection
+select_audio_stream(AudioStreamSelectionRequest) -> AudioStreamSelection
+select_preferred_audio_source(PreferredAudioSourceRequest) -> PreferredAudioSourceSelection
 ```
 
-Proposed FFI:
+- `quality_policy` represents all historical Bilibili quality-ID labels while
+  restricting configurable normalized choices to the current five labels. It
+  returns normalized/optional/indexed quality identities, the exact raw-label
+  DASH cap, effective yt-dlp maximum height, and ordered BBDown quality labels.
+- `video_stream_ranking` receives original index, quality ID, integer bandwidth,
+  and exact codec identity. It preserves the three current stages: constrained
+  codec/quality/AVC selection, quality-only fallback, then uncapped fallback.
+  Each chosen stage ranks descending quality ID, descending bandwidth, then
+  stable original input order. Unknown codec strings retain exact identity;
+  Bilibili's `7 -> avc`, `12 -> hevc`, and `13 -> av1` metadata normalization
+  remains in the Python API parser.
+- `audio_stream_ranking` ranks regular audio by the existing fixed order
+  Dolby 30250, FLAC 30251, 192K 30280, 132K 30232, and 64K 30216. Bandwidth is
+  deliberately ignored and original input order breaks ties. With Hi-Res off,
+  Dolby/FLAC entries in the regular list are removed when a standard entry
+  exists, but an all-Hi-Res regular list is retained as the existing fallback.
+- `preferred_audio_source_binding` deliberately does not receive quality IDs or
+  bandwidth and never ranks regular audio. It preserves the first supplied
+  regular candidate exactly; with Hi-Res enabled FLAC overrides regular and
+  Dolby overrides FLAC, while with Hi-Res disabled both separate sources are
+  ignored. This is distinct from `_select_dash_audio_stream` ranking policy.
+
+Additive ABI-v1 JSON exports and capabilities:
 
 ```text
-rust_plan_playlist_order(request_json) -> owned response JSON or null
+rust_decide_quality_policy / decide_quality_policy
+rust_select_video_stream / select_video_stream
+rust_select_audio_stream / select_audio_stream
+rust_select_preferred_audio_source / select_preferred_audio_source
 ```
 
-Python fallback: calculate a complete proposed order in Python when native
-execution fails. In either path, Python validates ID conservation and applies
-the plan atomically under the existing lock, then persists/notifies normally.
+All four return Rust-owned JSON freed by `rust_free_string`, reject null,
+invalid UTF-8, malformed JSON, unsupported schemas, unknown fields, and invalid
+or duplicate wire indices, and distinguish valid `no_match` from FFI failure.
+The Python backend caps stream counts and UTF-8 label/codec lengths, rejects
+Boolean-as-integer and out-of-range values, and reconstructs the entire expected
+decision/ranking before accepting it. Selected and ranked indices, reasons,
+quality/codec caps, preferred source, first-regular identity, and order must
+match exactly.
 
-Golden tests: all existing cycle/priority/manual/reorder cases, duplicate users
-and songs, removed/current items, empty users, stable ID conservation, and
-property tests proving no item is lost or duplicated.
+Tests cover typed Rust policy, wire adapters, FFI panic/null/UTF-8/schema and
+repeated allocation/free behavior; independent Python golden references;
+missing-library/symbol/ABI and malicious native responses; and strict-native
+fixed/generated equivalence across qualities, caps, codecs, permutations,
+fallback stages, bandwidth ties, unsorted regular-audio inputs, object identity,
+Dolby, FLAC, and Hi-Res combinations. Existing cache command regressions
+confirm that only policy decisions changed ownership.
 
-Risk: very high. It changes core fairness and session behavior and sits next to
-mutable state. It should be one of the last Phase-2 domains.
+Remaining risk: source metadata can contain malformed scalar values. Such
+requests fail closed to the original Python policy, preserving its behavior.
+Cross-platform CI remains necessary because the JSON ABI is loaded through
+platform-specific dynamic libraries. Downloader-specific selector strings and
+arguments intentionally remain Python adapters rather than canonical policy.
 
-Recommended order: last, after a pure planning boundary is extracted and
-extensively shadow-tested in Python.
+### 7. Cache planning calculations
 
-### 8. Cache planning calculations
+Status: **completed**.
 
-Current Python ownership:
+The complete independent Python reference is `_py_plan_cache_window`. It takes
+frozen `CachePlanItem` and `CachePlanRequest` values and returns one frozen
+`CachePlan`; it does not call Rust, inspect files, acquire locks, mutate the
+manager/store, or operate worker threads. Python resolves filesystem readiness
+before each bounded planning request. A synchronization can therefore resolve
+readiness for both its state-plan snapshot and its later priority-plan snapshot.
 
-- `bilikara/cache.py`
-- `_cache_window_plan`
-- `_retained_cache_ids`
-- pure calculations within `_prioritize_cache_window`, `_is_in_cache_window`,
-  and `_should_cache`;
-- queue mutation, process interruption, worker behavior, retries, and file
-  existence checks remain Python.
-
-Input/output model: ordered immutable item descriptors with cache state,
-current position, configured window size, in-flight IDs, and retention limit;
-response contains desired IDs, ordered pending IDs, retained IDs, and proposed
-preemption IDs.
-
-Dependencies: cache-window and retention policy. Filesystem readiness facts
-must be computed in Python and passed as booleans.
-
-User-visible policy: which songs are prepared, which completed entries are
-retained, and which active work may be deprioritized. No Rust result may itself
-cancel a process.
-
-Proposed Rust structures:
+Typed Rust API:
 
 ```text
-CacheItem { id, position, state, ready, active }
-CachePlanRequest { items, max_items, retention_limit, active_ids }
+CacheItem { original_index, item_id, cache_ready }
+CachePlanRequest {
+  items, max_items, retention_limit, active_item_ids,
+  primary_active_item_id, urgent_item_ids
+}
 CachePlan { desired_ids, pending_order, retained_ids, preempt_ids }
+plan_cache_window(CachePlanRequest) -> Result<CachePlan, CachePlanError>
 ```
 
-Proposed FFI:
+The domain is deterministic and typed, uses input-order traversal, and performs
+no I/O, locking, process control, scheduling, environment access, or global
+mutation. `preempt_ids` is only a proposal reproducing the former
+`_prioritize_cache_window` decision; it contains at most the primary active ID.
+
+Additive ABI-v1 wire schema and capability:
 
 ```text
 rust_plan_cache_window(request_json) -> owned response JSON or null
+request = {
+  schema_version: 1,
+  items: [{ original_index, item_id, cache_ready }],
+  max_items, retention_limit, active_item_ids,
+  primary_active_item_id, urgent_item_ids
+}
+response = {
+  schema_version: 1,
+  desired_ids, pending_order, retained_ids, preempt_ids
+}
 ```
 
-Python fallback: preserve the existing calculations; validate that every
-returned ID exists and every returned set satisfies configured bounds. Python
-alone applies queue changes or interrupts work under current locks.
+The strict schema rejects null/invalid UTF-8, malformed JSON, unsupported
+versions, unknown fields, Boolean numeric values, out-of-range indices,
+oversized/empty/NUL IDs, duplicate IDs/indices/references, and unknown or
+invalid active/urgent references. Rust owns the returned string until Python
+calls `rust_free_string`; failures return null while an empty valid plan returns
+a concrete response.
 
-Golden tests: empty/current-only playlists, ready/pending/failed mixes, window
-boundaries, retention buffers, priority changes, in-flight items, reordered
-playlists, ID conservation, and all current cache planning regression tests.
+`try_plan_cache_window` independently validates both directions. It requires
+known unique IDs, pending as ordered desired non-ready IDs, desired as the
+ordered window, retained as desired plus no more than the configured number of
+ready outside-window IDs in traversal order, and at most the permitted primary
+preemption. Finally it recomputes `_py_plan_cache_window` and requires exact
+field-for-field and order-for-order equality. Missing libraries/symbols, ABI
+mismatch, native exceptions/panics, nulls, malformed or nonconforming JSON,
+invented/missing/duplicate/reordered IDs, invalid retention/preemption, or any
+result mismatch cause complete Python fallback; native and Python results are
+never partially merged.
 
-Risk: high. The calculation is deterministic, but incorrect plans cause wasted
-downloads or missing near-term media and interact with worker timing.
+Each synchronization calculates one accepted state plan whose desired,
+pending, and retained outputs own the state/window decision. After ensure/drop
+operations that may change active or urgent runtime facts, Python calculates a
+fresh priority plan. Immediately before applying a proposed preemption, Python
+revalidates the live active item, pending order, urgent next item, and shutdown
+state under the manager lock. Only then does it capture the matching processes;
+queue insertion and process termination remain Python-owned and occur outside
+that validation lock.
 
-Recommended order: late, after pure planning has been extracted from mutation.
+Filesystem readiness may therefore be evaluated for both bounded planning
+snapshots. This additional check is intentional: the first plan owns
+desired/pending/retained results, while the second refreshes priority and
+preemption facts after queue/start work. The implementation must not be
+described as one accepted plan total for the entire synchronization operation.
+Python remains solely responsible for locks and state assignment, orphan
+cleanup, filesystem readiness, cache creation/deletion, queue mutation,
+interruption messages and process termination, retries, urgent/current-item
+behavior, worker lifecycle, store updates, persistence, and notifications. The
+retention buffer and cache-limit semantics are unchanged. Compatibility
+wrappers retain the prior private method surface.
 
-## Recommended migration sequence
+Tests cover Python-only policy matrices, typed Rust and strict wire behavior,
+FFI null/UTF-8/schema/ownership/free/panic behavior, Python backend request and
+response fallback classes, generated native equivalence across permutations,
+limits, retention, ready masks, active items and urgent items, and existing
+CacheManager queue/preemption/retry/reconciliation behavior without real media
+downloads.
+
+Residual risk is limited to cross-platform/runtime concurrency variation while
+Python applies a validated immutable proposal. Exact Python reconstruction,
+the fresh priority plan, and apply-time active/urgent validation bound that
+risk. No scored priority lane, dynamic preemption policy, new worker, or extra
+download concurrency was introduced.
+
+### 8. Playlist ordering and deduplication
+
+Status: **completed**. This is the eighth and final Phase-2 domain.
+
+Independent Python references and value models:
+
+- `_py_plan_playlist_order` accepts frozen `PlaylistOrderRequest` and
+  `PlaylistOrderItem` descriptors and returns `PlaylistOrderPlan`.
+- `_py_playlist_identity_key` preserves BVID-over-AID identity, video page,
+  positive selected-audio pages in supplied order, and repeated pages.
+- `_py_decide_playlist_duplicate` accepts frozen active/history descriptors and
+  returns `PlaylistDuplicateDecision` with only an identity key, active item ID,
+  and history original index.
+- The references do not acquire store locks, call Rust, use live model objects,
+  mutate inputs, persist, notify, or read time/environment state.
+
+Typed Rust APIs:
+
+```text
+plan_playlist_order(PlaylistOrderRequest)
+  -> Result<PlaylistOrderPlan, PlaylistPlanError>
+decide_playlist_duplicate(PlaylistDuplicateRequest)
+  -> Result<PlaylistDuplicateDecision, PlaylistPlanError>
+```
+
+Ordering supports exactly `rebuild` and `insert_cycle`. Rebuild rotates the
+registered requester order after the normalized current requester, assigns
+eligible cycle occurrence keys by input traversal, and replaces only eligible
+cycle positions. Priority, manual, and unregistered-requester cycle positions
+remain fixed. Insert-cycle reproduces the prior traversal/insertion-point
+algorithm rather than globally sorting the queue. Both operations conserve
+unique IDs and Python maps them back to the exact existing objects; the current
+item is never included in the ordered request or output.
+
+Duplicate planning returns the canonical key and first matching references.
+Current item precedes queued items, queue order is preserved, and history order
+is represented by explicit original indices. Python still constructs entries,
+returns detached public copies, increments request counts, removes the old
+entry, inserts the newest entry at index zero, records played entries, and owns
+all timestamps. Canonical and supplied history keys share an 8192-byte UTF-8
+boundary, which covers the maximum legal 512-byte BVID, platform-sized video
+page, and 256 positive signed-64-bit audio page values without accepting
+unbounded history input.
+
+Additive ABI-v1 capabilities:
+
+```text
+rust_plan_playlist_order / plan_playlist_order
+rust_decide_playlist_duplicate / decide_playlist_duplicate
+```
+
+Wire requests and responses use exact schema-version-1 JSON fields. Typed
+domain structures have no serde derives; separate strict wire structures reject
+unknown fields, malformed enums and numeric types, duplicate IDs/indices/users,
+candidate collisions, invalid operation/candidate combinations, oversized
+collections/strings, and invalid identity values. Rust-owned strings use the
+existing `rust_free_string` contract; ABI remains version 1.
+
+Python validates requests before native calls, validates full response shape,
+ID conservation and references, recomputes the only permissible result with
+the independent Python reference, and requires exact field/order equality.
+Missing library/symbol, ABI mismatch, exception/panic, null, malformed JSON,
+schema/field/type failure, invented/missing/duplicate/reordered IDs, invalid
+active/history references, wrong identity, or any result mismatch invokes the
+complete Python fallback; results are never partially combined.
+
+Store integration remains atomic under the existing RLock: Python normalizes
+names, builds immutable descriptors, calls the bounded deterministic planner,
+maps IDs to original objects, verifies conservation again, applies the list,
+then performs the existing persistence and notification flow. All I/O, model
+mutation, request-count/history/session mutation, current-item changes, server
+errors, `allow_repeat`, cache resynchronization, and notifications remain
+Python-owned.
+
+Tests cover Python-only golden ordering and duplicate matrices; deterministic
+generated ID-conservation/fixed-position cases; typed Rust and wire behavior;
+FFI null/UTF-8/schema/ownership/free/panic cases; backend failure and malicious
+response fallback; real strict-native equivalence; and existing Store/server
+regressions including cycle fairness, priority/manual movement, user changes,
+restore, history counts, detached copies, and unstarted-item behavior.
+
+Residual risk is bounded to cross-platform JSON/FFI execution and future
+changes to Store policy. Exact Python reconstruction and object-conservation
+checks prevent a native result from silently changing fairness or identity.
+
+## Completed Phase-2 migration sequence
 
 1. Update asset scoring and selection.
 2. Release filtering and stable/preview selection.
@@ -601,11 +678,20 @@ Recommended order: late, after pure planning has been extracted from mutation.
 7. Cache planning calculations after mutation-free extraction.
 8. Playlist ordering and deduplication after mutation-free extraction.
 
-The exact sequence after the first domain should be re-evaluated using test
-coverage and production behavior at that time. Only one domain should be
-migrated per commit and each should be independently revertible.
+Phase 2 is complete (8/8). No Phase-2 domain remains. Python still owns all I/O
+and application mutation, all native capabilities were additive, and ABI
+version remains 1.
 
-## First Phase-2 implementation
+The AV-delay state machine added during v0.7.0 stabilization is an additional
+typed Rust transition policy, not Phase-2 Item 9. Python continues to own its
+mutable Store integration, persistence, strict native-response validation, and
+complete compatibility fallback.
+
+Phase 2 concerns deterministic immutable decisions. The future migration of
+stateful runtime ownership is a different architectural project; see the
+[version roadmap](version-roadmap.md) for the post-v0.7 convergence direction.
+
+## Historical rationale for the first Phase-2 domain
 
 The first implementation is **update asset scoring and selection**.
 

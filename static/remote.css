@@ -128,6 +128,28 @@
   --toast-border: 1px solid rgba(87, 63, 43, 0.12);
   --toast-shadow: 0 16px 42px rgba(88, 56, 30, 0.16);
   --btn-hover-shadow: transparent;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent-deep);
+  --av-lock-local-emphasis: var(--accent-deep);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
+  --av-lock-hover-filter: brightness(1.06) saturate(1.06);
+  --av-lock-focus-outline: 2px solid var(--remote-focus-border-color);
+  --av-lock-focus-shadow: var(--remote-focus-ring-shadow);
+  --av-lock-active-transform: translateY(1px);
 }
 
 * {
@@ -1014,7 +1036,8 @@ h1 {
 }
 
 #remote-av-sync-panel .remote-step-button,
-#remote-av-sync-panel .remote-reset-button {
+#remote-av-sync-panel .remote-reset-button,
+#remote-av-sync-panel .remote-lock-button {
   width: 100%;
   min-width: 0;
   padding-inline: 8px;
@@ -1022,9 +1045,69 @@ h1 {
 }
 
 #remote-av-sync-panel .remote-input-wrap {
-  grid-column: 2 / -1;
+  grid-column: 2 / 4;
   width: 100%;
   justify-content: center;
+}
+
+#remote-av-sync-panel .remote-lock-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding-inline: 8px;
+  background: var(--av-lock-unlocked-bg);
+  border: var(--av-lock-unlocked-border);
+  color: var(--av-lock-unlocked-color);
+  font-size: 18px;
+}
+
+#remote-av-sync-panel .remote-lock-button[data-has-local="true"] {
+  background: var(--av-lock-local-bg);
+  border: var(--av-lock-local-border);
+  color: var(--av-lock-local-color);
+  box-shadow: inset 0 0 0 1px var(--av-lock-local-emphasis);
+}
+
+#remote-av-sync-panel .remote-lock-button[data-has-local="true"]::after {
+  content: "•";
+  margin-left: 2px;
+  font-size: 10px;
+  line-height: 1;
+}
+
+#remote-av-sync-panel .remote-lock-button[data-locked="true"] {
+  background: var(--av-lock-locked-bg);
+  border: var(--av-lock-locked-border);
+  color: var(--av-lock-locked-color);
+  box-shadow: inset 0 -2px 0 var(--av-lock-locked-emphasis);
+}
+
+#remote-av-sync-panel .remote-lock-button[data-locked="true"][data-has-local="true"] {
+  background: var(--av-lock-locked-local-bg);
+  border: var(--av-lock-locked-local-border);
+  color: var(--av-lock-locked-local-color);
+  box-shadow: inset 0 0 0 2px var(--av-lock-locked-local-emphasis);
+}
+
+#remote-av-sync-panel .remote-lock-button:disabled {
+  background: var(--av-lock-disabled-bg);
+  border: var(--av-lock-disabled-border);
+  color: var(--av-lock-disabled-color);
+  box-shadow: none;
+}
+
+#remote-av-sync-panel .remote-lock-button:not(:disabled):hover {
+  filter: var(--av-lock-hover-filter);
+}
+
+#remote-av-sync-panel .remote-lock-button:focus-visible {
+  outline: var(--av-lock-focus-outline);
+  outline-offset: 2px;
+  box-shadow: var(--av-lock-focus-shadow);
+}
+
+#remote-av-sync-panel .remote-lock-button:not(:disabled):active {
+  transform: var(--av-lock-active-transform);
 }
 
 #remote-key-shift-panel .remote-setting-controls {
@@ -3196,7 +3279,8 @@ body.remote-search-modal-open {
   }
 
   #remote-av-sync-panel .remote-step-button,
-  #remote-av-sync-panel .remote-reset-button {
+  #remote-av-sync-panel .remote-reset-button,
+  #remote-av-sync-panel .remote-lock-button {
     width: 100%;
     min-height: 42px;
     padding-inline: 12px;
@@ -3207,7 +3291,7 @@ body.remote-search-modal-open {
   }
 
   #remote-av-sync-panel .remote-input-wrap {
-    grid-column: 2 / -1;
+    grid-column: 2 / 4;
     width: 100%;
     min-height: 42px;
     justify-content: center;
@@ -3954,6 +4038,24 @@ body.remote-identity-modal-open {
   --bg-glow: rgba(30, 26, 23, 0.9);
   --bg-top: #1c1815;
   --bg-bottom: #13110f;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   /* Component variables - dark values */
   --chip-bg: rgba(30, 26, 23, 0.56);
@@ -4061,6 +4163,24 @@ body.remote-identity-modal-open {
   --bg-glow: rgba(56, 189, 248, 0.18);
   --bg-top: #06111f;
   --bg-bottom: #020617;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   --chip-bg: rgba(8, 18, 32, 0.58);
   --chip-border: 1px solid rgba(148, 202, 233, 0.16);
@@ -4182,6 +4302,24 @@ body.remote-identity-modal-open {
   --bg-glow: rgba(30, 41, 59, 0.9);
   --bg-top: #0b1120;
   --bg-bottom: #050810;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   --chip-bg: rgba(17, 25, 40, 0.56);
   --chip-border: 1px solid rgba(255, 255, 255, 0.1);

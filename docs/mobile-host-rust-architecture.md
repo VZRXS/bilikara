@@ -20,6 +20,9 @@
    - migration fallback
    - reference implementations
    - development and build tooling
+   During v0.8 convergence, the process selects Rust Core mode or Python
+   compatibility mode once at startup. Stateful operations do not fall back
+   per operation, because that would permit split-brain state.
 5. Tauri provides:
    - the native application shell
    - the system WebView
@@ -64,8 +67,19 @@ platform and infrastructure adapters
 Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI code, or platform adapters.
 
 ## Future Infrastructure Direction
-- Only the BBDown capabilities required by bilikara will eventually be migrated.
-- Do not port or link aria2 source code.
-- A future independent Rust downloader may implement the required HTTP/Range/retry/cancellation subset.
-- FFmpeg and ffprobe CLI calls are desktop transition adapters.
-- Future media handling must be accessed through an abstract media backend.
+- Only the BBDown capabilities required by bilikara will be migrated, using
+  known BBDown behavior as a compatibility oracle and explicit fallback for
+  unsupported cases during transition.
+- Do not port or link aria2 source code. Build an independent Rust downloader;
+  retain aria2c only as an explicit desktop transition fallback until that path
+  is proven.
+- FFmpeg and ffprobe CLI calls are desktop transition adapters. Media handling
+  must use a `MediaBackend` abstraction, with direct FFmpeg libraries preferred
+  for the required metadata and remux functionality.
+- Mobile production cannot depend on Python, child processes, sidecars, or CLI
+  executables.
+- Tauri remains the shell and WebView integration layer. Swift and Kotlin stay
+  narrow platform adapters rather than alternate backends.
+
+The detailed release sequencing, downloader scope, and casting foundation are
+maintained in [the version roadmap](version-roadmap.md).

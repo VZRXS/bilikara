@@ -5,11 +5,13 @@ import re
 import threading
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from .models import HistoryEntry, PlaylistItem, SessionPlayedEntry
+from . import rust_backend
 
 MAX_SESSION_USERS = 32
 MAX_SESSION_USER_NAME_LENGTH = 24
@@ -19,6 +21,339 @@ DEFAULT_SONG_ADVANCE_DELAY_SECONDS = 3
 MAX_SONG_ADVANCE_DELAY_SECONDS = 30
 MIN_KEY_SHIFT = -6
 MAX_KEY_SHIFT = 6
+PLAYLIST_SLOT_TYPES = frozenset({"cycle", "priority", "manual"})
+PLAYLIST_ORDER_OPERATIONS = frozenset({"rebuild", "insert_cycle"})
+MAX_PLAYLIST_PLAN_ITEMS = 10_000
+MAX_PLAYLIST_STRING_BYTES = 512
+MAX_PLAYLIST_HISTORY_KEY_BYTES = 8_192
+MAX_PLAYLIST_AUDIO_PAGES = 256
+
+
+def _py_apply_av_delay_action(
+    state: dict[str, object], action: dict[str, object]
+) -> dict[str, object]:
+    """Complete Python reference for the pure Rust AV-delay state machine."""
+
+    global_delay = int(state["global_delay_ms"])
+    local_delay = int(state["local_delay_ms"])
+    locked = bool(state["locked"])
+    action_type = str(action["type"])
+
+    def bounded(value: int) -> int:
+        return max(-MAX_AV_OFFSET_MS, min(MAX_AV_OFFSET_MS, value))
+
+    if action_type == "set_effective":
+        local_delay = bounded(int(action["effective_delay_ms"])) - global_delay
+    elif action_type == "adjust":
+        target = bounded(global_delay + local_delay + int(action["delta_ms"]))
+        local_delay = target - global_delay
+    elif action_type == "reset_local":
+        local_delay = 0
+    elif action_type == "toggle_lock" and locked:
+        local_delay += global_delay
+        global_delay = 0
+        locked = False
+    elif action_type == "toggle_lock" and local_delay != 0:
+        global_delay += local_delay
+        local_delay = 0
+        locked = True
+    elif action_type not in {"snapshot", "toggle_lock"}:
+        raise ValueError("unknown AV delay action")
+
+    effective_delay = global_delay + local_delay
+    has_local = local_delay != 0
+    return {
+        "schema_version": 1,
+        "global_delay_ms": global_delay,
+        "local_delay_ms": local_delay,
+        "effective_delay_ms": effective_delay,
+        "locked": locked,
+        "has_local_adjustment": has_local,
+        "lock_button_enabled": locked or has_local,
+    }
+
+
+@dataclass(frozen=True)
+class PlaylistOrderItem:
+    original_index: int
+    item_id: str
+    requester_name: str
+    slot_type: str
+
+
+@dataclass(frozen=True)
+class PlaylistOrderRequest:
+    operation: str
+    session_users: tuple[str, ...]
+    current_requester: str | None
+    items: tuple[PlaylistOrderItem, ...]
+    candidate: PlaylistOrderItem | None = None
+
+
+@dataclass(frozen=True)
+class PlaylistOrderPlan:
+    ordered_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PlaylistIdentity:
+    bvid: str
+    aid: int
+    video_page: int
+    selected_audio_pages: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class DuplicateActiveItem:
+    original_index: int
+    item_id: str
+    identity: PlaylistIdentity
+
+
+@dataclass(frozen=True)
+class DuplicateHistoryEntry:
+    original_index: int
+    key: str
+
+
+@dataclass(frozen=True)
+class PlaylistDuplicateRequest:
+    candidate: PlaylistIdentity
+    current_item: DuplicateActiveItem | None = None
+    queued_items: tuple[DuplicateActiveItem, ...] = ()
+    history_entries: tuple[DuplicateHistoryEntry, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlaylistDuplicateDecision:
+    identity_key: str
+    active_duplicate_id: str | None
+    history_duplicate_index: int | None
+
+
+def _validate_playlist_order_item(item: object) -> PlaylistOrderItem:
+    if not isinstance(item, PlaylistOrderItem):
+        raise ValueError("invalid playlist order item")
+    if (
+        isinstance(item.original_index, bool)
+        or not isinstance(item.original_index, int)
+        or item.original_index < 0
+        or not isinstance(item.item_id, str)
+        or not item.item_id
+        or "\x00" in item.item_id
+        or len(item.item_id.encode("utf-8")) > MAX_PLAYLIST_STRING_BYTES
+        or not isinstance(item.requester_name, str)
+        or "\x00" in item.requester_name
+        or len(item.requester_name.encode("utf-8")) > MAX_PLAYLIST_STRING_BYTES
+        or item.slot_type not in PLAYLIST_SLOT_TYPES
+    ):
+        raise ValueError("invalid playlist order item")
+    return item
+
+
+def _validate_playlist_order_request(request: object) -> PlaylistOrderRequest:
+    if not isinstance(request, PlaylistOrderRequest):
+        raise ValueError("invalid playlist order request")
+    if request.operation not in PLAYLIST_ORDER_OPERATIONS:
+        raise ValueError("invalid playlist order operation")
+    if (
+        not isinstance(request.session_users, tuple)
+        or any(not isinstance(name, str) or not name for name in request.session_users)
+        or any(
+            "\x00" in name or len(name.encode("utf-8")) > MAX_PLAYLIST_STRING_BYTES
+            for name in request.session_users
+        )
+        or len(request.session_users) > MAX_SESSION_USERS
+        or len(set(request.session_users)) != len(request.session_users)
+        or request.current_requester is not None
+        and not isinstance(request.current_requester, str)
+        or isinstance(request.current_requester, str)
+        and (
+            "\x00" in request.current_requester
+            or len(request.current_requester.encode("utf-8")) > MAX_PLAYLIST_STRING_BYTES
+        )
+        or not isinstance(request.items, tuple)
+        or len(request.items) > MAX_PLAYLIST_PLAN_ITEMS
+    ):
+        raise ValueError("invalid playlist order request")
+    item_ids: set[str] = set()
+    indices: set[int] = set()
+    for item in request.items:
+        item = _validate_playlist_order_item(item)
+        if item.item_id in item_ids or item.original_index in indices:
+            raise ValueError("duplicate playlist item identity")
+        item_ids.add(item.item_id)
+        indices.add(item.original_index)
+    if request.operation == "rebuild":
+        if request.candidate is not None:
+            raise ValueError("rebuild cannot include a candidate")
+    else:
+        candidate = _validate_playlist_order_item(request.candidate)
+        if candidate.slot_type != "cycle":
+            raise ValueError("insert candidate must be a cycle item")
+        if len(request.items) >= MAX_PLAYLIST_PLAN_ITEMS:
+            raise ValueError("playlist insertion exceeds item limit")
+        if candidate.item_id in item_ids or candidate.original_index in indices:
+            raise ValueError("candidate identity collides with playlist")
+    return request
+
+
+def _py_rotated_playlist_users(request: PlaylistOrderRequest) -> tuple[str, ...]:
+    users = request.session_users
+    current = request.current_requester
+    if not users or current not in users:
+        return users
+    start = (users.index(current) + 1) % len(users)
+    return users[start:] + users[:start]
+
+
+def _py_playlist_cycle_state(
+    request: PlaylistOrderRequest,
+) -> tuple[dict[str, tuple[int, int]], dict[str, int], dict[str, int]]:
+    ordered_users = _py_rotated_playlist_users(request)
+    order_index = {name: index for index, name in enumerate(ordered_users)}
+    requester_counts = {name: 0 for name in ordered_users}
+    cycle_keys: dict[str, tuple[int, int]] = {}
+    for item in request.items:
+        if item.slot_type != "cycle" or item.requester_name not in order_index:
+            continue
+        cycle_keys[item.item_id] = (
+            requester_counts[item.requester_name],
+            order_index[item.requester_name],
+        )
+        requester_counts[item.requester_name] += 1
+    return cycle_keys, requester_counts, order_index
+
+
+def _py_plan_playlist_order(request: PlaylistOrderRequest) -> PlaylistOrderPlan:
+    """Return the exact queue rebuild or cycle-insertion order without mutation."""
+
+    request = _validate_playlist_order_request(request)
+    cycle_keys, requester_counts, order_index = _py_playlist_cycle_state(request)
+    if request.operation == "insert_cycle":
+        candidate = request.candidate
+        assert candidate is not None
+        ordered_ids = [item.item_id for item in request.items]
+        if not ordered_ids:
+            return PlaylistOrderPlan((candidate.item_id,))
+        if candidate.requester_name not in order_index:
+            return PlaylistOrderPlan(tuple(ordered_ids + [candidate.item_id]))
+        new_key = (
+            requester_counts[candidate.requester_name],
+            order_index[candidate.requester_name],
+        )
+        insert_index = 0
+        for index, existing in enumerate(request.items):
+            if existing.slot_type != "cycle":
+                insert_index = index + 1
+                continue
+            existing_key = cycle_keys.get(existing.item_id)
+            if existing_key is None or existing_key <= new_key:
+                insert_index = index + 1
+        ordered_ids.insert(insert_index, candidate.item_id)
+        return PlaylistOrderPlan(tuple(ordered_ids))
+
+    cycle_positions: list[int] = []
+    sortable: list[tuple[tuple[int, int], int, str]] = []
+    for position, item in enumerate(request.items):
+        if item.slot_type != "cycle" or item.item_id not in cycle_keys:
+            continue
+        cycle_positions.append(position)
+        sortable.append((cycle_keys[item.item_id], item.original_index, item.item_id))
+    sortable.sort(key=lambda entry: (entry[0][0], entry[0][1], entry[1]))
+    ordered_ids = [item.item_id for item in request.items]
+    for target, (_, _, item_id) in zip(cycle_positions, sortable):
+        ordered_ids[target] = item_id
+    return PlaylistOrderPlan(tuple(ordered_ids))
+
+
+def _validate_playlist_identity(identity: object) -> PlaylistIdentity:
+    if not isinstance(identity, PlaylistIdentity):
+        raise ValueError("invalid playlist identity")
+    if (
+        not isinstance(identity.bvid, str)
+        or isinstance(identity.aid, bool)
+        or not isinstance(identity.aid, int)
+        or identity.aid < 0
+        or identity.aid > 2**64 - 1
+        or isinstance(identity.video_page, bool)
+        or not isinstance(identity.video_page, int)
+        or identity.video_page <= 0
+        or identity.video_page > 2**64 - 1
+        or not isinstance(identity.selected_audio_pages, tuple)
+        or any(isinstance(page, bool) or not isinstance(page, int) for page in identity.selected_audio_pages)
+        or len(identity.bvid.encode("utf-8")) > MAX_PLAYLIST_STRING_BYTES
+        or "\x00" in identity.bvid
+        or len(identity.selected_audio_pages) > MAX_PLAYLIST_AUDIO_PAGES
+        or any(not -(2**63) <= page <= 2**63 - 1 for page in identity.selected_audio_pages)
+    ):
+        raise ValueError("invalid playlist identity")
+    return identity
+
+
+def _py_playlist_identity_key(identity: PlaylistIdentity) -> str:
+    identity = _validate_playlist_identity(identity)
+    audio_pages = [page for page in identity.selected_audio_pages if page > 0]
+    audio_suffix = ":a" + "-".join(str(page) for page in audio_pages) if audio_pages else ""
+    prefix = identity.bvid if identity.bvid else f"aid:{identity.aid}"
+    return f"{prefix}:p{identity.video_page}{audio_suffix}"
+
+
+def _py_decide_playlist_duplicate(
+    request: PlaylistDuplicateRequest,
+) -> PlaylistDuplicateDecision:
+    """Return canonical identity and first active/history matches without mutation."""
+
+    if not isinstance(request, PlaylistDuplicateRequest):
+        raise ValueError("invalid playlist duplicate request")
+    identity_key = _py_playlist_identity_key(request.candidate)
+    if not isinstance(request.queued_items, tuple) or not isinstance(request.history_entries, tuple):
+        raise ValueError("invalid playlist duplicate collections")
+    active_items = (() if request.current_item is None else (request.current_item,)) + request.queued_items
+    active_ids: set[str] = set()
+    active_indices: set[int] = set()
+    active_duplicate_id: str | None = None
+    for item in active_items:
+        if (
+            not isinstance(item, DuplicateActiveItem)
+            or isinstance(item.original_index, bool)
+            or not isinstance(item.original_index, int)
+            or item.original_index < 0
+            or not isinstance(item.item_id, str)
+            or not item.item_id
+            or "\x00" in item.item_id
+            or len(item.item_id.encode("utf-8")) > MAX_PLAYLIST_STRING_BYTES
+            or item.item_id in active_ids
+            or item.original_index in active_indices
+        ):
+            raise ValueError("invalid or duplicate active item")
+        active_ids.add(item.item_id)
+        active_indices.add(item.original_index)
+        item_key = _py_playlist_identity_key(item.identity)
+        if active_duplicate_id is None and item_key == identity_key:
+            active_duplicate_id = item.item_id
+    history_indices: set[int] = set()
+    history_duplicate_index: int | None = None
+    for entry in request.history_entries:
+        if (
+            not isinstance(entry, DuplicateHistoryEntry)
+            or isinstance(entry.original_index, bool)
+            or not isinstance(entry.original_index, int)
+            or entry.original_index < 0
+            or not isinstance(entry.key, str)
+            or "\x00" in entry.key
+            or len(entry.key.encode("utf-8")) > MAX_PLAYLIST_HISTORY_KEY_BYTES
+            or entry.original_index in history_indices
+        ):
+            raise ValueError("invalid or duplicate history entry")
+        history_indices.add(entry.original_index)
+        if history_duplicate_index is None and entry.key == identity_key:
+            history_duplicate_index = entry.original_index
+    return PlaylistDuplicateDecision(
+        identity_key=identity_key,
+        active_duplicate_id=active_duplicate_id,
+        history_duplicate_index=history_duplicate_index,
+    )
 
 
 class PlaylistStore:
@@ -43,7 +378,9 @@ class PlaylistStore:
         self.on_change = on_change
         self.lock = threading.RLock()
         self.playback_mode = "local"
-        self.av_offset_ms = 0
+        self.av_global_delay_ms = 0
+        self.av_local_delay_ms = 0
+        self.av_delay_locked = False
         self.volume_percent = 100
         self.is_muted = False
         self.song_advance_delay_seconds = DEFAULT_SONG_ADVANCE_DELAY_SECONDS
@@ -73,6 +410,7 @@ class PlaylistStore:
                 "playback_mode": self.playback_mode,
                 "player_settings": {
                     "av_offset_ms": self.av_offset_ms,
+                    "av_delay": self._av_delay_snapshot_unlocked(),
                     "volume_percent": self.volume_percent,
                     "is_muted": self.is_muted,
                     "song_advance_delay_seconds": self.song_advance_delay_seconds,
@@ -112,6 +450,7 @@ class PlaylistStore:
         position: str = "tail",
         *,
         requester_name: str = "",
+        reset_av_delay: bool = False,
     ) -> None:
         with self.lock:
             normalized_requester = self._validate_requester_name_unlocked(requester_name)
@@ -121,6 +460,10 @@ class PlaylistStore:
                 self._clear_previous_session_unlocked()
                 self.current_item = item
                 self.current_item_started = False
+                if reset_av_delay:
+                    self._apply_av_delay_action_unlocked(
+                        {"type": "reset_local"}, persist=False
+                    )
                 self._record_session_played_unlocked(item)
                 self._touch(persist_backup=True)
                 return
@@ -197,7 +540,7 @@ class PlaylistStore:
                 self._touch(persist_backup=True)
             return changed
 
-    def advance_to_next(self) -> bool:
+    def advance_to_next(self, *, reset_av_delay: bool = False) -> bool:
         with self.lock:
             if not self.current_item and not self.playlist:
                 return False
@@ -205,6 +548,10 @@ class PlaylistStore:
             self.current_item = self.playlist.pop(0) if self.playlist else None
             self.current_item_started = False
             self.key_shift = 0
+            if self.current_item and reset_av_delay:
+                self._apply_av_delay_action_unlocked(
+                    {"type": "reset_local"}, persist=False
+                )
             if self.current_item:
                 self._record_session_played_unlocked(self.current_item)
             self._rebuild_cycle_items_unlocked()
@@ -273,7 +620,7 @@ class PlaylistStore:
             self._touch(persist_backup=True)
             return True
 
-    def move_to_front(self, item_id: str) -> bool:
+    def move_to_front(self, item_id: str, *, reset_av_delay: bool = False) -> bool:
         with self.lock:
             index = self._find_index(item_id)
             if index is None:
@@ -281,6 +628,10 @@ class PlaylistStore:
             self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(index)
             self.current_item_started = False
+            if reset_av_delay:
+                self._apply_av_delay_action_unlocked(
+                    {"type": "reset_local"}, persist=False
+                )
             self._record_session_played_unlocked(self.current_item)
             self._rebuild_cycle_items_unlocked()
             self._touch(persist_backup=True)
@@ -293,12 +644,54 @@ class PlaylistStore:
 
     def set_av_offset_ms(self, offset_ms: int) -> int:
         with self.lock:
-            bounded = max(-MAX_AV_OFFSET_MS, min(MAX_AV_OFFSET_MS, int(offset_ms)))
-            if self.av_offset_ms == bounded:
-                return bounded
-            self.av_offset_ms = bounded
+            result = self._apply_av_delay_action_unlocked(
+                {"type": "set_effective", "effective_delay_ms": int(offset_ms)}
+            )
+            return int(result["effective_delay_ms"])
+
+    @property
+    def av_offset_ms(self) -> int:
+        return self.av_global_delay_ms + self.av_local_delay_ms
+
+    def apply_av_delay_action(self, action: dict[str, object]) -> dict[str, object]:
+        with self.lock:
+            return self._apply_av_delay_action_unlocked(action)
+
+    def _av_delay_snapshot_unlocked(self) -> dict[str, object]:
+        return self._apply_av_delay_action_unlocked(
+            {"type": "snapshot"}, persist=False
+        )
+
+    def _apply_av_delay_action_unlocked(
+        self, action: dict[str, object], *, persist: bool = True
+    ) -> dict[str, object]:
+        request = {
+            "schema_version": 1,
+            "state": {
+                "global_delay_ms": self.av_global_delay_ms,
+                "local_delay_ms": self.av_local_delay_ms,
+                "locked": self.av_delay_locked,
+            },
+            "action": dict(action),
+        }
+        used_rust, result = rust_backend.try_apply_av_delay_action(request)
+        if not used_rust or result is None:
+            result = _py_apply_av_delay_action(request["state"], request["action"])
+        changed = (
+            self.av_global_delay_ms != result["global_delay_ms"]
+            or self.av_local_delay_ms != result["local_delay_ms"]
+            or self.av_delay_locked != result["locked"]
+        )
+        self.av_global_delay_ms = int(result["global_delay_ms"])
+        self.av_local_delay_ms = int(result["local_delay_ms"])
+        self.av_delay_locked = bool(result["locked"])
+        if changed and persist:
             self._touch(persist_backup=True)
-            return bounded
+        return result
+
+    def reset_av_delay_for_track_change(self) -> dict[str, object]:
+        with self.lock:
+            return self._apply_av_delay_action_unlocked({"type": "reset_local"})
 
     def set_volume_percent(self, volume_percent: int) -> int:
         with self.lock:
@@ -451,7 +844,7 @@ class PlaylistStore:
             self._touch(persist_backup=True)
             return True
 
-    def restore_backup(self) -> bool:
+    def restore_backup(self, *, reset_av_delay: bool = False) -> bool:
         with self.lock:
             payload = self._read_backup_payload_unlocked()
             if not payload:
@@ -470,6 +863,10 @@ class PlaylistStore:
                 for item in playlist_payload
             ]
             self.current_item_started = False
+            if self.current_item and reset_av_delay:
+                self._apply_av_delay_action_unlocked(
+                    {"type": "reset_local"}, persist=False
+                )
             self._restore_session_played_from_backup_unlocked(payload)
             self._clear_previous_session_unlocked()
             self._rebuild_cycle_items_unlocked()
@@ -491,7 +888,9 @@ class PlaylistStore:
     def reset_runtime_data(self) -> None:
         with self.lock:
             self.playback_mode = "local"
-            self.av_offset_ms = 0
+            self.av_global_delay_ms = 0
+            self.av_local_delay_ms = 0
+            self.av_delay_locked = False
             self.volume_percent = 100
             self.is_muted = False
             self.song_advance_delay_seconds = DEFAULT_SONG_ADVANCE_DELAY_SECONDS
@@ -510,7 +909,9 @@ class PlaylistStore:
     def reset_player_state(self) -> None:
         with self.lock:
             self.playback_mode = "local"
-            self.av_offset_ms = 0
+            self.av_global_delay_ms = 0
+            self.av_local_delay_ms = 0
+            self.av_delay_locked = False
             self.volume_percent = 100
             self.is_muted = False
             self.song_advance_delay_seconds = DEFAULT_SONG_ADVANCE_DELAY_SECONDS
@@ -543,21 +944,26 @@ class PlaylistStore:
 
     def session_request_for_item(self, item: PlaylistItem) -> HistoryEntry | None:
         with self.lock:
-            key = self._history_key(item)
-            for entry in self.session_history:
-                if entry.key == key:
-                    return HistoryEntry.from_dict(entry.serialize())
-            return None
+            decision = self._decide_playlist_duplicate_unlocked(
+                item,
+                history_entries=self.session_history,
+            )
+            if decision.history_duplicate_index is None:
+                return None
+            entry = self.session_history[decision.history_duplicate_index]
+            return HistoryEntry.from_dict(entry.serialize())
 
     def active_duplicate_for_item(self, item: PlaylistItem) -> PlaylistItem | None:
         with self.lock:
-            key = self._history_key(item)
-            if self.current_item and self._history_key(self.current_item) == key:
-                return PlaylistItem.from_dict(self.current_item.serialize())
-            for existing in self.playlist:
-                if self._history_key(existing) == key:
-                    return PlaylistItem.from_dict(existing.serialize())
-            return None
+            decision = self._decide_playlist_duplicate_unlocked(
+                item,
+                current_item=self.current_item,
+                queued_items=self.playlist,
+            )
+            if decision.active_duplicate_id is None:
+                return None
+            existing = self._find_item_unlocked(decision.active_duplicate_id)
+            return PlaylistItem.from_dict(existing.serialize()) if existing else None
 
     def session_played_snapshot(self) -> list[dict[str, Any]]:
         with self.lock:
@@ -685,89 +1091,109 @@ class PlaylistStore:
             predicted_ids.add(self._variant_id(page, normalized_label, index))
         return predicted_ids
 
+    def _playlist_order_request_unlocked(
+        self,
+        operation: str,
+        candidate: PlaylistItem | None = None,
+    ) -> PlaylistOrderRequest:
+        items = tuple(
+            PlaylistOrderItem(
+                original_index=index,
+                item_id=item.id,
+                requester_name=self._normalize_session_user_name(item.requester_name),
+                slot_type=item.queue_slot_type,
+            )
+            for index, item in enumerate(self.playlist)
+        )
+        candidate_descriptor = None
+        if candidate is not None:
+            candidate_descriptor = PlaylistOrderItem(
+                original_index=len(items),
+                item_id=candidate.id,
+                requester_name=self._normalize_session_user_name(candidate.requester_name),
+                slot_type=candidate.queue_slot_type,
+            )
+        return PlaylistOrderRequest(
+            operation=operation,
+            session_users=tuple(self.session_users),
+            current_requester=(
+                self._normalize_session_user_name(self.current_item.requester_name)
+                if self.current_item
+                else None
+            ),
+            items=items,
+            candidate=candidate_descriptor,
+        )
+
+    @staticmethod
+    def _playlist_order_wire_request(request: PlaylistOrderRequest) -> dict[str, object]:
+        def item_payload(item: PlaylistOrderItem) -> dict[str, object]:
+            return {
+                "original_index": item.original_index,
+                "item_id": item.item_id,
+                "requester_name": item.requester_name,
+                "slot_type": item.slot_type,
+            }
+
+        return {
+            "schema_version": 1,
+            "operation": request.operation,
+            "session_users": list(request.session_users),
+            "current_requester": request.current_requester,
+            "items": [item_payload(item) for item in request.items],
+            "candidate": item_payload(request.candidate) if request.candidate else None,
+        }
+
+    def _plan_playlist_order_unlocked(
+        self,
+        operation: str,
+        candidate: PlaylistItem | None = None,
+    ) -> PlaylistOrderPlan:
+        request = self._playlist_order_request_unlocked(operation, candidate)
+        fallback = _py_plan_playlist_order(request)
+        completed, response = rust_backend.try_plan_playlist_order(
+            self._playlist_order_wire_request(request)
+        )
+        if not completed or response is None:
+            return fallback
+        return PlaylistOrderPlan(tuple(response["ordered_ids"]))
+
+    def _apply_playlist_order_unlocked(
+        self,
+        plan: PlaylistOrderPlan,
+        candidate: PlaylistItem | None = None,
+    ) -> None:
+        objects_by_id = {item.id: item for item in self.playlist}
+        if candidate is not None:
+            if candidate.id in objects_by_id:
+                raise ValueError("playlist candidate ID already exists")
+            objects_by_id[candidate.id] = candidate
+        if len(plan.ordered_ids) != len(objects_by_id) or set(plan.ordered_ids) != set(objects_by_id):
+            raise ValueError("playlist order plan violates object conservation")
+        self.playlist = [objects_by_id[item_id] for item_id in plan.ordered_ids]
+
     def _insert_cycle_item_unlocked(self, item: PlaylistItem) -> None:
-        if not self.playlist:
-            self.playlist.append(item)
-            return
-
-        cycle_keys, requester_counts, order_index = self._requester_cycle_state_unlocked()
-        requester_name = self._normalize_session_user_name(item.requester_name)
-        if requester_name not in order_index:
-            self.playlist.append(item)
-            return
-        new_key = (requester_counts[requester_name], order_index[requester_name])
-
-        insert_index = 0
-        for index, existing in enumerate(self.playlist):
-            if existing.queue_slot_type != "cycle":
-                insert_index = index + 1
-                continue
-            existing_key = cycle_keys.get(existing.id)
-            if existing_key is None:
-                insert_index = index + 1
-                continue
-            if existing_key <= new_key:
-                insert_index = index + 1
-        self.playlist.insert(insert_index, item)
+        plan = self._plan_playlist_order_unlocked("insert_cycle", item)
+        self._apply_playlist_order_unlocked(plan, item)
 
     def _rebuild_cycle_items_unlocked(self) -> None:
-        cycle_positions: list[int] = []
-        sortable_items: list[tuple[tuple[int, int], int, PlaylistItem]] = []
-        cycle_keys, _, _ = self._requester_cycle_state_unlocked()
-
-        for index, item in enumerate(self.playlist):
-            if item.queue_slot_type != "cycle":
-                continue
-            key = cycle_keys.get(item.id)
-            if key is None:
-                continue
-            cycle_positions.append(index)
-            sortable_items.append((key, index, item))
-
-        if not sortable_items:
-            return
-
-        sortable_items.sort(key=lambda entry: (entry[0][0], entry[0][1], entry[1]))
-        rebuilt_playlist = list(self.playlist)
-        for target_index, (_, _, item) in zip(cycle_positions, sortable_items):
-            rebuilt_playlist[target_index] = item
-        self.playlist = rebuilt_playlist
+        plan = self._plan_playlist_order_unlocked("rebuild")
+        self._apply_playlist_order_unlocked(plan)
 
     def _requester_cycle_state_unlocked(
         self,
     ) -> tuple[dict[str, tuple[int, int]], defaultdict[str, int], dict[str, int]]:
-        ordered_users = self._rotated_cycle_users_unlocked()
-        order_index = {
-            user_name: index for index, user_name in enumerate(ordered_users)
-        }
-        requester_counts: defaultdict[str, int] = defaultdict(int)
-        cycle_keys: dict[str, tuple[int, int]] = {}
-
-        for item in self.playlist:
-            requester_name = self._normalize_session_user_name(item.requester_name)
-            if requester_name not in order_index:
-                continue
-            if item.queue_slot_type != "cycle":
-                continue
-            cycle_keys[item.id] = (
-                requester_counts[requester_name],
-                order_index[requester_name],
-            )
-            requester_counts[requester_name] += 1
-
+        request = self._playlist_order_request_unlocked("rebuild")
+        cycle_keys, counts, order_index = _py_playlist_cycle_state(request)
+        requester_counts: defaultdict[str, int] = defaultdict(
+            int,
+            {requester: count for requester, count in counts.items() if count > 0},
+        )
         return cycle_keys, requester_counts, order_index
 
     def _rotated_cycle_users_unlocked(self) -> list[str]:
-        if not self.session_users:
-            return []
-        current_requester = self._normalize_session_user_name(
-            self.current_item.requester_name if self.current_item else ""
-        )
-        if current_requester not in self.session_users:
-            return list(self.session_users)
-        current_index = self.session_users.index(current_requester)
-        start_index = (current_index + 1) % len(self.session_users)
-        return self.session_users[start_index:] + self.session_users[:start_index]
+        request = self._playlist_order_request_unlocked("rebuild")
+        return list(_py_rotated_playlist_users(request))
 
     def _save_session(self) -> None:
         self._write_json_payload_unlocked(
@@ -775,7 +1201,8 @@ class PlaylistStore:
             {
                 "playback_mode": self.playback_mode,
                 "player_settings": {
-                    "av_offset_ms": self.av_offset_ms,
+                    "global_av_delay_ms": self.av_global_delay_ms,
+                    "av_delay_locked": self.av_delay_locked,
                     "volume_percent": self.volume_percent,
                     "is_muted": self.is_muted,
                     "song_advance_delay_seconds": self.song_advance_delay_seconds,
@@ -1007,7 +1434,11 @@ class PlaylistStore:
             player_payload = self._read_json_payload_unlocked(self.player_state_file)
             if player_payload:
                 self.playback_mode = self._load_playback_mode(player_payload)
-                self.av_offset_ms = self._load_av_offset_ms(player_payload)
+                (
+                    self.av_global_delay_ms,
+                    self.av_delay_locked,
+                ) = self._load_av_delay_persistent_state(player_payload)
+                self.av_local_delay_ms = 0
                 self.volume_percent = self._load_volume_percent(player_payload)
                 self.is_muted = self._load_is_muted(player_payload)
                 self.song_advance_delay_seconds = self._load_song_advance_delay_seconds(player_payload)
@@ -1056,6 +1487,25 @@ class PlaylistStore:
             return 0
         return max(-MAX_AV_OFFSET_MS, min(MAX_AV_OFFSET_MS, value))
 
+    @classmethod
+    def _load_av_delay_persistent_state(
+        cls, payload: dict[str, Any]
+    ) -> tuple[int, bool]:
+        player_settings = payload.get("player_settings")
+        if not isinstance(player_settings, dict):
+            return 0, False
+        if "global_av_delay_ms" not in player_settings:
+            legacy_delay = cls._load_av_offset_ms(payload)
+            return legacy_delay, legacy_delay != 0
+        raw_global = player_settings.get("global_av_delay_ms", 0)
+        try:
+            global_delay = int(raw_global)
+        except (TypeError, ValueError):
+            global_delay = 0
+        global_delay = max(-MAX_AV_OFFSET_MS, min(MAX_AV_OFFSET_MS, global_delay))
+        locked = player_settings.get("av_delay_locked", False)
+        return global_delay, locked if isinstance(locked, bool) else False
+
     @staticmethod
     def _load_volume_percent(payload: dict[str, Any]) -> int:
         player_settings = payload.get("player_settings")
@@ -1103,22 +1553,100 @@ class PlaylistStore:
         return max(MIN_KEY_SHIFT, min(MAX_KEY_SHIFT, value))
 
     @staticmethod
-    def _history_key(item: PlaylistItem) -> str:
-        audio_pages = [
-            int(page)
-            for page in (item.selected_pages or [])
-            if int(page) > 0
-        ]
-        audio_suffix = ""
-        if audio_pages:
-            audio_suffix = ":a" + "-".join(str(page) for page in audio_pages)
-        if item.bvid:
-            return f"{item.bvid}:p{item.page}{audio_suffix}"
-        return f"aid:{item.aid}:p{item.page}{audio_suffix}"
+    def _playlist_identity_from_item(item: PlaylistItem) -> PlaylistIdentity:
+        return PlaylistIdentity(
+            bvid=str(item.bvid or ""),
+            aid=int(item.aid),
+            video_page=int(item.page),
+            selected_audio_pages=tuple(int(page) for page in (item.selected_pages or [])),
+        )
+
+    @staticmethod
+    def _playlist_duplicate_wire_request(
+        request: PlaylistDuplicateRequest,
+    ) -> dict[str, object]:
+        def identity_payload(identity: PlaylistIdentity) -> dict[str, object]:
+            return {
+                "bvid": identity.bvid,
+                "aid": identity.aid,
+                "video_page": identity.video_page,
+                "selected_audio_pages": list(identity.selected_audio_pages),
+            }
+
+        def active_payload(item: DuplicateActiveItem) -> dict[str, object]:
+            return {
+                "original_index": item.original_index,
+                "item_id": item.item_id,
+                "identity": identity_payload(item.identity),
+            }
+
+        return {
+            "schema_version": 1,
+            "candidate": identity_payload(request.candidate),
+            "current_item": active_payload(request.current_item) if request.current_item else None,
+            "queued_items": [active_payload(item) for item in request.queued_items],
+            "history_entries": [
+                {"original_index": entry.original_index, "key": entry.key}
+                for entry in request.history_entries
+            ],
+        }
+
+    @classmethod
+    def _decide_playlist_duplicate_unlocked(
+        cls,
+        item: PlaylistItem,
+        *,
+        current_item: PlaylistItem | None = None,
+        queued_items: list[PlaylistItem] | None = None,
+        history_entries: list[HistoryEntry] | None = None,
+    ) -> PlaylistDuplicateDecision:
+        request = PlaylistDuplicateRequest(
+            candidate=cls._playlist_identity_from_item(item),
+            current_item=(
+                DuplicateActiveItem(
+                    original_index=0,
+                    item_id=current_item.id,
+                    identity=cls._playlist_identity_from_item(current_item),
+                )
+                if current_item
+                else None
+            ),
+            queued_items=tuple(
+                DuplicateActiveItem(
+                    original_index=index,
+                    item_id=queued.id,
+                    identity=cls._playlist_identity_from_item(queued),
+                )
+                for index, queued in enumerate(queued_items or [], start=1)
+            ),
+            history_entries=tuple(
+                DuplicateHistoryEntry(original_index=index, key=entry.key)
+                for index, entry in enumerate(history_entries or [])
+            ),
+        )
+        fallback = _py_decide_playlist_duplicate(request)
+        completed, response = rust_backend.try_decide_playlist_duplicate(
+            cls._playlist_duplicate_wire_request(request)
+        )
+        if not completed or response is None:
+            return fallback
+        return PlaylistDuplicateDecision(
+            identity_key=response["identity_key"],
+            active_duplicate_id=response["active_duplicate_id"],
+            history_duplicate_index=response["history_duplicate_index"],
+        )
+
+    @classmethod
+    def _history_key(cls, item: PlaylistItem) -> str:
+        return cls._decide_playlist_duplicate_unlocked(item).identity_key
 
     def _record_history_unlocked(self, item: PlaylistItem) -> None:
         now = time.time()
-        key = self._history_key(item)
+        decision = self._decide_playlist_duplicate_unlocked(
+            item,
+            history_entries=self.history,
+        )
+        key = decision.identity_key
         entry = HistoryEntry(
             key=key,
             display_title=item.display_title,
@@ -1133,12 +1661,11 @@ class PlaylistStore:
             requested_at=now,
             request_count=1,
         )
-        for index, existing in enumerate(self.history):
-            if existing.key != key:
-                continue
+        index = decision.history_duplicate_index
+        if index is not None:
+            existing = self.history[index]
             entry.request_count = existing.request_count + 1
             self.history.pop(index)
-            break
         self.history.insert(0, entry)
 
     def _archive_current_item_unlocked(self) -> None:
@@ -1159,7 +1686,11 @@ class PlaylistStore:
 
     def _record_session_request_unlocked(self, item: PlaylistItem) -> None:
         now = time.time()
-        key = self._history_key(item)
+        decision = self._decide_playlist_duplicate_unlocked(
+            item,
+            history_entries=self.session_history,
+        )
+        key = decision.identity_key
         entry = HistoryEntry(
             key=key,
             display_title=item.display_title,
@@ -1174,12 +1705,11 @@ class PlaylistStore:
             requested_at=now,
             request_count=1,
         )
-        for index, existing in enumerate(self.session_history):
-            if existing.key != key:
-                continue
+        index = decision.history_duplicate_index
+        if index is not None:
+            existing = self.session_history[index]
             entry.request_count = existing.request_count + 1
             self.session_history.pop(index)
-            break
         self.session_history.insert(0, entry)
 
     def _record_session_played_unlocked(self, item: PlaylistItem) -> None:
@@ -1256,7 +1786,6 @@ class PlaylistStore:
         normalized = self._normalize_session_user_name(requester_name)
         if not normalized:
             return self.session_users[0]
-            raise ValueError("点歌前请先选择用户名")
         if normalized not in self.session_users:
             raise ValueError("所选用户名不存在，请重新选择")
         return normalized

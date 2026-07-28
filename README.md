@@ -185,7 +185,7 @@ python start_bilikara.py
 
 **Tauri 桌面壳**
 
-构建 Tauri 桌面壳需要安装 Node.js 20 或更高版本，以及 Rust 工具链。仓库提供 `.nvmrc`，使用 nvm 时可先运行 `nvm use`。开发模式可运行：
+构建 Tauri 桌面壳需要安装 Node.js 24 或更高版本，以及 Rust 工具链。Node.js 24 仅是构建 / CI 基线，不是最终用户运行已打包应用的要求。仓库提供 `.nvmrc`，使用 nvm 时可先运行 `nvm use`。开发模式可运行：
 
 ```bash
 npm ci
@@ -213,6 +213,13 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - Windows 和 macOS 的最终包通常需要在各自系统上分别构建；也就是说，Windows 包最好在 Windows 上打，macOS 包最好在 macOS 上打
 - Windows 打包脚本会依次尝试 `py`、`python`、`python3`；如果都不存在，需要先安装 Python 3
 - 如需排查后端打包版启动问题，可使用 `python build_bundle.py --console` 生成带控制台窗口的调试包
+
+架构与版本规划文档：
+
+- [版本路线图](docs/version-roadmap.md)
+- [Rust 业务规则迁移计划](docs/rust-business-rule-migration-plan.md)
+- [移动 Host 与共享 Rust 架构](docs/mobile-host-rust-architecture.md)
+- [原生工具迁移清单](docs/rust-native-utility-inventory.md)
 
 ## 可选环境变量
 

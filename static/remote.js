@@ -1,6 +1,7 @@
 const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
 const remoteVolumeCommitDebounceMs = 160;
+const avDelayRequestTimeoutMs = 8000;
 const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
@@ -193,9 +194,7 @@ const state = {
   audioVariantSwitchInFlight: false,
   audioVariantSwitchUnlockAt: 0,
   audioVariantSwitchTimer: null,
-  remoteAvOffsetSaveSeq: 0,
-  remoteAvOffsetEchoSuppressUntil: 0,
-  remoteLocalAvOffsetMs: null,
+  remoteAvDelaySaving: false,
   remoteVolumeSaveSeq: 0,
   remoteSettingsEchoSuppressUntil: 0,
   remoteLocalVolumePercent: null,
@@ -364,6 +363,7 @@ const elements = {
   remoteAvSyncPanel: document.getElementById("remote-av-sync-panel"),
   remoteAvOffsetInput: document.getElementById("remote-av-offset-input"),
   remoteAvOffsetResetButton: document.getElementById("remote-av-offset-reset-button"),
+  remoteAvDelayLockButton: document.getElementById("remote-av-delay-lock-button"),
   remoteVolumePanel: document.getElementById("remote-volume-panel"),
   remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
   remoteVolumeSlider: document.getElementById("remote-volume-slider"),
@@ -563,23 +563,6 @@ function clientHeaders(extraHeaders = {}) {
     "X-Bilikara-Client": state.clientId,
     ...extraHeaders,
   };
-}
-
-async function saveTauriBackendDownload(path, body = null) {
-  if (!window.__TAURI__) {
-    return null;
-  }
-  const invoke = window.__TAURI__?.core?.invoke;
-  if (typeof invoke !== "function") {
-    throw new Error(t("history.exportFailed"));
-  }
-  return Boolean(await invoke("save_backend_download", {
-    request: {
-      path,
-      body,
-      clientId: state.clientId,
-    },
-  }));
 }
 
 function localizedBBDownLoginMessage(message) {
@@ -1377,22 +1360,41 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
   return t("request.duplicateSession", { title, count: count || 1 });
 }
 
-async function apiPost(url, payload = {}) {
-  const response = await fetch(url, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: clientHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  if (!response.ok || !data.ok) {
-    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
-    error.status = response.status;
-    error.code = data.code || "";
-    error.payload = data;
+async function apiPost(url, payload = {}, options = {}) {
+  const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
+  const controller = timeoutMs > 0 && typeof AbortController === "function"
+    ? new AbortController()
+    : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: clientHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
+      error.status = response.status;
+      error.code = data.code || "";
+      error.payload = data;
+      throw error;
+    }
+    return data.data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(t("error.requestTimeout"));
+    }
     throw error;
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
   }
-  return data.data;
 }
 
 function normalizedRemoteIdentity(payload) {
@@ -2148,16 +2150,6 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   }
 }
 
-function filenameFromContentDisposition(headerValue, fallback) {
-  const value = String(headerValue || "");
-  const quotedMatch = value.match(/filename="([^"]+)"/i);
-  if (quotedMatch) {
-    return quotedMatch[1];
-  }
-  const plainMatch = value.match(/filename=([^;]+)/i);
-  return plainMatch ? plainMatch[1].trim() : fallback;
-}
-
 function selectedHistoryExportSource() {
   return String(elements.historyExportSource?.value || "played").trim();
 }
@@ -2181,51 +2173,19 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     page_size: String(normalizedPageSize),
   });
   const exportUrl = `/api/playlist/export?${params.toString()}`;
-  const tauriSaved = await saveTauriBackendDownload(exportUrl);
-  if (tauriSaved !== null) {
-    return tauriSaved;
-  }
   const exportDownload = window.BilikaraExportDownload;
   if (!exportDownload
-    || typeof exportDownload.isLoopbackHostname !== "function"
-    || typeof exportDownload.triggerAttachmentDownload !== "function") {
+    || typeof exportDownload.downloadBrowserFile !== "function") {
     throw new Error(t("history.exportFailed"));
   }
-  if (!exportDownload.isLoopbackHostname(window.location.hostname)) {
-    exportDownload.triggerAttachmentDownload(exportUrl);
-    return true;
-  }
-  const response = await fetch(exportUrl, {
-    credentials: "same-origin",
-  });
-  if (!response.ok) {
-    let message = t("history.exportFailed");
-    try {
-      const payload = await response.json();
-      message = payload.error || message;
-    } catch {
-      // Keep the translated fallback for non-JSON failures.
-    }
-    throw new Error(message);
-  }
-  const blob = await response.blob();
   const fallbackFilename = normalizedFormat === "csv"
     ? "bilikara-playlist.csv"
     : "bilikara-playlist.png";
-  const filename = filenameFromContentDisposition(
-    response.headers.get("Content-Disposition"),
+  return exportDownload.downloadBrowserFile(exportUrl, {
     fallbackFilename,
-  );
-  const downloadUrl = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = downloadUrl;
-  link.download = filename;
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
-  return true;
+    fallbackMessage: t("history.exportFailed"),
+    headers: clientHeaders(),
+  });
 }
 
 elements.openRatingButton?.addEventListener("click", () => {
@@ -2252,7 +2212,10 @@ async function exportHistory(format) {
         ? t("history.csvDownloadStarted", { source: sourceLabel })
         : t("history.imageDownloadStarted", { source: sourceLabel }));
     } catch (error) {
-      setAppMessage(error.message, true);
+      setAppMessage(
+        window.BilikaraExportDownload.normalizedErrorMessage(error, t("history.exportFailed")),
+        true,
+      );
     }
   });
 }
@@ -4924,14 +4887,6 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   });
 }
 
-function boundedRemoteAvOffsetMs(offsetMs) {
-  const numeric = Number(offsetMs || 0);
-  if (!Number.isFinite(numeric)) {
-    return 0;
-  }
-  return Math.max(-5000, Math.min(5000, Math.round(numeric)));
-}
-
 function boundedRemoteVolumePercent(volumePercent) {
   const numeric = Number(volumePercent);
   if (!Number.isFinite(numeric)) {
@@ -4941,14 +4896,10 @@ function boundedRemoteVolumePercent(volumePercent) {
 }
 
 function serverRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
-  return boundedRemoteAvOffsetMs(playerSettings?.av_offset_ms || 0);
+  return Number(playerSettings?.av_delay?.effective_delay_ms ?? playerSettings?.av_offset_ms ?? 0);
 }
 
 function currentRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
-  if (state.remoteLocalAvOffsetMs !== null && Date.now() < state.remoteAvOffsetEchoSuppressUntil) {
-    return state.remoteLocalAvOffsetMs;
-  }
-  state.remoteLocalAvOffsetMs = null;
   return serverRemoteAvOffsetMs(playerSettings);
 }
 
@@ -5022,13 +4973,6 @@ function currentRemoteMuted(playerSettings = state.data?.player_settings) {
   return serverRemoteMuted(playerSettings);
 }
 
-function markRemoteAvOffsetWrite(offsetMs) {
-  state.remoteLocalAvOffsetMs = boundedRemoteAvOffsetMs(offsetMs);
-  state.remoteAvOffsetEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
-  state.remoteAvOffsetSaveSeq += 1;
-  return state.remoteAvOffsetSaveSeq;
-}
-
 function markRemoteVolumeWrite(payload) {
   if (payload.volume_percent !== undefined) {
     state.remoteLocalVolumePercent = payload.volume_percent;
@@ -5060,10 +5004,29 @@ function renderRemoteAvSyncControls(playbackMode, playerSettings) {
   const isLocalMode = playbackMode === "local";
   elements.remoteAvSyncPanel.classList.toggle("hidden", !isLocalMode);
   const offsetMs = currentRemoteAvOffsetMs(playerSettings);
+  const delayState = playerSettings?.av_delay || {};
+  elements.remoteAvOffsetInput.disabled = state.remoteAvDelaySaving;
+  elements.remoteAvSyncPanel.querySelectorAll("button[data-av-step]").forEach((button) => {
+    button.disabled = state.remoteAvDelaySaving;
+  });
   if (elements.remoteAvOffsetResetButton) {
-    elements.remoteAvOffsetResetButton.disabled = offsetMs === 0;
+    elements.remoteAvOffsetResetButton.disabled = state.remoteAvDelaySaving || !Boolean(delayState.has_local_adjustment);
   }
-  if (document.activeElement !== elements.remoteAvOffsetInput) {
+  if (elements.remoteAvDelayLockButton) {
+    const locked = Boolean(delayState.locked);
+    const hasLocal = Boolean(delayState.has_local_adjustment);
+    elements.remoteAvDelayLockButton.textContent = locked ? "🔒" : "🔓";
+    elements.remoteAvDelayLockButton.disabled = state.remoteAvDelaySaving || !Boolean(delayState.lock_button_enabled);
+    elements.remoteAvDelayLockButton.dataset.locked = String(locked);
+    elements.remoteAvDelayLockButton.dataset.hasLocal = String(hasLocal);
+    elements.remoteAvDelayLockButton.setAttribute("aria-pressed", String(locked));
+    const labelKey = locked
+      ? hasLocal ? "player.unlockAvDelayAdjusted" : "player.unlockAvDelay"
+      : hasLocal ? "player.lockAvDelayAdjusted" : "player.lockAvDelay";
+    elements.remoteAvDelayLockButton.setAttribute("aria-label", t(labelKey));
+    elements.remoteAvDelayLockButton.title = t(labelKey);
+  }
+  if (document.activeElement !== elements.remoteAvOffsetInput || state.remoteAvDelaySaving) {
     elements.remoteAvOffsetInput.value = String(offsetMs);
   }
 }
@@ -5706,34 +5669,40 @@ async function confirmBindingSheet() {
 }
 
 async function setRemoteAvOffset(offsetMs) {
-  const boundedOffsetMs = boundedRemoteAvOffsetMs(offsetMs);
-  const currentValue = currentRemoteAvOffsetMs();
-  if (boundedOffsetMs === currentValue) {
-    markRemoteAvOffsetWrite(boundedOffsetMs);
-    if (elements.remoteAvOffsetInput) {
-      elements.remoteAvOffsetInput.value = String(boundedOffsetMs);
-    }
+  const numeric = Number(offsetMs);
+  if (!Number.isFinite(numeric)) {
     return;
   }
+  await dispatchRemoteAvDelayAction({ type: "set_effective", effective_delay_ms: Math.round(numeric) });
+}
 
-  const requestSeq = markRemoteAvOffsetWrite(boundedOffsetMs);
-  if (elements.remoteAvOffsetInput) {
-    elements.remoteAvOffsetInput.value = String(boundedOffsetMs);
+async function dispatchRemoteAvDelayAction(action) {
+  if (state.remoteAvDelaySaving) {
+    return;
   }
+  const activeElement = document.activeElement;
+  activeElement?.setAttribute?.("aria-busy", "true");
+  state.remoteAvDelaySaving = true;
   renderRemoteAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   try {
-    const nextData = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
-    if (requestSeq !== state.remoteAvOffsetSaveSeq) {
-      return;
-    }
-    applyStateSnapshot(nextData);
+    const decision = await apiPost(
+      "/api/player/av-delay-action",
+      action,
+      { timeoutMs: avDelayRequestTimeoutMs },
+    );
+    state.data = {
+      ...state.data,
+      player_settings: {
+        ...state.data?.player_settings,
+        av_offset_ms: Number(decision?.effective_delay_ms || 0),
+        av_delay: decision,
+      },
+    };
   } catch (error) {
-    if (requestSeq !== state.remoteAvOffsetSaveSeq) {
-      return;
-    }
-    state.remoteLocalAvOffsetMs = null;
-    state.remoteAvOffsetEchoSuppressUntil = 0;
     setFormMessage(error.message, true);
+  } finally {
+    state.remoteAvDelaySaving = false;
+    activeElement?.removeAttribute?.("aria-busy");
     renderRemoteAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   }
 }
@@ -6701,10 +6670,6 @@ async function sendPlayerNext() {
   renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
 }
 
-function queueNoteText() {
-  return "";
-}
-
 function disconnectClient() {
   // Flush any pending auto-ratings before disconnecting so songs that
   // crossed the threshold but never got a deferred flush (e.g. the last
@@ -7441,7 +7406,7 @@ elements.refreshButton.addEventListener("click", async () => {
 });
 
 elements.remoteAvSyncPanel?.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-av-step], button[data-reset-av-offset]");
+  const button = event.target.closest("button[data-av-step], button[data-reset-av-offset], button[data-av-delay-lock]");
   if (!button) {
     return;
   }
@@ -7449,12 +7414,14 @@ elements.remoteAvSyncPanel?.addEventListener("click", async (event) => {
     return;
   }
   if (button.hasAttribute("data-reset-av-offset")) {
-    await setRemoteAvOffset(0);
+    await dispatchRemoteAvDelayAction({ type: "reset_local" });
     return;
   }
-  await setRemoteAvOffset(
-    currentRemoteAvOffsetMs(state.data?.player_settings) + Number(button.dataset.avStep || "0"),
-  );
+  if (button.hasAttribute("data-av-delay-lock")) {
+    await dispatchRemoteAvDelayAction({ type: "toggle_lock" });
+    return;
+  }
+  await dispatchRemoteAvDelayAction({ type: "adjust", delta_ms: Number(button.dataset.avStep || "0") });
 });
 
 elements.remoteAvOffsetInput?.addEventListener("change", async (event) => {

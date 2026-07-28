@@ -41,6 +41,10 @@ PHASE2_CAPABILITIES = (
     "select_video_stream",
     "select_audio_stream",
     "select_preferred_audio_source",
+    "plan_cache_window",
+    "plan_playlist_order",
+    "decide_playlist_duplicate",
+    "apply_av_delay_action",
 )
 
 MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS = 4096
@@ -50,6 +54,13 @@ MAX_TOOL_FALLBACK_BASES = 256
 MAX_STREAM_RANKING_INPUTS = 512
 MAX_CODEC_STRING_BYTES = 256
 MAX_QUALITY_LABEL_BYTES = 256
+MAX_CACHE_PLAN_ITEMS = 10_000
+MAX_CACHE_ITEM_ID_BYTES = 512
+MAX_PLAYLIST_PLAN_ITEMS = 10_000
+MAX_PLAYLIST_SESSION_USERS = 32
+MAX_PLAYLIST_STRING_BYTES = 512
+MAX_PLAYLIST_HISTORY_KEY_BYTES = 8192
+MAX_PLAYLIST_AUDIO_PAGES = 256
 
 
 def _rust_library_name() -> str:
@@ -200,6 +211,26 @@ _SYMBOLS = {
     ),
     "select_preferred_audio_source": (
         "rust_select_preferred_audio_source",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "plan_cache_window": (
+        "rust_plan_cache_window",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "plan_playlist_order": (
+        "rust_plan_playlist_order",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "decide_playlist_duplicate": (
+        "rust_decide_playlist_duplicate",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "apply_av_delay_action": (
+        "rust_apply_av_delay_action",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -2195,6 +2226,746 @@ def try_select_preferred_audio_source(
             return False, None
         response = json.loads(response_json)
         if not _valid_preferred_audio_source_response(response, validated):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _cache_plan_request(request: object) -> dict[str, object] | None:
+    required_fields = {
+        "schema_version",
+        "items",
+        "max_items",
+        "retention_limit",
+        "active_item_ids",
+        "primary_active_item_id",
+        "urgent_item_ids",
+    }
+    if not isinstance(request, dict) or set(request) != required_fields:
+        return None
+    schema_version = request.get("schema_version")
+    items = request.get("items")
+    max_items = request.get("max_items")
+    retention_limit = request.get("retention_limit")
+    active_item_ids = request.get("active_item_ids")
+    primary_active_item_id = request.get("primary_active_item_id")
+    urgent_item_ids = request.get("urgent_item_ids")
+    size_t_max = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(items, list)
+        or len(items) > MAX_CACHE_PLAN_ITEMS
+        or isinstance(max_items, bool)
+        or not isinstance(max_items, int)
+        or not 0 <= max_items <= size_t_max
+        or isinstance(retention_limit, bool)
+        or not isinstance(retention_limit, int)
+        or not 0 <= retention_limit <= size_t_max
+        or not isinstance(active_item_ids, list)
+        or not isinstance(urgent_item_ids, list)
+        or primary_active_item_id is not None
+        and not isinstance(primary_active_item_id, str)
+    ):
+        return None
+
+    validated_items: list[dict[str, object]] = []
+    item_ids: set[str] = set()
+    indices: set[int] = set()
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {
+            "original_index",
+            "item_id",
+            "cache_ready",
+        }:
+            return None
+        original_index = item.get("original_index")
+        item_id = item.get("item_id")
+        cache_ready = item.get("cache_ready")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or not 0 <= original_index <= size_t_max
+            or not isinstance(item_id, str)
+            or not item_id
+            or len(item_id.encode("utf-8")) > MAX_CACHE_ITEM_ID_BYTES
+            or "\x00" in item_id
+            or not isinstance(cache_ready, bool)
+            or original_index in indices
+            or item_id in item_ids
+        ):
+            return None
+        indices.add(original_index)
+        item_ids.add(item_id)
+        validated_items.append(
+            {
+                "original_index": original_index,
+                "item_id": item_id,
+                "cache_ready": cache_ready,
+            }
+        )
+
+    def valid_references(value: list[object]) -> bool:
+        return (
+            len(value) <= len(items)
+            and all(isinstance(item_id, str) and item_id in item_ids for item_id in value)
+            and len(set(value)) == len(value)
+        )
+
+    if not valid_references(active_item_ids) or not valid_references(urgent_item_ids):
+        return None
+    if primary_active_item_id is not None and (
+        primary_active_item_id not in item_ids
+        or primary_active_item_id not in active_item_ids
+    ):
+        return None
+    return {
+        "schema_version": 1,
+        "items": validated_items,
+        "max_items": max_items,
+        "retention_limit": retention_limit,
+        "active_item_ids": list(active_item_ids),
+        "primary_active_item_id": primary_active_item_id,
+        "urgent_item_ids": list(urgent_item_ids),
+    }
+
+
+def _expected_cache_plan(request: dict[str, object]) -> dict[str, object]:
+    # Local import avoids a module-load cycle: cache.py owns the independent
+    # policy reference and imports this native adapter.
+    from .cache import (
+        CachePlanItem,
+        CachePlanRequest,
+        _py_plan_cache_window,
+    )
+
+    items = request["items"]
+    assert isinstance(items, list)
+    plan = _py_plan_cache_window(
+        CachePlanRequest(
+            items=tuple(
+                CachePlanItem(
+                    original_index=item["original_index"],
+                    item_id=item["item_id"],
+                    cache_ready=item["cache_ready"],
+                )
+                for item in items
+            ),
+            max_items=request["max_items"],
+            retention_limit=request["retention_limit"],
+            active_item_ids=tuple(request["active_item_ids"]),
+            primary_active_item_id=request["primary_active_item_id"],
+            urgent_item_ids=tuple(request["urgent_item_ids"]),
+        )
+    )
+    return {
+        "schema_version": 1,
+        "desired_ids": list(plan.desired_ids),
+        "pending_order": list(plan.pending_order),
+        "retained_ids": list(plan.retained_ids),
+        "preempt_ids": list(plan.preempt_ids),
+    }
+
+
+def _valid_cache_plan_response(
+    response: object,
+    request: dict[str, object],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "desired_ids",
+        "pending_order",
+        "retained_ids",
+        "preempt_ids",
+    }:
+        return False
+    if isinstance(response.get("schema_version"), bool) or response.get("schema_version") != 1:
+        return False
+    items = request["items"]
+    assert isinstance(items, list)
+    known_ids = [item["item_id"] for item in items]
+    known_set = set(known_ids)
+    for field in ("desired_ids", "pending_order", "retained_ids", "preempt_ids"):
+        values = response.get(field)
+        if (
+            not isinstance(values, list)
+            or any(not isinstance(item_id, str) or item_id not in known_set for item_id in values)
+            or len(values) != len(set(values))
+        ):
+            return False
+    desired_ids = response["desired_ids"]
+    pending_order = response["pending_order"]
+    retained_ids = response["retained_ids"]
+    preempt_ids = response["preempt_ids"]
+    if (
+        not set(pending_order).issubset(desired_ids)
+        or not set(desired_ids).issubset(retained_ids)
+        or len(retained_ids) > len(desired_ids) + request["retention_limit"]
+        or len(preempt_ids) > 1
+        or any(item_id != request["primary_active_item_id"] for item_id in preempt_ids)
+    ):
+        return False
+    return response == _expected_cache_plan(request)
+
+
+def try_plan_cache_window(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call Rust and accept only the complete canonical cache plan."""
+
+    validated = _cache_plan_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("plan_cache_window", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        response_json = _read_rust_string(_rust_lib.rust_plan_cache_window(payload))
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_cache_plan_response(response, validated):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _av_delay_request(request: object) -> dict[str, object] | None:
+    if not isinstance(request, dict) or set(request) != {"schema_version", "state", "action"}:
+        return None
+    state = request.get("state")
+    action = request.get("action")
+    if (
+        request.get("schema_version") != 1
+        or isinstance(request.get("schema_version"), bool)
+        or not isinstance(state, dict)
+        or set(state) != {"global_delay_ms", "local_delay_ms", "locked"}
+        or not isinstance(action, dict)
+        or not isinstance(state.get("locked"), bool)
+    ):
+        return None
+    global_delay = state.get("global_delay_ms")
+    local_delay = state.get("local_delay_ms")
+    if (
+        isinstance(global_delay, bool)
+        or not isinstance(global_delay, int)
+        or isinstance(local_delay, bool)
+        or not isinstance(local_delay, int)
+        or not -5000 <= global_delay <= 5000
+        or not -5000 <= global_delay + local_delay <= 5000
+    ):
+        return None
+    action_type = action.get("type")
+    expected_fields = {
+        "snapshot": {"type"},
+        "set_effective": {"type", "effective_delay_ms"},
+        "adjust": {"type", "delta_ms"},
+        "reset_local": {"type"},
+        "toggle_lock": {"type"},
+    }
+    if action_type not in expected_fields or set(action) != expected_fields[action_type]:
+        return None
+    numeric_field = "effective_delay_ms" if action_type == "set_effective" else "delta_ms"
+    if numeric_field in action:
+        value = action[numeric_field]
+        if isinstance(value, bool) or not isinstance(value, int) or not -(2**31) <= value < 2**31:
+            return None
+    return request
+
+
+def try_apply_av_delay_action(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call Rust and accept only the canonical AV-delay transition result."""
+
+    validated = _av_delay_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("apply_av_delay_action", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        response_json = _read_rust_string(_rust_lib.rust_apply_av_delay_action(payload))
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        from .store import _py_apply_av_delay_action
+
+        expected = _py_apply_av_delay_action(validated["state"], validated["action"])
+        integer_fields = {
+            "schema_version",
+            "global_delay_ms",
+            "local_delay_ms",
+            "effective_delay_ms",
+        }
+        boolean_fields = {"locked", "has_local_adjustment", "lock_button_enabled"}
+        if (
+            not isinstance(response, dict)
+            or set(response) != integer_fields | boolean_fields
+            or any(
+                isinstance(response.get(field), bool)
+                or not isinstance(response.get(field), int)
+                for field in integer_fields
+            )
+            or any(not isinstance(response.get(field), bool) for field in boolean_fields)
+            or response != expected
+        ):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _playlist_order_request(request: object) -> dict[str, object] | None:
+    required_fields = {
+        "schema_version",
+        "operation",
+        "session_users",
+        "current_requester",
+        "items",
+        "candidate",
+    }
+    if not isinstance(request, dict) or set(request) != required_fields:
+        return None
+    schema_version = request.get("schema_version")
+    operation = request.get("operation")
+    session_users = request.get("session_users")
+    current_requester = request.get("current_requester")
+    items = request.get("items")
+    candidate = request.get("candidate")
+    size_t_max = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+
+    def valid_string(value: object, *, allow_empty: bool = False) -> bool:
+        return (
+            isinstance(value, str)
+            and (allow_empty or bool(value))
+            and "\x00" not in value
+            and len(value.encode("utf-8")) <= MAX_PLAYLIST_STRING_BYTES
+        )
+
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or operation not in {"rebuild", "insert_cycle"}
+        or not isinstance(session_users, list)
+        or len(session_users) > MAX_PLAYLIST_SESSION_USERS
+        or any(not valid_string(name) for name in session_users)
+        or len(set(session_users)) != len(session_users)
+        or current_requester is not None
+        and not valid_string(current_requester, allow_empty=True)
+        or not isinstance(items, list)
+        or len(items) > MAX_PLAYLIST_PLAN_ITEMS
+    ):
+        return None
+
+    def validated_item(value: object) -> dict[str, object] | None:
+        if not isinstance(value, dict) or set(value) != {
+            "original_index",
+            "item_id",
+            "requester_name",
+            "slot_type",
+        }:
+            return None
+        original_index = value.get("original_index")
+        item_id = value.get("item_id")
+        requester_name = value.get("requester_name")
+        slot_type = value.get("slot_type")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or not 0 <= original_index <= size_t_max
+            or not valid_string(item_id)
+            or not valid_string(requester_name, allow_empty=True)
+            or slot_type not in {"cycle", "priority", "manual"}
+        ):
+            return None
+        return {
+            "original_index": original_index,
+            "item_id": item_id,
+            "requester_name": requester_name,
+            "slot_type": slot_type,
+        }
+
+    validated_items: list[dict[str, object]] = []
+    item_ids: set[str] = set()
+    indices: set[int] = set()
+    for item in items:
+        validated = validated_item(item)
+        if validated is None:
+            return None
+        item_id = validated["item_id"]
+        original_index = validated["original_index"]
+        if item_id in item_ids or original_index in indices:
+            return None
+        item_ids.add(item_id)
+        indices.add(original_index)
+        validated_items.append(validated)
+
+    validated_candidate = None
+    if operation == "rebuild":
+        if candidate is not None:
+            return None
+    else:
+        validated_candidate = validated_item(candidate)
+        if (
+            validated_candidate is None
+            or validated_candidate["slot_type"] != "cycle"
+            or validated_candidate["item_id"] in item_ids
+            or validated_candidate["original_index"] in indices
+            or len(items) >= MAX_PLAYLIST_PLAN_ITEMS
+        ):
+            return None
+    return {
+        "schema_version": 1,
+        "operation": operation,
+        "session_users": list(session_users),
+        "current_requester": current_requester,
+        "items": validated_items,
+        "candidate": validated_candidate,
+    }
+
+
+def _expected_playlist_order(request: dict[str, object]) -> dict[str, object]:
+    from .store import (
+        PlaylistOrderItem,
+        PlaylistOrderRequest,
+        _py_plan_playlist_order,
+    )
+
+    def item(value: dict[str, object]) -> PlaylistOrderItem:
+        return PlaylistOrderItem(
+            original_index=value["original_index"],
+            item_id=value["item_id"],
+            requester_name=value["requester_name"],
+            slot_type=value["slot_type"],
+        )
+
+    items = request["items"]
+    assert isinstance(items, list)
+    candidate = request["candidate"]
+    plan = _py_plan_playlist_order(
+        PlaylistOrderRequest(
+            operation=request["operation"],
+            session_users=tuple(request["session_users"]),
+            current_requester=request["current_requester"],
+            items=tuple(item(value) for value in items),
+            candidate=item(candidate) if isinstance(candidate, dict) else None,
+        )
+    )
+    return {"schema_version": 1, "ordered_ids": list(plan.ordered_ids)}
+
+
+def _valid_playlist_order_response(
+    response: object,
+    request: dict[str, object],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {"schema_version", "ordered_ids"}:
+        return False
+    if isinstance(response.get("schema_version"), bool) or response.get("schema_version") != 1:
+        return False
+    ordered_ids = response.get("ordered_ids")
+    items = request["items"]
+    assert isinstance(items, list)
+    known_ids = [item["item_id"] for item in items]
+    candidate = request["candidate"]
+    if isinstance(candidate, dict):
+        known_ids.append(candidate["item_id"])
+    if (
+        not isinstance(ordered_ids, list)
+        or any(not isinstance(item_id, str) for item_id in ordered_ids)
+        or len(ordered_ids) != len(known_ids)
+        or len(set(ordered_ids)) != len(ordered_ids)
+        or set(ordered_ids) != set(known_ids)
+    ):
+        return False
+    return response == _expected_playlist_order(request)
+
+
+def try_plan_playlist_order(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call Rust and accept only the exact canonical playlist order."""
+
+    validated = _playlist_order_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("plan_playlist_order", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        response_json = _read_rust_string(_rust_lib.rust_plan_playlist_order(payload))
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_playlist_order_response(response, validated):
+            return False, None
+        return True, response
+    except Exception:
+        return False, None
+
+
+def _playlist_duplicate_request(request: object) -> dict[str, object] | None:
+    required_fields = {
+        "schema_version",
+        "candidate",
+        "current_item",
+        "queued_items",
+        "history_entries",
+    }
+    if not isinstance(request, dict) or set(request) != required_fields:
+        return None
+    schema_version = request.get("schema_version")
+    current_item = request.get("current_item")
+    queued_items = request.get("queued_items")
+    history_entries = request.get("history_entries")
+    size_t_max = 2 ** (ctypes.sizeof(ctypes.c_size_t) * 8) - 1
+    i64_min = -(2**63)
+    i64_max = 2**63 - 1
+    u64_max = 2**64 - 1
+
+    def valid_string(value: object, limit: int, *, allow_empty: bool = False) -> bool:
+        return (
+            isinstance(value, str)
+            and (allow_empty or bool(value))
+            and "\x00" not in value
+            and len(value.encode("utf-8")) <= limit
+        )
+
+    def validated_identity(value: object) -> dict[str, object] | None:
+        if not isinstance(value, dict) or set(value) != {
+            "bvid",
+            "aid",
+            "video_page",
+            "selected_audio_pages",
+        }:
+            return None
+        bvid = value.get("bvid")
+        aid = value.get("aid")
+        video_page = value.get("video_page")
+        selected_audio_pages = value.get("selected_audio_pages")
+        if (
+            not valid_string(bvid, MAX_PLAYLIST_STRING_BYTES, allow_empty=True)
+            or isinstance(aid, bool)
+            or not isinstance(aid, int)
+            or not 0 <= aid <= u64_max
+            or isinstance(video_page, bool)
+            or not isinstance(video_page, int)
+            or not 1 <= video_page <= size_t_max
+            or not isinstance(selected_audio_pages, list)
+            or len(selected_audio_pages) > MAX_PLAYLIST_AUDIO_PAGES
+            or any(
+                isinstance(page, bool)
+                or not isinstance(page, int)
+                or not i64_min <= page <= i64_max
+                for page in selected_audio_pages
+            )
+        ):
+            return None
+        return {
+            "bvid": bvid,
+            "aid": aid,
+            "video_page": video_page,
+            "selected_audio_pages": list(selected_audio_pages),
+        }
+
+    def validated_active(value: object) -> dict[str, object] | None:
+        if not isinstance(value, dict) or set(value) != {
+            "original_index",
+            "item_id",
+            "identity",
+        }:
+            return None
+        original_index = value.get("original_index")
+        item_id = value.get("item_id")
+        identity = validated_identity(value.get("identity"))
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or not 0 <= original_index <= size_t_max
+            or not valid_string(item_id, MAX_PLAYLIST_STRING_BYTES)
+            or identity is None
+        ):
+            return None
+        return {
+            "original_index": original_index,
+            "item_id": item_id,
+            "identity": identity,
+        }
+
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(queued_items, list)
+        or len(queued_items) > MAX_PLAYLIST_PLAN_ITEMS
+        or not isinstance(history_entries, list)
+        or len(history_entries) > MAX_PLAYLIST_PLAN_ITEMS
+    ):
+        return None
+    candidate = validated_identity(request.get("candidate"))
+    if candidate is None:
+        return None
+    validated_current = None if current_item is None else validated_active(current_item)
+    if current_item is not None and validated_current is None:
+        return None
+    validated_queued: list[dict[str, object]] = []
+    active_ids: set[str] = set()
+    active_indices: set[int] = set()
+    for active in ([validated_current] if validated_current else []) + list(queued_items):
+        validated = active if active is validated_current else validated_active(active)
+        if validated is None:
+            return None
+        if validated["item_id"] in active_ids or validated["original_index"] in active_indices:
+            return None
+        active_ids.add(validated["item_id"])
+        active_indices.add(validated["original_index"])
+        if validated is not validated_current:
+            validated_queued.append(validated)
+
+    validated_history: list[dict[str, object]] = []
+    history_indices: set[int] = set()
+    for entry in history_entries:
+        if not isinstance(entry, dict) or set(entry) != {"original_index", "key"}:
+            return None
+        original_index = entry.get("original_index")
+        key = entry.get("key")
+        if (
+            isinstance(original_index, bool)
+            or not isinstance(original_index, int)
+            or not 0 <= original_index <= size_t_max
+            or not valid_string(key, MAX_PLAYLIST_HISTORY_KEY_BYTES, allow_empty=True)
+            or original_index in history_indices
+        ):
+            return None
+        history_indices.add(original_index)
+        validated_history.append({"original_index": original_index, "key": key})
+    return {
+        "schema_version": 1,
+        "candidate": candidate,
+        "current_item": validated_current,
+        "queued_items": validated_queued,
+        "history_entries": validated_history,
+    }
+
+
+def _expected_playlist_duplicate(request: dict[str, object]) -> dict[str, object]:
+    from .store import (
+        DuplicateActiveItem,
+        DuplicateHistoryEntry,
+        PlaylistDuplicateRequest,
+        PlaylistIdentity,
+        _py_decide_playlist_duplicate,
+    )
+
+    def identity(value: dict[str, object]) -> PlaylistIdentity:
+        return PlaylistIdentity(
+            bvid=value["bvid"],
+            aid=value["aid"],
+            video_page=value["video_page"],
+            selected_audio_pages=tuple(value["selected_audio_pages"]),
+        )
+
+    def active(value: dict[str, object]) -> DuplicateActiveItem:
+        return DuplicateActiveItem(
+            original_index=value["original_index"],
+            item_id=value["item_id"],
+            identity=identity(value["identity"]),
+        )
+
+    current = request["current_item"]
+    decision = _py_decide_playlist_duplicate(
+        PlaylistDuplicateRequest(
+            candidate=identity(request["candidate"]),
+            current_item=active(current) if isinstance(current, dict) else None,
+            queued_items=tuple(active(value) for value in request["queued_items"]),
+            history_entries=tuple(
+                DuplicateHistoryEntry(
+                    original_index=value["original_index"],
+                    key=value["key"],
+                )
+                for value in request["history_entries"]
+            ),
+        )
+    )
+    return {
+        "schema_version": 1,
+        "identity_key": decision.identity_key,
+        "active_duplicate_id": decision.active_duplicate_id,
+        "history_duplicate_index": decision.history_duplicate_index,
+    }
+
+
+def _valid_playlist_duplicate_response(
+    response: object,
+    request: dict[str, object],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "identity_key",
+        "active_duplicate_id",
+        "history_duplicate_index",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    identity_key = response.get("identity_key")
+    active_duplicate_id = response.get("active_duplicate_id")
+    history_duplicate_index = response.get("history_duplicate_index")
+    active_ids = {
+        value["item_id"]
+        for value in ([request["current_item"]] if request["current_item"] else [])
+        + list(request["queued_items"])
+    }
+    history_indices = {value["original_index"] for value in request["history_entries"]}
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or not isinstance(identity_key, str)
+        or not identity_key
+        or active_duplicate_id is not None
+        and (not isinstance(active_duplicate_id, str) or active_duplicate_id not in active_ids)
+        or history_duplicate_index is not None
+        and (
+            isinstance(history_duplicate_index, bool)
+            or not isinstance(history_duplicate_index, int)
+            or history_duplicate_index not in history_indices
+        )
+    ):
+        return False
+    return response == _expected_playlist_duplicate(request)
+
+
+def try_decide_playlist_duplicate(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Call Rust and accept only the exact canonical duplicate decision."""
+
+    validated = _playlist_duplicate_request(request)
+    if (
+        validated is None
+        or _rust_lib is None
+        or not _CAPABILITIES.get("decide_playlist_duplicate", False)
+    ):
+        return False, None
+    try:
+        payload = json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        response_json = _read_rust_string(_rust_lib.rust_decide_playlist_duplicate(payload))
+        if response_json is None:
+            return False, None
+        response = json.loads(response_json)
+        if not _valid_playlist_duplicate_response(response, validated):
             return False, None
         return True, response
     except Exception:

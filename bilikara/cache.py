@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import math
@@ -108,6 +109,110 @@ class CacheCancelledError(RuntimeError):
 
 class DownloadCommandError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CachePlanItem:
+    original_index: int
+    item_id: str
+    cache_ready: bool
+
+
+@dataclass(frozen=True)
+class CachePlanRequest:
+    items: tuple[CachePlanItem, ...]
+    max_items: int
+    retention_limit: int
+    active_item_ids: tuple[str, ...] = ()
+    primary_active_item_id: str | None = None
+    urgent_item_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CachePlan:
+    desired_ids: tuple[str, ...]
+    pending_order: tuple[str, ...]
+    retained_ids: tuple[str, ...]
+    preempt_ids: tuple[str, ...]
+
+
+def _py_plan_cache_window(request: CachePlanRequest) -> CachePlan:
+    """Return the complete cache policy decision without I/O or mutation."""
+
+    if not isinstance(request, CachePlanRequest) or not isinstance(request.items, tuple):
+        raise ValueError("invalid cache plan request")
+    if (
+        isinstance(request.max_items, bool)
+        or not isinstance(request.max_items, int)
+        or request.max_items < 0
+        or isinstance(request.retention_limit, bool)
+        or not isinstance(request.retention_limit, int)
+        or request.retention_limit < 0
+    ):
+        raise ValueError("cache limits must be non-negative integers")
+
+    item_ids: set[str] = set()
+    indices: set[int] = set()
+    for item in request.items:
+        if not isinstance(item, CachePlanItem):
+            raise ValueError("invalid cache plan item")
+        if (
+            isinstance(item.original_index, bool)
+            or not isinstance(item.original_index, int)
+            or item.original_index < 0
+            or not isinstance(item.item_id, str)
+            or not item.item_id
+            or not isinstance(item.cache_ready, bool)
+            or item.item_id in item_ids
+            or item.original_index in indices
+        ):
+            raise ValueError("invalid or duplicate cache plan item")
+        item_ids.add(item.item_id)
+        indices.add(item.original_index)
+
+    for references in (request.active_item_ids, request.urgent_item_ids):
+        if not isinstance(references, tuple) or len(set(references)) != len(references):
+            raise ValueError("cache plan references must be unique tuples")
+        if any(not isinstance(item_id, str) or item_id not in item_ids for item_id in references):
+            raise ValueError("cache plan reference does not identify an item")
+    primary_id = request.primary_active_item_id
+    if primary_id is not None and (
+        not isinstance(primary_id, str)
+        or primary_id not in item_ids
+        or primary_id not in request.active_item_ids
+    ):
+        raise ValueError("primary active item must identify an active item")
+
+    window = request.items[: request.max_items] if request.max_items else ()
+    desired_ids = tuple(item.item_id for item in window)
+    pending_order = tuple(item.item_id for item in window if not item.cache_ready)
+
+    retained = list(desired_ids)
+    retained_set = set(retained)
+    if request.max_items:
+        for item in request.items:
+            if len(retained) >= len(desired_ids) + request.retention_limit:
+                break
+            if item.item_id not in retained_set and item.cache_ready:
+                retained.append(item.item_id)
+                retained_set.add(item.item_id)
+
+    preempt_ids: tuple[str, ...] = ()
+    if (
+        primary_id is not None
+        and pending_order
+        and primary_id in pending_order
+        and primary_id != pending_order[0]
+        and pending_order[0] not in request.urgent_item_ids
+    ):
+        preempt_ids = (primary_id,)
+
+    return CachePlan(
+        desired_ids=desired_ids,
+        pending_order=pending_order,
+        retained_ids=tuple(retained),
+        preempt_ids=preempt_ids,
+    )
 
 
 def _debug_print(msg: str) -> None:
@@ -569,7 +674,6 @@ class CacheManager:
         items = self.store.list_items()
         if not items:
             return
-        desired_ids, ordered_desired_ids = self._cache_window_plan(items)
         invalidated_ids: list[str] = []
 
         for item in items:
@@ -591,11 +695,12 @@ class CacheManager:
         if not invalidated_ids:
             return
 
-        with self.lock:
-            self.desired_ids = set(desired_ids)
-            self.ordered_desired_ids = list(ordered_desired_ids)
-
         fresh_items = self.store.list_items()
+        plan = self._plan_cache_snapshot(fresh_items)
+        desired_ids = set(plan.desired_ids)
+        with self.lock:
+            self.desired_ids = desired_ids
+            self.ordered_desired_ids = list(plan.pending_order)
         fresh_by_id = {item.id: item for item in fresh_items}
         for item_id in invalidated_ids:
             if item_id not in desired_ids:
@@ -603,7 +708,8 @@ class CacheManager:
             item = fresh_by_id.get(item_id)
             if item:
                 self._ensure_item_cached(item)
-        self._prioritize_cache_window(fresh_items, desired_ids)
+        priority_plan = self._plan_cache_snapshot(fresh_items)
+        self._apply_cache_plan_priority(fresh_items, priority_plan)
 
     def set_max_cache_items(self, max_cache_items: int) -> int:
         self.set_cache_policy(max_cache_items=max_cache_items)
@@ -1024,43 +1130,98 @@ class CacheManager:
             return
         self.enqueue(item_id)
 
+    @staticmethod
+    def _cache_plan_wire_request(request: CachePlanRequest) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "items": [
+                {
+                    "original_index": item.original_index,
+                    "item_id": item.item_id,
+                    "cache_ready": item.cache_ready,
+                }
+                for item in request.items
+            ],
+            "max_items": request.max_items,
+            "retention_limit": request.retention_limit,
+            "active_item_ids": list(request.active_item_ids),
+            "primary_active_item_id": request.primary_active_item_id,
+            "urgent_item_ids": list(request.urgent_item_ids),
+        }
+
+    def _plan_cache_snapshot(
+        self,
+        items: list[Any],
+        *,
+        max_items: int | None = None,
+    ) -> CachePlan:
+        descriptors = tuple(
+            CachePlanItem(index, item.id, self._item_cache_ready(item))
+            for index, item in enumerate(items)
+        )
+        supplied_ids = {item.item_id for item in descriptors}
+        with self.lock:
+            primary_id = self.active_item_id
+            active_ids = set(self.active_process_item_ids.values())
+            if primary_id:
+                active_ids.add(primary_id)
+            active_ids.update(self.urgent_cache_ids)
+            urgent_ids = set(self.urgent_cache_ids)
+        if primary_id not in supplied_ids:
+            primary_id = None
+        request = CachePlanRequest(
+            items=descriptors,
+            max_items=self.max_cache_items if max_items is None else max_items,
+            retention_limit=CACHE_RETENTION_BUFFER_ITEMS,
+            active_item_ids=tuple(
+                item.item_id for item in descriptors if item.item_id in active_ids
+            ),
+            primary_active_item_id=primary_id,
+            urgent_item_ids=tuple(
+                item.item_id for item in descriptors if item.item_id in urgent_ids
+            ),
+        )
+        fallback = _py_plan_cache_window(request)
+        completed, response = rust_backend.try_plan_cache_window(
+            self._cache_plan_wire_request(request)
+        )
+        if not completed or response is None:
+            return fallback
+        return CachePlan(
+            desired_ids=tuple(response["desired_ids"]),
+            pending_order=tuple(response["pending_order"]),
+            retained_ids=tuple(response["retained_ids"]),
+            preempt_ids=tuple(response["preempt_ids"]),
+        )
+
     def _cache_window_plan(self, items: list[Any]) -> tuple[set[str], list[str]]:
-        if self.max_cache_items <= 0:
-            return set(), []
-        window_items = list(items[: self.max_cache_items])
-        desired_ids = {item.id for item in window_items}
-        ordered_desired_ids = [
-            item.id
-            for item in window_items
-            if not self._item_cache_ready(item)
-        ]
-        return desired_ids, ordered_desired_ids
+        plan = self._plan_cache_snapshot(items)
+        return set(plan.desired_ids), list(plan.pending_order)
 
     def _retained_cache_ids(self, items: list[Any], desired_ids: set[str]) -> set[str]:
-        retained_ids = set(desired_ids)
-        if self.max_cache_items <= 0:
-            return retained_ids
-        buffer_remaining = CACHE_RETENTION_BUFFER_ITEMS
-        if buffer_remaining <= 0:
-            return retained_ids
+        plan = self._plan_cache_snapshot(items)
+        if set(plan.desired_ids) == set(desired_ids):
+            return set(plan.retained_ids)
 
-        for item in items:
-            if item.id in retained_ids or not self._item_cache_ready(item):
-                continue
-            retained_ids.add(item.id)
-            buffer_remaining -= 1
-            if buffer_remaining <= 0:
-                break
+        # Private-call compatibility for callers supplying a nonstandard window.
+        retained_ids = set(desired_ids)
+        if self.max_cache_items > 0:
+            for item in items:
+                if len(retained_ids) >= len(desired_ids) + CACHE_RETENTION_BUFFER_ITEMS:
+                    break
+                if item.id not in retained_ids and self._item_cache_ready(item):
+                    retained_ids.add(item.id)
         return retained_ids
 
     def sync_with_playlist(self) -> None:
         items = self.store.list_items()
-        desired_ids, ordered_desired_ids = self._cache_window_plan(items)
-        retained_ids = self._retained_cache_ids(items, desired_ids)
+        plan = self._plan_cache_snapshot(items)
+        desired_ids = set(plan.desired_ids)
+        retained_ids = set(plan.retained_ids)
         current_ids = {item.id for item in items}
         with self.lock:
             self.desired_ids = set(desired_ids)
-            self.ordered_desired_ids = list(ordered_desired_ids)
+            self.ordered_desired_ids = list(plan.pending_order)
 
         self._cleanup_orphan_cache_dirs(current_ids)
         self._stop_active_if_not_desired(desired_ids)
@@ -1070,7 +1231,8 @@ class CacheManager:
                 self._ensure_item_cached(item)
             elif item.id not in retained_ids:
                 self._drop_item_cache(item.id, self._outside_window_message())
-        self._prioritize_cache_window(items, desired_ids)
+        priority_plan = self._plan_cache_snapshot(items)
+        self._apply_cache_plan_priority(items, priority_plan)
 
     def enqueue(self, item_id: str) -> None:
         with self.lock:
@@ -1209,39 +1371,36 @@ class CacheManager:
 
     def _prioritize_cache_window(self, items: list[Any], desired_ids: set[str]) -> None:
         ordered_items = [item for item in items if item.id in desired_ids]
-        ordered_cache_ids = [
-            item.id
-            for item in ordered_items
-            if not self._item_cache_ready(item)
-        ]
+        plan = self._plan_cache_snapshot(ordered_items, max_items=len(ordered_items))
+        self._apply_cache_plan_priority(ordered_items, plan)
+
+    def _apply_cache_plan_priority(self, items: list[Any], plan: CachePlan) -> None:
+        ordered_cache_ids = list(plan.pending_order)
         if not ordered_cache_ids:
             return
 
         self._reorder_pending_cache_queue(ordered_cache_ids)
 
-        with self.lock:
-            active_item_id = self.active_item_id
-            active_processes = self._active_processes_locked(active_item_id)
-            urgent_cache_ids = set(self.urgent_cache_ids)
-        if not active_item_id or active_item_id not in desired_ids:
+        if len(plan.preempt_ids) != 1:
             return
-        if ordered_cache_ids[0] in urgent_cache_ids:
-            return
-        if active_item_id == ordered_cache_ids[0]:
-            return
-        if active_item_id not in ordered_cache_ids:
-            return
-
+        proposed_active_id = plan.preempt_ids[0]
         next_item_id = ordered_cache_ids[0]
-        next_item = next((item for item in ordered_items if item.id == next_item_id), None)
+        next_item = next((item for item in items if item.id == next_item_id), None)
         with self.lock:
-            if self.active_item_id != active_item_id:
+            if (
+                self.stop_event.is_set()
+                or self.active_item_id != proposed_active_id
+                or proposed_active_id not in ordered_cache_ids
+                or proposed_active_id == next_item_id
+                or next_item_id in self.urgent_cache_ids
+            ):
                 return
+            active_processes = self._active_processes_locked(proposed_active_id)
             title = str(getattr(next_item, "display_title", "") or "").strip()
-            self.cache_interrupted_messages[active_item_id] = (
+            self.cache_interrupted_messages[proposed_active_id] = (
                 f"等待优先缓存: {title}" if title else "等待优先缓存"
             )
-        self._enqueue_front(next_item_id, requeue_after=active_item_id)
+        self._enqueue_front(next_item_id, requeue_after=proposed_active_id)
         self._terminate_processes(active_processes)
 
     def _worker_loop(self) -> None:

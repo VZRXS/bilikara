@@ -375,6 +375,76 @@ pub unsafe extern "C" fn rust_plan_tool_download_candidates(
     })
 }
 
+/// Plans the desired, pending, retained, and proposed-preemption cache IDs.
+///
+/// The returned schema-v1 JSON string is owned by Rust and must be freed with
+/// [`rust_free_string`]. Invalid pointers, UTF-8, JSON, schema, identities, or
+/// references return null. This function performs no queue or process mutation.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_plan_cache_window(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::cache_planning::plan_cache_window_json(request_json)
+    })
+}
+
+/// Applies or snapshots the canonical two-layer AV-delay state machine.
+///
+/// The returned string is Rust-owned and must be freed with [`rust_free_string`].
+/// This function performs no locking or persistence.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_apply_av_delay_action(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::av_delay::decide_av_delay_json(request_json)
+    })
+}
+
+/// Plans a deterministic playlist rebuild or cycle insertion from schema-v1 JSON.
+///
+/// The returned string is Rust-owned and must be freed with [`rust_free_string`].
+/// This function performs no store mutation, locking, persistence, or notification.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_plan_playlist_order(request_json: *const c_char) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::playlist_planning::plan_playlist_order_json(request_json)
+    })
+}
+
+/// Decides canonical playlist identity and active/history duplicate references.
+///
+/// The returned string is Rust-owned and must be freed with [`rust_free_string`].
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_decide_playlist_duplicate(
+    request_json: *const c_char,
+) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::playlist_planning::decide_playlist_duplicate_json(request_json)
+    })
+}
+
 /// Decides normalized quality, DASH, BBDown, and yt-dlp policy from schema-v1 JSON.
 ///
 /// The returned owned JSON string must be freed with [`rust_free_string`].
@@ -990,6 +1060,198 @@ mod tests {
                 rust_free_string(result);
             }
         }
+    }
+
+    #[test]
+    fn cache_plan_export_is_strict_and_repeats_allocation_free() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let malformed = CString::new("not json").unwrap();
+        let unsupported = CString::new(
+            r#"{"schema_version":2,"items":[],"max_items":0,"retention_limit":0,"active_item_ids":[],"primary_active_item_id":null,"urgent_item_ids":[]}"#,
+        )
+        .unwrap();
+        let duplicate = CString::new(
+            r#"{"schema_version":1,"items":[{"original_index":0,"item_id":"a","cache_ready":false},{"original_index":1,"item_id":"a","cache_ready":true}],"max_items":2,"retention_limit":0,"active_item_ids":[],"primary_active_item_id":null,"urgent_item_ids":[]}"#,
+        )
+        .unwrap();
+        let unknown_reference = CString::new(
+            r#"{"schema_version":1,"items":[],"max_items":0,"retention_limit":0,"active_item_ids":["missing"],"primary_active_item_id":null,"urgent_item_ids":[]}"#,
+        )
+        .unwrap();
+        let valid = CString::new(
+            r#"{"schema_version":1,"items":[],"max_items":0,"retention_limit":0,"active_item_ids":[],"primary_active_item_id":null,"urgent_item_ids":[]}"#,
+        )
+        .unwrap();
+        unsafe {
+            assert!(rust_plan_cache_window(std::ptr::null()).is_null());
+            assert!(rust_plan_cache_window(invalid_utf8.as_ptr()).is_null());
+            assert!(rust_plan_cache_window(malformed.as_ptr()).is_null());
+            assert!(rust_plan_cache_window(unsupported.as_ptr()).is_null());
+            assert!(rust_plan_cache_window(duplicate.as_ptr()).is_null());
+            assert!(rust_plan_cache_window(unknown_reference.as_ptr()).is_null());
+            for _ in 0..20 {
+                let result = rust_plan_cache_window(valid.as_ptr());
+                assert!(!result.is_null());
+                let response = CStr::from_ptr(result).to_str().unwrap();
+                assert!(response.contains(r#""desired_ids":[]"#));
+                rust_free_string(result);
+            }
+        }
+    }
+
+    #[test]
+    fn cache_plan_export_uses_shared_panic_containment() {
+        let result = ffi_string_result(|| -> Option<String> {
+            panic!("simulated cache planning panic");
+        });
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn playlist_order_export_is_strict_and_repeats_allocation_free() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_payloads = [
+            "not json",
+            r#"{"schema_version":2,"operation":"rebuild","session_users":[],"current_requester":null,"items":[],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"bad","session_users":[],"current_requester":null,"items":[],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[],"candidate":null,"unknown":true}"#,
+            r#"{"schema_version":1,"operation":"rebuild","session_users":["A","A"],"current_requester":null,"items":[],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[{"original_index":true,"item_id":"a","requester_name":"","slot_type":"cycle"}],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[{"original_index":-1,"item_id":"a","requester_name":"","slot_type":"cycle"}],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[{"original_index":18446744073709551616,"item_id":"a","requester_name":"","slot_type":"cycle"}],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[{"original_index":0,"item_id":"a","requester_name":"","slot_type":"bad"}],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[{"original_index":0,"item_id":"a","requester_name":"","slot_type":"cycle"},{"original_index":1,"item_id":"a","requester_name":"","slot_type":"cycle"}],"candidate":null}"#,
+            r#"{"schema_version":1,"operation":"insert_cycle","session_users":[],"current_requester":null,"items":[{"original_index":0,"item_id":"a","requester_name":"","slot_type":"cycle"}],"candidate":{"original_index":1,"item_id":"a","requester_name":"","slot_type":"cycle"}}"#,
+        ];
+        let valid = CString::new(r#"{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[],"candidate":null}"#).unwrap();
+        let oversized = CString::new(format!(
+            r#"{{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[{{"original_index":0,"item_id":"{}","requester_name":"","slot_type":"cycle"}}],"candidate":null}}"#,
+            "x".repeat(513)
+        ))
+        .unwrap();
+        let oversized_count = CString::new(format!(
+            r#"{{"schema_version":1,"operation":"rebuild","session_users":[],"current_requester":null,"items":[{}],"candidate":null}}"#,
+            (0..=10_000)
+                .map(|index| format!(r#"{{"original_index":{index},"item_id":"item-{index}","requester_name":"","slot_type":"cycle"}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+        .unwrap();
+        unsafe {
+            assert!(rust_plan_playlist_order(std::ptr::null()).is_null());
+            assert!(rust_plan_playlist_order(invalid_utf8.as_ptr()).is_null());
+            for payload in invalid_payloads {
+                let payload = CString::new(payload).unwrap();
+                assert!(rust_plan_playlist_order(payload.as_ptr()).is_null());
+            }
+            assert!(rust_plan_playlist_order(oversized.as_ptr()).is_null());
+            assert!(rust_plan_playlist_order(oversized_count.as_ptr()).is_null());
+            for _ in 0..20 {
+                let result = rust_plan_playlist_order(valid.as_ptr());
+                assert!(!result.is_null());
+                assert!(
+                    CStr::from_ptr(result)
+                        .to_str()
+                        .unwrap()
+                        .contains(r#""ordered_ids":[]"#)
+                );
+                rust_free_string(result);
+            }
+        }
+    }
+
+    #[test]
+    fn playlist_duplicate_export_is_strict_and_repeats_allocation_free() {
+        let invalid_utf8 = [0xff_u8 as c_char, 0];
+        let invalid_payloads = [
+            "not json",
+            r#"{"schema_version":2,"candidate":{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[]}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":true,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[]}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":-1,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[]}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":18446744073709551616,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[]}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":1,"video_page":0,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[]}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[],"extra":1}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]},"current_item":{"original_index":0,"item_id":"a","identity":{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]}},"queued_items":[{"original_index":0,"item_id":"b","identity":{"bvid":"BV2","aid":2,"video_page":1,"selected_audio_pages":[]}}],"history_entries":[]}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[{"original_index":0,"key":"valid\u0000invalid"}]}"#,
+            r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[{"original_index":0,"key":123}]}"#,
+        ];
+        let valid = CString::new(r#"{"schema_version":1,"candidate":{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]},"current_item":null,"queued_items":[],"history_entries":[]}"#).unwrap();
+        let oversized = CString::new(format!(
+            r#"{{"schema_version":1,"candidate":{{"bvid":"{}","aid":1,"video_page":1,"selected_audio_pages":[]}},"current_item":null,"queued_items":[],"history_entries":[]}}"#,
+            "x".repeat(513)
+        ))
+        .unwrap();
+        let oversized_count = CString::new(format!(
+            r#"{{"schema_version":1,"candidate":{{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]}},"current_item":null,"queued_items":[],"history_entries":[{}]}}"#,
+            (0..=10_000)
+                .map(|index| format!(r#"{{"original_index":{index},"key":""}}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+        .unwrap();
+        let oversized_history_key = CString::new(format!(
+            r#"{{"schema_version":1,"candidate":{{"bvid":"BV","aid":1,"video_page":1,"selected_audio_pages":[]}},"current_item":null,"queued_items":[],"history_entries":[{{"original_index":0,"key":"{}"}}]}}"#,
+            "x".repeat(8_193)
+        ))
+        .unwrap();
+        let audio_pages = (0..256)
+            .map(|_| i64::MAX.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let maximum_key = format!(
+            "{}:p{}:a{}",
+            "B".repeat(512),
+            usize::MAX,
+            audio_pages.replace(',', "-")
+        );
+        let maximum = CString::new(format!(
+            r#"{{"schema_version":1,"candidate":{{"bvid":"{}","aid":{},"video_page":{},"selected_audio_pages":[{}]}},"current_item":null,"queued_items":[],"history_entries":[{{"original_index":9,"key":"{}"}}]}}"#,
+            "B".repeat(512),
+            u64::MAX,
+            usize::MAX,
+            audio_pages,
+            maximum_key
+        ))
+        .unwrap();
+        unsafe {
+            assert!(rust_decide_playlist_duplicate(std::ptr::null()).is_null());
+            assert!(rust_decide_playlist_duplicate(invalid_utf8.as_ptr()).is_null());
+            for payload in invalid_payloads {
+                let payload = CString::new(payload).unwrap();
+                assert!(rust_decide_playlist_duplicate(payload.as_ptr()).is_null());
+            }
+            assert!(rust_decide_playlist_duplicate(oversized.as_ptr()).is_null());
+            assert!(rust_decide_playlist_duplicate(oversized_count.as_ptr()).is_null());
+            assert!(rust_decide_playlist_duplicate(oversized_history_key.as_ptr()).is_null());
+            let maximum_result = rust_decide_playlist_duplicate(maximum.as_ptr());
+            assert!(!maximum_result.is_null());
+            assert!(
+                CStr::from_ptr(maximum_result)
+                    .to_str()
+                    .unwrap()
+                    .contains(r#""history_duplicate_index":9"#)
+            );
+            rust_free_string(maximum_result);
+            for _ in 0..20 {
+                let result = rust_decide_playlist_duplicate(valid.as_ptr());
+                assert!(!result.is_null());
+                assert!(
+                    CStr::from_ptr(result)
+                        .to_str()
+                        .unwrap()
+                        .contains(r#""identity_key":"BV:p1""#)
+                );
+                rust_free_string(result);
+            }
+        }
+    }
+
+    #[test]
+    fn playlist_planning_exports_use_shared_panic_containment() {
+        let result = ffi_string_result(|| -> Option<String> {
+            panic!("simulated playlist planning panic");
+        });
+        assert!(result.is_null());
     }
 
     #[test]

@@ -8,11 +8,7 @@ from pathlib import Path
 class AsyncActionGuardsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        v20_node = Path("/tmp/node-v20.18.0-linux-x64/bin/node")
-        if v20_node.is_file():
-            cls.node = str(v20_node)
-        else:
-            cls.node = shutil.which("node")
+        cls.node = shutil.which("node")
         if not cls.node:
             raise unittest.SkipTest("node is unavailable")
         cls.repo_root = Path(__file__).resolve().parents[1]

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-save-backend-download"
+description = "Allows the main Host window to save approved backend export endpoints through the native Save As flow."
+commands.allow = ["save_backend_download"]

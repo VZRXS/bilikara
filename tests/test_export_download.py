@@ -30,328 +30,316 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
             [self.node, "-e", script, *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         return json.loads(process.stdout)
 
-    def test_loopback_hostname_rules_include_mapped_loopback_only(self):
+    def test_error_normalization_covers_error_string_and_fallback_inputs(self):
         result = self.run_node(
             """
             const helper = require(process.argv[1]);
-            const values = [
-              "localhost", "LOCALHOST.", "127.0.0.1", "127.99.4.3",
-              "::1", "[::1]", "::ffff:127.0.0.1", "[::ffff:7f00:1]",
-              "192.168.1.8", "10.0.0.4", "172.16.0.9", "128.0.0.1",
-              "::ffff:192.168.1.8", "example.com",
-            ];
-            process.stdout.write(JSON.stringify(
-              Object.fromEntries(values.map((value) => [value, helper.isLoopbackHostname(value)]))
-            ));
-            """,
-            str(self.helper),
-        )
-        for hostname in (
-            "localhost",
-            "LOCALHOST.",
-            "127.0.0.1",
-            "127.99.4.3",
-            "::1",
-            "[::1]",
-            "::ffff:127.0.0.1",
-            "[::ffff:7f00:1]",
-        ):
-            self.assertTrue(result[hostname], hostname)
-        for hostname in (
-            "192.168.1.8",
-            "10.0.0.4",
-            "172.16.0.9",
-            "128.0.0.1",
-            "::ffff:192.168.1.8",
-            "example.com",
-        ):
-            self.assertFalse(result[hostname], hostname)
-
-    def test_direct_attachment_uses_hidden_removable_iframe(self):
-        result = self.run_node(
-            """
-            const helper = require(process.argv[1]);
-            let scheduled = null;
-            const frame = {
-              hidden: false,
-              attributes: {},
-              removed: false,
-              setAttribute(name, value) { this.attributes[name] = value; },
-              remove() { this.removed = true; },
-            };
-            const document = {
-              createdTag: "",
-              appended: null,
-              createElement(tag) { this.createdTag = tag; return frame; },
-              body: { appendChild(node) { document.appended = node; } },
-            };
-            const triggered = helper.triggerAttachmentDownload(
-              "/api/playlist/export?format=csv&source=played&page_size=200",
-              {
-                document,
-                setTimeout(callback, delay) { scheduled = { callback, delay }; },
-              },
-            );
-            const beforeCleanup = frame.removed;
-            scheduled.callback();
+            const fallback = "translated fallback";
             process.stdout.write(JSON.stringify({
-              triggered,
-              tag: document.createdTag,
-              appended: document.appended === frame,
-              hidden: frame.hidden,
-              ariaHidden: frame.attributes["aria-hidden"],
-              src: frame.src,
-              cleanupDelay: scheduled.delay,
-              beforeCleanup,
-              removed: frame.removed,
-              hasDownloadAttribute: Object.prototype.hasOwnProperty.call(frame, "download"),
+              error: helper.normalizedErrorMessage(new Error("error instance"), fallback),
+              string: helper.normalizedErrorMessage("  string rejection  ", fallback),
+              empty: helper.normalizedErrorMessage("   ", fallback),
+              nullValue: helper.normalizedErrorMessage(null, fallback),
+              object: helper.normalizedErrorMessage({ code: 500 }, fallback),
+              translated: helper.normalizedErrorMessage(undefined, "翻译后的失败消息"),
             }));
             """,
             str(self.helper),
         )
-        self.assertTrue(result["triggered"])
-        self.assertEqual(result["tag"], "iframe")
-        self.assertTrue(result["appended"])
-        self.assertTrue(result["hidden"])
-        self.assertEqual(result["ariaHidden"], "true")
-        self.assertEqual(result["cleanupDelay"], 60_000)
-        self.assertFalse(result["beforeCleanup"])
-        self.assertTrue(result["removed"])
-        self.assertFalse(result["hasDownloadAttribute"])
-        self.assertIn("format=csv", result["src"])
-        self.assertIn("source=played", result["src"])
-        self.assertIn("page_size=200", result["src"])
+        self.assertEqual(result["error"], "error instance")
+        self.assertEqual(result["string"], "string rejection")
+        self.assertEqual(result["empty"], "translated fallback")
+        self.assertEqual(result["nullValue"], "translated fallback")
+        self.assertEqual(result["object"], "translated fallback")
+        self.assertEqual(result["translated"], "翻译后的失败消息")
 
-    def run_frontend_download(
-        self,
-        frontend: str,
-        *,
-        hostname: str,
-        tauri_result: bool | None,
-        export_format: str,
-        source: str,
-        page_size: int,
-        response_ok: bool = True,
-    ) -> dict:
-        function_source = self.function_source(
-            self.sources[frontend],
-            "async function downloadHistoryExport",
-            "async function exportHistory",
+    def test_native_result_accepts_only_saved_and_cancelled(self):
+        result = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            const values = {};
+            for (const [name, value] of Object.entries({
+              saved: { status: "saved" },
+              cancelled: { status: "cancelled" },
+              boolean: true,
+              unknown: { status: "complete" },
+              nullValue: null,
+            })) {
+              try {
+                values[name] = { status: helper.nativeDownloadStatus(value, "native fallback") };
+              } catch (error) {
+                values[name] = { error: error.message };
+              }
+            }
+            process.stdout.write(JSON.stringify(values));
+            """,
+            str(self.helper),
         )
-        script = """
-        const NativeURLSearchParams = global.URLSearchParams;
-        const events = {
-          saveCalls: 0,
-          fetchCalls: 0,
-          blobCalls: 0,
-          objectUrlCalls: 0,
-          navigationCalls: 0,
-          created: [],
-          appended: [],
-          timers: [],
-        };
-        global.document = {
-          createElement(tag) {
-            const node = {
-              tagName: String(tag).toLowerCase(),
-              hidden: false,
-              attributes: {},
+        self.assertEqual(result["saved"], {"status": "saved"})
+        self.assertEqual(result["cancelled"], {"status": "cancelled"})
+        for name in ("boolean", "unknown", "nullValue"):
+            self.assertEqual(result[name], {"error": "native fallback"})
+
+    def run_browser_download(self, *, response_mode: str, filename: str = "server-name.csv") -> dict:
+        return self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            const mode = process.argv[2];
+            const filename = process.argv[3];
+            const events = { appended: [], revoked: [], timers: [], fetchOptions: null };
+            const link = {
               removed: false,
               clicked: false,
-              setAttribute(name, value) { this.attributes[name] = String(value); },
               remove() { this.removed = true; },
               click() { this.clicked = true; },
             };
-            events.created.push(node);
-            return node;
-          },
-          body: {
-            appendChild(node) { events.appended.push(node); },
-          },
-        };
-        global.setTimeout = function(callback, delay) {
-          events.timers.push({ callback, delay });
-          return events.timers.length;
-        };
-        global.window = global;
-        window.location = {
-          hostname: process.argv[2],
-          replace() { events.navigationCalls += 1; },
-        };
-        window.BilikaraExportDownload = require(process.argv[1]);
-        global.URLSearchParams = NativeURLSearchParams;
-        global.URL = {
-          createObjectURL() { events.objectUrlCalls += 1; return "blob:test"; },
-          revokeObjectURL() {},
-        };
-        async function saveTauriBackendDownload(url) {
-          events.saveCalls += 1;
-          events.saveUrl = url;
-          return JSON.parse(process.argv[3]);
+            const environment = {
+              async fetch(url, options) {
+                events.fetchUrl = url;
+                events.fetchOptions = options;
+                return {
+                  ok: mode === "success",
+                  headers: { get(name) {
+                    return name === "Content-Disposition"
+                      ? `attachment; filename="${filename}"`
+                      : null;
+                  } },
+                  async blob() { events.blobCalled = true; return { size: 12 }; },
+                  async json() {
+                    if (mode === "json-error") return { error: "server rejected export" };
+                    if (mode === "empty-json-error") return { error: "" };
+                    throw new Error("not JSON");
+                  },
+                };
+              },
+              document: {
+                createElement(tag) { events.createdTag = tag; return link; },
+                body: { appendChild(node) { events.appended.push(node); } },
+              },
+              URL: {
+                createObjectURL(blob) { events.createdBlob = blob; return "blob:download"; },
+                revokeObjectURL(url) { events.revoked.push(url); },
+              },
+              setTimeout(callback, delay) { events.timers.push({ callback, delay }); },
+            };
+            helper.downloadBrowserFile(
+              "/api/playlist/export?format=csv",
+              {
+                fallbackFilename: "fallback.csv",
+                fallbackMessage: "translated export failure",
+                headers: { "X-Bilikara-Client": "remote-client" },
+              },
+              environment,
+            ).then((value) => {
+              for (const timer of events.timers) timer.callback();
+              process.stdout.write(JSON.stringify({
+                value,
+                error: null,
+                fetchUrl: events.fetchUrl,
+                fetchOptions: events.fetchOptions,
+                blobCalled: Boolean(events.blobCalled),
+                createdTag: events.createdTag || null,
+                clicked: link.clicked,
+                removed: link.removed,
+                href: link.href || null,
+                download: link.download || null,
+                rel: link.rel || null,
+                timerDelays: events.timers.map((timer) => timer.delay),
+                revoked: events.revoked,
+              }));
+            }).catch((error) => {
+              process.stdout.write(JSON.stringify({
+                value: null,
+                error: error.message,
+                fetchOptions: events.fetchOptions,
+                blobCalled: Boolean(events.blobCalled),
+                createdTag: events.createdTag || null,
+                revoked: events.revoked,
+              }));
+            });
+            """,
+            str(self.helper),
+            response_mode,
+            filename,
+        )
+
+    def test_browser_blob_download_uses_content_disposition_and_cleans_up(self):
+        for filename in ("playlist.csv", "playlist.png"):
+            with self.subTest(filename=filename):
+                result = self.run_browser_download(response_mode="success", filename=filename)
+                self.assertTrue(result["value"])
+                self.assertIsNone(result["error"])
+                self.assertEqual(result["fetchOptions"]["credentials"], "same-origin")
+                self.assertEqual(result["fetchOptions"]["cache"], "no-store")
+                self.assertEqual(
+                    result["fetchOptions"]["headers"]["X-Bilikara-Client"],
+                    "remote-client",
+                )
+                self.assertTrue(result["blobCalled"])
+                self.assertEqual(result["createdTag"], "a")
+                self.assertTrue(result["clicked"])
+                self.assertTrue(result["removed"])
+                self.assertEqual(result["href"], "blob:download")
+                self.assertEqual(result["download"], filename)
+                self.assertEqual(result["rel"], "noopener")
+                self.assertEqual(result["timerDelays"], [1000])
+                self.assertEqual(result["revoked"], ["blob:download"])
+
+    def test_browser_blob_download_surfaces_json_and_non_json_errors(self):
+        expected = {
+            "json-error": "server rejected export",
+            "non-json-error": "translated export failure",
+            "empty-json-error": "translated export failure",
         }
-        async function fetch(url) {
+        for mode, message in expected.items():
+            with self.subTest(mode=mode):
+                result = self.run_browser_download(response_mode=mode)
+                self.assertEqual(result["error"], message)
+                self.assertFalse(result["blobCalled"])
+                self.assertIsNone(result["createdTag"])
+                self.assertEqual(result["revoked"], [])
+
+    def run_adapter(self, frontend: str, *, tauri: bool, native_mode: str = "saved") -> dict:
+        download_source = self.function_source(
+            self.sources[frontend],
+            "async function downloadHistoryExport",
+            "async function exportHistory" if frontend == "host" else "elements.openRatingButton",
+        )
+        save_source = ""
+        if frontend == "host":
+            save_source = self.function_source(
+                self.sources[frontend],
+                "async function saveTauriBackendDownload",
+                "async function setTauriWindowFullscreen",
+            )
+        script = """
+        const helper = require(process.argv[1]);
+        const NativeURLSearchParams = global.URLSearchParams;
+        const events = { invokeCalls: 0, fetchCalls: 0, links: [], revoked: [] };
+        global.window = global;
+        window.BilikaraExportDownload = helper;
+        global.URLSearchParams = NativeURLSearchParams;
+        const state = { clientId: "client-1" };
+        const elements = {};
+        function t(key) { return key; }
+        function clientHeaders() { return { "X-Bilikara-Client": state.clientId }; }
+        function normalizedHistoryExportSource(value) { return value === "history" ? "history" : "played"; }
+        function normalizedHistoryExportPageSize(value) { return Number(value) || 200; }
+        async function invoke() {
+          events.invokeCalls += 1;
+          const mode = process.argv[3];
+          if (mode === "string-error") throw "[request_backend] backend unavailable";
+          if (mode === "error-object") throw new Error("[write_file] permission denied");
+          if (mode === "malformed") return true;
+          return { status: mode };
+        }
+        function tauriInvoke() { return window.__TAURI__?.core?.invoke || null; }
+        if (JSON.parse(process.argv[2])) {
+          window.__TAURI__ = { core: { invoke } };
+        }
+        global.fetch = async function(url, options) {
           events.fetchCalls += 1;
           events.fetchUrl = url;
+          events.fetchOptions = options;
           return {
-            ok: JSON.parse(process.argv[7]),
-            headers: { get() { return 'attachment; filename="server-name.csv"'; } },
-            async json() { return { error: "server export failed" }; },
-            async blob() { events.blobCalls += 1; return { size: 3 }; },
+            ok: true,
+            headers: { get() { return 'attachment; filename="browser-file.csv"'; } },
+            async blob() { return { size: 3 }; },
           };
-        }
-        function normalizedHistoryExportSource(value) {
-          return value === "history" ? "history" : "played";
-        }
-        function normalizedHistoryExportPageSize(value) {
-          const parsed = Number.parseInt(String(value), 10);
-          return [200, 150, 100, 80, 60, 50].includes(parsed) ? parsed : 200;
-        }
-        function filenameFromContentDisposition(value, fallback) {
-          const match = String(value || "").match(/filename="([^"]+)"/i);
-          return match ? match[1] : fallback;
-        }
-        function t(key) { return key; }
-        const elements = {};
-        const state = {};
-        function openRatingPrompt() {}
-        """ + function_source + """
-        function report(result, error) {
-            events.timers.filter((timer) => timer.delay === 60000)
-              .forEach((timer) => timer.callback());
-            process.stdout.write(JSON.stringify({
-              result,
-              error: error ? error.message : null,
-              saveCalls: events.saveCalls,
-              fetchCalls: events.fetchCalls,
-              blobCalls: events.blobCalls,
-              objectUrlCalls: events.objectUrlCalls,
-              navigationCalls: events.navigationCalls,
-              saveUrl: events.saveUrl || null,
-              fetchUrl: events.fetchUrl || null,
-              created: events.created.map((node) => ({
-                tagName: node.tagName,
-                hidden: node.hidden,
-                ariaHidden: node.attributes["aria-hidden"] || null,
-                src: node.src || null,
-                download: node.download || null,
-                removed: node.removed,
-                clicked: node.clicked,
-              })),
-              timerDelays: events.timers.map((timer) => timer.delay),
-            }));
-        }
-        downloadHistoryExport(process.argv[4], process.argv[5], Number(process.argv[6]))
-          .then((result) => report(result, null))
-          .catch((error) => report(null, error));
+        };
+        global.document = {
+          createElement() {
+            const link = {
+              clicked: false,
+              removed: false,
+              click() { this.clicked = true; },
+              remove() { this.removed = true; },
+            };
+            events.links.push(link);
+            return link;
+          },
+          body: { appendChild() {} },
+        };
+        global.URL = {
+          createObjectURL() { return "blob:test"; },
+          revokeObjectURL(url) { events.revoked.push(url); },
+        };
+        global.setTimeout = (callback) => { callback(); };
+        """ + save_source + download_source + """
+        downloadHistoryExport("csv", "played", 200).then((result) => {
+          process.stdout.write(JSON.stringify({
+            result,
+            error: null,
+            invokeCalls: events.invokeCalls,
+            fetchCalls: events.fetchCalls,
+            fetchOptions: events.fetchOptions || null,
+            links: events.links.map((link) => ({
+              download: link.download,
+              clicked: link.clicked,
+              removed: link.removed,
+            })),
+            revoked: events.revoked,
+          }));
+        }).catch((error) => {
+          process.stdout.write(JSON.stringify({
+            result: null,
+            error: error.message,
+            invokeCalls: events.invokeCalls,
+            fetchCalls: events.fetchCalls,
+          }));
+        });
         """
         return self.run_node(
             script,
             str(self.helper),
-            hostname,
-            json.dumps(tauri_result),
-            export_format,
-            source,
-            str(page_size),
-            json.dumps(response_ok),
+            json.dumps(tauri),
+            native_mode,
         )
 
-    def test_frontends_choose_tauri_loopback_and_physical_ip_paths(self):
-        for frontend in self.sources:
-            with self.subTest(frontend=frontend, path="tauri-success"):
-                result = self.run_frontend_download(
-                    frontend,
-                    hostname="192.168.1.25",
-                    tauri_result=True,
-                    export_format="csv",
-                    source="played",
-                    page_size=200,
-                )
-                self.assertTrue(result["result"])
-                self.assertEqual(result["saveCalls"], 1)
-                self.assertEqual(result["fetchCalls"], 0)
-                self.assertEqual(result["created"], [])
+    def test_adapter_routing_is_explicit_for_tauri_host_web_host_and_remote(self):
+        tauri_host = self.run_adapter("host", tauri=True, native_mode="saved")
+        self.assertTrue(tauri_host["result"])
+        self.assertEqual(tauri_host["invokeCalls"], 1)
+        self.assertEqual(tauri_host["fetchCalls"], 0)
 
-            with self.subTest(frontend=frontend, path="tauri-cancel"):
-                result = self.run_frontend_download(
-                    frontend,
-                    hostname="192.168.1.25",
-                    tauri_result=False,
-                    export_format="csv",
-                    source="played",
-                    page_size=200,
-                )
-                self.assertFalse(result["result"])
-                self.assertEqual(result["fetchCalls"], 0)
-                self.assertEqual(result["created"], [])
+        web_host = self.run_adapter("host", tauri=False)
+        self.assertTrue(web_host["result"])
+        self.assertEqual(web_host["invokeCalls"], 0)
+        self.assertEqual(web_host["fetchCalls"], 1)
+        self.assertEqual(web_host["links"][0]["download"], "browser-file.csv")
 
-            with self.subTest(frontend=frontend, path="loopback"):
-                result = self.run_frontend_download(
-                    frontend,
-                    hostname="localhost",
-                    tauri_result=None,
-                    export_format="csv",
-                    source="played",
-                    page_size=200,
-                )
-                self.assertTrue(result["result"])
-                self.assertEqual(result["fetchCalls"], 1)
-                self.assertEqual(result["blobCalls"], 1)
-                self.assertEqual(result["objectUrlCalls"], 1)
-                self.assertEqual(result["created"][0]["tagName"], "a")
-                self.assertEqual(result["created"][0]["download"], "server-name.csv")
-                self.assertIn("format=csv", result["fetchUrl"])
-                self.assertIn("source=played", result["fetchUrl"])
+        remote_with_tauri_fixture = self.run_adapter("remote", tauri=True)
+        self.assertTrue(remote_with_tauri_fixture["result"])
+        self.assertEqual(remote_with_tauri_fixture["invokeCalls"], 0)
+        self.assertEqual(remote_with_tauri_fixture["fetchCalls"], 1)
+        self.assertEqual(
+            remote_with_tauri_fixture["fetchOptions"]["headers"]["X-Bilikara-Client"],
+            "client-1",
+        )
 
-            with self.subTest(frontend=frontend, path="loopback-error"):
-                result = self.run_frontend_download(
-                    frontend,
-                    hostname="127.0.0.1",
-                    tauri_result=None,
-                    export_format="csv",
-                    source="played",
-                    page_size=200,
-                    response_ok=False,
-                )
-                self.assertEqual(result["error"], "server export failed")
-                self.assertEqual(result["fetchCalls"], 1)
-                self.assertEqual(result["blobCalls"], 0)
-                self.assertEqual(result["objectUrlCalls"], 0)
+    def test_native_saved_cancelled_and_failure_results_are_observable(self):
+        saved = self.run_adapter("host", tauri=True, native_mode="saved")
+        self.assertTrue(saved["result"])
 
-            for export_format, source, page_size in (
-                ("csv", "played", 200),
-                ("image", "history", 80),
-            ):
-                with self.subTest(frontend=frontend, path="physical", format=export_format):
-                    result = self.run_frontend_download(
-                        frontend,
-                        hostname="192.168.1.25",
-                        tauri_result=None,
-                        export_format=export_format,
-                        source=source,
-                        page_size=page_size,
-                    )
-                    self.assertTrue(result["result"])
-                    self.assertEqual(result["fetchCalls"], 0)
-                    self.assertEqual(result["blobCalls"], 0)
-                    self.assertEqual(result["objectUrlCalls"], 0)
-                    self.assertEqual(result["navigationCalls"], 0)
-                    self.assertEqual(len(result["created"]), 1)
-                    frame = result["created"][0]
-                    self.assertEqual(frame["tagName"], "iframe")
-                    self.assertTrue(frame["hidden"])
-                    self.assertEqual(frame["ariaHidden"], "true")
-                    self.assertIsNone(frame["download"])
-                    self.assertTrue(frame["removed"])
-                    self.assertIn(f"format={export_format}", frame["src"])
-                    self.assertIn(f"source={source}", frame["src"])
-                    self.assertIn(f"page_size={page_size}", frame["src"])
-                    self.assertIn(60_000, result["timerDelays"])
+        cancelled = self.run_adapter("host", tauri=True, native_mode="cancelled")
+        self.assertFalse(cancelled["result"])
+        self.assertIsNone(cancelled["error"])
 
-    def run_export_guard_behavior(self, frontend: str, saved: bool) -> dict:
+        string_error = self.run_adapter("host", tauri=True, native_mode="string-error")
+        self.assertEqual(string_error["error"], "[request_backend] backend unavailable")
+
+        error_object = self.run_adapter("host", tauri=True, native_mode="error-object")
+        self.assertEqual(error_object["error"], "[write_file] permission denied")
+
+        malformed = self.run_adapter("host", tauri=True, native_mode="malformed")
+        self.assertEqual(malformed["error"], "history.exportFailed")
+
+    def run_export_guard_error(self, frontend: str, rejection_kind: str) -> dict:
         next_marker = "function diagnosticBrowserInfo" if frontend == "host" else "async function submitAddRequest"
         function_source = self.function_source(
             self.sources[frontend],
@@ -359,58 +347,59 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
             next_marker,
         )
         invocation = 'exportHistory("csv", "played", 200)' if frontend == "host" else 'exportHistory("csv")'
-        script = """
-        const { createExportGuard } = require(process.argv[1]);
-        const button = {
-          disabled: false,
-          attributes: {},
-          setAttribute(name, value) { this.attributes[name] = value; },
-          removeAttribute(name) { delete this.attributes[name]; },
-        };
-        const historyExportGuard = createExportGuard([button]);
-        const messages = [];
-        let downloadCalls = 0;
-        async function downloadHistoryExport() {
-          downloadCalls += 1;
-          return JSON.parse(process.argv[2]);
-        }
-        function normalizedHistoryExportSource(value) { return value; }
-        function normalizedHistoryExportPageSize(value) { return value; }
-        function historyExportSourceLabel(value) { return value; }
-        function selectedHistoryExportSource() { return "played"; }
-        function selectedHistoryExportPageSize() { return 200; }
-        function closeConfirm() {}
-        function setAppMessage(message) { messages.push(message); }
-        function t(key) { return key; }
-        """ + function_source + """
-        """ + invocation + """.then(() => {
-          process.stdout.write(JSON.stringify({
-            downloadCalls,
-            messages,
-            busy: historyExportGuard.isBusy(),
-            disabled: button.disabled,
-            ariaBusy: button.attributes["aria-busy"] || null,
-          }));
-        });
-        """
-        return self.run_node(script, str(self.guard), json.dumps(saved))
+        return self.run_node(
+            """
+            const helper = require(process.argv[2]);
+            const { createExportGuard } = require(process.argv[1]);
+            global.window = global;
+            window.BilikaraExportDownload = helper;
+            const button = {
+              disabled: false,
+              attributes: {},
+              setAttribute(name, value) { this.attributes[name] = value; },
+              removeAttribute(name) { delete this.attributes[name]; },
+            };
+            const historyExportGuard = createExportGuard([button]);
+            const messages = [];
+            async function downloadHistoryExport() {
+              if (process.argv[3] === "string") throw "native string failure";
+              throw { code: "plain object" };
+            }
+            function normalizedHistoryExportSource(value) { return value; }
+            function normalizedHistoryExportPageSize(value) { return value; }
+            function historyExportSourceLabel(value) { return value; }
+            function selectedHistoryExportSource() { return "played"; }
+            function selectedHistoryExportPageSize() { return 200; }
+            function closeConfirm() {}
+            function setAppMessage(message, isError) { messages.push({ message, isError: Boolean(isError) }); }
+            function t(key) { return key; }
+            """ + function_source + """
+            """ + invocation + """.then(() => {
+              process.stdout.write(JSON.stringify({
+                messages,
+                busy: historyExportGuard.isBusy(),
+                disabled: button.disabled,
+                ariaBusy: button.attributes["aria-busy"] || null,
+              }));
+            });
+            """,
+            str(self.guard),
+            str(self.helper),
+            rejection_kind,
+        )
 
-    def test_cancellation_has_no_false_success_and_guard_is_released(self):
+    def test_export_guards_restore_buttons_and_show_normalized_errors(self):
         for frontend in self.sources:
-            with self.subTest(frontend=frontend, saved=False):
-                result = self.run_export_guard_behavior(frontend, False)
-                self.assertEqual(result["downloadCalls"], 1)
-                self.assertNotIn("history.csvDownloadStarted", result["messages"])
+            with self.subTest(frontend=frontend, rejection="string"):
+                result = self.run_export_guard_error(frontend, "string")
+                self.assertEqual(result["messages"][-1], {"message": "native string failure", "isError": True})
                 self.assertFalse(result["busy"])
                 self.assertFalse(result["disabled"])
                 self.assertIsNone(result["ariaBusy"])
-            with self.subTest(frontend=frontend, saved=True):
-                result = self.run_export_guard_behavior(frontend, True)
-                self.assertEqual(result["downloadCalls"], 1)
-                self.assertIn("history.csvDownloadStarted", result["messages"])
+            with self.subTest(frontend=frontend, rejection="object"):
+                result = self.run_export_guard_error(frontend, "object")
+                self.assertEqual(result["messages"][-1], {"message": "history.exportFailed", "isError": True})
                 self.assertFalse(result["busy"])
-                self.assertFalse(result["disabled"])
-                self.assertIsNone(result["ariaBusy"])
 
 
 if __name__ == "__main__":

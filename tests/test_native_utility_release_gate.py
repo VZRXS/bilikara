@@ -39,6 +39,10 @@ EXPECTED_PHASE2_CAPABILITIES = {
     "select_video_stream",
     "select_audio_stream",
     "select_preferred_audio_source",
+    "plan_cache_window",
+    "plan_playlist_order",
+    "decide_playlist_duplicate",
+    "apply_av_delay_action",
 }
 
 
@@ -175,6 +179,22 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         self.assertTrue(completed)
         self.assertEqual(quality["effective_max_height"], 720)
         self.assertEqual(quality["dash_max_quality_id"], 116)
+        completed, av_delay = rust_backend.try_apply_av_delay_action(
+            {
+                "schema_version": 1,
+                "state": {
+                    "global_delay_ms": 100,
+                    "local_delay_ms": 25,
+                    "locked": False,
+                },
+                "action": {"type": "toggle_lock"},
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(av_delay["global_delay_ms"], 125)
+        self.assertEqual(av_delay["local_delay_ms"], 0)
+        self.assertEqual(av_delay["effective_delay_ms"], 125)
+        self.assertTrue(av_delay["locked"])
 
         completed, video = rust_backend.try_select_video_stream(
             {
@@ -234,6 +254,70 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         self.assertTrue(completed)
         self.assertEqual(preferred_audio["preferred_source"], "dolby")
         self.assertEqual(preferred_audio["selected_regular_index"], 0)
+
+        completed, cache_plan = rust_backend.try_plan_cache_window(
+            {
+                "schema_version": 1,
+                "items": [
+                    {"original_index": 0, "item_id": "first", "cache_ready": False},
+                    {"original_index": 1, "item_id": "active", "cache_ready": False},
+                ],
+                "max_items": 2,
+                "retention_limit": 3,
+                "active_item_ids": ["active"],
+                "primary_active_item_id": "active",
+                "urgent_item_ids": [],
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(cache_plan["pending_order"], ["first", "active"])
+        self.assertEqual(cache_plan["preempt_ids"], ["active"])
+
+        completed, playlist_plan = rust_backend.try_plan_playlist_order(
+            {
+                "schema_version": 1,
+                "operation": "rebuild",
+                "session_users": ["A", "B"],
+                "current_requester": "A",
+                "items": [
+                    {
+                        "original_index": 0,
+                        "item_id": "a",
+                        "requester_name": "A",
+                        "slot_type": "cycle",
+                    },
+                    {
+                        "original_index": 1,
+                        "item_id": "b",
+                        "requester_name": "B",
+                        "slot_type": "cycle",
+                    },
+                ],
+                "candidate": None,
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(playlist_plan["ordered_ids"], ["b", "a"])
+
+        completed, duplicate = rust_backend.try_decide_playlist_duplicate(
+            {
+                "schema_version": 1,
+                "candidate": {
+                    "bvid": "BVCase",
+                    "aid": 1,
+                    "video_page": 2,
+                    "selected_audio_pages": [2, 1, 2],
+                },
+                "current_item": None,
+                "queued_items": [],
+                "history_entries": [
+                    {"original_index": 4, "key": "BVCase:p2:a2-1-2"}
+                ],
+            }
+        )
+        self.assertTrue(completed)
+        self.assertEqual(duplicate["identity_key"], "BVCase:p2:a2-1-2")
+        self.assertEqual(duplicate["history_duplicate_index"], 4)
 
     def test_phase1_capability_documentation_matches_backend_symbols(self):
         self.assertEqual(set(rust_backend.PHASE1_CAPABILITIES), EXPECTED_PHASE1_CAPABILITIES)
