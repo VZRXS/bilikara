@@ -803,6 +803,11 @@ fn process_backend_stdout_line(line: &str, ready_handled: &mut bool) -> BackendS
     BackendStdoutLine::Output(sanitized_backend_stdout_line(line))
 }
 
+fn write_and_flush_ready_marker<W: io::Write>(mut writer: W, base_url: &str) -> io::Result<()> {
+    writeln!(writer, "Backend ready at {}", base_url)?;
+    writer.flush()
+}
+
 fn drain_backend_stdout<R, FReady, FOutput>(
     reader: R,
     mut on_ready: FReady,
@@ -919,7 +924,11 @@ fn main() {
                 let result = drain_backend_stdout(
                     reader,
                     |ready| {
-                        println!("Backend ready at {}", ready.base_url);
+                        if let Err(error) =
+                            write_and_flush_ready_marker(io::stdout(), &ready.base_url)
+                        {
+                            eprintln!("Failed to flush backend readiness output: {error}");
+                        }
                         if let Ok(mut stored_url) = base_url_for_reader.lock() {
                             *stored_url = Some(ready.base_url.clone());
                         }
@@ -1462,6 +1471,16 @@ mod tests {
             })
         );
         server.join().expect("test server");
+    }
+
+    #[test]
+    fn readiness_marker_is_written_and_flushed() {
+        let mut buf = Vec::new();
+        write_and_flush_ready_marker(&mut buf, "http://127.0.0.1:5678").unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "Backend ready at http://127.0.0.1:5678\n"
+        );
     }
 
     #[test]

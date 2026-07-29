@@ -220,7 +220,7 @@ jobs:
           BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_backend_smoke.py -v
 
           echo "=== Running Tauri/backend integration smoke test ==="
-          BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_tauri_smoke.py -v
+          BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_tauri_smoke.py -v
 
       - name: Archive Windows bundle
         if: runner.os == 'Windows'
@@ -249,7 +249,7 @@ jobs:
 
           echo "=== Running round-trip extracted smoke test ==="
           BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_backend_smoke.py -v
-          BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_tauri_smoke.py -v
+          BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_tauri_smoke.py -v
 
       - name: Upload Windows bundle artifact
         if: runner.os == 'Windows'
