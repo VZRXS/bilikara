@@ -1,6 +1,7 @@
 import json
 import threading
 import unittest
+from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -56,8 +57,22 @@ class PlaylistStoreTest(unittest.TestCase):
 
         self.assertEqual(restored_store.playback_mode, "local")
 
-    def test_av_offset_persists_in_player_state_file(self):
+    def test_av_delay_persists_only_global_and_locked_state(self):
         self.store.set_av_offset_ms(230)
+
+        local_snapshot = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(local_snapshot["global_delay_ms"], 0)
+        self.assertEqual(local_snapshot["local_delay_ms"], 230)
+        self.assertFalse(local_snapshot["locked"])
+
+        local_only_restored = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+        self.assertEqual(local_only_restored.av_offset_ms, 0)
+
+        self.store.apply_av_delay_action({"type": "toggle_lock"})
 
         restored_store = PlaylistStore(
             state_file=self.state_file,
@@ -67,8 +82,102 @@ class PlaylistStoreTest(unittest.TestCase):
 
         self.assertEqual(self.store.snapshot()["player_settings"]["av_offset_ms"], 230)
         self.assertEqual(restored_store.av_offset_ms, 230)
+        restored_delay = restored_store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(restored_delay["global_delay_ms"], 230)
+        self.assertEqual(restored_delay["local_delay_ms"], 0)
+        self.assertTrue(restored_delay["locked"])
+        persisted = json.loads(restored_store.player_state_file.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["player_settings"]["global_av_delay_ms"], 230)
+        self.assertTrue(persisted["player_settings"]["av_delay_locked"])
+        self.assertNotIn("local_delay_ms", persisted["player_settings"])
+        self.assertNotIn("av_offset_ms", persisted["player_settings"])
         self.assertFalse(self.state_file.exists())
         self.assertTrue((self.state_file.parent / "player_state.json").exists())
+
+    def test_legacy_persisted_offset_migrates_to_locked_global_delay(self):
+        self.store.player_state_file.write_text(
+            json.dumps(
+                {
+                    "player_settings": {
+                        "av_offset_ms": -340,
+                        "volume_percent": 100,
+                        "is_muted": False,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        restored = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        )
+        delay = restored.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(delay["global_delay_ms"], -340)
+        self.assertEqual(delay["local_delay_ms"], 0)
+        self.assertEqual(delay["effective_delay_ms"], -340)
+        self.assertTrue(delay["locked"])
+
+    def test_av_delay_lock_unlock_and_reset_transitions(self):
+        initial = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertFalse(initial["locked"])
+        self.assertFalse(initial["lock_button_enabled"])
+
+        self.store.apply_av_delay_action({"type": "adjust", "delta_ms": 125})
+        adjusted = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(adjusted["effective_delay_ms"], 125)
+        self.assertEqual(adjusted["local_delay_ms"], 125)
+        self.assertTrue(adjusted["lock_button_enabled"])
+
+        self.store.apply_av_delay_action({"type": "toggle_lock"})
+        locked = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(locked["effective_delay_ms"], 125)
+        self.assertEqual(locked["global_delay_ms"], 125)
+        self.assertEqual(locked["local_delay_ms"], 0)
+        self.assertTrue(locked["locked"])
+        self.assertTrue(locked["lock_button_enabled"])
+
+        self.store.apply_av_delay_action({"type": "adjust", "delta_ms": -25})
+        locked_adjusted = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(locked_adjusted["global_delay_ms"], 125)
+        self.assertEqual(locked_adjusted["local_delay_ms"], -25)
+        self.assertEqual(locked_adjusted["effective_delay_ms"], 100)
+
+        self.store.apply_av_delay_action({"type": "reset_local"})
+        reset = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(reset["effective_delay_ms"], 125)
+        self.assertEqual(reset["local_delay_ms"], 0)
+
+        self.store.apply_av_delay_action({"type": "toggle_lock"})
+        unlocked = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(unlocked["effective_delay_ms"], 125)
+        self.assertEqual(unlocked["global_delay_ms"], 0)
+        self.assertEqual(unlocked["local_delay_ms"], 125)
+        self.assertFalse(unlocked["locked"])
+        restarted = PlaylistStore(
+            state_file=self.state_file,
+            backup_file=self.backup_file,
+            session_archive_dir=self.session_archive_dir,
+        ).snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(restarted["effective_delay_ms"], 0)
+        self.assertFalse(restarted["locked"])
+
+    def test_track_change_reset_only_clears_local_delay_when_enabled(self):
+        self.add_item("a", requester_name="A")
+        self.add_item("b", requester_name="B")
+        self.store.set_av_offset_ms(200)
+        self.store.apply_av_delay_action({"type": "toggle_lock"})
+        self.store.apply_av_delay_action({"type": "adjust", "delta_ms": 50})
+
+        self.store.advance_to_next(reset_av_delay=False)
+        self.assertEqual(self.store.av_offset_ms, 250)
+        self.store.apply_av_delay_action({"type": "adjust", "delta_ms": -30})
+        self.store.add_item(self.make_item("c"), requester_name="C")
+        self.store.move_to_front("c", reset_av_delay=True)
+        delay = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(delay["global_delay_ms"], 200)
+        self.assertEqual(delay["local_delay_ms"], 0)
+        self.assertEqual(delay["effective_delay_ms"], 200)
 
     def test_volume_settings_persist_in_player_state_file(self):
         self.store.set_volume_percent(35)
@@ -243,6 +352,42 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.current_item.id, "a")
         self.assertEqual([item.id for item in self.store.playlist], ["c", "b"])
 
+    def test_empty_requester_defaults_to_first_registered_user(self):
+        item = self.make_item("default-requester")
+        self.store.add_item(item, requester_name="")
+        self.assertEqual(self.store.current_item.requester_name, "A")
+
+    def test_requester_cycle_state_retains_legacy_defaultdict_shape(self):
+        _, counts, _ = self.store._requester_cycle_state_unlocked()
+        self.assertIsInstance(counts, defaultdict)
+        self.assertEqual(dict(counts), {})
+
+        fixed_manual = self.make_item("manual")
+        fixed_manual.requester_name = "A"
+        fixed_manual.queue_slot_type = "manual"
+        fixed_priority = self.make_item("priority")
+        fixed_priority.requester_name = "B"
+        fixed_priority.queue_slot_type = "priority"
+        self.store.playlist = [fixed_manual, fixed_priority]
+        _, counts, _ = self.store._requester_cycle_state_unlocked()
+        self.assertEqual(dict(counts), {})
+
+        cycle_a1 = self.make_item("a1")
+        cycle_a1.requester_name = "A"
+        cycle_a2 = self.make_item("a2")
+        cycle_a2.requester_name = "A"
+        cycle_b1 = self.make_item("b1")
+        cycle_b1.requester_name = "B"
+        self.store.playlist = [cycle_a1]
+        _, counts, _ = self.store._requester_cycle_state_unlocked()
+        self.assertEqual(dict(counts), {"A": 1})
+
+        self.store.playlist = [cycle_a1, cycle_b1, cycle_a2]
+        _, counts, _ = self.store._requester_cycle_state_unlocked()
+        self.assertEqual(dict(counts), {"A": 2, "B": 1})
+        self.assertNotIn("missing", counts)
+        self.assertEqual(counts["missing"], 0)
+
     def test_move_to_next(self):
         self.add_item("a", requester_name="A")
         self.add_item("b", requester_name="B")
@@ -370,6 +515,12 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(self.store.session_history[0].display_title, "title-b - P1")
         self.assertEqual(self.store.session_history[0].request_count, 2)
         self.assertEqual(self.store.session_history[0].requester_name, "B")
+
+        detached = self.store.session_request_for_item(
+            self.make_item("detached", song_key="song-a")
+        )
+        self.assertIsNotNone(detached)
+        self.assertIsNot(detached, self.store.session_history[0])
 
     def test_unstarted_removed_song_does_not_count_as_session_duplicate(self):
         self.add_item("a", requester_name="A", song_key="song-a")
@@ -707,6 +858,56 @@ class PlaylistStoreTest(unittest.TestCase):
         found = self.store.active_duplicate_for_item(duplicate)
         self.assertIsNotNone(found)
         self.assertEqual(found.id, "a")
+        self.assertIsNot(found, self.store.current_item)
+
+    def test_playlist_rebuild_preserves_exact_python_object_identity(self):
+        self.add_item("a1", requester_name="A")
+        self.add_item("a2", requester_name="A")
+        self.add_item("b1", requester_name="B")
+        self.add_item("c1", requester_name="C")
+        original_objects = {item.id: item for item in self.store.playlist}
+
+        self.store.move_session_user_to_index("C", 1)
+
+        self.assertEqual([item.id for item in self.store.playlist], ["c1", "b1", "a2"])
+        for item in self.store.playlist:
+            self.assertIs(item, original_objects[item.id])
+
+    def test_playlist_order_and_duplicate_use_complete_python_fallback(self):
+        with patch(
+            "bilikara.store.rust_backend.try_plan_playlist_order",
+            return_value=(False, None),
+        ), patch(
+            "bilikara.store.rust_backend.try_decide_playlist_duplicate",
+            return_value=(False, None),
+        ):
+            self.add_item("a1", requester_name="A", song_key="song-a")
+            self.add_item("a2", requester_name="A", song_key="song-b")
+            self.add_item("b1", requester_name="B", song_key="song-c")
+            self.add_item("c1", requester_name="C", song_key="song-d")
+            self.assertEqual([item.id for item in self.store.playlist], ["b1", "c1", "a2"])
+
+            candidate = self.make_item("duplicate", song_key="song-a")
+            found = self.store.active_duplicate_for_item(candidate)
+            self.assertIsNotNone(found)
+            self.assertEqual(found.id, "a1")
+            self.assertIsNot(found, self.store.current_item)
+
+    def test_duplicate_identity_preserves_selected_page_order_and_repetition(self):
+        first = self.make_item("a", song_key="song-a")
+        first.selected_pages = [2, 0, -1, 1, 2]
+        self.store.add_item(first, requester_name="A")
+
+        matching = self.make_item("matching", song_key="song-a")
+        matching.selected_pages = [2, 1, 2]
+        different = self.make_item("different", song_key="song-a")
+        different.selected_pages = [1, 2, 2]
+
+        found = self.store.active_duplicate_for_item(matching)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.id, "a")
+        self.assertIsNone(self.store.active_duplicate_for_item(different))
+        self.assertEqual(self.store.session_played[0].key, "BVSONG-A0000:p1:a2-1-2")
 
     def test_missing_owner_urls_collects_entries_without_owner_name(self):
         item = self.make_item("a", song_key="song-a")
@@ -829,7 +1030,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertTrue(restored_store.restore_backup())
         self.assertFalse(restored_store.current_item_started)
         self.assertEqual(restored_store.playback_mode, "local")
-        self.assertEqual(restored_store.av_offset_ms, 180)
+        self.assertEqual(restored_store.av_offset_ms, 0)
         self.assertEqual(restored_store.volume_percent, 42)
         self.assertTrue(restored_store.is_muted)
         self.assertEqual(restored_store.current_item.id, "a")
@@ -1012,6 +1213,51 @@ class PlaylistStoreTest(unittest.TestCase):
 
 
 class BilibiliParserTest(unittest.TestCase):
+    def test_cached_avatar_annotation_prefers_owner_name_for_collaboration(self):
+        profiles_by_uid = {
+            "671767": {"uid": "671767", "name": "VZRXS", "avatar_url": "vzrxs.jpg"},
+            "3145040": {"uid": "3145040", "name": "kevinx96", "avatar_url": "kevin.jpg"},
+        }
+        profiles_by_name = {profile["name"].casefold(): profile for profile in profiles_by_uid.values()}
+        items = [
+            {"bvid": "BV1tPC2BEEjq", "owner_name": "VZRXS", "mid": "3145040"},
+            {"bvid": "BVMATCH", "owner_name": "kevinx96", "mid": "3145040"},
+            {"bvid": "BVMISMATCH", "owner_name": "someone else", "mid": "3145040"},
+        ]
+
+        with patch.object(
+            bilibili_module,
+            "_cached_gatcha_profile_indexes",
+            return_value=(profiles_by_uid, profiles_by_name),
+        ):
+            annotated = bilibili_module._annotate_gatcha_owner_avatars(items)
+
+        self.assertEqual(annotated[0]["owner_avatar_url"], "vzrxs.jpg")
+        self.assertEqual(annotated[1]["owner_avatar_url"], "kevin.jpg")
+        self.assertNotIn("owner_avatar_url", annotated[2])
+
+    def test_local_search_returns_cached_owner_avatar_without_browse_request(self):
+        profile = {"uid": "671767", "name": "VZRXS", "avatar_url": "vzrxs.jpg"}
+        entry = {
+            "mid": "3145040",
+            "bvid": "BV1tPC2BEEjq",
+            "title": "agony karaoke",
+            "url": "https://www.bilibili.com/video/BV1tPC2BEEjq",
+            "owner_name": "VZRXS",
+        }
+        with (
+            patch.object(bilibili_module, "_local_gatcha_candidates", return_value=[entry]),
+            patch.object(bilibili_module, "_local_gatcha_favlist_candidates", return_value=[]),
+            patch.object(
+                bilibili_module,
+                "_cached_gatcha_profile_indexes",
+                return_value=({"671767": profile}, {"vzrxs": profile}),
+            ),
+        ):
+            results = bilibili_module.search_gatcha_cache("agony")
+
+        self.assertEqual(results[0]["owner_avatar_url"], "vzrxs.jpg")
+
     def test_clean_display_title_removes_brackets_and_part_suffix(self):
         cleaned = clean_display_title(
             title="\u3010pure k | nico karaoke | troupe\u3011Song Name",
@@ -1845,6 +2091,7 @@ class BilibiliParserTest(unittest.TestCase):
             uid_file = data_dir / "gatcha_uids.json"
             cache_file = data_dir / "gatcha_cache.json"
             favlist_file = data_dir / "gatcha_favlist.json"
+            pool_file = data_dir / "gatcha_pool_config.json"
             uid_file.write_text(json.dumps({"uids": []}), encoding="utf-8")
             cache_file.write_text(json.dumps({"schema_version": 2, "uids": {}, "profiles": {}}), encoding="utf-8")
             favlist_file.write_text(
@@ -1872,6 +2119,7 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
                 patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
                 patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
+                patch.object(bilibili_module, "_GATCHA_POOL_CONFIG_FILE", pool_file),
             ):
                 results = bilibili_module.search_gatcha_cache("fav local")
                 candidate = bilibili_module.fetch_gatcha_candidate()
@@ -2240,16 +2488,16 @@ class BilibiliParserTest(unittest.TestCase):
             },
         }
         item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
-        self.assertEqual(item.page, 2)
-        self.assertEqual(item.cid, 789)
-        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.page, 1)
+        self.assertEqual(item.cid, 456)
+        self.assertEqual(item.video_page, 1)
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_cids, [456, 789])
-        self.assertEqual(item.display_title, "example video - off_vocal")
+        self.assertEqual(item.display_title, "example video - on_vocal")
         self.assertEqual(item.owner_mid, 114514)
         self.assertEqual(item.owner_name, "example-up")
         self.assertEqual(item.owner_url, "https://space.bilibili.com/114514")
-        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
+        self.assertEqual(item.selected_audio_variant_id, "p1_on_vocal")
         self.assertEqual(item.available_pages, [1, 2])
         self.assertEqual(item.available_parts, ["on_vocal", "off_vocal"])
 
@@ -2304,7 +2552,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_audio_variant_id, "p2_track_2")
 
     @patch("bilikara.bilibili.request_json")
-    def test_fetch_video_item_defaults_to_p2_when_only_p2_has_dual_audio_keyword(self, mock_request_json):
+    def test_fetch_video_item_defaults_to_p1_when_vocal_pair_is_not_resolved(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
             "data": {
@@ -2323,13 +2571,13 @@ class BilibiliParserTest(unittest.TestCase):
         item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
 
         self.assertFalse(item.manual_selection)
-        self.assertEqual(item.page, 2)
-        self.assertEqual(item.cid, 789)
-        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.page, 1)
+        self.assertEqual(item.cid, 456)
+        self.assertEqual(item.video_page, 1)
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_cids, [456, 789])
-        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
-        self.assertEqual(item.display_title, "example video - off vocal")
+        self.assertEqual(item.selected_audio_variant_id, "p1_main_track")
+        self.assertEqual(item.display_title, "example video - main track")
 
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item_requires_manual_binding_for_ambiguous_multipart_video(self, mock_request_json):
@@ -2492,7 +2740,7 @@ class BilibiliParserTest(unittest.TestCase):
 
         decide.assert_called_once()
         self.assertEqual(item.selected_pages, [1, 2])
-        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.video_page, 1)
 
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item_native_and_forced_python_outputs_match(self, mock_request_json):
@@ -2516,6 +2764,10 @@ class BilibiliParserTest(unittest.TestCase):
         }
 
         with patch.object(
+            bilibili_module.rust_backend,
+            "strict_equivalence_enabled",
+            return_value=False,
+        ), patch.object(
             bilibili_module,
             "_py_decide_audio_binding",
             side_effect=AssertionError("Python fallback was called"),

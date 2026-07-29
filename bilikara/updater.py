@@ -154,7 +154,9 @@ def _dedupe_urls(urls: list[str]) -> list[str]:
     completed, plan = _try_native_update_download_plan(candidates)
     if completed:
         return [str(candidate["url"]) for candidate in plan]
-    return _py_dedupe_urls(urls)
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates", lambda: _py_dedupe_urls(urls)
+    )
 
 
 def _py_release_list_api_from_latest(api_url: str) -> str:
@@ -186,7 +188,12 @@ def _latest_release_api_urls() -> list[str]:
     completed, plan = _try_native_update_download_plan(candidates)
     if completed:
         return [str(candidate["url"]) for candidate in plan]
-    return _py_latest_release_api_urls(APP_RELEASE_API, APP_RELEASE_API_FALLBACKS)
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates",
+        lambda: _py_latest_release_api_urls(
+            APP_RELEASE_API, APP_RELEASE_API_FALLBACKS
+        ),
+    )
 
 
 def _py_release_list_api_urls(
@@ -217,10 +224,13 @@ def _release_list_api_urls() -> list[str]:
     completed, plan = _try_native_update_download_plan(candidates)
     if completed:
         return [str(candidate["url"]) for candidate in plan]
-    return _py_release_list_api_urls(
-        APP_RELEASES_API,
-        APP_RELEASES_API_FALLBACKS,
-        APP_RELEASE_API_FALLBACKS,
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates",
+        lambda: _py_release_list_api_urls(
+            APP_RELEASES_API,
+            APP_RELEASES_API_FALLBACKS,
+            APP_RELEASE_API_FALLBACKS,
+        ),
     )
 
 
@@ -275,10 +285,13 @@ def _download_url_candidates(url: str) -> list[str]:
     )
     if completed:
         return [str(candidate["url"]) for candidate in plan]
-    return _py_download_url_candidates(
-        url,
-        APP_UPDATE_DOWNLOAD_PROXY,
-        APP_UPDATE_DOWNLOAD_PROXY_FIRST,
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates",
+        lambda: _py_download_url_candidates(
+            url,
+            APP_UPDATE_DOWNLOAD_PROXY,
+            APP_UPDATE_DOWNLOAD_PROXY_FIRST,
+        ),
     )
 
 
@@ -480,7 +493,12 @@ def _latest_release_for_current(
         elif status == "no_match":
             return {}
 
-    return _py_latest_release_for_current(current_version, releases, include_preview=include_preview)
+    return rust_backend.python_fallback(
+        "select_release",
+        lambda: _py_latest_release_for_current(
+            current_version, releases, include_preview=include_preview
+        ),
+    )
 
 
 def _py_normalize_machine_arch(machine: object) -> str:
@@ -717,7 +735,9 @@ def _score_asset_for_target(asset: dict[str, Any], target: dict[str, str]) -> in
                 score = score_entry.get("score")
                 if isinstance(score, int) and not isinstance(score, bool):
                     return score
-    return _py_score_asset_for_target(asset, target)
+    return rust_backend.python_fallback(
+        "select_update_asset", lambda: _py_score_asset_for_target(asset, target)
+    )
 
 
 def _py_select_update_asset(
@@ -794,19 +814,31 @@ def select_update_asset(
     }
     completed, response = rust_backend.try_select_update_asset(request)
     if not completed or response is None:
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
     status = response.get("status")
     if status == "no_match":
         return None
     if status != "selected":
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
 
     selected_index = response.get("selected_index")
     if not isinstance(selected_index, int) or isinstance(selected_index, bool):
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
     selected = assets_by_index.get(selected_index)
     if selected is None:
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
     return {
         "name": str(selected.get("name") or ""),
         "browser_download_url": str(selected.get("browser_download_url") or ""),

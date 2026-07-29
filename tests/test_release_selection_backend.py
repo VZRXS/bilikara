@@ -7,6 +7,11 @@ from bilikara import updater, rust_backend
 
 class TestReleaseSelectionBackend(unittest.TestCase):
     def setUp(self):
+        strict_patcher = patch.dict(
+            os.environ, {"BILIKARA_RUST_STRICT_EQUIVALENCE": ""}, clear=False
+        )
+        strict_patcher.start()
+        self.addCleanup(strict_patcher.stop)
         self.releases = [
             {"tag_name": "v0.8.0", "draft": False, "prerelease": False},
         ]

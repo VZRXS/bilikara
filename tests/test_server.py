@@ -454,10 +454,42 @@ class AddressArchitectureTest(unittest.TestCase):
         self.assertEqual(server_module._local_ui_host("0.0.0.0"), "127.0.0.1")
         self.assertEqual(server_module._local_ui_url("0.0.0.0", 8080), "http://127.0.0.1:8080")
 
-    def test_windows_remote_url_uses_selected_physical_adapter(self):
+    def test_windows_remote_url_uses_ranked_system_addresses(self):
         with (
             patch.object(server_module.os, "name", "nt"),
-            patch("bilikara.server._detect_windows_physical_host", return_value="192.168.1.20"),
+            patch(
+                "bilikara.server.detect_lan_ipv4_addresses",
+                return_value=["192.168.1.20", "192.168.1.21"],
+            ),
+        ):
+            urls = server_module._network_access_urls("0.0.0.0", 8080)
+
+        self.assertEqual(
+            urls,
+            ["http://192.168.1.20:8080", "http://192.168.1.21:8080"],
+        )
+
+    def test_container_runtime_does_not_publish_bridge_address(self):
+        with (
+            patch.object(server_module.os, "name", "posix"),
+            patch("bilikara.server._is_container_runtime", return_value=True),
+            patch(
+                "bilikara.server.socket.getaddrinfo",
+                side_effect=AssertionError("container hostname must not be resolved"),
+            ),
+        ):
+            urls = server_module._network_access_urls("0.0.0.0", 8080)
+
+        self.assertEqual(urls, [])
+
+    def test_native_posix_remote_url_uses_lan_address(self):
+        with (
+            patch.object(server_module.os, "name", "posix"),
+            patch("bilikara.server._is_container_runtime", return_value=False),
+            patch(
+                "bilikara.server.detect_lan_ipv4_addresses",
+                return_value=["192.168.1.20"],
+            ),
         ):
             urls = server_module._network_access_urls("0.0.0.0", 8080)
 
@@ -602,6 +634,59 @@ class PlaylistAddRequestTest(unittest.TestCase):
 
 
 class PlaylistExportRouteTest(unittest.TestCase):
+    def test_playlist_csv_and_image_are_unchanged_by_tauri_launch_mode(self):
+        def run_export(path, image_payload=None):
+            handler = BilikaraHandler.__new__(BilikaraHandler)
+            handler.path = path
+            handler.headers = {"X-Bilikara-Client": "host-client"}
+            writes = []
+            handler._write_download = lambda payload, content_type, filename: writes.append(
+                (payload, content_type, filename)
+            )
+            context = SimpleNamespace(
+                touch_client=lambda client_id, is_host=True: None,
+                history_snapshot=lambda: [{"display_title": "song", "requested_at": 1}],
+                session_played_snapshot=lambda: [{"display_title": "song", "requested_at": 1}],
+            )
+            patches = [
+                patch("bilikara.server.CONTEXT", context),
+                patch("bilikara.server.time.strftime", return_value="20260728-120000"),
+            ]
+            if image_payload is not None:
+                patches.append(
+                    patch(
+                        "bilikara.server.playlist_image_export",
+                        return_value=image_payload,
+                    )
+                )
+            with patches[0], patches[1]:
+                if len(patches) == 3:
+                    with patches[2]:
+                        handler.do_GET()
+                else:
+                    handler.do_GET()
+            return writes[0]
+
+        cases = [
+            ("/api/playlist/export?format=csv&source=played", None),
+            (
+                "/api/playlist/export?format=image&source=played",
+                (b"png", "image/png", "playlist.png"),
+            ),
+        ]
+        for path, image_payload in cases:
+            with self.subTest(path=path):
+                with patch.dict(server_module.os.environ, {}, clear=False):
+                    server_module.os.environ.pop("BILIKARA_LAUNCH_MODE", None)
+                    standalone = run_export(path, image_payload)
+                with patch.dict(
+                    server_module.os.environ,
+                    {"BILIKARA_LAUNCH_MODE": "tauri"},
+                    clear=False,
+                ):
+                    tauri = run_export(path, image_payload)
+                self.assertEqual(tauri, standalone)
+
     def test_playlist_export_csv_route_downloads_friendly_csv(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
@@ -1175,6 +1260,26 @@ class DownloadResponseTest(unittest.TestCase):
 
         self.assertEqual(events, ["export_headers_sent", "export_body_written"])
 
+    def test_diagnostics_stage_logs_headers_and_body(self):
+        handler = self.make_handler()
+        events = []
+        context = {
+            "started_at": server_module.time.monotonic(),
+            "payload_size": 3,
+        }
+        handler._active_diagnostic_context = context
+        handler._log_diagnostics_stage = lambda stage, active_context, **kwargs: events.append(stage)
+
+        self.assertTrue(
+            handler._write_download(
+                b"zip",
+                content_type="application/zip",
+                filename="diagnostics.zip",
+            )
+        )
+
+        self.assertEqual(events, ["diagnostics_headers_sent", "diagnostics_body_written"])
+
     def test_download_disconnect_is_handled(self):
         class BrokenWriter:
             def write(self, payload):
@@ -1248,6 +1353,46 @@ class DiagnosticRouteTest(unittest.TestCase):
         self.assertTrue(downloads[0]["filename"].startswith("bilikara-diagnostics-"))
         with zipfile.ZipFile(io.BytesIO(downloads[0]["payload"])) as archive:
             self.assertEqual(set(archive.namelist()), {"diagnostics.md", "system.json"})
+
+    def test_package_route_logs_bounded_stages_in_tauri_launch_mode(self):
+        handler = self.make_handler("/api/diagnostics/package", {"browser": {}})
+        artifact = DiagnosticArtifact(markdown="# report", files={"system.json": b"{}"})
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            build_diagnostics=lambda browser_info: artifact,
+        )
+        stages = []
+        handler._log_diagnostics_stage = lambda stage, active_context, **kwargs: stages.append(
+            (stage, active_context.get("payload_size"), kwargs.get("error"))
+        )
+        handler._write_download = lambda payload, *, content_type, filename: True
+
+        with patch("bilikara.server.CONTEXT", context), patch.dict(
+            server_module.os.environ,
+            {"BILIKARA_LAUNCH_MODE": "tauri"},
+            clear=False,
+        ):
+            handler.do_POST()
+
+        self.assertEqual(
+            [stage for stage, _, _ in stages],
+            [
+                "diagnostics_request_started",
+                "diagnostics_authorized",
+                "diagnostics_artifact_ready",
+            ],
+        )
+        self.assertGreater(stages[-1][1], 0)
+
+    def test_diagnostic_error_sanitizer_redacts_paths_tokens_and_newlines(self):
+        error = RuntimeError("failed /home/alice/private.txt token=secret\nnext")
+        sanitized = BilikaraHandler._sanitized_diagnostic_error(error)
+        self.assertIn("RuntimeError", sanitized)
+        self.assertIn("<path>", sanitized)
+        self.assertIn("token=<redacted>", sanitized)
+        self.assertNotIn("alice", sanitized)
+        self.assertNotIn("secret", sanitized)
+        self.assertNotIn("\n", sanitized)
 
     def test_diagnostic_routes_reject_non_local_clients(self):
         handler = self.make_handler("/api/diagnostics/markdown", {"browser": {}})
@@ -1526,6 +1671,44 @@ class PlayerKeyShiftRouteTest(unittest.TestCase):
 
         self.assertEqual(writes[0], {"set_key_shift": 3})
         self.assertEqual(writes[1], {"ok": True, "data": {"player_settings": {"key_shift": 3}}})
+
+
+class PlayerAvDelayRouteTest(unittest.TestCase):
+    def test_av_delay_action_route_dispatches_structured_rust_action(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        actions: list[dict] = []
+        decision = {
+            "global_delay_ms": 100,
+            "local_delay_ms": 50,
+            "effective_delay_ms": 150,
+            "locked": True,
+            "has_local_adjustment": True,
+            "lock_button_enabled": True,
+        }
+
+        def apply_action(action):
+            actions.append(action)
+            return decision
+
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            apply_av_delay_action=apply_action,
+            snapshot=lambda: (_ for _ in ()).throw(
+                AssertionError("full snapshot must not be generated")
+            ),
+        )
+
+        handler.path = "/api/player/av-delay-action"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"type": "adjust", "delta_ms": 50}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(actions, [{"type": "adjust", "delta_ms": 50}])
+        self.assertEqual(writes, [{"ok": True, "data": decision}])
 
 
 if __name__ == "__main__":

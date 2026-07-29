@@ -90,6 +90,34 @@ fn part_keyword_match(part: &str) -> bool {
         .any(|keyword| normalized.contains(keyword))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VocalRole {
+    On,
+    Off,
+}
+
+fn part_vocal_role(part: &str) -> Option<VocalRole> {
+    let normalized = part.trim().to_lowercase();
+    let tokens: Vec<&str> = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    let has_vocal = tokens.contains(&"vocal");
+    let is_on = normalized.contains("人声")
+        || normalized.contains("原唱")
+        || tokens.contains(&"onvocal")
+        || (has_vocal && tokens.contains(&"on"));
+    let is_off = normalized.contains("伴奏")
+        || tokens.contains(&"offvocal")
+        || (has_vocal && tokens.contains(&"off"));
+
+    match (is_on, is_off) {
+        (true, false) => Some(VocalRole::On),
+        (false, true) => Some(VocalRole::Off),
+        _ => None,
+    }
+}
+
 fn is_automatic_pair(pages: &[AudioPageDescriptor], tolerance_seconds: i64) -> bool {
     pages.len() == 2
         && pages.iter().any(|page| part_keyword_match(&page.part))
@@ -101,19 +129,15 @@ fn automatic_video_index(pages: &[AudioPageDescriptor]) -> Option<usize> {
         return None;
     }
 
-    let mut sorted_pages: Vec<&AudioPageDescriptor> = pages.iter().collect();
-    sorted_pages.sort_by_key(|page| page.page);
-    let first_page = sorted_pages[0];
-    let second_page = sorted_pages[1];
-    if first_page.page == 1
-        && second_page.page == 2
-        && !part_keyword_match(&first_page.part)
-        && part_keyword_match(&second_page.part)
-    {
-        Some(second_page.original_index)
-    } else {
-        None
+    match (
+        part_vocal_role(&pages[0].part),
+        part_vocal_role(&pages[1].part),
+    ) {
+        (Some(VocalRole::On), Some(VocalRole::Off)) => return Some(pages[0].original_index),
+        (Some(VocalRole::Off), Some(VocalRole::On)) => return Some(pages[1].original_index),
+        _ => {}
     }
+    None
 }
 
 pub fn decide_audio_binding(
@@ -274,19 +298,75 @@ mod tests {
                 page(1, 2, 301, "伴奏版"),
             ]))
             .unwrap(),
-            decision(AudioBindingMode::Automatic, vec![0, 1], Some(1))
+            decision(AudioBindingMode::Automatic, vec![0, 1], None)
         );
     }
 
     #[test]
-    fn both_recognized_labels_are_automatic_without_override() {
+    fn complementary_vocal_labels_prefer_on_vocal() {
         assert_eq!(
             decide_audio_binding(&request(vec![
                 page(0, 1, 300, "on vocal"),
                 page(1, 2, 301, "off vocal"),
             ]))
             .unwrap(),
-            decision(AudioBindingMode::Automatic, vec![0, 1], None)
+            decision(AudioBindingMode::Automatic, vec![0, 1], Some(0))
+        );
+    }
+
+    #[test]
+    fn reversed_complementary_vocal_labels_prefer_on_vocal() {
+        assert_eq!(
+            decide_audio_binding(&request(vec![
+                page(7, 1, 300, "off_vocal"),
+                page(3, 2, 301, "ON-VOCAL"),
+            ]))
+            .unwrap(),
+            decision(AudioBindingMode::Automatic, vec![7, 3], Some(3))
+        );
+    }
+
+    #[test]
+    fn vocal_role_parser_requires_an_unambiguous_role() {
+        for label in ["on vocal", "ON_VOCAL", "onvocal", "人声版", "原唱"] {
+            assert_eq!(part_vocal_role(label), Some(VocalRole::On), "{label:?}");
+        }
+        for label in ["off vocal", "OFF-VOCAL", "offvocal", "伴奏版"] {
+            assert_eq!(part_vocal_role(label), Some(VocalRole::Off), "{label:?}");
+        }
+        for label in [
+            "on/off vocal",
+            "人声/伴奏",
+            "song vocal",
+            "office vocal",
+            "vocal track",
+        ] {
+            assert_eq!(part_vocal_role(label), None, "{label:?}");
+        }
+    }
+
+    #[test]
+    fn incomplete_or_same_vocal_roles_do_not_override_first_page_fallback() {
+        for pages in [
+            vec![page(0, 1, 300, "on vocal"), page(1, 2, 301, "music track")],
+            vec![page(0, 1, 300, "on vocal"), page(1, 2, 301, "ON_VOCAL")],
+        ] {
+            assert_eq!(
+                decide_audio_binding(&request(pages)).unwrap(),
+                decision(AudioBindingMode::Automatic, vec![0, 1], None)
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_page_numbers_still_select_the_on_vocal_entry() {
+        assert_eq!(
+            decide_audio_binding(&request(vec![
+                page(0, 1, 300, "off vocal"),
+                page(1, 1, 301, "on vocal"),
+            ]))
+            .unwrap(),
+            decision(AudioBindingMode::Automatic, vec![0, 1], Some(1))
         );
     }
 
@@ -344,19 +424,19 @@ mod tests {
         };
         assert_eq!(
             decide_audio_binding(&request).unwrap(),
-            decision(AudioBindingMode::Automatic, vec![0, 1], Some(1))
+            decision(AudioBindingMode::Automatic, vec![0, 1], None)
         );
     }
 
     #[test]
-    fn reversed_input_preserves_selection_order_and_maps_override() {
+    fn reversed_input_preserves_selection_order_without_inferred_vocal_pair() {
         assert_eq!(
             decide_audio_binding(&request(vec![
                 page(8, 2, 301, "off vocal"),
                 page(3, 1, 300, "plain"),
             ]))
             .unwrap(),
-            decision(AudioBindingMode::Automatic, vec![8, 3], Some(8))
+            decision(AudioBindingMode::Automatic, vec![8, 3], None)
         );
     }
 
@@ -441,7 +521,7 @@ mod tests {
                 page(2, 2, 301, "off"),
             ]))
             .unwrap(),
-            decision(AudioBindingMode::Automatic, vec![9, 2], Some(2))
+            decision(AudioBindingMode::Automatic, vec![9, 2], None)
         );
     }
 
@@ -521,7 +601,7 @@ mod tests {
     #[test]
     fn wire_adapter_returns_automatic_decision() {
         assert_wire_response(
-            r#"{"schema_version":1,"tolerance_seconds":3,"pages":[{"original_index":4,"page":1,"duration":300,"part":"plain"},{"original_index":9,"page":2,"duration":301,"part":"On Vocal"}]}"#,
+            r#"{"schema_version":1,"tolerance_seconds":3,"pages":[{"original_index":4,"page":1,"duration":300,"part":"off vocal"},{"original_index":9,"page":2,"duration":301,"part":"On Vocal"}]}"#,
             serde_json::json!({
                 "schema_version": 1,
                 "status": "decided",

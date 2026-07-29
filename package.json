@@ -1,9 +1,9 @@
 {
   "name": "bilikara-tauri",
-  "version": "1.0.0",
+  "version": "0.7.0",
   "author": "VZRXS",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build:rust": "cd rust && cargo build --release --locked",

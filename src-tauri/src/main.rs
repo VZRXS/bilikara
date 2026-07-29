@@ -3,8 +3,8 @@
     windows_subsystem = "windows"
 )]
 
-use serde::Deserialize;
-use std::io::{BufRead, BufReader, Read, Write};
+use serde::{Deserialize, Serialize};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -19,9 +19,12 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[derive(Deserialize, Debug)]
+const MAX_BACKEND_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024;
+const MAX_BACKEND_RESPONSE_BYTES: u64 = (MAX_BACKEND_DOWNLOAD_BYTES + 64 * 1024) as u64;
+const MAX_BACKEND_STDOUT_CHARS: usize = 2_048;
+
+#[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
 struct ReadyEvent {
-    #[allow(dead_code)]
     event: String,
     #[allow(dead_code)]
     host: String,
@@ -50,6 +53,54 @@ struct BackendDownloadResponse {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ValidatedBackendDownloadResponse {
+    filename: String,
+    required_extension: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendDownloadKind {
+    PlaylistCsv,
+    PlaylistImage,
+    Diagnostics,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ValidatedBackendDownloadRequest {
+    method: &'static str,
+    path: String,
+    body: String,
+    client_id: Option<String>,
+    default_filename: &'static str,
+    kind: BackendDownloadKind,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BackendAddress {
+    connect_host: String,
+    host_header: String,
+    port: u16,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackendStdoutLine {
+    Ready(ReadyEvent),
+    Output(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SaveBackendDownloadStatus {
+    Saved,
+    Cancelled,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct SaveBackendDownloadResult {
+    status: SaveBackendDownloadStatus,
 }
 
 fn resolve_backend_command() -> (String, Vec<String>) {
@@ -85,7 +136,14 @@ fn resolve_backend_command() -> (String, Vec<String>) {
         return (win_path2.to_string_lossy().to_string(), vec![]);
     }
 
-    // macOS packaged path
+    // macOS packaged paths (dedicated backend candidate preferred over standalone app)
+    let mac_dedicated = current_dir
+        .join("bilikara-backend")
+        .join("bilikara-backend");
+    if is_backend_candidate(&mac_dedicated, &current_exe) {
+        return (mac_dedicated.to_string_lossy().to_string(), vec![]);
+    }
+
     let mac_path = current_dir
         .join("bilikara.app")
         .join("Contents")
@@ -119,11 +177,28 @@ fn find_dev_launcher(start_dir: &std::path::Path) -> Option<PathBuf> {
 }
 
 fn is_backend_candidate(path: &Path, current_exe: &Path) -> bool {
-    if !path.exists() {
+    if !path.is_file() {
         return false;
     }
-    let candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    candidate != current_exe
+    let canonical_candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical_current_exe = current_exe
+        .canonicalize()
+        .unwrap_or_else(|_| current_exe.to_path_buf());
+    if canonical_candidate == canonical_current_exe {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = path.metadata() {
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 fn current_executable_string() -> String {
@@ -142,17 +217,67 @@ fn make_shutdown_token() -> String {
     format!("{}-{}", std::process::id(), nanos)
 }
 
-fn parse_local_http_url(base_url: &str) -> Option<(&str, u16)> {
-    let rest = base_url.strip_prefix("http://")?;
-    let authority = rest.split('/').next()?;
-    let (host, port_text) = authority.rsplit_once(':')?;
-    let port = port_text.parse::<u16>().ok()?;
-    Some((host, port))
+fn normalized_url_host(host: &str) -> String {
+    host.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
+}
+
+fn parse_local_http_url(base_url: &str) -> Option<BackendAddress> {
+    let url = tauri::Url::parse(base_url).ok()?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+    {
+        return None;
+    }
+    let connect_host = normalized_url_host(url.host_str()?);
+    if connect_host.is_empty() {
+        return None;
+    }
+    let port = url.port_or_known_default()?;
+    let host_header = if connect_host.contains(':') {
+        format!("[{connect_host}]")
+    } else {
+        connect_host.clone()
+    };
+    Some(BackendAddress {
+        connect_host,
+        host_header,
+        port,
+    })
+}
+
+fn parsed_http_origin(url: &str) -> Option<(String, String, u16)> {
+    let parsed = tauri::Url::parse(url).ok()?;
+    if parsed.scheme() != "http" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return None;
+    }
+    let host = normalized_url_host(parsed.host_str()?);
+    if host.is_empty() {
+        return None;
+    }
+    Some((
+        parsed.scheme().to_ascii_lowercase(),
+        host,
+        parsed.port_or_known_default()?,
+    ))
+}
+
+fn window_origin_authorized(window_url: &str, backend_url: &str) -> bool {
+    parsed_http_origin(window_url)
+        .zip(parsed_http_origin(backend_url))
+        .is_some_and(|(window_origin, backend_origin)| window_origin == backend_origin)
 }
 
 fn validate_backend_download_request(
     request: &SaveBackendDownloadRequest,
-) -> Result<(&'static str, String), String> {
+) -> Result<ValidatedBackendDownloadRequest, String> {
     if request.path.len() > 4096
         || request
             .path
@@ -161,26 +286,64 @@ fn validate_backend_download_request(
     {
         return Err("导出请求路径无效".to_string());
     }
-    if request
+    let client_id = request
         .client_id
         .as_deref()
-        .is_some_and(|value| value.contains('\r') || value.contains('\n') || value.len() > 256)
-    {
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if client_id.is_some_and(|value| {
+        value.len() > 256 || value.chars().any(|character| character.is_ascii_control())
+    }) {
         return Err("导出客户端标识无效".to_string());
     }
 
-    if request.path.starts_with("/api/playlist/export?") {
+    let request_url = tauri::Url::parse(&format!("http://bilikara.invalid{}", request.path))
+        .map_err(|_| "导出请求路径无效".to_string())?;
+    if request_url.fragment().is_some() || request_url.host_str() != Some("bilikara.invalid") {
+        return Err("导出请求路径无效".to_string());
+    }
+
+    if request_url.path() == "/api/playlist/export" && request_url.query().is_some() {
         if request.body.as_deref().is_some_and(|body| !body.is_empty()) {
             return Err("歌单导出不接受请求体".to_string());
         }
-        return Ok(("GET", String::new()));
+        let export_format = request_url
+            .query_pairs()
+            .find_map(|(name, value)| (name == "format").then(|| value.into_owned()))
+            .unwrap_or_else(|| "csv".to_string());
+        let (kind, default_filename) = match export_format.as_str() {
+            "csv" => (BackendDownloadKind::PlaylistCsv, "bilikara-playlist.csv"),
+            "image" => (BackendDownloadKind::PlaylistImage, "bilikara-playlist.png"),
+            _ => return Err("歌单导出格式无效".to_string()),
+        };
+        return Ok(ValidatedBackendDownloadRequest {
+            method: "GET",
+            path: request.path.clone(),
+            body: String::new(),
+            client_id: client_id.map(str::to_string),
+            default_filename,
+            kind,
+        });
     }
-    if request.path == "/api/diagnostics/package" {
+    if request_url.path() == "/api/diagnostics/package" && request_url.query().is_none() {
         let body = request.body.clone().unwrap_or_else(|| "{}".to_string());
         if body.len() > 64 * 1024 {
             return Err("诊断请求体过大".to_string());
         }
-        return Ok(("POST", body));
+        if !serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .is_some_and(|value| value.is_object())
+        {
+            return Err("诊断请求体必须是 JSON 对象".to_string());
+        }
+        return Ok(ValidatedBackendDownloadRequest {
+            method: "POST",
+            path: request.path.clone(),
+            body,
+            client_id: client_id.map(str::to_string),
+            default_filename: "bilikara-diagnostics.zip",
+            kind: BackendDownloadKind::Diagnostics,
+        });
     }
     Err("不允许保存该后端端点".to_string())
 }
@@ -192,11 +355,22 @@ fn parse_backend_download_response(raw: Vec<u8>) -> Result<BackendDownloadRespon
         .ok_or_else(|| "后端返回了无效的 HTTP 响应".to_string())?;
     let header_text = std::str::from_utf8(&raw[..header_end])
         .map_err(|_| "后端返回了无效的 HTTP 响应头".to_string())?;
+    if header_end > 64 * 1024 {
+        return Err("后端返回了过大的 HTTP 响应头".to_string());
+    }
     let mut lines = header_text.split("\r\n");
-    let status = lines
+    let mut status_parts = lines
         .next()
-        .and_then(|line| line.split_whitespace().nth(1))
+        .ok_or_else(|| "后端返回了无效的 HTTP 状态".to_string())?
+        .split_whitespace();
+    let version = status_parts.next().unwrap_or_default();
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
+        return Err("后端返回了不支持的 HTTP 版本".to_string());
+    }
+    let status = status_parts
+        .next()
         .and_then(|value| value.parse::<u16>().ok())
+        .filter(|value| (100..=599).contains(value))
         .ok_or_else(|| "后端返回了无效的 HTTP 状态".to_string())?;
     let mut headers = Vec::new();
     for line in lines {
@@ -206,16 +380,16 @@ fn parse_backend_download_response(raw: Vec<u8>) -> Result<BackendDownloadRespon
         headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
     }
     let body = raw[(header_end + 4)..].to_vec();
-    if let Some(expected_length) = headers
-        .iter()
-        .find(|(name, _)| name == "content-length")
-        .and_then(|(_, value)| value.parse::<usize>().ok())
-        && body.len() != expected_length
-    {
-        return Err(format!(
-            "导出文件接收不完整：预期 {expected_length} 字节，实际 {} 字节",
-            body.len()
-        ));
+    if let Some((_, value)) = headers.iter().find(|(name, _)| name == "content-length") {
+        let expected_length = value
+            .parse::<usize>()
+            .map_err(|_| "后端返回了无效的 Content-Length".to_string())?;
+        if body.len() != expected_length {
+            return Err(format!(
+                "导出文件接收不完整：预期 {expected_length} 字节，实际 {} 字节",
+                body.len()
+            ));
+        }
     }
     Ok(BackendDownloadResponse {
         status,
@@ -267,7 +441,7 @@ fn safe_download_filename(value: &str, fallback: &str) -> String {
             }
         })
         .collect::<String>();
-    let safe = safe.trim_matches('-');
+    let safe = safe.trim_matches(|character| matches!(character, '-' | '.'));
     if safe.is_empty() {
         fallback.to_string()
     } else {
@@ -275,17 +449,41 @@ fn safe_download_filename(value: &str, fallback: &str) -> String {
     }
 }
 
+fn build_backend_http_request(
+    address: &BackendAddress,
+    request: &ValidatedBackendDownloadRequest,
+) -> Vec<u8> {
+    let mut request_bytes = format!(
+        "{} {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n",
+        request.method, request.path, address.host_header, address.port
+    )
+    .into_bytes();
+    if let Some(client_id) = request.client_id.as_deref() {
+        request_bytes.extend_from_slice(format!("X-Bilikara-Client: {client_id}\r\n").as_bytes());
+    }
+    if request.method == "POST" {
+        request_bytes.extend_from_slice(b"Content-Type: application/json\r\n");
+    }
+    request_bytes
+        .extend_from_slice(format!("Content-Length: {}\r\n\r\n", request.body.len()).as_bytes());
+    request_bytes.extend_from_slice(request.body.as_bytes());
+    request_bytes
+}
+
 fn request_backend_download(
     base_url: &str,
-    request: &SaveBackendDownloadRequest,
-) -> Result<BackendDownloadResponse, String> {
-    let Some((host, port)) = parse_local_http_url(base_url) else {
+    request: &ValidatedBackendDownloadRequest,
+) -> Result<Vec<u8>, String> {
+    let Some(address) = parse_local_http_url(base_url) else {
         return Err("本机后端地址无效".to_string());
     };
-    let (method, body) = validate_backend_download_request(request)?;
-    let connect_host = host.trim_matches(|character| character == '[' || character == ']');
-    let mut stream = TcpStream::connect((connect_host, port))
+    eprintln!(
+        "[tauri-export] transport=resolve host={} port={}",
+        address.connect_host, address.port
+    );
+    let mut stream = TcpStream::connect((address.connect_host.as_str(), address.port))
         .map_err(|error| format!("无法连接本机后端：{error}"))?;
+    eprintln!("[tauri-export] transport=connect status=ok");
     stream
         .set_write_timeout(Some(Duration::from_secs(10)))
         .map_err(|error| format!("无法设置导出写入超时：{error}"))?;
@@ -293,36 +491,146 @@ fn request_backend_download(
         .set_read_timeout(Some(Duration::from_secs(180)))
         .map_err(|error| format!("无法设置导出读取超时：{error}"))?;
 
-    let mut request_text = format!(
-        "{method} {} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n",
-        request.path
-    );
-    if let Some(client_id) = request
-        .client_id
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
-        request_text.push_str(&format!("X-Bilikara-Client: {client_id}\r\n"));
-    }
-    if method == "POST" {
-        request_text.push_str("Content-Type: application/json\r\n");
-    }
-    request_text.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
-    request_text.push_str(&body);
+    let request_bytes = build_backend_http_request(&address, request);
     stream
-        .write_all(request_text.as_bytes())
+        .write_all(&request_bytes)
         .map_err(|error| format!("发送导出请求失败：{error}"))?;
+    eprintln!(
+        "[tauri-export] transport=request_written method={} endpoint={}",
+        request.method, request.path
+    );
     let _ = stream.shutdown(Shutdown::Write);
 
     let mut raw_response = Vec::new();
-    stream
+    (&mut stream)
+        .take(MAX_BACKEND_RESPONSE_BYTES + 1)
         .read_to_end(&mut raw_response)
         .map_err(|error| format!("接收导出文件失败：{error}"))?;
-    let response = parse_backend_download_response(raw_response)?;
-    if !(200..300).contains(&response.status) {
-        return Err(backend_error_message(&response));
+    if raw_response.len() as u64 > MAX_BACKEND_RESPONSE_BYTES {
+        return Err("后端导出响应过大".to_string());
     }
-    Ok(response)
+    eprintln!(
+        "[tauri-export] transport=response_received bytes={}",
+        raw_response.len()
+    );
+    Ok(raw_response)
+}
+
+fn validate_backend_download_response(
+    response: &BackendDownloadResponse,
+    request: &ValidatedBackendDownloadRequest,
+) -> Result<ValidatedBackendDownloadResponse, String> {
+    if !(200..300).contains(&response.status) {
+        return Err(backend_error_message(response));
+    }
+    if response.body.len() > MAX_BACKEND_DOWNLOAD_BYTES {
+        return Err("后端导出文件过大".to_string());
+    }
+    if backend_response_header(response, "transfer-encoding")
+        .is_some_and(|value| !value.eq_ignore_ascii_case("identity"))
+    {
+        return Err("后端返回了不支持的传输编码".to_string());
+    }
+    let content_type = backend_response_header(response, "content-type")
+        .ok_or_else(|| "后端响应缺少 Content-Type".to_string())?;
+    let media_type = content_type.split(';').next().unwrap_or_default().trim();
+    let required_extension = match request.kind {
+        BackendDownloadKind::PlaylistCsv if media_type.eq_ignore_ascii_case("text/csv") => "csv",
+        BackendDownloadKind::PlaylistImage if media_type.eq_ignore_ascii_case("image/png") => "png",
+        BackendDownloadKind::PlaylistImage
+            if media_type.eq_ignore_ascii_case("application/zip") =>
+        {
+            "zip"
+        }
+        BackendDownloadKind::Diagnostics if media_type.eq_ignore_ascii_case("application/zip") => {
+            "zip"
+        }
+        _ => {
+            return Err(format!("后端返回了意外的 Content-Type：{content_type}"));
+        }
+    };
+    let content_disposition = backend_response_header(response, "content-disposition")
+        .ok_or_else(|| "后端响应缺少 Content-Disposition".to_string())?;
+    if !content_disposition
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("attachment"))
+    {
+        return Err("后端返回了无效的 Content-Disposition".to_string());
+    }
+    let filename = safe_download_filename(content_disposition, request.default_filename);
+    if !Path::new(&filename)
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(required_extension))
+    {
+        return Err("后端文件名与 Content-Type 不一致".to_string());
+    }
+    Ok(ValidatedBackendDownloadResponse {
+        filename,
+        required_extension,
+    })
+}
+
+fn final_download_target_path(selected_path: &Path, required_extension: &str) -> (PathBuf, bool) {
+    if selected_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(required_extension))
+    {
+        return (selected_path.to_path_buf(), false);
+    }
+    (selected_path.with_extension(required_extension), true)
+}
+
+fn staged_error(stage: &str, message: impl AsRef<str>) -> String {
+    let message = message.as_ref().trim();
+    if message.is_empty() {
+        format!("[{stage}] 导出失败")
+    } else {
+        format!("[{stage}] {message}")
+    }
+}
+
+fn log_native_export_stage(stage: &str, endpoint: &str, detail: &str) {
+    if detail.is_empty() {
+        eprintln!("[tauri-export] stage={stage} endpoint={endpoint}");
+    } else {
+        eprintln!("[tauri-export] stage={stage} endpoint={endpoint} {detail}");
+    }
+}
+
+fn write_backend_download(
+    target_path: &Path,
+    body: &[u8],
+    allow_overwrite: bool,
+) -> Result<(), String> {
+    if allow_overwrite {
+        return std::fs::write(target_path, body)
+            .map_err(|error| staged_error("write_file", format!("写入导出文件失败：{error}")));
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target_path)
+        .map_err(|error| {
+            let message = if error.kind() == io::ErrorKind::AlreadyExists {
+                "修正扩展名后的目标文件已存在，请重新选择保存位置".to_string()
+            } else {
+                format!("创建导出文件失败：{error}")
+            };
+            staged_error("write_file", message)
+        })?;
+    if let Err(error) = file.write_all(body) {
+        drop(file);
+        let _ = std::fs::remove_file(target_path);
+        return Err(staged_error(
+            "write_file",
+            format!("写入导出文件失败：{error}"),
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -330,38 +638,32 @@ async fn save_backend_download(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, BackendProcess>,
     request: SaveBackendDownloadRequest,
-) -> Result<bool, String> {
+) -> Result<SaveBackendDownloadResult, String> {
+    log_native_export_stage("validate_request", &request.path, "");
+    let validated = validate_backend_download_request(&request)
+        .map_err(|error| staged_error("validate_request", error))?;
+
+    log_native_export_stage("authorize_window", &validated.path, "");
     let base_url = state
         .base_url
         .lock()
-        .map_err(|_| "无法读取本机后端地址".to_string())?
+        .map_err(|_| staged_error("authorize_window", "无法读取本机后端地址"))?
         .clone()
-        .ok_or_else(|| "本机后端尚未就绪".to_string())?;
-    let backend_origin = base_url.trim_end_matches('/');
-    let backend_prefix = format!("{backend_origin}/");
-    let window_url = window
-        .url()
-        .map_err(|error| format!("无法读取当前页面地址：{error}"))?;
-    if window_url.as_str() != backend_origin && !window_url.as_str().starts_with(&backend_prefix) {
-        return Err("当前页面无权调用本机导出".to_string());
+        .ok_or_else(|| staged_error("authorize_window", "本机后端尚未就绪"))?;
+    let window_url = window.url().map_err(|error| {
+        staged_error("authorize_window", format!("无法读取当前页面地址：{error}"))
+    })?;
+    if !window_origin_authorized(window_url.as_str(), &base_url) {
+        return Err(staged_error("authorize_window", "当前页面无权调用本机导出"));
     }
-    let response = request_backend_download(&base_url, &request)?;
-    let fallback = if request.path == "/api/diagnostics/package" {
-        "bilikara-diagnostics.zip"
-    } else if request.path.contains("format=image") {
-        "bilikara-playlist.png"
-    } else {
-        "bilikara-playlist.csv"
-    };
-    let filename = safe_download_filename(
-        backend_response_header(&response, "content-disposition").unwrap_or_default(),
-        fallback,
-    );
+
+    log_native_export_stage("choose_destination", &validated.path, "");
+    let filename = validated.default_filename;
     let mut dialog = window
         .dialog()
         .file()
         .set_title("保存导出文件")
-        .set_file_name(filename.clone());
+        .set_file_name(filename);
     if let Some(extension) = Path::new(&filename)
         .extension()
         .and_then(|value| value.to_str())
@@ -369,14 +671,51 @@ async fn save_backend_download(
         dialog = dialog.add_filter("导出文件", &[extension]);
     }
     let Some(file_path) = dialog.blocking_save_file() else {
-        return Ok(false);
+        log_native_export_stage("complete", &validated.path, "status=cancelled");
+        return Ok(SaveBackendDownloadResult {
+            status: SaveBackendDownloadStatus::Cancelled,
+        });
     };
-    let target_path = file_path
-        .into_path()
-        .map_err(|error| format!("无法使用所选保存路径：{error}"))?;
-    std::fs::write(&target_path, response.body)
-        .map_err(|error| format!("写入导出文件失败：{error}"))?;
-    Ok(true)
+    let target_path = file_path.into_path().map_err(|error| {
+        staged_error(
+            "choose_destination",
+            format!("无法使用所选保存路径：{error}"),
+        )
+    })?;
+
+    let endpoint = validated.path.clone();
+    let worker_endpoint = endpoint.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        log_native_export_stage("request_backend", &worker_endpoint, "");
+        let raw_response = request_backend_download(&base_url, &validated)
+            .map_err(|error| staged_error("request_backend", error))?;
+
+        log_native_export_stage("validate_response", &worker_endpoint, "");
+        let response = parse_backend_download_response(raw_response)
+            .map_err(|error| staged_error("validate_response", error))?;
+        let validated_response = validate_backend_download_response(&response, &validated)
+            .map_err(|error| staged_error("validate_response", error))?;
+        eprintln!(
+            "[tauri-export] response status={} bytes={} content_type={} filename={}",
+            response.status,
+            response.body.len(),
+            backend_response_header(&response, "content-type").unwrap_or("missing"),
+            validated_response.filename
+        );
+
+        log_native_export_stage("write_file", &worker_endpoint, "");
+        let (final_target_path, extension_corrected) =
+            final_download_target_path(&target_path, validated_response.required_extension);
+        write_backend_download(&final_target_path, &response.body, !extension_corrected)?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| staged_error("request_backend", format!("导出工作线程失败：{error}")))??;
+
+    log_native_export_stage("complete", &endpoint, "status=saved");
+    Ok(SaveBackendDownloadResult {
+        status: SaveBackendDownloadStatus::Saved,
+    })
 }
 
 #[tauri::command]
@@ -387,18 +726,17 @@ fn set_window_fullscreen(window: tauri::WebviewWindow, fullscreen: bool) -> Resu
 }
 
 fn request_backend_shutdown(base_url: &str, shutdown_token: &str) -> bool {
-    let Some((host, port)) = parse_local_http_url(base_url) else {
+    let Some(address) = parse_local_http_url(base_url) else {
         return false;
     };
-    let Ok(mut stream) = TcpStream::connect((host.trim_matches(|c| c == '[' || c == ']'), port))
-    else {
+    let Ok(mut stream) = TcpStream::connect((address.connect_host.as_str(), address.port)) else {
         return false;
     };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let request = format!(
         "POST /api/app/shutdown HTTP/1.1\r\nHost: {}:{}\r\nContent-Length: 2\r\nContent-Type: application/json\r\nX-Bilikara-Shutdown-Token: {}\r\nConnection: close\r\n\r\n{}",
-        host, port, shutdown_token, "{}"
+        address.host_header, address.port, shutdown_token, "{}"
     );
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
@@ -423,6 +761,71 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
             Err(_) => return true,
         }
     }
+}
+
+fn sanitized_backend_stdout_line(line: &str) -> String {
+    let lower = line.to_ascii_lowercase();
+    if [
+        "cookie",
+        "authorization",
+        "shutdown_token",
+        "shutdown-token",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return "[redacted sensitive backend output]".to_string();
+    }
+
+    let mut sanitized = line
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\t'))
+        .take(MAX_BACKEND_STDOUT_CHARS + 1)
+        .collect::<String>();
+    if sanitized.chars().count() > MAX_BACKEND_STDOUT_CHARS {
+        sanitized = sanitized
+            .chars()
+            .take(MAX_BACKEND_STDOUT_CHARS)
+            .collect::<String>();
+        sanitized.push('…');
+    }
+    sanitized
+}
+
+fn process_backend_stdout_line(line: &str, ready_handled: &mut bool) -> BackendStdoutLine {
+    if !*ready_handled
+        && let Ok(ready) = serde_json::from_str::<ReadyEvent>(line)
+        && ready.event == "bilikara.ready"
+    {
+        *ready_handled = true;
+        return BackendStdoutLine::Ready(ready);
+    }
+    BackendStdoutLine::Output(sanitized_backend_stdout_line(line))
+}
+
+fn write_and_flush_ready_marker<W: io::Write>(mut writer: W, base_url: &str) -> io::Result<()> {
+    writeln!(writer, "Backend ready at {}", base_url)?;
+    writer.flush()
+}
+
+fn drain_backend_stdout<R, FReady, FOutput>(
+    reader: R,
+    mut on_ready: FReady,
+    mut on_output: FOutput,
+) -> io::Result<()>
+where
+    R: BufRead,
+    FReady: FnMut(ReadyEvent),
+    FOutput: FnMut(String),
+{
+    let mut ready_handled = false;
+    for line in reader.lines() {
+        match process_backend_stdout_line(&line?, &mut ready_handled) {
+            BackendStdoutLine::Ready(ready) => on_ready(ready),
+            BackendStdoutLine::Output(output) => on_output(output),
+        }
+    }
+    Ok(())
 }
 
 fn main() {
@@ -518,12 +921,14 @@ fn main() {
 
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    let line = line.unwrap_or_default();
-                    if line.contains("\"event\": \"bilikara.ready\"")
-                        && let Ok(ready) = serde_json::from_str::<ReadyEvent>(&line)
-                    {
-                        println!("Backend ready at {}", ready.base_url);
+                let result = drain_backend_stdout(
+                    reader,
+                    |ready| {
+                        if let Err(error) =
+                            write_and_flush_ready_marker(io::stdout(), &ready.base_url)
+                        {
+                            eprintln!("Failed to flush backend readiness output: {error}");
+                        }
                         if let Ok(mut stored_url) = base_url_for_reader.lock() {
                             *stored_url = Some(ready.base_url.clone());
                         }
@@ -538,8 +943,11 @@ fn main() {
                         {
                             eprintln!("Failed to navigate to backend: {}", error);
                         }
-                        break;
-                    }
+                    },
+                    |line| println!("Backend stdout: {line}"),
+                );
+                if let Err(error) = result {
+                    eprintln!("Failed to read backend stdout: {error}");
                 }
             });
 
@@ -579,35 +987,87 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+    use std::net::TcpListener;
+    use std::thread;
 
-    fn download_request(path: &str, body: Option<&str>) -> SaveBackendDownloadRequest {
+    fn download_request(
+        path: &str,
+        body: Option<&str>,
+        client_id: Option<&str>,
+    ) -> SaveBackendDownloadRequest {
         SaveBackendDownloadRequest {
             path: path.to_string(),
             body: body.map(str::to_string),
-            client_id: Some("client-1".to_string()),
+            client_id: client_id.map(str::to_string),
         }
+    }
+
+    fn valid_csv_response(version: &str, body: &[u8]) -> Vec<u8> {
+        valid_download_response(version, "text/csv; charset=utf-8", "list.csv", body)
+    }
+
+    fn valid_download_response(
+        version: &str,
+        content_type: &str,
+        filename: &str,
+        body: &[u8],
+    ) -> Vec<u8> {
+        let mut response = format!(
+            "{version} 200 OK\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(body);
+        response
     }
 
     #[test]
     fn native_download_request_allows_only_export_endpoints() {
-        assert_eq!(
-            validate_backend_download_request(&download_request(
-                "/api/playlist/export?format=csv&source=played",
-                None,
-            )),
-            Ok(("GET", String::new()))
+        let csv = validate_backend_download_request(&download_request(
+            "/api/playlist/export?format=csv&source=played",
+            None,
+            Some("client-1"),
+        ))
+        .expect("CSV request");
+        assert_eq!(csv.method, "GET");
+        assert_eq!(csv.kind, BackendDownloadKind::PlaylistCsv);
+        assert_eq!(csv.default_filename, "bilikara-playlist.csv");
+
+        let image = validate_backend_download_request(&download_request(
+            "/api/playlist/export?format=image&source=played",
+            None,
+            None,
+        ))
+        .expect("image request");
+        assert_eq!(image.kind, BackendDownloadKind::PlaylistImage);
+        assert_eq!(image.default_filename, "bilikara-playlist.png");
+
+        let diagnostics = validate_backend_download_request(&download_request(
+            "/api/diagnostics/package",
+            Some("{}"),
+            Some("client-1"),
+        ))
+        .expect("diagnostics request");
+        assert_eq!(diagnostics.method, "POST");
+        assert_eq!(diagnostics.kind, BackendDownloadKind::Diagnostics);
+        assert_eq!(diagnostics.body, "{}");
+
+        assert!(
+            validate_backend_download_request(&download_request("/api/state", None, None)).is_err()
         );
-        assert_eq!(
-            validate_backend_download_request(&download_request(
-                "/api/diagnostics/package",
-                Some("{}"),
-            )),
-            Ok(("POST", "{}".to_string()))
-        );
-        assert!(validate_backend_download_request(&download_request("/api/state", None)).is_err());
         assert!(
             validate_backend_download_request(&download_request(
                 "/api/playlist/export?format=csv HTTP/1.1",
+                None,
+                None,
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_backend_download_request(&download_request(
+                "/api/playlist/export?format=pdf",
+                None,
                 None,
             ))
             .is_err()
@@ -615,23 +1075,241 @@ mod tests {
     }
 
     #[test]
-    fn native_download_response_requires_complete_body() {
-        let response = parse_backend_download_response(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Disposition: attachment; filename=\"list.csv\"\r\n\r\ncsv"
+    fn native_download_request_enforces_body_and_client_id_rules() {
+        assert!(
+            validate_backend_download_request(&download_request(
+                "/api/playlist/export?format=csv",
+                Some("{}"),
+                Some("client-1"),
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_backend_download_request(&download_request(
+                "/api/diagnostics/package",
+                Some("[]"),
+                Some("client-1"),
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_backend_download_request(&download_request(
+                "/api/diagnostics/package",
+                Some("{}"),
+                Some("client\r\ninjected"),
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn backend_urls_support_loopback_physical_ipv4_and_ipv6() {
+        assert_eq!(
+            parse_local_http_url("http://127.0.0.1:8080/"),
+            Some(BackendAddress {
+                connect_host: "127.0.0.1".to_string(),
+                host_header: "127.0.0.1".to_string(),
+                port: 8080,
+            })
+        );
+        assert_eq!(
+            parse_local_http_url("http://192.168.1.20:4567"),
+            Some(BackendAddress {
+                connect_host: "192.168.1.20".to_string(),
+                host_header: "192.168.1.20".to_string(),
+                port: 4567,
+            })
+        );
+        assert_eq!(
+            parse_local_http_url("http://[::1]:9090/"),
+            Some(BackendAddress {
+                connect_host: "::1".to_string(),
+                host_header: "[::1]".to_string(),
+                port: 9090,
+            })
+        );
+        assert!(parse_local_http_url("https://127.0.0.1:8080/").is_none());
+        assert!(parse_local_http_url("http://user@127.0.0.1:8080/").is_none());
+    }
+
+    #[test]
+    fn window_authorization_compares_exact_normalized_origins() {
+        for (window_url, backend_url) in [
+            (
+                "http://127.0.0.1:8080/route?view=host",
+                "http://127.0.0.1:8080",
+            ),
+            ("http://localhost:8080/", "http://LOCALHOST.:8080/"),
+            (
+                "http://192.168.1.20:49152/host",
+                "http://192.168.1.20:49152/",
+            ),
+            ("http://[::1]:8080/path", "http://[::1]:8080/"),
+        ] {
+            assert!(
+                window_origin_authorized(window_url, backend_url),
+                "{window_url} should match {backend_url}"
+            );
+        }
+        for (window_url, backend_url) in [
+            (
+                "http://127.0.0.1:8080.evil.invalid/",
+                "http://127.0.0.1:8080/",
+            ),
+            ("http://127.0.0.1:8081/", "http://127.0.0.1:8080/"),
+            ("https://127.0.0.1:8080/", "http://127.0.0.1:8080/"),
+            ("http://localhost:8080/", "http://127.0.0.1:8080/"),
+            ("http://user@127.0.0.1:8080/", "http://127.0.0.1:8080/"),
+        ] {
+            assert!(
+                !window_origin_authorized(window_url, backend_url),
+                "{window_url} must not match {backend_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_http_request_formats_get_and_post_without_exposing_body_in_logs() {
+        let address = parse_local_http_url("http://127.0.0.1:8080").expect("address");
+        let get = validate_backend_download_request(&download_request(
+            "/api/playlist/export?format=csv",
+            None,
+            Some("client-1"),
+        ))
+        .expect("GET request");
+        let get_text =
+            String::from_utf8(build_backend_http_request(&address, &get)).expect("UTF-8");
+        assert!(get_text.starts_with("GET /api/playlist/export?format=csv HTTP/1.1\r\n"));
+        assert!(get_text.contains("Host: 127.0.0.1:8080\r\n"));
+        assert!(get_text.contains("X-Bilikara-Client: client-1\r\n"));
+        assert!(get_text.ends_with("Content-Length: 0\r\n\r\n"));
+
+        let post = validate_backend_download_request(&download_request(
+            "/api/diagnostics/package",
+            Some("{\"browser\":{}}"),
+            Some("client-2"),
+        ))
+        .expect("POST request");
+        let post_text =
+            String::from_utf8(build_backend_http_request(&address, &post)).expect("UTF-8");
+        assert!(post_text.starts_with("POST /api/diagnostics/package HTTP/1.1\r\n"));
+        assert!(post_text.contains("Content-Type: application/json\r\n"));
+        assert!(post_text.ends_with("\r\n\r\n{\"browser\":{}}"));
+    }
+
+    #[test]
+    fn native_download_response_supports_http_10_http_11_and_close_framing() {
+        for version in ["HTTP/1.0", "HTTP/1.1"] {
+            let response = parse_backend_download_response(valid_csv_response(version, b"csv"))
+                .expect("valid response");
+            assert_eq!(response.status, 200);
+            assert_eq!(response.body, b"csv");
+        }
+
+        let close_framed = parse_backend_download_response(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=\"list.csv\"\r\n\r\ncsv"
                 .to_vec(),
         )
-        .expect("valid response");
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, b"csv");
-        assert_eq!(
-            backend_response_header(&response, "content-disposition"),
-            Some("attachment; filename=\"list.csv\"")
-        );
+        .expect("connection-close response");
+        assert_eq!(close_framed.body, b"csv");
 
         let incomplete = parse_backend_download_response(
             b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ncsv".to_vec(),
         );
         assert!(incomplete.is_err());
+        assert!(
+            parse_backend_download_response(
+                b"HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\ncsv".to_vec()
+            )
+            .is_err()
+        );
+        assert!(parse_backend_download_response(b"not-http\r\n\r\ncsv".to_vec()).is_err());
+    }
+
+    #[test]
+    fn native_download_response_reports_json_errors_and_validates_headers() {
+        let request = validate_backend_download_request(&download_request(
+            "/api/playlist/export?format=csv",
+            None,
+            Some("client-1"),
+        ))
+        .expect("request");
+        let forbidden = parse_backend_download_response(
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 21\r\nContent-Type: application/json\r\n\r\n{\"error\":\"forbidden\"}"
+                .to_vec(),
+        )
+        .expect("parsed 403");
+        assert_eq!(
+            validate_backend_download_response(&forbidden, &request),
+            Err("forbidden".to_string())
+        );
+        let server_error = parse_backend_download_response(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 18\r\nContent-Type: application/json\r\n\r\n{\"error\":\"failed\"}"
+                .to_vec(),
+        )
+        .expect("parsed 500");
+        assert_eq!(
+            validate_backend_download_response(&server_error, &request),
+            Err("failed".to_string())
+        );
+
+        let valid = parse_backend_download_response(valid_csv_response("HTTP/1.1", b"csv"))
+            .expect("valid response");
+        assert_eq!(
+            validate_backend_download_response(&valid, &request),
+            Ok(ValidatedBackendDownloadResponse {
+                filename: "list.csv".to_string(),
+                required_extension: "csv",
+            })
+        );
+
+        let malformed_type = parse_backend_download_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Type: application/zip\r\nContent-Disposition: attachment; filename=\"list.csv\"\r\n\r\ncsv"
+                .to_vec(),
+        )
+        .expect("parsed response");
+        assert!(validate_backend_download_response(&malformed_type, &request).is_err());
+    }
+
+    #[test]
+    fn native_image_response_selects_png_or_zip_extension() {
+        let request = validate_backend_download_request(&download_request(
+            "/api/playlist/export?format=image&source=played",
+            None,
+            Some("client-1"),
+        ))
+        .expect("image request");
+        for (content_type, filename, required_extension) in [
+            ("image/png", "bilikara-playlist.png", "png"),
+            ("application/zip", "bilikara-playlist-images.zip", "zip"),
+        ] {
+            let response = parse_backend_download_response(valid_download_response(
+                "HTTP/1.1",
+                content_type,
+                filename,
+                b"payload",
+            ))
+            .expect("valid image response");
+            assert_eq!(
+                validate_backend_download_response(&response, &request),
+                Ok(ValidatedBackendDownloadResponse {
+                    filename: filename.to_string(),
+                    required_extension,
+                })
+            );
+        }
+
+        let mismatched = parse_backend_download_response(valid_download_response(
+            "HTTP/1.1",
+            "application/zip",
+            "bilikara-playlist.png",
+            b"payload",
+        ))
+        .expect("parse mismatched response");
+        assert_eq!(
+            validate_backend_download_response(&mismatched, &request),
+            Err("后端文件名与 Content-Type 不一致".to_string())
+        );
     }
 
     #[test]
@@ -648,7 +1326,249 @@ mod tests {
                 "attachment; filename=\"../unsafe name.zip\"",
                 "fallback.zip"
             ),
-            "..-unsafe-name.zip"
+            "unsafe-name.zip"
         );
+    }
+
+    #[test]
+    fn native_download_corrects_only_the_user_selected_extension() {
+        assert_eq!(
+            final_download_target_path(Path::new("/exports/custom-name.png"), "png"),
+            (PathBuf::from("/exports/custom-name.png"), false)
+        );
+        assert_eq!(
+            final_download_target_path(Path::new("/exports/custom-name.png"), "zip"),
+            (PathBuf::from("/exports/custom-name.zip"), true)
+        );
+        assert_eq!(
+            final_download_target_path(Path::new("/exports/my.custom.name.png"), "zip"),
+            (PathBuf::from("/exports/my.custom.name.zip"), true)
+        );
+        assert_eq!(
+            final_download_target_path(Path::new("/exports/custom-name"), "zip"),
+            (PathBuf::from("/exports/custom-name.zip"), true)
+        );
+        assert_eq!(
+            final_download_target_path(Path::new("/exports/custom-name.ZIP"), "zip"),
+            (PathBuf::from("/exports/custom-name.ZIP"), false)
+        );
+    }
+
+    #[test]
+    fn corrected_target_does_not_silently_overwrite_an_existing_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!(
+            "bilikara-export-target-test-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&test_dir).expect("create test directory");
+        let selected = test_dir.join("custom-name.png");
+        let corrected = test_dir.join("custom-name.zip");
+
+        std::fs::write(&selected, b"old selected content").expect("seed selected file");
+        write_backend_download(&selected, b"new png", true).expect("approved overwrite");
+        assert_eq!(
+            std::fs::read(&selected).expect("read selected file"),
+            b"new png"
+        );
+
+        write_backend_download(&corrected, b"new zip", false).expect("new corrected target");
+        assert_eq!(
+            std::fs::read(&corrected).expect("read corrected file"),
+            b"new zip"
+        );
+        let error = write_backend_download(&corrected, b"replacement", false)
+            .expect_err("corrected target must not be overwritten silently");
+        assert_eq!(
+            error,
+            "[write_file] 修正扩展名后的目标文件已存在，请重新选择保存位置"
+        );
+        assert_eq!(
+            std::fs::read(&corrected).expect("read preserved file"),
+            b"new zip"
+        );
+
+        std::fs::remove_dir_all(&test_dir).expect("clean test directory");
+    }
+
+    #[test]
+    fn native_download_result_and_errors_are_typed_and_staged() {
+        assert_eq!(
+            serde_json::to_value(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Saved,
+            })
+            .expect("saved JSON"),
+            serde_json::json!({"status": "saved"})
+        );
+        assert_eq!(
+            serde_json::to_value(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Cancelled,
+            })
+            .expect("cancelled JSON"),
+            serde_json::json!({"status": "cancelled"})
+        );
+        assert_eq!(
+            staged_error("write_file", "写入导出文件失败：permission denied"),
+            "[write_file] 写入导出文件失败：permission denied"
+        );
+        assert_eq!(
+            staged_error("validate_response", ""),
+            "[validate_response] 导出失败"
+        );
+        let write_error = write_backend_download(&std::env::temp_dir(), b"data", true)
+            .expect_err("a directory is not a writable file destination");
+        assert!(write_error.starts_with("[write_file] 写入导出文件失败："));
+    }
+
+    #[test]
+    fn native_download_reports_backend_unavailable_at_transport_boundary() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve test port");
+        let port = listener.local_addr().expect("local address").port();
+        drop(listener);
+        let request = validate_backend_download_request(&download_request(
+            "/api/playlist/export?format=csv",
+            None,
+            Some("client-1"),
+        ))
+        .expect("request");
+        let error = request_backend_download(&format!("http://127.0.0.1:{port}"), &request)
+            .expect_err("closed port must fail");
+        assert!(error.starts_with("无法连接本机后端："));
+    }
+
+    #[test]
+    fn native_download_raw_tcp_integration_captures_complete_response() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test server");
+        let port = listener.local_addr().expect("local address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept client");
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).expect("read request");
+            let request_text = String::from_utf8(request).expect("request UTF-8");
+            assert!(request_text.starts_with("GET /api/playlist/export?format=csv HTTP/1.1"));
+            stream
+                .write_all(&valid_csv_response("HTTP/1.1", b"csv"))
+                .expect("write response");
+        });
+
+        let request = validate_backend_download_request(&download_request(
+            "/api/playlist/export?format=csv",
+            None,
+            Some("client-1"),
+        ))
+        .expect("request");
+        let raw = request_backend_download(&format!("http://127.0.0.1:{port}"), &request)
+            .expect("download response");
+        let response = parse_backend_download_response(raw).expect("parse response");
+        assert_eq!(
+            validate_backend_download_response(&response, &request),
+            Ok(ValidatedBackendDownloadResponse {
+                filename: "list.csv".to_string(),
+                required_extension: "csv",
+            })
+        );
+        server.join().expect("test server");
+    }
+
+    #[test]
+    fn readiness_marker_is_written_and_flushed() {
+        let mut buf = Vec::new();
+        write_and_flush_ready_marker(&mut buf, "http://127.0.0.1:5678").unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            "Backend ready at http://127.0.0.1:5678\n"
+        );
+    }
+
+    #[test]
+    fn stdout_reader_handles_ready_once_and_drains_until_eof() {
+        let input = concat!(
+            "ordinary before\n",
+            "{malformed ready\n",
+            "{\"event\":\"bilikara.ready\",\"host\":\"127.0.0.1\",\"port\":8080,\"baseUrl\":\"http://127.0.0.1:8080\"}\n",
+            "ordinary after\n",
+            "{\"event\":\"bilikara.ready\",\"host\":\"127.0.0.1\",\"port\":9090,\"baseUrl\":\"http://127.0.0.1:9090\"}\n",
+        );
+        let mut ready_urls = Vec::new();
+        let mut output = Vec::new();
+        drain_backend_stdout(
+            Cursor::new(input.as_bytes()),
+            |ready| ready_urls.push(ready.base_url),
+            |line| output.push(line),
+        )
+        .expect("EOF ends cleanly");
+
+        assert_eq!(ready_urls, ["http://127.0.0.1:8080"]);
+        assert_eq!(output[0], "ordinary before");
+        assert_eq!(output[1], "{malformed ready");
+        assert_eq!(output[2], "ordinary after");
+        assert!(
+            output[3].contains("9090"),
+            "duplicate readiness is still drained"
+        );
+    }
+
+    #[test]
+    fn backend_candidate_validation_and_precedence() {
+        let temp_dir = std::env::temp_dir().join(format!("bilikara_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let dummy_exe = temp_dir.join("current_exe");
+        let _ = std::fs::write(&dummy_exe, b"test");
+        let canonical_dummy_exe = dummy_exe.canonicalize().unwrap();
+        let noncanonical_dummy_exe = temp_dir.join(".").join("current_exe");
+
+        assert!(!is_backend_candidate(&temp_dir, &dummy_exe));
+        assert!(!is_backend_candidate(&dummy_exe, &dummy_exe));
+        assert!(!is_backend_candidate(
+            &canonical_dummy_exe,
+            &noncanonical_dummy_exe
+        ));
+        assert!(!is_backend_candidate(
+            &noncanonical_dummy_exe,
+            &canonical_dummy_exe
+        ));
+        assert!(!is_backend_candidate(
+            &temp_dir.join("nonexistent"),
+            &dummy_exe
+        ));
+
+        let non_exec = temp_dir.join("non_exec_binary");
+        let _ = std::fs::write(&non_exec, b"binary content");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&non_exec).unwrap().permissions();
+            perms.set_mode(0o644);
+            let _ = std::fs::set_permissions(&non_exec, perms);
+            assert!(!is_backend_candidate(&non_exec, &dummy_exe));
+        }
+
+        let exec_bin = temp_dir.join("exec_binary");
+        let _ = std::fs::write(&exec_bin, b"binary content");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&exec_bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&exec_bin, perms);
+            assert!(is_backend_candidate(&exec_bin, &dummy_exe));
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn stdout_forwarding_is_bounded_and_redacts_sensitive_lines() {
+        assert_eq!(
+            sanitized_backend_stdout_line("Cookie: private"),
+            "[redacted sensitive backend output]"
+        );
+        let long_line = "x".repeat(MAX_BACKEND_STDOUT_CHARS + 100);
+        let sanitized = sanitized_backend_stdout_line(&long_line);
+        assert_eq!(sanitized.chars().count(), MAX_BACKEND_STDOUT_CHARS + 1);
+        assert!(sanitized.ends_with('…'));
     }
 }

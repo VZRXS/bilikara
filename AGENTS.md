@@ -157,6 +157,9 @@ When completing a task, agents must report:
 | `src/video_stream_ranking.rs` | Pure DASH video codec, quality, bandwidth, AVC-cap, fallback, and stable ranking policy. |
 | `src/audio_stream_ranking.rs` | Pure regular DASH audio quality ordering, Hi-Res filtering/fallback, and stable ties. |
 | `src/preferred_audio_source_binding.rs` | Pure first-regular, FLAC, and Dolby preferred-audio source binding without regular ranking. |
+| `src/cache_planning.rs` | Pure cache-window desired, pending, retention, and preemption planning policy. |
+| `src/playlist_planning.rs` | Pure playlist ordering and duplicate-identity planning policy. |
+| `src/av_delay.rs` | Pure global/local AV-delay transition, clamping, and lock-button state policy. |
 | `src/release_selection.rs` | Semantic version sorting and release filtering rules. |
 | `src/asset_selection.rs` | Update package scoring by platform and architecture. |
 | `src/ffi.rs` | FFI wrapper utilities, memory safety helpers, panic containment. |

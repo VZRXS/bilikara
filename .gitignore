@@ -12,3 +12,4 @@ src-tauri/target/
 node_modules/
 rust/target/
 src-tauri/gen/
+.agent/

@@ -2206,7 +2206,7 @@ def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
         )
         if len(results) >= max(1, int(limit)):
             break
-    return results
+    return _annotate_gatcha_owner_avatars(results)
 
 
 def _gatcha_entry_payload(entry: dict) -> dict:
@@ -2223,6 +2223,69 @@ def _gatcha_entry_payload(entry: dict) -> dict:
         if value:
             payload[key] = value
     return payload
+
+
+def _cached_gatcha_profile_indexes() -> tuple[dict[str, dict], dict[str, dict]]:
+    with _GATCHA_UIDS_LOCK:
+        uid_payload = _load_gatcha_uid_payload()
+    with _GATCHA_CACHE_LOCK:
+        cache_payload = _load_gatcha_cache()
+
+    profiles_by_uid: dict[str, dict] = {}
+    for payload in (cache_payload, uid_payload):
+        profiles = payload.get("profiles") if isinstance(payload, dict) else {}
+        if not isinstance(profiles, dict):
+            continue
+        for raw_uid, raw_profile in profiles.items():
+            if not isinstance(raw_profile, dict):
+                continue
+            uid = str(raw_profile.get("uid") or raw_uid or "").strip()
+            if not uid:
+                continue
+            merged = dict(profiles_by_uid.get(uid) or {})
+            merged.update({key: value for key, value in raw_profile.items() if str(value or "").strip()})
+            profiles_by_uid[uid] = merged
+
+    profiles_by_name: dict[str, dict] = {}
+    duplicate_names: set[str] = set()
+    for profile in profiles_by_uid.values():
+        name_key = str(profile.get("name") or "").strip().casefold()
+        if not name_key:
+            continue
+        if name_key in profiles_by_name:
+            duplicate_names.add(name_key)
+            continue
+        profiles_by_name[name_key] = profile
+    for name_key in duplicate_names:
+        profiles_by_name.pop(name_key, None)
+    return profiles_by_uid, profiles_by_name
+
+
+def _annotate_gatcha_owner_avatars(items: list[dict]) -> list[dict]:
+    profiles_by_uid, profiles_by_name = _cached_gatcha_profile_indexes()
+    annotated: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        next_item = dict(item)
+        if str(next_item.get("owner_avatar_url") or next_item.get("avatar_url") or "").strip():
+            annotated.append(next_item)
+            continue
+
+        owner_name = str(next_item.get("owner_name") or next_item.get("author") or "").strip()
+        owner_name_key = owner_name.casefold()
+        profile = profiles_by_name.get(owner_name_key) if owner_name_key else None
+        if profile is None:
+            owner_uid = str(next_item.get("owner_mid") or next_item.get("mid") or "").strip()
+            uid_profile = profiles_by_uid.get(owner_uid)
+            uid_profile_name = str((uid_profile or {}).get("name") or "").strip().casefold()
+            if uid_profile is not None and (not owner_name_key or uid_profile_name == owner_name_key):
+                profile = uid_profile
+        avatar_url = str((profile or {}).get("avatar_url") or "").strip()
+        if avatar_url:
+            next_item["owner_avatar_url"] = avatar_url
+        annotated.append(next_item)
+    return annotated
 
 
 def annotate_gatcha_local_status(items: list[dict]) -> list[dict]:
@@ -2261,7 +2324,7 @@ def annotate_gatcha_local_status(items: list[dict]) -> list[dict]:
             next_item["local_source"] = "follow"
             next_item.setdefault("mid", str(local_entry.get("mid") or ""))
         annotated.append(next_item)
-    return annotated
+    return _annotate_gatcha_owner_avatars(annotated)
 
 
 def _profile_from_cached_entries(mid: str, entries: list[dict]) -> dict:
@@ -2593,7 +2656,14 @@ def select_matching_pages(
     descriptors = []
     for idx, page in enumerate(pages):
         if not isinstance(page, VideoPage):
-            return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+            return rust_backend.python_fallback(
+                "select_media_pages",
+                lambda: _py_select_matching_pages(
+                    pages,
+                    preferred_page=preferred_page,
+                    tolerance_seconds=tolerance_seconds,
+                ),
+            )
         descriptors.append({
             "original_index": idx,
             "page": int(page.page),
@@ -2620,15 +2690,25 @@ def select_matching_pages(
                     if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(pages):
                         result.append(pages[idx])
                     else:
-                        return _py_select_matching_pages(pages, preferred_page=preferred_page, tolerance_seconds=tolerance_seconds)
+                        return rust_backend.python_fallback(
+                            "select_media_pages",
+                            lambda: _py_select_matching_pages(
+                                pages,
+                                preferred_page=preferred_page,
+                                tolerance_seconds=tolerance_seconds,
+                            ),
+                        )
                 return result
         elif status == "no_match":
             return []
 
-    return _py_select_matching_pages(
-        pages,
-        preferred_page=preferred_page,
-        tolerance_seconds=tolerance_seconds,
+    return rust_backend.python_fallback(
+        "select_media_pages",
+        lambda: _py_select_matching_pages(
+            pages,
+            preferred_page=preferred_page,
+            tolerance_seconds=tolerance_seconds,
+        ),
     )
 
 
@@ -2659,6 +2739,26 @@ def _py_part_keyword_match(part: str) -> bool:
     return any(keyword in normalized for keyword in ("on", "off", "人声", "原唱", "伴奏"))
 
 
+def _py_part_vocal_role(part: str) -> str | None:
+    normalized = str(part or "").strip().lower()
+    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
+    has_vocal = "vocal" in tokens
+    is_on = (
+        "人声" in normalized
+        or "原唱" in normalized
+        or "onvocal" in tokens
+        or (has_vocal and "on" in tokens)
+    )
+    is_off = (
+        "伴奏" in normalized
+        or "offvocal" in tokens
+        or (has_vocal and "off" in tokens)
+    )
+    if is_on == is_off:
+        return None
+    return "on" if is_on else "off"
+
+
 def _py_is_auto_dual_audio_pair(
     pages: list[VideoPage],
     tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
@@ -2672,18 +2772,20 @@ def _py_is_auto_dual_audio_pair(
     return True
 
 
-def _py_auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+def _py_auto_dual_audio_video_index(pages: list[VideoPage]) -> int | None:
     if len(pages) != 2:
         return None
-    first_page, second_page = sorted(pages, key=lambda page: page.page)
-    if (
-        first_page.page == 1
-        and second_page.page == 2
-        and not _py_part_keyword_match(first_page.part)
-        and _py_part_keyword_match(second_page.part)
-    ):
-        return second_page.page
+    vocal_roles = [_py_part_vocal_role(page.part) for page in pages]
+    if sorted(role for role in vocal_roles if role is not None) == ["off", "on"]:
+        return vocal_roles.index("on")
     return None
+
+
+def _py_auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+    automatic_video_index = _py_auto_dual_audio_video_index(pages)
+    if automatic_video_index is None:
+        return None
+    return pages[automatic_video_index].page
 
 
 def _py_requires_manual_binding(
@@ -2718,15 +2820,7 @@ def _py_decide_audio_binding(
             automatic_video_index=None,
         )
 
-    automatic_video_page = _py_auto_dual_audio_video_page(pages)
-    automatic_video_index = next(
-        (
-            index
-            for index, page in enumerate(pages)
-            if page.page == automatic_video_page
-        ),
-        None,
-    )
+    automatic_video_index = _py_auto_dual_audio_video_index(pages)
     return AudioBindingDecision(
         mode="automatic",
         selected_indices=(0, 1),
@@ -2757,7 +2851,10 @@ def decide_audio_binding(
     descriptors: list[dict[str, object]] = []
     for original_index, page in enumerate(pages):
         if not isinstance(page, VideoPage):
-            return _py_decide_audio_binding(pages, tolerance_seconds)
+            return rust_backend.python_fallback(
+                "decide_audio_binding",
+                lambda: _py_decide_audio_binding(pages, tolerance_seconds),
+            )
         descriptors.append(
             {
                 "original_index": original_index,
@@ -2782,7 +2879,10 @@ def decide_audio_binding(
             automatic_video_index=response["automatic_video_index"],
         )
 
-    return _py_decide_audio_binding(pages, tolerance_seconds)
+    return rust_backend.python_fallback(
+        "decide_audio_binding",
+        lambda: _py_decide_audio_binding(pages, tolerance_seconds),
+    )
 
 
 def _normalize_selected_pages(raw_pages: object) -> list[int]:

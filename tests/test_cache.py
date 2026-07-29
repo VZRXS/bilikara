@@ -15,7 +15,9 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from bilikara import rust_backend
 from bilikara.cache import (
+    CachePlan,
     CacheManager,
     DOWNLOAD_SOURCE_DOWNKYI,
     DOWNLOAD_SOURCE_YTDLP,
@@ -807,6 +809,61 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_reconcile_invalidates_before_planning_and_refreshes_after_ensure(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
+                self.store.update_item(
+                    "song-a",
+                    cache_status="ready",
+                    cache_progress=100.0,
+                    cache_message="缓存已完成",
+                    video_relative_path="song-a/missing-video.mp4",
+                    video_media_url="/media/song-a/missing-video.mp4",
+                    audio_variants=[
+                        {
+                            "id": "p1",
+                            "label": "P1",
+                            "audio_url": "/media/song-a/missing-audio.m4a",
+                        }
+                    ],
+                    persist_backup=False,
+                )
+                events = []
+                planned_statuses = []
+                original_planner = manager._plan_cache_snapshot
+
+                def record_plan(items, **kwargs):
+                    events.append("plan")
+                    planned_statuses.append(self.store.get_item("song-a").cache_status)
+                    return original_planner(items, **kwargs)
+
+                with patch.object(
+                    manager,
+                    "_plan_cache_snapshot",
+                    side_effect=record_plan,
+                ) as planner_mock, patch.object(
+                    manager,
+                    "_ensure_item_cached",
+                    side_effect=lambda item: events.append(f"ensure:{item.id}"),
+                ), patch.object(
+                    manager,
+                    "_apply_cache_plan_priority",
+                    side_effect=lambda items, plan: events.append("apply"),
+                ):
+                    manager.reconcile_cache_state()
+
+                self.assertEqual(planner_mock.call_count, 1)
+                self.assertEqual(planned_statuses, ["pending"])
+                self.assertEqual(events, ["plan", "ensure:song-a", "apply"])
+            finally:
+                manager.shutdown()
+
     def test_sync_with_playlist_keeps_ready_current_and_targets_following_window_items(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,
@@ -819,7 +876,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
                 self.mark_item_ready_with_files("song-a")
 
-                manager.sync_with_playlist()
+                with patch(
+                    "bilikara.cache.rust_backend.try_plan_cache_window",
+                    wraps=rust_backend.try_plan_cache_window,
+                ) as planner_mock:
+                    manager.sync_with_playlist()
 
                 song_a = self.store.get_item("song-a")
                 self.assertIsNotNone(song_a)
@@ -827,6 +888,165 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertTrue((self.cache_dir / "song-a").exists())
                 self.assertEqual(manager.desired_ids, {"song-a", "song-b", "song-c"})
                 self.assertEqual(manager.ordered_desired_ids, ["song-b", "song-c"])
+                self.assertEqual(planner_mock.call_count, 1)
+            finally:
+                manager.shutdown()
+
+    def test_sync_after_removing_item_tolerates_parallel_active_processes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            processes = [
+                subprocess.Popen([sys.executable, "-c", "pass"]),  # noqa: S603
+                subprocess.Popen([sys.executable, "-c", "pass"]),  # noqa: S603
+            ]
+            try:
+                for process in processes:
+                    process.wait(timeout=5)
+                for item_id in ["song-a", "song-b"]:
+                    self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
+                with manager.lock:
+                    manager.active_item_id = "song-a"
+                    manager.active_processes = set(processes)
+                    manager.active_process_item_ids = {
+                        process: "song-a" for process in processes
+                    }
+
+                self.assertEqual(
+                    manager._cache_priority_state(),
+                    ("song-a", ("song-a",), ()),
+                )
+                self.assertTrue(self.store.remove_item("song-a"))
+
+                manager.sync_with_playlist()
+
+                self.assertIsNone(self.store.get_item("song-a"))
+                self.assertEqual(manager.desired_ids, {"song-b"})
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                manager.shutdown()
+
+    def test_sync_refreshes_priority_plan_after_ensure_starts_active_item(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            fake_process = SimpleNamespace(
+                poll=lambda: None,
+                terminate=lambda: None,
+                wait=lambda timeout=None: None,
+                kill=lambda: None,
+            )
+            try:
+                for item_id in ["song-a", "song-b", "song-c"]:
+                    self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
+                with manager.lock:
+                    manager.pending_ids = {"song-a", "song-b", "song-c"}
+                    for item_id in ["song-c", "song-b", "song-a"]:
+                        manager.tasks.put(item_id)
+
+                plans = []
+                original_planner = manager._plan_cache_snapshot
+
+                def record_plan(items, **kwargs):
+                    plan = original_planner(items, **kwargs)
+                    plans.append(plan)
+                    return plan
+
+                def expose_later_active_item(item):
+                    if item.id == "song-a":
+                        with manager.lock:
+                            manager.active_item_id = "song-b"
+                            manager.active_process = fake_process
+
+                with patch.object(
+                    manager,
+                    "_plan_cache_snapshot",
+                    side_effect=record_plan,
+                ), patch.object(
+                    manager,
+                    "_ensure_item_cached",
+                    side_effect=expose_later_active_item,
+                ), patch.object(
+                    manager,
+                    "_terminate_process",
+                ) as terminate_mock:
+                    manager.sync_with_playlist()
+
+                self.assertEqual(len(plans), 2)
+                self.assertEqual(plans[0].preempt_ids, ())
+                self.assertEqual(plans[1].preempt_ids, ("song-b",))
+                terminate_mock.assert_called_once_with(fake_process)
+                self.assertEqual(
+                    manager.cache_interrupted_messages["song-b"],
+                    "等待优先缓存: title-song-a - P1",
+                )
+                self.assertIn("song-b", manager.requeued_active_ids)
+                queued_ids = []
+                while True:
+                    try:
+                        queued_ids.append(manager.tasks.get_nowait())
+                    except queue.Empty:
+                        break
+                self.assertEqual(queued_ids, ["song-a", "song-b", "song-c"])
+            finally:
+                manager.shutdown()
+
+    def test_sync_reuses_plan_when_ensure_keeps_priority_inputs_unchanged(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            try:
+                for item_id in ["song-a", "song-b"]:
+                    self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
+                state_plan = CachePlan(
+                    desired_ids=("song-a", "song-b"),
+                    pending_order=("song-a", "song-b"),
+                    retained_ids=("song-a", "song-b"),
+                    preempt_ids=(),
+                )
+                events = []
+
+                def plan_snapshot(items):
+                    events.append("plan")
+                    return state_plan
+
+                with patch.object(
+                    manager,
+                    "_plan_cache_snapshot",
+                    side_effect=plan_snapshot,
+                ), patch.object(
+                    manager,
+                    "_ensure_item_cached",
+                    side_effect=lambda item: events.append(f"ensure:{item.id}"),
+                ), patch.object(
+                    manager,
+                    "_apply_cache_plan_priority",
+                    side_effect=lambda items, plan: events.append(("apply", plan)),
+                ) as apply_mock:
+                    manager.sync_with_playlist()
+
+                self.assertEqual(
+                    events,
+                    [
+                        "plan",
+                        "ensure:song-a",
+                        "ensure:song-b",
+                        ("apply", state_plan),
+                    ],
+                )
+                apply_mock.assert_called_once()
             finally:
                 manager.shutdown()
 
@@ -1367,6 +1587,114 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     except queue.Empty:
                         break
                 self.assertEqual(queued_ids, ["song-a", "song-b", "song-c"])
+            finally:
+                manager.shutdown()
+
+    def test_apply_priority_ignores_plan_when_active_item_changes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            process_a = Mock()
+            process_b = Mock()
+            try:
+                items = [self.make_item("song-first"), self.make_item("song-a")]
+                plan = CachePlan(
+                    desired_ids=("song-first", "song-a"),
+                    pending_order=("song-first", "song-a"),
+                    retained_ids=("song-first", "song-a"),
+                    preempt_ids=("song-a",),
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-first", "song-a"}
+                    manager.pending_ids = {"song-first", "song-a"}
+                    manager.active_item_id = "song-b"
+                    manager.active_processes = {process_a, process_b}
+                    manager.active_process_item_ids = {
+                        process_a: "song-a",
+                        process_b: "song-b",
+                    }
+                    manager.tasks.put("song-first")
+                    manager.tasks.put("song-a")
+
+                with patch.object(manager, "_terminate_processes") as terminate_mock:
+                    manager._apply_cache_plan_priority(items, plan)
+
+                terminate_mock.assert_not_called()
+                self.assertNotIn("song-a", manager.cache_interrupted_messages)
+                self.assertNotIn("song-a", manager.requeued_active_ids)
+                self.assertEqual(manager.active_item_id, "song-b")
+            finally:
+                manager.shutdown()
+
+    def test_apply_priority_ignores_plan_when_active_item_finishes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            process_a = Mock()
+            try:
+                items = [self.make_item("song-first"), self.make_item("song-a")]
+                plan = CachePlan(
+                    desired_ids=("song-first", "song-a"),
+                    pending_order=("song-first", "song-a"),
+                    retained_ids=("song-first", "song-a"),
+                    preempt_ids=("song-a",),
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-first", "song-a"}
+                    manager.pending_ids = {"song-first", "song-a"}
+                    manager.active_item_id = None
+                    manager.active_processes = {process_a}
+                    manager.active_process_item_ids = {process_a: "song-a"}
+                    manager.tasks.put("song-first")
+                    manager.tasks.put("song-a")
+
+                with patch.object(manager, "_terminate_processes") as terminate_mock:
+                    manager._apply_cache_plan_priority(items, plan)
+
+                terminate_mock.assert_not_called()
+                self.assertNotIn("song-a", manager.cache_interrupted_messages)
+                self.assertNotIn("song-a", manager.requeued_active_ids)
+            finally:
+                manager.shutdown()
+
+    def test_apply_priority_ignores_plan_when_next_item_becomes_urgent(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            process_a = Mock()
+            try:
+                items = [self.make_item("song-first"), self.make_item("song-a")]
+                plan = CachePlan(
+                    desired_ids=("song-first", "song-a"),
+                    pending_order=("song-first", "song-a"),
+                    retained_ids=("song-first", "song-a"),
+                    preempt_ids=("song-a",),
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-first", "song-a"}
+                    manager.pending_ids = {"song-first", "song-a"}
+                    manager.active_item_id = "song-a"
+                    manager.urgent_cache_ids.add("song-first")
+                    manager.active_processes = {process_a}
+                    manager.active_process_item_ids = {process_a: "song-a"}
+                    manager.tasks.put("song-first")
+                    manager.tasks.put("song-a")
+
+                with patch.object(manager, "_terminate_processes") as terminate_mock:
+                    manager._apply_cache_plan_priority(items, plan)
+
+                terminate_mock.assert_not_called()
+                self.assertNotIn("song-a", manager.cache_interrupted_messages)
+                self.assertNotIn("song-a", manager.requeued_active_ids)
             finally:
                 manager.shutdown()
 

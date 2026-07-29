@@ -23,7 +23,6 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "handleSplitPlaybackFault",
             "recordSplitMediaIssue",
             "attachSplitPlaybackFaultHandlers",
-            "handleSplitAudioEnded",
             "playbackFaultItemId",
             "playbackFaultRetryByItem",
             "mediaIssueEventsByKey",
@@ -45,7 +44,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
 
     def test_media_diagnostics_are_best_effort_and_report_useful_fields(self):
         diagnostics = self.function_source(
-            "function reportMediaDiagnostic",
+            "function splitVideoFrameStats",
             "function attachSplitPlayerDiagnostics",
         )
         for field in (
@@ -58,6 +57,17 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "network_state",
             "paused",
             "ended",
+            "seeking",
+            "playback_rate",
+            "buffered_end",
+            "audio_current_time",
+            "video_current_time",
+            "target_video_time",
+            "drift_seconds",
+            "effective_av_delay_seconds",
+            "synchronization_action",
+            "dropped_video_frames",
+            "total_video_frames",
             "error_code",
             "error_message",
             "url_basename",
@@ -81,7 +91,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
         for event_name in ("waiting", "stalled", "suspend", "error"):
             self.assertNotIn(f'addEventListener("{event_name}"', self.app_source)
 
-    def test_audio_ended_only_stops_future_audio_sync(self):
+    def test_audio_ended_is_the_authoritative_completion_event(self):
         sync_source = self.function_source(
             "function syncSplitPlayer",
             "function syncMountedLocalPlayer",
@@ -91,17 +101,18 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
         ended_guard = ended_guard[:ended_guard.index("}")]
         self.assertNotIn("audio.play(", ended_guard)
         self.assertNotIn("audio.pause(", ended_guard)
-        self.assertNotIn('audio.addEventListener("ended"', self.app_source)
+        self.assertIn('addMountedPlayerListener(audio, "ended"', self.app_source)
 
-    def test_video_ended_uses_normal_path_exactly_once(self):
+    def test_video_ended_defers_to_audio_and_audio_completion_advances_once(self):
         handler = self.function_source(
             "async function handleSplitVideoEnded",
             "function syncSplitPlayer",
         )
-        self.assertIn('video.dataset.bilikaraEndedHandled === "true"', handler)
+        self.assertIn("if (!audio.ended)", handler)
+        self.assertIn('"defer-video-recovery"', handler)
+        self.assertIn("state.localPlaybackEndHandled", handler)
         self.assertEqual(handler.count('handleLocalPlaybackEnded("media-ended")'), 1)
-        self.assertEqual(handler.count("audio.pause()"), 1)
-        self.assertEqual(handler.count("reportStatus()"), 1)
+        self.assertNotIn("audio.pause()", handler)
         self.assertNotIn("cache/retry", handler)
         self.assertNotIn("render()", handler)
 
@@ -122,7 +133,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             self.app_source,
         )
 
-    def test_offset_changes_and_remote_snapshots_keep_seek_settling(self):
+    def test_offset_changes_resynchronize_only_the_slave_video(self):
         offset_handler = self.function_source(
             "async function setAvOffset",
             "function updateCacheSliderFill",
@@ -133,6 +144,12 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
         )
         self.assertIn("resyncMountedLocalPlayerForOffsetChange()", offset_handler)
         self.assertIn("resyncMountedLocalPlayerForOffsetChange()", snapshot_handler)
+        resync_handler = self.function_source(
+            "function resyncMountedLocalPlayerForOffsetChange",
+            "function applyStoredVolumeToSinglePlayer",
+        )
+        self.assertIn("syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true)", resync_handler)
+        self.assertNotIn("beginSplitPlayerSeek", resync_handler)
 
 
 if __name__ == "__main__":

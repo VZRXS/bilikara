@@ -14,6 +14,7 @@
   },
   "permissions": [
     "core:default",
-    "core:window:allow-set-fullscreen"
+    "core:window:allow-set-fullscreen",
+    "allow-save-backend-download"
   ]
 }

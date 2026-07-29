@@ -73,10 +73,10 @@ from .config import (
     REMOTE_IDENTITIES_FILE,
     STATE_FILE,
     STATIC_DIR,
-    _detect_windows_physical_host,
     ensure_directories,
 )
 from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
+from .networking import detect_lan_ipv4_addresses
 from .playlist_export import playlist_csv_bytes, playlist_image_export
 from .remote_identity import RemoteIdentityStore
 from .store import PlaylistStore
@@ -93,6 +93,7 @@ MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
 REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
 REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
+CONTAINER_RUNTIME_MARKERS = ("docker", "containerd", "kubepods", "lxc")
 
 
 def _normalized_ip_address(value: object) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -122,6 +123,16 @@ def _local_ui_host(bind_host: str) -> str:
 
 def _local_ui_url(bind_host: str, port: int) -> str:
     return f"http://{_url_host(_local_ui_host(bind_host))}:{port}"
+
+
+def _is_container_runtime() -> bool:
+    if Path("/.dockerenv").exists():
+        return True
+    try:
+        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+    return any(marker in cgroup for marker in CONTAINER_RUNTIME_MARKERS)
 
 
 def _is_path_within(path: Path, root: Path) -> bool:
@@ -310,7 +321,12 @@ class AppContext:
         )
 
     def add_item(self, item, *, position: str, requester_name: str) -> None:
-        self.store.add_item(item, position=position, requester_name=requester_name)
+        self.store.add_item(
+            item,
+            position=position,
+            requester_name=requester_name,
+            reset_av_delay=self.cache_manager.reset_offset_on_next,
+        )
         self.cache_manager.sync_with_playlist()
 
     def has_session_users(self) -> bool:
@@ -335,7 +351,9 @@ class AppContext:
             return True
 
     def advance_to_next(self) -> None:
-        self.store.advance_to_next()
+        self.store.advance_to_next(
+            reset_av_delay=self.cache_manager.reset_offset_on_next
+        )
         self.cache_manager.sync_with_playlist()
 
     def remove_item(self, item_id: str) -> None:
@@ -376,7 +394,9 @@ class AppContext:
         self.cache_manager.sync_with_playlist()
 
     def move_to_front(self, item_id: str) -> None:
-        self.store.move_to_front(item_id)
+        self.store.move_to_front(
+            item_id, reset_av_delay=self.cache_manager.reset_offset_on_next
+        )
         self.cache_manager.sync_with_playlist()
 
     def set_mode(self, mode: str) -> None:
@@ -384,6 +404,9 @@ class AppContext:
 
     def set_av_offset_ms(self, offset_ms: int) -> int:
         return self.store.set_av_offset_ms(offset_ms)
+
+    def apply_av_delay_action(self, action: dict[str, object]) -> dict[str, object]:
+        return self.store.apply_av_delay_action(action)
 
     def set_volume_percent(self, volume_percent: int) -> int:
         return self.store.set_volume_percent(volume_percent)
@@ -616,7 +639,9 @@ class AppContext:
             return dict(self._player_status)
 
     def restore_backup(self) -> bool:
-        restored = self.store.restore_backup()
+        restored = self.store.restore_backup(
+            reset_av_delay=self.cache_manager.reset_offset_on_next
+        )
         self.auto_restored_backup = restored or self.auto_restored_backup
         self.cache_manager.sync_with_playlist()
         return restored
@@ -1189,16 +1214,39 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True, "data": {"markdown": artifact.markdown}})
                 return
             if route == "/api/diagnostics/package":
+                diagnostic_context = {
+                    "started_at": time.monotonic(),
+                    "payload_size": 0,
+                }
+                self._log_diagnostics_stage("diagnostics_request_started", diagnostic_context)
                 if not self._is_local_client():
+                    self._log_diagnostics_stage(
+                        "diagnostics_failed",
+                        diagnostic_context,
+                        error=PermissionError("remote client rejected"),
+                    )
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
-                artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
-                timestamp = time.strftime("%Y%m%d-%H%M%S")
-                self._write_download(
-                    artifact.zip_bytes(),
-                    content_type="application/zip",
-                    filename=f"bilikara-diagnostics-{timestamp}.zip",
-                )
+                self._log_diagnostics_stage("diagnostics_authorized", diagnostic_context)
+                try:
+                    artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
+                    payload = artifact.zip_bytes()
+                    diagnostic_context["payload_size"] = len(payload)
+                    self._log_diagnostics_stage("diagnostics_artifact_ready", diagnostic_context)
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    self._write_diagnostics_download(
+                        payload,
+                        content_type="application/zip",
+                        filename=f"bilikara-diagnostics-{timestamp}.zip",
+                        diagnostic_context=diagnostic_context,
+                    )
+                except Exception as exc:
+                    self._log_diagnostics_stage(
+                        "diagnostics_failed",
+                        diagnostic_context,
+                        error=exc,
+                    )
+                    raise
                 return
             if route == "/api/remote-identity/register":
                 token, identity = CONTEXT.register_remote_identity(
@@ -1465,6 +1513,30 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.set_av_offset_ms(offset_ms)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
+            if route == "/api/player/av-delay-action":
+                action_type = body.get("type")
+                if action_type == "adjust":
+                    delta_ms = body.get("delta_ms")
+                    if isinstance(delta_ms, bool) or not isinstance(delta_ms, int):
+                        raise ValueError("delta_ms must be an integer")
+                    action = {"type": "adjust", "delta_ms": delta_ms}
+                elif action_type == "set_effective":
+                    effective_delay_ms = body.get("effective_delay_ms")
+                    if isinstance(effective_delay_ms, bool) or not isinstance(effective_delay_ms, int):
+                        raise ValueError("effective_delay_ms must be an integer")
+                    action = {
+                        "type": "set_effective",
+                        "effective_delay_ms": effective_delay_ms,
+                    }
+                elif action_type in {"reset_local", "toggle_lock"}:
+                    action = {"type": action_type}
+                else:
+                    raise ValueError("invalid AV delay action")
+                if set(body) != set(action):
+                    raise ValueError("unexpected AV delay action fields")
+                decision = CONTEXT.apply_av_delay_action(action)
+                self._write_json({"ok": True, "data": decision})
+                return
             if route == "/api/player/advance-delay":
                 delay_seconds = body.get("delay_seconds")
                 if not isinstance(delay_seconds, int):
@@ -1618,10 +1690,35 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "ready_state": body.get("ready_state"),
                     "network_state": body.get("network_state"),
                     "paused": bool(body.get("paused")),
+                    "seeking": bool(body.get("seeking")),
                     "ended": bool(body.get("ended")),
+                    "playback_rate": body.get("playback_rate"),
+                    "buffered_end": body.get("buffered_end"),
                     "error_code": body.get("error_code"),
                     "error_message": str(body.get("error_message") or "")[:500],
                     "url_basename": str(body.get("url_basename") or "")[:255],
+                    "audio_current_time": body.get("audio_current_time"),
+                    "video_current_time": body.get("video_current_time"),
+                    "target_video_time": body.get("target_video_time"),
+                    "drift_seconds": body.get("drift_seconds"),
+                    "effective_av_delay_seconds": body.get("effective_av_delay_seconds"),
+                    "audio_playback_rate": body.get("audio_playback_rate"),
+                    "video_playback_rate": body.get("video_playback_rate"),
+                    "audio_ready_state": body.get("audio_ready_state"),
+                    "video_ready_state": body.get("video_ready_state"),
+                    "audio_network_state": body.get("audio_network_state"),
+                    "video_network_state": body.get("video_network_state"),
+                    "audio_paused": bool(body.get("audio_paused")),
+                    "video_paused": bool(body.get("video_paused")),
+                    "audio_seeking": bool(body.get("audio_seeking")),
+                    "video_seeking": bool(body.get("video_seeking")),
+                    "audio_ended": bool(body.get("audio_ended")),
+                    "video_ended": bool(body.get("video_ended")),
+                    "audio_buffered_end": body.get("audio_buffered_end"),
+                    "video_buffered_end": body.get("video_buffered_end"),
+                    "dropped_video_frames": body.get("dropped_video_frames"),
+                    "total_video_frames": body.get("total_video_frames"),
+                    "synchronization_action": str(body.get("synchronization_action") or "none")[:40],
                 }
                 print(f"[player-media] {json.dumps(event, ensure_ascii=False, sort_keys=True)}", flush=True)
                 self._write_json({"ok": True})
@@ -2049,11 +2146,48 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             "client_address": getattr(self, "client_address", None),
             "local_socket_address": local_socket,
             "sys_frozen": bool(getattr(sys, "frozen", False)),
+            "launch_mode": str(os.getenv("BILIKARA_LAUNCH_MODE", "") or "web")[:40],
             "request_path": str(getattr(self, "path", "")),
         }
         if error:
             record["error"] = error
         print("[playlist-export] " + json.dumps(record, ensure_ascii=False, default=str), flush=True)
+
+    @staticmethod
+    def _sanitized_diagnostic_error(error: BaseException) -> str:
+        message = str(error).replace("\r", " ").replace("\n", " ")[:300]
+        message = re.sub(
+            r"(?i)\b(cookie|token|authorization)\s*[:=]\s*[^\s,;]+",
+            r"\1=<redacted>",
+            message,
+        )
+        message = re.sub(r"(?<!\w)(?:[A-Za-z]:[\\/]|/)[^\s,;]+", "<path>", message)
+        return f"{type(error).__name__}: {message}" if message else type(error).__name__
+
+    def _log_diagnostics_stage(
+        self,
+        stage: str,
+        context: dict[str, object],
+        *,
+        error: BaseException | None = None,
+    ) -> None:
+        try:
+            local_socket = self.connection.getsockname()
+        except (AttributeError, OSError, TypeError):
+            local_socket = None
+        record = {
+            "event": stage,
+            "elapsed_ms": round((time.monotonic() - float(context["started_at"])) * 1000, 1),
+            "payload_size": context.get("payload_size"),
+            "request_path": str(getattr(self, "path", "")),
+            "launch_mode": str(os.getenv("BILIKARA_LAUNCH_MODE", "") or "web")[:40],
+            "sys_frozen": bool(getattr(sys, "frozen", False)),
+            "client_address": getattr(self, "client_address", None),
+            "local_socket_address": local_socket,
+        }
+        if error is not None:
+            record["error"] = self._sanitized_diagnostic_error(error)
+        print("[diagnostics] " + json.dumps(record, ensure_ascii=False, default=str), flush=True)
 
     def _write_export_download(
         self,
@@ -2069,9 +2203,24 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         finally:
             self._active_export_context = None
 
+    def _write_diagnostics_download(
+        self,
+        payload: bytes,
+        *,
+        content_type: str,
+        filename: str,
+        diagnostic_context: dict[str, object],
+    ) -> bool:
+        self._active_diagnostic_context = diagnostic_context
+        try:
+            return self._write_download(payload, content_type=content_type, filename=filename)
+        finally:
+            self._active_diagnostic_context = None
+
     def _write_download(self, payload: bytes, *, content_type: str, filename: str) -> bool:
         safe_filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip("-") or "download.bin"
         export_context = getattr(self, "_active_export_context", None)
+        diagnostic_context = getattr(self, "_active_diagnostic_context", None)
         try:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
@@ -2082,10 +2231,14 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if isinstance(export_context, dict):
                 self._log_export_stage("export_headers_sent", export_context)
+            if isinstance(diagnostic_context, dict):
+                self._log_diagnostics_stage("diagnostics_headers_sent", diagnostic_context)
             self.wfile.write(payload)
             self.wfile.flush()
             if isinstance(export_context, dict):
                 self._log_export_stage("export_body_written", export_context)
+            if isinstance(diagnostic_context, dict):
+                self._log_diagnostics_stage("diagnostics_body_written", diagnostic_context)
             return True
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             if isinstance(export_context, dict):
@@ -2093,6 +2246,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "export_failed",
                     export_context,
                     error=f"{type(exc).__name__}: {exc}",
+                )
+            if isinstance(diagnostic_context, dict):
+                self._log_diagnostics_stage(
+                    "diagnostics_failed",
+                    diagnostic_context,
+                    error=exc,
                 )
             return False
 
@@ -2349,24 +2508,10 @@ def _network_access_urls(host: str, port: int) -> list[str]:
             return []
         return [f"http://{_url_host(host)}:{port}"]
 
-    candidates: list[str] = []
-    seen: set[str] = set()
-    if os.name == "nt":
-        physical_host = _detect_windows_physical_host()
-        if physical_host:
-            return [f"http://{physical_host}:{port}"]
-    try:
-        addresses = socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET)
-    except OSError:
-        addresses = []
-
-    for entry in addresses:
-        ip = entry[4][0]
-        if ip.startswith("127."):
-            continue
-        url = f"http://{ip}:{port}"
-        if url in seen:
-            continue
-        seen.add(url)
-        candidates.append(url)
-    return candidates
+    if os.name != "nt" and _is_container_runtime():
+        # Container bridge addresses (commonly 172.17/16) are not reachable
+        # from the host's LAN and must never be advertised as mobile URLs.
+        return []
+    return [
+        f"http://{address}:{port}" for address in detect_lan_ipv4_addresses()
+    ]
