@@ -758,7 +758,7 @@ mod tests {
     #[test]
     fn audio_binding_export_returns_owned_json_and_can_be_freed() {
         let request = CString::new(
-            r#"{"schema_version":1,"tolerance_seconds":3,"pages":[{"original_index":0,"page":1,"duration":300,"part":"Instrumental"},{"original_index":1,"page":2,"duration":301,"part":"On Vocal"}]}"#,
+            r#"{"schema_version":1,"tolerance_seconds":3,"pages":[{"original_index":0,"page":1,"duration":300,"part":"Off Vocal"},{"original_index":1,"page":2,"duration":301,"part":"On Vocal"}]}"#,
         )
         .unwrap();
 

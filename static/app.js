@@ -1427,6 +1427,24 @@ function safeHttpUrl(value) {
   }
 }
 
+function renderOwnerBadgeLabel(element, ownerName) {
+  const normalized = String(ownerName || "").trim();
+  element.replaceChildren();
+  if (!normalized) {
+    element.removeAttribute("aria-label");
+    return;
+  }
+  const badge = document.createElement("span");
+  badge.className = "owner-badge";
+  badge.textContent = "UP";
+  badge.setAttribute("aria-hidden", "true");
+  const name = document.createElement("span");
+  name.className = "owner-badge-name";
+  name.textContent = normalized;
+  element.append(badge, name);
+  element.setAttribute("aria-label", t("owner.tooltip", { name: normalized }));
+}
+
 function ratingOwnerUid(item) {
   const rawMid = item?.owner_mid ?? item?.mid;
   const uid = String(rawMid || "").trim();
@@ -1566,8 +1584,8 @@ function renderRatingPromptContent() {
   hint.className = "rating-hint";
   hint.textContent = t("rating.hint");
   const owner = document.createElement("p");
-  owner.className = "rating-owner";
-  owner.textContent = t("rating.owner", { owner: ownerName });
+  owner.className = "rating-owner owner-badge-label";
+  renderOwnerBadgeLabel(owner, ownerName);
   copy.append(kicker, title, hint, owner);
   if (url) {
     const link = document.createElement("a");
@@ -2698,19 +2716,19 @@ function createSearchResultUrlLine(item) {
   const bvid = document.createElement("span");
   bvid.className = "search-result-bvid";
   bvid.textContent = String(item?.bvid || item?.url || "");
-  line.appendChild(bvid);
 
   const ownerName = searchResultOwnerName(item);
   if (ownerName) {
     const owner = document.createElement("span");
-    owner.className = "search-result-owner";
-    owner.textContent = t("owner.tooltip", { name: ownerName });
+    owner.className = "search-result-owner owner-badge-label";
+    renderOwnerBadgeLabel(owner, ownerName);
     line.appendChild(owner);
   }
   const rating = document.createElement("span");
   rating.className = "search-result-rating-text";
   rating.textContent = searchResultRatingText(item);
   line.appendChild(rating);
+  line.appendChild(bvid);
 
   return line;
 }

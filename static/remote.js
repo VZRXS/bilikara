@@ -608,14 +608,31 @@ function localizedApiMessage(message) {
   return raw;
 }
 
+function renderOwnerBadgeLabel(element, ownerName) {
+  const normalized = String(ownerName || "").trim();
+  element.replaceChildren();
+  if (!normalized) {
+    element.removeAttribute("aria-label");
+    return;
+  }
+  const badge = document.createElement("span");
+  badge.className = "owner-badge";
+  badge.textContent = "UP";
+  badge.setAttribute("aria-hidden", "true");
+  const name = document.createElement("span");
+  name.className = "owner-badge-name";
+  name.textContent = normalized;
+  element.append(badge, name);
+  element.setAttribute("aria-label", t("owner.tooltip", { name: normalized }));
+}
+
 function requesterBadgeText(requesterName) {
   const normalized = String(requesterName || "").trim();
   return normalized ? t("request.requesterBadge", { name: normalized }) : "";
 }
 
 function ownerLineText(ownerName) {
-  const normalized = String(ownerName || "").trim();
-  return normalized ? t("owner.upOwner", { name: normalized }) : "";
+  return String(ownerName || "").trim();
 }
 
 function selectedRequesterName() {
@@ -1809,8 +1826,8 @@ function renderRatingPromptContent() {
   hint.className = "rating-hint";
   hint.textContent = t("rating.hint");
   const owner = document.createElement("p");
-  owner.className = "rating-owner";
-  owner.textContent = t("rating.owner", { owner: ownerName });
+  owner.className = "rating-owner owner-badge-label";
+  renderOwnerBadgeLabel(owner, ownerName);
   copy.append(kicker, title, hint, owner);
   if (url) {
     const link = document.createElement("a");
@@ -2891,22 +2908,15 @@ function searchResultStatusLabel(item) {
   return "";
 }
 
-function createSearchResultUrlLine(item, { showBvid = true } = {}) {
+function createSearchResultUrlLine(item) {
   const line = document.createElement("div");
   line.className = "search-result-url";
-
-  if (showBvid) {
-    const bvid = document.createElement("span");
-    bvid.className = "search-result-bvid";
-    bvid.textContent = String(item?.bvid || item?.url || "");
-    line.appendChild(bvid);
-  }
 
   const ownerName = searchResultOwnerName(item);
   if (ownerName) {
     const owner = document.createElement("span");
-    owner.className = "search-result-owner";
-    owner.textContent = t("owner.tooltip", { name: ownerName });
+    owner.className = "search-result-owner owner-badge-label";
+    renderOwnerBadgeLabel(owner, ownerName);
     line.appendChild(owner);
   }
   const rating = document.createElement("span");
@@ -3139,7 +3149,7 @@ function createSearchResultRow(item) {
     statusLine.appendChild(plays);
   }
 
-  const url = createSearchResultUrlLine(item, { showBvid: false });
+  const url = createSearchResultUrlLine(item);
 
   const button = document.createElement("button");
   button.type = "button";
@@ -4625,7 +4635,7 @@ function renderCurrentItem(current, playbackMode) {
       elements.currentTitle.textContent = current.display_title;
       elements.currentRequester.textContent = requesterText;
       elements.currentRequester.classList.toggle("hidden", !requesterText);
-      elements.currentOwner.textContent = ownerText;
+      renderOwnerBadgeLabel(elements.currentOwner, ownerText);
       elements.currentOwner.classList.toggle("hidden", !ownerText);
       if (elements.openRatingButton) {
         elements.openRatingButton.classList.toggle("hidden", !current.bvid);
@@ -6620,6 +6630,26 @@ async function addByUrl(url, position = "tail", source = "search") {
   }
 }
 
+async function confirmGatchaCandidate() {
+  const button = elements.gatchaConfirmButton;
+  if (!button || button.disabled || state.submitting || !state.gatchaCandidate?.url) {
+    return false;
+  }
+
+  const previousText = button.textContent;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = t("search.adding");
+  try {
+    await addByUrl(String(state.gatchaCandidate.url), "tail", "gatcha");
+    return true;
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = previousText;
+  }
+}
+
 async function sendPlayerControl(action, deltaSeconds = 0) {
   const currentItem = state.data?.current_item;
   const playbackMode = frontendPlaybackMode(state.data?.playback_mode);
@@ -7584,10 +7614,7 @@ elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
-  if (!state.gatchaCandidate?.url) {
-    return;
-  }
-  await addByUrl(String(state.gatchaCandidate.url), "tail", "gatcha");
+  await confirmGatchaCandidate();
 });
 
 elements.bindingSheetClose?.addEventListener("click", () => {

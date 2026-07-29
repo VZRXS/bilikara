@@ -2441,16 +2441,16 @@ class BilibiliParserTest(unittest.TestCase):
             },
         }
         item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD?p=2")
-        self.assertEqual(item.page, 2)
-        self.assertEqual(item.cid, 789)
-        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.page, 1)
+        self.assertEqual(item.cid, 456)
+        self.assertEqual(item.video_page, 1)
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_cids, [456, 789])
-        self.assertEqual(item.display_title, "example video - off_vocal")
+        self.assertEqual(item.display_title, "example video - on_vocal")
         self.assertEqual(item.owner_mid, 114514)
         self.assertEqual(item.owner_name, "example-up")
         self.assertEqual(item.owner_url, "https://space.bilibili.com/114514")
-        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
+        self.assertEqual(item.selected_audio_variant_id, "p1_on_vocal")
         self.assertEqual(item.available_pages, [1, 2])
         self.assertEqual(item.available_parts, ["on_vocal", "off_vocal"])
 
@@ -2505,7 +2505,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.selected_audio_variant_id, "p2_track_2")
 
     @patch("bilikara.bilibili.request_json")
-    def test_fetch_video_item_defaults_to_p2_when_only_p2_has_dual_audio_keyword(self, mock_request_json):
+    def test_fetch_video_item_defaults_to_p1_when_vocal_pair_is_not_resolved(self, mock_request_json):
         mock_request_json.return_value = {
             "code": 0,
             "data": {
@@ -2524,13 +2524,13 @@ class BilibiliParserTest(unittest.TestCase):
         item = fetch_video_item("https://www.bilibili.com/video/BV1xx411c7mD")
 
         self.assertFalse(item.manual_selection)
-        self.assertEqual(item.page, 2)
-        self.assertEqual(item.cid, 789)
-        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.page, 1)
+        self.assertEqual(item.cid, 456)
+        self.assertEqual(item.video_page, 1)
         self.assertEqual(item.selected_pages, [1, 2])
         self.assertEqual(item.selected_cids, [456, 789])
-        self.assertEqual(item.selected_audio_variant_id, "p2_off_vocal")
-        self.assertEqual(item.display_title, "example video - off vocal")
+        self.assertEqual(item.selected_audio_variant_id, "p1_main_track")
+        self.assertEqual(item.display_title, "example video - main track")
 
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item_requires_manual_binding_for_ambiguous_multipart_video(self, mock_request_json):
@@ -2693,7 +2693,7 @@ class BilibiliParserTest(unittest.TestCase):
 
         decide.assert_called_once()
         self.assertEqual(item.selected_pages, [1, 2])
-        self.assertEqual(item.video_page, 2)
+        self.assertEqual(item.video_page, 1)
 
     @patch("bilikara.bilibili.request_json")
     def test_fetch_video_item_native_and_forced_python_outputs_match(self, mock_request_json):

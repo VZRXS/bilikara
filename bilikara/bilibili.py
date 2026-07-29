@@ -2676,6 +2676,26 @@ def _py_part_keyword_match(part: str) -> bool:
     return any(keyword in normalized for keyword in ("on", "off", "人声", "原唱", "伴奏"))
 
 
+def _py_part_vocal_role(part: str) -> str | None:
+    normalized = str(part or "").strip().lower()
+    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
+    has_vocal = "vocal" in tokens
+    is_on = (
+        "人声" in normalized
+        or "原唱" in normalized
+        or "onvocal" in tokens
+        or (has_vocal and "on" in tokens)
+    )
+    is_off = (
+        "伴奏" in normalized
+        or "offvocal" in tokens
+        or (has_vocal and "off" in tokens)
+    )
+    if is_on == is_off:
+        return None
+    return "on" if is_on else "off"
+
+
 def _py_is_auto_dual_audio_pair(
     pages: list[VideoPage],
     tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
@@ -2689,18 +2709,20 @@ def _py_is_auto_dual_audio_pair(
     return True
 
 
-def _py_auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+def _py_auto_dual_audio_video_index(pages: list[VideoPage]) -> int | None:
     if len(pages) != 2:
         return None
-    first_page, second_page = sorted(pages, key=lambda page: page.page)
-    if (
-        first_page.page == 1
-        and second_page.page == 2
-        and not _py_part_keyword_match(first_page.part)
-        and _py_part_keyword_match(second_page.part)
-    ):
-        return second_page.page
+    vocal_roles = [_py_part_vocal_role(page.part) for page in pages]
+    if sorted(role for role in vocal_roles if role is not None) == ["off", "on"]:
+        return vocal_roles.index("on")
     return None
+
+
+def _py_auto_dual_audio_video_page(pages: list[VideoPage]) -> int | None:
+    automatic_video_index = _py_auto_dual_audio_video_index(pages)
+    if automatic_video_index is None:
+        return None
+    return pages[automatic_video_index].page
 
 
 def _py_requires_manual_binding(
@@ -2735,15 +2757,7 @@ def _py_decide_audio_binding(
             automatic_video_index=None,
         )
 
-    automatic_video_page = _py_auto_dual_audio_video_page(pages)
-    automatic_video_index = next(
-        (
-            index
-            for index, page in enumerate(pages)
-            if page.page == automatic_video_page
-        ),
-        None,
-    )
+    automatic_video_index = _py_auto_dual_audio_video_index(pages)
     return AudioBindingDecision(
         mode="automatic",
         selected_indices=(0, 1),

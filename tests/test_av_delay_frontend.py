@@ -25,12 +25,32 @@ class AvDelayFrontendTest(unittest.TestCase):
         self.assertIn('id="av-delay-lock-button"', self.host_html)
         self.assertIn('id="remote-av-delay-lock-button"', self.remote_html)
 
-    def test_host_lock_button_is_immediately_right_of_delay_input(self):
-        input_position = self.host_html.index('id="av-offset-input"')
+    def test_host_lock_button_is_immediately_right_of_reset_button(self):
+        positive_step_position = self.host_html.index('data-step="200"')
+        reset_position = self.host_html.index('id="av-offset-reset-button"')
         lock_position = self.host_html.index("data-av-delay-lock")
-        positive_step_position = self.host_html.index('data-step="50"')
-        self.assertLess(input_position, lock_position)
-        self.assertLess(lock_position, positive_step_position)
+        self.assertLess(positive_step_position, reset_position)
+        self.assertLess(reset_position, lock_position)
+
+    def test_remote_av_delay_spinner_sits_next_to_unit(self):
+        selector = "#remote-av-sync-panel .remote-input-wrap {"
+        rules = self.remote_css.split(selector)
+        self.assertGreaterEqual(len(rules), 3)
+        for rule in rules[1:]:
+            declarations = rule.split("}", 1)[0]
+            self.assertIn("justify-content: flex-end;", declarations)
+            self.assertIn("gap: 4px;", declarations)
+        input_selector = '#remote-av-sync-panel .remote-input-wrap input[type="number"] {'
+        input_rules = self.remote_css.split(input_selector)
+        self.assertGreaterEqual(len(input_rules), 3)
+        for rule in input_rules[1:]:
+            declarations = rule.split("}", 1)[0]
+            self.assertIn("padding: 0;", declarations)
+            self.assertIn("margin: 0;", declarations)
+        self.assertIn(
+            '#remote-av-sync-panel .remote-input-wrap input[type="number"]::-webkit-inner-spin-button',
+            self.remote_css,
+        )
 
     def test_frontends_dispatch_actions_and_render_rust_snapshot_fields(self):
         for source in (self.host_js, self.remote_js):
@@ -169,14 +189,8 @@ apiPost("/api/player/av-delay-action", {{}}, {{ timeoutMs: 10 }})
                 f'{selector}[data-locked="true"][data-has-local="true"]', source
             )
             self.assertIn(f"{selector}:disabled", source)
-            for token in (
-                "--av-lock-unlocked-bg",
-                "--av-lock-local-bg",
-                "--av-lock-locked-bg",
-                "--av-lock-locked-local-bg",
-                "--av-lock-disabled-bg",
-            ):
-                self.assertGreaterEqual(source.count(token), 4)
+            self.assertIn("background: var(--av-lock-unlocked-bg);", source)
+            self.assertIn("background: var(--av-lock-disabled-bg);", source)
             for token in (
                 "--av-lock-hover-filter",
                 "--av-lock-focus-outline",
@@ -185,8 +199,20 @@ apiPost("/api/player/av-delay-action", {{}}, {{ timeoutMs: 10 }})
             ):
                 self.assertIn(token, source)
             self.assertIn(f'{selector}[data-has-local="true"]::after', source)
+            self.assertIn('content: "";', source)
+            self.assertIn("position: absolute;", source)
+            self.assertIn("inset-block-start: 6px;", source)
+            self.assertIn("inset-inline-end: 6px;", source)
             self.assertIn(f"{selector}:focus-visible", source)
             self.assertIn(f"{selector}:not(:disabled):active", source)
+
+            local_rule = source.split(f'{selector}[data-has-local="true"] {{', 1)[1].split("}", 1)[0]
+            locked_rule = source.split(f'{selector}[data-locked="true"] {{', 1)[1].split("}", 1)[0]
+            locked_local_rule = source.split(
+                f'{selector}[data-locked="true"][data-has-local="true"] {{', 1
+            )[1].split("}", 1)[0]
+            for state_rule in (local_rule, locked_rule, locked_local_rule):
+                self.assertNotIn("background:", state_rule)
 
 
 if __name__ == "__main__":

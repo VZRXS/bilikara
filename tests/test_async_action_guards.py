@@ -13,6 +13,8 @@ class AsyncActionGuardsTest(unittest.TestCase):
             raise unittest.SkipTest("node is unavailable")
         cls.repo_root = Path(__file__).resolve().parents[1]
         cls.app_js = cls.repo_root / "static" / "app.js"
+        cls.remote_js = cls.repo_root / "static" / "remote.js"
+        cls.remote_css = cls.repo_root / "static" / "remote.css"
         cls.export_guard_js = cls.repo_root / "static" / "export-guard.js"
         cls.i18n_json = cls.repo_root / "static" / "i18n.json"
 
@@ -245,6 +247,69 @@ class AsyncActionGuardsTest(unittest.TestCase):
         self.assertFalse(res["finalDisabled"])
         self.assertIsNone(res["finalAriaBusy"])
         self.assertEqual(res["finalText"], "确定点歌")
+
+    def test_remote_gatcha_confirm_button_prevents_duplicate_and_restores(self):
+        source = self.remote_js.read_text(encoding="utf-8")
+        start = source.index("async function confirmGatchaCandidate")
+        end = source.index("async function sendPlayerControl", start)
+        function_source = source[start:end]
+        script = f"""
+const state = {{
+  submitting: false,
+  gatchaCandidate: {{ url: "https://bilibili.com/video/BV1xx" }},
+}};
+const button = {{
+  disabled: false,
+  textContent: "确定点歌",
+  attributes: {{}},
+  setAttribute(key, value) {{ this.attributes[key] = String(value); }},
+  removeAttribute(key) {{ delete this.attributes[key]; }},
+}};
+const elements = {{ gatchaConfirmButton: button }};
+function t() {{ return "添加中..."; }}
+let addCalls = 0;
+let resolveAdd;
+function addByUrl() {{
+  addCalls += 1;
+  return new Promise((resolve) => {{ resolveAdd = resolve; }});
+}}
+{function_source}
+const first = confirmGatchaCandidate();
+const during = {{
+  disabled: button.disabled,
+  ariaBusy: button.attributes["aria-busy"],
+  text: button.textContent,
+}};
+const second = confirmGatchaCandidate();
+resolveAdd();
+Promise.all([first, second]).then((results) => {{
+  process.stdout.write(JSON.stringify({{
+    addCalls,
+    during,
+    results,
+    finalDisabled: button.disabled,
+    finalAriaBusy: button.attributes["aria-busy"] || null,
+    finalText: button.textContent,
+  }}));
+}});
+"""
+        completed = subprocess.run(
+            [self.node, "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["addCalls"], 1)
+        self.assertTrue(result["during"]["disabled"])
+        self.assertEqual(result["during"]["ariaBusy"], "true")
+        self.assertEqual(result["during"]["text"], "添加中...")
+        self.assertEqual(result["results"], [True, False])
+        self.assertFalse(result["finalDisabled"])
+        self.assertIsNone(result["finalAriaBusy"])
+        self.assertEqual(result["finalText"], "确定点歌")
+        self.assertIn(".primary-button:disabled", self.remote_css.read_text(encoding="utf-8"))
 
     def test_history_readd_button_prevents_duplicate_and_restores(self):
         res = self.run_node_app_test(
