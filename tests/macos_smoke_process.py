@@ -153,17 +153,29 @@ class CapturedProcess:
         terminate_timeout: float = 5.0,
         kill_timeout: float = 5.0,
     ) -> bool:
+        if self.process.poll() is not None:
+            self.finish_draining()
+            return True
+
         if os.name == "posix":
             try:
                 os.killpg(self.process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                process_exited = self.process.poll() is not None
+                self.finish_draining()
+                return process_exited
             group_exited = self._wait_for_process_group_exit(terminate_timeout)
             if not group_exited:
                 try:
                     os.killpg(self.process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError:
+                    process_exited = self.process.poll() is not None
+                    self.finish_draining()
+                    return process_exited
                 group_exited = self._wait_for_process_group_exit(kill_timeout)
             process_exited = self.wait_for_exit(kill_timeout)
         else:

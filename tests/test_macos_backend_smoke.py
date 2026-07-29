@@ -115,6 +115,32 @@ class SmokeProcessReaderTest(unittest.TestCase):
         finally:
             self.assertTrue(capture.terminate_process_group())
 
+    def test_cleanup_is_idempotent_after_process_exit(self):
+        capture = self._start_fixture("print('done', flush=True)")
+        self.assertTrue(capture.wait_for_exit(2.0))
+        self.assertTrue(capture.terminate_process_group())
+        self.assertTrue(capture.terminate_process_group())
+
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX signals")
+    def test_posix_permission_error_for_live_process_returns_false(self):
+        capture = self._start_fixture("import time; time.sleep(30)")
+        try:
+            with patch("tests.macos_smoke_process.os.killpg", side_effect=PermissionError):
+                self.assertFalse(capture.terminate_process_group())
+            self.assertIsNone(capture.process.poll())
+
+            with (
+                patch.object(capture, "_wait_for_process_group_exit", return_value=False),
+                patch(
+                    "tests.macos_smoke_process.os.killpg",
+                    side_effect=[None, PermissionError],
+                ),
+            ):
+                self.assertFalse(capture.terminate_process_group())
+            self.assertIsNone(capture.process.poll())
+        finally:
+            self.assertTrue(capture.terminate_process_group())
+
     def test_closed_streams_do_not_wait_unboundedly_for_live_process(self):
         capture = self._start_fixture(
             "import os,time; os.close(1); os.close(2); time.sleep(30)"
@@ -241,6 +267,8 @@ class MacOSBackendSmokeTest(unittest.TestCase):
             env["DEBUG_LOG_FILE"] = str(startup_log_path)
             capture = CapturedProcess.start(cmd, env=env)
             failure: BaseException | None = None
+            cleanup_error: Exception | None = None
+            cleaned_up = False
             try:
                 ready_data = capture.wait_for_output(
                     _ready_event_from_output,
@@ -293,15 +321,29 @@ class MacOSBackendSmokeTest(unittest.TestCase):
             except BaseException as exc:
                 failure = exc
             finally:
-                cleaned_up = capture.terminate_process_group()
+                try:
+                    cleaned_up = capture.terminate_process_group()
+                except Exception as exc:
+                    cleanup_error = exc
 
             if failure is not None:
+                cleanup_report = f"cleanup_succeeded={cleaned_up}"
+                if cleanup_error is not None:
+                    cleanup_report += f"\ncleanup_error={cleanup_error!r}"
                 raise AssertionError(
-                    f"{failure}\n{_failure_report(capture, startup_log_path)}"
+                    f"{failure}\n{cleanup_report}\n{_failure_report(capture, startup_log_path)}"
                 ) from failure
+            if cleanup_error is not None:
+                raise AssertionError(
+                    "Backend process cleanup raised unexpectedly.\n"
+                    f"cleanup_succeeded={cleaned_up}\n"
+                    f"cleanup_error={cleanup_error!r}\n"
+                    + _failure_report(capture, startup_log_path)
+                ) from cleanup_error
             if not cleaned_up:
                 raise AssertionError(
                     "Backend process group did not terminate cleanly.\n"
+                    f"cleanup_succeeded={cleaned_up}\n"
                     + _failure_report(capture, startup_log_path)
                 )
 
