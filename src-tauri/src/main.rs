@@ -465,6 +465,7 @@ struct NativeDisplayMetadata {
     name: String,
 }
 
+#[cfg(target_os = "windows")]
 fn wide_string(value: &[u16]) -> String {
     let length = value
         .iter()
