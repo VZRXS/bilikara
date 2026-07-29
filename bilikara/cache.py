@@ -1211,7 +1211,7 @@ class CacheManager:
         with self.lock:
             return (
                 self.active_item_id,
-                tuple(sorted(self.active_process_item_ids.items())),
+                tuple(sorted(set(self.active_process_item_ids.values()))),
                 tuple(sorted(self.urgent_cache_ids)),
             )
 

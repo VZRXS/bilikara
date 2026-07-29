@@ -892,6 +892,46 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_sync_after_removing_item_tolerates_parallel_active_processes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            processes = [
+                subprocess.Popen([sys.executable, "-c", "pass"]),  # noqa: S603
+                subprocess.Popen([sys.executable, "-c", "pass"]),  # noqa: S603
+            ]
+            try:
+                for process in processes:
+                    process.wait(timeout=5)
+                for item_id in ["song-a", "song-b"]:
+                    self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
+                with manager.lock:
+                    manager.active_item_id = "song-a"
+                    manager.active_processes = set(processes)
+                    manager.active_process_item_ids = {
+                        process: "song-a" for process in processes
+                    }
+
+                self.assertEqual(
+                    manager._cache_priority_state(),
+                    ("song-a", ("song-a",), ()),
+                )
+                self.assertTrue(self.store.remove_item("song-a"))
+
+                manager.sync_with_playlist()
+
+                self.assertIsNone(self.store.get_item("song-a"))
+                self.assertEqual(manager.desired_ids, {"song-b"})
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                manager.shutdown()
+
     def test_sync_refreshes_priority_plan_after_ensure_starts_active_item(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,

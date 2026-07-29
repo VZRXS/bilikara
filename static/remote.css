@@ -1993,7 +1993,7 @@ select:disabled {
   font-weight: 500;
   line-height: 1;
   letter-spacing: normal;
-  transform: translateY(0.08em);
+  transform: translateY(0);
 }
 
 .owner-badge-name {

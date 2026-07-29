@@ -96,7 +96,12 @@ console.log(JSON.stringify({{
             self.assertIn("font-weight: 500;", badge_rule)
             self.assertIn("line-height: 1;", badge_rule)
             self.assertIn("letter-spacing: normal;", badge_rule)
-            self.assertIn("transform: translateY(0.08em);", badge_rule)
+        host_css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        remote_css = (ROOT / "static" / "remote.css").read_text(encoding="utf-8")
+        host_badge_rule = host_css.split(".owner-badge {", 1)[1].split("}", 1)[0]
+        remote_badge_rule = remote_css.split(".owner-badge {", 1)[1].split("}", 1)[0]
+        self.assertIn("transform: translateY(0.08em);", host_badge_rule)
+        self.assertIn("transform: translateY(0);", remote_badge_rule)
 
     def test_up_owner_text_uses_consistent_spacing_and_colons(self):
         i18n = (ROOT / "static" / "i18n.json").read_text(encoding="utf-8")
