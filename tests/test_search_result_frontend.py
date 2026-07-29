@@ -186,6 +186,14 @@ console.log(JSON.stringify({{
         self.assertIn("elements.request.classList.add(className)", detail_js)
         self.assertNotIn(".song-detail-actions button:disabled", detail_css)
 
+    def test_detail_cover_fills_mobile_grid_column_on_initial_layout(self):
+        detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
+        cover_rule = detail_css.split(".song-detail-cover {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("width: 100%;", cover_rule)
+        self.assertIn("min-width: 0;", cover_rule)
+        self.assertIn("aspect-ratio: 16 / 9;", cover_rule)
+
     def test_detail_motion_matches_rating_and_playback_controls(self):
         detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
         remote_css = (ROOT / "static" / "remote.css").read_text(encoding="utf-8")
