@@ -175,7 +175,7 @@ jobs:
 
       - name: Inject Tauri into macOS Bundle
         if: runner.os == 'macOS'
-        run: cp -r src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
+        run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
 
       - name: Resolve bundle archive name
         id: bundle-name
@@ -193,18 +193,63 @@ jobs:
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
           echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
 
+      - name: Stage and verify macOS bundles
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist_release
+          ditto dist/bilikara.app dist_release/bilikara.app
+          ditto dist/Bilikara-Desktop.app dist_release/Bilikara-Desktop.app
+
+          echo "=== Verifying staged bilikara.app ==="
+          test -x dist_release/bilikara.app/Contents/MacOS/bilikara
+          plutil -lint dist_release/bilikara.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 dist_release/bilikara.app
+          codesign -dv --verbose=4 dist_release/bilikara.app
+
+          echo "=== Verifying staged Bilikara-Desktop.app ==="
+          test -x dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          plutil -lint dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 dist_release/Bilikara-Desktop.app
+          codesign -dv --verbose=4 dist_release/Bilikara-Desktop.app
+
+          echo "=== Architecture checks ==="
+          file dist_release/bilikara.app/Contents/MacOS/bilikara
+          file dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+
+          echo "=== Running Python backend smoke test ==="
+          BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_backend_smoke.py -v
+
+          echo "=== Running Tauri/backend integration smoke test ==="
+          BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_tauri_smoke.py -v
+
       - name: Archive Windows bundle
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path dist/bilikara -DestinationPath $env:BUNDLE_ARCHIVE
 
-      - name: Archive macOS bundle
+      - name: Archive and verify round-trip macOS bundle
         if: runner.os == 'macOS'
         run: |
-          mkdir -p dist_release
-          mv dist/bilikara.app dist_release/
-          mv dist/Bilikara-Desktop.app dist_release/
-          ditto -c -k --sequesterRsrc dist_release "$BUNDLE_ARCHIVE"
+          ditto -c -k --sequesterRsrc --keepParent dist_release "$BUNDLE_ARCHIVE"
+
+          mkdir -p test_extract
+          ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
+
+          echo "=== Verifying extracted bilikara.app ==="
+          test -x test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara
+          plutil -lint test_extract/dist_release/bilikara.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 test_extract/dist_release/bilikara.app
+          codesign -dv --verbose=4 test_extract/dist_release/bilikara.app
+
+          echo "=== Verifying extracted Bilikara-Desktop.app ==="
+          test -x test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          plutil -lint test_extract/dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
+          codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
+
+          echo "=== Running round-trip extracted smoke test ==="
+          BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_backend_smoke.py -v
+          BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests/test_macos_tauri_smoke.py -v
 
       - name: Upload Windows bundle artifact
         if: runner.os == 'Windows'
@@ -219,7 +264,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
-          path: dist_release
+          path: ${{ steps.bundle-name.outputs.archive_name }}
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release

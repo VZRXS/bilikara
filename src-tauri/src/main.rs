@@ -136,7 +136,14 @@ fn resolve_backend_command() -> (String, Vec<String>) {
         return (win_path2.to_string_lossy().to_string(), vec![]);
     }
 
-    // macOS packaged path
+    // macOS packaged paths (dedicated backend candidate preferred over standalone app)
+    let mac_dedicated = current_dir
+        .join("bilikara-backend")
+        .join("bilikara-backend");
+    if is_backend_candidate(&mac_dedicated, &current_exe) {
+        return (mac_dedicated.to_string_lossy().to_string(), vec![]);
+    }
+
     let mac_path = current_dir
         .join("bilikara.app")
         .join("Contents")
@@ -170,11 +177,28 @@ fn find_dev_launcher(start_dir: &std::path::Path) -> Option<PathBuf> {
 }
 
 fn is_backend_candidate(path: &Path, current_exe: &Path) -> bool {
-    if !path.exists() {
+    if !path.is_file() {
         return false;
     }
-    let candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    candidate != current_exe
+    let canonical_candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical_current_exe = current_exe
+        .canonicalize()
+        .unwrap_or_else(|_| current_exe.to_path_buf());
+    if canonical_candidate == canonical_current_exe {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = path.metadata() {
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 fn current_executable_string() -> String {
@@ -1466,6 +1490,55 @@ mod tests {
             output[3].contains("9090"),
             "duplicate readiness is still drained"
         );
+    }
+
+    #[test]
+    fn backend_candidate_validation_and_precedence() {
+        let temp_dir = std::env::temp_dir().join(format!("bilikara_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let dummy_exe = temp_dir.join("current_exe");
+        let _ = std::fs::write(&dummy_exe, b"test");
+        let canonical_dummy_exe = dummy_exe.canonicalize().unwrap();
+        let noncanonical_dummy_exe = temp_dir.join(".").join("current_exe");
+
+        assert!(!is_backend_candidate(&temp_dir, &dummy_exe));
+        assert!(!is_backend_candidate(&dummy_exe, &dummy_exe));
+        assert!(!is_backend_candidate(
+            &canonical_dummy_exe,
+            &noncanonical_dummy_exe
+        ));
+        assert!(!is_backend_candidate(
+            &noncanonical_dummy_exe,
+            &canonical_dummy_exe
+        ));
+        assert!(!is_backend_candidate(
+            &temp_dir.join("nonexistent"),
+            &dummy_exe
+        ));
+
+        let non_exec = temp_dir.join("non_exec_binary");
+        let _ = std::fs::write(&non_exec, b"binary content");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&non_exec).unwrap().permissions();
+            perms.set_mode(0o644);
+            let _ = std::fs::set_permissions(&non_exec, perms);
+            assert!(!is_backend_candidate(&non_exec, &dummy_exe));
+        }
+
+        let exec_bin = temp_dir.join("exec_binary");
+        let _ = std::fs::write(&exec_bin, b"binary content");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&exec_bin).unwrap().permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&exec_bin, perms);
+            assert!(is_backend_candidate(&exec_bin, &dummy_exe));
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

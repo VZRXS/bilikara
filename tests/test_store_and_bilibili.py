@@ -2046,6 +2046,7 @@ class BilibiliParserTest(unittest.TestCase):
             uid_file = data_dir / "gatcha_uids.json"
             cache_file = data_dir / "gatcha_cache.json"
             favlist_file = data_dir / "gatcha_favlist.json"
+            pool_file = data_dir / "gatcha_pool_config.json"
             uid_file.write_text(json.dumps({"uids": []}), encoding="utf-8")
             cache_file.write_text(json.dumps({"schema_version": 2, "uids": {}, "profiles": {}}), encoding="utf-8")
             favlist_file.write_text(
@@ -2073,6 +2074,7 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
                 patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
                 patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
+                patch.object(bilibili_module, "_GATCHA_POOL_CONFIG_FILE", pool_file),
             ):
                 results = bilibili_module.search_gatcha_cache("fav local")
                 candidate = bilibili_module.fetch_gatcha_candidate()
