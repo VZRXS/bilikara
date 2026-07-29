@@ -166,7 +166,8 @@
   --rating-card-bg: rgba(255, 250, 244, 0.96);
   --rating-card-border: 1px solid rgba(87, 63, 43, 0.12);
   --rating-card-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
-  --rating-close-bg: rgba(109, 98, 88, 0.12);
+  --rating-close-bg: rgba(109, 98, 88, 0.16);
+  --rating-close-hover-bg: rgba(109, 98, 88, 0.28);
   --rating-tab-bg: rgba(67, 53, 41, 0.05);
   --rating-tab-border: 1px solid var(--line);
   --rating-tab-color: var(--muted);
@@ -6838,6 +6839,7 @@ select:disabled {
   --rating-card-border: 1px solid rgba(125, 211, 252, 0.2);
   --rating-card-shadow: 0 24px 90px rgba(2, 8, 23, 0.72), 0 0 36px rgba(56, 189, 248, 0.14);
   --rating-close-bg: rgba(148, 202, 233, 0.14);
+  --rating-close-hover-bg: rgba(148, 202, 233, 0.24);
   --rating-tab-bg: rgba(2, 6, 23, 0.44);
   --rating-tab-border: 1px solid rgba(125, 211, 252, 0.22);
   --rating-tab-color: #93a9bd;

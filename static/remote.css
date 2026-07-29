@@ -399,14 +399,16 @@ h1 {
   min-width: 0;
   flex: 0 0 auto;
   transition:
-    transform 0.15s ease,
+    transform 0.12s ease,
     background 0.15s ease,
     color 0.15s ease;
 }
 
-.display-popover .mode-button:hover {
-  transform: translateY(-1px);
-  color: var(--ink);
+@media (hover: hover) and (pointer: fine) {
+  .display-popover .mode-button:hover {
+    transform: translateY(-1px);
+    color: var(--ink);
+  }
 }
 
 .display-popover .mode-button.active {
@@ -501,12 +503,19 @@ h1 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--qr-popover-close-bg);
-  color: var(--muted);
+  background: var(--rating-close-bg);
+  color: var(--ink);
   cursor: pointer;
   font-size: 20px;
   line-height: 0;
   padding: 0 0 2px 1px;
+  transition: background 0.2s ease, transform 0.12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .remote-qr-popover-close:hover {
+    background: var(--rating-close-hover-bg);
+  }
 }
 
 .remote-qr-popover-image-wrap {
@@ -935,12 +944,20 @@ h1 {
   white-space: nowrap;
 }
 
-.remote-step-button:hover,
-.remote-reset-button:hover,
-.remote-mute-button:hover {
-  background: rgba(255, 255, 255, 0.95);
-  border-color: var(--player-btn-hover-border);
-  box-shadow: none;
+.remote-step-button,
+.remote-reset-button,
+.remote-mute-button {
+  transition: transform 0.12s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .remote-step-button:hover,
+  .remote-reset-button:hover,
+  .remote-mute-button:hover {
+    background: rgba(255, 255, 255, 0.95);
+    border-color: var(--player-btn-hover-border);
+    box-shadow: none;
+  }
 }
 
 .remote-mute-button.is-muted {
@@ -1105,8 +1122,10 @@ h1 {
   box-shadow: none;
 }
 
-#remote-av-sync-panel .remote-lock-button:not(:disabled):hover {
-  filter: var(--av-lock-hover-filter);
+@media (hover: hover) and (pointer: fine) {
+  #remote-av-sync-panel .remote-lock-button:not(:disabled):hover {
+    filter: var(--av-lock-hover-filter);
+  }
 }
 
 #remote-av-sync-panel .remote-lock-button:focus-visible {
@@ -1207,9 +1226,11 @@ h1 {
     opacity 0.18s ease;
 }
 
-.player-control-row button:hover {
-  background: var(--player-btn-hover-bg);
-  border-color: var(--player-btn-hover-border);
+@media (hover: hover) and (pointer: fine) {
+  .player-control-row button:hover {
+    background: var(--player-btn-hover-bg);
+    border-color: var(--player-btn-hover-border);
+  }
 }
 
 .player-control-row button:active {
@@ -1694,6 +1715,7 @@ select:disabled {
   border-radius: 16px;
   padding: 12px 14px;
   cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
 }
 
 .primary-button {
@@ -1701,9 +1723,11 @@ select:disabled {
   color: white;
 }
 
-.primary-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px var(--btn-hover-shadow);
+@media (hover: hover) and (pointer: fine) {
+  .primary-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px var(--btn-hover-shadow);
+  }
 }
 
 .secondary-button,
@@ -2307,9 +2331,15 @@ select:disabled {
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 
-.follow-up-button:hover {
-  border-color: rgba(202, 91, 60, 0.24);
-  background: rgba(255, 255, 255, 0.94);
+.follow-up-button {
+  transition: transform 0.12s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .follow-up-button:hover {
+    border-color: rgba(202, 91, 60, 0.24);
+    background: rgba(255, 255, 255, 0.94);
+  }
 }
 
 .follow-up-button:active {
@@ -3513,7 +3543,7 @@ body.remote-identity-modal-open {
 }
 
 .remote-identity-actions .primary-button:only-child,
-.remote-identity-actions .hidden + .primary-button {
+.remote-identity-actions .hidden+.primary-button {
   grid-column: 1 / -1;
 }
 
@@ -3598,8 +3628,14 @@ body.remote-identity-modal-open {
   padding: 0 0 2px 1px;
 }
 
-.rating-close:hover {
-  background: var(--rating-close-hover-bg);
+.rating-close {
+  transition: background 0.2s ease, transform 0.12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .rating-close:hover {
+    background: var(--rating-close-hover-bg);
+  }
 }
 
 .rating-tabs {
@@ -3761,7 +3797,14 @@ body.remote-identity-modal-open {
   user-select: none;
 }
 
-.remote-info-button:hover,
+@media (hover: hover) and (pointer: fine) {
+  .remote-info-button:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}
+
 .info-trigger-wrap.show-tooltip .remote-info-button {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -3842,9 +3885,11 @@ body.remote-identity-modal-open {
   padding: 0;
 }
 
-.floating-control-trigger:hover {
-  transform: scale(1.08);
-  box-shadow: var(--floating-control-trigger-hover-shadow);
+@media (hover: hover) and (pointer: fine) {
+  .floating-control-trigger:hover {
+    transform: scale(1.08);
+    box-shadow: var(--floating-control-trigger-hover-shadow);
+  }
 }
 
 .floating-control-trigger:active {
@@ -3951,7 +3996,7 @@ body.remote-identity-modal-open {
   height: 32px;
   border: 0;
   border-radius: 50%;
-  background: var(--floating-close-bg);
+  background: var(--rating-close-bg);
   color: var(--ink);
   display: flex;
   align-items: center;
@@ -3963,8 +4008,14 @@ body.remote-identity-modal-open {
   padding: 0 0 2px 1px;
 }
 
-.floating-control-close:hover {
-  background: var(--floating-close-hover-bg);
+.floating-control-close {
+  transition: background 0.2s ease, transform 0.12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .floating-control-close:hover {
+    background: var(--rating-close-hover-bg);
+  }
 }
 
 .floating-control-body {
@@ -4177,9 +4228,10 @@ body.remote-identity-modal-open {
   --scrollbar-thumb-hover-bg: rgba(224, 108, 83, 0.4);
   --toast-bg: rgba(30, 26, 23, 0.94);
   --toast-border: 1px solid rgba(246, 241, 235, 0.15);
---toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
+  --toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
   --btn-hover-shadow: transparent;
 }
+
 /* --- BLUE BLACK THEME OVERRIDES --- */
 :root[data-theme="blue"] {
   --bg: #06111f;
@@ -4430,7 +4482,7 @@ body.remote-identity-modal-open {
   --scrollbar-track-bg: rgba(255, 255, 255, 0.05);
   --scrollbar-thumb-bg: rgba(0, 210, 255, 0.28);
   --scrollbar-thumb-hover-bg: rgba(0, 210, 255, 0.42);
---toast-bg: rgba(17, 25, 40, 0.94);
+  --toast-bg: rgba(17, 25, 40, 0.94);
   --toast-border: 1px solid rgba(255, 255, 255, 0.14);
   --btn-hover-shadow: rgba(0, 210, 255, 0.22);
 }
@@ -4460,12 +4512,14 @@ body.remote-identity-modal-open {
   color: var(--ink);
 }
 
-:root:is([data-theme="dark"], [data-theme="blue"]) .remote-step-button:hover,
-:root:is([data-theme="dark"], [data-theme="blue"]) .remote-reset-button:hover,
-:root:is([data-theme="dark"], [data-theme="blue"]) .remote-mute-button:hover,
-:root:is([data-theme="dark"], [data-theme="blue"]) .follow-up-button:hover {
-  background: var(--dark-control-hover-bg);
-  border-color: var(--dark-control-hover-border-color);
+@media (hover: hover) and (pointer: fine) {
+  :root:is([data-theme="dark"], [data-theme="blue"]) .remote-step-button:hover,
+  :root:is([data-theme="dark"], [data-theme="blue"]) .remote-reset-button:hover,
+  :root:is([data-theme="dark"], [data-theme="blue"]) .remote-mute-button:hover,
+  :root:is([data-theme="dark"], [data-theme="blue"]) .follow-up-button:hover {
+    background: var(--dark-control-hover-bg);
+    border-color: var(--dark-control-hover-border-color);
+  }
 }
 
 :root:is([data-theme="dark"], [data-theme="blue"]) .audio-variant-button.pending-bind {
@@ -4570,13 +4624,16 @@ body.remote-identity-modal-open {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: background-color 0.2s, color 0.2s;
+  transition: background-color 0.2s, color 0.2s, transform 0.12s ease;
   padding: 0;
   vertical-align: middle;
 }
-.queue-retry-button:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--accent);
+
+@media (hover: hover) and (pointer: fine) {
+  .queue-retry-button:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--accent);
+  }
 }
 
 .current-cache-retry {
@@ -4590,11 +4647,70 @@ body.remote-identity-modal-open {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: background-color 0.2s, transform 0.12s ease;
   padding: 0;
   vertical-align: middle;
   margin-left: 4px;
 }
-.current-cache-retry:hover {
-  background: rgba(255, 255, 255, 0.15);
+
+@media (hover: hover) and (pointer: fine) {
+  .current-cache-retry:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+}
+
+/* Touch and coarse-pointer Remote UI refinements */
+@media (hover: none), (pointer: coarse) {
+  .display-popover .mode-button:hover,
+  .primary-button:hover,
+  .floating-control-trigger:hover,
+  .follow-up-button:hover,
+  .remote-step-button:hover,
+  .remote-reset-button:hover,
+  .remote-mute-button:hover,
+  .player-control-row button:hover {
+    transform: none;
+  }
+
+  .primary-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .secondary-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .ghost-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .toggle-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .display-popover .mode-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-step-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-reset-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-mute-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .tag-letter-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .tag-browser-tag:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .category-browser-card:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .category-browser-tab:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-search-modal-tab:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .queue-retry-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .current-cache-retry:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .rating-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-qr-popover-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .floating-control-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
+    transform: scale(0.97);
+  }
+}
+
+/* Disabled and busy controls transform neutralization */
+button:disabled,
+[aria-disabled="true"],
+[aria-busy="true"],
+.primary-button:disabled,
+.secondary-button:disabled,
+.ghost-button:disabled,
+.toggle-button:disabled {
+  transform: none !important;
+}
+
+button:disabled:active,
+[aria-disabled="true"]:active,
+[aria-busy="true"]:active,
+.primary-button:disabled:active,
+.secondary-button:disabled:active,
+.ghost-button:disabled:active,
+.toggle-button:disabled:active {
+  transform: none !important;
 }

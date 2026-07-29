@@ -2206,7 +2206,7 @@ def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
         )
         if len(results) >= max(1, int(limit)):
             break
-    return results
+    return _annotate_gatcha_owner_avatars(results)
 
 
 def _gatcha_entry_payload(entry: dict) -> dict:
@@ -2223,6 +2223,69 @@ def _gatcha_entry_payload(entry: dict) -> dict:
         if value:
             payload[key] = value
     return payload
+
+
+def _cached_gatcha_profile_indexes() -> tuple[dict[str, dict], dict[str, dict]]:
+    with _GATCHA_UIDS_LOCK:
+        uid_payload = _load_gatcha_uid_payload()
+    with _GATCHA_CACHE_LOCK:
+        cache_payload = _load_gatcha_cache()
+
+    profiles_by_uid: dict[str, dict] = {}
+    for payload in (cache_payload, uid_payload):
+        profiles = payload.get("profiles") if isinstance(payload, dict) else {}
+        if not isinstance(profiles, dict):
+            continue
+        for raw_uid, raw_profile in profiles.items():
+            if not isinstance(raw_profile, dict):
+                continue
+            uid = str(raw_profile.get("uid") or raw_uid or "").strip()
+            if not uid:
+                continue
+            merged = dict(profiles_by_uid.get(uid) or {})
+            merged.update({key: value for key, value in raw_profile.items() if str(value or "").strip()})
+            profiles_by_uid[uid] = merged
+
+    profiles_by_name: dict[str, dict] = {}
+    duplicate_names: set[str] = set()
+    for profile in profiles_by_uid.values():
+        name_key = str(profile.get("name") or "").strip().casefold()
+        if not name_key:
+            continue
+        if name_key in profiles_by_name:
+            duplicate_names.add(name_key)
+            continue
+        profiles_by_name[name_key] = profile
+    for name_key in duplicate_names:
+        profiles_by_name.pop(name_key, None)
+    return profiles_by_uid, profiles_by_name
+
+
+def _annotate_gatcha_owner_avatars(items: list[dict]) -> list[dict]:
+    profiles_by_uid, profiles_by_name = _cached_gatcha_profile_indexes()
+    annotated: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        next_item = dict(item)
+        if str(next_item.get("owner_avatar_url") or next_item.get("avatar_url") or "").strip():
+            annotated.append(next_item)
+            continue
+
+        owner_name = str(next_item.get("owner_name") or next_item.get("author") or "").strip()
+        owner_name_key = owner_name.casefold()
+        profile = profiles_by_name.get(owner_name_key) if owner_name_key else None
+        if profile is None:
+            owner_uid = str(next_item.get("owner_mid") or next_item.get("mid") or "").strip()
+            uid_profile = profiles_by_uid.get(owner_uid)
+            uid_profile_name = str((uid_profile or {}).get("name") or "").strip().casefold()
+            if uid_profile is not None and (not owner_name_key or uid_profile_name == owner_name_key):
+                profile = uid_profile
+        avatar_url = str((profile or {}).get("avatar_url") or "").strip()
+        if avatar_url:
+            next_item["owner_avatar_url"] = avatar_url
+        annotated.append(next_item)
+    return annotated
 
 
 def annotate_gatcha_local_status(items: list[dict]) -> list[dict]:
@@ -2261,7 +2324,7 @@ def annotate_gatcha_local_status(items: list[dict]) -> list[dict]:
             next_item["local_source"] = "follow"
             next_item.setdefault("mid", str(local_entry.get("mid") or ""))
         annotated.append(next_item)
-    return annotated
+    return _annotate_gatcha_owner_avatars(annotated)
 
 
 def _profile_from_cached_entries(mid: str, entries: list[dict]) -> dict:

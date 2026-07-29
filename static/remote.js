@@ -12,6 +12,9 @@ const d1BrowseMergeMinLength = 5;
 const d1BrowseCountConcurrency = 4;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
 const categoryBrowsePageSize = 100;
+const searchResultItemByElement = new WeakMap();
+let searchDetailController = null;
+let searchModalCloseTimer = 0;
 const categoryBrowseDefinitionsRaw = [
   { key: "hotBlood", tags: ["热血", "战斗"] },
   { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
@@ -3086,6 +3089,7 @@ function setGatchaUidFlowMessage(target, message, isError = false) {
 function createSearchResultRow(item) {
   const row = document.createElement("article");
   row.className = "search-result-item";
+  searchResultItemByElement.set(row, item);
   const itemUrl = String(item?.url || "").trim();
   if (itemUrl) {
     row.dataset.url = itemUrl;
@@ -3155,7 +3159,7 @@ function createSearchResultRow(item) {
   button.type = "button";
   button.className = "primary-button search-result-add";
   button.dataset.url = itemUrl;
-  button.textContent = t("search.add");
+  button.textContent = t("search.detail");
 
   meta.append(title);
   if (statusLine.children.length) {
@@ -3978,17 +3982,80 @@ async function loadFavlistBrowse({
 }
 
 function setSearchModalOpen(open) {
-  state.searchModalOpen = Boolean(open);
-  elements.searchModal?.classList.toggle("hidden", !state.searchModalOpen);
-  document.body.classList.toggle("remote-search-modal-open", state.searchModalOpen);
-  if (state.searchModalOpen) {
+  const shouldOpen = Boolean(open);
+  state.searchModalOpen = shouldOpen;
+  if (shouldOpen) {
+    window.clearTimeout(searchModalCloseTimer);
+    searchModalCloseTimer = 0;
+    elements.searchModal?.classList.remove("hidden", "closing");
+    document.body.classList.add("remote-search-modal-open");
     renderSearchModalView(state.searchModalView || "search");
     window.setTimeout(() => {
       if (state.searchModalView === "search") {
         elements.searchModalLarkQuery?.focus();
       }
     }, 0);
+    return;
   }
+  searchDetailController?.close({ immediate: true });
+  if (!elements.searchModal || elements.searchModal.classList.contains("hidden")) {
+    document.body.classList.remove("remote-search-modal-open");
+    return;
+  }
+  if (elements.searchModal.classList.contains("closing")) {
+    return;
+  }
+  elements.searchModal.classList.add("closing");
+  window.clearTimeout(searchModalCloseTimer);
+  searchModalCloseTimer = window.setTimeout(() => {
+    elements.searchModal?.classList.add("hidden");
+    elements.searchModal?.classList.remove("closing");
+    document.body.classList.remove("remote-search-modal-open");
+    searchModalCloseTimer = 0;
+  }, 220);
+}
+
+function openSearchResultDetail(event, container, source) {
+  if (!searchDetailController || !container?.closest("#search-modal")) {
+    return false;
+  }
+  const card = event.target.closest(".search-result-item[data-url]");
+  if (!card || !container.contains(card)) {
+    return false;
+  }
+  const item = searchResultItemByElement.get(card);
+  if (!item) {
+    return false;
+  }
+  const avatarUrl = window.BilikaraSongDetail.ownerAvatarFromCachedOwners(
+    item,
+    state.followBrowseData?.owners,
+  );
+  event.preventDefault();
+  searchDetailController.open({
+    ...item,
+    avatar_url: avatarUrl,
+    detailSource: source,
+  });
+  return true;
+}
+
+function initSearchDetailController() {
+  if (searchDetailController || !window.BilikaraSongDetail) {
+    return;
+  }
+  const container = elements.searchModal?.querySelector(".remote-search-modal-card");
+  searchDetailController = window.BilikaraSongDetail.createSongDetailController({
+    container,
+    t,
+    requestButtonClass: "primary-button",
+    nextButtonClass: "secondary-button",
+    onRequest: (url, position, item) => addByUrl(
+      url,
+      position,
+      String(item?.detailSource || "modalSearch"),
+    ),
+  });
 }
 
 function renderSearchModalView(target = state.searchModalView || "search") {
@@ -6579,11 +6646,11 @@ async function resortPlaylistByCycle() {
 async function addByUrl(url, position = "tail", source = "search") {
   const requesterName = selectedRequesterName();
   if (!url || state.submitting) {
-    return;
+    return false;
   }
   if (!requesterName) {
     setMessageForSource(source, t("session.requireRequester"), true);
-    return;
+    return false;
   }
 
   state.submitting = true;
@@ -6592,7 +6659,7 @@ async function addByUrl(url, position = "tail", source = "search") {
     const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
     if (result.cancelled) {
       setMessageForSource(source, t("remote.cancelledDuplicate"));
-      return;
+      return false;
     }
     applyStateSnapshot(result.data, { forceRender: true });
     if (source === "search") {
@@ -6610,6 +6677,7 @@ async function addByUrl(url, position = "tail", source = "search") {
       renderGatchaUidView();
     }
     setMessageForSource(source, t("request.success"));
+    return true;
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(
@@ -6622,9 +6690,10 @@ async function addByUrl(url, position = "tail", source = "search") {
         },
         error.payload?.binding,
       );
-      return;
+      return false;
     }
     setMessageForSource(source, error.message, true);
+    return false;
   } finally {
     state.submitting = false;
   }
@@ -6848,6 +6917,9 @@ elements.searchModalLarkForm?.addEventListener("submit", async (event) => {
 });
 
 elements.searchModalLarkResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.searchModalLarkResults, "modalSearch")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.searchModalLarkResults.contains(target)) {
     return;
@@ -6912,6 +6984,9 @@ elements.favlistSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.favlistSongResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.favlistSongResults, "modalFavlist")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.favlistSongResults.contains(target)) {
     return;
@@ -7064,6 +7139,9 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
 });
 
 elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.searchModalOtherView, "modalBrowse")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.searchModalOtherView.contains(target)) {
     return;
@@ -7297,6 +7375,9 @@ elements.followSongResults?.addEventListener("click", async (event) => {
 });
 
 elements.modalFollowSongResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.modalFollowSongResults, "modalFollow")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.modalFollowSongResults.contains(target)) {
     return;
@@ -8191,6 +8272,7 @@ async function startRemoteSession() {
   hydrateLocalPreferences();
   initFloatingControlConsole();
   await loadTranslations();
+  initSearchDetailController();
   renderLayoutMode();
   renderRemoteIdentity();
   await fetchRemoteIdentity();

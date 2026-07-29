@@ -1213,6 +1213,51 @@ class PlaylistStoreTest(unittest.TestCase):
 
 
 class BilibiliParserTest(unittest.TestCase):
+    def test_cached_avatar_annotation_prefers_owner_name_for_collaboration(self):
+        profiles_by_uid = {
+            "671767": {"uid": "671767", "name": "VZRXS", "avatar_url": "vzrxs.jpg"},
+            "3145040": {"uid": "3145040", "name": "kevinx96", "avatar_url": "kevin.jpg"},
+        }
+        profiles_by_name = {profile["name"].casefold(): profile for profile in profiles_by_uid.values()}
+        items = [
+            {"bvid": "BV1tPC2BEEjq", "owner_name": "VZRXS", "mid": "3145040"},
+            {"bvid": "BVMATCH", "owner_name": "kevinx96", "mid": "3145040"},
+            {"bvid": "BVMISMATCH", "owner_name": "someone else", "mid": "3145040"},
+        ]
+
+        with patch.object(
+            bilibili_module,
+            "_cached_gatcha_profile_indexes",
+            return_value=(profiles_by_uid, profiles_by_name),
+        ):
+            annotated = bilibili_module._annotate_gatcha_owner_avatars(items)
+
+        self.assertEqual(annotated[0]["owner_avatar_url"], "vzrxs.jpg")
+        self.assertEqual(annotated[1]["owner_avatar_url"], "kevin.jpg")
+        self.assertNotIn("owner_avatar_url", annotated[2])
+
+    def test_local_search_returns_cached_owner_avatar_without_browse_request(self):
+        profile = {"uid": "671767", "name": "VZRXS", "avatar_url": "vzrxs.jpg"}
+        entry = {
+            "mid": "3145040",
+            "bvid": "BV1tPC2BEEjq",
+            "title": "agony karaoke",
+            "url": "https://www.bilibili.com/video/BV1tPC2BEEjq",
+            "owner_name": "VZRXS",
+        }
+        with (
+            patch.object(bilibili_module, "_local_gatcha_candidates", return_value=[entry]),
+            patch.object(bilibili_module, "_local_gatcha_favlist_candidates", return_value=[]),
+            patch.object(
+                bilibili_module,
+                "_cached_gatcha_profile_indexes",
+                return_value=({"671767": profile}, {"vzrxs": profile}),
+            ),
+        ):
+            results = bilibili_module.search_gatcha_cache("agony")
+
+        self.assertEqual(results[0]["owner_avatar_url"], "vzrxs.jpg")
+
     def test_clean_display_title_removes_brackets_and_part_suffix(self):
         cleaned = clean_display_title(
             title="\u3010pure k | nico karaoke | troupe\u3011Song Name",

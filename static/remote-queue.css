@@ -253,9 +253,17 @@
   background: var(--danger-btn-bg);
 }
 
-.queue-actions .danger-button:hover,
-.queue-actions .danger-button:focus-visible {
-  background: var(--danger-btn-hover-bg);
+@media (hover: hover) and (pointer: fine) {
+  .queue-actions .danger-button:hover,
+  .queue-actions .danger-button:focus-visible {
+    background: var(--danger-btn-hover-bg);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .queue-actions .danger-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
+    transform: scale(0.97);
+  }
 }
 
 .queue-list.drag-active,

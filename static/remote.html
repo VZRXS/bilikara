@@ -9,6 +9,7 @@
     />
     <title data-i18n="document.remoteTitle">bilikara remote</title>
     <link rel="stylesheet" href="/remote.css" />
+    <link rel="stylesheet" href="/song-detail.css" />
     <link rel="stylesheet" href="/remote-queue.css" />
   </head>
   <body>
@@ -312,7 +313,8 @@
               <p class="panel-tag" data-i18n="search.modalLibrary">搜索库</p>
               <h2 id="search-modal-title" data-i18n="search.modalLibrary">搜索库</h2>
             </div>
-            <button type="button" id="search-modal-close" class="ghost-button remote-search-modal-close" data-i18n="common.close">关闭</button>
+            <button type="button" id="search-modal-close" class="remote-search-modal-close"
+              aria-label="关闭" data-i18n-aria-label="common.close">×</button>
           </div>
           <div class="remote-search-modal-tabs" role="tablist" aria-label="Search library">
             <button type="button" class="remote-search-modal-tab active" data-target="search" data-i18n="search.modalSearch">搜索</button>
@@ -807,6 +809,7 @@
 
     <script src="/export-guard.js" defer></script>
     <script src="/export-download.js" defer></script>
+    <script src="/song-detail.js" defer></script>
     <script src="/remote.js" defer></script>
     <script src="/remote-queue.js" defer></script>
   </body>

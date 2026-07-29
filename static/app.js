@@ -27,6 +27,9 @@ const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.sear
   .has("bilikara_smoke_bypass_fullscreen");
 const developerModeRequesterName = "VZRXS";
 const projectUrl = "https://github.com/VZRXS/bilikara";
+const searchResultItemByElement = new WeakMap();
+let searchDetailController = null;
+let searchModalCloseTimer = 0;
 
 function openExternalUrl(url) {
   if (window.__TAURI__) {
@@ -2736,6 +2739,7 @@ function createSearchResultUrlLine(item) {
 function createSearchResultItem(item) {
   const row = document.createElement("article");
   row.className = "search-result-item";
+  searchResultItemByElement.set(row, item);
   const itemUrl = String(item?.url || "").trim();
   const bvid = searchResultBvid(item);
   if (itemUrl) {
@@ -2844,7 +2848,14 @@ function renderSearchResultItems(container, items, emptyText = t("search.empty")
   }
 
   items.forEach((item) => {
-    container.appendChild(createSearchResultItem(item));
+    const row = createSearchResultItem(item);
+    if (container.closest("#search-modal")) {
+      const button = row.querySelector(".search-result-add");
+      if (button) {
+        button.textContent = t("search.detail");
+      }
+    }
+    container.appendChild(row);
   });
 }
 
@@ -2859,7 +2870,14 @@ function appendSearchResultItems(container, items) {
   container.classList.remove("hidden");
 
   items.forEach((item) => {
-    container.appendChild(createSearchResultItem(item));
+    const row = createSearchResultItem(item);
+    if (container.closest("#search-modal")) {
+      const button = row.querySelector(".search-result-add");
+      if (button) {
+        button.textContent = t("search.detail");
+      }
+    }
+    container.appendChild(row);
   });
 }
 
@@ -9282,7 +9300,7 @@ async function handleAdd(position, anchorPoint) {
 async function handleAddByUrl(url, position, anchorPoint, source = "search") {
   const requesterName = validatedRequesterNameForAdd();
   if (!requesterName) {
-    return;
+    return false;
   }
   const isHistory = source === "history";
   setMessageForSource(source, isHistory ? t("history.addingFromHistory") : t("request.parsing"));
@@ -9294,6 +9312,7 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
     setMessageForSource(source, message);
     setAppMessage(message);
     render();
+    return true;
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingModal(
@@ -9306,7 +9325,7 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
         },
         error.payload?.binding,
       );
-      return;
+      return false;
     }
     if (error.code === "duplicate_session_request") {
       openConfirm({
@@ -9325,9 +9344,10 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
         y: anchorPoint?.y ?? anchorPointForEvent({}, isHistory ? elements.historyList : elements.addForm).y,
       });
       setMessageForSource(source, t("request.duplicateHint"));
-      return;
+      return false;
     }
     setMessageForSource(source, error.message, true);
+    return false;
   }
 }
 
@@ -10364,7 +10384,63 @@ function searchResultRequestTarget(event, container) {
   };
 }
 
+function setSearchCardDetailMode(active) {
+  elements.searchCardContent?.querySelectorAll(".search-result-add").forEach((button) => {
+    button.textContent = t(active ? "search.detail" : "search.add");
+  });
+}
+
+function openSearchResultDetail(event, container, source) {
+  if (!searchDetailController || !container?.closest("#search-modal")) {
+    return false;
+  }
+  if (event.target.closest("button[data-dev-action]")) {
+    return false;
+  }
+  const card = event.target.closest(".search-result-item[data-url]");
+  if (!card || !container.contains(card)) {
+    return false;
+  }
+  const item = searchResultItemByElement.get(card);
+  if (!item) {
+    return false;
+  }
+  const avatarUrl = window.BilikaraSongDetail.ownerAvatarFromCachedOwners(
+    item,
+    state.followBrowseData?.owners,
+  );
+  event.preventDefault();
+  searchDetailController.open({
+    ...item,
+    avatar_url: avatarUrl,
+    detailSource: source,
+  });
+  return true;
+}
+
+function initSearchDetailController() {
+  if (searchDetailController || !window.BilikaraSongDetail) {
+    return;
+  }
+  const container = elements.searchModal?.querySelector(".search-modal-card");
+  searchDetailController = window.BilikaraSongDetail.createSongDetailController({
+    container,
+    t,
+    requestButtonClass: "next-button",
+    nextButtonClass: "toolbar-button",
+    onRequest: (url, position, item) => handleAddByUrl(
+      url,
+      position,
+      anchorPointForEvent({}, searchDetailController?.root || container),
+      String(item?.detailSource || "modalSearch"),
+    ),
+  });
+}
+
 elements.searchResults.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.searchResults, "search")) {
+    return;
+  }
   const target = searchResultRequestTarget(event, elements.searchResults);
   if (!target) {
     return;
@@ -10479,6 +10555,9 @@ elements.larkSearchHitboxQuery?.addEventListener("input", () => {
 });
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.larkSearchResults, "lark")) {
+    return;
+  }
   const target = searchResultRequestTarget(event, elements.larkSearchResults);
   if (!target) {
     return;
@@ -11927,10 +12006,12 @@ document.addEventListener("webkitfullscreenchange", handleRatingFullscreenChange
 
 elements.requesterSelect?.addEventListener("change", handleRequesterSelectionChange);
 
-elements.searchExpandButton?.addEventListener("click", () => {
+function openExpandedSearchModal() {
   if (elements.searchModalPlaceholder && elements.searchCardContent && elements.searchModal) {
+    window.clearTimeout(searchModalCloseTimer);
+    searchModalCloseTimer = 0;
     elements.searchModalPlaceholder.appendChild(elements.searchCardContent);
-    elements.searchModal.classList.remove("hidden");
+    elements.searchModal.classList.remove("hidden", "closing");
     elements.searchModalPlaceholder.classList.remove("hidden");
     elements.favlistBrowserView?.classList.add("hidden");
     elements.searchModalOtherView?.classList.add("hidden");
@@ -11940,28 +12021,40 @@ elements.searchExpandButton?.addEventListener("click", () => {
     if (elements.searchExpandButton) {
       elements.searchExpandButton.style.display = "none";
     }
+    setSearchCardDetailMode(true);
   }
-});
+}
 
-elements.searchModalClose?.addEventListener("click", () => {
-  if (elements.searchOriginalContainer && elements.searchCardContent && elements.searchModal) {
+function closeExpandedSearchModal() {
+  if (
+    !elements.searchOriginalContainer
+    || !elements.searchCardContent
+    || !elements.searchModal
+    || elements.searchModal.classList.contains("hidden")
+    || elements.searchModal.classList.contains("closing")
+  ) {
+    return;
+  }
+  searchDetailController?.close({ immediate: true });
+  elements.searchModal.classList.add("closing");
+  window.clearTimeout(searchModalCloseTimer);
+  searchModalCloseTimer = window.setTimeout(() => {
     elements.searchOriginalContainer.appendChild(elements.searchCardContent);
     elements.searchModal.classList.add("hidden");
+    elements.searchModal.classList.remove("closing");
+    setSearchCardDetailMode(false);
     if (elements.searchExpandButton) {
       elements.searchExpandButton.style.display = "";
     }
-  }
-});
+    searchModalCloseTimer = 0;
+  }, 220);
+}
 
-elements.searchModalBackdrop?.addEventListener("click", () => {
-  if (elements.searchOriginalContainer && elements.searchCardContent && elements.searchModal) {
-    elements.searchOriginalContainer.appendChild(elements.searchCardContent);
-    elements.searchModal.classList.add("hidden");
-    if (elements.searchExpandButton) {
-      elements.searchExpandButton.style.display = "";
-    }
-  }
-});
+elements.searchExpandButton?.addEventListener("click", openExpandedSearchModal);
+
+elements.searchModalClose?.addEventListener("click", closeExpandedSearchModal);
+
+elements.searchModalBackdrop?.addEventListener("click", closeExpandedSearchModal);
 
 elements.searchSidebarItems?.forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -12171,6 +12264,9 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
 });
 
 elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.searchModalOtherView, "modalBrowse")) {
+    return;
+  }
   const target = searchResultRequestTarget(event, elements.searchModalOtherView);
   if (!target?.url || (target.button && target.button.disabled)) {
     return;
@@ -12253,6 +12349,9 @@ elements.followSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.followSongResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.followSongResults, "modalFollow")) {
+    return;
+  }
   const target = searchResultRequestTarget(event, elements.followSongResults);
   if (!target) {
     return;
@@ -12312,6 +12411,9 @@ elements.favlistSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.favlistSongResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.favlistSongResults, "modalFavlist")) {
+    return;
+  }
   const target = searchResultRequestTarget(event, elements.favlistSongResults);
   if (!target) {
     return;
@@ -12474,6 +12576,7 @@ elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
 async function startPolling() {
   hydrateLocalPreferences();
   await loadTranslations();
+  initSearchDetailController();
   renderLayoutMode();
   try {
     await reportMediaCapabilities();
