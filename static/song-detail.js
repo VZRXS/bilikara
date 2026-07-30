@@ -15,6 +15,67 @@
     return "";
   }
 
+  function normalizeBvidValue(value) {
+    const candidate = stringValue(value);
+    return /^bv[0-9a-z]+$/i.test(candidate) ? `BV${candidate.slice(2)}` : "";
+  }
+
+  function bvidFromBilibiliUrl(value) {
+    const candidate = stringValue(value);
+    if (!candidate) {
+      return "";
+    }
+    try {
+      const parsed = new URL(candidate);
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname !== "bilibili.com" && !hostname.endsWith(".bilibili.com")) {
+        return "";
+      }
+      const match = parsed.pathname.match(/^\/video\/(bv[0-9a-z]+)(?:\/|$)/i);
+      return normalizeBvidValue(match?.[1]);
+    } catch {
+      return "";
+    }
+  }
+
+  function normalizedBvid(item) {
+    const direct = stringValue(item?.bvid);
+    if (direct) {
+      return normalizeBvidValue(direct);
+    }
+    for (const key of ["url", "resolved_url", "original_url"]) {
+      const recovered = bvidFromBilibiliUrl(item?.[key]);
+      if (recovered) {
+        return recovered;
+      }
+    }
+    return "";
+  }
+
+  function canonicalBilibiliUrl(item) {
+    const bvid = normalizedBvid(item);
+    return bvid ? `https://www.bilibili.com/video/${bvid}` : "";
+  }
+
+  function renderBilibiliMetadata(elements, item, translate) {
+    const bvid = normalizedBvid(item);
+    const bilibiliUrl = canonicalBilibiliUrl(item);
+    elements.bvid.textContent = bvid;
+    elements.bvid.classList.toggle("hidden", !bvid);
+    elements.bilibiliLink.textContent = bvid ? translate("search.openOnBilibili") : "";
+    elements.bilibiliLink.classList.toggle("hidden", !bvid);
+    if (bilibiliUrl) {
+      elements.bilibiliLink.href = bilibiliUrl;
+      elements.bilibiliLink.removeAttribute("aria-disabled");
+      elements.bilibiliLink.removeAttribute("tabindex");
+    } else {
+      elements.bilibiliLink.removeAttribute("href");
+      elements.bilibiliLink.setAttribute("aria-disabled", "true");
+      elements.bilibiliLink.setAttribute("tabindex", "-1");
+    }
+    return bilibiliUrl;
+  }
+
   function normalizedCoverUrl(item) {
     const cover = firstValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
     return cover.startsWith("//") ? `https:${cover}` : cover;
@@ -93,6 +154,7 @@
     const container = options?.container;
     const translate = typeof options?.t === "function" ? options.t : (key) => key;
     const onRequest = typeof options?.onRequest === "function" ? options.onRequest : async () => false;
+    const onOpenExternal = typeof options?.onOpenExternal === "function" ? options.onOpenExternal : null;
     const requestButtonClass = stringValue(options?.requestButtonClass);
     const nextButtonClass = stringValue(options?.nextButtonClass);
     if (!container) {
@@ -118,6 +180,8 @@
                 <span class="song-detail-up-mark owner-badge" data-song-detail-up-mark>UP</span>
                 <strong data-song-detail-owner-name>—</strong>
               </div>
+              <div class="song-detail-bvid hidden" data-song-detail-bvid></div>
+              <a class="song-detail-bilibili-link hidden" data-song-detail-bilibili-link target="_blank" rel="noopener noreferrer"></a>
               <div class="song-detail-metrics">
                 <div class="song-detail-metric">
                   <span data-song-detail-plays-label></span>
@@ -146,6 +210,8 @@
       ownerAvatar: root.querySelector("[data-song-detail-owner-avatar]"),
       upMark: root.querySelector("[data-song-detail-up-mark]"),
       ownerName: root.querySelector("[data-song-detail-owner-name]"),
+      bvid: root.querySelector("[data-song-detail-bvid]"),
+      bilibiliLink: root.querySelector("[data-song-detail-bilibili-link]"),
       playsLabel: root.querySelector("[data-song-detail-plays-label]"),
       plays: root.querySelector("[data-song-detail-plays]"),
       ratingLabel: root.querySelector("[data-song-detail-rating-label]"),
@@ -159,6 +225,7 @@
 
     let activeItem = null;
     let activeUrl = "";
+    let activeBilibiliUrl = "";
     let generation = 0;
     let closeTimer = 0;
     let previouslyFocused = null;
@@ -200,6 +267,7 @@
       elements.duration.classList.toggle("hidden", !duration);
       elements.title.textContent = stringValue(item?.title) || stringValue(item?.bvid) || "Bilibili";
       elements.ownerName.textContent = firstValue(item, ["owner_name", "author"]) || translate("search.detailOwnerUnknown");
+      activeBilibiliUrl = renderBilibiliMetadata(elements, item, translate);
       const avatarUrl = normalizedAvatarUrl(item);
       elements.ownerAvatar.classList.toggle("hidden", !avatarUrl);
       elements.upMark.classList.toggle("hidden", Boolean(avatarUrl));
@@ -246,6 +314,8 @@
         root.setAttribute("aria-hidden", "true");
         activeItem = null;
         activeUrl = "";
+        activeBilibiliUrl = "";
+        renderBilibiliMetadata(elements, null, translate);
         if (previouslyFocused?.isConnected) {
           previouslyFocused.focus();
         }
@@ -279,6 +349,16 @@
     }
 
     elements.close.addEventListener("click", () => close());
+    elements.bilibiliLink.addEventListener("click", (event) => {
+      if (!activeBilibiliUrl) {
+        event.preventDefault();
+        return;
+      }
+      if (onOpenExternal) {
+        event.preventDefault();
+        onOpenExternal(activeBilibiliUrl);
+      }
+    });
     elements.request.addEventListener("click", () => request("tail"));
     elements.next.addEventListener("click", () => request("next"));
     root.addEventListener("keydown", (event) => {
@@ -298,7 +378,9 @@
   }
 
   global.BilikaraSongDetail = {
+    canonicalBilibiliUrl,
     createSongDetailController,
+    normalizedBvid,
     ownerAvatarFromCachedOwners,
   };
 })(window);

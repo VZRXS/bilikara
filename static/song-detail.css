@@ -232,6 +232,34 @@
   white-space: nowrap;
 }
 
+.song-detail-bvid {
+  color: var(--muted, #766d66);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.song-detail-bilibili-link {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.song-detail-bvid.hidden,
+.song-detail-bilibili-link.hidden {
+  display: none;
+}
+
+.song-detail-bilibili-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .song-detail-metrics {
   min-width: 0;
   display: flex;
@@ -323,6 +351,10 @@
     width: 32px;
     height: 32px;
     font-size: 23px;
+  }
+
+  .remote-search-modal .song-detail-close {
+    padding-bottom: 3px;
   }
 
   .selection-modal .search-modal-close {

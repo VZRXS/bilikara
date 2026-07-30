@@ -127,6 +127,169 @@ console.log(JSON.stringify({{
         self.assertNotIn("data-song-detail-parts", detail_js)
         self.assertNotIn("item?.pages", detail_js)
 
+    def test_detail_metadata_order_and_secure_bilibili_anchor(self):
+        source = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        owner = source.index('class="song-detail-owner" data-song-detail-owner')
+        bvid = source.index('class="song-detail-bvid hidden" data-song-detail-bvid')
+        link = source.index('class="song-detail-bilibili-link hidden" data-song-detail-bilibili-link')
+        metrics = source.index('class="song-detail-metrics"')
+
+        self.assertLess(owner, bvid)
+        self.assertLess(bvid, link)
+        self.assertLess(link, metrics)
+        anchor = re.search(r'<a class="song-detail-bilibili-link[\s\S]*?</a>', source)
+        self.assertIsNotNone(anchor)
+        self.assertIn('target="_blank"', anchor.group(0))
+        self.assertIn('rel="noopener noreferrer"', anchor.group(0))
+
+    def test_detail_bvid_normalization_and_canonical_url_are_behavioral(self):
+        source = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        helper_source = source[
+            source.index("function stringValue"):source.index("function normalizedCoverUrl")
+        ]
+        script = f"""
+{helper_source}
+const cases = {{
+  direct: normalizedBvid({{ bvid: "bvAb12" }}),
+  url: normalizedBvid({{ url: "https://www.bilibili.com/video/bvUrl123?spm_id_from=333" }}),
+  resolved: normalizedBvid({{ resolved_url: "https://m.bilibili.com/video/BV9x" }}),
+  original: normalizedBvid({{ original_url: "https://bilibili.com/video/bV7Y/" }}),
+  invalidDirectDoesNotFallThrough: normalizedBvid({{
+    bvid: "av123", url: "https://www.bilibili.com/video/BVvalid"
+  }}),
+  foreignUrl: normalizedBvid({{ url: "https://example.com/video/BVfake" }}),
+  unrelatedId: normalizedBvid({{ id: "BVwrong", aid: "BVwrong2", mid: "BVwrong3" }}),
+  shortValid: normalizedBvid({{ bvid: "BV1" }}),
+  canonical: canonicalBilibiliUrl({{ bvid: "bvAb12" }}),
+  unavailable: canonicalBilibiliUrl({{ url: "https://example.com/video/BVfake" }}),
+}};
+console.log(JSON.stringify(cases));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "direct": "BVAb12",
+                "url": "BVUrl123",
+                "resolved": "BV9x",
+                "original": "BV7Y",
+                "invalidDirectDoesNotFallThrough": "",
+                "foreignUrl": "",
+                "unrelatedId": "",
+                "shortValid": "BV1",
+                "canonical": "https://www.bilibili.com/video/BVAb12",
+                "unavailable": "",
+            },
+        )
+
+    def test_detail_bilibili_state_is_hidden_and_cleared_without_a_bvid(self):
+        source = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        helper_source = source[
+            source.index("function stringValue"):source.index("function normalizedCoverUrl")
+        ]
+        script = f"""
+{helper_source}
+function element() {{
+  const classes = new Set(["hidden"]);
+  return {{
+    textContent: "", href: "", attributes: {{}},
+    classList: {{
+      toggle(name, enabled) {{ enabled ? classes.add(name) : classes.delete(name); }},
+      contains(name) {{ return classes.has(name); }},
+    }},
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    removeAttribute(name) {{
+      delete this.attributes[name];
+      if (name === "href") this.href = "";
+    }},
+  }};
+}}
+const elements = {{ bvid: element(), bilibiliLink: element() }};
+const translate = (key) => ({{
+  "search.openOnBilibili": "跳转 B 站",
+}})[key];
+const firstUrl = renderBilibiliMetadata(elements, {{ bvid: "bvFirst" }}, translate);
+const before = {{
+  bvidText: elements.bvid.textContent,
+  bvidHidden: elements.bvid.classList.contains("hidden"),
+  linkText: elements.bilibiliLink.textContent,
+  linkHidden: elements.bilibiliLink.classList.contains("hidden"),
+  href: elements.bilibiliLink.href,
+}};
+const secondUrl = renderBilibiliMetadata(elements, {{ url: "https://example.com/not-bilibili" }}, translate);
+const after = {{
+  bvidText: elements.bvid.textContent,
+  bvidHidden: elements.bvid.classList.contains("hidden"),
+  linkText: elements.bilibiliLink.textContent,
+  linkHidden: elements.bilibiliLink.classList.contains("hidden"),
+  href: elements.bilibiliLink.href,
+  ariaDisabled: elements.bilibiliLink.attributes["aria-disabled"],
+  tabindex: elements.bilibiliLink.attributes.tabindex,
+}};
+console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, timeout=5, check=False
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "firstUrl": "https://www.bilibili.com/video/BVFirst",
+                "secondUrl": "",
+                "before": {
+                    "bvidText": "BVFirst",
+                    "bvidHidden": False,
+                    "linkText": "跳转 B 站",
+                    "linkHidden": False,
+                    "href": "https://www.bilibili.com/video/BVFirst",
+                },
+                "after": {
+                    "bvidText": "",
+                    "bvidHidden": True,
+                    "linkText": "",
+                    "linkHidden": True,
+                    "href": "",
+                    "ariaDisabled": "true",
+                    "tabindex": "-1",
+                },
+            },
+        )
+        close_source = self.function_source(source, "close", "request")
+        self.assertIn('activeBilibiliUrl = "";', close_source)
+        self.assertIn("renderBilibiliMetadata(elements, null, translate);", close_source)
+
+    def test_host_uses_external_open_callback_and_remote_keeps_native_anchor(self):
+        host = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        remote = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
+        detail = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        host_init_start = host.index("function initSearchDetailController")
+        host_init = host[host_init_start:host.index("\nelements.searchResults.addEventListener", host_init_start)]
+        remote_init = self.function_source(remote, "initSearchDetailController", "renderSearchModalView")
+
+        self.assertIn("onOpenExternal: openExternalUrl,", host_init)
+        self.assertNotIn("onOpenExternal", remote_init)
+        self.assertNotIn("/api/", remote_init)
+        self.assertIn('event.preventDefault();\n        onOpenExternal(activeBilibiliUrl);', detail)
+
+    def test_detail_bilibili_link_translation_exists_in_all_languages(self):
+        translations = json.loads((ROOT / "static" / "i18n.json").read_text(encoding="utf-8"))["languages"]
+        expected = {
+            "zh": "跳转 B 站",
+            "en": "Open on Bilibili",
+            "ja": "Bilibiliで開く",
+        }
+        for language, value in expected.items():
+            self.assertEqual(translations[language]["search.openOnBilibili"], value)
+            self.assertNotIn("search.detailBvidLabel", translations[language])
+
     def test_expanded_search_cards_open_details_before_ordering(self):
         host_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
@@ -256,6 +419,22 @@ console.log(JSON.stringify({{
             self.assertIn(selector, remote_css)
         self.assertGreaterEqual(remote_css.count("background: var(--rating-close-bg);"), 5)
         self.assertGreaterEqual(remote_css.count("background: var(--rating-close-hover-bg);"), 3)
+
+    def test_mobile_remote_song_detail_close_has_only_minimal_optical_correction(self):
+        detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
+        mobile_css = detail_css.split("@media (max-width: 680px) {", 1)[1].split(
+            "@media (prefers-reduced-motion: reduce)", 1
+        )[0]
+        close_rule = mobile_css.split(".remote-search-modal .song-detail-close {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("padding-bottom: 3px;", close_rule)
+        self.assertNotIn("padding-left", close_rule)
+        self.assertNotIn("padding-right", close_rule)
+        self.assertNotIn("transform", close_rule)
+        self.assertNotIn(".selection-modal .song-detail-close", mobile_css)
+        self.assertNotIn("translateY", mobile_css)
+        self.assertIn(">×</button>", detail_js := (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8"))
+        self.assertNotIn("<svg", detail_js)
 
 
 if __name__ == "__main__":

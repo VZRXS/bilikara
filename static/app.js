@@ -10428,6 +10428,7 @@ function initSearchDetailController() {
     t,
     requestButtonClass: "next-button",
     nextButtonClass: "toolbar-button",
+    onOpenExternal: openExternalUrl,
     onRequest: (url, position, item) => handleAddByUrl(
       url,
       position,
