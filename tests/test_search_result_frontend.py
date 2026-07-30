@@ -213,7 +213,7 @@ function element() {{
 }}
 const elements = {{ bvid: element(), bilibiliLink: element() }};
 const translate = (key) => ({{
-  "search.openOnBilibili": "跳转 B 站",
+  "search.openOnBilibili": "Open on Bilibili",
 }})[key];
 const firstUrl = renderBilibiliMetadata(elements, {{ bvid: "bvFirst" }}, translate);
 const before = {{
@@ -247,7 +247,7 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
                 "before": {
                     "bvidText": "BVFirst",
                     "bvidHidden": False,
-                    "linkText": "跳转 B 站",
+                    "linkText": "Open on Bilibili",
                     "linkHidden": False,
                     "href": "https://www.bilibili.com/video/BVFirst",
                 },
