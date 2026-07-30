@@ -5,6 +5,7 @@ from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime
+import http.cookiejar
 import json
 import math
 import os
@@ -49,7 +50,12 @@ from .config import (
     YTDLP_PATH_OVERRIDE,
     YTDLP_RELEASE_API,
 )
-from .bilibili import BilibiliError, effective_bilibili_cookie, fetch_dash_playurl
+from .bilibili import (
+    BilibiliError,
+    cookie_from_bbdown_data,
+    effective_bilibili_cookie,
+    fetch_dash_playurl,
+)
 from . import rust_backend
 from .store import PlaylistStore
 
@@ -68,6 +74,24 @@ CACHE_RETENTION_BUFFER_ITEMS = 3
 MAX_PARALLEL_TRACK_DOWNLOADS = 4
 DOWNKYI_TRACK_MAX_ATTEMPTS = 10
 DOWNKYI_TRACK_RETRY_WAIT_SECONDS = 3.0
+BILIBILI_QR_GENERATE_URL = (
+    "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+    "?source=main-fe-header"
+)
+BILIBILI_QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
+BILIBILI_QR_WAITING_SCAN = 86101
+BILIBILI_QR_WAITING_CONFIRMATION = 86090
+BILIBILI_QR_EXPIRED = 86038
+BILIBILI_LOGIN_COOKIE_ORDER = (
+    "SESSDATA",
+    "bili_jct",
+    "DedeUserID",
+    "DedeUserID__ckMd5",
+    "sid",
+    "buvid3",
+    "buvid4",
+    "b_nut",
+)
 SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS = 2.0
 try:
     ARIA2_CONNECTIONS_PER_TRACK = max(
@@ -279,7 +303,7 @@ class CacheManager:
         self.retry_requested_ids: set[str] = set()
         self.cache_interrupted_messages: dict[str, str] = {}
         self.log_dir = LOG_DIR
-        self.bbdown_login_process: subprocess.Popen[str] | None = None
+        self.bbdown_login_cancel_event: threading.Event | None = None
         self.bbdown_login_state = "idle"
         self.bbdown_login_message = "未登录"
         # self.bbdown_login_qr_text = ""
@@ -380,11 +404,20 @@ class CacheManager:
         }
 
     def bbdown_login_status(self) -> dict[str, Any]:
-        logged_in = self._bbdown_data_path().exists()
+        data_path = self._bbdown_data_path()
+        data_exists = data_path.exists()
+        logged_in = bool(cookie_from_bbdown_data(data_path))
         with self.lock:
-            if logged_in:
+            if self.bbdown_login_state == "failed":
+                logged_in = False
+                state = "failed"
+                message = self.bbdown_login_message
+            elif logged_in:
                 state = "logged_in"
                 message = "BBDown 已登录"
+            elif data_exists and self.bbdown_login_state not in {"starting", "waiting"}:
+                state = "failed"
+                message = "BBDown 登录完成，但 BBDown.data 中未检测到有效的 SESSDATA 和 bili_jct"
             else:
                 state = self.bbdown_login_state
                 message = self.bbdown_login_message
@@ -398,29 +431,37 @@ class CacheManager:
             }
 
     def start_bbdown_login(self, *, force_refresh_qr: bool = False) -> dict[str, Any]:
-        if self._bbdown_data_path().exists():
+        if cookie_from_bbdown_data(self._bbdown_data_path()):
             return self.bbdown_login_status()
-        process_to_stop: subprocess.Popen[str] | None = None
         with self.lock:
-            if self.bbdown_login_process and self.bbdown_login_process.poll() is None and not force_refresh_qr:
+            active_login = (
+                self.bbdown_login_cancel_event is not None
+                and not self.bbdown_login_cancel_event.is_set()
+                and self.bbdown_login_state in {"starting", "waiting"}
+            )
+            if active_login and not force_refresh_qr:
                 return self.bbdown_login_status()
-            if self.bbdown_login_process and self.bbdown_login_process.poll() is None:
-                process_to_stop = self.bbdown_login_process
-                self.bbdown_login_process = None
+            if self.bbdown_login_cancel_event is not None:
+                self.bbdown_login_cancel_event.set()
+            cancel_event = threading.Event()
+            self.bbdown_login_cancel_event = cancel_event
             self.bbdown_login_state = "starting"
             self.bbdown_login_message = "正在启动 BBDown 登录"
             # self.bbdown_login_qr_text = ""
             self.bbdown_login_qr_image = ""
-        self._terminate_process(process_to_stop)
         self._remove_bbdown_qr_image()
-        threading.Thread(target=self._bbdown_login_worker, daemon=True).start()
+        threading.Thread(
+            target=self._bbdown_login_worker,
+            args=(cancel_event,),
+            daemon=True,
+        ).start()
         return self.bbdown_login_status()
 
     def logout_bbdown(self) -> dict[str, Any]:
         with self.lock:
-            process = self.bbdown_login_process
-            self.bbdown_login_process = None
-        self._terminate_process(process)
+            if self.bbdown_login_cancel_event is not None:
+                self.bbdown_login_cancel_event.set()
+            self.bbdown_login_cancel_event = None
         self._remove_bbdown_qr_image()
         try:
             self._bbdown_data_path().unlink(missing_ok=True)
@@ -994,9 +1035,9 @@ class CacheManager:
             self.stop_event.set()
             processes = self._active_processes_locked()
             urgent_workers = list(self.urgent_workers.values())
-            if self.bbdown_login_process is not None:
-                processes.append(self.bbdown_login_process)
-                self.bbdown_login_process = None
+            if self.bbdown_login_cancel_event is not None:
+                self.bbdown_login_cancel_event.set()
+                self.bbdown_login_cancel_event = None
         self._terminate_processes(processes, wait=True)
         current_thread = threading.current_thread()
         for worker in urgent_workers:
@@ -6582,94 +6623,184 @@ class CacheManager:
             except subprocess.TimeoutExpired:
                 pass
 
-    def _bbdown_login_worker(self) -> None:
-            try:
-                self._remove_bbdown_qr_image()
-                binary_path = self._ensure_bbdown()
-            except Exception as exc:  # noqa: BLE001
-                with self.lock:
-                    self.bbdown_login_state = "failed"
-                    self.bbdown_login_message = f"BBDown 不可用: {exc}"
-                return
+    @staticmethod
+    def _bilibili_login_request_json(
+        opener: urllib.request.OpenerDirector,
+        url: str,
+    ) -> dict[str, Any]:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": BILIBILI_HEADERS["User-Agent"],
+                "Referer": "https://www.bilibili.com/",
+            },
+            method="GET",
+        )
+        with opener.open(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Bilibili login response is not an object")
+        return payload
 
-            command = [self._tool_arg_path(binary_path), "login"]
-            try:
-                process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-                    command,
-                    shell=False,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    encoding=SUBPROCESS_OUTPUT_ENCODING,
-                    errors="replace",
-                    bufsize=1,
-                    cwd=self._tool_arg_path(BB_DOWN_DIR),
-                    env=self._tool_process_env(binary_path),
-                    **self._hidden_process_kwargs(),
-                )
-            except OSError as exc:
-                with self.lock:
-                    self.bbdown_login_state = "failed"
-                    self.bbdown_login_message = f"启动 BBDown 登录失败: {exc}"
-                return
+    @staticmethod
+    def _write_bbdown_login_qr(qr_url: str, target_path: Path) -> str:
+        try:
+            import qrcode  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError("缺少本地二维码组件，请重新安装或更新 bilikara") from exc
 
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        qrcode.make(qr_url).save(target_path)
+        target_path.chmod(0o600)
+        encoded = base64.b64encode(target_path.read_bytes()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    @staticmethod
+    def _cookie_text_from_login_jar(cookie_jar: http.cookiejar.CookieJar) -> str:
+        pairs: dict[str, str] = {}
+        for cookie in cookie_jar:
+            name = str(cookie.name or "").strip()
+            value = str(cookie.value or "").strip()
+            if name and value:
+                pairs[name] = value
+
+        lower_names = {name.lower(): name for name in pairs}
+        if "sessdata" not in lower_names or "bili_jct" not in lower_names:
+            return ""
+
+        ordered_names: list[str] = []
+        for preferred in BILIBILI_LOGIN_COOKIE_ORDER:
+            actual = lower_names.get(preferred.lower())
+            if actual and actual not in ordered_names:
+                ordered_names.append(actual)
+        return "; ".join(f"{name}={pairs[name]}" for name in ordered_names)
+
+    def _save_bbdown_login_cookie(self, cookie_text: str) -> bool:
+        data_path = self._bbdown_data_path()
+        temporary_path = data_path.with_name(f".{data_path.name}.login.tmp")
+        try:
+            data_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path.write_text(cookie_text, encoding="utf-8")
+            temporary_path.chmod(0o600)
+            os.replace(temporary_path, data_path)
+            data_path.chmod(0o600)
+        except OSError:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+        return bool(cookie_from_bbdown_data(data_path))
+
+    def _bbdown_login_worker(self, cancel_event: threading.Event | None = None) -> None:
+        cancel_event = cancel_event or threading.Event()
+        with self.lock:
+            if self.bbdown_login_cancel_event is None:
+                self.bbdown_login_cancel_event = cancel_event
+
+        login_succeeded = False
+        notify_success = False
+        failure_message = "Bilibili 登录失败，请重试"
+        cookie_jar = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cookie_jar)
+        )
+
+        try:
+            generated = self._bilibili_login_request_json(
+                opener,
+                BILIBILI_QR_GENERATE_URL,
+            )
+            generated_data = generated.get("data")
+            if not isinstance(generated_data, dict):
+                raise ValueError("Bilibili QR response has no data object")
+            qr_url = str(generated_data.get("url") or "").strip()
+            qr_key = str(generated_data.get("qrcode_key") or "").strip()
+            if not qr_url or not qr_key:
+                raise ValueError("Bilibili QR response is incomplete")
+
+            qr_image = self._write_bbdown_login_qr(
+                qr_url,
+                self._bbdown_qr_image_path(),
+            )
             with self.lock:
-                self.bbdown_login_process = process
+                if self.bbdown_login_cancel_event is not cancel_event:
+                    return
                 self.bbdown_login_state = "waiting"
                 self.bbdown_login_message = "请使用哔哩哔哩 App 扫码登录"
+                self.bbdown_login_qr_image = qr_image
 
-            output_lines: list[str] = []
-            try:
-                assert process.stdout is not None
-                for raw_line in self._iter_output_messages(process.stdout):
-                    line = self._normalize_output_line(raw_line)
-                    if not line:
-                        continue
-                    output_lines.append(line)
-                    del output_lines[:-80]
-                    
-                    qr_image_path = self._bbdown_qr_image_path()
-                    qr_image = "" 
-                    
-                    try:
-                        if qr_image_path.stat().st_size > 0:
-                            with qr_image_path.open("rb") as image_file:
-                                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                                qr_image = f"data:image/png;base64,{encoded_string}"
-                    except Exception:
-                        pass
-                    
+            while not cancel_event.wait(1.0):
+                query = urllib.parse.urlencode(
+                    {"qrcode_key": qr_key, "source": "main-fe-header"}
+                )
+                polled = self._bilibili_login_request_json(
+                    opener,
+                    f"{BILIBILI_QR_POLL_URL}?{query}",
+                )
+                poll_data = polled.get("data")
+                if not isinstance(poll_data, dict):
+                    raise ValueError("Bilibili QR poll response has no data object")
+                code = int(poll_data.get("code", -1))
+                if code == BILIBILI_QR_WAITING_SCAN:
+                    continue
+                if code == BILIBILI_QR_WAITING_CONFIRMATION:
                     with self.lock:
-                        if self.bbdown_login_process is process:
-                            self.bbdown_login_qr_image = qr_image
-                    
-                    if self._bbdown_data_path().exists():
-                        break
-            finally:
-                if process.poll() is None and self._bbdown_data_path().exists():
-                    self._terminate_process(process)
-                return_code = process.poll()
-                if return_code is None:
-                    try:
-                        return_code = process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        return_code = None
-                login_succeeded = self._bbdown_data_path().exists()
+                        if self.bbdown_login_cancel_event is cancel_event:
+                            self.bbdown_login_message = "扫码成功，请在哔哩哔哩 App 中确认"
+                    continue
+                if code == BILIBILI_QR_EXPIRED:
+                    failure_message = "二维码已过期，请重新生成"
+                    break
+                if code != 0:
+                    break
+
                 with self.lock:
-                    is_current_process = self.bbdown_login_process is process
-                    if is_current_process:
-                        self.bbdown_login_process = None
-                    if login_succeeded:
-                        self._remove_bbdown_qr_image()
+                    if (
+                        cancel_event.is_set()
+                        or self.bbdown_login_cancel_event is not cancel_event
+                    ):
+                        return
+
+                cookie_text = self._cookie_text_from_login_jar(cookie_jar)
+                if not cookie_text:
+                    failure_message = (
+                        "Bilibili 登录完成，但响应中未检测到有效的 "
+                        "SESSDATA 和 bili_jct"
+                    )
+                    break
+                if not self._save_bbdown_login_cookie(cookie_text):
+                    failure_message = "Bilibili 登录完成，但 Cookie 保存或验证失败"
+                    break
+                login_succeeded = True
+                break
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+            failure_message = "Bilibili 登录请求失败，请重试"
+        except RuntimeError as exc:
+            failure_message = str(exc)
+        except Exception:  # noqa: BLE001 - never expose login response details
+            failure_message = "Bilibili 登录请求失败，请重试"
+        finally:
+            with self.lock:
+                is_current_login = self.bbdown_login_cancel_event is cancel_event
+                if is_current_login:
+                    self.bbdown_login_cancel_event = None
+                    self._remove_bbdown_qr_image()
+                    self.bbdown_login_qr_image = ""
+                    if cancel_event.is_set():
+                        if self.bbdown_login_state not in {"idle", "logged_in"}:
+                            self.bbdown_login_state = "idle"
+                            self.bbdown_login_message = "未登录"
+                    elif login_succeeded:
                         self.bbdown_login_state = "logged_in"
                         self.bbdown_login_message = "BBDown 已登录"
-                        self.bbdown_login_qr_image = ""
-                    elif is_current_process and self.bbdown_login_state not in {"failed", "idle"} and return_code not in (None, 0):
+                        notify_success = True
+                    else:
                         self.bbdown_login_state = "failed"
-                        self.bbdown_login_message = "BBDown 登录失败，请重试"
-                if login_succeeded:
-                    self._notify_bbdown_login_success()
+                        self.bbdown_login_message = failure_message
+
+        if notify_success:
+            self._notify_bbdown_login_success()
 
     def _outside_window_message(self) -> str:
         if self.max_cache_items <= 0:

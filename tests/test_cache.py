@@ -2523,6 +2523,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
         bbdown_dir.mkdir(parents=True, exist_ok=True)
         qr_path = bbdown_dir / "qrcode.png"
         qr_path.write_bytes(b"old-qr")
+        (bbdown_dir / "BBDown.data").write_text(
+            "ticket=synthetic-ticket; gourl=synthetic-path",
+            encoding="utf-8",
+        )
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -2553,26 +2557,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def test_bbdown_login_success_triggers_callback(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
         bbdown_dir.mkdir(parents=True, exist_ok=True)
-        (bbdown_dir / "BBDown.data").write_text("{}", encoding="utf-8")
         callback_calls: list[str] = []
-
-        class FakeLoginProcess:
-            def __init__(self) -> None:
-                self.stdout = io.StringIO("login qr ready\n")
-                self.returncode: int | None = None
-
-            def poll(self) -> int | None:
-                return self.returncode
-
-            def terminate(self) -> None:
-                self.returncode = 0
-
-            def wait(self, timeout: float | None = None) -> int:
-                self.returncode = 0
-                return 0
-
-            def kill(self) -> None:
-                self.returncode = -9
+        cancel_event = Mock()
+        cancel_event.wait.return_value = False
+        cancel_event.is_set.return_value = False
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
             manager = CacheManager(
@@ -2581,16 +2569,174 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 on_bbdown_login_success=lambda: callback_calls.append("refresh"),
             )
             try:
-                with patch.object(manager, "_ensure_bbdown", return_value=bbdown_dir / "BBDown"), patch(
-                    "bilikara.cache.subprocess.Popen",
-                    return_value=FakeLoginProcess(),
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=[
+                        {"data": {"url": "synthetic-qr-url", "qrcode_key": "synthetic-qr-key"}},
+                        {"data": {"code": 0}},
+                    ],
+                ), patch.object(
+                    manager,
+                    "_write_bbdown_login_qr",
+                    return_value="data:image/png;base64,synthetic",
+                ), patch.object(
+                    manager,
+                    "_cookie_text_from_login_jar",
+                    return_value="SESSDATA=synthetic-session; bili_jct=synthetic-csrf",
                 ):
-                    manager._bbdown_login_worker()
+                    manager._bbdown_login_worker(cancel_event)
 
                 self.assertEqual(callback_calls, ["refresh"])
                 self.assertEqual(manager.bbdown_login_status()["state"], "logged_in")
             finally:
                 manager.shutdown()
+
+    def test_bbdown_login_rejects_ticket_only_data_after_zero_exit(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        bbdown_dir.mkdir(parents=True, exist_ok=True)
+        (bbdown_dir / "BBDown.data").write_text(
+            "ticket=synthetic-ticket; gourl=synthetic-path; first_domain=synthetic-domain",
+            encoding="utf-8",
+        )
+        callback_calls: list[str] = []
+        cancel_event = Mock()
+        cancel_event.wait.return_value = False
+        cancel_event.is_set.return_value = False
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
+            manager = CacheManager(
+                self.store,
+                max_cache_items=3,
+                on_bbdown_login_success=lambda: callback_calls.append("refresh"),
+            )
+            try:
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=[
+                        {"data": {"url": "synthetic-qr-url", "qrcode_key": "synthetic-qr-key"}},
+                        {"data": {"code": 0}},
+                    ],
+                ), patch.object(
+                    manager,
+                    "_write_bbdown_login_qr",
+                    return_value="data:image/png;base64,synthetic",
+                ), patch.object(
+                    manager,
+                    "_cookie_text_from_login_jar",
+                    return_value="",
+                ):
+                    manager._bbdown_login_worker(cancel_event)
+
+                status = manager.bbdown_login_status()
+                self.assertEqual(callback_calls, [])
+                self.assertFalse(status["logged_in"])
+                self.assertEqual(status["state"], "failed")
+                self.assertIn("SESSDATA 和 bili_jct", status["message"])
+            finally:
+                manager.shutdown()
+
+    def test_bbdown_login_rejects_valid_cookie_when_poll_fails(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        bbdown_dir.mkdir(parents=True, exist_ok=True)
+        (bbdown_dir / "BBDown.data").write_text(
+            "SESSDATA=synthetic-session; bili_jct=synthetic-csrf",
+            encoding="utf-8",
+        )
+
+        cancel_event = Mock()
+        cancel_event.wait.return_value = False
+        cancel_event.is_set.return_value = False
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=[
+                        {"data": {"url": "synthetic-qr-url", "qrcode_key": "synthetic-qr-key"}},
+                        {"data": {"code": 1}},
+                    ],
+                ), patch.object(
+                    manager,
+                    "_write_bbdown_login_qr",
+                    return_value="data:image/png;base64,synthetic",
+                ):
+                    manager._bbdown_login_worker(cancel_event)
+
+                status = manager.bbdown_login_status()
+                self.assertFalse(status["logged_in"])
+                self.assertEqual(status["state"], "failed")
+                self.assertEqual(status["message"], "Bilibili 登录失败，请重试")
+            finally:
+                manager.shutdown()
+
+    def test_cookie_text_from_login_jar_requires_web_cookie_pair(self):
+        complete = [
+            SimpleNamespace(name="bili_jct", value="synthetic-csrf"),
+            SimpleNamespace(name="SESSDATA", value="synthetic-session"),
+            SimpleNamespace(name="DedeUserID", value="100"),
+        ]
+        token_only = [SimpleNamespace(name="access_token", value="synthetic-token")]
+
+        self.assertEqual(
+            CacheManager._cookie_text_from_login_jar(complete),
+            "SESSDATA=synthetic-session; bili_jct=synthetic-csrf; DedeUserID=100",
+        )
+        self.assertEqual(CacheManager._cookie_text_from_login_jar(token_only), "")
+
+    def test_cancelled_login_does_not_save_returned_cookie_material(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        bbdown_dir.mkdir(parents=True, exist_ok=True)
+        cancel_event = Mock()
+        cancel_event.wait.return_value = False
+        cancel_event.is_set.return_value = True
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=[
+                        {"data": {"url": "synthetic-qr-url", "qrcode_key": "synthetic-qr-key"}},
+                        {"data": {"code": 0}},
+                    ],
+                ), patch.object(
+                    manager,
+                    "_write_bbdown_login_qr",
+                    return_value="data:image/png;base64,synthetic",
+                ), patch.object(manager, "_save_bbdown_login_cookie") as save_cookie:
+                    manager._bbdown_login_worker(cancel_event)
+
+                save_cookie.assert_not_called()
+                self.assertFalse((bbdown_dir / "BBDown.data").exists())
+            finally:
+                manager.shutdown()
+
+    def test_save_bbdown_login_cookie_is_atomic_and_private(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                saved = manager._save_bbdown_login_cookie(
+                    "SESSDATA=synthetic-session; bili_jct=synthetic-csrf"
+                )
+            finally:
+                manager.shutdown()
+
+        data_path = bbdown_dir / "BBDown.data"
+        self.assertTrue(saved)
+        self.assertTrue(data_path.exists())
+        self.assertFalse((bbdown_dir / ".BBDown.data.login.tmp").exists())
+        if os.name != "nt":
+            self.assertEqual(data_path.stat().st_mode & 0o777, 0o600)
 
     def test_ensure_ffmpeg_rejects_non_executable_binary(self):
         vendor_dir = Path(self.temp_dir.name) / "vendor"

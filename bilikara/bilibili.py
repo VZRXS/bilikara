@@ -148,8 +148,8 @@ def _format_cookie_pairs(pairs: dict[str, str]) -> str:
     return "; ".join(f"{name}={pairs[name]}" for name in ordered_names)
 
 
-def cookie_from_bbdown_data() -> str:
-    data_path = cfg.BB_DOWN_DIR / "BBDown.data"
+def cookie_from_bbdown_data(data_path: Path | None = None) -> str:
+    data_path = data_path or (cfg.BB_DOWN_DIR / "BBDown.data")
     if not data_path.exists():
         return ""
 

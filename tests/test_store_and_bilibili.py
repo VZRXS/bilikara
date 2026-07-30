@@ -1344,6 +1344,19 @@ class BilibiliParserTest(unittest.TestCase):
                     "SESSDATA=manual; bili_jct=manual",
                 )
 
+    def test_cookie_from_explicit_bbdown_data_path(self):
+        with TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "BBDown.data"
+            data_path.write_text(
+                "SESSDATA=synthetic-session; bili_jct=synthetic-csrf",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                bilibili_module.cookie_from_bbdown_data(data_path),
+                "SESSDATA=synthetic-session; bili_jct=synthetic-csrf",
+            )
+
     def test_gatcha_missing_cookie_message_when_cache_empty(self):
         with (
             patch.object(bilibili_module, "_local_gatcha_candidates_by_uid", return_value={}),
