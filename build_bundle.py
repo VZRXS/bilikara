@@ -62,8 +62,116 @@ def main() -> None:
         command, shell=False, check=True, cwd=ROOT_DIR
     )
     _write_release_compliance_files()
+    if platform.system() == "Darwin":
+        finalize_macos_app_bundle(ROOT_DIR / "dist" / f"{APP_NAME}.app")
     print()
     print(f"Build complete. Output directory: {ROOT_DIR / 'dist'}")
+
+
+MACHO_MAGICS = {
+    b"\xcf\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xce\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xce",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+}
+
+
+def _is_macho_file(path: Path) -> bool:
+    if not path.is_file() or path.is_symlink():
+        return False
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(4)
+            if len(header) == 4 and header in MACHO_MAGICS:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _lint_info_plist(info_plist: Path) -> None:
+    plutil = shutil.which("plutil")
+    if not plutil:
+        return
+    res = subprocess.run([plutil, "-lint", str(info_plist)], capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"plutil -lint failed for {info_plist}: {res.stderr or res.stdout}")
+
+
+def _sign_path(target: Path) -> None:
+    codesign = shutil.which("codesign")
+    if not codesign:
+        raise RuntimeError("codesign binary not found on PATH")
+    res = subprocess.run(
+        [codesign, "--force", "--sign", "-", "--timestamp=none", str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"codesign failed for {target}: {res.stderr or res.stdout}")
+
+
+def _verify_codesign(target: Path, deep: bool = True, strict: bool = True) -> bool:
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return True
+    cmd = [codesign, "--verify"]
+    if deep:
+        cmd.append("--deep")
+    if strict:
+        cmd.append("--strict")
+    cmd.extend(["--verbose=4", str(target)])
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    return res.returncode == 0
+
+
+def _show_codesign_details(target: Path) -> None:
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return
+    res = subprocess.run([codesign, "-dv", "--verbose=4", str(target)], capture_output=True, text=True)
+    print(f"Codesign details for {target}:\n{res.stderr or res.stdout}")
+
+
+def _sign_nested_macho_objects(app_path: Path) -> None:
+    contents_dir = app_path / "Contents"
+    if not contents_dir.exists():
+        return
+    for root, _, files in os.walk(contents_dir):
+        for name in files:
+            p = Path(root) / name
+            if _is_macho_file(p):
+                print(f"Signing nested Mach-O code object: {p}")
+                _sign_path(p)
+
+
+def finalize_macos_app_bundle(app_path: Path) -> None:
+    if platform.system() != "Darwin":
+        return
+
+    info_plist = app_path / "Contents" / "Info.plist"
+    executable = app_path / "Contents" / "MacOS" / "bilikara"
+
+    if not info_plist.is_file():
+        raise RuntimeError(f"Missing Contents/Info.plist in bundle: {app_path}")
+
+    if not executable.is_file():
+        raise RuntimeError(f"Missing Contents/MacOS/bilikara executable in bundle: {app_path}")
+
+    if not os.access(executable, os.X_OK):
+        raise RuntimeError(f"Main executable is not executable: {executable}")
+
+    _lint_info_plist(info_plist)
+
+    print(f"Finalizing macOS ad-hoc signing for {app_path}...")
+    _sign_nested_macho_objects(app_path)
+    _sign_path(app_path)
+    if not _verify_codesign(app_path, deep=True, strict=True):
+        raise RuntimeError(f"Strict codesign verification failed for {app_path}")
+
+    _show_codesign_details(app_path)
 
 
 def _write_windows_version_info(bundle_version: str, spec_dir: Path) -> Path:

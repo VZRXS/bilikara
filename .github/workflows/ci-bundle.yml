@@ -33,6 +33,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -73,6 +78,7 @@ jobs:
         run: python -m unittest discover -s tests -v
         env:
           BILIKARA_REQUIRE_RUST_LIB: "1"
+          BILIKARA_RUST_STRICT_EQUIVALENCE: "1"
 
   bundle:
     name: Bundle (${{ matrix.label }})
@@ -113,7 +119,11 @@ jobs:
 
       - name: Install FFmpeg on macOS
         if: runner.os == 'macOS'
-        run: brew install ffmpeg
+        run: |
+          if brew tap | grep -qx 'aws/tap'; then
+            brew untap aws/tap
+          fi
+          brew install ffmpeg
 
       - name: Install packaging dependencies
         run: |
@@ -138,9 +148,9 @@ jobs:
           BILIKARA_REQUIRE_RUST_LIB: "1"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Build Tauri App on Windows
         if: runner.os == 'Windows'
@@ -165,7 +175,7 @@ jobs:
 
       - name: Inject Tauri into macOS Bundle
         if: runner.os == 'macOS'
-        run: cp -r src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
+        run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
 
       - name: Resolve bundle archive name
         id: bundle-name
@@ -183,22 +193,67 @@ jobs:
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
           echo "BUNDLE_ARCHIVE=$archive_name" >> "$GITHUB_ENV"
 
+      - name: Stage and verify macOS bundles
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist_release
+          ditto dist/bilikara.app dist_release/bilikara.app
+          ditto dist/Bilikara-Desktop.app dist_release/Bilikara-Desktop.app
+
+          echo "=== Verifying staged bilikara.app ==="
+          test -x dist_release/bilikara.app/Contents/MacOS/bilikara
+          plutil -lint dist_release/bilikara.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 dist_release/bilikara.app
+          codesign -dv --verbose=4 dist_release/bilikara.app
+
+          echo "=== Verifying staged Bilikara-Desktop.app ==="
+          test -x dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          plutil -lint dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 dist_release/Bilikara-Desktop.app
+          codesign -dv --verbose=4 dist_release/Bilikara-Desktop.app
+
+          echo "=== Architecture checks ==="
+          file dist_release/bilikara.app/Contents/MacOS/bilikara
+          file dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+
+          echo "=== Running Python backend smoke test ==="
+          BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
+
+          echo "=== Running Tauri/backend integration smoke test ==="
+          BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
+
       - name: Archive Windows bundle
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path dist/bilikara -DestinationPath $env:BUNDLE_ARCHIVE
 
-      - name: Archive macOS bundle
+      - name: Archive and verify round-trip macOS bundle
         if: runner.os == 'macOS'
         run: |
-          mkdir -p dist_release
-          mv dist/bilikara.app dist_release/
-          mv dist/Bilikara-Desktop.app dist_release/
-          ditto -c -k --sequesterRsrc dist_release "$BUNDLE_ARCHIVE"
+          ditto -c -k --sequesterRsrc --keepParent dist_release "$BUNDLE_ARCHIVE"
+
+          mkdir -p test_extract
+          ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
+
+          echo "=== Verifying extracted bilikara.app ==="
+          test -x test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara
+          plutil -lint test_extract/dist_release/bilikara.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 test_extract/dist_release/bilikara.app
+          codesign -dv --verbose=4 test_extract/dist_release/bilikara.app
+
+          echo "=== Verifying extracted Bilikara-Desktop.app ==="
+          test -x test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          plutil -lint test_extract/dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
+          codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
+
+          echo "=== Running round-trip extracted smoke test ==="
+          BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
+          BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
 
       - name: Upload Windows bundle artifact
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
           path: dist/bilikara
@@ -206,18 +261,19 @@ jobs:
 
       - name: Upload macOS bundle artifact
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.bundle-name.outputs.artifact_name }}
-          path: dist_release
+          path: ${{ steps.bundle-name.outputs.archive_name }}
           if-no-files-found: error
 
       - name: Upload bundle to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ steps.bundle-name.outputs.archive_name }}
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-preview.') }}
 
   mirror-release-r2:
     name: Mirror Release To R2

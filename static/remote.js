@@ -1,6 +1,7 @@
 const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
 const remoteVolumeCommitDebounceMs = 160;
+const avDelayRequestTimeoutMs = 8000;
 const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
@@ -11,6 +12,9 @@ const d1BrowseMergeMinLength = 5;
 const d1BrowseCountConcurrency = 4;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
 const categoryBrowsePageSize = 100;
+const searchResultItemByElement = new WeakMap();
+let searchDetailController = null;
+let searchModalCloseTimer = 0;
 const categoryBrowseDefinitionsRaw = [
   { key: "hotBlood", tags: ["热血", "战斗"] },
   { key: "fantasy", tags: ["奇幻", "冒险", "魔法", "科幻"] },
@@ -52,7 +56,7 @@ const categoryBrowseDefinitionsRaw = [
   { key: "touhouProject", tags: ["东方project"] },
   { key: "macross", tags: ["マクロス", "超时空要塞"] },
   { key: "gundam", tags: ["高达系列"] },
-  { key: "longRunning", tags: ["名探偵コナン"] },
+  { key: "longRunning", tags: ["名探偵コナン","NARUTO","ナルト","BLEACH","ONE PIECE","火影忍者","海贼王","銀魂","银魂","家庭教師ヒットマンREBORN!","家庭教师","鬼滅の刃","鬼灭之刃","呪術廻戦","咒术回战","ジョジョの奇妙な冒険","ドラゴンボール","聖闘士星矢","幽☆遊☆白書","THE FIRST SLAM DUNK","FAIRY TAIL"] },
 ];
 const categoryBrowseFullFieldTags = new Set([
   "Hololive",
@@ -93,6 +97,28 @@ const categoryBrowseFullFieldTags = new Set([
   "WHITE ALBUM2",
   "HoneyWorks",
   "超时空要塞",
+  "东方project",
+  "マクロス",
+  "NARUTO",
+  "ナルト",
+  "BLEACH",
+  "ONE PIECE",
+  "火影忍者",
+  "海贼王",
+  "銀魂",
+  "银魂",
+  "家庭教師ヒットマンREBORN!",
+  "家庭教师",
+  "鬼滅の刃",
+  "鬼灭之刃",
+  "呪術廻戦",
+  "咒术回战",
+  "ジョジョの奇妙な冒険",
+  "ドラゴンボール",
+  "聖闘士星矢",
+  "幽☆遊☆白書",
+  "THE FIRST SLAM DUNK",
+  "FAIRY TAIL",
 ].map(categoryBrowseTagKey));
 const categoryBrowseImageUrls = [
   "/pic/cat_1.png",
@@ -171,9 +197,7 @@ const state = {
   audioVariantSwitchInFlight: false,
   audioVariantSwitchUnlockAt: 0,
   audioVariantSwitchTimer: null,
-  remoteAvOffsetSaveSeq: 0,
-  remoteAvOffsetEchoSuppressUntil: 0,
-  remoteLocalAvOffsetMs: null,
+  remoteAvDelaySaving: false,
   remoteVolumeSaveSeq: 0,
   remoteSettingsEchoSuppressUntil: 0,
   remoteLocalVolumePercent: null,
@@ -342,6 +366,7 @@ const elements = {
   remoteAvSyncPanel: document.getElementById("remote-av-sync-panel"),
   remoteAvOffsetInput: document.getElementById("remote-av-offset-input"),
   remoteAvOffsetResetButton: document.getElementById("remote-av-offset-reset-button"),
+  remoteAvDelayLockButton: document.getElementById("remote-av-delay-lock-button"),
   remoteVolumePanel: document.getElementById("remote-volume-panel"),
   remoteVolumeMuteButton: document.getElementById("remote-volume-mute-button"),
   remoteVolumeSlider: document.getElementById("remote-volume-slider"),
@@ -586,14 +611,31 @@ function localizedApiMessage(message) {
   return raw;
 }
 
+function renderOwnerBadgeLabel(element, ownerName) {
+  const normalized = String(ownerName || "").trim();
+  element.replaceChildren();
+  if (!normalized) {
+    element.removeAttribute("aria-label");
+    return;
+  }
+  const badge = document.createElement("span");
+  badge.className = "owner-badge";
+  badge.textContent = "UP";
+  badge.setAttribute("aria-hidden", "true");
+  const name = document.createElement("span");
+  name.className = "owner-badge-name";
+  name.textContent = normalized;
+  element.append(badge, name);
+  element.setAttribute("aria-label", t("owner.tooltip", { name: normalized }));
+}
+
 function requesterBadgeText(requesterName) {
   const normalized = String(requesterName || "").trim();
   return normalized ? t("request.requesterBadge", { name: normalized }) : "";
 }
 
 function ownerLineText(ownerName) {
-  const normalized = String(ownerName || "").trim();
-  return normalized ? t("owner.upOwner", { name: normalized }) : "";
+  return String(ownerName || "").trim();
 }
 
 function selectedRequesterName() {
@@ -1338,22 +1380,41 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
   return t("request.duplicateSession", { title, count: count || 1 });
 }
 
-async function apiPost(url, payload = {}) {
-  const response = await fetch(url, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: clientHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  if (!response.ok || !data.ok) {
-    const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
-    error.status = response.status;
-    error.code = data.code || "";
-    error.payload = data;
+async function apiPost(url, payload = {}, options = {}) {
+  const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
+  const controller = timeoutMs > 0 && typeof AbortController === "function"
+    ? new AbortController()
+    : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: clientHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) {
+      const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
+      error.status = response.status;
+      error.code = data.code || "";
+      error.payload = data;
+      throw error;
+    }
+    return data.data;
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(t("error.requestTimeout"));
+    }
     throw error;
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
   }
-  return data.data;
 }
 
 function normalizedRemoteIdentity(payload) {
@@ -1768,8 +1829,8 @@ function renderRatingPromptContent() {
   hint.className = "rating-hint";
   hint.textContent = t("rating.hint");
   const owner = document.createElement("p");
-  owner.className = "rating-owner";
-  owner.textContent = t("rating.owner", { owner: ownerName });
+  owner.className = "rating-owner owner-badge-label";
+  renderOwnerBadgeLabel(owner, ownerName);
   copy.append(kicker, title, hint, owner);
   if (url) {
     const link = document.createElement("a");
@@ -2109,16 +2170,6 @@ function maybeUpdateRemoteRatingPrompt(currentItem) {
   }
 }
 
-function filenameFromContentDisposition(headerValue, fallback) {
-  const value = String(headerValue || "");
-  const quotedMatch = value.match(/filename="([^"]+)"/i);
-  if (quotedMatch) {
-    return quotedMatch[1];
-  }
-  const plainMatch = value.match(/filename=([^;]+)/i);
-  return plainMatch ? plainMatch[1].trim() : fallback;
-}
-
 function selectedHistoryExportSource() {
   return String(elements.historyExportSource?.value || "played").trim();
 }
@@ -2141,33 +2192,20 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     source: normalizedSource,
     page_size: String(normalizedPageSize),
   });
-  const response = await fetch(`/api/playlist/export?${params.toString()}`, {
-    cache: "no-store",
+  const exportUrl = `/api/playlist/export?${params.toString()}`;
+  const exportDownload = window.BilikaraExportDownload;
+  if (!exportDownload
+    || typeof exportDownload.downloadBrowserFile !== "function") {
+    throw new Error(t("history.exportFailed"));
+  }
+  const fallbackFilename = normalizedFormat === "csv"
+    ? "bilikara-playlist.csv"
+    : "bilikara-playlist.png";
+  return exportDownload.downloadBrowserFile(exportUrl, {
+    fallbackFilename,
+    fallbackMessage: t("history.exportFailed"),
     headers: clientHeaders(),
   });
-  if (!response.ok) {
-    let message = t("history.exportFailed");
-    try {
-      const payload = await response.json();
-      message = payload.error || message;
-    } catch {
-      // Keep the generic message when the response is not JSON.
-    }
-    throw new Error(message);
-  }
-  const blob = await response.blob();
-  const sourceName = normalizedSource.startsWith("played") ? "played" : "history";
-  const fallback = normalizedFormat === "csv" ? `bilikara-${sourceName}.csv` : `bilikara-${sourceName}.png`;
-  const filename = filenameFromContentDisposition(response.headers.get("Content-Disposition"), fallback);
-  const downloadUrl = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = downloadUrl;
-  link.download = filename;
-  link.rel = "noopener";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
 
 elements.openRatingButton?.addEventListener("click", () => {
@@ -2185,12 +2223,19 @@ async function exportHistory(format) {
       ? t("remote.exportingCsv", { source: sourceLabel })
       : t("remote.exportingImagePaged", { source: sourceLabel, count: pageSize }));
     try {
-      await downloadHistoryExport(format, source, pageSize);
+      const saved = await downloadHistoryExport(format, source, pageSize);
+      if (!saved) {
+        setAppMessage("");
+        return;
+      }
       setAppMessage(format === "csv"
         ? t("history.csvDownloadStarted", { source: sourceLabel })
         : t("history.imageDownloadStarted", { source: sourceLabel }));
     } catch (error) {
-      setAppMessage(error.message, true);
+      setAppMessage(
+        window.BilikaraExportDownload.normalizedErrorMessage(error, t("history.exportFailed")),
+        true,
+      );
     }
   });
 }
@@ -2866,22 +2911,15 @@ function searchResultStatusLabel(item) {
   return "";
 }
 
-function createSearchResultUrlLine(item, { showBvid = true } = {}) {
+function createSearchResultUrlLine(item) {
   const line = document.createElement("div");
   line.className = "search-result-url";
-
-  if (showBvid) {
-    const bvid = document.createElement("span");
-    bvid.className = "search-result-bvid";
-    bvid.textContent = String(item?.bvid || item?.url || "");
-    line.appendChild(bvid);
-  }
 
   const ownerName = searchResultOwnerName(item);
   if (ownerName) {
     const owner = document.createElement("span");
-    owner.className = "search-result-owner";
-    owner.textContent = t("owner.tooltip", { name: ownerName });
+    owner.className = "search-result-owner owner-badge-label";
+    renderOwnerBadgeLabel(owner, ownerName);
     line.appendChild(owner);
   }
   const rating = document.createElement("span");
@@ -3051,6 +3089,7 @@ function setGatchaUidFlowMessage(target, message, isError = false) {
 function createSearchResultRow(item) {
   const row = document.createElement("article");
   row.className = "search-result-item";
+  searchResultItemByElement.set(row, item);
   const itemUrl = String(item?.url || "").trim();
   if (itemUrl) {
     row.dataset.url = itemUrl;
@@ -3114,13 +3153,13 @@ function createSearchResultRow(item) {
     statusLine.appendChild(plays);
   }
 
-  const url = createSearchResultUrlLine(item, { showBvid: false });
+  const url = createSearchResultUrlLine(item);
 
   const button = document.createElement("button");
   button.type = "button";
   button.className = "primary-button search-result-add";
   button.dataset.url = itemUrl;
-  button.textContent = t("search.add");
+  button.textContent = t("search.detail");
 
   meta.append(title);
   if (statusLine.children.length) {
@@ -3943,17 +3982,80 @@ async function loadFavlistBrowse({
 }
 
 function setSearchModalOpen(open) {
-  state.searchModalOpen = Boolean(open);
-  elements.searchModal?.classList.toggle("hidden", !state.searchModalOpen);
-  document.body.classList.toggle("remote-search-modal-open", state.searchModalOpen);
-  if (state.searchModalOpen) {
+  const shouldOpen = Boolean(open);
+  state.searchModalOpen = shouldOpen;
+  if (shouldOpen) {
+    window.clearTimeout(searchModalCloseTimer);
+    searchModalCloseTimer = 0;
+    elements.searchModal?.classList.remove("hidden", "closing");
+    document.body.classList.add("remote-search-modal-open");
     renderSearchModalView(state.searchModalView || "search");
     window.setTimeout(() => {
       if (state.searchModalView === "search") {
         elements.searchModalLarkQuery?.focus();
       }
     }, 0);
+    return;
   }
+  searchDetailController?.close({ immediate: true });
+  if (!elements.searchModal || elements.searchModal.classList.contains("hidden")) {
+    document.body.classList.remove("remote-search-modal-open");
+    return;
+  }
+  if (elements.searchModal.classList.contains("closing")) {
+    return;
+  }
+  elements.searchModal.classList.add("closing");
+  window.clearTimeout(searchModalCloseTimer);
+  searchModalCloseTimer = window.setTimeout(() => {
+    elements.searchModal?.classList.add("hidden");
+    elements.searchModal?.classList.remove("closing");
+    document.body.classList.remove("remote-search-modal-open");
+    searchModalCloseTimer = 0;
+  }, 220);
+}
+
+function openSearchResultDetail(event, container, source) {
+  if (!searchDetailController || !container?.closest("#search-modal")) {
+    return false;
+  }
+  const card = event.target.closest(".search-result-item[data-url]");
+  if (!card || !container.contains(card)) {
+    return false;
+  }
+  const item = searchResultItemByElement.get(card);
+  if (!item) {
+    return false;
+  }
+  const avatarUrl = window.BilikaraSongDetail.ownerAvatarFromCachedOwners(
+    item,
+    state.followBrowseData?.owners,
+  );
+  event.preventDefault();
+  searchDetailController.open({
+    ...item,
+    avatar_url: avatarUrl,
+    detailSource: source,
+  });
+  return true;
+}
+
+function initSearchDetailController() {
+  if (searchDetailController || !window.BilikaraSongDetail) {
+    return;
+  }
+  const container = elements.searchModal?.querySelector(".remote-search-modal-card");
+  searchDetailController = window.BilikaraSongDetail.createSongDetailController({
+    container,
+    t,
+    requestButtonClass: "primary-button",
+    nextButtonClass: "secondary-button",
+    onRequest: (url, position, item) => addByUrl(
+      url,
+      position,
+      String(item?.detailSource || "modalSearch"),
+    ),
+  });
 }
 
 function renderSearchModalView(target = state.searchModalView || "search") {
@@ -4600,7 +4702,7 @@ function renderCurrentItem(current, playbackMode) {
       elements.currentTitle.textContent = current.display_title;
       elements.currentRequester.textContent = requesterText;
       elements.currentRequester.classList.toggle("hidden", !requesterText);
-      elements.currentOwner.textContent = ownerText;
+      renderOwnerBadgeLabel(elements.currentOwner, ownerText);
       elements.currentOwner.classList.toggle("hidden", !ownerText);
       if (elements.openRatingButton) {
         elements.openRatingButton.classList.toggle("hidden", !current.bvid);
@@ -4862,14 +4964,6 @@ function renderAudioVariantBar(currentItem, playbackMode) {
   });
 }
 
-function boundedRemoteAvOffsetMs(offsetMs) {
-  const numeric = Number(offsetMs || 0);
-  if (!Number.isFinite(numeric)) {
-    return 0;
-  }
-  return Math.max(-5000, Math.min(5000, Math.round(numeric)));
-}
-
 function boundedRemoteVolumePercent(volumePercent) {
   const numeric = Number(volumePercent);
   if (!Number.isFinite(numeric)) {
@@ -4879,14 +4973,10 @@ function boundedRemoteVolumePercent(volumePercent) {
 }
 
 function serverRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
-  return boundedRemoteAvOffsetMs(playerSettings?.av_offset_ms || 0);
+  return Number(playerSettings?.av_delay?.effective_delay_ms ?? playerSettings?.av_offset_ms ?? 0);
 }
 
 function currentRemoteAvOffsetMs(playerSettings = state.data?.player_settings) {
-  if (state.remoteLocalAvOffsetMs !== null && Date.now() < state.remoteAvOffsetEchoSuppressUntil) {
-    return state.remoteLocalAvOffsetMs;
-  }
-  state.remoteLocalAvOffsetMs = null;
   return serverRemoteAvOffsetMs(playerSettings);
 }
 
@@ -4960,13 +5050,6 @@ function currentRemoteMuted(playerSettings = state.data?.player_settings) {
   return serverRemoteMuted(playerSettings);
 }
 
-function markRemoteAvOffsetWrite(offsetMs) {
-  state.remoteLocalAvOffsetMs = boundedRemoteAvOffsetMs(offsetMs);
-  state.remoteAvOffsetEchoSuppressUntil = Date.now() + playerSettingsEchoSuppressMs;
-  state.remoteAvOffsetSaveSeq += 1;
-  return state.remoteAvOffsetSaveSeq;
-}
-
 function markRemoteVolumeWrite(payload) {
   if (payload.volume_percent !== undefined) {
     state.remoteLocalVolumePercent = payload.volume_percent;
@@ -4998,10 +5081,29 @@ function renderRemoteAvSyncControls(playbackMode, playerSettings) {
   const isLocalMode = playbackMode === "local";
   elements.remoteAvSyncPanel.classList.toggle("hidden", !isLocalMode);
   const offsetMs = currentRemoteAvOffsetMs(playerSettings);
+  const delayState = playerSettings?.av_delay || {};
+  elements.remoteAvOffsetInput.disabled = state.remoteAvDelaySaving;
+  elements.remoteAvSyncPanel.querySelectorAll("button[data-av-step]").forEach((button) => {
+    button.disabled = state.remoteAvDelaySaving;
+  });
   if (elements.remoteAvOffsetResetButton) {
-    elements.remoteAvOffsetResetButton.disabled = offsetMs === 0;
+    elements.remoteAvOffsetResetButton.disabled = state.remoteAvDelaySaving || !Boolean(delayState.has_local_adjustment);
   }
-  if (document.activeElement !== elements.remoteAvOffsetInput) {
+  if (elements.remoteAvDelayLockButton) {
+    const locked = Boolean(delayState.locked);
+    const hasLocal = Boolean(delayState.has_local_adjustment);
+    elements.remoteAvDelayLockButton.textContent = locked ? "🔒" : "🔓";
+    elements.remoteAvDelayLockButton.disabled = state.remoteAvDelaySaving || !Boolean(delayState.lock_button_enabled);
+    elements.remoteAvDelayLockButton.dataset.locked = String(locked);
+    elements.remoteAvDelayLockButton.dataset.hasLocal = String(hasLocal);
+    elements.remoteAvDelayLockButton.setAttribute("aria-pressed", String(locked));
+    const labelKey = locked
+      ? hasLocal ? "player.unlockAvDelayAdjusted" : "player.unlockAvDelay"
+      : hasLocal ? "player.lockAvDelayAdjusted" : "player.lockAvDelay";
+    elements.remoteAvDelayLockButton.setAttribute("aria-label", t(labelKey));
+    elements.remoteAvDelayLockButton.title = t(labelKey);
+  }
+  if (document.activeElement !== elements.remoteAvOffsetInput || state.remoteAvDelaySaving) {
     elements.remoteAvOffsetInput.value = String(offsetMs);
   }
 }
@@ -5644,34 +5746,40 @@ async function confirmBindingSheet() {
 }
 
 async function setRemoteAvOffset(offsetMs) {
-  const boundedOffsetMs = boundedRemoteAvOffsetMs(offsetMs);
-  const currentValue = currentRemoteAvOffsetMs();
-  if (boundedOffsetMs === currentValue) {
-    markRemoteAvOffsetWrite(boundedOffsetMs);
-    if (elements.remoteAvOffsetInput) {
-      elements.remoteAvOffsetInput.value = String(boundedOffsetMs);
-    }
+  const numeric = Number(offsetMs);
+  if (!Number.isFinite(numeric)) {
     return;
   }
+  await dispatchRemoteAvDelayAction({ type: "set_effective", effective_delay_ms: Math.round(numeric) });
+}
 
-  const requestSeq = markRemoteAvOffsetWrite(boundedOffsetMs);
-  if (elements.remoteAvOffsetInput) {
-    elements.remoteAvOffsetInput.value = String(boundedOffsetMs);
+async function dispatchRemoteAvDelayAction(action) {
+  if (state.remoteAvDelaySaving) {
+    return;
   }
+  const activeElement = document.activeElement;
+  activeElement?.setAttribute?.("aria-busy", "true");
+  state.remoteAvDelaySaving = true;
   renderRemoteAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   try {
-    const nextData = await apiPost("/api/player/av-offset", { offset_ms: boundedOffsetMs });
-    if (requestSeq !== state.remoteAvOffsetSaveSeq) {
-      return;
-    }
-    applyStateSnapshot(nextData);
+    const decision = await apiPost(
+      "/api/player/av-delay-action",
+      action,
+      { timeoutMs: avDelayRequestTimeoutMs },
+    );
+    state.data = {
+      ...state.data,
+      player_settings: {
+        ...state.data?.player_settings,
+        av_offset_ms: Number(decision?.effective_delay_ms || 0),
+        av_delay: decision,
+      },
+    };
   } catch (error) {
-    if (requestSeq !== state.remoteAvOffsetSaveSeq) {
-      return;
-    }
-    state.remoteLocalAvOffsetMs = null;
-    state.remoteAvOffsetEchoSuppressUntil = 0;
     setFormMessage(error.message, true);
+  } finally {
+    state.remoteAvDelaySaving = false;
+    activeElement?.removeAttribute?.("aria-busy");
     renderRemoteAvSyncControls(frontendPlaybackMode(state.data?.playback_mode), state.data?.player_settings);
   }
 }
@@ -6538,11 +6646,11 @@ async function resortPlaylistByCycle() {
 async function addByUrl(url, position = "tail", source = "search") {
   const requesterName = selectedRequesterName();
   if (!url || state.submitting) {
-    return;
+    return false;
   }
   if (!requesterName) {
     setMessageForSource(source, t("session.requireRequester"), true);
-    return;
+    return false;
   }
 
   state.submitting = true;
@@ -6551,7 +6659,7 @@ async function addByUrl(url, position = "tail", source = "search") {
     const result = await submitAddRequestWithDuplicateConfirm(url, position, requesterName);
     if (result.cancelled) {
       setMessageForSource(source, t("remote.cancelledDuplicate"));
-      return;
+      return false;
     }
     applyStateSnapshot(result.data, { forceRender: true });
     if (source === "search") {
@@ -6569,6 +6677,7 @@ async function addByUrl(url, position = "tail", source = "search") {
       renderGatchaUidView();
     }
     setMessageForSource(source, t("request.success"));
+    return true;
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingSheet(
@@ -6581,11 +6690,32 @@ async function addByUrl(url, position = "tail", source = "search") {
         },
         error.payload?.binding,
       );
-      return;
+      return false;
     }
     setMessageForSource(source, error.message, true);
+    return false;
   } finally {
     state.submitting = false;
+  }
+}
+
+async function confirmGatchaCandidate() {
+  const button = elements.gatchaConfirmButton;
+  if (!button || button.disabled || state.submitting || !state.gatchaCandidate?.url) {
+    return false;
+  }
+
+  const previousText = button.textContent;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = t("search.adding");
+  try {
+    await addByUrl(String(state.gatchaCandidate.url), "tail", "gatcha");
+    return true;
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = previousText;
   }
 }
 
@@ -6637,10 +6767,6 @@ async function sendPlayerNext() {
   }
   state.playerControlPendingAction = "";
   renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
-}
-
-function queueNoteText() {
-  return "";
 }
 
 function disconnectClient() {
@@ -6791,6 +6917,9 @@ elements.searchModalLarkForm?.addEventListener("submit", async (event) => {
 });
 
 elements.searchModalLarkResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.searchModalLarkResults, "modalSearch")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.searchModalLarkResults.contains(target)) {
     return;
@@ -6855,6 +6984,9 @@ elements.favlistSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.favlistSongResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.favlistSongResults, "modalFavlist")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.favlistSongResults.contains(target)) {
     return;
@@ -7007,6 +7139,9 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
 });
 
 elements.searchModalOtherView?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.searchModalOtherView, "modalBrowse")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.searchModalOtherView.contains(target)) {
     return;
@@ -7240,6 +7375,9 @@ elements.followSongResults?.addEventListener("click", async (event) => {
 });
 
 elements.modalFollowSongResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.modalFollowSongResults, "modalFollow")) {
+    return;
+  }
   const target = event.target.closest(".search-result-item[data-url], button[data-url]");
   if (!target || !elements.modalFollowSongResults.contains(target)) {
     return;
@@ -7379,7 +7517,7 @@ elements.refreshButton.addEventListener("click", async () => {
 });
 
 elements.remoteAvSyncPanel?.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-av-step], button[data-reset-av-offset]");
+  const button = event.target.closest("button[data-av-step], button[data-reset-av-offset], button[data-av-delay-lock]");
   if (!button) {
     return;
   }
@@ -7387,12 +7525,14 @@ elements.remoteAvSyncPanel?.addEventListener("click", async (event) => {
     return;
   }
   if (button.hasAttribute("data-reset-av-offset")) {
-    await setRemoteAvOffset(0);
+    await dispatchRemoteAvDelayAction({ type: "reset_local" });
     return;
   }
-  await setRemoteAvOffset(
-    currentRemoteAvOffsetMs(state.data?.player_settings) + Number(button.dataset.avStep || "0"),
-  );
+  if (button.hasAttribute("data-av-delay-lock")) {
+    await dispatchRemoteAvDelayAction({ type: "toggle_lock" });
+    return;
+  }
+  await dispatchRemoteAvDelayAction({ type: "adjust", delta_ms: Number(button.dataset.avStep || "0") });
 });
 
 elements.remoteAvOffsetInput?.addEventListener("change", async (event) => {
@@ -7555,10 +7695,7 @@ elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
 });
 
 elements.gatchaConfirmButton.addEventListener("click", async () => {
-  if (!state.gatchaCandidate?.url) {
-    return;
-  }
-  await addByUrl(String(state.gatchaCandidate.url), "tail", "gatcha");
+  await confirmGatchaCandidate();
 });
 
 elements.bindingSheetClose?.addEventListener("click", () => {
@@ -8135,6 +8272,7 @@ async function startRemoteSession() {
   hydrateLocalPreferences();
   initFloatingControlConsole();
   await loadTranslations();
+  initSearchDetailController();
   renderLayoutMode();
   renderRemoteIdentity();
   await fetchRemoteIdentity();

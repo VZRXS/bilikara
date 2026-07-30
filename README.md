@@ -165,7 +165,7 @@ python start_bilikara.py
 
 无论使用后端可执行文件还是源码脚本，启动后默认优先尝试 `http://127.0.0.1:8080`；如果默认端口被占用，会自动尝试后续端口。打开的本地页面全部关闭后，服务会在几秒内自动退出。
 
-**提示：** Windows 打包版默认会优先尝试绑定当前探测到的局域网 IPv4，并尝试过滤出物理网卡；如果探测不到，会回退到 `0.0.0.0`。如果希望手动指定监听地址，可通过 `BILIKARA_HOST` 覆盖。
+**提示：** Host 会先依据系统路由选择推荐的局域网 IPv4，再从结构化网卡信息中排列可用的备用地址；容器网桥、虚拟网卡和隧道会被降级，但在它们是唯一可用路径时仍可作为后备。复杂路由、VPN 或多网卡环境不保证总能自动选中正确地址，请在手机访问提示中尝试备用 URL，或通过 `BILIKARA_HOST` 手动指定监听地址。
 
 ## 本地打包
 
@@ -185,7 +185,7 @@ python start_bilikara.py
 
 **Tauri 桌面壳**
 
-构建 Tauri 桌面壳需要安装 Node.js 20 或更高版本，以及 Rust 工具链。仓库提供 `.nvmrc`，使用 nvm 时可先运行 `nvm use`。开发模式可运行：
+构建 Tauri 桌面壳需要安装 Node.js 24 或更高版本，以及 Rust 工具链。Node.js 24 仅是构建 / CI 基线，不是最终用户运行已打包应用的要求。仓库提供 `.nvmrc`，使用 nvm 时可先运行 `nvm use`。开发模式可运行：
 
 ```bash
 npm ci
@@ -214,6 +214,13 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - Windows 打包脚本会依次尝试 `py`、`python`、`python3`；如果都不存在，需要先安装 Python 3
 - 如需排查后端打包版启动问题，可使用 `python build_bundle.py --console` 生成带控制台窗口的调试包
 
+架构与版本规划文档：
+
+- [版本路线图](docs/version-roadmap.md)
+- [Rust 业务规则迁移计划](docs/rust-business-rule-migration-plan.md)
+- [移动 Host 与共享 Rust 架构](docs/mobile-host-rust-architecture.md)
+- [原生工具迁移清单](docs/rust-native-utility-inventory.md)
+
 ## 可选环境变量
 
 - `BILIKARA_HOST`：监听地址；脚本启动默认 `0.0.0.0`，Windows 打包版默认优先使用探测到的局域网 IPv4，失败时回退到 `0.0.0.0`
@@ -224,6 +231,8 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - `BB_DOWN_PATH`：自定义本地 `BBDown` 可执行文件路径
 - `FFMPEG_PATH`：自定义本地 `ffmpeg` 可执行文件路径
 - `BILIKARA_STARTUP_LOG`：设为 `1` 时，启动日志会写入 `runtime/data/logs/startup.log`，用于排查打包版启动问题
+- `BILIKARA_RUST_STRICT_EQUIVALENCE`：设为 `1` 时，对已迁移能力同时运行 Rust 与 Python 参考实现并比较规范结果；仅建议用于测试、CI 和开发诊断
+- `BILIKARA_RUST_TIMING_DIAGNOSTICS`：设为 `1` 时，在后端状态中聚合 Rust FFI、JSON、Python 回退和严格等价检查耗时；默认关闭且不会逐调用打印日志
 
 ## 技术说明
 
@@ -236,7 +245,7 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - 本地缓存会优先使用本地已有的 `BBDown`；启动后会在后台静默检查是否需要更新
 - 启动后也会在后台准备 `FFmpeg`，并把可用版本同步到应用目录内的 `runtime/tools/bbdown/`
 - Windows 打包版会以隐藏进程方式调用 `BBDown`，避免点歌时弹出命令行窗口
-- Windows 打包版默认优先监听一个具体局域网 IPv4，探测不到时再回退到 `0.0.0.0`，以尽量保留局域网手机访问能力
+- 手机访问 URL 的首选地址来自系统路由决定的源 IPv4；其他活动物理网卡地址可作为备用，虚拟和隧道地址会被降级
 - `BBDown` 下载日志会写到应用数据目录下的 `data/logs/bbdown/`
 - 本次已唱记录会单独写入 `data/played_sessions/played-YYYY-MM-DD_HH-MM-SS-ffffff.json`
 - 如果 `BBDown` 返回“请尝试升级到最新版本后重试”这类提示，程序会自动强制刷新一次本地 BBDown 并重试当前下载

@@ -20,8 +20,23 @@ def startup_logging_enabled() -> bool:
 
 def _fallback_app_home() -> Path:
     if getattr(sys, "frozen", False):
+        if sys.platform == "darwin":
+            return Path("~/Library/Application Support/bilikara").expanduser()
         return Path(sys.executable).resolve().parent / "runtime"
     return Path(__file__).resolve().parent.parent
+
+
+def _ensure_std_streams() -> None:
+    if sys.stdout is None:
+        try:
+            sys.stdout = os.fdopen(1, "w", encoding="utf-8", buffering=1)
+        except Exception:
+            pass
+    if sys.stderr is None:
+        try:
+            sys.stderr = os.fdopen(2, "w", encoding="utf-8", buffering=1)
+        except Exception:
+            pass
 
 
 def startup_log_path() -> Path:
@@ -133,13 +148,14 @@ def run_with_startup_logging() -> None:
     parser.add_argument("--port", type=int, default=None, help="Bind port")
     args = parser.parse_args()
 
+    _ensure_std_streams()
     _install_debug_log_streams()
     _install_startup_exception_hooks()
     if startup_logging_enabled():
         append_startup_log(
             "Launcher start "
             f"(frozen={getattr(sys, 'frozen', False)}, "
-            f"executable={Path(sys.executable).resolve()}, cwd={Path.cwd()}, pid={os.getpid()})"
+            f"executable={Path(sys.executable).resolve()}, cwd={Path.cwd()}, pid={os.getpid()}, args={sys.argv})"
         )
     try:
         from .config import APP_HOME, ROOT_DIR, STATIC_DIR

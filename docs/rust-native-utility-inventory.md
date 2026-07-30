@@ -55,14 +55,14 @@ No other helper is approved for Phase 1. The tables below document why.
 
 | Helpers reviewed | Category / dependencies | Pure | Decision and reason |
 | --- | --- | --- | --- |
-| `_quality_from_choice_index`, `_optional_video_quality`, `_normalize_video_quality` | quality label validation/defaulting | yes | Intentionally defer. They are tiny Python membership checks and the default is cache policy; FFI overhead exceeds the work. |
+| `_quality_from_choice_index`, `_optional_video_quality`, `_normalize_video_quality` | quality label validation/defaulting | yes | Excluded from Phase 1; migrated together with consumer decisions as Phase 2 Item 6 `quality_policy`, with complete `_py_*` references. |
 | `_normalize_download_source`, `_current_download_source`, `_download_source_label` | source normalization/label policy | yes | Excluded: source preference and cache policy. |
 | `_bounded_cache_items` | integer coercion/clamping | yes | Defer: trivial scalar coercion tied to cache policy. |
 | `_variant_id`, `_download_track_key`, `_download_track_label`, `_part_label_for_page` | download-track identifiers/labels | yes | Defer: tiny helpers embedded in download planning; `_variant_id` should first be consolidated with `bilibili.py`. |
 | `_page_url`, `_build_media_url` | URL composition | yes | Defer: each is a trivial operation in downloader/local-serving code, not a reusable URL parsing domain. |
 | `_normalize_output_line`, `_extract_progress`, `_compact_probe_error`, `_format_stage_bytes` | subprocess output cleanup/parsing | core yes | Excluded from this phase because their primary purpose is subprocess/progress handling. |
-| `_dash_max_quality_id`, `_video_quality_priority`, format selectors and stream selectors | quality lookup/ranking | yes | Excluded: download policy, scoring, ranking, and selection. |
-| `_dash_stream_urls`, `_current_platform_tokens`, release asset-name helpers | response adapters/platform selection | mostly | Excluded: source/download planning or heterogeneous dictionaries. |
+| `_dash_max_quality_id`, `_video_quality_priority`, `_ytdlp_max_height`, and stream selectors | quality lookup/ranking | yes | Excluded from Phase 1; deterministic decisions migrated as Phase 2 Item 6. BBDown/yt-dlp syntax and all execution remain Python. |
+| `_dash_stream_urls`, `_current_platform_tokens`, release asset-name helpers | response adapters/platform selection | mostly | Excluded from Phase 1. The pure URL flattening and fallback asset construction were later migrated as Phase 2 Item 5; runtime detection and dictionary adaptation remain Python. |
 | All command, downloader, archive extraction, file lookup, path-size, process, worker, retry, cache-window, and filesystem helpers | I/O, subprocess, state, scheduling, policy | no/mixed | Outside Phase 1 by definition. |
 
 ### `bilikara/config.py`
@@ -127,18 +127,19 @@ No other helper is approved for Phase 1. The tables below document why.
 | Helpers reviewed | Category / dependencies | Pure | Decision and reason |
 | --- | --- | --- | --- |
 | `PlaylistStore.normalize_session_user_name`, `_normalize_session_user_name` | name trimming/validation | transformation yes | Excluded for now: user-visible identity/business validation and store policy. |
-| `_variant_id`, `_history_key`, `_session_file_label`, `_split_state_path` | identifiers/path labels | mostly | Defer: dictionary/model/store adapters, persistence naming, or duplicated media identifier logic. |
+| `_variant_id`, `_session_file_label`, `_split_state_path` | identifiers/path labels | mostly | Defer: dictionary/model/store adapters and persistence naming. |
+| `_history_key` and queue/cycle/history policy | identity, ordering, and duplicate decisions | mixed | Excluded from Phase 1; deterministic playlist ordering and duplicate identity decisions were later migrated as Phase 2 Item 8. Python retains locks, model mutation, persistence, timestamps, and notifications. |
 | `_load_*` scalar settings, `_session_started_at_from_payload` | scalar coercion | yes | Defer: trivial persistent-payload adaptation. |
 | Model `from_dict`/serialization and backup sanitization | Python object/schema adaptation | mostly | Defer: custom serialization would outweigh native work. |
-| Queue/cycle/history/session methods | ordering, state transitions, persistence, locks | no/mixed | Excluded: playlist policy and mutable store state. |
+| Queue/cycle/history/session methods | ordering, state transitions, persistence, locks | no/mixed | Mutable Store state remains excluded. Only the immutable deterministic ordering and duplicate decisions were migrated in Phase 2 Item 8. |
 
 ### `bilikara/updater.py`
 
 | Helpers reviewed | Category / dependencies | Pure | Decision and reason |
 | --- | --- | --- | --- |
 | `_release_list_api_from_latest`, `_format_download_proxy_url` | URL syntax/composition | yes | **Migrate now** as `url_utils.rs`. |
-| `_dedupe_urls`, `_latest_release_api_urls`, `_release_list_api_urls` | ordered fallback construction | yes | Defer/exclude: ordered fallback and source preference policy. The pure URL transform used inside is migrated separately. |
-| `_download_url_candidates` | ordered proxy/direct candidates | yes | Explicitly excluded: ordered download fallback policy. |
+| `_dedupe_urls`, `_latest_release_api_urls`, `_release_list_api_urls` | ordered fallback construction | yes | Excluded from Phase 1; later migrated as the updater portion of Phase 2 Item 5. |
+| `_download_url_candidates` | ordered proxy/direct candidates | yes | Excluded from Phase 1; later migrated as the updater portion of Phase 2 Item 5. |
 | Version, architecture, asset-token, safe-filename helpers | normalization/parsing | yes | Already migrated; Python fallbacks retained. |
 | `is_release_version`, `is_preview_version`, `is_stable_version`, `is_newer_version` | classification/comparison | yes | Intentionally remain Python composition over migrated parse results; migration would duplicate trivial policy. |
 | `_asset_text` | release asset dictionary → text | yes | Defer: Python dictionary adapter; no useful native work. |
@@ -279,6 +280,22 @@ Missing optional symbols disable only their matching capabilities.
 | --- | --- | --- |
 | `media_page_selection` | `rust_select_media_pages` / `select_media_pages` | Implemented and locally stabilized. Cross-platform confirmation remains for the PR to `dev`. Python retains Bilibili adaptation, object mapping, and fallback. |
 | `audio_binding` | `rust_decide_audio_binding` / `decide_audio_binding` | Implemented only after the strict media-page gate passed. Python retains model construction, errors, manual selection, URLs, and fallback. |
+| `download_candidate_planning` (updater) | `rust_plan_update_download_candidates` / `plan_update_download_candidates` | Implements updater API/direct/proxy construction with trimming, stable deduplication, explicit sources/routes, and complete Python fallback. |
+| `media_download_candidate_planning` | `rust_plan_media_download_candidates` / `plan_media_download_candidates` | Implements DASH primary/backup flattening and preferred-audio URL flattening. DASH trims/drops empties and preserves duplicates; preferred audio preserves raw strings and duplicates. Python retains descriptor selection, all I/O, and complete `_py_*` references. |
+| `tool_download_candidate_planning` | `rust_plan_tool_download_candidates` / `plan_tool_download_candidates` | Implements supplied/built-in primary plus configured fallback ordering, tool/target fallback asset identity, name quoting, and exact stable deduplication for BBDown, yt-dlp, and aria2c. Python retains runtime detection, asset scoring, downloads, installation, and complete `_py_*` references. |
+| `quality_policy` | `rust_decide_quality_policy` / `decide_quality_policy` | Implements active-label normalization, all historical DASH quality IDs, choice-index mapping, AVC-cap evaluation, yt-dlp maximum-height intent, and BBDown ordered quality intent. Python retains configuration, selector/argument syntax, and complete `_py_*` references. |
+| `video_stream_ranking` | `rust_select_video_stream` / `select_video_stream` | Implements exact codec/quality/AVC filtering, current two fallback stages, descending quality/bandwidth ranking, stable ties, and selected/ranked original indices. Python retains DASH fetching, stream dictionaries, URLs, and fallback. |
+| `audio_stream_ranking` | `rust_select_audio_stream` / `select_audio_stream` | Implements only regular audio quality ordering and Hi-Res filtering/fallback. Bandwidth remains intentionally irrelevant and equal quality preserves input order. Python retains DASH fetching, stream dictionaries, and complete fallback. |
+| `preferred_audio_source_binding` | `rust_select_preferred_audio_source` / `select_preferred_audio_source` | Implements preferred-source binding without regular ranking: the first supplied regular candidate is retained, then FLAC and Dolby override it in that order only when Hi-Res is enabled. Python retains object mapping, URLs, file extension/application, and complete fallback. |
+| `cache_planning` | `rust_plan_cache_window` / `plan_cache_window` | Phase-2 Item 7. Plans desired, pending, retained, and preempted cache IDs from an immutable snapshot. Python retains files, workers, locks, retries, cancellation, and plan application. |
+| `playlist_planning` | `rust_plan_playlist_order`, `rust_decide_playlist_duplicate` / matching capabilities | Phase-2 Item 8. Plans queue ordering and duplicate identity from immutable descriptors. Python retains Store mutation, object identity, history/session updates, persistence, locking, and complete fallback. |
+
+The following typed policy was added during v0.7.0 stabilization and is not a
+ninth Phase-2 item:
+
+| Typed Rust policy | Optional JSON export / Python capability | Status and retained Python ownership |
+| --- | --- | --- |
+| `av_delay` | `rust_apply_av_delay_action` / `apply_av_delay_action` | Canonical pure lock, unlock, adjust, reset, clamping, and button-state transitions. Python retains mutable Store integration, global/locked persistence, legacy migration, strict native-response validation, and complete fallback. |
 
 Audio binding transports only original index, page number, duration, and part
 label. It does not transport CID or arbitrary Bilibili metadata. The Rust
@@ -286,9 +303,12 @@ domain preserves the existing broad keyword substring policy and returns
 `single`, `automatic`, `manual_required`, or domain-level `no_match`.
 
 Variant-ID construction remains entirely in Python and was not consolidated.
-Quality/stream ranking is the next candidate, but no ranking, download
-planning, BBDown, aria2, cache, playlist, mobile plugin, or FFmpeg migration
-was started here.
+Phase 2 later completed all eight domains. Candidate planning, quality policy,
+video ranking, regular-audio ranking, preferred-source binding, cache planning,
+and playlist ordering/duplicate identity remain separate because their
+normalization, fallback, and ordering policies are intentionally different.
+Downloader execution, mobile plugin work, and FFmpeg migration were not
+started.
 
 ### Criteria for future migration
 
@@ -300,7 +320,9 @@ I/O and mutable policy in Python unless that later phase explicitly changes
 the boundary.
 
 The intentionally deferred helpers in the audit remain deferred. In
-particular, release and asset scoring/selection, URL candidate order, Bilibili
-short-link resolution, cache quality/source defaults, track/download planning,
-path traversal checks, persistent schema adapters, rendering utilities, and
-all filesystem/network/subprocess/thread behavior are not part of Phase 1.
+particular, Bilibili short-link resolution, download-source defaults,
+path traversal checks, persistent schema adapters, rendering utilities, and all
+filesystem/network/subprocess/thread behavior are not part of Phase 1.
+Candidate planning, quality/stream ranking, cache planning, and playlist
+planning are the later completed Phase-2 Items 5 through 8 documented in the
+business-rule migration plan.

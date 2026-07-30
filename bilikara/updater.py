@@ -48,7 +48,7 @@ class AppUpdateError(RuntimeError):
     pass
 
 
-def _dedupe_urls(urls: list[str]) -> list[str]:
+def _py_dedupe_urls(urls: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for url in urls:
@@ -58,6 +58,105 @@ def _dedupe_urls(urls: list[str]) -> list[str]:
         seen.add(normalized)
         result.append(normalized)
     return result
+
+
+def _update_candidate_inputs(
+    urls: list[object],
+    sources: list[str] | None = None,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "original_index": index,
+            "url": str(url or ""),
+            "source": sources[index] if sources is not None else "primary",
+        }
+        for index, url in enumerate(urls)
+    ]
+
+
+def _update_download_plan_request(
+    candidates: list[dict[str, object]],
+    *,
+    proxy: str | None = None,
+    proxy_first: bool = False,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "candidates": candidates,
+        "proxy": (
+            {"template": str(proxy), "proxy_first": bool(proxy_first)}
+            if proxy is not None
+            else None
+        ),
+    }
+
+
+def _py_plan_update_download_candidates(
+    candidates: list[dict[str, object]],
+    *,
+    proxy: str | None = None,
+    proxy_first: bool = False,
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        direct_url = str(candidate.get("url") or "").strip()
+        if not direct_url:
+            continue
+        proxy_url = (
+            _py_format_download_proxy_url(str(proxy), direct_url)
+            if proxy is not None
+            else ""
+        )
+        if proxy_url.strip() == direct_url:
+            proxy_url = ""
+        ordered = (
+            (("proxy", proxy_url), ("direct", direct_url))
+            if proxy_first
+            else (("direct", direct_url), ("proxy", proxy_url))
+        )
+        for route, raw_url in ordered:
+            url = str(raw_url or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            result.append(
+                {
+                    "input_index": candidate["original_index"],
+                    "source": candidate["source"],
+                    "route": route,
+                    "url": url,
+                }
+            )
+    return result
+
+
+def _try_native_update_download_plan(
+    candidates: list[dict[str, object]],
+    *,
+    proxy: str | None = None,
+    proxy_first: bool = False,
+) -> tuple[bool, list[dict[str, object]]]:
+    completed, response = rust_backend.try_plan_update_download_candidates(
+        _update_download_plan_request(
+            candidates,
+            proxy=proxy,
+            proxy_first=proxy_first,
+        )
+    )
+    if not completed or response is None:
+        return False, []
+    return True, list(response["candidates"])
+
+
+def _dedupe_urls(urls: list[str]) -> list[str]:
+    candidates = _update_candidate_inputs(list(urls))
+    completed, plan = _try_native_update_download_plan(candidates)
+    if completed:
+        return [str(candidate["url"]) for candidate in plan]
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates", lambda: _py_dedupe_urls(urls)
+    )
 
 
 def _py_release_list_api_from_latest(api_url: str) -> str:
@@ -75,8 +174,39 @@ def _release_list_api_from_latest(api_url: str) -> str:
     return _py_release_list_api_from_latest(api_url)
 
 
+def _py_latest_release_api_urls(
+    primary_url: object,
+    fallback_urls: tuple[str, ...] | list[str],
+) -> list[str]:
+    return _py_dedupe_urls([str(primary_url or ""), *fallback_urls])
+
+
 def _latest_release_api_urls() -> list[str]:
-    return _dedupe_urls([APP_RELEASE_API, *APP_RELEASE_API_FALLBACKS])
+    urls = [APP_RELEASE_API, *APP_RELEASE_API_FALLBACKS]
+    sources = ["primary", *("mirror" for _ in APP_RELEASE_API_FALLBACKS)]
+    candidates = _update_candidate_inputs(urls, sources)
+    completed, plan = _try_native_update_download_plan(candidates)
+    if completed:
+        return [str(candidate["url"]) for candidate in plan]
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates",
+        lambda: _py_latest_release_api_urls(
+            APP_RELEASE_API, APP_RELEASE_API_FALLBACKS
+        ),
+    )
+
+
+def _py_release_list_api_urls(
+    primary_url: object,
+    fallback_urls: tuple[str, ...] | list[str],
+    latest_fallback_urls: tuple[str, ...] | list[str],
+) -> list[str]:
+    derived_fallbacks = [
+        _py_release_list_api_from_latest(url) for url in latest_fallback_urls
+    ]
+    return _py_dedupe_urls(
+        [str(primary_url or ""), *fallback_urls, *derived_fallbacks]
+    )
 
 
 def _release_list_api_urls() -> list[str]:
@@ -84,7 +214,24 @@ def _release_list_api_urls() -> list[str]:
         _release_list_api_from_latest(url)
         for url in APP_RELEASE_API_FALLBACKS
     ]
-    return _dedupe_urls([APP_RELEASES_API, *APP_RELEASES_API_FALLBACKS, *derived_fallbacks])
+    urls = [APP_RELEASES_API, *APP_RELEASES_API_FALLBACKS, *derived_fallbacks]
+    sources = [
+        "primary",
+        *("mirror" for _ in APP_RELEASES_API_FALLBACKS),
+        *("derived_mirror" for _ in derived_fallbacks),
+    ]
+    candidates = _update_candidate_inputs(urls, sources)
+    completed, plan = _try_native_update_download_plan(candidates)
+    if completed:
+        return [str(candidate["url"]) for candidate in plan]
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates",
+        lambda: _py_release_list_api_urls(
+            APP_RELEASES_API,
+            APP_RELEASES_API_FALLBACKS,
+            APP_RELEASE_API_FALLBACKS,
+        ),
+    )
 
 
 def _py_format_download_proxy_url(proxy: str, url: str) -> str:
@@ -110,15 +257,42 @@ def _format_download_proxy_url(proxy: str, url: str) -> str:
     return _py_format_download_proxy_url(proxy, url)
 
 
-def _download_url_candidates(url: str) -> list[str]:
-    url = str(url or "").strip()
-    if not url:
+def _py_download_url_candidates(
+    url: object,
+    proxy: object,
+    proxy_first: bool,
+) -> list[str]:
+    normalized_url = str(url or "").strip()
+    if not normalized_url:
         return []
-    proxy_url = _format_download_proxy_url(APP_UPDATE_DOWNLOAD_PROXY, url)
-    if not proxy_url or proxy_url == url:
-        return [url]
-    candidates = [proxy_url, url] if APP_UPDATE_DOWNLOAD_PROXY_FIRST else [url, proxy_url]
-    return _dedupe_urls(candidates)
+    proxy_url = _py_format_download_proxy_url(str(proxy or ""), normalized_url)
+    if not proxy_url or proxy_url == normalized_url:
+        return [normalized_url]
+    candidates = (
+        [proxy_url, normalized_url]
+        if proxy_first
+        else [normalized_url, proxy_url]
+    )
+    return _py_dedupe_urls(candidates)
+
+
+def _download_url_candidates(url: str) -> list[str]:
+    candidates = _update_candidate_inputs([url], ["primary"])
+    completed, plan = _try_native_update_download_plan(
+        candidates,
+        proxy=APP_UPDATE_DOWNLOAD_PROXY,
+        proxy_first=APP_UPDATE_DOWNLOAD_PROXY_FIRST,
+    )
+    if completed:
+        return [str(candidate["url"]) for candidate in plan]
+    return rust_backend.python_fallback(
+        "plan_update_download_candidates",
+        lambda: _py_download_url_candidates(
+            url,
+            APP_UPDATE_DOWNLOAD_PROXY,
+            APP_UPDATE_DOWNLOAD_PROXY_FIRST,
+        ),
+    )
 
 
 def _py_normalize_version_tag(version: object) -> str:
@@ -318,8 +492,13 @@ def _latest_release_for_current(
                         return selected
         elif status == "no_match":
             return {}
-            
-    return _py_latest_release_for_current(current_version, releases, include_preview=include_preview)
+
+    return rust_backend.python_fallback(
+        "select_release",
+        lambda: _py_latest_release_for_current(
+            current_version, releases, include_preview=include_preview
+        ),
+    )
 
 
 def _py_normalize_machine_arch(machine: object) -> str:
@@ -556,7 +735,9 @@ def _score_asset_for_target(asset: dict[str, Any], target: dict[str, str]) -> in
                 score = score_entry.get("score")
                 if isinstance(score, int) and not isinstance(score, bool):
                     return score
-    return _py_score_asset_for_target(asset, target)
+    return rust_backend.python_fallback(
+        "select_update_asset", lambda: _py_score_asset_for_target(asset, target)
+    )
 
 
 def _py_select_update_asset(
@@ -633,19 +814,31 @@ def select_update_asset(
     }
     completed, response = rust_backend.try_select_update_asset(request)
     if not completed or response is None:
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
     status = response.get("status")
     if status == "no_match":
         return None
     if status != "selected":
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
 
     selected_index = response.get("selected_index")
     if not isinstance(selected_index, int) or isinstance(selected_index, bool):
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
     selected = assets_by_index.get(selected_index)
     if selected is None:
-        return _py_select_update_asset(release, target=resolved_target)
+        return rust_backend.python_fallback(
+            "select_update_asset",
+            lambda: _py_select_update_asset(release, target=resolved_target),
+        )
     return {
         "name": str(selected.get("name") or ""),
         "browser_download_url": str(selected.get("browser_download_url") or ""),

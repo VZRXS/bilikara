@@ -12,6 +12,7 @@ from bilikara.bilibili import (
     _py_decide_audio_binding,
     _py_is_auto_dual_audio_pair,
     _py_part_keyword_match,
+    _py_part_vocal_role,
     _py_requires_manual_binding,
     _requires_manual_binding,
 )
@@ -79,11 +80,32 @@ class AudioBindingPythonPolicyTest(unittest.TestCase):
 
     def test_exactly_one_recognized_label_is_automatic(self):
         pages = [page(1, "plain"), page(2, "伴奏版", 301)]
+        self.assert_decision(pages, "automatic", (0, 1))
+
+    def test_complementary_vocal_labels_prefer_on_vocal(self):
+        pages = [page(1, "on vocal"), page(2, "off vocal", 301)]
+        self.assert_decision(pages, "automatic", (0, 1), 0)
+
+    def test_reversed_complementary_vocal_labels_prefer_on_vocal(self):
+        pages = [page(1, "off_vocal"), page(2, "ON-VOCAL", 301)]
         self.assert_decision(pages, "automatic", (0, 1), 1)
 
-    def test_both_recognized_labels_are_automatic_without_override(self):
-        pages = [page(1, "on vocal"), page(2, "off vocal", 301)]
-        self.assert_decision(pages, "automatic", (0, 1))
+    def test_vocal_role_parser_requires_an_unambiguous_role(self):
+        for label in ("on vocal", "ON_VOCAL", "onvocal", "人声版", "原唱"):
+            with self.subTest(label=label):
+                self.assertEqual(_py_part_vocal_role(label), "on")
+        for label in ("off vocal", "OFF-VOCAL", "offvocal", "伴奏版"):
+            with self.subTest(label=label):
+                self.assertEqual(_py_part_vocal_role(label), "off")
+        for label in (
+            "on/off vocal",
+            "人声/伴奏",
+            "song vocal",
+            "office vocal",
+            "vocal track",
+        ):
+            with self.subTest(label=label):
+                self.assertIsNone(_py_part_vocal_role(label))
 
     def test_english_keyword_case_variants(self):
         for label in ("ON", "On", "on", "OFF", "Off", "off"):
@@ -113,31 +135,47 @@ class AudioBindingPythonPolicyTest(unittest.TestCase):
                     [page(1, "plain", 300), page(2, "off", 300 + difference)],
                     expected_mode,
                     (0, 1) if expected_mode == "automatic" else (),
-                    1 if expected_mode == "automatic" else None,
                 )
 
     def test_custom_tolerance_is_applied_by_reference_decision(self):
         pages = [page(1, "plain", 300), page(2, "off", 304)]
-        self.assert_decision(pages, "automatic", (0, 1), 1, tolerance_seconds=4)
+        self.assert_decision(pages, "automatic", (0, 1), tolerance_seconds=4)
 
-    def test_reversed_input_preserves_selected_order_and_maps_override_index(self):
+    def test_reversed_input_preserves_selected_order_without_inferred_vocal_pair(self):
         p2 = page(2, "off vocal", 301)
         p1 = page(1, "plain", 300)
-        self.assert_decision([p2, p1], "automatic", (0, 1), 0)
+        self.assert_decision([p2, p1], "automatic", (0, 1))
 
-    def test_p1_p2_automatic_video_override(self):
+    def test_only_off_vocal_label_does_not_override_first_page(self):
         pages = [page(1, "main track"), page(2, "off vocal", 301)]
-        self.assertEqual(_py_auto_dual_audio_video_page(pages), 2)
-        self.assert_decision(pages, "automatic", (0, 1), 1)
+        self.assertIsNone(_py_auto_dual_audio_video_page(pages))
+        self.assert_decision(pages, "automatic", (0, 1))
 
     def test_p1_recognized_p2_unrecognized_has_no_override(self):
         pages = [page(1, "on vocal"), page(2, "music track", 301)]
         self.assertIsNone(_py_auto_dual_audio_video_page(pages))
         self.assert_decision(pages, "automatic", (0, 1))
 
-    def test_both_p1_p2_recognized_have_no_override(self):
+    def test_both_p1_p2_vocal_roles_prefer_on_vocal(self):
         pages = [page(1, "on vocal"), page(2, "off vocal", 301)]
-        self.assertIsNone(_py_auto_dual_audio_video_page(pages))
+        self.assertEqual(_py_auto_dual_audio_video_page(pages), 1)
+
+    def test_incomplete_or_same_vocal_roles_do_not_override(self):
+        for pages in (
+            [page(1, "on vocal"), page(2, "music track", 301)],
+            [page(1, "on vocal"), page(2, "ON_VOCAL", 301)],
+        ):
+            with self.subTest(parts=[item.part for item in pages]):
+                self.assertIsNone(_py_auto_dual_audio_video_page(pages))
+                self.assert_decision(pages, "automatic", (0, 1))
+
+    def test_duplicate_page_numbers_still_select_the_on_vocal_entry(self):
+        pages = [
+            page(1, "off vocal", cid=101),
+            page(1, "on vocal", 301, cid=102),
+        ]
+        self.assertEqual(_py_auto_dual_audio_video_page(pages), 1)
+        self.assert_decision(pages, "automatic", (0, 1), 1)
 
     def test_other_page_numbers_have_no_override(self):
         pages = [page(3, "main track"), page(4, "off vocal", 301)]

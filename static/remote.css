@@ -128,6 +128,28 @@
   --toast-border: 1px solid rgba(87, 63, 43, 0.12);
   --toast-shadow: 0 16px 42px rgba(88, 56, 30, 0.16);
   --btn-hover-shadow: transparent;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent-deep);
+  --av-lock-local-emphasis: var(--accent-deep);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
+  --av-lock-hover-filter: brightness(1.06) saturate(1.06);
+  --av-lock-focus-outline: 2px solid var(--remote-focus-border-color);
+  --av-lock-focus-shadow: var(--remote-focus-ring-shadow);
+  --av-lock-active-transform: translateY(1px);
 }
 
 * {
@@ -377,14 +399,16 @@ h1 {
   min-width: 0;
   flex: 0 0 auto;
   transition:
-    transform 0.15s ease,
+    transform 0.12s ease,
     background 0.15s ease,
     color 0.15s ease;
 }
 
-.display-popover .mode-button:hover {
-  transform: translateY(-1px);
-  color: var(--ink);
+@media (hover: hover) and (pointer: fine) {
+  .display-popover .mode-button:hover {
+    transform: translateY(-1px);
+    color: var(--ink);
+  }
 }
 
 .display-popover .mode-button.active {
@@ -479,12 +503,19 @@ h1 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--qr-popover-close-bg);
-  color: var(--muted);
+  background: var(--rating-close-bg);
+  color: var(--ink);
   cursor: pointer;
   font-size: 20px;
   line-height: 0;
   padding: 0 0 2px 1px;
+  transition: background 0.2s ease, transform 0.12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .remote-qr-popover-close:hover {
+    background: var(--rating-close-hover-bg);
+  }
 }
 
 .remote-qr-popover-image-wrap {
@@ -913,12 +944,20 @@ h1 {
   white-space: nowrap;
 }
 
-.remote-step-button:hover,
-.remote-reset-button:hover,
-.remote-mute-button:hover {
-  background: rgba(255, 255, 255, 0.95);
-  border-color: var(--player-btn-hover-border);
-  box-shadow: none;
+.remote-step-button,
+.remote-reset-button,
+.remote-mute-button {
+  transition: transform 0.12s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .remote-step-button:hover,
+  .remote-reset-button:hover,
+  .remote-mute-button:hover {
+    background: rgba(255, 255, 255, 0.95);
+    border-color: var(--player-btn-hover-border);
+    box-shadow: none;
+  }
 }
 
 .remote-mute-button.is-muted {
@@ -1014,7 +1053,8 @@ h1 {
 }
 
 #remote-av-sync-panel .remote-step-button,
-#remote-av-sync-panel .remote-reset-button {
+#remote-av-sync-panel .remote-reset-button,
+#remote-av-sync-panel .remote-lock-button {
   width: 100%;
   min-width: 0;
   padding-inline: 8px;
@@ -1022,9 +1062,80 @@ h1 {
 }
 
 #remote-av-sync-panel .remote-input-wrap {
-  grid-column: 2 / -1;
+  grid-column: 2 / 4;
   width: 100%;
-  justify-content: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+#remote-av-sync-panel .remote-input-wrap input[type="number"] {
+  padding: 0;
+  margin: 0;
+}
+
+#remote-av-sync-panel .remote-input-wrap input[type="number"]::-webkit-inner-spin-button {
+  margin: 0;
+}
+
+#remote-av-sync-panel .remote-lock-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding-inline: 8px;
+  position: relative;
+  background: var(--av-lock-unlocked-bg);
+  border: var(--av-lock-unlocked-border);
+  color: var(--av-lock-unlocked-color);
+  font-size: 18px;
+}
+
+#remote-av-sync-panel .remote-lock-button[data-has-local="true"] {
+  border: var(--av-lock-local-border);
+  color: var(--av-lock-local-color);
+}
+
+#remote-av-sync-panel .remote-lock-button[data-has-local="true"]::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+#remote-av-sync-panel .remote-lock-button[data-locked="true"] {
+  border: var(--av-lock-locked-border);
+  color: var(--av-lock-locked-emphasis);
+}
+
+#remote-av-sync-panel .remote-lock-button[data-locked="true"][data-has-local="true"] {
+  border: var(--av-lock-locked-local-border);
+  color: var(--av-lock-locked-local-emphasis);
+}
+
+#remote-av-sync-panel .remote-lock-button:disabled {
+  background: var(--av-lock-disabled-bg);
+  border: var(--av-lock-disabled-border);
+  color: var(--av-lock-disabled-color);
+  box-shadow: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  #remote-av-sync-panel .remote-lock-button:not(:disabled):hover {
+    filter: var(--av-lock-hover-filter);
+  }
+}
+
+#remote-av-sync-panel .remote-lock-button:focus-visible {
+  outline: var(--av-lock-focus-outline);
+  outline-offset: 2px;
+  box-shadow: var(--av-lock-focus-shadow);
+}
+
+#remote-av-sync-panel .remote-lock-button:not(:disabled):active {
+  transform: var(--av-lock-active-transform);
 }
 
 #remote-key-shift-panel .remote-setting-controls {
@@ -1115,9 +1226,11 @@ h1 {
     opacity 0.18s ease;
 }
 
-.player-control-row button:hover {
-  background: var(--player-btn-hover-bg);
-  border-color: var(--player-btn-hover-border);
+@media (hover: hover) and (pointer: fine) {
+  .player-control-row button:hover {
+    background: var(--player-btn-hover-bg);
+    border-color: var(--player-btn-hover-border);
+  }
 }
 
 .player-control-row button:active {
@@ -1602,6 +1715,7 @@ select:disabled {
   border-radius: 16px;
   padding: 12px 14px;
   cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease;
 }
 
 .primary-button {
@@ -1609,9 +1723,11 @@ select:disabled {
   color: white;
 }
 
-.primary-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px var(--btn-hover-shadow);
+@media (hover: hover) and (pointer: fine) {
+  .primary-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px var(--btn-hover-shadow);
+  }
 }
 
 .secondary-button,
@@ -1849,13 +1965,38 @@ select:disabled {
 }
 
 
-.search-result-bvid {
-  flex: 0 0 auto;
+.search-result-owner {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.owner-badge-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  max-width: 100%;
+  vertical-align: middle;
+}
 
-.search-result-owner {
+.owner-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding-block: 0;
+  padding-inline: 0.12em 0.14em;
+  border: 1.3px solid currentColor;
+  border-radius: 0.22em;
+  font-size: 0.8em;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: normal;
+  transform: translateY(0);
+}
+
+.owner-badge-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2190,9 +2331,15 @@ select:disabled {
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 
-.follow-up-button:hover {
-  border-color: rgba(202, 91, 60, 0.24);
-  background: rgba(255, 255, 255, 0.94);
+.follow-up-button {
+  transition: transform 0.12s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .follow-up-button:hover {
+    border-color: rgba(202, 91, 60, 0.24);
+    background: rgba(255, 255, 255, 0.94);
+  }
 }
 
 .follow-up-button:active {
@@ -3196,7 +3343,8 @@ body.remote-search-modal-open {
   }
 
   #remote-av-sync-panel .remote-step-button,
-  #remote-av-sync-panel .remote-reset-button {
+  #remote-av-sync-panel .remote-reset-button,
+  #remote-av-sync-panel .remote-lock-button {
     width: 100%;
     min-height: 42px;
     padding-inline: 12px;
@@ -3207,15 +3355,18 @@ body.remote-search-modal-open {
   }
 
   #remote-av-sync-panel .remote-input-wrap {
-    grid-column: 2 / -1;
+    grid-column: 2 / 4;
     width: 100%;
     min-height: 42px;
-    justify-content: center;
-    padding: 0 16px;
+    justify-content: flex-end;
+    gap: 4px;
+    padding: 0 12px;
   }
 
   #remote-av-sync-panel .remote-input-wrap input[type="number"] {
     width: min(120px, 100%);
+    padding: 0;
+    margin: 0;
     font-size: 18px;
   }
 
@@ -3392,7 +3543,7 @@ body.remote-identity-modal-open {
 }
 
 .remote-identity-actions .primary-button:only-child,
-.remote-identity-actions .hidden + .primary-button {
+.remote-identity-actions .hidden+.primary-button {
   grid-column: 1 / -1;
 }
 
@@ -3477,8 +3628,14 @@ body.remote-identity-modal-open {
   padding: 0 0 2px 1px;
 }
 
-.rating-close:hover {
-  background: var(--rating-close-hover-bg);
+.rating-close {
+  transition: background 0.2s ease, transform 0.12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .rating-close:hover {
+    background: var(--rating-close-hover-bg);
+  }
 }
 
 .rating-tabs {
@@ -3511,35 +3668,6 @@ body.remote-identity-modal-open {
   cursor: not-allowed;
   pointer-events: none;
   color: var(--muted);
-}
-
-.rating-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin: 14px 0 0;
-  padding: 4px;
-  border: 1px solid rgba(0, 210, 255, 0.18);
-  border-radius: 12px;
-  background: rgba(2, 6, 23, 0.34);
-}
-
-.rating-tabs button {
-  min-height: 36px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: #94a3b8;
-  font-weight: 700;
-}
-
-.rating-tabs button.active {
-  background: rgba(0, 210, 255, 0.16);
-  color: #f8fafc;
-}
-
-.rating-tabs button:disabled {
-  opacity: 0.42;
 }
 
 .rating-media {
@@ -3669,7 +3797,14 @@ body.remote-identity-modal-open {
   user-select: none;
 }
 
-.remote-info-button:hover,
+@media (hover: hover) and (pointer: fine) {
+  .remote-info-button:hover {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}
+
 .info-trigger-wrap.show-tooltip .remote-info-button {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -3750,9 +3885,11 @@ body.remote-identity-modal-open {
   padding: 0;
 }
 
-.floating-control-trigger:hover {
-  transform: scale(1.08);
-  box-shadow: var(--floating-control-trigger-hover-shadow);
+@media (hover: hover) and (pointer: fine) {
+  .floating-control-trigger:hover {
+    transform: scale(1.08);
+    box-shadow: var(--floating-control-trigger-hover-shadow);
+  }
 }
 
 .floating-control-trigger:active {
@@ -3859,7 +3996,7 @@ body.remote-identity-modal-open {
   height: 32px;
   border: 0;
   border-radius: 50%;
-  background: var(--floating-close-bg);
+  background: var(--rating-close-bg);
   color: var(--ink);
   display: flex;
   align-items: center;
@@ -3871,8 +4008,14 @@ body.remote-identity-modal-open {
   padding: 0 0 2px 1px;
 }
 
-.floating-control-close:hover {
-  background: var(--floating-close-hover-bg);
+.floating-control-close {
+  transition: background 0.2s ease, transform 0.12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .floating-control-close:hover {
+    background: var(--rating-close-hover-bg);
+  }
 }
 
 .floating-control-body {
@@ -3983,6 +4126,24 @@ body.remote-identity-modal-open {
   --bg-glow: rgba(30, 26, 23, 0.9);
   --bg-top: #1c1815;
   --bg-bottom: #13110f;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   /* Component variables - dark values */
   --chip-bg: rgba(30, 26, 23, 0.56);
@@ -4038,6 +4199,11 @@ body.remote-identity-modal-open {
   --theme-switch-button-bg: #13110f;
   --theme-switch-button-border: 1px solid rgba(246, 241, 235, 0.12);
   --theme-preview-active-border: var(--on-accent);
+  --rating-tab-bg: rgba(246, 241, 235, 0.06);
+  --rating-tab-border: 1px solid rgba(246, 241, 235, 0.14);
+  --rating-tab-color: var(--muted);
+  --rating-tab-active-bg: rgba(224, 108, 83, 0.2);
+  --rating-tab-active-color: var(--ink);
   --dark-control-rail-shadow: inset 0 0 0 1px rgba(246, 241, 235, 0.08);
   --dark-control-bg: rgba(48, 41, 37, 0.82);
   --dark-control-hover-bg: rgba(64, 55, 50, 0.95);
@@ -4062,9 +4228,10 @@ body.remote-identity-modal-open {
   --scrollbar-thumb-hover-bg: rgba(224, 108, 83, 0.4);
   --toast-bg: rgba(30, 26, 23, 0.94);
   --toast-border: 1px solid rgba(246, 241, 235, 0.15);
---toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
+  --toast-shadow: 0 16px 42px rgba(0, 0, 0, 0.4);
   --btn-hover-shadow: transparent;
 }
+
 /* --- BLUE BLACK THEME OVERRIDES --- */
 :root[data-theme="blue"] {
   --bg: #06111f;
@@ -4085,6 +4252,24 @@ body.remote-identity-modal-open {
   --bg-glow: rgba(56, 189, 248, 0.18);
   --bg-top: #06111f;
   --bg-bottom: #020617;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   --chip-bg: rgba(8, 18, 32, 0.58);
   --chip-border: 1px solid rgba(148, 202, 233, 0.16);
@@ -4206,6 +4391,24 @@ body.remote-identity-modal-open {
   --bg-glow: rgba(30, 41, 59, 0.9);
   --bg-top: #0b1120;
   --bg-bottom: #050810;
+  --av-lock-unlocked-bg: var(--btn-secondary-bg);
+  --av-lock-unlocked-border: var(--btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--btn-secondary-bg);
+  --av-lock-disabled-border: var(--btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   --chip-bg: rgba(17, 25, 40, 0.56);
   --chip-border: 1px solid rgba(255, 255, 255, 0.1);
@@ -4245,6 +4448,11 @@ body.remote-identity-modal-open {
   --qr-popover-close-bg: rgba(30, 41, 59, 0.8);
   --theme-switch-button-bg: #050810;
   --theme-switch-button-border: 1px solid rgba(255, 255, 255, 0.14);
+  --rating-tab-bg: rgba(5, 8, 16, 0.54);
+  --rating-tab-border: 1px solid rgba(0, 210, 255, 0.22);
+  --rating-tab-color: var(--muted);
+  --rating-tab-active-bg: rgba(0, 210, 255, 0.18);
+  --rating-tab-active-color: var(--ink);
   --dark-control-rail-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   --dark-control-bg: rgba(30, 41, 59, 0.84);
   --dark-control-hover-bg: rgba(30, 41, 59, 0.96);
@@ -4274,7 +4482,7 @@ body.remote-identity-modal-open {
   --scrollbar-track-bg: rgba(255, 255, 255, 0.05);
   --scrollbar-thumb-bg: rgba(0, 210, 255, 0.28);
   --scrollbar-thumb-hover-bg: rgba(0, 210, 255, 0.42);
---toast-bg: rgba(17, 25, 40, 0.94);
+  --toast-bg: rgba(17, 25, 40, 0.94);
   --toast-border: 1px solid rgba(255, 255, 255, 0.14);
   --btn-hover-shadow: rgba(0, 210, 255, 0.22);
 }
@@ -4304,12 +4512,14 @@ body.remote-identity-modal-open {
   color: var(--ink);
 }
 
-:root:is([data-theme="dark"], [data-theme="blue"]) .remote-step-button:hover,
-:root:is([data-theme="dark"], [data-theme="blue"]) .remote-reset-button:hover,
-:root:is([data-theme="dark"], [data-theme="blue"]) .remote-mute-button:hover,
-:root:is([data-theme="dark"], [data-theme="blue"]) .follow-up-button:hover {
-  background: var(--dark-control-hover-bg);
-  border-color: var(--dark-control-hover-border-color);
+@media (hover: hover) and (pointer: fine) {
+  :root:is([data-theme="dark"], [data-theme="blue"]) .remote-step-button:hover,
+  :root:is([data-theme="dark"], [data-theme="blue"]) .remote-reset-button:hover,
+  :root:is([data-theme="dark"], [data-theme="blue"]) .remote-mute-button:hover,
+  :root:is([data-theme="dark"], [data-theme="blue"]) .follow-up-button:hover {
+    background: var(--dark-control-hover-bg);
+    border-color: var(--dark-control-hover-border-color);
+  }
 }
 
 :root:is([data-theme="dark"], [data-theme="blue"]) .audio-variant-button.pending-bind {
@@ -4414,13 +4624,16 @@ body.remote-identity-modal-open {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: background-color 0.2s, color 0.2s;
+  transition: background-color 0.2s, color 0.2s, transform 0.12s ease;
   padding: 0;
   vertical-align: middle;
 }
-.queue-retry-button:hover {
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--accent);
+
+@media (hover: hover) and (pointer: fine) {
+  .queue-retry-button:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--accent);
+  }
 }
 
 .current-cache-retry {
@@ -4434,11 +4647,70 @@ body.remote-identity-modal-open {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: background-color 0.2s, transform 0.12s ease;
   padding: 0;
   vertical-align: middle;
   margin-left: 4px;
 }
-.current-cache-retry:hover {
-  background: rgba(255, 255, 255, 0.15);
+
+@media (hover: hover) and (pointer: fine) {
+  .current-cache-retry:hover {
+    background: rgba(255, 255, 255, 0.15);
+  }
+}
+
+/* Touch and coarse-pointer Remote UI refinements */
+@media (hover: none), (pointer: coarse) {
+  .display-popover .mode-button:hover,
+  .primary-button:hover,
+  .floating-control-trigger:hover,
+  .follow-up-button:hover,
+  .remote-step-button:hover,
+  .remote-reset-button:hover,
+  .remote-mute-button:hover,
+  .player-control-row button:hover {
+    transform: none;
+  }
+
+  .primary-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .secondary-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .ghost-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .toggle-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .display-popover .mode-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-step-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-reset-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-mute-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .tag-letter-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .tag-browser-tag:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .category-browser-card:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .category-browser-tab:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-search-modal-tab:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .queue-retry-button:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .current-cache-retry:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .rating-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .remote-qr-popover-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]),
+  .floating-control-close:active:not(:disabled):not([aria-disabled="true"]):not([aria-busy="true"]) {
+    transform: scale(0.97);
+  }
+}
+
+/* Disabled and busy controls transform neutralization */
+button:disabled,
+[aria-disabled="true"],
+[aria-busy="true"],
+.primary-button:disabled,
+.secondary-button:disabled,
+.ghost-button:disabled,
+.toggle-button:disabled {
+  transform: none !important;
+}
+
+button:disabled:active,
+[aria-disabled="true"]:active,
+[aria-busy="true"]:active,
+.primary-button:disabled:active,
+.secondary-button:disabled:active,
+.ghost-button:disabled:active,
+.toggle-button:disabled:active {
+  transform: none !important;
 }

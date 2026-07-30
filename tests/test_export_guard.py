@@ -129,6 +129,7 @@ class ExportGuardTest(unittest.TestCase):
         for page_name, consumer_name in (("index.html", "app.js"), ("remote.html", "remote.js")):
             source = (self.repo_root / "static" / page_name).read_text(encoding="utf-8")
             self.assertLess(source.index("/export-guard.js"), source.index(f"/{consumer_name}"))
+            self.assertLess(source.index("/export-download.js"), source.index(f"/{consumer_name}"))
 
 
 if __name__ == "__main__":

@@ -106,6 +106,28 @@
   --sync-focus-border: rgba(208, 90, 63, 0.55);
   --sync-focus-ring: rgba(208, 90, 63, 0.18);
   --sync-button-hover-border: rgba(208, 90, 63, 0.22);
+  --av-lock-unlocked-bg: var(--sync-btn-bg);
+  --av-lock-unlocked-border: var(--sync-btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--sync-focus-border);
+  --av-lock-local-color: var(--accent-deep);
+  --av-lock-local-emphasis: var(--accent-deep);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--sync-btn-bg);
+  --av-lock-disabled-border: var(--sync-btn-border);
+  --av-lock-disabled-color: var(--muted);
+  --av-lock-hover-filter: brightness(1.06) saturate(1.06);
+  --av-lock-focus-outline: 2px solid var(--sync-focus-border);
+  --av-lock-focus-shadow: 0 0 0 4px var(--sync-focus-ring);
+  --av-lock-active-transform: translateY(1px);
   --audio-variant-active-shadow: rgba(208, 90, 63, 0.18);
   --search-btn-hover-shadow: transparent;
   --developer-reset-btn-bg: rgba(208, 90, 63, 0.9);
@@ -144,12 +166,13 @@
   --rating-card-bg: rgba(255, 250, 244, 0.96);
   --rating-card-border: 1px solid rgba(87, 63, 43, 0.12);
   --rating-card-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
-  --rating-close-bg: rgba(109, 98, 88, 0.12);
-  --rating-tab-bg: rgba(2, 6, 23, 0.32);
-  --rating-tab-border: 1px solid rgba(148, 163, 184, 0.22);
-  --rating-tab-color: #94a3b8;
-  --rating-tab-active-bg: rgba(125, 211, 252, 0.18);
-  --rating-tab-active-color: #f8fafc;
+  --rating-close-bg: rgba(109, 98, 88, 0.16);
+  --rating-close-hover-bg: rgba(109, 98, 88, 0.28);
+  --rating-tab-bg: rgba(67, 53, 41, 0.05);
+  --rating-tab-border: 1px solid var(--line);
+  --rating-tab-color: var(--muted);
+  --rating-tab-active-bg: var(--accent-soft);
+  --rating-tab-active-color: var(--accent-deep);
   --rating-cover-bg: rgba(255, 255, 255, 0.8);
   --rating-cover-empty-border: 1px dashed rgba(87, 63, 43, 0.18);
   --rating-star-border: 1px solid rgba(208, 90, 63, 0.28);
@@ -2428,7 +2451,7 @@ h2 {
   gap: 6px;
   align-items: center;
   justify-content: flex-end;
-  width: min(520px, 100%);
+  width: min(578px, 100%);
   justify-self: end;
 }
 
@@ -2474,7 +2497,8 @@ h2 {
 }
 
 .av-sync-step-button,
-.av-sync-reset-button {
+.av-sync-reset-button,
+.av-sync-lock-button {
   /* min-width: 78px; */
   display: flex;
   align-items: center;
@@ -2502,6 +2526,20 @@ h2 {
 .volume-mute-button:hover {
   background: rgba(255, 255, 255, 0.95);
   border-color: var(--sync-button-hover-border);
+}
+
+.av-sync-lock-button:not(:disabled):hover {
+  filter: var(--av-lock-hover-filter);
+}
+
+.av-sync-lock-button:focus-visible {
+  outline: var(--av-lock-focus-outline);
+  outline-offset: 2px;
+  box-shadow: var(--av-lock-focus-shadow);
+}
+
+.av-sync-lock-button:not(:disabled):active {
+  transform: var(--av-lock-active-transform);
 }
 
 .volume-controls {
@@ -2539,6 +2577,50 @@ h2 {
   flex: 0 0 52px;
   grid-column: 1;
   padding-inline: 8px;
+}
+
+.av-sync-lock-button {
+  flex: 0 0 52px;
+  width: 52px;
+  padding-inline: 8px;
+  position: relative;
+  background: var(--av-lock-unlocked-bg);
+  border: var(--av-lock-unlocked-border);
+  color: var(--av-lock-unlocked-color);
+  font-size: 18px;
+}
+
+.av-sync-lock-button[data-has-local="true"] {
+  border: var(--av-lock-local-border);
+  color: var(--av-lock-local-color);
+}
+
+.av-sync-lock-button[data-has-local="true"]::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-end: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.av-sync-lock-button[data-locked="true"] {
+  border: var(--av-lock-locked-border);
+  color: var(--av-lock-locked-emphasis);
+}
+
+.av-sync-lock-button[data-locked="true"][data-has-local="true"] {
+  border: var(--av-lock-locked-local-border);
+  color: var(--av-lock-locked-local-emphasis);
+}
+
+.av-sync-lock-button:disabled {
+  background: var(--av-lock-disabled-bg);
+  border: var(--av-lock-disabled-border);
+  color: var(--av-lock-disabled-color);
+  box-shadow: none;
 }
 
 .av-sync-input-wrap {
@@ -4776,6 +4858,37 @@ select:disabled {
   white-space: nowrap;
 }
 
+.owner-badge-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.owner-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding-block: 0;
+  padding-inline: 0.12em 0.14em;
+  border: 1.3px solid currentColor;
+  border-radius: 0.22em;
+  font-size: 0.8em;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: normal;
+  transform: translateY(0.08em);
+}
+
+.owner-badge-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .search-result-rating-text {
   flex: 0 0 auto;
   white-space: nowrap;
@@ -6443,6 +6556,24 @@ select:disabled {
   --danger-btn-strong-bg: rgba(177, 69, 69, 0.92);
   --toast-error-border: rgba(177, 69, 69, 0.26);
   --status-failed-bg: rgba(177, 69, 69, 0.18);
+  --av-lock-unlocked-bg: var(--sync-btn-bg);
+  --av-lock-unlocked-border: var(--sync-btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--sync-focus-border);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--sync-btn-bg);
+  --av-lock-disabled-border: var(--sync-btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   /* Component variables - dark values */
   --chip-bg: rgba(30, 26, 23, 0.6);
@@ -6512,6 +6643,11 @@ select:disabled {
   --theme-switch-button-bg: #302925;
   --theme-switch-button-border: 1px solid rgba(246, 241, 235, 0.12);
   --theme-preview-active-border: var(--on-accent);
+  --rating-tab-bg: rgba(246, 241, 235, 0.06);
+  --rating-tab-border: 1px solid rgba(246, 241, 235, 0.14);
+  --rating-tab-color: var(--muted);
+  --rating-tab-active-bg: rgba(224, 108, 83, 0.2);
+  --rating-tab-active-color: var(--ink);
 
   --accent-soft: rgba(224, 108, 83, 0.15);
   --accent-soft-hover: rgba(224, 108, 83, 0.22);
@@ -6600,6 +6736,24 @@ select:disabled {
   --green: #34d399;
   --red: #fb7185;
   --shadow: 0 24px 70px rgba(2, 8, 23, 0.58);
+  --av-lock-unlocked-bg: var(--sync-btn-bg);
+  --av-lock-unlocked-border: var(--sync-btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--sync-btn-bg);
+  --av-lock-disabled-border: var(--sync-btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   --chip-bg: rgba(8, 18, 32, 0.62);
   --chip-border: 1px solid rgba(148, 202, 233, 0.16);
@@ -6685,6 +6839,7 @@ select:disabled {
   --rating-card-border: 1px solid rgba(125, 211, 252, 0.2);
   --rating-card-shadow: 0 24px 90px rgba(2, 8, 23, 0.72), 0 0 36px rgba(56, 189, 248, 0.14);
   --rating-close-bg: rgba(148, 202, 233, 0.14);
+  --rating-close-hover-bg: rgba(148, 202, 233, 0.24);
   --rating-tab-bg: rgba(2, 6, 23, 0.44);
   --rating-tab-border: 1px solid rgba(125, 211, 252, 0.22);
   --rating-tab-color: #93a9bd;
@@ -6777,6 +6932,24 @@ select:disabled {
   --green: #00ffa3;
   --red: #ff3366;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --av-lock-unlocked-bg: var(--sync-btn-bg);
+  --av-lock-unlocked-border: var(--sync-btn-border);
+  --av-lock-unlocked-color: var(--muted);
+  --av-lock-local-bg: var(--accent-soft);
+  --av-lock-local-border: 1px solid var(--accent);
+  --av-lock-local-color: var(--accent);
+  --av-lock-local-emphasis: var(--accent);
+  --av-lock-locked-bg: var(--accent);
+  --av-lock-locked-border: 1px solid var(--accent-deep);
+  --av-lock-locked-color: var(--on-accent);
+  --av-lock-locked-emphasis: var(--accent-deep);
+  --av-lock-locked-local-bg: var(--accent-deep);
+  --av-lock-locked-local-border: 1px solid var(--accent);
+  --av-lock-locked-local-color: var(--on-accent);
+  --av-lock-locked-local-emphasis: var(--accent);
+  --av-lock-disabled-bg: var(--sync-btn-bg);
+  --av-lock-disabled-border: var(--sync-btn-border);
+  --av-lock-disabled-color: var(--muted);
 
   --chip-bg: rgba(17, 25, 40, 0.62);
   --chip-border: 1px solid rgba(255, 255, 255, 0.1);
@@ -6812,6 +6985,11 @@ select:disabled {
   --delay-overlay-bg: radial-gradient(circle at top left, rgba(0, 210, 255, 0.2), transparent 48%), linear-gradient(135deg, #0b1120 0%, #050810 100%);
   --theme-switch-button-bg: #050810;
   --theme-switch-button-border: 1px solid rgba(255, 255, 255, 0.14);
+  --rating-tab-bg: rgba(5, 8, 16, 0.54);
+  --rating-tab-border: 1px solid rgba(0, 210, 255, 0.22);
+  --rating-tab-color: var(--muted);
+  --rating-tab-active-bg: rgba(0, 210, 255, 0.18);
+  --rating-tab-active-color: var(--ink);
 
   --accent-soft-hover: rgba(0, 210, 255, 0.2);
   --switch-checked-bg: rgba(0, 210, 255, 0.78);

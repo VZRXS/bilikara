@@ -15,7 +15,16 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bilikara.cache import CacheManager, DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_YTDLP, DownloadCommandError, VIDEO_QUALITY_CHOICES
+from bilikara import rust_backend
+from bilikara.cache import (
+    CachePlan,
+    CacheManager,
+    DOWNLOAD_SOURCE_DOWNKYI,
+    DOWNLOAD_SOURCE_YTDLP,
+    DownloadCommandError,
+    SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS,
+    VIDEO_QUALITY_CHOICES,
+)
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
 
@@ -800,6 +809,61 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_reconcile_invalidates_before_planning_and_refreshes_after_ensure(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
+                self.store.update_item(
+                    "song-a",
+                    cache_status="ready",
+                    cache_progress=100.0,
+                    cache_message="缓存已完成",
+                    video_relative_path="song-a/missing-video.mp4",
+                    video_media_url="/media/song-a/missing-video.mp4",
+                    audio_variants=[
+                        {
+                            "id": "p1",
+                            "label": "P1",
+                            "audio_url": "/media/song-a/missing-audio.m4a",
+                        }
+                    ],
+                    persist_backup=False,
+                )
+                events = []
+                planned_statuses = []
+                original_planner = manager._plan_cache_snapshot
+
+                def record_plan(items, **kwargs):
+                    events.append("plan")
+                    planned_statuses.append(self.store.get_item("song-a").cache_status)
+                    return original_planner(items, **kwargs)
+
+                with patch.object(
+                    manager,
+                    "_plan_cache_snapshot",
+                    side_effect=record_plan,
+                ) as planner_mock, patch.object(
+                    manager,
+                    "_ensure_item_cached",
+                    side_effect=lambda item: events.append(f"ensure:{item.id}"),
+                ), patch.object(
+                    manager,
+                    "_apply_cache_plan_priority",
+                    side_effect=lambda items, plan: events.append("apply"),
+                ):
+                    manager.reconcile_cache_state()
+
+                self.assertEqual(planner_mock.call_count, 1)
+                self.assertEqual(planned_statuses, ["pending"])
+                self.assertEqual(events, ["plan", "ensure:song-a", "apply"])
+            finally:
+                manager.shutdown()
+
     def test_sync_with_playlist_keeps_ready_current_and_targets_following_window_items(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,
@@ -812,7 +876,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
                 self.mark_item_ready_with_files("song-a")
 
-                manager.sync_with_playlist()
+                with patch(
+                    "bilikara.cache.rust_backend.try_plan_cache_window",
+                    wraps=rust_backend.try_plan_cache_window,
+                ) as planner_mock:
+                    manager.sync_with_playlist()
 
                 song_a = self.store.get_item("song-a")
                 self.assertIsNotNone(song_a)
@@ -820,6 +888,165 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertTrue((self.cache_dir / "song-a").exists())
                 self.assertEqual(manager.desired_ids, {"song-a", "song-b", "song-c"})
                 self.assertEqual(manager.ordered_desired_ids, ["song-b", "song-c"])
+                self.assertEqual(planner_mock.call_count, 1)
+            finally:
+                manager.shutdown()
+
+    def test_sync_after_removing_item_tolerates_parallel_active_processes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            processes = [
+                subprocess.Popen([sys.executable, "-c", "pass"]),  # noqa: S603
+                subprocess.Popen([sys.executable, "-c", "pass"]),  # noqa: S603
+            ]
+            try:
+                for process in processes:
+                    process.wait(timeout=5)
+                for item_id in ["song-a", "song-b"]:
+                    self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
+                with manager.lock:
+                    manager.active_item_id = "song-a"
+                    manager.active_processes = set(processes)
+                    manager.active_process_item_ids = {
+                        process: "song-a" for process in processes
+                    }
+
+                self.assertEqual(
+                    manager._cache_priority_state(),
+                    ("song-a", ("song-a",), ()),
+                )
+                self.assertTrue(self.store.remove_item("song-a"))
+
+                manager.sync_with_playlist()
+
+                self.assertIsNone(self.store.get_item("song-a"))
+                self.assertEqual(manager.desired_ids, {"song-b"})
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                manager.shutdown()
+
+    def test_sync_refreshes_priority_plan_after_ensure_starts_active_item(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            fake_process = SimpleNamespace(
+                poll=lambda: None,
+                terminate=lambda: None,
+                wait=lambda timeout=None: None,
+                kill=lambda: None,
+            )
+            try:
+                for item_id in ["song-a", "song-b", "song-c"]:
+                    self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
+                with manager.lock:
+                    manager.pending_ids = {"song-a", "song-b", "song-c"}
+                    for item_id in ["song-c", "song-b", "song-a"]:
+                        manager.tasks.put(item_id)
+
+                plans = []
+                original_planner = manager._plan_cache_snapshot
+
+                def record_plan(items, **kwargs):
+                    plan = original_planner(items, **kwargs)
+                    plans.append(plan)
+                    return plan
+
+                def expose_later_active_item(item):
+                    if item.id == "song-a":
+                        with manager.lock:
+                            manager.active_item_id = "song-b"
+                            manager.active_process = fake_process
+
+                with patch.object(
+                    manager,
+                    "_plan_cache_snapshot",
+                    side_effect=record_plan,
+                ), patch.object(
+                    manager,
+                    "_ensure_item_cached",
+                    side_effect=expose_later_active_item,
+                ), patch.object(
+                    manager,
+                    "_terminate_process",
+                ) as terminate_mock:
+                    manager.sync_with_playlist()
+
+                self.assertEqual(len(plans), 2)
+                self.assertEqual(plans[0].preempt_ids, ())
+                self.assertEqual(plans[1].preempt_ids, ("song-b",))
+                terminate_mock.assert_called_once_with(fake_process)
+                self.assertEqual(
+                    manager.cache_interrupted_messages["song-b"],
+                    "等待优先缓存: title-song-a - P1",
+                )
+                self.assertIn("song-b", manager.requeued_active_ids)
+                queued_ids = []
+                while True:
+                    try:
+                        queued_ids.append(manager.tasks.get_nowait())
+                    except queue.Empty:
+                        break
+                self.assertEqual(queued_ids, ["song-a", "song-b", "song-c"])
+            finally:
+                manager.shutdown()
+
+    def test_sync_reuses_plan_when_ensure_keeps_priority_inputs_unchanged(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            try:
+                for item_id in ["song-a", "song-b"]:
+                    self.store.add_item(self.make_item(item_id), requester_name="cache-test-user")
+                state_plan = CachePlan(
+                    desired_ids=("song-a", "song-b"),
+                    pending_order=("song-a", "song-b"),
+                    retained_ids=("song-a", "song-b"),
+                    preempt_ids=(),
+                )
+                events = []
+
+                def plan_snapshot(items):
+                    events.append("plan")
+                    return state_plan
+
+                with patch.object(
+                    manager,
+                    "_plan_cache_snapshot",
+                    side_effect=plan_snapshot,
+                ), patch.object(
+                    manager,
+                    "_ensure_item_cached",
+                    side_effect=lambda item: events.append(f"ensure:{item.id}"),
+                ), patch.object(
+                    manager,
+                    "_apply_cache_plan_priority",
+                    side_effect=lambda items, plan: events.append(("apply", plan)),
+                ) as apply_mock:
+                    manager.sync_with_playlist()
+
+                self.assertEqual(
+                    events,
+                    [
+                        "plan",
+                        "ensure:song-a",
+                        "ensure:song-b",
+                        ("apply", state_plan),
+                    ],
+                )
+                apply_mock.assert_called_once()
             finally:
                 manager.shutdown()
 
@@ -1363,6 +1590,114 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_apply_priority_ignores_plan_when_active_item_changes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            process_a = Mock()
+            process_b = Mock()
+            try:
+                items = [self.make_item("song-first"), self.make_item("song-a")]
+                plan = CachePlan(
+                    desired_ids=("song-first", "song-a"),
+                    pending_order=("song-first", "song-a"),
+                    retained_ids=("song-first", "song-a"),
+                    preempt_ids=("song-a",),
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-first", "song-a"}
+                    manager.pending_ids = {"song-first", "song-a"}
+                    manager.active_item_id = "song-b"
+                    manager.active_processes = {process_a, process_b}
+                    manager.active_process_item_ids = {
+                        process_a: "song-a",
+                        process_b: "song-b",
+                    }
+                    manager.tasks.put("song-first")
+                    manager.tasks.put("song-a")
+
+                with patch.object(manager, "_terminate_processes") as terminate_mock:
+                    manager._apply_cache_plan_priority(items, plan)
+
+                terminate_mock.assert_not_called()
+                self.assertNotIn("song-a", manager.cache_interrupted_messages)
+                self.assertNotIn("song-a", manager.requeued_active_ids)
+                self.assertEqual(manager.active_item_id, "song-b")
+            finally:
+                manager.shutdown()
+
+    def test_apply_priority_ignores_plan_when_active_item_finishes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            process_a = Mock()
+            try:
+                items = [self.make_item("song-first"), self.make_item("song-a")]
+                plan = CachePlan(
+                    desired_ids=("song-first", "song-a"),
+                    pending_order=("song-first", "song-a"),
+                    retained_ids=("song-first", "song-a"),
+                    preempt_ids=("song-a",),
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-first", "song-a"}
+                    manager.pending_ids = {"song-first", "song-a"}
+                    manager.active_item_id = None
+                    manager.active_processes = {process_a}
+                    manager.active_process_item_ids = {process_a: "song-a"}
+                    manager.tasks.put("song-first")
+                    manager.tasks.put("song-a")
+
+                with patch.object(manager, "_terminate_processes") as terminate_mock:
+                    manager._apply_cache_plan_priority(items, plan)
+
+                terminate_mock.assert_not_called()
+                self.assertNotIn("song-a", manager.cache_interrupted_messages)
+                self.assertNotIn("song-a", manager.requeued_active_ids)
+            finally:
+                manager.shutdown()
+
+    def test_apply_priority_ignores_plan_when_next_item_becomes_urgent(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            process_a = Mock()
+            try:
+                items = [self.make_item("song-first"), self.make_item("song-a")]
+                plan = CachePlan(
+                    desired_ids=("song-first", "song-a"),
+                    pending_order=("song-first", "song-a"),
+                    retained_ids=("song-first", "song-a"),
+                    preempt_ids=("song-a",),
+                )
+                with manager.lock:
+                    manager.desired_ids = {"song-first", "song-a"}
+                    manager.pending_ids = {"song-first", "song-a"}
+                    manager.active_item_id = "song-a"
+                    manager.urgent_cache_ids.add("song-first")
+                    manager.active_processes = {process_a}
+                    manager.active_process_item_ids = {process_a: "song-a"}
+                    manager.tasks.put("song-first")
+                    manager.tasks.put("song-a")
+
+                with patch.object(manager, "_terminate_processes") as terminate_mock:
+                    manager._apply_cache_plan_priority(items, plan)
+
+                terminate_mock.assert_not_called()
+                self.assertNotIn("song-a", manager.cache_interrupted_messages)
+                self.assertNotIn("song-a", manager.requeued_active_ids)
+            finally:
+                manager.shutdown()
+
     def test_cache_item_clears_old_cache_dir_before_processing_pending_retry(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -1616,6 +1951,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "browser_download_url": "https://github.example/yt-dlp.exe",
                     },
                     target_path,
+                    tool="ytdlp",
                 )
         finally:
             manager.shutdown()
@@ -2097,6 +2433,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertNotIn("media_url", result["audio_variants"][0])
         validation_labels = [entry["label"] for entry in result["validation_files"]]
         self.assertEqual(validation_labels, ["视频轨 P1", "音轨 P1"])
+        video_validation, audio_validation = result["validation_files"]
+        self.assertIn("expected_duration", video_validation)
+        self.assertNotIn("expected_duration", audio_validation)
 
     def test_download_selected_streams_records_page_for_single_p2_audio_binding(self):
         item_dir = self.cache_dir / "song-a"
@@ -2303,10 +2642,12 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             "codec_name": "h264" if kind == "video" else "aac",
             "codec_tag_string": "avc1" if kind == "video" else "mp4a",
             "start_time": "0.000000",
+            "time_base": "1/1000",
         }
         file_format = {"format_name": "mov,mp4,m4a", "start_time": "0.000000"}
         if duration is not None:
             stream["duration"] = duration
+            stream["duration_ts"] = str(round(float(duration) * 1000))
             file_format["duration"] = duration
         return {"streams": [stream], "format": file_format}
 
@@ -2375,6 +2716,94 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         self.assertEqual(result["start_time"], 0.0)
         self.assertEqual(result["streams"][0]["codec_name"], "h264")
         self.assertEqual(result["streams"][0]["codec_tag_string"], "avc1")
+        self.assertEqual(result["streams"][0]["duration_ts"], "120500")
+        self.assertEqual(result["streams"][0]["time_base"], "1/1000")
+
+    def test_audio_stream_duration_does_not_use_video_or_container_duration(self):
+        payload = {
+            "streams": [
+                {"codec_type": "video", "duration": "243.0"},
+                {"codec_type": "audio", "duration": "87.0"},
+            ],
+            "format": {"duration": "243.0"},
+        }
+
+        self.assertEqual(CacheManager._probe_stream_duration(payload, "audio"), 87.0)
+        self.assertEqual(CacheManager._probe_stream_duration(payload, "video"), 243.0)
+
+    def test_original_audio_probe_uses_audio_stream_not_container_duration(self):
+        media = self.cache_dir / "song" / "raw-audio.m4a"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"raw")
+        payload = {
+            "streams": [
+                {"codec_type": "video", "duration": "243.0"},
+                {"codec_type": "audio", "duration": "87.0"},
+            ],
+            "format": {"duration": "243.0"},
+        }
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch(
+                    "bilikara.cache.subprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps(payload),
+                        stderr="",
+                    ),
+                ):
+                    duration = manager._probe_original_audio_duration(
+                        Path("/tools/ffprobe"),
+                        Path("/tools/ffmpeg"),
+                        media,
+                        label="音轨 P1",
+                        log_path=self.log_path,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(duration, 87.0)
+
+    def test_stream_duration_reconstructs_from_duration_ts_and_time_base(self):
+        payload = {
+            "streams": [{
+                "codec_type": "audio",
+                "duration_ts": "459020",
+                "time_base": "1/44100",
+            }],
+            "format": {"duration": "99.0"},
+        }
+
+        self.assertAlmostEqual(
+            CacheManager._probe_stream_duration(payload, "audio"),
+            459020 / 44100,
+            places=9,
+        )
+
+    def test_stream_duration_rejects_invalid_or_non_finite_values(self):
+        invalid_payloads = [
+            {"streams": [{"codec_type": "audio", "duration": "nan"}]},
+            {"streams": [{"codec_type": "audio", "duration": "inf"}]},
+            {
+                "streams": [{
+                    "codec_type": "audio",
+                    "duration_ts": "100",
+                    "time_base": "1/0",
+                }]
+            },
+            {
+                "streams": [{
+                    "codec_type": "audio",
+                    "duration_ts": True,
+                    "time_base": "1/1000",
+                }]
+            },
+        ]
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                self.assertIsNone(CacheManager._probe_stream_duration(payload, "audio"))
 
     def test_validation_error_prevents_cache_result_acceptance(self):
         media = self.cache_dir / "song" / "audio.m4a"
@@ -2407,11 +2836,21 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_ffprobe_missing_duration_is_rejected(self):
-        self._assert_duration_rejected("audio", None, expected=120)
+    def test_source_audio_missing_stream_duration_is_rejected(self):
+        with self.assertRaisesRegex(DownloadCommandError, "未报告音频流时长"):
+            self._validate_source_audio_duration(None, source_duration=120.0)
 
-    def test_audio_significantly_shorter_than_expected_is_rejected(self):
-        self._assert_duration_rejected("audio", "87", expected=243)
+    def test_source_audio_duration_accepts_observed_remux_delta(self):
+        result = self._validate_source_audio_duration("118.0", source_duration=120.0)
+        self.assertEqual(result["duration"], 118.0)
+
+    def test_source_audio_duration_rejects_shorter_output_beyond_tolerance(self):
+        with self.assertRaisesRegex(DownloadCommandError, "与原始音轨时长不一致"):
+            self._validate_source_audio_duration("117.999", source_duration=120.0)
+
+    def test_source_audio_duration_rejects_longer_output_beyond_tolerance(self):
+        with self.assertRaisesRegex(DownloadCommandError, "与原始音轨时长不一致"):
+            self._validate_source_audio_duration("122.001", source_duration=120.0)
 
     def test_video_significantly_shorter_than_expected_is_rejected(self):
         self._assert_duration_rejected("video", "87", expected=243)
@@ -2462,7 +2901,7 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                             required_streams={"audio"},
                             log_path=self.log_path,
                             diagnostic_context={
-                                "expected_duration": 120,
+                                "source_audio_duration": 120,
                                 "download_source": DOWNLOAD_SOURCE_DOWNKYI,
                                 "stream_kind": "audio",
                             },
@@ -2523,6 +2962,56 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         self.assertEqual(command[command.index("-map") + 1], "0:a:0")
         self.assertNotIn("-movflags", command)
 
+    def test_real_aac_remux_preserves_original_audio_duration_when_available(self):
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        if not ffmpeg or not ffprobe:
+            self.skipTest("ffmpeg/ffprobe unavailable")
+        media = self.cache_dir / "song" / ".attempt-test" / "audio-p1.m4a"
+        media.parent.mkdir(parents=True)
+        generated = subprocess.run([
+            ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=440:sample_rate=44100:duration=1.2",
+            "-vn", "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov",
+            str(media),
+        ], capture_output=True, text=True, check=False)
+        if generated.returncode != 0:
+            self.skipTest(f"AAC fixture generation unavailable: {generated.stderr[:120]}")
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                source_duration = manager._probe_original_audio_duration(
+                    Path(ffprobe),
+                    Path(ffmpeg),
+                    media,
+                    label="音轨 P1",
+                    log_path=self.log_path,
+                )
+                manager._normalize_downkyi_media_file(
+                    Path(ffmpeg),
+                    media,
+                    label="音轨 P1",
+                    stream_kind="audio",
+                    log_path=self.log_path,
+                )
+                metadata = manager._validate_media_file(
+                    Path(ffprobe),
+                    Path(ffmpeg),
+                    media,
+                    label="音轨 P1",
+                    required_streams={"audio"},
+                    log_path=self.log_path,
+                    diagnostic_context={"source_audio_duration": source_duration},
+                )
+            finally:
+                manager.shutdown()
+
+        self.assertLessEqual(
+            abs(float(metadata["duration"]) - source_duration),
+            SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS,
+        )
+
     def test_downkyi_remux_failure_keeps_raw_file_and_rejects_cache(self):
         media = self.cache_dir / "song" / ".attempt-test" / "audio-p1.m4a"
         media.parent.mkdir(parents=True)
@@ -2575,13 +3064,95 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_matching_page_audio_shorter_than_video_is_rejected(self):
-        errors = CacheManager._duration_pair_errors([
-            {"label": "视频轨 P1", "stream_kind": "video", "page": 1, "duration": 243.0},
-            {"label": "音轨 P1", "stream_kind": "audio", "page": 1, "duration": 87.0},
-        ])
-        self.assertEqual(len(errors), 1)
-        self.assertIn("比视频轨明显更短", errors[0])
+    def test_audio_duration_is_not_compared_with_video_duration(self):
+        video = self.cache_dir / "song" / "video.mp4"
+        audio = self.cache_dir / "song" / "audio.m4a"
+        video.parent.mkdir(parents=True)
+        video.write_bytes(b"video")
+        audio.write_bytes(b"audio")
+        cache_result = {
+            "validation_files": [
+                {
+                    "path": video,
+                    "label": "视频轨 P1",
+                    "required_streams": {"video"},
+                    "stream_kind": "video",
+                    "page": 1,
+                    "expected_duration": 243,
+                },
+                {
+                    "path": audio,
+                    "label": "音轨 P1",
+                    "required_streams": {"audio"},
+                    "stream_kind": "audio",
+                    "page": 1,
+                },
+            ]
+        }
+        probes = [
+            SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(self._probe_payload("video", "243")),
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(self._probe_payload("audio", "87")),
+                stderr="",
+            ),
+        ]
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch.object(
+                    manager,
+                    "_ffprobe_path_for_ffmpeg",
+                    return_value=Path("/tools/ffprobe"),
+                ), patch("bilikara.cache.subprocess.run", side_effect=probes):
+                    manager._validate_cache_result(
+                        "song", cache_result, Path("/tools/ffmpeg"), self.log_path
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(cache_result["validation_failure_count"], 0)
+        self.assertEqual(
+            [entry["duration"] for entry in cache_result["validation_metadata"]],
+            [243.0, 87.0],
+        )
+
+    def _validate_source_audio_duration(
+        self,
+        actual: str | None,
+        *,
+        source_duration: float,
+    ) -> dict[str, object]:
+        media = self.cache_dir / "song" / "source-audio.m4a"
+        media.parent.mkdir(parents=True, exist_ok=True)
+        media.write_bytes(b"media")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch(
+                    "bilikara.cache.subprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps(self._probe_payload("audio", actual)),
+                        stderr="",
+                    ),
+                ):
+                    return manager._validate_media_file(
+                        Path("/tools/ffprobe"),
+                        Path("/tools/ffmpeg"),
+                        media,
+                        label="音轨 P1",
+                        required_streams={"audio"},
+                        log_path=self.log_path,
+                        diagnostic_context={"source_audio_duration": source_duration},
+                    )
+            finally:
+                manager.shutdown()
 
     def _assert_duration_rejected(self, kind: str, actual: str | None, *, expected: float) -> None:
         extension = ".mp4" if kind == "video" else ".m4a"
@@ -2715,7 +3286,7 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                 raise UnicodeEncodeError("ascii", s, 0, 1, "ordinal not in range")
             def flush(self):
                 pass
-        
+
         with patch("sys.stdout", UnicodeErrorStdout()):
             _debug_print("Hello 世界")
             self.assertIn(b"Hello ??", fake_buffer.getvalue())
@@ -2729,7 +3300,7 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                 raise ConnectionError(f"failed to connect to {url}")
 
             target_file = Path(self.temp_dir.name) / "test_tool"
-            
+
             with patch("bilikara.cache.TOOL_ASSET_BASE_URL", "https://mirror.example.com"), patch.object(
                 manager, "_download_url", side_effect=fake_download_url
             ):
@@ -2738,8 +3309,8 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     "browser_download_url": "https://github.example.com/test_tool_asset"
                 }
                 with self.assertRaisesRegex(RuntimeError, "tool asset test_tool_asset download failed") as ctx:
-                    manager._download_tool_asset(asset, target_file)
-                
+                    manager._download_tool_asset(asset, target_file, tool="bbdown")
+
                 err_msg = str(ctx.exception)
                 self.assertIn("test_tool_asset", err_msg)
                 self.assertIn("https://github.example.com/test_tool_asset", err_msg)
@@ -2758,9 +3329,9 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
         bbdown_dir.mkdir(parents=True, exist_ok=True)
         version_file = bbdown_dir / "VERSION"
-        
+
         invalid_zip_content = b"<html><body>Proxy Error</body></html>"
-        
+
         def fake_download_url(url, path):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(invalid_zip_content)
@@ -2795,11 +3366,11 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
         bbdown_dir.mkdir(parents=True, exist_ok=True)
         version_file = bbdown_dir / "VERSION"
         version_file.write_text("v1.6.2", encoding="utf-8")
-        
+
         suffix = ".exe" if os.name == "nt" else ""
         existing_binary = bbdown_dir / f"BBDown{suffix}"
         existing_binary.write_bytes(b"existing-binary-content")
-        
+
         data_file = bbdown_dir / "BBDown.data"
         data_file.write_text("user-data", encoding="utf-8")
 
@@ -2832,17 +3403,17 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
 
                 self.assertTrue(existing_binary.exists())
                 self.assertEqual(existing_binary.read_bytes(), b"existing-binary-content")
-                
+
                 self.assertTrue(data_file.exists())
                 self.assertEqual(data_file.read_text(encoding="utf-8"), "user-data")
-                
+
                 self.assertEqual(version_file.read_text(encoding="utf-8").strip(), "v1.6.2")
             finally:
                 manager.shutdown()
 
     def test_worker_loop_handles_unexpected_exception(self):
         log_dir = Path(self.temp_dir.name) / "logs"
-        
+
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
@@ -2861,23 +3432,23 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     embed_url="https://player.bilibili.com/player.html?aid=123",
                 )
                 self.store.add_item(item, requester_name="cache-test-user")
-                
+
                 with patch.object(manager, "_cache_item", side_effect=RuntimeError("unexpected crash")):
                     manager.tasks.put("song-err")
                     manager.tasks.join()
-                
+
                 import time
                 time.sleep(0.1)
-                
+
                 refreshed = self.store.get_item("song-err")
                 self.assertEqual(refreshed.cache_status, "failed")
                 self.assertIn("缓存发生意外错误: unexpected crash", refreshed.cache_message)
-                
+
                 manager.sync_with_playlist()
                 self.assertEqual(manager.tasks.qsize(), 0)
                 refreshed = self.store.get_item("song-err")
                 self.assertEqual(refreshed.cache_status, "failed")
-                
+
                 log_path = manager._item_log_path("song-err")
                 self.assertTrue(log_path.exists())
                 log_content = log_path.read_text(encoding="utf-8")
@@ -3086,6 +3657,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
         item = self._single_downkyi_item("async-validation")
         video_validated = threading.Event()
         download_counts = {"video": 0, "audio": 0}
+        audio_steps = []
 
         def fake_download(_item_id, _binary, _ffmpeg, target_dir, _log, **kwargs):
             kind = kwargs["stream_kind"]
@@ -3098,9 +3670,24 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
             path.write_bytes(kind.encode("ascii"))
             return path
 
+        def fake_probe_source(_ffprobe, _ffmpeg, media_path, **_kwargs):
+            self.assertEqual(media_path.read_bytes(), b"audio")
+            audio_steps.append("source-probe")
+            return 120.125
+
+        def fake_normalize(_ffmpeg, _media_path, **kwargs):
+            if kwargs["stream_kind"] == "audio":
+                audio_steps.append("normalize")
+
         def fake_validate(_ffprobe, _ffmpeg, media_path, **kwargs):
-            if kwargs["diagnostic_context"]["stream_kind"] == "video":
+            context = kwargs["diagnostic_context"]
+            if context["stream_kind"] == "video":
                 video_validated.set()
+                self.assertNotIn("source_audio_duration", context)
+            else:
+                audio_steps.append("validate")
+                self.assertEqual(context["source_audio_duration"], 120.125)
+                self.assertNotIn("expected_duration", context)
             return {
                 "path": str(media_path),
                 "size": media_path.stat().st_size,
@@ -3123,7 +3710,9 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                 ), patch.object(
                     manager, "_download_stream_with_aria2c", side_effect=fake_download
                 ), patch.object(
-                    manager, "_normalize_downkyi_media_file"
+                    manager, "_probe_original_audio_duration", side_effect=fake_probe_source
+                ), patch.object(
+                    manager, "_normalize_downkyi_media_file", side_effect=fake_normalize
                 ), patch.object(
                     manager, "_validate_media_file", side_effect=fake_validate
                 ):
@@ -3146,6 +3735,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
         self.assertEqual(set(result), {"video-p1", "audio-p1"})
         self.assertEqual(download_counts, {"video": 1, "audio": 1})
         self.assertTrue(video_validated.is_set())
+        self.assertEqual(audio_steps, ["source-probe", "normalize", "validate"])
 
     def test_downkyi_retries_only_failed_track_and_caps_total_attempts_at_ten(self):
         item = self._single_downkyi_item("track-retry")
@@ -3189,6 +3779,8 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                     manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")
                 ), patch.object(
                     manager, "_download_stream_with_aria2c", side_effect=fake_download
+                ), patch.object(
+                    manager, "_probe_original_audio_duration", return_value=120.0
                 ), patch.object(
                     manager, "_normalize_downkyi_media_file"
                 ), patch.object(

@@ -170,16 +170,8 @@ def _default_host() -> str:
     if override:
         return override
 
-    # Legacy Windows packaged strategy:
-    # keep the broader heuristic that scans IPv4 candidates.
-    #
-    # if getattr(sys, "frozen", False) and os.name == "nt":
-    #     return _detect_windows_bind_host()
-
-    # Current Windows packaged strategy:
-    # prefer a host from the default physical adapter, and only fall back to
-    # the legacy broad IPv4 scan when that selection cannot determine a good
-    # candidate.
+    # Preserve the preview.1 packaged-Windows behavior: the desktop shell and
+    # standalone bundle both open the concrete physical-adapter address.
     if getattr(sys, "frozen", False) and os.name == "nt":
         physical_host = _detect_windows_physical_host()
         if physical_host:

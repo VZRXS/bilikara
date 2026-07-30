@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
+from dataclasses import dataclass
 from datetime import datetime
 import json
+import math
 import os
 import platform
 import queue
@@ -48,6 +50,7 @@ from .config import (
     YTDLP_RELEASE_API,
 )
 from .bilibili import BilibiliError, effective_bilibili_cookie, fetch_dash_playurl
+from . import rust_backend
 from .store import PlaylistStore
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
@@ -65,6 +68,7 @@ CACHE_RETENTION_BUFFER_ITEMS = 3
 MAX_PARALLEL_TRACK_DOWNLOADS = 4
 DOWNKYI_TRACK_MAX_ATTEMPTS = 10
 DOWNKYI_TRACK_RETRY_WAIT_SECONDS = 3.0
+SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS = 2.0
 try:
     ARIA2_CONNECTIONS_PER_TRACK = max(
         1,
@@ -105,6 +109,110 @@ class CacheCancelledError(RuntimeError):
 
 class DownloadCommandError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class CachePlanItem:
+    original_index: int
+    item_id: str
+    cache_ready: bool
+
+
+@dataclass(frozen=True)
+class CachePlanRequest:
+    items: tuple[CachePlanItem, ...]
+    max_items: int
+    retention_limit: int
+    active_item_ids: tuple[str, ...] = ()
+    primary_active_item_id: str | None = None
+    urgent_item_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CachePlan:
+    desired_ids: tuple[str, ...]
+    pending_order: tuple[str, ...]
+    retained_ids: tuple[str, ...]
+    preempt_ids: tuple[str, ...]
+
+
+def _py_plan_cache_window(request: CachePlanRequest) -> CachePlan:
+    """Return the complete cache policy decision without I/O or mutation."""
+
+    if not isinstance(request, CachePlanRequest) or not isinstance(request.items, tuple):
+        raise ValueError("invalid cache plan request")
+    if (
+        isinstance(request.max_items, bool)
+        or not isinstance(request.max_items, int)
+        or request.max_items < 0
+        or isinstance(request.retention_limit, bool)
+        or not isinstance(request.retention_limit, int)
+        or request.retention_limit < 0
+    ):
+        raise ValueError("cache limits must be non-negative integers")
+
+    item_ids: set[str] = set()
+    indices: set[int] = set()
+    for item in request.items:
+        if not isinstance(item, CachePlanItem):
+            raise ValueError("invalid cache plan item")
+        if (
+            isinstance(item.original_index, bool)
+            or not isinstance(item.original_index, int)
+            or item.original_index < 0
+            or not isinstance(item.item_id, str)
+            or not item.item_id
+            or not isinstance(item.cache_ready, bool)
+            or item.item_id in item_ids
+            or item.original_index in indices
+        ):
+            raise ValueError("invalid or duplicate cache plan item")
+        item_ids.add(item.item_id)
+        indices.add(item.original_index)
+
+    for references in (request.active_item_ids, request.urgent_item_ids):
+        if not isinstance(references, tuple) or len(set(references)) != len(references):
+            raise ValueError("cache plan references must be unique tuples")
+        if any(not isinstance(item_id, str) or item_id not in item_ids for item_id in references):
+            raise ValueError("cache plan reference does not identify an item")
+    primary_id = request.primary_active_item_id
+    if primary_id is not None and (
+        not isinstance(primary_id, str)
+        or primary_id not in item_ids
+        or primary_id not in request.active_item_ids
+    ):
+        raise ValueError("primary active item must identify an active item")
+
+    window = request.items[: request.max_items] if request.max_items else ()
+    desired_ids = tuple(item.item_id for item in window)
+    pending_order = tuple(item.item_id for item in window if not item.cache_ready)
+
+    retained = list(desired_ids)
+    retained_set = set(retained)
+    if request.max_items:
+        for item in request.items:
+            if len(retained) >= len(desired_ids) + request.retention_limit:
+                break
+            if item.item_id not in retained_set and item.cache_ready:
+                retained.append(item.item_id)
+                retained_set.add(item.item_id)
+
+    preempt_ids: tuple[str, ...] = ()
+    if (
+        primary_id is not None
+        and pending_order
+        and primary_id in pending_order
+        and primary_id != pending_order[0]
+        and pending_order[0] not in request.urgent_item_ids
+    ):
+        preempt_ids = (primary_id,)
+
+    return CachePlan(
+        desired_ids=desired_ids,
+        pending_order=pending_order,
+        retained_ids=tuple(retained),
+        preempt_ids=preempt_ids,
+    )
 
 
 def _debug_print(msg: str) -> None:
@@ -437,7 +545,7 @@ class CacheManager:
         return self.media_capabilities_snapshot()
 
     @staticmethod
-    def _quality_from_choice_index(index: object) -> str | None:
+    def _py_quality_from_choice_index(index: object) -> str | None:
         try:
             normalized_index = int(index)
         except (TypeError, ValueError):
@@ -447,11 +555,52 @@ class CacheManager:
         return None
 
     @staticmethod
-    def _optional_video_quality(video_quality: object) -> str | None:
+    def _py_optional_video_quality(video_quality: object) -> str | None:
         value = str(video_quality or "").strip()
         if value in VIDEO_QUALITY_CHOICES:
             return value
         return None
+
+    @staticmethod
+    def _native_quality_policy(
+        video_quality: object,
+        quality_cap: object = "",
+        choice_index: int | None = None,
+    ) -> dict[str, Any] | None:
+        request = {
+            "schema_version": 1,
+            "raw_quality": str(video_quality or ""),
+            "raw_cap": str(quality_cap or ""),
+            "choice_index": choice_index,
+        }
+        completed, response = rust_backend.try_decide_quality_policy(request)
+        return response if completed else None
+
+    @staticmethod
+    def _quality_from_choice_index(index: object) -> str | None:
+        try:
+            normalized_index = int(index)
+        except (TypeError, ValueError):
+            normalized_index = None
+        response = CacheManager._native_quality_policy(
+            "", choice_index=normalized_index
+        )
+        if response is not None:
+            return response["indexed_quality"]
+        return rust_backend.python_fallback(
+            "decide_quality_policy",
+            lambda: CacheManager._py_quality_from_choice_index(index),
+        )
+
+    @staticmethod
+    def _optional_video_quality(video_quality: object) -> str | None:
+        response = CacheManager._native_quality_policy(video_quality)
+        if response is not None:
+            return response["optional_quality"]
+        return rust_backend.python_fallback(
+            "decide_quality_policy",
+            lambda: CacheManager._py_optional_video_quality(video_quality),
+        )
 
     def enrich_snapshot(
         self,
@@ -531,7 +680,6 @@ class CacheManager:
         items = self.store.list_items()
         if not items:
             return
-        desired_ids, ordered_desired_ids = self._cache_window_plan(items)
         invalidated_ids: list[str] = []
 
         for item in items:
@@ -553,11 +701,12 @@ class CacheManager:
         if not invalidated_ids:
             return
 
-        with self.lock:
-            self.desired_ids = set(desired_ids)
-            self.ordered_desired_ids = list(ordered_desired_ids)
-
         fresh_items = self.store.list_items()
+        plan, priority_state = self._stable_cache_plan_snapshot(fresh_items)
+        desired_ids = set(plan.desired_ids)
+        with self.lock:
+            self.desired_ids = desired_ids
+            self.ordered_desired_ids = list(plan.pending_order)
         fresh_by_id = {item.id: item for item in fresh_items}
         for item_id in invalidated_ids:
             if item_id not in desired_ids:
@@ -565,7 +714,12 @@ class CacheManager:
             item = fresh_by_id.get(item_id)
             if item:
                 self._ensure_item_cached(item)
-        self._prioritize_cache_window(fresh_items, desired_ids)
+        priority_plan = (
+            plan
+            if self._cache_priority_state() == priority_state
+            else self._plan_cache_snapshot(fresh_items)
+        )
+        self._apply_cache_plan_priority(fresh_items, priority_plan)
 
     def set_max_cache_items(self, max_cache_items: int) -> int:
         self.set_cache_policy(max_cache_items=max_cache_items)
@@ -666,11 +820,18 @@ class CacheManager:
         return bounded
 
     @staticmethod
-    def _normalize_video_quality(video_quality: object) -> str:
+    def _py_normalize_video_quality(video_quality: object) -> str:
         value = str(video_quality or "").strip()
         if value in VIDEO_QUALITY_CHOICES:
             return value
         return DEFAULT_VIDEO_QUALITY
+
+    @staticmethod
+    def _normalize_video_quality(video_quality: object) -> str:
+        response = CacheManager._native_quality_policy(video_quality)
+        if response is not None:
+            return str(response["normalized_quality"])
+        return CacheManager._py_normalize_video_quality(video_quality)
 
     @staticmethod
     def _normalize_download_source(download_source: object) -> str:
@@ -979,43 +1140,126 @@ class CacheManager:
             return
         self.enqueue(item_id)
 
+    @staticmethod
+    def _cache_plan_wire_request(request: CachePlanRequest) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "items": [
+                {
+                    "original_index": item.original_index,
+                    "item_id": item.item_id,
+                    "cache_ready": item.cache_ready,
+                }
+                for item in request.items
+            ],
+            "max_items": request.max_items,
+            "retention_limit": request.retention_limit,
+            "active_item_ids": list(request.active_item_ids),
+            "primary_active_item_id": request.primary_active_item_id,
+            "urgent_item_ids": list(request.urgent_item_ids),
+        }
+
+    def _plan_cache_snapshot(
+        self,
+        items: list[Any],
+        *,
+        max_items: int | None = None,
+    ) -> CachePlan:
+        descriptors = tuple(
+            CachePlanItem(index, item.id, self._item_cache_ready(item))
+            for index, item in enumerate(items)
+        )
+        supplied_ids = {item.item_id for item in descriptors}
+        with self.lock:
+            primary_id = self.active_item_id
+            active_ids = set(self.active_process_item_ids.values())
+            if primary_id:
+                active_ids.add(primary_id)
+            active_ids.update(self.urgent_cache_ids)
+            urgent_ids = set(self.urgent_cache_ids)
+        if primary_id not in supplied_ids:
+            primary_id = None
+        request = CachePlanRequest(
+            items=descriptors,
+            max_items=self.max_cache_items if max_items is None else max_items,
+            retention_limit=CACHE_RETENTION_BUFFER_ITEMS,
+            active_item_ids=tuple(
+                item.item_id for item in descriptors if item.item_id in active_ids
+            ),
+            primary_active_item_id=primary_id,
+            urgent_item_ids=tuple(
+                item.item_id for item in descriptors if item.item_id in urgent_ids
+            ),
+        )
+        completed, response = rust_backend.try_plan_cache_window(
+            self._cache_plan_wire_request(request)
+        )
+        if not completed or response is None:
+            return rust_backend.python_fallback(
+                "plan_cache_window", lambda: _py_plan_cache_window(request)
+            )
+        return CachePlan(
+            desired_ids=tuple(response["desired_ids"]),
+            pending_order=tuple(response["pending_order"]),
+            retained_ids=tuple(response["retained_ids"]),
+            preempt_ids=tuple(response["preempt_ids"]),
+        )
+
+    def _cache_priority_state(self) -> tuple[object, ...]:
+        """Return the mutable planner inputs that cache starts may change."""
+
+        with self.lock:
+            return (
+                self.active_item_id,
+                tuple(sorted(set(self.active_process_item_ids.values()))),
+                tuple(sorted(self.urgent_cache_ids)),
+            )
+
+    def _stable_cache_plan_snapshot(
+        self, items: list[Any]
+    ) -> tuple[CachePlan, tuple[object, ...]]:
+        """Plan outside locks and retry only if mutable planner inputs changed."""
+
+        after = self._cache_priority_state()
+        for _attempt in range(3):
+            before = after
+            plan = self._plan_cache_snapshot(items)
+            after = self._cache_priority_state()
+            if before == after:
+                return plan, after
+        # Persistent churn is rare. The caller will see the sentinel and avoid
+        # reusing this final plan for its later priority/preemption phase.
+        after = ("unstable", *after)
+        return plan, after
+
     def _cache_window_plan(self, items: list[Any]) -> tuple[set[str], list[str]]:
-        if self.max_cache_items <= 0:
-            return set(), []
-        window_items = list(items[: self.max_cache_items])
-        desired_ids = {item.id for item in window_items}
-        ordered_desired_ids = [
-            item.id
-            for item in window_items
-            if not self._item_cache_ready(item)
-        ]
-        return desired_ids, ordered_desired_ids
+        plan = self._plan_cache_snapshot(items)
+        return set(plan.desired_ids), list(plan.pending_order)
 
     def _retained_cache_ids(self, items: list[Any], desired_ids: set[str]) -> set[str]:
-        retained_ids = set(desired_ids)
-        if self.max_cache_items <= 0:
-            return retained_ids
-        buffer_remaining = CACHE_RETENTION_BUFFER_ITEMS
-        if buffer_remaining <= 0:
-            return retained_ids
+        plan = self._plan_cache_snapshot(items)
+        if set(plan.desired_ids) == set(desired_ids):
+            return set(plan.retained_ids)
 
-        for item in items:
-            if item.id in retained_ids or not self._item_cache_ready(item):
-                continue
-            retained_ids.add(item.id)
-            buffer_remaining -= 1
-            if buffer_remaining <= 0:
-                break
+        # Private-call compatibility for callers supplying a nonstandard window.
+        retained_ids = set(desired_ids)
+        if self.max_cache_items > 0:
+            for item in items:
+                if len(retained_ids) >= len(desired_ids) + CACHE_RETENTION_BUFFER_ITEMS:
+                    break
+                if item.id not in retained_ids and self._item_cache_ready(item):
+                    retained_ids.add(item.id)
         return retained_ids
 
     def sync_with_playlist(self) -> None:
         items = self.store.list_items()
-        desired_ids, ordered_desired_ids = self._cache_window_plan(items)
-        retained_ids = self._retained_cache_ids(items, desired_ids)
+        plan, priority_state = self._stable_cache_plan_snapshot(items)
+        desired_ids = set(plan.desired_ids)
+        retained_ids = set(plan.retained_ids)
         current_ids = {item.id for item in items}
         with self.lock:
             self.desired_ids = set(desired_ids)
-            self.ordered_desired_ids = list(ordered_desired_ids)
+            self.ordered_desired_ids = list(plan.pending_order)
 
         self._cleanup_orphan_cache_dirs(current_ids)
         self._stop_active_if_not_desired(desired_ids)
@@ -1025,7 +1269,12 @@ class CacheManager:
                 self._ensure_item_cached(item)
             elif item.id not in retained_ids:
                 self._drop_item_cache(item.id, self._outside_window_message())
-        self._prioritize_cache_window(items, desired_ids)
+        priority_plan = (
+            plan
+            if self._cache_priority_state() == priority_state
+            else self._plan_cache_snapshot(items)
+        )
+        self._apply_cache_plan_priority(items, priority_plan)
 
     def enqueue(self, item_id: str) -> None:
         with self.lock:
@@ -1164,39 +1413,36 @@ class CacheManager:
 
     def _prioritize_cache_window(self, items: list[Any], desired_ids: set[str]) -> None:
         ordered_items = [item for item in items if item.id in desired_ids]
-        ordered_cache_ids = [
-            item.id
-            for item in ordered_items
-            if not self._item_cache_ready(item)
-        ]
+        plan = self._plan_cache_snapshot(ordered_items, max_items=len(ordered_items))
+        self._apply_cache_plan_priority(ordered_items, plan)
+
+    def _apply_cache_plan_priority(self, items: list[Any], plan: CachePlan) -> None:
+        ordered_cache_ids = list(plan.pending_order)
         if not ordered_cache_ids:
             return
 
         self._reorder_pending_cache_queue(ordered_cache_ids)
 
-        with self.lock:
-            active_item_id = self.active_item_id
-            active_processes = self._active_processes_locked(active_item_id)
-            urgent_cache_ids = set(self.urgent_cache_ids)
-        if not active_item_id or active_item_id not in desired_ids:
+        if len(plan.preempt_ids) != 1:
             return
-        if ordered_cache_ids[0] in urgent_cache_ids:
-            return
-        if active_item_id == ordered_cache_ids[0]:
-            return
-        if active_item_id not in ordered_cache_ids:
-            return
-
+        proposed_active_id = plan.preempt_ids[0]
         next_item_id = ordered_cache_ids[0]
-        next_item = next((item for item in ordered_items if item.id == next_item_id), None)
+        next_item = next((item for item in items if item.id == next_item_id), None)
         with self.lock:
-            if self.active_item_id != active_item_id:
+            if (
+                self.stop_event.is_set()
+                or self.active_item_id != proposed_active_id
+                or proposed_active_id not in ordered_cache_ids
+                or proposed_active_id == next_item_id
+                or next_item_id in self.urgent_cache_ids
+            ):
                 return
+            active_processes = self._active_processes_locked(proposed_active_id)
             title = str(getattr(next_item, "display_title", "") or "").strip()
-            self.cache_interrupted_messages[active_item_id] = (
+            self.cache_interrupted_messages[proposed_active_id] = (
                 f"等待优先缓存: {title}" if title else "等待优先缓存"
             )
-        self._enqueue_front(next_item_id, requeue_after=active_item_id)
+        self._enqueue_front(next_item_id, requeue_after=proposed_active_id)
         self._terminate_processes(active_processes)
 
     def _worker_loop(self) -> None:
@@ -1812,7 +2058,6 @@ class CacheManager:
                     "stream_kind": "audio",
                     "page": page,
                     "cid": self._cid_for_validation(item, page),
-                    "expected_duration": self._duration_for_page(item, page),
                     "download_source": download_source,
                     "stream_metadata": next(
                         (track.get("stream_metadata") or {} for track in audio_tracks if int(track["page"]) == page),
@@ -2065,8 +2310,10 @@ class CacheManager:
         )
 
     @staticmethod
-    def _ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
-        quality = CacheManager._optional_video_quality(quality_cap) or CacheManager._normalize_video_quality(video_quality)
+    def _py_ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
+        quality = CacheManager._py_optional_video_quality(
+            quality_cap
+        ) or CacheManager._py_normalize_video_quality(video_quality)
         if "360" in quality:
             return 360
         if "480" in quality:
@@ -2080,6 +2327,13 @@ class CacheManager:
         if "8K" in quality:
             return 4320
         return 1080
+
+    @staticmethod
+    def _ytdlp_max_height(video_quality: object, quality_cap: object = "") -> int:
+        response = CacheManager._native_quality_policy(video_quality, quality_cap)
+        if response is not None:
+            return int(response["effective_max_height"])
+        return CacheManager._py_ytdlp_max_height(video_quality, quality_cap)
 
     @staticmethod
     def _ytdlp_browser_cookie_source() -> str:
@@ -2234,7 +2488,8 @@ class CacheManager:
         except RuntimeError:
             return 0
 
-    def _dash_max_quality_id(self, video_quality: str) -> int:
+    @staticmethod
+    def _py_dash_max_quality_id(video_quality: str) -> int:
         quality_id_map = {
             "360P 流畅": 16,
             "480P 清晰": 32,
@@ -2250,15 +2505,28 @@ class CacheManager:
         }
         return quality_id_map.get(video_quality, 80)
 
-    def _select_dash_video_stream(
-        self,
+    @staticmethod
+    def _dash_max_quality_id(video_quality: str) -> int:
+        if not isinstance(video_quality, str):
+            return CacheManager._py_dash_max_quality_id(video_quality)
+        response = CacheManager._native_quality_policy(video_quality)
+        if response is not None:
+            return int(response["dash_max_quality_id"])
+        return CacheManager._py_dash_max_quality_id(video_quality)
+
+    @staticmethod
+    def _py_select_dash_video_stream(
         video_streams: list[dict],
         *,
         max_quality_id: int,
         codec_filter: str | None = None,
         avc_quality_cap: str = "",
     ) -> dict | None:
-        max_avc_quality_id = self._dash_max_quality_id(avc_quality_cap) if avc_quality_cap else 0
+        max_avc_quality_id = (
+            CacheManager._py_dash_max_quality_id(avc_quality_cap)
+            if avc_quality_cap
+            else 0
+        )
         candidates = []
         for stream in video_streams:
             quality_id = stream.get("quality_id", 0)
@@ -2282,7 +2550,57 @@ class CacheManager:
         candidates.sort(key=lambda s: (-s.get("quality_id", 0), -s.get("bandwidth", 0)))
         return candidates[0]
 
-    def _select_dash_audio_stream(self, audio_streams: list[dict], *, audio_hires: bool = True) -> dict | None:
+    @staticmethod
+    def _select_dash_video_stream(
+        video_streams: list[dict],
+        *,
+        max_quality_id: int,
+        codec_filter: str | None = None,
+        avc_quality_cap: str = "",
+    ) -> dict | None:
+        try:
+            streams = [
+                {
+                    "original_index": index,
+                    "quality_id": stream.get("quality_id", 0),
+                    "bandwidth": stream.get("bandwidth", 0),
+                    "codec": stream.get("codec_name", ""),
+                }
+                for index, stream in enumerate(video_streams)
+            ]
+            max_avc_quality_id = (
+                CacheManager._dash_max_quality_id(avc_quality_cap)
+                if avc_quality_cap
+                else None
+            )
+            request = {
+                "schema_version": 1,
+                "max_quality_id": max_quality_id,
+                "codec_filter": codec_filter,
+                "max_avc_quality_id": max_avc_quality_id,
+                "streams": streams,
+            }
+            completed, response = rust_backend.try_select_video_stream(request)
+            if completed and response is not None:
+                if response["status"] == "no_match":
+                    return None
+                return video_streams[response["selected_index"]]
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+        return rust_backend.python_fallback(
+            "select_video_stream",
+            lambda: CacheManager._py_select_dash_video_stream(
+                video_streams,
+                max_quality_id=max_quality_id,
+                codec_filter=codec_filter,
+                avc_quality_cap=avc_quality_cap,
+            ),
+        )
+
+    @staticmethod
+    def _py_select_dash_audio_stream(
+        audio_streams: list[dict], *, audio_hires: bool = True
+    ) -> dict | None:
         if not audio_streams:
             return None
         candidates = list(audio_streams)
@@ -2300,6 +2618,92 @@ class CacheManager:
                 candidates = list(audio_streams)
         candidates.sort(key=lambda s: quality_order.get(s.get("quality_id", 0), 99))
         return candidates[0]
+
+    @staticmethod
+    def _select_dash_audio_stream(
+        audio_streams: list[dict], *, audio_hires: bool = True
+    ) -> dict | None:
+        try:
+            request = {
+                "schema_version": 1,
+                "audio_hires": audio_hires,
+                "regular_streams": [
+                    {
+                        "original_index": index,
+                        "quality_id": stream.get("quality_id", 0),
+                        "bandwidth": stream.get("bandwidth", 0),
+                    }
+                    for index, stream in enumerate(audio_streams)
+                ],
+            }
+            completed, response = rust_backend.try_select_audio_stream(request)
+            if completed and response is not None:
+                selected_index = response["selected_index"]
+                return None if selected_index is None else audio_streams[selected_index]
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+        return rust_backend.python_fallback(
+            "select_audio_stream",
+            lambda: CacheManager._py_select_dash_audio_stream(
+                audio_streams, audio_hires=audio_hires
+            ),
+        )
+
+    @staticmethod
+    def _py_select_preferred_dash_audio(
+        best_audio: list[dict],
+        flac_audio: dict | None,
+        dolby_audio: dict | None,
+        *,
+        audio_hires: bool,
+    ) -> dict | None:
+        preferred_audio = best_audio[0] if best_audio else None
+        if flac_audio and audio_hires:
+            preferred_audio = flac_audio
+        if dolby_audio and audio_hires:
+            preferred_audio = dolby_audio
+        return preferred_audio
+
+    @staticmethod
+    def _select_preferred_dash_audio(
+        best_audio: list[dict],
+        flac_audio: dict | None,
+        dolby_audio: dict | None,
+        *,
+        audio_hires: bool,
+    ) -> dict | None:
+        try:
+            request = {
+                "schema_version": 1,
+                "audio_hires": audio_hires,
+                "regular_candidates": [
+                    {"original_index": index} for index in range(len(best_audio))
+                ],
+                "flac_available": bool(flac_audio),
+                "dolby_available": bool(dolby_audio),
+            }
+            completed, response = rust_backend.try_select_preferred_audio_source(request)
+            if completed and response is not None:
+                source = response["preferred_source"]
+                if source == "dolby":
+                    return dolby_audio
+                if source == "flac":
+                    return flac_audio
+                if source == "regular":
+                    selected_index = response["selected_regular_index"]
+                    return best_audio[selected_index]
+                return None
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+        return rust_backend.python_fallback(
+            "select_preferred_audio_source",
+            lambda: CacheManager._py_select_preferred_dash_audio(
+                best_audio,
+                flac_audio,
+                dolby_audio,
+                audio_hires=audio_hires,
+            ),
+        )
 
     def _download_dash_streams_with_aria2c(
         self,
@@ -2362,15 +2766,15 @@ class CacheManager:
             best_audio = page_dash_streams.get("audio") or []
             flac_audio = page_dash_streams.get("flac")
             dolby_audio = page_dash_streams.get("dolby")
-            preferred_audio = best_audio[0] if best_audio else None
-            if flac_audio and audio_hires:
-                preferred_audio = flac_audio
-            if dolby_audio and audio_hires:
-                preferred_audio = dolby_audio
+            preferred_audio = self._select_preferred_dash_audio(
+                best_audio,
+                flac_audio,
+                dolby_audio,
+                audio_hires=audio_hires,
+            )
 
             if preferred_audio:
-                audio_urls = [preferred_audio["url"]]
-                audio_urls.extend(preferred_audio.get("backup_urls") or [])
+                audio_urls = self._preferred_audio_urls(preferred_audio)
             else:
                 audio_urls = self._dash_stream_urls(page_dash_streams, "audio")
             if not audio_urls:
@@ -2442,6 +2846,16 @@ class CacheManager:
                             attempt=attempt,
                             max_attempts=max_attempts,
                         )
+                        assert ffprobe_path is not None
+                        source_audio_duration = None
+                        if stream_kind == "audio":
+                            source_audio_duration = self._probe_original_audio_duration(
+                                ffprobe_path,
+                                ffmpeg_path,
+                                media_path,
+                                label=validation_label,
+                                log_path=log_path,
+                            )
                         self._normalize_downkyi_media_file(
                             ffmpeg_path,
                             media_path,
@@ -2449,7 +2863,6 @@ class CacheManager:
                             stream_kind=stream_kind,
                             log_path=log_path,
                         )
-                        assert ffprobe_path is not None
                         validation_entry: dict[str, object] = {
                             "label": validation_label,
                             "path": media_path,
@@ -2457,10 +2870,13 @@ class CacheManager:
                             "stream_kind": stream_kind,
                             "page": page,
                             "cid": cid,
-                            "expected_duration": self._duration_for_page(item, page),
                             "download_source": DOWNLOAD_SOURCE_DOWNKYI,
                             "stream_metadata": dict(stream_metadata),
                         }
+                        if stream_kind == "video":
+                            validation_entry["expected_duration"] = self._duration_for_page(item, page)
+                        if source_audio_duration is not None:
+                            validation_entry["source_audio_duration"] = source_audio_duration
                         metadata = self._validate_media_file(
                             ffprobe_path,
                             ffmpeg_path,
@@ -2476,6 +2892,9 @@ class CacheManager:
                             "stream_kind": stream_kind,
                             "expected_duration": self._optional_probe_float(
                                 validation_entry.get("expected_duration")
+                            ),
+                            "source_audio_duration": self._optional_probe_float(
+                                validation_entry.get("source_audio_duration")
                             ),
                         })
                         track["validation_metadata"] = metadata
@@ -2578,7 +2997,7 @@ class CacheManager:
         return result_paths
 
     @staticmethod
-    def _dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
+    def _py_dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
         if stream_kind == "video":
             streams = dash_streams.get("video") or []
             urls = []
@@ -2604,6 +3023,74 @@ class CacheManager:
                         urls.append(backup_url)
             return urls
         return []
+
+    @staticmethod
+    def _dash_stream_urls(dash_streams: dict, stream_kind: str) -> list[str]:
+        if stream_kind not in {"video", "audio"}:
+            return rust_backend.python_fallback(
+                "plan_media_download_candidates",
+                lambda: CacheManager._py_dash_stream_urls(dash_streams, stream_kind),
+            )
+        streams = dash_streams.get(stream_kind) or []
+        request = {
+            "schema_version": 1,
+            "mode": "dash_streams",
+            "stream_kind": stream_kind,
+            "streams": [
+                {
+                    "original_index": index,
+                    "primary_url": str(stream.get("url") or ""),
+                    "backup_urls": [
+                        str(backup) for backup in (stream.get("backup_urls") or [])
+                    ],
+                }
+                for index, stream in enumerate(streams)
+            ],
+        }
+        completed, response = rust_backend.try_plan_media_download_candidates(request)
+        if completed and response is not None:
+            return [candidate["url"] for candidate in response["candidates"]]
+        return rust_backend.python_fallback(
+            "plan_media_download_candidates",
+            lambda: CacheManager._py_dash_stream_urls(dash_streams, stream_kind),
+        )
+
+    @staticmethod
+    def _py_preferred_audio_urls(preferred_audio: dict) -> list[str]:
+        urls = [preferred_audio["url"]]
+        urls.extend(preferred_audio.get("backup_urls") or [])
+        return urls
+
+    @staticmethod
+    def _preferred_audio_urls(preferred_audio: dict) -> list[str]:
+        primary_url = preferred_audio["url"]
+        backup_urls = list(preferred_audio.get("backup_urls") or [])
+        if not isinstance(primary_url, str) or not all(
+            isinstance(url, str) for url in backup_urls
+        ):
+            return rust_backend.python_fallback(
+                "plan_media_download_candidates",
+                lambda: CacheManager._py_preferred_audio_urls(preferred_audio),
+            )
+        request = {
+            "schema_version": 1,
+            "mode": "preferred_audio",
+            "stream_kind": "audio",
+            "streams": [
+                {
+                    "original_index": 0,
+                    "primary_url": primary_url,
+                    "backup_urls": backup_urls,
+                }
+            ],
+        }
+        completed, response = rust_backend.try_plan_media_download_candidates(request)
+        if completed and response is not None:
+            return [candidate["url"] for candidate in response["candidates"]]
+        return rust_backend.python_fallback(
+            "plan_media_download_candidates",
+            lambda: CacheManager._py_preferred_audio_urls(preferred_audio),
+        )
 
     @staticmethod
     def _safe_url_summary(url: object) -> str:
@@ -2905,13 +3392,20 @@ class CacheManager:
         self._terminate_processes(active_processes)
 
     @staticmethod
-    def _video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
-        normalized_quality = CacheManager._normalize_video_quality(video_quality)
+    def _py_video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
+        normalized_quality = CacheManager._py_normalize_video_quality(video_quality)
         start_index = VIDEO_QUALITY_CHOICES.index(normalized_quality)
-        cap_quality = CacheManager._optional_video_quality(quality_cap)
+        cap_quality = CacheManager._py_optional_video_quality(quality_cap)
         if cap_quality:
             start_index = max(start_index, VIDEO_QUALITY_CHOICES.index(cap_quality))
         return ",".join(VIDEO_QUALITY_CHOICES[start_index:])
+
+    @staticmethod
+    def _video_quality_priority(video_quality: object, quality_cap: object = "") -> str:
+        response = CacheManager._native_quality_policy(video_quality, quality_cap)
+        if response is not None:
+            return ",".join(response["bbdown_quality_order"])
+        return CacheManager._py_video_quality_priority(video_quality, quality_cap)
 
     def _run_item_command(
         self,
@@ -3556,6 +4050,9 @@ class CacheManager:
                         "page": int(entry.get("page") or 0),
                         "stream_kind": str(entry.get("stream_kind") or ""),
                         "expected_duration": self._optional_probe_float(entry.get("expected_duration")),
+                        "source_audio_duration": self._optional_probe_float(
+                            entry.get("source_audio_duration")
+                        ),
                     }
                 )
                 validation_metadata.append(metadata)
@@ -3572,7 +4069,6 @@ class CacheManager:
                     f"[{self._log_timestamp()}] ffprobe validate {label}: failed: {message}",
                 )
 
-        validation_errors.extend(self._duration_pair_errors(validation_metadata))
         cache_result["validation_metadata"] = validation_metadata
         cache_result["validation_failure_count"] = len(validation_errors)
         if validation_errors:
@@ -3584,17 +4080,15 @@ class CacheManager:
             raise DownloadCommandError("；".join(validation_errors))
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ffprobe validate: ok")
 
-    def _validate_media_file(
+    def _probe_media_payload(
         self,
         ffprobe_path: Path,
         ffmpeg_path: Path,
         media_path: Path,
         *,
         label: str,
-        required_streams: set[str],
         log_path: Path,
-        diagnostic_context: dict[str, object] | None = None,
-    ) -> dict[str, object]:
+    ) -> tuple[int, dict[str, object]]:
         if not media_path.exists():
             raise DownloadCommandError(f"缓存校验失败: {label} 文件不存在")
         size = media_path.stat().st_size
@@ -3636,7 +4130,49 @@ class CacheManager:
             payload = json.loads(process.stdout or "{}")
         except json.JSONDecodeError as exc:
             raise DownloadCommandError(f"缓存校验失败: {label}: ffprobe 输出无法解析") from exc
+        if not isinstance(payload, dict):
+            raise DownloadCommandError(f"缓存校验失败: {label}: ffprobe 输出结构无效")
+        return size, payload
 
+    def _probe_original_audio_duration(
+        self,
+        ffprobe_path: Path,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        log_path: Path,
+    ) -> float:
+        _size, payload = self._probe_media_payload(
+            ffprobe_path,
+            ffmpeg_path,
+            media_path,
+            label=f"{label} 原始音轨",
+            log_path=log_path,
+        )
+        duration = self._probe_stream_duration(payload, "audio")
+        if duration is None:
+            raise DownloadCommandError(f"缓存校验失败: {label} 原始音轨未报告有效时长")
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] ffprobe source audio {label}: duration={duration:.6f}s",
+        )
+        return duration
+
+    def _validate_media_file(
+        self,
+        ffprobe_path: Path,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        required_streams: set[str],
+        log_path: Path,
+        diagnostic_context: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        size, payload = self._probe_media_payload(
+            ffprobe_path, ffmpeg_path, media_path, label=label, log_path=log_path
+        )
         streams = payload.get("streams")
         if not isinstance(streams, list) or not streams:
             raise DownloadCommandError(f"缓存校验失败: {label}: 未识别到媒体流")
@@ -3654,7 +4190,13 @@ class CacheManager:
                 f"缓存校验失败: {label}: 缺少 {missing_label} 流，实际为 {detected_label}"
             )
 
-        duration = self._probe_duration(payload)
+        primary_stream_kind = next(iter(required_streams)) if len(required_streams) == 1 else None
+        stream_duration = (
+            self._probe_stream_duration(payload, primary_stream_kind)
+            if primary_stream_kind is not None
+            else None
+        )
+        duration = stream_duration or self._probe_duration(payload)
         context = diagnostic_context or {}
         expected_duration = self._optional_probe_float(context.get("expected_duration"))
         if expected_duration is not None and expected_duration > 0 and duration is None:
@@ -3667,6 +4209,23 @@ class CacheManager:
                 raise DownloadCommandError(
                     f"缓存校验失败: {label} 时长异常，预期约 {expected_duration:.0f} 秒，"
                     f"实际 {duration:.0f} 秒"
+                )
+        if "source_audio_duration" in context:
+            source_audio_duration = self._optional_probe_float(context.get("source_audio_duration"))
+            if (
+                required_streams != {"audio"}
+                or source_audio_duration is None
+                or source_audio_duration <= 0
+            ):
+                raise DownloadCommandError(f"缓存校验失败: {label} 原始音轨时长上下文无效")
+            if stream_duration is None:
+                raise DownloadCommandError(f"缓存校验失败: {label} 未报告音频流时长")
+            difference = abs(stream_duration - source_audio_duration)
+            if difference > SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS:
+                raise DownloadCommandError(
+                    f"缓存校验失败: {label} 与原始音轨时长不一致，"
+                    f"原始 {source_audio_duration:.3f} 秒，实际 {stream_duration:.3f} 秒，"
+                    f"相差 {difference:.3f} 秒"
                 )
         if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
             self._validate_demux_file(
@@ -3693,6 +4252,8 @@ class CacheManager:
                 "codec_tag_string": str(stream.get("codec_tag_string") or ""),
                 "duration": self._optional_probe_float(stream.get("duration")),
                 "start_time": self._optional_probe_float(stream.get("start_time")),
+                "duration_ts": stream.get("duration_ts"),
+                "time_base": str(stream.get("time_base") or ""),
             }
             for stream in streams
             if isinstance(stream, dict)
@@ -3720,6 +4281,7 @@ class CacheManager:
                 "expected_output": str(media_path),
                 "actual_output": str(media_path),
                 "file_size": size,
+                "source_audio_duration": self._optional_probe_float(context.get("source_audio_duration")),
                 "aria2_control_files": [
                     candidate.name
                     for candidate in media_path.parent.glob("*.aria2")
@@ -3737,41 +4299,6 @@ class CacheManager:
     @staticmethod
     def _duration_tolerance(expected_duration: float) -> float:
         return max(3.0, expected_duration * 0.02)
-
-    @classmethod
-    def _duration_pair_errors(cls, metadata: list[dict[str, object]]) -> list[str]:
-        videos = [entry for entry in metadata if entry.get("stream_kind") == "video"]
-        audios = [entry for entry in metadata if entry.get("stream_kind") == "audio"]
-        errors: list[str] = []
-        for audio in audios:
-            audio_duration = cls._optional_probe_float(audio.get("duration"))
-            if audio_duration is None:
-                continue
-            audio_page = int(audio.get("page") or 0)
-            audio_expected = cls._optional_probe_float(audio.get("expected_duration"))
-            for video in videos:
-                video_duration = cls._optional_probe_float(video.get("duration"))
-                if video_duration is None:
-                    continue
-                video_page = int(video.get("page") or 0)
-                video_expected = cls._optional_probe_float(video.get("expected_duration"))
-                expected_match = (
-                    audio_expected is not None
-                    and video_expected is not None
-                    and abs(audio_expected - video_expected)
-                    <= cls._duration_tolerance(max(audio_expected, video_expected))
-                )
-                if audio_page != video_page and not expected_match:
-                    continue
-                tolerance = cls._duration_tolerance(video_duration)
-                if audio_duration + tolerance < video_duration:
-                    label = str(audio.get("label") or f"音轨 P{audio_page}")
-                    errors.append(
-                        f"缓存校验失败: {label} 比视频轨明显更短，"
-                        f"视频 {video_duration:.0f} 秒，音频 {audio_duration:.0f} 秒"
-                    )
-                break
-        return errors
 
     @staticmethod
     def _discard_invalid_media(media_path: Path) -> None:
@@ -3835,31 +4362,68 @@ class CacheManager:
 
     @staticmethod
     def _optional_probe_float(value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
         try:
             result = float(value)
         except (TypeError, ValueError):
             return None
-        return result if result == result else None
+        return result if math.isfinite(result) else None
 
-    @staticmethod
-    def _probe_duration(payload: dict[str, object]) -> float | None:
-        candidates: list[object] = []
-        file_format = payload.get("format")
-        if isinstance(file_format, dict):
-            candidates.append(file_format.get("duration"))
+    @classmethod
+    def _probe_stream_duration(
+        cls,
+        payload: dict[str, object],
+        stream_kind: str,
+    ) -> float | None:
+        streams = payload.get("streams")
+        if not isinstance(streams, list):
+            return None
+        for stream in streams:
+            if (
+                not isinstance(stream, dict)
+                or str(stream.get("codec_type") or "").strip() != stream_kind
+            ):
+                continue
+            duration = cls._optional_probe_float(stream.get("duration"))
+            if duration is not None and duration > 0:
+                return duration
+            duration_ts = cls._optional_probe_float(stream.get("duration_ts"))
+            time_base = str(stream.get("time_base") or "").strip()
+            if duration_ts is None or duration_ts <= 0 or "/" not in time_base:
+                continue
+            numerator_text, denominator_text = time_base.split("/", 1)
+            numerator = cls._optional_probe_float(numerator_text)
+            denominator = cls._optional_probe_float(denominator_text)
+            if (
+                numerator is None
+                or numerator <= 0
+                or denominator is None
+                or denominator <= 0
+            ):
+                continue
+            reconstructed = duration_ts * numerator / denominator
+            if math.isfinite(reconstructed) and reconstructed > 0:
+                return reconstructed
+        return None
+
+    @classmethod
+    def _probe_duration(cls, payload: dict[str, object]) -> float | None:
         streams = payload.get("streams")
         if isinstance(streams, list):
-            candidates.extend(
-                stream.get("duration")
+            stream_kinds = [
+                str(stream.get("codec_type") or "").strip()
                 for stream in streams
                 if isinstance(stream, dict)
-            )
-        for candidate in candidates:
-            try:
-                duration = float(candidate)
-            except (TypeError, ValueError):
-                continue
-            if duration > 0:
+            ]
+            for stream_kind in stream_kinds:
+                duration = cls._probe_stream_duration(payload, stream_kind)
+                if duration is not None:
+                    return duration
+        file_format = payload.get("format")
+        if isinstance(file_format, dict):
+            duration = cls._optional_probe_float(file_format.get("duration"))
+            if duration is not None and duration > 0:
                 return duration
         return None
 
@@ -4450,7 +5014,7 @@ class CacheManager:
 
             try:
                 # 1. Download to temporary archive
-                self._download_tool_asset(asset, tmp_archive)
+                self._download_tool_asset(asset, tmp_archive, tool="bbdown")
 
                 # 2. Validate downloaded archive
                 archive_name = asset["name"]
@@ -4635,17 +5199,17 @@ class CacheManager:
         YTDLP_DIR.mkdir(parents=True, exist_ok=True)
         name = str(asset.get("name") or target_path.name)
         download_url = str(asset.get("browser_download_url") or "")
-        if not download_url and not self._tool_fallback_url(name):
+        if not download_url and not self._tool_fallback_url(name, tool="ytdlp"):
             raise RuntimeError("yt-dlp release asset missing download URL")
         if name.lower().endswith((".zip", ".tar.gz", ".tgz")):
             archive_path = YTDLP_DIR / name
-            self._download_tool_asset(asset, archive_path)
+            self._download_tool_asset(asset, archive_path, tool="ytdlp")
             try:
                 self._extract_tool_binary_from_archive(archive_path, YTDLP_DIR, target_path.name)
             finally:
                 archive_path.unlink(missing_ok=True)
         else:
-            self._download_tool_asset(asset, target_path)
+            self._download_tool_asset(asset, target_path, tool="ytdlp")
 
     def _install_aria2c(self, target_path: Path) -> None:
         system, arch = self._current_platform_tokens()
@@ -4663,10 +5227,10 @@ class CacheManager:
         ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
         name = str(asset.get("name") or "aria2c.zip")
         download_url = str(asset.get("browser_download_url") or "")
-        if not download_url and not self._tool_fallback_url(name):
+        if not download_url and not self._tool_fallback_url(name, tool="aria2c"):
             raise RuntimeError("aria2 release asset missing download URL")
         archive_path = ARIA2C_DIR / name
-        self._download_tool_asset(asset, archive_path)
+        self._download_tool_asset(asset, archive_path, tool="aria2c")
         try:
             self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
         finally:
@@ -4862,28 +5426,101 @@ class CacheManager:
             return json.loads(response.read().decode("utf-8"))
 
     @staticmethod
-    def _fallback_tool_asset(name: str) -> dict[str, str]:
-        if not TOOL_ASSET_BASE_URL:
+    def _py_tool_fallback_url(name: str, base_url: str) -> str:
+        if not base_url or not name:
+            return ""
+        return f"{base_url}/{urllib.parse.quote(name)}"
+
+    @staticmethod
+    def _py_fallback_tool_asset(name: str, base_url: str) -> dict[str, str]:
+        if not base_url:
             raise RuntimeError("tool asset fallback base URL is not configured")
         return {
             "name": name,
-            "browser_download_url": f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}",
+            "browser_download_url": CacheManager._py_tool_fallback_url(
+                name, base_url
+            ),
         }
 
     @staticmethod
-    def _tool_fallback_url(name: str) -> str:
-        if not TOOL_ASSET_BASE_URL or not name:
-            return ""
-        return f"{TOOL_ASSET_BASE_URL}/{urllib.parse.quote(name)}"
-
-    def _download_tool_asset(self, asset: dict, target_path: Path) -> None:
-        name = str(asset.get("name") or target_path.name)
+    def _py_tool_download_candidates(
+        asset: dict,
+        target_name: str,
+        fallback_base_urls: list[str],
+    ) -> list[str]:
+        name = str(asset.get("name") or target_name)
         primary_url = str(asset.get("browser_download_url") or "")
-        fallback_url = self._tool_fallback_url(name)
+        fallback_urls = [
+            CacheManager._py_tool_fallback_url(name, base_url)
+            for base_url in fallback_base_urls
+        ]
         urls: list[str] = []
-        for url in (primary_url, fallback_url):
+        for url in [primary_url, *fallback_urls]:
             if url and url not in urls:
                 urls.append(url)
+        return urls
+
+    @staticmethod
+    def _plan_tool_download_candidates(
+        tool: str,
+        asset: dict,
+        target_name: str,
+        fallback_base_urls: list[str],
+    ) -> list[str]:
+        name = str(asset.get("name") or target_name)
+        primary_url = str(asset.get("browser_download_url") or "")
+        request = {
+            "schema_version": 1,
+            "tool": tool,
+            "asset": {
+                "mode": "supplied",
+                "name": name,
+                "primary_url": primary_url,
+            },
+            "fallback_bases": [
+                {"original_index": index, "base_url": base_url}
+                for index, base_url in enumerate(fallback_base_urls)
+            ],
+        }
+        completed, response = rust_backend.try_plan_tool_download_candidates(request)
+        if completed and response is not None:
+            return [candidate["url"] for candidate in response["candidates"]]
+        return rust_backend.python_fallback(
+            "plan_tool_download_candidates",
+            lambda: CacheManager._py_tool_download_candidates(
+                asset, target_name, fallback_base_urls
+            ),
+        )
+
+    @staticmethod
+    def _tool_fallback_url(name: str, *, tool: str = "bbdown") -> str:
+        urls = CacheManager._plan_tool_download_candidates(
+            tool,
+            {"name": name, "browser_download_url": ""},
+            name,
+            [TOOL_ASSET_BASE_URL],
+        )
+        return urls[0] if urls else ""
+
+    @staticmethod
+    def _fallback_tool_asset(name: str) -> dict[str, str]:
+        urls = CacheManager._plan_tool_download_candidates(
+            "bbdown",
+            {"name": name, "browser_download_url": ""},
+            name,
+            [TOOL_ASSET_BASE_URL],
+        )
+        if not urls:
+            return CacheManager._py_fallback_tool_asset(name, TOOL_ASSET_BASE_URL)
+        return {"name": name, "browser_download_url": urls[0]}
+
+    def _download_tool_asset(
+        self, asset: dict, target_path: Path, *, tool: str = "bbdown"
+    ) -> None:
+        name = str(asset.get("name") or target_path.name)
+        urls = self._plan_tool_download_candidates(
+            tool, asset, target_path.name, [TOOL_ASSET_BASE_URL]
+        )
         if not urls:
             raise RuntimeError(f"tool asset {name} missing download URL")
 
@@ -4924,6 +5561,15 @@ class CacheManager:
 
     def _bbdown_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
+        return self._default_tool_fallback_asset("bbdown", system, arch)
+
+    @staticmethod
+    def _py_default_tool_fallback_asset(
+        tool: str,
+        system: str,
+        arch: str,
+        fallback_base_url: str,
+    ) -> dict[str, str]:
         asset_names = {
             ("windows", "x64"): "BBDown_1.6.3_20240814_win-x64.zip",
             ("windows", "x86"): "BBDown_1.6.3_20240814_win-x64.zip",
@@ -4933,27 +5579,76 @@ class CacheManager:
             ("linux", "x64"): "BBDown_1.6.3_20240814_linux-x64.zip",
             ("linux", "arm64"): "BBDown_1.6.3_20240814_linux-arm64.zip",
         }
-        name = asset_names.get((system, arch))
-        if not name:
-            raise RuntimeError(f"no BBDown tool fallback asset for {system}/{arch}")
-        return self._fallback_tool_asset(name)
+        if tool == "bbdown":
+            name = asset_names.get((system, arch))
+            if not name:
+                raise RuntimeError(f"no BBDown tool fallback asset for {system}/{arch}")
+            if not fallback_base_url:
+                raise RuntimeError("tool asset fallback base URL is not configured")
+            url = CacheManager._py_tool_fallback_url(name, fallback_base_url)
+        elif tool == "ytdlp":
+            if system == "windows":
+                if arch == "arm64":
+                    name = "yt-dlp_arm64.exe"
+                elif arch == "x86":
+                    name = "yt-dlp_x86.exe"
+                else:
+                    name = "yt-dlp.exe"
+            elif system == "darwin":
+                name = "yt-dlp_macos"
+            elif system == "linux":
+                name = "yt-dlp_linux"
+            else:
+                name = "yt-dlp"
+            if not fallback_base_url:
+                raise RuntimeError("tool asset fallback base URL is not configured")
+            url = CacheManager._py_tool_fallback_url(name, fallback_base_url)
+        elif tool == "aria2c":
+            if system != "windows":
+                raise RuntimeError(f"no aria2c fallback asset for {system}/{arch}")
+            name = CacheManager._aria2_windows_fallback_asset_name(arch)
+            url = (
+                "https://github.com/aria2/aria2/releases/download/release-1.37.0/"
+                f"{urllib.parse.quote(name)}"
+            )
+        else:
+            raise RuntimeError(f"unknown tool candidate planner: {tool}")
+        return {"name": name, "browser_download_url": url}
+
+    @staticmethod
+    def _default_tool_fallback_asset(
+        tool: str,
+        system: str,
+        arch: str,
+    ) -> dict[str, str]:
+        request = {
+            "schema_version": 1,
+            "tool": tool,
+            "asset": {
+                "mode": "default_for_target",
+                "platform": system,
+                "arch": arch,
+            },
+            "fallback_bases": [
+                {"original_index": 0, "base_url": TOOL_ASSET_BASE_URL}
+            ],
+        }
+        completed, response = rust_backend.try_plan_tool_download_candidates(request)
+        if completed and response is not None and response["candidates"]:
+            return {
+                "name": response["asset_name"],
+                "browser_download_url": response["candidates"][0]["url"],
+            }
+        return rust_backend.python_fallback(
+            "plan_tool_download_candidates",
+            lambda: CacheManager._py_default_tool_fallback_asset(
+                tool, system, arch, TOOL_ASSET_BASE_URL
+            ),
+        )
 
     def _ytdlp_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
-        if system == "windows":
-            if arch == "arm64":
-                name = "yt-dlp_arm64.exe"
-            elif arch == "x86":
-                name = "yt-dlp_x86.exe"
-            else:
-                name = "yt-dlp.exe"
-        elif system == "darwin":
-            name = "yt-dlp_macos"
-        elif system == "linux":
-            name = "yt-dlp_linux"
-        else:
-            name = "yt-dlp"
-        return self._fallback_tool_asset(name)
+        return self._default_tool_fallback_asset("ytdlp", system, arch)
 
     @staticmethod
     def _aria2_windows_fallback_asset_name(arch: str) -> str:
@@ -4973,13 +5668,7 @@ class CacheManager:
 
     def _aria2_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
-        if system != "windows":
-            raise RuntimeError(f"no aria2c fallback asset for {system}/{arch}")
-        name = self._aria2_windows_fallback_asset_name(arch)
-        return {
-            "name": name,
-            "browser_download_url": f"https://github.com/aria2/aria2/releases/download/release-1.37.0/{urllib.parse.quote(name)}",
-        }
+        return self._default_tool_fallback_asset("aria2c", system, arch)
 
     def _select_ytdlp_asset(self, release: dict) -> dict:
         system, arch = self._current_platform_tokens()

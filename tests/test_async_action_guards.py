@@ -8,16 +8,15 @@ from pathlib import Path
 class AsyncActionGuardsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        v20_node = Path("/tmp/node-v20.18.0-linux-x64/bin/node")
-        if v20_node.is_file():
-            cls.node = str(v20_node)
-        else:
-            cls.node = shutil.which("node")
+        cls.node = shutil.which("node")
         if not cls.node:
             raise unittest.SkipTest("node is unavailable")
         cls.repo_root = Path(__file__).resolve().parents[1]
         cls.app_js = cls.repo_root / "static" / "app.js"
+        cls.remote_js = cls.repo_root / "static" / "remote.js"
+        cls.remote_css = cls.repo_root / "static" / "remote.css"
         cls.export_guard_js = cls.repo_root / "static" / "export-guard.js"
+        cls.i18n_json = cls.repo_root / "static" / "i18n.json"
 
     def run_node_app_test(self, test_script: str) -> dict:
         harness = """
@@ -31,15 +30,22 @@ class AsyncActionGuardsTest(unittest.TestCase):
 
         function createMockElement(tag) {
           const listeners = {};
+          const classes = new Set();
           return {
             tagName: tag ? tag.toUpperCase() : "DIV",
             className: "",
             listeners,
             dataset: {},
             classList: {
-              add() {},
-              remove() {},
-              toggle() {},
+              add(...names) { names.forEach(name => classes.add(name)); },
+              remove(...names) { names.forEach(name => classes.delete(name)); },
+              toggle(name, force) {
+                if (force === true) { classes.add(name); return true; }
+                if (force === false) { classes.delete(name); return false; }
+                if (classes.has(name)) { classes.delete(name); return false; }
+                classes.add(name); return true;
+              },
+              contains(name) { return classes.has(name); },
             },
             style: {},
             attributes: {},
@@ -95,7 +101,7 @@ class AsyncActionGuardsTest(unittest.TestCase):
 
         // Load app.js and bind top-level declarations to global object
         const appSource = fs.readFileSync(""" + json.dumps(str(self.app_js)) + """, 'utf-8');
-        eval(appSource + "; global.state = state; global.elements = elements; global.t = t; global.closeOpenMenus = closeOpenMenus;");
+        eval(appSource + "; global.state = state; global.elements = elements; global.t = t; global.closeOpenMenus = closeOpenMenus; global.renderBackupBanner = renderBackupBanner; global.dismissBackupBanner = dismissBackupBanner;");
 
         """ + test_script
         process = subprocess.run(
@@ -242,6 +248,69 @@ class AsyncActionGuardsTest(unittest.TestCase):
         self.assertIsNone(res["finalAriaBusy"])
         self.assertEqual(res["finalText"], "确定点歌")
 
+    def test_remote_gatcha_confirm_button_prevents_duplicate_and_restores(self):
+        source = self.remote_js.read_text(encoding="utf-8")
+        start = source.index("async function confirmGatchaCandidate")
+        end = source.index("async function sendPlayerControl", start)
+        function_source = source[start:end]
+        script = f"""
+const state = {{
+  submitting: false,
+  gatchaCandidate: {{ url: "https://bilibili.com/video/BV1xx" }},
+}};
+const button = {{
+  disabled: false,
+  textContent: "确定点歌",
+  attributes: {{}},
+  setAttribute(key, value) {{ this.attributes[key] = String(value); }},
+  removeAttribute(key) {{ delete this.attributes[key]; }},
+}};
+const elements = {{ gatchaConfirmButton: button }};
+function t() {{ return "添加中..."; }}
+let addCalls = 0;
+let resolveAdd;
+function addByUrl() {{
+  addCalls += 1;
+  return new Promise((resolve) => {{ resolveAdd = resolve; }});
+}}
+{function_source}
+const first = confirmGatchaCandidate();
+const during = {{
+  disabled: button.disabled,
+  ariaBusy: button.attributes["aria-busy"],
+  text: button.textContent,
+}};
+const second = confirmGatchaCandidate();
+resolveAdd();
+Promise.all([first, second]).then((results) => {{
+  process.stdout.write(JSON.stringify({{
+    addCalls,
+    during,
+    results,
+    finalDisabled: button.disabled,
+    finalAriaBusy: button.attributes["aria-busy"] || null,
+    finalText: button.textContent,
+  }}));
+}});
+"""
+        completed = subprocess.run(
+            [self.node, "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["addCalls"], 1)
+        self.assertTrue(result["during"]["disabled"])
+        self.assertEqual(result["during"]["ariaBusy"], "true")
+        self.assertEqual(result["during"]["text"], "添加中...")
+        self.assertEqual(result["results"], [True, False])
+        self.assertFalse(result["finalDisabled"])
+        self.assertIsNone(result["finalAriaBusy"])
+        self.assertEqual(result["finalText"], "确定点歌")
+        self.assertIn(".primary-button:disabled", self.remote_css.read_text(encoding="utf-8"))
+
     def test_history_readd_button_prevents_duplicate_and_restores(self):
         res = self.run_node_app_test(
             """
@@ -346,6 +415,132 @@ class AsyncActionGuardsTest(unittest.TestCase):
         self.assertFalse(res["finalDisabled"])
         self.assertIsNone(res["finalAriaBusy"])
         self.assertEqual(res["finalText"], "重新排序")
+
+    def test_previous_session_banner_uses_countdown_and_localized_continue_action(self):
+        res = self.run_node_app_test(
+            """
+            global.state.translations = JSON.parse(fs.readFileSync("""
+            + json.dumps(str(self.i18n_json))
+            + """, "utf-8")).languages;
+            global.state.language = "zh";
+            global.renderBackupBanner(
+              { available: false },
+              { available: true, item_count: 2 },
+              false,
+              0,
+              false,
+            );
+            const zh = {
+              mode: global.state.backupBannerMode,
+              title: global.elements.backupTitle.textContent,
+              text: global.elements.backupText.textContent,
+              action: global.elements.backupActionButton.textContent,
+              countdown: global.elements.dismissBackupButton.textContent,
+              visible: !global.elements.backupBanner.classList.contains("hidden"),
+              timerActive: Boolean(global.state.backupBannerCountdownTimer),
+            };
+
+            global.state.language = "en";
+            global.renderBackupBanner(
+              { available: false },
+              { available: true, item_count: 2 },
+              false,
+              0,
+              false,
+            );
+            const enAction = global.elements.backupActionButton.textContent;
+
+            global.state.language = "ja";
+            global.renderBackupBanner(
+              { available: false },
+              { available: true, item_count: 2 },
+              false,
+              0,
+              false,
+            );
+            const jaAction = global.elements.backupActionButton.textContent;
+            global.dismissBackupBanner();
+
+            global.state.previousSessionPromptChecked = false;
+            global.state.previousSessionPromptEligible = false;
+            global.state.backupBannerShown = false;
+            global.state.backupBannerDismissed = false;
+            global.state.language = "zh";
+            global.renderBackupBanner(
+              { available: true, playlist_count: 3 },
+              { available: true, item_count: 2 },
+              true,
+              0,
+              true,
+            );
+            const autoRestore = {
+              mode: global.state.backupBannerMode,
+              action: global.elements.backupActionButton.textContent,
+              text: global.elements.backupText.textContent,
+            };
+            global.dismissBackupBanner();
+            process.stdout.write(JSON.stringify({ zh, enAction, jaAction, autoRestore }));
+            """
+        )
+        self.assertEqual(res["zh"]["mode"], "previous_session")
+        self.assertEqual(res["zh"]["title"], "上一场")
+        self.assertEqual(res["zh"]["text"], "检测到上一场记录，共 2 首。")
+        self.assertEqual(res["zh"]["action"], "继续上一场")
+        self.assertEqual(res["zh"]["countdown"], "5")
+        self.assertTrue(res["zh"]["visible"])
+        self.assertTrue(res["zh"]["timerActive"])
+        self.assertEqual(res["enAction"], "Continue Previous Session")
+        self.assertEqual(res["jaAction"], "前回のセッションを続ける")
+        self.assertEqual(res["autoRestore"]["mode"], "auto_restored")
+        self.assertEqual(res["autoRestore"]["action"], "清空备份")
+        self.assertEqual(
+            res["autoRestore"]["text"], "已自动恢复上次歌单，共 3 首。"
+        )
+
+    def test_previous_session_action_prevents_duplicate_click_and_restores_state(self):
+        res = self.run_node_app_test(
+            """
+            let continueCalls = 0;
+            let resolveContinue;
+            global.state.backupBannerMode = "previous_session";
+            global.state.translations = { zh: { "gatcha.adding": "处理中" } };
+            global.continuePreviousSession = function() {
+              continueCalls++;
+              return new Promise(resolve => { resolveContinue = resolve; });
+            };
+
+            const button = global.elements.backupActionButton;
+            button.textContent = "继续上一场";
+            button.click();
+            const during = {
+              disabled: button.disabled,
+              ariaBusy: button.attributes["aria-busy"],
+              text: button.textContent,
+              continueCalls,
+            };
+            button.click();
+            const callsAfterSecondClick = continueCalls;
+            resolveContinue();
+
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                during,
+                callsAfterSecondClick,
+                finalDisabled: button.disabled,
+                finalAriaBusy: button.attributes["aria-busy"] || null,
+                finalText: button.textContent,
+              }));
+            }, 10);
+            """
+        )
+        self.assertEqual(res["during"]["continueCalls"], 1)
+        self.assertEqual(res["callsAfterSecondClick"], 1)
+        self.assertTrue(res["during"]["disabled"])
+        self.assertEqual(res["during"]["ariaBusy"], "true")
+        self.assertEqual(res["during"]["text"], "处理中")
+        self.assertFalse(res["finalDisabled"])
+        self.assertIsNone(res["finalAriaBusy"])
+        self.assertEqual(res["finalText"], "继续上一场")
 
 
 if __name__ == "__main__":
