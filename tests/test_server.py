@@ -1674,6 +1674,31 @@ class PlayerKeyShiftRouteTest(unittest.TestCase):
 
 
 class PlayerAvDelayRouteTest(unittest.TestCase):
+    def test_legacy_av_offset_route_uses_persistent_compatibility_setter(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        calls: list[object] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            set_av_offset_ms=lambda offset_ms: calls.append(("set", offset_ms)),
+            snapshot=lambda: {"player_settings": {"av_offset_ms": 240}},
+        )
+
+        handler.path = "/api/player/av-offset"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"offset_ms": 240}
+        handler._write_json = lambda payload, status=None: calls.append(("write", payload))
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(
+            calls,
+            [
+                ("set", 240),
+                ("write", {"ok": True, "data": {"player_settings": {"av_offset_ms": 240}}}),
+            ],
+        )
+
     def test_av_delay_action_route_dispatches_structured_rust_action(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
@@ -1709,6 +1734,27 @@ class PlayerAvDelayRouteTest(unittest.TestCase):
 
         self.assertEqual(actions, [{"type": "adjust", "delta_ms": 50}])
         self.assertEqual(writes, [{"ok": True, "data": decision}])
+
+
+class AppShutdownRouteTest(unittest.TestCase):
+    def test_success_response_is_flushed_before_shutdown_starts(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        calls: list[str] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            request_shutdown=lambda: calls.append("shutdown"),
+        )
+
+        handler.path = "/api/app/shutdown"
+        handler.headers = {}
+        handler._read_json_body = lambda: {}
+        handler._is_local_client = lambda: True
+        handler._write_json = lambda payload, status=None: calls.append("write")
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(calls, ["write", "shutdown"])
 
 
 if __name__ == "__main__":

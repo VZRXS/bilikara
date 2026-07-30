@@ -210,6 +210,29 @@ class SmokeProcessReaderTest(unittest.TestCase):
         else:
             self.fail(f"child process {child_pid} survived process-group cleanup")
 
+    @unittest.skipUnless(os.name == "posix", "process-group cleanup requires POSIX signals")
+    def test_cleanup_kills_descendant_group_after_leader_exits(self):
+        script = (
+            "import subprocess,sys; "
+            "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+            "print(child.pid, flush=True)"
+        )
+        capture = self._start_fixture(script)
+        child_pid = capture.wait_for_output(
+            lambda name, line: (
+                int(line.strip())
+                if name == "stdout" and line.strip().isdigit()
+                else None
+            ),
+            2.0,
+        )
+        self.assertIsInstance(child_pid, int)
+        self.assertTrue(capture.wait_for_exit(2.0))
+        self.assertTrue(capture._process_group_exists(capture.process.pid))
+
+        self.assertTrue(capture.terminate_process_group(kill_timeout=2.0))
+        self.assertFalse(capture._process_group_exists(capture.process.pid))
+
 
 class BackendSmokeTimeoutPolicyTest(unittest.TestCase):
     def test_default_and_valid_override(self):

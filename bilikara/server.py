@@ -1269,8 +1269,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 if not self._is_local_client() and not self._has_valid_shutdown_token():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
-                CONTEXT.request_shutdown()
                 self._write_json({"ok": True})
+                CONTEXT.request_shutdown()
                 return
             if route == "/api/app/update/install":
                 include_preview = str(body.get("include_preview", body.get("includePreview", ""))).lower() in {

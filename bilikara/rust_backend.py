@@ -3061,13 +3061,18 @@ def _av_delay_request(request: object) -> dict[str, object] | None:
     expected_fields = {
         "snapshot": {"type"},
         "set_effective": {"type", "effective_delay_ms"},
+        "set_persistent": {"type", "effective_delay_ms"},
         "adjust": {"type", "delta_ms"},
         "reset_local": {"type"},
         "toggle_lock": {"type"},
     }
     if action_type not in expected_fields or set(action) != expected_fields[action_type]:
         return None
-    numeric_field = "effective_delay_ms" if action_type == "set_effective" else "delta_ms"
+    numeric_field = (
+        "effective_delay_ms"
+        if action_type in {"set_effective", "set_persistent"}
+        else "delta_ms"
+    )
     if numeric_field in action:
         value = action[numeric_field]
         if isinstance(value, bool) or not isinstance(value, int) or not -(2**31) <= value < 2**31:
@@ -3125,6 +3130,10 @@ def try_apply_av_delay_action(
 
     if action_type == "set_effective":
         expected_local = bounded(int(action["effective_delay_ms"])) - expected_global
+    elif action_type == "set_persistent":
+        expected_global = bounded(int(action["effective_delay_ms"]))
+        expected_local = 0
+        expected_locked = expected_global != 0
     elif action_type == "adjust":
         expected_local = (
             bounded(expected_global + expected_local + int(action["delta_ms"]))

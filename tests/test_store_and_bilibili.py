@@ -61,18 +61,16 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.set_av_offset_ms(230)
 
         local_snapshot = self.store.snapshot()["player_settings"]["av_delay"]
-        self.assertEqual(local_snapshot["global_delay_ms"], 0)
-        self.assertEqual(local_snapshot["local_delay_ms"], 230)
-        self.assertFalse(local_snapshot["locked"])
+        self.assertEqual(local_snapshot["global_delay_ms"], 230)
+        self.assertEqual(local_snapshot["local_delay_ms"], 0)
+        self.assertTrue(local_snapshot["locked"])
 
         local_only_restored = PlaylistStore(
             state_file=self.state_file,
             backup_file=self.backup_file,
             session_archive_dir=self.session_archive_dir,
         )
-        self.assertEqual(local_only_restored.av_offset_ms, 0)
-
-        self.store.apply_av_delay_action({"type": "toggle_lock"})
+        self.assertEqual(local_only_restored.av_offset_ms, 230)
 
         restored_store = PlaylistStore(
             state_file=self.state_file,
@@ -93,6 +91,21 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertNotIn("av_offset_ms", persisted["player_settings"])
         self.assertFalse(self.state_file.exists())
         self.assertTrue((self.state_file.parent / "player_state.json").exists())
+
+    def test_legacy_av_offset_setter_replaces_transient_delay_and_clears_lock_at_zero(self):
+        self.store.apply_av_delay_action({"type": "adjust", "delta_ms": 125})
+
+        self.assertEqual(self.store.set_av_offset_ms(-340), -340)
+        delay = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(delay["global_delay_ms"], -340)
+        self.assertEqual(delay["local_delay_ms"], 0)
+        self.assertTrue(delay["locked"])
+
+        self.assertEqual(self.store.set_av_offset_ms(0), 0)
+        cleared = self.store.snapshot()["player_settings"]["av_delay"]
+        self.assertEqual(cleared["global_delay_ms"], 0)
+        self.assertEqual(cleared["local_delay_ms"], 0)
+        self.assertFalse(cleared["locked"])
 
     def test_legacy_persisted_offset_migrates_to_locked_global_delay(self):
         self.store.player_state_file.write_text(
@@ -166,7 +179,6 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A")
         self.add_item("b", requester_name="B")
         self.store.set_av_offset_ms(200)
-        self.store.apply_av_delay_action({"type": "toggle_lock"})
         self.store.apply_av_delay_action({"type": "adjust", "delta_ms": 50})
 
         self.store.advance_to_next(reset_av_delay=False)
@@ -1030,7 +1042,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertTrue(restored_store.restore_backup())
         self.assertFalse(restored_store.current_item_started)
         self.assertEqual(restored_store.playback_mode, "local")
-        self.assertEqual(restored_store.av_offset_ms, 0)
+        self.assertEqual(restored_store.av_offset_ms, 180)
         self.assertEqual(restored_store.volume_percent, 42)
         self.assertTrue(restored_store.is_muted)
         self.assertEqual(restored_store.current_item.id, "a")

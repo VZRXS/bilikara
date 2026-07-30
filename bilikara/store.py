@@ -44,6 +44,10 @@ def _py_apply_av_delay_action(
 
     if action_type == "set_effective":
         local_delay = bounded(int(action["effective_delay_ms"])) - global_delay
+    elif action_type == "set_persistent":
+        global_delay = bounded(int(action["effective_delay_ms"]))
+        local_delay = 0
+        locked = global_delay != 0
     elif action_type == "adjust":
         target = bounded(global_delay + local_delay + int(action["delta_ms"]))
         local_delay = target - global_delay
@@ -645,7 +649,7 @@ class PlaylistStore:
     def set_av_offset_ms(self, offset_ms: int) -> int:
         with self.lock:
             result = self._apply_av_delay_action_unlocked(
-                {"type": "set_effective", "effective_delay_ms": int(offset_ms)}
+                {"type": "set_persistent", "effective_delay_ms": int(offset_ms)}
             )
             return int(result["effective_delay_ms"])
 

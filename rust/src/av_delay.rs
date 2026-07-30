@@ -13,6 +13,7 @@ pub struct AvDelayState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AvDelayAction {
     SetEffective { effective_delay_ms: i32 },
+    SetPersistent { effective_delay_ms: i32 },
     Adjust { delta_ms: i32 },
     ResetLocal,
     ToggleLock,
@@ -36,6 +37,11 @@ pub fn decide_av_delay(state: AvDelayState, action: AvDelayAction) -> AvDelayDec
         AvDelayAction::SetEffective { effective_delay_ms } => {
             let target = bounded(i64::from(effective_delay_ms));
             next.local_delay_ms = target - next.global_delay_ms;
+        }
+        AvDelayAction::SetPersistent { effective_delay_ms } => {
+            next.global_delay_ms = bounded(i64::from(effective_delay_ms));
+            next.local_delay_ms = 0;
+            next.locked = next.global_delay_ms != 0;
         }
         AvDelayAction::Adjust { delta_ms } => {
             let effective = i64::from(next.global_delay_ms) + i64::from(next.local_delay_ms);
@@ -90,6 +96,7 @@ struct WireState {
 enum WireAction {
     Snapshot,
     SetEffective { effective_delay_ms: i32 },
+    SetPersistent { effective_delay_ms: i32 },
     Adjust { delta_ms: i32 },
     ResetLocal,
     ToggleLock,
@@ -124,6 +131,9 @@ pub(crate) fn decide_av_delay_json(request_json: &str) -> Option<String> {
         WireAction::Snapshot => snapshot(state),
         WireAction::SetEffective { effective_delay_ms } => {
             decide_av_delay(state, AvDelayAction::SetEffective { effective_delay_ms })
+        }
+        WireAction::SetPersistent { effective_delay_ms } => {
+            decide_av_delay(state, AvDelayAction::SetPersistent { effective_delay_ms })
         }
         WireAction::Adjust { delta_ms } => {
             decide_av_delay(state, AvDelayAction::Adjust { delta_ms })
@@ -180,6 +190,27 @@ mod tests {
         );
         assert_eq!(bounded.state, state(200, 4_800, true));
         assert_eq!(bounded.effective_delay_ms, MAX_AV_DELAY_MS);
+    }
+
+    #[test]
+    fn persistent_compatibility_setter_replaces_transient_state() {
+        let set = decide_av_delay(
+            state(200, -50, true),
+            AvDelayAction::SetPersistent {
+                effective_delay_ms: 350,
+            },
+        );
+        assert_eq!(set.state, state(350, 0, true));
+        assert_eq!(set.effective_delay_ms, 350);
+
+        let cleared = decide_av_delay(
+            set.state,
+            AvDelayAction::SetPersistent {
+                effective_delay_ms: 0,
+            },
+        );
+        assert_eq!(cleared.state, state(0, 0, false));
+        assert!(!cleared.lock_button_enabled);
     }
 
     #[test]
