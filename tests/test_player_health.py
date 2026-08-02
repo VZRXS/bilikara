@@ -75,6 +75,14 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             self.assertIn(field, diagnostics)
         self.assertIn('apiPost("/api/player/diagnostic", payload).catch(() => {})', diagnostics)
 
+    def test_media_diagnostics_do_not_write_to_browser_console(self):
+        diagnostics = self.function_source(
+            "function reportMediaDiagnostic",
+            "function reportSplitSyncDiagnostic",
+        )
+        for method in ("log", "debug", "info", "warn", "error"):
+            self.assertNotIn(f"console.{method}", diagnostics)
+
     def test_health_events_have_no_control_side_effects(self):
         diagnostics = self.function_source(
             "function reportMediaDiagnostic",

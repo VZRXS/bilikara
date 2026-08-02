@@ -42,6 +42,36 @@ pub enum ReleaseSelection {
     NoMatch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateAction {
+    NormalUpgrade,
+    PreviewToStable,
+    DevelopmentToStable,
+    NoAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateReason {
+    NewerVersion,
+    PreviewChannelDisabled,
+    DevelopmentBuild,
+    AlreadyCurrent,
+    StableNotNewer,
+    PreviewNotNewer,
+    DevelopmentTargetNotStable,
+    NoStableRelease,
+    NoEligibleRelease,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReleaseDecision {
+    pub selection: ReleaseSelection,
+    pub action: UpdateAction,
+    pub reason: UpdateReason,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum ReleaseSelectionError {
@@ -60,6 +90,8 @@ struct SelectionResponse {
     schema_version: u32,
     status: SelectionStatus,
     selected_index: Option<usize>,
+    action: UpdateAction,
+    reason: UpdateReason,
 }
 
 fn parsed_version_sort_key(version: &str) -> Option<[String; 5]> {
@@ -85,9 +117,9 @@ fn compare_version_sort_keys(left: &[String; 5], right: &[String; 5]) -> Orderin
     Ordering::Equal
 }
 
-pub fn select_release(
+pub fn decide_release_update(
     request: &ReleaseSelectionRequest,
-) -> Result<ReleaseSelection, ReleaseSelectionError> {
+) -> Result<ReleaseDecision, ReleaseSelectionError> {
     let mut valid_releases = Vec::new();
 
     for (i, release) in request.releases.iter().enumerate() {
@@ -99,7 +131,15 @@ pub fn select_release(
     }
 
     if valid_releases.is_empty() {
-        return Ok(ReleaseSelection::NoMatch);
+        return Ok(ReleaseDecision {
+            selection: ReleaseSelection::NoMatch,
+            action: UpdateAction::NoAction,
+            reason: if request.include_preview {
+                UpdateReason::NoEligibleRelease
+            } else {
+                UpdateReason::NoStableRelease
+            },
+        });
     }
 
     let candidates: Vec<_> = if request.include_preview {
@@ -112,7 +152,15 @@ pub fn select_release(
     };
 
     if candidates.is_empty() {
-        return Ok(ReleaseSelection::NoMatch);
+        return Ok(ReleaseDecision {
+            selection: ReleaseSelection::NoMatch,
+            action: UpdateAction::NoAction,
+            reason: if request.include_preview {
+                UpdateReason::NoEligibleRelease
+            } else {
+                UpdateReason::NoStableRelease
+            },
+        });
     }
 
     let mut best_index = candidates[0].0;
@@ -125,9 +173,49 @@ pub fn select_release(
         }
     }
 
-    Ok(ReleaseSelection::Selected {
-        selected_index: best_index,
+    let selected_key = best_sort_key;
+    let selected_is_stable = selected_key[3] == "1";
+    let (action, reason) = match parsed_version_sort_key(&request.current_version) {
+        None if selected_is_stable => (
+            UpdateAction::DevelopmentToStable,
+            UpdateReason::DevelopmentBuild,
+        ),
+        None => (
+            UpdateAction::NoAction,
+            UpdateReason::DevelopmentTargetNotStable,
+        ),
+        Some(current_key) => {
+            let ordering = compare_version_sort_keys(selected_key, &current_key);
+            if ordering == Ordering::Greater {
+                (UpdateAction::NormalUpgrade, UpdateReason::NewerVersion)
+            } else if current_key[3] == "0" && selected_is_stable && !request.include_preview {
+                (
+                    UpdateAction::PreviewToStable,
+                    UpdateReason::PreviewChannelDisabled,
+                )
+            } else if ordering == Ordering::Equal {
+                (UpdateAction::NoAction, UpdateReason::AlreadyCurrent)
+            } else if current_key[3] == "1" {
+                (UpdateAction::NoAction, UpdateReason::StableNotNewer)
+            } else {
+                (UpdateAction::NoAction, UpdateReason::PreviewNotNewer)
+            }
+        }
+    };
+
+    Ok(ReleaseDecision {
+        selection: ReleaseSelection::Selected {
+            selected_index: best_index,
+        },
+        action,
+        reason,
     })
+}
+
+pub fn select_release(
+    request: &ReleaseSelectionRequest,
+) -> Result<ReleaseSelection, ReleaseSelectionError> {
+    Ok(decide_release_update(request)?.selection)
 }
 
 pub(crate) fn select_release_json(request_json: &str) -> Option<String> {
@@ -152,9 +240,9 @@ pub(crate) fn select_release_json(request_json: &str) -> Option<String> {
         releases: domain_releases,
     };
 
-    let result = select_release(&req).ok()?;
+    let decision = decide_release_update(&req).ok()?;
 
-    let (status, selected_index) = match result {
+    let (status, selected_index) = match decision.selection {
         ReleaseSelection::Selected { selected_index } => {
             (SelectionStatus::Selected, Some(selected_index))
         }
@@ -165,6 +253,8 @@ pub(crate) fn select_release_json(request_json: &str) -> Option<String> {
         schema_version: SCHEMA_VERSION,
         status,
         selected_index,
+        action: decision.action,
+        reason: decision.reason,
     };
 
     serde_json::to_string(&response).ok()
@@ -341,5 +431,136 @@ mod tests {
             select_release(&req).unwrap(),
             ReleaseSelection::Selected { selected_index: 0 }
         );
+    }
+
+    #[test]
+    fn update_decision_matrix_distinguishes_upgrades_channel_switches_and_no_action() {
+        struct Case {
+            name: &'static str,
+            current: &'static str,
+            include_preview: bool,
+            releases: Vec<(&'static str, bool, bool)>,
+            selected_index: Option<usize>,
+            action: UpdateAction,
+            reason: UpdateReason,
+        }
+
+        let cases = vec![
+            Case {
+                name: "stable normal update",
+                current: "v0.6.3",
+                include_preview: false,
+                releases: vec![("v0.6.4", false, false)],
+                selected_index: Some(0),
+                action: UpdateAction::NormalUpgrade,
+                reason: UpdateReason::NewerVersion,
+            },
+            Case {
+                name: "stable already current",
+                current: "v0.6.4",
+                include_preview: false,
+                releases: vec![("v0.6.4", false, false)],
+                selected_index: Some(0),
+                action: UpdateAction::NoAction,
+                reason: UpdateReason::AlreadyCurrent,
+            },
+            Case {
+                name: "stable to preview when enabled",
+                current: "v0.6.4",
+                include_preview: true,
+                releases: vec![("v0.7.0-preview.1", false, true)],
+                selected_index: Some(0),
+                action: UpdateAction::NormalUpgrade,
+                reason: UpdateReason::NewerVersion,
+            },
+            Case {
+                name: "preview to newer preview",
+                current: "v0.7.0-preview.1",
+                include_preview: true,
+                releases: vec![("v0.7.0-preview.2", false, true)],
+                selected_index: Some(0),
+                action: UpdateAction::NormalUpgrade,
+                reason: UpdateReason::NewerVersion,
+            },
+            Case {
+                name: "preview has no newer preview",
+                current: "v0.7.0-preview.3",
+                include_preview: true,
+                releases: vec![("v0.7.0-preview.3", false, true)],
+                selected_index: Some(0),
+                action: UpdateAction::NoAction,
+                reason: UpdateReason::AlreadyCurrent,
+            },
+            Case {
+                name: "preview switches to numerically lower stable",
+                current: "v0.7.0-preview.3",
+                include_preview: false,
+                releases: vec![("v0.6.4", false, false)],
+                selected_index: Some(0),
+                action: UpdateAction::PreviewToStable,
+                reason: UpdateReason::PreviewChannelDisabled,
+            },
+            Case {
+                name: "preview upgrades to final stable",
+                current: "v0.7.0-preview.3",
+                include_preview: false,
+                releases: vec![("v0.7.0", false, false)],
+                selected_index: Some(0),
+                action: UpdateAction::NormalUpgrade,
+                reason: UpdateReason::NewerVersion,
+            },
+            Case {
+                name: "development build switches to stable",
+                current: "v0.7.0-12-gabcdef",
+                include_preview: false,
+                releases: vec![("v0.6.4", false, false)],
+                selected_index: Some(0),
+                action: UpdateAction::DevelopmentToStable,
+                reason: UpdateReason::DevelopmentBuild,
+            },
+            Case {
+                name: "stable does not downgrade",
+                current: "v0.7.0",
+                include_preview: false,
+                releases: vec![("v0.6.4", false, false)],
+                selected_index: Some(0),
+                action: UpdateAction::NoAction,
+                reason: UpdateReason::StableNotNewer,
+            },
+            Case {
+                name: "draft and malformed releases are ignored",
+                current: "v0.7.0",
+                include_preview: false,
+                releases: vec![("v0.8.0", true, false), ("broken", false, false)],
+                selected_index: None,
+                action: UpdateAction::NoAction,
+                reason: UpdateReason::NoStableRelease,
+            },
+            Case {
+                name: "no stable is available",
+                current: "v0.7.0-preview.3",
+                include_preview: false,
+                releases: vec![("v0.8.0-preview.1", false, true)],
+                selected_index: None,
+                action: UpdateAction::NoAction,
+                reason: UpdateReason::NoStableRelease,
+            },
+        ];
+
+        for case in cases {
+            let decision =
+                decide_release_update(&request(case.current, case.include_preview, case.releases))
+                    .unwrap();
+            assert_eq!(decision.action, case.action, "{} action", case.name);
+            assert_eq!(decision.reason, case.reason, "{} reason", case.name);
+            assert_eq!(
+                decision.selection,
+                case.selected_index
+                    .map(|selected_index| ReleaseSelection::Selected { selected_index })
+                    .unwrap_or(ReleaseSelection::NoMatch),
+                "{} selection",
+                case.name
+            );
+        }
     }
 }

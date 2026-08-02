@@ -1715,6 +1715,15 @@ h2 {
   padding: 0;
 }
 
+.playback-selector-hint {
+  max-width: 22rem;
+  text-align: right;
+}
+
+.playback-selector-hint.is-warning {
+  color: var(--danger-color, #b54732);
+}
+
 .app-shell.layout-mode-basic .bottom-grid,
 .app-shell.layout-mode-basic .search-sub-card {
   display: none;

@@ -42,6 +42,26 @@ APP_UPDATE_NO_ASSET_ERROR = "没有找到适用于当前平台的自动更新包
 APP_UPDATE_BUSY_STATES = {"checking", "downloading", "installing", "restarting"}
 APP_UPDATE_SUPPORTED_PLATFORMS = {"windows", "macos"}
 APP_UPDATE_CHUNK_SIZE = 1024 * 256
+UPDATE_ACTION_NORMAL_UPGRADE = "normal_upgrade"
+UPDATE_ACTION_PREVIEW_TO_STABLE = "preview_to_stable"
+UPDATE_ACTION_DEVELOPMENT_TO_STABLE = "development_to_stable"
+UPDATE_ACTION_NONE = "no_action"
+UPDATE_INSTALLABLE_ACTIONS = {
+    UPDATE_ACTION_NORMAL_UPGRADE,
+    UPDATE_ACTION_PREVIEW_TO_STABLE,
+    UPDATE_ACTION_DEVELOPMENT_TO_STABLE,
+}
+UPDATE_REASONS = {
+    "newer_version",
+    "preview_channel_disabled",
+    "development_build",
+    "already_current",
+    "stable_not_newer",
+    "preview_not_newer",
+    "development_target_not_stable",
+    "no_stable_release",
+    "no_eligible_release",
+}
 
 
 class AppUpdateError(RuntimeError):
@@ -434,13 +454,30 @@ def _py_latest_release_for_current(
     *,
     include_preview: bool = False,
 ) -> dict[str, Any]:
+    return _py_release_decision_for_current(
+        current_version,
+        releases,
+        include_preview=include_preview,
+    )["release"]
+
+
+def _py_release_decision_for_current(
+    current_version: str,
+    releases: list[dict[str, Any]],
+    *,
+    include_preview: bool = False,
+) -> dict[str, Any]:
     valid_releases = [
         release
         for release in releases
         if not release.get("draft") and _py_version_sort_key(release.get("tag_name")) is not None
     ]
     if not valid_releases:
-        return {}
+        return {
+            "release": {},
+            "action": UPDATE_ACTION_NONE,
+            "reason": "no_eligible_release" if include_preview else "no_stable_release",
+        }
 
     latest_any = max(valid_releases, key=lambda release: _py_version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0))
     stable_releases = [
@@ -454,9 +491,46 @@ def _py_latest_release_for_current(
         else {}
     )
 
-    if include_preview:
-        return latest_any
-    return latest_stable
+    selected = latest_any if include_preview else latest_stable
+    if not selected:
+        return {
+            "release": {},
+            "action": UPDATE_ACTION_NONE,
+            "reason": "no_eligible_release" if include_preview else "no_stable_release",
+        }
+
+    current_key = _py_version_sort_key(current_version)
+    selected_key = _py_version_sort_key(selected.get("tag_name"))
+    assert selected_key is not None
+    selected_is_stable = _py_is_stable_version(selected.get("tag_name"))
+    if current_key is None:
+        action = (
+            UPDATE_ACTION_DEVELOPMENT_TO_STABLE
+            if selected_is_stable
+            else UPDATE_ACTION_NONE
+        )
+        reason = "development_build" if selected_is_stable else "development_target_not_stable"
+    elif selected_key > current_key:
+        action = UPDATE_ACTION_NORMAL_UPGRADE
+        reason = "newer_version"
+    elif (
+        _py_is_preview_version(current_version)
+        and selected_is_stable
+        and not include_preview
+    ):
+        action = UPDATE_ACTION_PREVIEW_TO_STABLE
+        reason = "preview_channel_disabled"
+    elif selected_key == current_key:
+        action = UPDATE_ACTION_NONE
+        reason = "already_current"
+    elif _py_is_stable_version(current_version):
+        action = UPDATE_ACTION_NONE
+        reason = "stable_not_newer"
+    else:
+        action = UPDATE_ACTION_NONE
+        reason = "preview_not_newer"
+
+    return {"release": selected, "action": action, "reason": reason}
 
 
 def _latest_release_for_current(
@@ -497,6 +571,54 @@ def _latest_release_for_current(
         "select_release",
         lambda: _py_latest_release_for_current(
             current_version, releases, include_preview=include_preview
+        ),
+    )
+
+
+def _release_decision_for_current(
+    current_version: str,
+    releases: list[dict[str, Any]],
+    *,
+    include_preview: bool = False,
+) -> dict[str, Any]:
+    request: dict[str, object] = {
+        "schema_version": 1,
+        "current_version": str(current_version),
+        "include_preview": bool(include_preview),
+        "releases": [
+            {
+                "tag_name": str(release.get("tag_name") or ""),
+                "draft": bool(release.get("draft")),
+                "prerelease": bool(release.get("prerelease")),
+            }
+            for release in releases
+            if isinstance(release, dict)
+        ],
+    }
+    completed, response = rust_backend.try_select_release(request)
+    if completed and response is not None and "action" in response:
+        action = response.get("action")
+        reason = response.get("reason")
+        if action in UPDATE_INSTALLABLE_ACTIONS | {UPDATE_ACTION_NONE} and reason in UPDATE_REASONS:
+            if response.get("status") == "no_match":
+                return {"release": {}, "action": action, "reason": reason}
+            selected_index = response.get("selected_index")
+            if isinstance(selected_index, int) and not isinstance(selected_index, bool):
+                if 0 <= selected_index < len(releases):
+                    selected = releases[selected_index]
+                    if (
+                        not selected.get("draft")
+                        and is_release_version(selected.get("tag_name"))
+                        and (include_preview or is_stable_version(selected.get("tag_name")))
+                    ):
+                        return {"release": selected, "action": action, "reason": reason}
+
+    return rust_backend.python_fallback(
+        "select_release",
+        lambda: _py_release_decision_for_current(
+            current_version,
+            releases,
+            include_preview=include_preview,
         ),
     )
 
@@ -873,28 +995,48 @@ def check_for_update(
     if release_fetcher is None:
         release_fetcher = fetch_releases if include_preview else fetch_latest_release
     releases = _coerce_releases(release_fetcher())
-    release = _latest_release_for_current(
-        normalize_version_tag(current_version) or "dev",
+    current_version = normalize_version_tag(current_version) or "dev"
+    decision = _release_decision_for_current(
+        current_version,
         releases,
         include_preview=include_preview,
     )
+    release = decision["release"]
+    update_action = str(decision["action"])
+    update_reason = str(decision["reason"])
     latest_version = normalize_version_tag(release.get("tag_name"))
     release_url = str(release.get("html_url") or APP_RELEASES_URL)
-    current_version = normalize_version_tag(current_version) or "dev"
     current_is_release = is_release_version(current_version)
     latest_is_release = is_release_version(latest_version)
-    update_available = is_newer_version(latest_version, current_version)
-    switch_to_release_available = bool(latest_version and latest_is_release and not current_is_release)
+    update_available = update_action == UPDATE_ACTION_NORMAL_UPGRADE
+    switch_to_release_available = update_action in {
+        UPDATE_ACTION_PREVIEW_TO_STABLE,
+        UPDATE_ACTION_DEVELOPMENT_TO_STABLE,
+    }
+    update_installable = update_action in UPDATE_INSTALLABLE_ACTIONS
     latest_channel = "预览版" if is_preview_version(latest_version) else "正式版"
     target = detect_update_target()
     selected_asset = select_update_asset(release, target=target)
     platform_auto_update_supported = is_auto_update_supported(target=target)
-    auto_update_supported = bool(selected_asset) and platform_auto_update_supported
+    auto_update_supported = bool(
+        update_installable and selected_asset and platform_auto_update_supported
+    )
 
-    if switch_to_release_available:
+    if update_action == UPDATE_ACTION_PREVIEW_TO_STABLE:
+        message = (
+            f"当前使用预览版 {current_version}，已关闭预览版更新；"
+            f"可切换到最新正式版 {latest_version}。"
+        )
+    elif update_action == UPDATE_ACTION_DEVELOPMENT_TO_STABLE:
         message = f"当前是开发版或非正式版（{current_version}），最新{latest_channel}是 {latest_version}。"
-    elif update_available:
+    elif update_action == UPDATE_ACTION_NORMAL_UPGRADE:
         message = f"发现新{latest_channel} {latest_version}，当前版本 {current_version}。"
+    elif update_reason == "no_stable_release":
+        message = "没有找到可用的正式版。"
+    elif update_reason == "no_eligible_release":
+        message = "没有找到可用的 Release。"
+    elif update_reason == "preview_not_newer":
+        message = f"当前预览版已是所选更新频道的最新版本（{current_version}）。"
     else:
         message = f"当前已是最新版本（{current_version}）。"
 
@@ -906,6 +1048,9 @@ def check_for_update(
         "release_url": release_url,
         "release_name": str(release.get("name") or latest_version),
         "published_at": str(release.get("published_at") or ""),
+        "update_action": update_action,
+        "update_reason": update_reason,
+        "update_installable": update_installable,
         "update_available": update_available,
         "switch_to_release_available": switch_to_release_available,
         "include_preview": include_preview,
@@ -915,6 +1060,60 @@ def check_for_update(
         "auto_update_supported": auto_update_supported,
         "platform_auto_update_supported": platform_auto_update_supported,
     }
+
+
+def _is_update_decision_installable(
+    update: dict[str, Any],
+    *,
+    current_version: str,
+    include_preview: bool,
+) -> bool:
+    current = _py_normalize_version_tag(current_version) or "dev"
+    latest = _py_normalize_version_tag(update.get("latest_version"))
+    current_key = _py_version_sort_key(current)
+    latest_key = _py_version_sort_key(latest)
+    current_is_preview = _py_is_preview_version(current)
+    latest_is_stable = _py_is_stable_version(latest)
+    action = str(update.get("update_action") or "")
+    reason = str(update.get("update_reason") or "")
+
+    if action:
+        if action == UPDATE_ACTION_NORMAL_UPGRADE:
+            return bool(
+                reason == "newer_version"
+                and current_key is not None
+                and latest_key is not None
+                and latest_key > current_key
+            )
+        if action == UPDATE_ACTION_PREVIEW_TO_STABLE:
+            return bool(
+                reason == "preview_channel_disabled"
+                and not include_preview
+                and current_is_preview
+                and latest_is_stable
+            )
+        if action == UPDATE_ACTION_DEVELOPMENT_TO_STABLE:
+            return bool(
+                reason == "development_build"
+                and current_key is None
+                and latest_is_stable
+            )
+        return False
+
+    # Compatibility for checkers that predate explicit actions. Validate the
+    # version relationship instead of trusting booleans that could authorize
+    # an arbitrary downgrade.
+    if update.get("update_available"):
+        return bool(
+            current_key is not None
+            and latest_key is not None
+            and latest_key > current_key
+        )
+    if update.get("switch_to_release_available"):
+        return bool(
+            (current_key is None or current_is_preview) and latest_is_stable
+        )
+    return False
 
 
 def _py_safe_filename(name: object, fallback: str = "bilikara-update.zip") -> str:
@@ -1205,6 +1404,8 @@ class AppUpdateManager:
             "total_bytes": 0,
             "progress": 0.0,
             "include_preview": False,
+            "update_action": UPDATE_ACTION_NONE,
+            "update_reason": "",
             "platform": dict(self.target),
             "supported": is_auto_update_supported(target=self.target, frozen=self.frozen),
             "updated_at": time.time(),
@@ -1247,7 +1448,13 @@ class AppUpdateManager:
             )
             latest_version = normalize_version_tag(update.get("latest_version"))
             release_url = str(update.get("release_url") or APP_RELEASES_URL)
-            update_needed = bool(update.get("update_available") or update.get("switch_to_release_available"))
+            update_action = str(update.get("update_action") or "")
+            update_reason = str(update.get("update_reason") or "")
+            update_needed = _is_update_decision_installable(
+                update,
+                current_version=self.current_version,
+                include_preview=include_preview,
+            )
             if not update_needed:
                 self._set_status(
                     "idle",
@@ -1256,6 +1463,8 @@ class AppUpdateManager:
                     latest_version=latest_version,
                     release_url=release_url,
                     include_preview=include_preview,
+                    update_action=update_action or UPDATE_ACTION_NONE,
+                    update_reason=update_reason,
                 )
                 return
 
@@ -1268,6 +1477,8 @@ class AppUpdateManager:
                     latest_version=latest_version,
                     release_url=release_url,
                     include_preview=include_preview,
+                    update_action=update_action,
+                    update_reason=update_reason,
                 )
                 return
 
@@ -1281,6 +1492,8 @@ class AppUpdateManager:
                     latest_version=latest_version,
                     release_url=release_url,
                     include_preview=include_preview,
+                    update_action=update_action,
+                    update_reason=update_reason,
                 )
                 return
 
@@ -1307,6 +1520,8 @@ class AppUpdateManager:
                 total_bytes=expected_size,
                 progress=0.0,
                 include_preview=include_preview,
+                update_action=update_action,
+                update_reason=update_reason,
             )
             downloaded, total = self._download_update_archive(
                 asset_url,

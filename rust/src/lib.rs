@@ -76,8 +76,8 @@ pub use quality_policy::{
     QualityPolicyDecision, QualityPolicyRequest, VideoQuality, decide_quality_policy,
 };
 pub use release_selection::{
-    ReleaseCandidate, ReleaseSelection, ReleaseSelectionError, ReleaseSelectionRequest,
-    select_release,
+    ReleaseCandidate, ReleaseDecision, ReleaseSelection, ReleaseSelectionError,
+    ReleaseSelectionRequest, UpdateAction, UpdateReason, decide_release_update, select_release,
 };
 pub use tool_download_candidate_planning::{
     PlannedToolCandidate, ToolAssetInput, ToolCandidateSource, ToolDownloadPlan,

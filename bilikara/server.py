@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import rust_backend
 from .bilibili import (
     BilibiliError,
     ManualBindingRequiredError,
@@ -75,9 +76,14 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
-from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
+from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact, redact_text
 from .networking import detect_lan_ipv4_addresses
 from .playlist_export import playlist_csv_bytes, playlist_image_export
+from .playback_selector import (
+    PlaybackCapabilityError,
+    PlaybackSelector,
+    playback_selector_snapshot,
+)
 from .remote_identity import RemoteIdentityStore
 from .store import PlaylistStore
 from .updater import AppUpdateManager, check_for_update
@@ -91,6 +97,7 @@ BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 RATING_SUBMISSION_KEY_LIMIT = 2000
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
+PLAYER_DIAGNOSTIC_EVENT_LIMIT = 64
 REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
 REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 CONTAINER_RUNTIME_MARKERS = ("docker", "containerd", "kubepods", "lxc")
@@ -221,6 +228,10 @@ class AppContext:
         self._player_control_command: dict[str, object] | None = None
         self._player_status_lock = threading.RLock()
         self._player_status: dict[str, object] | None = None
+        self._player_diagnostic_lock = threading.RLock()
+        self._player_diagnostics: deque[dict[str, object]] = deque(
+            maxlen=PLAYER_DIAGNOSTIC_EVENT_LIMIT
+        )
         self._remote_access_lock = threading.RLock()
         self._remote_access = self._build_remote_access_payload(self._host, self._port, [])
         self._startup_lock = threading.RLock()
@@ -282,6 +293,9 @@ class AppContext:
             "queue_count": len(playlist),
             "gatcha_task": gatcha_task_snapshot(),
             "app_update": self.app_update_snapshot(),
+            "playback_selector": store_snapshot.get("playback_selector"),
+            "rust_backend": self._diagnostic_rust_backend_status(),
+            "recent_player_diagnostics": self.player_diagnostics_snapshot(),
             "state_revision": self._state_revision,
         }
         metrics = self.cache_manager.cache_metrics()
@@ -292,6 +306,23 @@ class AppContext:
             browser_info=browser_info,
             local_usernames=[str(name) for name in store_snapshot.get("session_users") or []],
         )
+
+    @staticmethod
+    def _diagnostic_rust_backend_status() -> dict[str, object]:
+        status = rust_backend.backend_status()
+        safe_keys = (
+            "loaded",
+            "fully_compatible",
+            "capabilities",
+            "missing_capabilities",
+            "abi_version",
+            "expected_abi_version",
+            "abi_compatible",
+            "strict_equivalence",
+            "timing_diagnostics_enabled",
+            "timing_diagnostics",
+        )
+        return {key: status[key] for key in safe_keys if key in status}
 
     @staticmethod
     def _diagnostic_item_snapshot(item: object) -> dict[str, object] | None:
@@ -401,6 +432,25 @@ class AppContext:
 
     def set_mode(self, mode: str) -> None:
         self.store.set_mode(mode)
+
+    def capture_playback_selector(self) -> PlaybackSelector:
+        return self.store.capture_playback_selector()
+
+    def set_playback_selector_mode(self, mode: object) -> str:
+        return self.store.set_playback_selector_mode(mode)
+
+    def playback_selector_capability_snapshot(self) -> dict[str, object]:
+        # Authorization is request-scoped in the handler. Keep the capability
+        # out of the shared application snapshot used by polling and SSE.
+        with self.store.lock:
+            mode = self.store.playback_selector_mode
+            warning = self.store.playback_selector_warning
+            with self._state_change_condition:
+                state_revision = self._state_revision
+        return {
+            "playback_selector": playback_selector_snapshot(mode, warning),
+            "state_revision": state_revision,
+        }
 
     def set_av_offset_ms(self, offset_ms: int) -> int:
         return self.store.set_av_offset_ms(offset_ms)
@@ -637,6 +687,27 @@ class AppContext:
             if str(self._player_status.get("item_id") or "").strip() != current_item_id:
                 return None
             return dict(self._player_status)
+
+    def record_player_diagnostic(self, event: dict[str, object]) -> None:
+        entry = dict(event)
+        for key, value in tuple(entry.items()):
+            if isinstance(value, str) and key not in {"error_message", "url_basename"}:
+                entry[key] = BilikaraHandler._sanitize_player_diagnostic_text(
+                    value, 500
+                )
+        entry["error_message"] = BilikaraHandler._sanitize_player_diagnostic_text(
+            entry.get("error_message"), 500
+        )
+        entry["url_basename"] = BilikaraHandler._sanitize_player_diagnostic_basename(
+            entry.get("url_basename")
+        )
+        entry["received_at"] = time.time()
+        with self._player_diagnostic_lock:
+            self._player_diagnostics.append(entry)
+
+    def player_diagnostics_snapshot(self) -> list[dict[str, object]]:
+        with self._player_diagnostic_lock:
+            return [dict(event) for event in self._player_diagnostics]
 
     def restore_backup(self) -> bool:
         restored = self.store.restore_backup(
@@ -913,6 +984,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+            return
+        if route == "/api/player/playback-selector":
+            if not self._is_local_client():
+                self._write_json(
+                    {"ok": False, "error": "forbidden"},
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return
+            self._write_json(
+                {
+                    "ok": True,
+                    "data": CONTEXT.playback_selector_capability_snapshot(),
+                }
+            )
             return
         if route == "/api/remote-identity":
             self._write_json({"ok": True, "data": CONTEXT.remote_identity_snapshot(self._remote_identity_token())})
@@ -1273,6 +1358,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.request_shutdown()
                 return
             if route == "/api/app/update/install":
+                if not self._is_local_client():
+                    self._write_json(
+                        {"ok": False, "error": "forbidden"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
                 include_preview = str(body.get("include_preview", body.get("includePreview", ""))).lower() in {
                     "1",
                     "true",
@@ -1506,6 +1597,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.set_mode(mode)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
+            if route == "/api/player/playback-selector":
+                if not self._is_local_client():
+                    self._write_json(
+                        {"ok": False, "error": "forbidden"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                if set(body) != {"mode"}:
+                    raise ValueError("request must contain only mode")
+                CONTEXT.set_playback_selector_mode(body.get("mode"))
+                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
+                return
             if route == "/api/player/av-offset":
                 offset_ms = body.get("offset_ms")
                 if not isinstance(offset_ms, int):
@@ -1695,8 +1798,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "playback_rate": body.get("playback_rate"),
                     "buffered_end": body.get("buffered_end"),
                     "error_code": body.get("error_code"),
-                    "error_message": str(body.get("error_message") or "")[:500],
-                    "url_basename": str(body.get("url_basename") or "")[:255],
+                    "error_message": self._sanitize_player_diagnostic_text(
+                        body.get("error_message"), 500
+                    ),
+                    "url_basename": self._sanitize_player_diagnostic_basename(
+                        body.get("url_basename")
+                    ),
                     "audio_current_time": body.get("audio_current_time"),
                     "video_current_time": body.get("video_current_time"),
                     "target_video_time": body.get("target_video_time"),
@@ -1720,7 +1827,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "total_video_frames": body.get("total_video_frames"),
                     "synchronization_action": str(body.get("synchronization_action") or "none")[:40],
                 }
-                print(f"[player-media] {json.dumps(event, ensure_ascii=False, sort_keys=True)}", flush=True)
+                CONTEXT.record_player_diagnostic(event)
                 self._write_json({"ok": True})
                 return
             if route == "/api/rating/log":
@@ -1898,6 +2005,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             if route == "/api/playlist/add":
                 self._delete_missing_bvid_from_pool_if_needed(body, exc)
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except PlaybackCapabilityError as exc:
+            self._write_json(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "code": "playback_capability_failed",
+                    "capability": exc.capability,
+                },
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
         except DuplicateSessionRequestError as exc:
             self._write_json(
                 {
@@ -1942,10 +2059,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         selected_audio_pages = raw_selected_audio_pages if isinstance(raw_selected_audio_pages, list) else None
         if not CONTEXT.has_session_users():
             raise ValueError("请先在服务端添加本场 KTV 用户")
+        playback_selector = CONTEXT.capture_playback_selector()
         item = fetch_video_item(
             url,
             selected_video_page=selected_video_page,
             selected_audio_pages=selected_audio_pages,
+            playback_selector=playback_selector,
         )
         existing_session_entry = CONTEXT.store.session_request_for_item(item)
         active_duplicate = CONTEXT.store.active_duplicate_for_item(item)
@@ -2163,6 +2282,24 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         )
         message = re.sub(r"(?<!\w)(?:[A-Za-z]:[\\/]|/)[^\s,;]+", "<path>", message)
         return f"{type(error).__name__}: {message}" if message else type(error).__name__
+
+    @staticmethod
+    def _sanitize_player_diagnostic_text(value: object, limit: int) -> str:
+        sanitized = redact_text(str(value or ""))
+        sanitized = re.sub(r"https?://[^\s]+", "<redacted-url>", sanitized)
+        return sanitized[: max(0, int(limit))]
+
+    @staticmethod
+    def _sanitize_player_diagnostic_basename(value: object) -> str:
+        raw = str(value or "").strip()
+        try:
+            parsed = urlparse(raw)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.scheme in {"http", "https"}:
+            raw = unquote(parsed.path)
+        raw = raw.split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+        return raw.rsplit("/", 1)[-1][:255]
 
     def _log_diagnostics_stage(
         self,

@@ -537,6 +537,142 @@ class AppContextPlayerStatusTest(unittest.TestCase):
         self.assertEqual(snapshot["current_time"], 13.0)
 
 
+class AppContextPlayerDiagnosticTest(unittest.TestCase):
+    def test_recent_events_are_bounded_and_copied(self):
+        context = AppContext.__new__(AppContext)
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 11
+        context._player_diagnostic_lock = threading.RLock()
+        context._player_diagnostics = deque(
+            maxlen=server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT
+        )
+
+        with patch("builtins.print") as stdout_output, patch.object(
+            context,
+            "_notify_state_changed",
+            side_effect=AssertionError(
+                "diagnostic recording must not publish a state change"
+            ),
+        ) as notify_state_changed:
+            for sequence in range(server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT + 3):
+                context.record_player_diagnostic(
+                    {
+                        "event": "sync-none",
+                        "sequence": sequence,
+                        "unexpected_text": (
+                            "https://cdn.example/video.m4s?token=secret"
+                            if sequence == server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT + 2
+                            else ""
+                        ),
+                    }
+                )
+        stdout_output.assert_not_called()
+        notify_state_changed.assert_not_called()
+        self.assertEqual(context._state_revision, 11)
+
+        snapshot = context.player_diagnostics_snapshot()
+        self.assertEqual(len(snapshot), server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT)
+        self.assertEqual(snapshot[0]["sequence"], 3)
+        self.assertEqual(
+            snapshot[-1]["sequence"],
+            server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT + 2,
+        )
+        self.assertEqual(snapshot[-1]["unexpected_text"], "<redacted-url>")
+        snapshot[-1]["sequence"] = -1
+        self.assertNotEqual(context.player_diagnostics_snapshot()[-1]["sequence"], -1)
+
+    def test_player_diagnostic_text_removes_complete_urls_and_credentials(self):
+        message = BilikaraHandler._sanitize_player_diagnostic_text(
+            "failed https://cdn.example/video.m4s?token=secret&upsig=signed Cookie: SESSDATA=value",
+            500,
+        )
+        basename = BilikaraHandler._sanitize_player_diagnostic_basename(
+            "https://cdn.example/path/video.m4s?token=secret&upsig=signed"
+        )
+
+        self.assertEqual(message, "failed <redacted-url> Cookie: [REDACTED]")
+        self.assertEqual(basename, "video.m4s")
+        self.assertNotIn("secret", message + basename)
+        self.assertNotIn("signed", message + basename)
+
+    def test_diagnostic_artifact_receives_recent_events_and_backend_timings(self):
+        context = AppContext.__new__(AppContext)
+        context._state_revision = 7
+        context.store = SimpleNamespace(
+            snapshot=lambda: {
+                "current_item": None,
+                "playlist": [],
+                "session_users": [],
+                "playback_selector": {"mode": "rust"},
+            }
+        )
+        context.cache_manager = SimpleNamespace(
+            cache_metrics=lambda: {},
+            policy_snapshot=lambda metrics: {"video_quality": "360P 流畅"},
+        )
+        context.update_manager = SimpleNamespace(snapshot=lambda: {"status": "idle"})
+        context._player_diagnostic_lock = threading.RLock()
+        context._player_diagnostics = deque(
+            maxlen=server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT
+        )
+        for sequence in range(server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT + 2):
+            context.record_player_diagnostic(
+                {
+                    "event": "waiting",
+                    "sequence": sequence,
+                    "unexpected_text": (
+                        "https://cdn.example/video.m4s?token=secret&upsig=signed"
+                        if sequence == server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT + 1
+                        else ""
+                    ),
+                }
+            )
+        artifact = DiagnosticArtifact(markdown="diagnostic", files={})
+        backend_status = {
+            "loaded": True,
+            "path": "/Users/alice/private/libbilikara_rust.dylib",
+            "error": "token=secret",
+            "timing_diagnostics_enabled": True,
+            "timing_diagnostics": {
+                "select_video_stream": {"rust_ffi_max_seconds": 0.002}
+            },
+        }
+
+        with patch(
+            "bilikara.server.gatcha_task_snapshot", return_value={"busy": False}
+        ), patch(
+            "bilikara.server.rust_backend.backend_status",
+            return_value=backend_status,
+        ), patch(
+            "bilikara.server.build_diagnostic_artifact", return_value=artifact
+        ) as build:
+            actual = context.build_diagnostics()
+
+        self.assertIs(actual, artifact)
+        runtime_state = build.call_args.kwargs["runtime_state"]
+        self.assertEqual(runtime_state["playback_selector"], {"mode": "rust"})
+        self.assertEqual(
+            runtime_state["rust_backend"],
+            {
+                "loaded": True,
+                "timing_diagnostics_enabled": True,
+                "timing_diagnostics": {
+                    "select_video_stream": {"rust_ffi_max_seconds": 0.002}
+                },
+            },
+        )
+        self.assertNotIn("path", runtime_state["rust_backend"])
+        self.assertNotIn("error", runtime_state["rust_backend"])
+        recent = runtime_state["recent_player_diagnostics"]
+        self.assertEqual(len(recent), server_module.PLAYER_DIAGNOSTIC_EVENT_LIMIT)
+        self.assertEqual(recent[0]["sequence"], 2)
+        self.assertEqual(recent[-1]["unexpected_text"], "<redacted-url>")
+        serialized = repr(recent)
+        self.assertNotIn("token=", serialized)
+        self.assertNotIn("secret", serialized)
+        self.assertNotIn("signed", serialized)
+
+
 class AppContextClientTrackingTest(unittest.TestCase):
     def make_context(self) -> AppContext:
         context = AppContext.__new__(AppContext)
@@ -1191,6 +1327,7 @@ class UpdateRouteTest(unittest.TestCase):
         handler.path = "/api/app/update/install"
         handler.headers = {}
         handler._read_json_body = lambda: {"include_preview": True}
+        handler._is_local_client = lambda: True
         handler._write_json = lambda payload, status=None: writes.append(payload)
 
         with patch("bilikara.server.CONTEXT", context):
@@ -1198,6 +1335,28 @@ class UpdateRouteTest(unittest.TestCase):
 
         self.assertEqual(calls, [{"include_preview": True}])
         self.assertEqual(writes[0], {"ok": True, "data": {"state": "checking", "include_preview": True}})
+
+    def test_update_install_route_rejects_lan_client(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            start_app_update=lambda **kwargs: self.fail("LAN client must not start update"),
+        )
+
+        handler.path = "/api/app/update/install"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"include_preview": False}
+        handler._is_local_client = lambda: False
+        handler._write_json = lambda payload, status=None: writes.append(
+            {"payload": payload, "status": status}
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(writes[0]["payload"], {"ok": False, "error": "forbidden"})
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.FORBIDDEN)
 
 
 class DownloadResponseTest(unittest.TestCase):
