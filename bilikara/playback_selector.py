@@ -6,7 +6,7 @@ from typing import Callable, TypeVar
 from . import rust_backend
 
 PLAYBACK_SELECTOR_MODES = ("python", "rust")
-DEFAULT_PLAYBACK_SELECTOR_MODE = "python"
+DEFAULT_PLAYBACK_SELECTOR_MODE = "rust"
 PLAYBACK_RUST_CAPABILITIES = (
     "decide_audio_binding",
     "decide_quality_policy",
@@ -60,15 +60,23 @@ def validate_playback_selector_mode(mode: object) -> str:
 
 def normalize_persisted_playback_selector_mode(mode: object) -> tuple[str, str]:
     if mode not in PLAYBACK_SELECTOR_MODES:
+        fallback_mode = DEFAULT_PLAYBACK_SELECTOR_MODE
+        if fallback_mode == "rust":
+            available, warning = rust_playback_availability()
+            if not available:
+                return (
+                    "python",
+                    f"invalid persisted playback selector mode {mode!r}; using python ({warning})",
+                )
         return (
-            DEFAULT_PLAYBACK_SELECTOR_MODE,
-            f"invalid persisted playback selector mode {mode!r}; using python",
+            fallback_mode,
+            f"invalid persisted playback selector mode {mode!r}; using {fallback_mode}",
         )
     if mode == "rust":
         available, warning = rust_playback_availability()
         if not available:
             return (
-                DEFAULT_PLAYBACK_SELECTOR_MODE,
+                "python",
                 f"persisted Rust playback mode is unavailable; using python ({warning})",
             )
     return str(mode), ""

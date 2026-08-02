@@ -47,24 +47,24 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
             on_change=on_change,
         )
 
-    def test_python_is_default_and_persists_round_trip(self):
+    def test_rust_is_default_and_persists_round_trip(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            store = self.make_store(root)
-            self.assertEqual(store.snapshot()["playback_selector"]["mode"], "python")
-
             with patch(
                 "bilikara.playback_selector.rust_backend.backend_status",
                 return_value=rust_status(available=True),
             ):
-                store.set_playback_selector_mode("rust")
+                store = self.make_store(root)
+                self.assertEqual(store.snapshot()["playback_selector"]["mode"], "rust")
+
+                store.set_playback_selector_mode("python")
                 restored = self.make_store(root)
 
-            self.assertEqual(restored.playback_selector_mode, "rust")
+            self.assertEqual(restored.playback_selector_mode, "python")
             payload = json.loads((root / "player_state.json").read_text(encoding="utf-8"))
-            self.assertEqual(payload["playback_selector_mode"], "rust")
+            self.assertEqual(payload["playback_selector_mode"], "python")
 
-    def test_invalid_persisted_value_normalizes_to_python_with_warning(self):
+    def test_invalid_persisted_value_normalizes_to_rust_with_warning(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "player_state.json").write_text(
@@ -72,17 +72,20 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
                 encoding="utf-8",
             )
             stderr = io.StringIO()
-            with patch("sys.stderr", stderr):
+            with patch("sys.stderr", stderr), patch(
+                "bilikara.playback_selector.rust_backend.backend_status",
+                return_value=rust_status(available=True),
+            ):
                 store = self.make_store(root)
 
             selector = store.snapshot()["playback_selector"]
-            self.assertEqual(selector["mode"], "python")
+            self.assertEqual(selector["mode"], "rust")
             self.assertIn("invalid persisted", selector["warning"])
-            self.assertIn("using python", stderr.getvalue())
+            self.assertIn("using rust", stderr.getvalue())
             persisted = json.loads(
                 (root / "player_state.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(persisted["playback_selector_mode"], "python")
+            self.assertEqual(persisted["playback_selector_mode"], "rust")
 
     def test_unavailable_persisted_rust_normalizes_to_python_with_warning(self):
         with TemporaryDirectory() as tmpdir:
@@ -141,7 +144,7 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
                 "bilikara.playback_selector.rust_backend.backend_status",
                 return_value=rust_status(available=True),
             ):
-                context.set_playback_selector_mode("rust")
+                context.set_playback_selector_mode("python")
 
             after = store.snapshot()["current_item"]
             self.assertEqual(after, before)
@@ -280,6 +283,7 @@ class PlaybackSelectorDispatchTest(unittest.TestCase):
             store = PlaylistStore(
                 root / "state.json", root / "backup.json", root / "played"
             )
+            store.playback_selector_mode = "python"
             entered = threading.Event()
             release = threading.Event()
             finished = threading.Event()
@@ -718,6 +722,7 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
             store = PlaylistStore(
                 root / "state.json", root / "backup.json", root / "played"
             )
+            store.playback_selector_mode = "python"
             item = SimpleNamespace(id="song")
             manager = CacheManager.__new__(CacheManager)
             manager.store = store

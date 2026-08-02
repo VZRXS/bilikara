@@ -1715,9 +1715,15 @@ h2 {
   padding: 0;
 }
 
-.playback-selector-hint {
-  max-width: 22rem;
-  text-align: right;
+.cache-panel-selector-row {
+  align-items: center;
+}
+
+.cache-panel-selector-row .cache-quality-select {
+  flex: 0 0 auto;
+  width: fit-content;
+  min-width: 0;
+  padding: 0 8px 0 8px;
 }
 
 .playback-selector-hint.is-warning {
