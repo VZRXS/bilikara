@@ -2119,6 +2119,12 @@ class CacheManager:
             binary_path = self._ensure_downloader(download_source)
         except Exception as exc:  # noqa: BLE001
             label = self._download_source_label(download_source)
+            self._update_recache_status(
+                item_id,
+                state="failed",
+                error=str(exc),
+                message=f"{label} 不可用: {exc}",
+            )
             if not is_already_ready:
                 self.store.update_item(
                     item_id,
@@ -2133,6 +2139,12 @@ class CacheManager:
             ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
         except Exception as exc:  # noqa: BLE001
             self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
+            self._update_recache_status(
+                item_id,
+                state="failed",
+                error=str(exc),
+                message=f"FFmpeg 不可用: {exc}",
+            )
             if not is_already_ready:
                 self.store.update_item(
                     item_id,

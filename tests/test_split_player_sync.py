@@ -215,6 +215,8 @@ if (typeof getSplitPlayerContextIdentity !== "function") {{
             input=script,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="strict",
             timeout=10,
             check=False,
         )
