@@ -81,7 +81,8 @@ async function flushPromises() {{ await Promise.resolve(); await Promise.resolve
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
         completed = subprocess.run(
-            [self.node, "-e", script],
+            [self.node, "-"],
+            input=script,
             capture_output=True,
             text=True,
             timeout=10,

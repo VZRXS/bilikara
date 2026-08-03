@@ -327,6 +327,200 @@ class PlaybackSelectorFrontendTest(unittest.TestCase):
         )
         self.assertIn("if (!applyFreshStateSnapshot(payload.data))", fetch_state)
 
+    def test_selector_change_forces_remount_once(self):
+        functions = self.source_slice(
+            "function hostStateRevision",
+            "async function setAvOffset",
+        )
+        script = f"""
+(async () => {{
+  const calls = [];
+  let teardownCalls = 0;
+  let renderCalls = 0;
+  const currentItem = {{ id: "song-1", audio_variants: [{{ id: "default" }}] }};
+  const video = {{ currentTime: 15.5, paused: false }};
+  const audio = {{ currentTime: 15.5, paused: false }};
+  const rustOption = {{ disabled: false }};
+  const select = {{
+    value: "python", disabled: false,
+    querySelector() {{ return rustOption; }},
+    removeAttribute() {{}},
+    toggleAttribute() {{}},
+  }};
+  const hint = {{
+    textContent: "", classList: {{ toggle() {{}} }},
+  }};
+  const elements = {{
+    playbackSelectorContainer: {{ hidden: false }},
+    playbackSelectorSelect: select,
+    playbackSelectorHint: hint,
+  }};
+  const state = {{
+    playbackSelectorSaving: false,
+    playbackSelectorAuthorized: true,
+    playbackSelectorCapability: {{ mode: "python", rust_available: true, warning: "" }},
+    playbackSelectorCapabilityRevision: 0,
+    playbackSelectorCapabilityRequestId: 0,
+    playerSignature: "sig-1",
+    playerContext: {{ mountId: 1 }},
+    data: {{
+      current_item: currentItem,
+      playback_selector: {{ mode: "python", rust_available: true, warning: "" }},
+    }},
+    pendingPlaybackRestore: null,
+  }};
+  function authorizedPlaybackSelectorState() {{ return state.data.playback_selector; }}
+  function applyFreshStateSnapshot(snapshot) {{
+    if (snapshot?.playback_selector) {{
+      state.data.playback_selector = snapshot.playback_selector;
+      return true;
+    }}
+    return false;
+  }}
+  function validatedPlaybackSelectorCapability(snapshot) {{
+    return snapshot?.playback_selector ? {{ selector: snapshot.playback_selector, revision: 1 }} : null;
+  }}
+  function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
+  function selectedAudioVariantForItem(item) {{ return item?.audio_variants?.[0] || null; }}
+  function teardownMountedPlayer() {{ teardownCalls += 1; }}
+  function setAppMessage() {{}}
+  function render() {{ renderCalls += 1; }}
+  function t(key) {{ return key; }}
+  async function apiPost(path, body) {{
+    calls.push({{ path, body }});
+    return {{
+      current_item: currentItem,
+      playback_selector: {{ mode: body?.mode || "rust", rust_available: true, warning: "" }},
+    }};
+  }}
+  {functions}
+  await setPlaybackSelectorMode("rust");
+  console.log(JSON.stringify({{
+    calls,
+    teardownCalls,
+    renderCalls,
+    playerSignature: state.playerSignature,
+    playerContext: state.playerContext,
+    pendingRestore: state.pendingPlaybackRestore,
+    mode: state.data.playback_selector.mode,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+        self.assertEqual(result["calls"], [{"path": "/api/player/playback-selector", "body": {"mode": "rust"}}])
+        self.assertEqual(result["teardownCalls"], 1)
+        self.assertEqual(result["renderCalls"], 1)
+        self.assertEqual(result["playerSignature"], "")
+        self.assertIsNone(result["playerContext"])
+        self.assertEqual(result["mode"], "rust")
+        self.assertEqual(
+            result["pendingRestore"],
+            {
+                "itemId": "song-1",
+                "variantId": "default",
+                "currentTime": 15.5,
+                "wasPlaying": True,
+            },
+        )
+
+    def test_reset_player_preserves_selector_mode(self):
+        functions = self.source_slice(
+            "async function resetPlayerState",
+            "async function installAppUpdate",
+        )
+        script = f"""
+(async () => {{
+  const calls = [];
+  let teardownCalls = 0;
+  let renderCalls = 0;
+  const currentItem = {{ id: "song-2", audio_variants: [{{ id: "default" }}] }};
+  const video = {{ currentTime: 42.0, paused: true }};
+  const audio = {{ currentTime: 42.0, paused: true }};
+  const state = {{
+    localTerminalAudioError: {{ mountId: 1, message: "failed" }},
+    playerSignature: "sig-2",
+    playerContext: {{ mountId: 1 }},
+    localPlayerVolume: 0.8,
+    localPlayerMuted: true,
+    playerSettingsEchoSuppressUntil: 0,
+    volumeSaveSeq: 0,
+    avOffsetSaving: false,
+    localShouldBePlaying: false,
+    data: {{
+      current_item: currentItem,
+      playback_selector: {{ mode: "rust", rust_available: true, warning: "" }},
+    }},
+    pendingPlaybackRestore: null,
+  }};
+  function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
+  function selectedAudioVariantForItem(item) {{ return item?.audio_variants?.[0] || null; }}
+  function teardownMountedPlayer() {{ teardownCalls += 1; }}
+  function persistLocalVolumePreferences() {{}}
+  function closeConfirm() {{}}
+  function setAppMessage() {{}}
+  function render() {{ renderCalls += 1; }}
+  function t(key) {{ return key; }}
+  async function apiPost(path, body) {{
+    const callObj = {{ path }};
+    if (body !== undefined) callObj.body = body;
+    calls.push(callObj);
+    return {{
+      current_item: currentItem,
+      playback_selector: {{ mode: "rust", rust_available: true, warning: "" }},
+    }};
+  }}
+  {functions}
+  try {{
+    await resetPlayerState();
+  }} catch (err) {{
+    console.error("script caught error:", err);
+  }}
+  console.log(JSON.stringify({{
+    calls,
+    teardownCalls,
+    renderCalls,
+    terminalError: state.localTerminalAudioError,
+    playerSignature: state.playerSignature,
+    playerContext: state.playerContext,
+    pendingRestore: state.pendingPlaybackRestore,
+    mode: state.data.playback_selector.mode,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        if completed.stderr:
+            print("NODE STDERR:", completed.stderr)
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+        self.assertEqual(result["calls"], [{"path": "/api/player/reset"}])
+        self.assertEqual(result["teardownCalls"], 1)
+        self.assertEqual(result["renderCalls"], 1)
+        self.assertIsNone(result["terminalError"])
+        self.assertEqual(result["playerSignature"], "")
+        self.assertIsNone(result["playerContext"])
+        self.assertEqual(result["mode"], "rust")
+        self.assertEqual(
+            result["pendingRestore"],
+            {
+                "itemId": "song-2",
+                "variantId": "default",
+                "currentTime": 42.0,
+                "wasPlaying": False,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

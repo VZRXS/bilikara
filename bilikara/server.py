@@ -241,6 +241,8 @@ class AppContext:
         self._rating_submission_lock = threading.RLock()
         self._rating_submission_keys: set[tuple[str, str]] = set()
         self._rating_submission_key_order: deque[tuple[str, str]] = deque()
+        self._repair_action_lock = threading.RLock()
+        self._repair_actions: deque[dict[str, object]] = deque(maxlen=50)
 
     def snapshot(self) -> dict:
         self.cache_manager.reconcile_cache_state()
@@ -297,6 +299,8 @@ class AppContext:
             "playback_selector": store_snapshot.get("playback_selector"),
             "rust_backend": self._diagnostic_rust_backend_status(),
             "recent_player_diagnostics": self.player_diagnostics_snapshot(),
+            "repair_actions": self.repair_actions_snapshot(),
+            "recache_statuses": getattr(self.cache_manager, "recache_statuses_snapshot", lambda: {})(),
             "state_revision": self._state_revision,
         }
         metrics = self.cache_manager.cache_metrics()
@@ -438,7 +442,10 @@ class AppContext:
         return self.store.capture_playback_selector()
 
     def set_playback_selector_mode(self, mode: object) -> str:
-        return self.store.set_playback_selector_mode(mode)
+        self.record_repair_action("selector-change-requested", {"mode": str(mode or "")})
+        new_mode = self.store.set_playback_selector_mode(mode)
+        self.record_repair_action("selector-change-applied", {"mode": new_mode})
+        return new_mode
 
     def playback_selector_capability_snapshot(self) -> dict[str, object]:
         # Authorization is request-scoped in the handler. Keep the capability
@@ -710,6 +717,31 @@ class AppContext:
         with self._player_diagnostic_lock:
             return [dict(event) for event in self._player_diagnostics]
 
+    def record_repair_action(self, event_type: str, details: dict[str, object] | None = None) -> None:
+        entry = {
+            "event": event_type,
+            "timestamp": time.time(),
+            **(details or {}),
+        }
+        lock = getattr(self, "_repair_action_lock", None)
+        actions = getattr(self, "_repair_actions", None)
+        if actions is not None:
+            if lock is not None:
+                with lock:
+                    actions.append(entry)
+            else:
+                actions.append(entry)
+
+    def repair_actions_snapshot(self) -> list[dict[str, object]]:
+        lock = getattr(self, "_repair_action_lock", None)
+        actions = getattr(self, "_repair_actions", None)
+        if actions is None:
+            return []
+        if lock is not None:
+            with lock:
+                return [dict(action) for action in actions]
+        return [dict(action) for action in actions]
+
     def restore_backup(self) -> bool:
         restored = self.store.restore_backup(
             reset_av_delay=self.cache_manager.reset_offset_on_next
@@ -745,12 +777,15 @@ class AppContext:
         self._notify_state_changed()
 
     def reset_player_state(self) -> None:
+        mode = getattr(self.store, "playback_selector_mode", "rust")
+        self.record_repair_action("player-reset-requested", {"selector_mode": mode})
         self.store.reset_player_state()
         with self._player_control_lock:
             self._player_control_ack_seq = self._player_control_seq
             self._player_control_command = None
         with self._player_status_lock:
             self._player_status = None
+        self.record_repair_action("player-reset-remounted", {"selector_mode": mode})
         self._notify_state_changed()
 
     def bind_server(self, server: ThreadingHTTPServer, *, shutdown_on_last_client: bool) -> None:

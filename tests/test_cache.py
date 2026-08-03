@@ -1329,6 +1329,111 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_replacement_recache_status_observability(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            with patch.object(CacheManager, "_worker_loop", return_value=None), patch.object(
+                CacheManager, "_start_urgent_cache", return_value=None
+            ):
+                manager = CacheManager(self.store, max_cache_items=3)
+                try:
+                    item_a = self.make_item("song-a")
+                    item_b = self.make_item("song-b")
+                    self.store.add_item(item_a, requester_name="cache-test-user")
+                    self.store.add_item(item_b, requester_name="cache-test-user")
+                    self.store.update_item(
+                        "song-a",
+                        cache_status="ready",
+                        cache_message="缓存完成",
+                        video_media_url="/media/a.mp4",
+                        media_revision="rev-old-a",
+                        persist_backup=False,
+                    )
+                    self.store.update_item(
+                        "song-b",
+                        cache_status="downloading",
+                        cache_message="下载中",
+                        persist_backup=False,
+                    )
+                    with manager.lock:
+                        manager.desired_ids = {"song-a", "song-b"}
+
+                    manager.retry_item("song-a", force=True)
+
+                    st_initial = manager.get_recache_status("song-a")
+                    self.assertIsNotNone(st_initial)
+                    self.assertEqual(st_initial["item_id"], "song-a")
+                    self.assertEqual(st_initial["old_media_revision"], "rev-old-a")
+                    self.assertTrue(st_initial["request_id"])
+
+                    # Verify snapshot enrichment includes recache_statuses
+                    snapshot = {}
+                    manager.enrich_snapshot(snapshot)
+                    self.assertIn("recache_statuses", snapshot)
+                    self.assertIn("song-a", snapshot["recache_statuses"])
+
+                    # Exercise actual worker processing in _cache_item_multi without manual status overrides
+                    video_file = self.cache_dir / "song-a" / "video.mp4"
+                    video_file.parent.mkdir(parents=True, exist_ok=True)
+                    video_file.write_bytes(b"dummy-video")
+
+                    fake_variant = {"id": "default", "audio_media_url": "/media/a-audio.mp4"}
+                    cache_result = {
+                        "video_file": str(video_file),
+                        "video_media_url": "/media/a.mp4",
+                        "audio_variants": [fake_variant],
+                        "media_revision": "rev-new-a",
+                        "validation_files": [],
+                    }
+
+                    manager._take_retry_request("song-a")
+                    with patch.object(
+                        manager,
+                        "_should_cache",
+                        return_value=True,
+                    ), patch.object(
+                        manager,
+                        "_download_selected_streams",
+                        return_value=cache_result,
+                    ), patch.object(
+                        manager,
+                        "_validate_cache_result",
+                        return_value=None,
+                    ), patch(
+                        "bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_release",
+                        return_value=True,
+                    ), patch(
+                        "bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_drain",
+                        return_value=True,
+                    ):
+                        manager._cache_item_multi("song-a", item_a, allow_refresh_retry=True)
+
+                    st_succ = manager.get_recache_status("song-a")
+                    self.assertIsNotNone(st_succ)
+                    self.assertEqual(st_succ["state"], "succeeded")
+                    self.assertEqual(st_succ["progress"], 100.0)
+
+                    # Test worker failure path propagates to recache status
+                    manager.retry_item("song-a", force=True)
+
+                    manager._take_retry_request("song-a")
+                    with patch.object(
+                        manager,
+                        "_should_cache",
+                        return_value=True,
+                    ), patch.object(
+                        manager,
+                        "_download_selected_streams",
+                        side_effect=DownloadCommandError("network timeout"),
+                    ):
+                        manager._cache_item_multi("song-a", item_a, allow_refresh_retry=True)
+
+                    st_fail = manager.get_recache_status("song-a")
+                    self.assertIsNotNone(st_fail)
+                    self.assertEqual(st_fail["state"], "failed")
+                    self.assertIn("network timeout", st_fail["error"])
+                finally:
+                    manager.shutdown()
+
     def test_retry_item_keeps_cache_dir_while_item_is_in_flight(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)

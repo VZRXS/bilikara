@@ -197,6 +197,7 @@ const state = {
   localSeekSettleCallback: null,
   localPlayerVolume: 1,
   localPlayerMuted: false,
+  localTerminalAudioError: null,
   pendingPlaybackRestore: null,
   lastAppliedPlayerControlSeq: 0,
   lastReportedPlayerStatusSignature: "",
@@ -5750,6 +5751,12 @@ function hostCacheDetailTextForItem(item) {
   if (!item) {
     return "";
   }
+  const recache = item.recache_status || state.data?.recache_statuses?.[item.id];
+  if (recache && ["queued", "downloading", "validating", "waiting_release", "publishing"].includes(recache.state)) {
+    const progressText = Number.isFinite(recache.progress) && recache.progress > 0 ? ` ${Math.round(recache.progress)}%` : "";
+    const msgText = recache.message ? `: ${recache.message}` : "";
+    return `[重新缓存 ${recache.state}${progressText}]${msgText} (旧缓存保持播放中)`;
+  }
   if (item.cache_status === "ready") {
     return "";
   }
@@ -6609,6 +6616,7 @@ function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
   state.localAudioPlaybackBlocked = false;
   state.localVideoPlaybackBlocked = false;
   state.localPlaybackEndHandled = false;
+  state.localTerminalAudioError = null;
   if (!preserveAdvanceDelayOverlay) {
     state.pendingSongTransitionOverlayData = null;
     state.pendingSongTransitionGeneration = 0;
@@ -6881,6 +6889,8 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
     player_mount_id: state.localPlayerMountId || 0,
     media_revision: video?.dataset?.mediaRevision || state.localMediaRevision || "",
     suppression_reason: state.localSplitSyncSuppressionReason || "",
+    terminal_audio_error_active: Boolean(state.localTerminalAudioError && state.localTerminalAudioError.mountId === (Number(video?.dataset?.playerMountId || audio?.dataset?.playerMountId || state.localPlayerMountId || 0))),
+    terminal_error_mount_id: state.localTerminalAudioError?.mountId || 0,
     audio_paused_for_recovery: state.localSplitSyncAudioPausedForRecovery || false,
     intent_will_be_restored: state.localSplitSyncIntentWillBeRestored || false,
     local_should_be_playing: state.localShouldBePlaying,
@@ -7036,6 +7046,30 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
     return "none";
   }
 
+  const reportAction = (action, force = false) => {
+    reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, force);
+    return action;
+  };
+
+  const activeMountId = Number(video?.dataset?.playerMountId || audio?.dataset?.playerMountId || state.localPlayerMountId || 0);
+  const isTerminalError = Boolean(
+    (audio && audio.error) ||
+    (state.localTerminalAudioError && state.localTerminalAudioError.mountId === activeMountId)
+  );
+
+  if (isTerminalError) {
+    state.localSplitSyncDecisionReason = "audio_terminal_error";
+    state.localSplitSyncSuppressionReason = "terminal_media_error";
+    state.localShouldBePlaying = false;
+    if (audio && !audio.paused) {
+      try { audio.pause(); } catch {}
+    }
+    if (video && !video.paused) {
+      try { video.pause(); } catch {}
+    }
+    return reportAction("audio-terminal-error", true);
+  }
+
   syncSplitPlayerVolumeFromVideo(video, audio);
   const requestedRate = Number(state.localPlayerRequestedRate || video.playbackRate || 1) || 1;
   if (Math.abs(audio.playbackRate - requestedRate) > 0.001) {
@@ -7044,11 +7078,6 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
   if (Math.abs(video.playbackRate - requestedRate) > 0.001) {
     video.playbackRate = requestedRate;
   }
-
-  const reportAction = (action, force = false) => {
-    reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, force);
-    return action;
-  };
 
   const currentCtx = getSplitPlayerContextIdentity(video, audio);
   const activeCtx = state.localSplitSyncCorrectionContext;
@@ -7280,6 +7309,58 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
     }
   }
   return reportAction(action, action === "seek");
+}
+
+function handleTerminalAudioError(video, audio, errEvent = null) {
+  const mountId = Number(audio?.dataset?.playerMountId || video?.dataset?.playerMountId || state.localPlayerMountId || 0);
+  if (mountId !== state.localPlayerMountId && mountId !== 0 && state.localPlayerMountId !== 0) {
+    return;
+  }
+  const currentItem = state.data?.current_item;
+  const itemId = String(video?.dataset?.playerItemId || audio?.dataset?.playerItemId || currentItem?.id || "");
+  const mediaRevision = String(video?.dataset?.mediaRevision || audio?.dataset?.mediaRevision || "");
+  const audioVariantId = String(video?.dataset?.audioVariantId || audio?.dataset?.audioVariantId || "");
+  const mediaErr = audio?.error || (errEvent && errEvent.target ? errEvent.target.error : null);
+  const code = mediaErr ? Number(mediaErr.code || 4) : 4;
+  const message = mediaErr && mediaErr.message ? String(mediaErr.message) : "PipelineStatus::DEMUXER_ERROR_COULD_NOT_PARSE: FFmpegDemuxer: PTS is not defined";
+  const failedUrl = typeof mediaUrlBasename === "function" ? (mediaUrlBasename(audio) || audio?.src || "") : (audio?.src || "");
+
+  state.localTerminalAudioError = {
+    mountId,
+    itemId,
+    mediaRevision,
+    audioVariantId,
+    failedUrl,
+    code,
+    message,
+    timestamp: Date.now(),
+  };
+
+  cancelSplitPlayerSyncCorrection("audio_terminal_error");
+  if (typeof clearLocalPlayerSyncTimer === "function") {
+    clearLocalPlayerSyncTimer();
+  }
+  state.localShouldBePlaying = false;
+  state.localSplitSyncDecisionReason = "audio_terminal_error";
+  state.localSplitSyncSuppressionReason = "terminal_media_error";
+
+  if (video) {
+    delete video.dataset.bilikaraInternalSeek;
+    delete video.dataset.bilikaraInternalPlay;
+    try { video.pause(); } catch {}
+  }
+  if (audio) {
+    delete audio.dataset.bilikaraInternalSeek;
+    delete audio.dataset.bilikaraInternalPlay;
+    try { audio.pause(); } catch {}
+  }
+
+  if (video && audio) {
+    reportSplitSyncDiagnostic(itemId, video, audio, "audio-terminal-error", true);
+  }
+  if (typeof setAppMessage === "function") {
+    setAppMessage(typeof t === "function" ? t("service.audioError") : "音频加载失败", true);
+  }
 }
 
 function syncMountedLocalPlayer(forceSeek = false) {
@@ -8055,8 +8136,9 @@ function renderPlayer(currentItem, playbackMode) {
     cancelSplitPlayerSyncCorrection("playback-error");
   });
 
-  addMountedPlayerListener(audio, "error", () => {
+  addMountedPlayerListener(audio, "error", (event) => {
     cancelSplitPlayerSyncCorrection("playback-error");
+    handleTerminalAudioError(video, audio, event);
   });
 
   addMountedPlayerListener(video, "waiting", () => {
@@ -10237,7 +10319,18 @@ async function resetRuntimeData() {
 
 async function resetPlayerState() {
   try {
+    const { video, audio } = activeLocalPlayerElements();
+    const currentItem = state.data?.current_item;
+    if (currentItem && (video || audio)) {
+      state.pendingPlaybackRestore = {
+        itemId: currentItem.id,
+        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
+        currentTime: Number(video?.currentTime || audio?.currentTime || 0),
+        wasPlaying: Boolean(state.localShouldBePlaying || (video && !video.paused) || (audio && !audio.paused)),
+      };
+    }
     teardownMountedPlayer();
+    state.localTerminalAudioError = null;
     state.playerSignature = "";
     state.playerContext = null;
     state.localPlayerVolume = 1;
@@ -10775,6 +10868,19 @@ async function setPlaybackSelectorMode(mode) {
         state.playbackSelectorCapabilityRevision = capability.revision;
       }
     }
+    const { video, audio } = activeLocalPlayerElements();
+    const currentItem = state.data?.current_item;
+    if (currentItem && (video || audio)) {
+      state.pendingPlaybackRestore = {
+        itemId: currentItem.id,
+        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
+        currentTime: Number(video?.currentTime || audio?.currentTime || 0),
+        wasPlaying: Boolean(state.localShouldBePlaying || (video && !video.paused) || (audio && !audio.paused)),
+      };
+    }
+    teardownMountedPlayer();
+    state.playerSignature = "";
+    state.playerContext = null;
     setAppMessage(t("service.playbackSelectorUpdated", { mode: mode === "rust" ? "Rust" : "Python" }));
     render();
   } catch (error) {

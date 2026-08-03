@@ -65,6 +65,7 @@ const state = {{
   localShouldBePlaying: true,
   localPlaybackEndHandled: false,
   localSeekResumePending: false,
+  localTerminalAudioError: null,
   localPlayerSyncTimer: null,
   localPlayerStartupTimer: null,
   localPlayerEventCleanups: [],
@@ -74,12 +75,53 @@ const localPlayerDriftToleranceSeconds = 0.045;
 const localPlayerModerateSyncThresholdSeconds = 0.14;
 const localPlayerHardSyncThresholdSeconds = 0.5;
 const localPlayerSyncSeekCooldownMs = 750;
+const localPlayerSyncDiagnosticThrottleMs = 1000;
 let nowMs = 1000;
 Date.now = () => nowMs;
 const actions = [];
 let heldItemId = "";
 function syncSplitPlayerVolumeFromVideo() {{}}
+function persistLocalVolumePreferences() {{}}
+function renderVolumeControls() {{}}
+function frontendPlaybackMode() {{ return "split"; }}
 function isSplitPlayerSeekSettling() {{ return false; }}
+function clearLocalPlayerSyncTimer() {{
+  if (state.localPlayerSyncTimer) {{
+    clearInterval(state.localPlayerSyncTimer);
+    state.localPlayerSyncTimer = null;
+  }}
+}}
+function clearLocalPlayerStartupTimer() {{
+  if (state.localPlayerStartupTimer) {{
+    clearTimeout(state.localPlayerStartupTimer);
+    state.localPlayerStartupTimer = null;
+  }}
+}}
+const elements = {{
+  playerDelayOverlay: {{ hidden: true }},
+  playerFrame: {{ querySelector() {{ return null; }}, querySelectorAll() {{ return []; }} }},
+}};
+globalThis.document = global.document = {{ querySelectorAll() {{ return []; }} }};
+var document = globalThis.document;
+function clearLocalPlayerSeekState() {{}}
+function clearLocalPlayerControlsHideTimer() {{}}
+function apiPost(path, body) {{
+  if (body?.event) {{
+    actions.push(body.event);
+  }}
+  return Promise.resolve({{}});
+}}
+function setAppMessage() {{}}
+function t(key) {{ return key; }}
+function clearLocalPlayerEventListeners() {{
+  if (Array.isArray(state.localPlayerEventCleanups)) {{
+    state.localPlayerEventCleanups.forEach((cleanup) => cleanup());
+    state.localPlayerEventCleanups = [];
+  }}
+}}
+function currentItemIdFromData() {{
+  return state.data?.current_item?.id || "";
+}}
 function shouldHoldCurrentItemForTransition(item) {{
   const itemId = String(item?.id || item || "");
   return Boolean(itemId && itemId === heldItemId);
@@ -123,11 +165,27 @@ class FakeMedia {{
     this.playCalls = 0;
     this.pauseCalls = 0;
     this.seekWrites = 0;
+    this.listeners = {{}};
   }}
   get currentTime() {{ return this._time; }}
   set currentTime(value) {{ this._time = Number(value); this.seekWrites += 1; }}
   play() {{ this.paused = false; this.playCalls += 1; return Promise.resolve(); }}
   pause() {{ this.paused = true; this.pauseCalls += 1; }}
+  addEventListener(event, handler) {{
+    if (!this.listeners[event]) this.listeners[event] = [];
+    this.listeners[event].push(handler);
+  }}
+  removeEventListener(event, handler) {{
+    if (!this.listeners[event]) return;
+    this.listeners[event] = this.listeners[event].filter(h => h !== handler);
+  }}
+  dispatchEvent(eventObj) {{
+    const type = typeof eventObj === "string" ? eventObj : eventObj?.type;
+    const handlers = (this.listeners[type] || []).slice();
+    for (const h of handlers) {{
+      h({{ target: this, type }});
+    }}
+  }}
 }}
 if (typeof cancelSplitPlayerSyncCorrection !== "function") {{
   function cancelSplitPlayerSyncCorrection(reason = "cancelled") {{
@@ -153,7 +211,8 @@ if (typeof getSplitPlayerContextIdentity !== "function") {{
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
         completed = subprocess.run(
-            [self.node, "-e", script],
+            [self.node, "-"],
+            input=script,
             capture_output=True,
             text=True,
             timeout=10,
@@ -698,6 +757,102 @@ function syncSplitPlayer(_video, _audio, _offset, forceSeek) { canplayForceSeek 
         renderer = self._slice("function renderPlayer(currentItem, playbackMode)", "function applyRemotePlayerControl")
         self.assertEqual(renderer.count("state.localPlayerSyncTimer = window.setInterval"), 1)
         self.assertIn("clearLocalPlayerEventListeners()", self.source)
+
+    def test_terminal_audio_error_stops_sync_and_prevents_video_seeks(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(3.6);
+const audio = new FakeMedia(3.217992);
+audio.error = { code: 4, message: "PipelineStatus::DEMUXER_ERROR_COULD_NOT_PARSE: FFmpegDemuxer: PTS is not defined" };
+audio.readyState = 4;
+video.readyState = 4;
+
+addMountedPlayerListener(audio, "error", (event) => handleTerminalAudioError(video, audio, event));
+audio.dispatchEvent("error");
+
+const seekWritesBeforeSync = video.seekWrites;
+const action1 = syncSplitPlayer(video, audio, 0.2, false);
+const action2 = syncSplitPlayer(video, audio, 0.2, true);
+const seekWritesAfterSync = video.seekWrites;
+
+// Simulate event callbacks firing after terminal error
+audio.dispatchEvent("canplay");
+audio.dispatchEvent("playing");
+audio.dispatchEvent("waiting");
+audio.dispatchEvent("stalled");
+video.dispatchEvent("seeked");
+const seekWritesAfterEvents = video.seekWrites;
+
+console.log(JSON.stringify({
+  action1,
+  action2,
+  seekWritesBeforeSync,
+  seekWritesAfterSync,
+  seekWritesAfterEvents,
+  audioPaused: audio.paused,
+  videoPaused: video.paused,
+  terminalActive: Boolean(state.localTerminalAudioError),
+  actions,
+}));
+""",
+            self._slice("function addMountedPlayerListener", "function syncMountedLocalPlayer"),
+        )
+        self.assertEqual(result["action1"], "audio-terminal-error")
+        self.assertEqual(result["action2"], "audio-terminal-error")
+        self.assertEqual(result["seekWritesBeforeSync"], 0)
+        self.assertEqual(result["seekWritesAfterSync"], 0)
+        self.assertEqual(result["seekWritesAfterEvents"], 0)
+        self.assertTrue(result["audioPaused"])
+        self.assertTrue(result["videoPaused"])
+        self.assertTrue(result["terminalActive"])
+        self.assertIn("sync-audio-terminal-error", result["actions"])
+
+    def test_stale_player_callbacks_do_not_poison_newer_mount(self):
+        result = self.run_node(
+            """
+const videoA = new FakeMedia(3.2);
+const audioA = new FakeMedia(3.2);
+videoA.dataset.playerMountId = "1";
+audioA.dataset.playerMountId = "1";
+
+const videoB = new FakeMedia(5.0);
+const audioB = new FakeMedia(4.8);
+videoB.dataset.playerMountId = "2";
+audioB.dataset.playerMountId = "2";
+
+// Mount player A and register listeners
+state.localPlayerMountId = 1;
+addMountedPlayerListener(audioA, "error", (event) => handleTerminalAudioError(videoA, audioA, event));
+addMountedPlayerListener(videoA, "canplay", () => syncSplitPlayer(videoA, audioA, 0.2));
+
+// Teardown mount A (clears listeners & state)
+teardownMountedPlayer();
+
+// Mount player B
+state.localPlayerMountId = 2;
+addMountedPlayerListener(audioB, "error", (event) => handleTerminalAudioError(videoB, audioB, event));
+addMountedPlayerListener(videoB, "canplay", () => syncSplitPlayer(videoB, audioB, 0.2));
+
+// Dispatch delayed events on unmounted player A
+audioA.error = { code: 4, message: "PTS is not defined" };
+audioA.dispatchEvent("error");
+audioA.dispatchEvent("canplay");
+audioA.dispatchEvent("playing");
+audioA.dispatchEvent("waiting");
+videoA.dispatchEvent("seeked");
+
+const syncB = syncSplitPlayer(videoB, audioB, 0.2, false);
+
+console.log(JSON.stringify({
+  syncB,
+  audioBPaused: audioB.paused,
+  terminalError: state.localTerminalAudioError,
+}));
+""",
+            self._slice("function addMountedPlayerListener", "function syncMountedLocalPlayer"),
+        )
+        self.assertNotEqual(result["syncB"], "audio-terminal-error")
+        self.assertIsNone(result["terminalError"])
 
     def test_frontend_has_no_duplicate_active_function_declarations(self):
         pattern = re.compile(r"^(?:async )?function ([A-Za-z0-9_]+)", re.MULTILINE)

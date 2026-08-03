@@ -441,6 +441,8 @@ class CacheManager:
         # self.bbdown_login_qr_text = ""
         self.active_builds: dict[str, str] = {}
         self.pending_obsolete_cleanups: dict[str, dict] = {}
+        self.recache_statuses: dict[str, dict[str, Any]] = {}
+        self._recache_status_lock = threading.RLock()
         self._load_cache_policy()
         self._cleanup_stale_staging_and_obsolete()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
@@ -804,6 +806,49 @@ class CacheManager:
             lambda: CacheManager._py_optional_video_quality(video_quality),
         )
 
+    def _current_selector_mode(self) -> str:
+        try:
+            return self.store.capture_playback_selector().mode
+        except Exception:
+            return "rust"
+
+    def get_recache_status(self, item_id: str) -> dict[str, Any] | None:
+        with self._recache_status_lock:
+            status = self.recache_statuses.get(item_id)
+            return dict(status) if status else None
+
+    def _update_recache_status(self, item_id: str, **kwargs: Any) -> dict[str, Any] | None:
+        with self._recache_status_lock:
+            entry = self.recache_statuses.get(item_id)
+            if not entry:
+                return None
+            for k, v in kwargs.items():
+                entry[k] = v
+            entry["updated_timestamp"] = time.time()
+            self._trim_recache_statuses_unlocked()
+            return dict(entry)
+
+    def _trim_recache_statuses_unlocked(self) -> None:
+        if len(self.recache_statuses) <= 50:
+            return
+        terminal_states = {"succeeded", "failed", "cancelled", "superseded"}
+        oldest_terminals = sorted(
+            [
+                (item_id, entry.get("updated_timestamp", 0))
+                for item_id, entry in self.recache_statuses.items()
+                if entry.get("state") in terminal_states
+            ],
+            key=lambda x: x[1],
+        )
+        for item_id, _ in oldest_terminals:
+            if len(self.recache_statuses) <= 40:
+                break
+            self.recache_statuses.pop(item_id, None)
+
+    def recache_statuses_snapshot(self) -> dict[str, dict[str, Any]]:
+        with self._recache_status_lock:
+            return {item_id: dict(status) for item_id, status in self.recache_statuses.items()}
+
     def enrich_snapshot(
         self,
         payload: dict[str, Any],
@@ -811,6 +856,8 @@ class CacheManager:
     ) -> dict[str, Any]:
         cache_metrics = metrics or self.cache_metrics()
         item_bytes = cache_metrics["item_bytes"]
+
+        payload["recache_statuses"] = self.recache_statuses_snapshot()
 
         current_item = payload.get("current_item")
         if isinstance(current_item, dict):
@@ -820,6 +867,9 @@ class CacheManager:
                 self.item_activity_at.get(current_item_id, 0.0)
             )
             current_item.update(self._download_progress_payload_for_item(current_item_id))
+            recache_st = self.get_recache_status(current_item_id)
+            if recache_st:
+                current_item["recache_status"] = recache_st
 
         playlist = payload.get("playlist")
         if isinstance(playlist, list):
@@ -831,6 +881,9 @@ class CacheManager:
                         self.item_activity_at.get(item_id, 0.0)
                     )
                     item.update(self._download_progress_payload_for_item(item_id))
+                    recache_st = self.get_recache_status(item_id)
+                    if recache_st:
+                        item["recache_status"] = recache_st
         return payload
 
     def _download_progress_payload_for_item(self, item_id: object) -> dict[str, Any]:
@@ -1585,6 +1638,22 @@ class CacheManager:
                 self.cache_interrupted_messages[preempted_item_id] = "等待当前歌曲重新下载"
 
         is_already_ready = item.cache_status == "ready"
+        request_id = uuid.uuid4().hex[:12]
+        with self._recache_status_lock:
+            self.recache_statuses[item_id] = {
+                "request_id": request_id,
+                "item_id": item_id,
+                "build_id": "",
+                "old_media_revision": str(getattr(item, "media_revision", "") or ""),
+                "selector_mode": self._current_selector_mode(),
+                "state": "queued" if in_flight else "downloading",
+                "progress": 0.0,
+                "message": "已接收重新缓存请求" if is_already_ready else "准备重新下载",
+                "error": None,
+                "requested_timestamp": time.time(),
+                "updated_timestamp": time.time(),
+            }
+
         if not is_already_ready:
             self.store.update_item(
                 item_id,
@@ -2015,6 +2084,15 @@ class CacheManager:
         with self.lock:
             self.active_builds[item_id] = build_id
 
+        sel_mode = playback_selector.mode if playback_selector else self._current_selector_mode()
+        self._update_recache_status(
+            item_id,
+            build_id=build_id,
+            selector_mode=sel_mode,
+            state="downloading",
+            message="正在下载多媒体数据",
+        )
+
         is_already_ready = bool(item and item.cache_status == "ready")
         self._clear_item_download_progress(item_id)
         if not is_already_ready:
@@ -2093,9 +2171,11 @@ class CacheManager:
 
             if self._is_build_superseded(item_id, build_id):
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] build {build_id[:8]} superseded by newer recache request")
+                self._update_recache_status(item_id, state="superseded", message="被新请求取代", error="superseded")
                 self._safe_rmtree(staging_dir)
                 return False
 
+            self._update_recache_status(item_id, state="validating", message="验证缓存数据")
             downkyi_tracks_prevalidated = bool(cache_result.get("downkyi_tracks_prevalidated"))
             if download_source == DOWNLOAD_SOURCE_DOWNKYI and not downkyi_tracks_prevalidated:
                 self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
@@ -2106,6 +2186,7 @@ class CacheManager:
 
             if self._is_build_superseded(item_id, build_id):
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] build {build_id[:8]} superseded after validation")
+                self._update_recache_status(item_id, state="superseded", message="被新请求取代", error="superseded")
                 self._safe_rmtree(staging_dir)
                 return False
 
@@ -2170,6 +2251,7 @@ class CacheManager:
             self._clear_item_download_progress(item_id)
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
+            self._update_recache_status(item_id, state="failed", error=last_message, message=f"重新缓存失败: {last_message}")
             if not is_already_ready:
                 self.store.update_item(
                     item_id,
@@ -2196,6 +2278,7 @@ class CacheManager:
             self._clear_item_download_progress(item_id)
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
+            self._update_recache_status(item_id, state="failed", error=last_message, message=f"重新缓存失败: {last_message}")
             if not is_already_ready:
                 self.store.update_item(
                     item_id,
@@ -2267,6 +2350,7 @@ class CacheManager:
                 callback()
 
         if replacement_build and is_current:
+            self._update_recache_status(item_id, state="waiting_release", message="等待播放器释放旧版本")
             self.store.set_media_release_request(release_req_id, item_id, old_media_revision)
             MEDIA_LEASE_COORDINATOR.start_release_request(release_req_id, item_id, old_media_revision)
             try:
@@ -2280,6 +2364,7 @@ class CacheManager:
                     pass
                 self._safe_rmtree(staging_dir)
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] release notification failed: {exc}")
+                self._update_recache_status(item_id, state="failed", error=str(exc), message=f"释放请求失败: {exc}")
                 return False
             if not MEDIA_LEASE_COORDINATOR.wait_for_release(
                 release_req_id,
@@ -2294,13 +2379,16 @@ class CacheManager:
                     pass
                 self._safe_rmtree(staging_dir)
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] recache release timed out")
+                self._update_recache_status(item_id, state="failed", error="release_timeout", message="释放旧版本超时")
                 return False
         elif replacement_build and old_media_revision:
+            self._update_recache_status(item_id, state="waiting_release", message="等待旧版本排空")
             MEDIA_LEASE_COORDINATOR.mark_draining(old_media_revision)
             if not MEDIA_LEASE_COORDINATOR.wait_for_drain(old_media_revision, timeout=2.0):
                 MEDIA_LEASE_COORDINATOR.finish_release_request("", old_media_revision)
                 self._safe_rmtree(staging_dir)
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] recache reader drain timed out")
+                self._update_recache_status(item_id, state="failed", error="drain_timeout", message="排空旧版本超时")
                 return False
 
         with self.lock:
@@ -2317,6 +2405,7 @@ class CacheManager:
                 log_path,
                 f"[{self._log_timestamp()}] publication aborted because build is no longer current",
             )
+            self._update_recache_status(item_id, state="superseded", message="发布取消", error="publication_aborted")
             if release_req_id:
                 self.store.clear_media_release_request(release_req_id)
             if replacement_build and old_media_revision:
@@ -2335,6 +2424,7 @@ class CacheManager:
         )
         if publication_token is None:
             self._append_log_line(log_path, f"[{self._log_timestamp()}] publication aborted due to role race")
+            self._update_recache_status(item_id, state="failed", message="角色竞争导致发布失败", error="role_race")
             if release_req_id:
                 self.store.clear_media_release_request(release_req_id)
             if replacement_build and old_media_revision:
@@ -2345,6 +2435,8 @@ class CacheManager:
                 pass
             self._safe_rmtree(staging_dir)
             return False
+
+        self._update_recache_status(item_id, state="publishing", message="发布新版本缓存")
 
         tx_marker = CACHE_DIR / f".tx_{item_id}_{build_id}.json"
         tx_payload: dict[str, object] = {
@@ -2374,6 +2466,7 @@ class CacheManager:
             notify_change()
             self._update_publication_transaction(tx_marker, tx_payload, "notified")
             publication_succeeded = True
+            self._update_recache_status(item_id, state="succeeded", progress=100.0, message="重新缓存成功")
             try:
                 tx_marker.unlink(missing_ok=True)
             except OSError as cleanup_exc:
@@ -2389,6 +2482,7 @@ class CacheManager:
                     f"[{self._log_timestamp()}] replaced file cleanup deferred: {cleanup_exc}",
                 )
         except Exception as publication_exc:  # noqa: BLE001
+            self._update_recache_status(item_id, state="failed", error=str(publication_exc), message=f"发布失败: {publication_exc}")
             self._append_log_line(
                 log_path,
                 f"[{self._log_timestamp()}] publication failed: {publication_exc}",
