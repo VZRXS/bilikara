@@ -436,6 +436,7 @@ class CacheManager:
         self.bbdown_login_cancel_event: threading.Event | None = None
         self.bbdown_login_state = "idle"
         self.bbdown_login_message = "未登录"
+        self.bbdown_login_qr_image = ""
         # self.bbdown_login_qr_text = ""
         self.active_builds: dict[str, str] = {}
         self.pending_obsolete_cleanups: dict[str, dict] = {}

@@ -2527,6 +2527,17 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual([variant["page"] for variant in result["audio_variants"]], [1, 2])
         self.assertEqual(result["selected_audio_variant_id"], "p2_off_vocal")
 
+    def test_bbdown_login_status_immediate_after_init(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                status = manager.bbdown_login_status()
+                self.assertIn("logged_in", status)
+                self.assertIn("qr_image", status)
+                self.assertEqual(status["qr_image"], "")
+            finally:
+                manager.shutdown()
+
     def test_start_bbdown_login_removes_stale_qr_image(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
         bbdown_dir.mkdir(parents=True, exist_ok=True)

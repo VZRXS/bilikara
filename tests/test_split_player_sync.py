@@ -7,6 +7,9 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from bilikara.rust_backend import try_apply_av_delay_action
+from bilikara.store import _py_apply_av_delay_action
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,6 +42,16 @@ class SplitPlayerSyncTest(unittest.TestCase):
         script = f"""
 const state = {{
   localPlayerRequestedRate: 1,
+  localPlayerMountId: 1,
+  localSplitSyncCorrectionToken: 0,
+  localSplitSyncCorrectionState: "idle",
+  localSplitSyncCorrectionContext: null,
+  localSplitSyncDecisionReason: "",
+  localSplitSyncSuppressionReason: "",
+  localSplitSyncSeekThresholdUsed: 0,
+  localSplitSyncCorrectionTarget: null,
+  localSplitSyncAudioPausedForRecovery: false,
+  localSplitSyncIntentWillBeRestored: false,
   localPlayerSyncLastSeekAt: 0,
   localPlayerSyncLastAction: "",
   localPlayerSyncLastDiagnosticAt: 0,
@@ -96,7 +109,12 @@ class FakeMedia {{
     this.playbackRate = 1;
     this.volume = 1;
     this.muted = false;
-    this.dataset = {{ playerItemId: "item" }};
+    this.dataset = {{
+      playerItemId: "item",
+      playerMountId: "1",
+      mediaRevision: "rev-1",
+      audioVariantId: "default",
+    }};
     this.playCalls = 0;
     this.pauseCalls = 0;
     this.seekWrites = 0;
@@ -105,6 +123,24 @@ class FakeMedia {{
   set currentTime(value) {{ this._time = Number(value); this.seekWrites += 1; }}
   play() {{ this.paused = false; this.playCalls += 1; return Promise.resolve(); }}
   pause() {{ this.paused = true; this.pauseCalls += 1; }}
+}}
+if (typeof cancelSplitPlayerSyncCorrection !== "function") {{
+  function cancelSplitPlayerSyncCorrection(reason = "cancelled") {{
+    state.localSplitSyncCorrectionState = "idle";
+    state.localSplitSyncCorrectionContext = null;
+    state.localSplitSyncCorrectionTarget = null;
+    state.localSplitSyncSuppressionReason = reason;
+  }}
+}}
+if (typeof getSplitPlayerContextIdentity !== "function") {{
+  function getSplitPlayerContextIdentity(video, audio) {{
+    return {{
+      mountId: Number(video?.dataset?.playerMountId || audio?.dataset?.playerMountId || state.localPlayerMountId || 0),
+      itemId: String(video?.dataset?.playerItemId || audio?.dataset?.playerItemId || ""),
+      mediaRevision: String(video?.dataset?.mediaRevision || audio?.dataset?.mediaRevision || ""),
+      audioVariantId: String(video?.dataset?.audioVariantId || audio?.dataset?.audioVariantId || ""),
+    }};
+  }}
 }}
 {''.join(sources)}
 (async () => {{
@@ -257,6 +293,9 @@ console.log(JSON.stringify({ videoRate: video.playbackRate, audioRate: audio.pla
 const video = new FakeMedia(2); const audio = new FakeMedia(10);
 video.paused = false; audio.paused = false;
 const first = syncSplitPlayer(video, audio, 0.2, false);
+delete video.dataset.bilikaraInternalSeek;
+state.localSplitSyncCorrectionState = "completed";
+state.localSplitSyncCorrectionContext = null;
 video._time = 8; nowMs += 100;
 const second = syncSplitPlayer(video, audio, 0.2, false);
 console.log(JSON.stringify({ first, second, videoTime: video.currentTime,
@@ -308,6 +347,270 @@ console.log(JSON.stringify({ intervalClears, timeoutClears, listenerCleanups,
         self.assertIsNone(result["syncTimer"])
         self.assertIsNone(result["startupTimer"])
         self.assertEqual(result["cleanupCount"], 0)
+
+    def test_exact_diagnostic_trace_replay(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(79.652896); const audio = new FakeMedia(80.010667);
+video.paused = false; audio.paused = false;
+const actionA = syncSplitPlayer(video, audio, 0.0, false);
+video.seeking = true; audio._time = 80.069333;
+const actionC = syncSplitPlayer(video, audio, 0.0, false);
+video.seeking = false; video._time = 80.069913; audio._time = 80.101333;
+state.localSplitSyncCorrectionState = "stabilizing";
+const actionD = syncSplitPlayer(video, audio, 0.0, false);
+console.log(JSON.stringify({ actionA, actionC, actionD, seekWrites: video.seekWrites, correctionState: state.localSplitSyncCorrectionState }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["actionA"], "seek")
+        self.assertEqual(result["actionC"], "defer-video-recovery")
+        self.assertEqual(result["actionD"], "resume")
+        self.assertEqual(result["seekWrites"], 1)
+
+    def test_one_initial_hard_seek_followed_by_residual_drift(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false;
+const firstAction = syncSplitPlayer(video, audio, 0, false);
+video.seeking = false; video._time = 10.0; audio._time = 10.05;
+state.localSplitSyncCorrectionState = "stabilizing";
+const secondAction = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ firstAction, secondAction, seekWrites: video.seekWrites }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["firstAction"], "seek")
+        self.assertEqual(result["secondAction"], "resume")
+        self.assertEqual(result["seekWrites"], 1)
+
+    def test_no_second_hard_seek_while_first_correction_active(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, false);
+const action1 = syncSplitPlayer(video, audio, 0, false);
+const action2 = syncSplitPlayer(video, audio, 0, false);
+const action3 = syncSplitPlayer(video, audio, 0, true);
+console.log(JSON.stringify({ action1, action2, action3, seekWrites: video.seekWrites }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["action1"], "defer-video-recovery")
+        self.assertEqual(result["action2"], "defer-video-recovery")
+        self.assertEqual(result["action3"], "defer-video-recovery")
+        self.assertEqual(result["seekWrites"], 1)
+
+    def test_audio_advancing_during_video_seek(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(5); const audio = new FakeMedia(5);
+video.paused = false; audio.paused = false;
+audio._time = 5.0;
+syncSplitPlayer(video, audio, 0.5, false);
+audio._time = 5.2;
+console.log(JSON.stringify({ audioPaused: audio.paused, audioTime: audio.currentTime, audioPauseCalls: audio.pauseCalls }));
+""",
+            self.sync_source,
+        )
+        self.assertFalse(result["audioPaused"])
+        self.assertEqual(result["audioTime"], 5.2)
+        self.assertEqual(result["audioPauseCalls"], 0)
+
+    def test_waiting_canplay_seeked_lifecycle_flow(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(0); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, false);
+const stateSeeking = state.localSplitSyncCorrectionState;
+video.readyState = 1; state.localVideoPlaybackBlocked = true;
+syncSplitPlayer(video, audio, 0, false);
+const stateWaiting = state.localSplitSyncCorrectionState;
+video.readyState = 4; state.localVideoPlaybackBlocked = false; video.seeking = false;
+state.localSplitSyncCorrectionState = "stabilizing";
+syncSplitPlayer(video, audio, 0, false);
+const stateCompleted = state.localSplitSyncCorrectionState;
+console.log(JSON.stringify({ stateSeeking, stateWaiting, stateCompleted }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["stateSeeking"], "seeking")
+        self.assertEqual(result["stateWaiting"], "waiting")
+        self.assertEqual(result["stateCompleted"], "idle")
+
+    def test_stale_callback_after_media_revision_change(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.dataset = { playerItemId: "item", playerMountId: "1", mediaRevision: "rev-1", audioVariantId: "default" };
+syncSplitPlayer(video, audio, 0, false);
+video.dataset.mediaRevision = "rev-2";
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ action, suppressionReason: state.localSplitSyncSuppressionReason }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["suppressionReason"], "stale_context")
+
+    def test_stale_callback_after_player_remount(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.dataset = { playerItemId: "item", playerMountId: "1", mediaRevision: "rev-1", audioVariantId: "default" };
+syncSplitPlayer(video, audio, 0, false);
+video.dataset.playerMountId = "2";
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ action, suppressionReason: state.localSplitSyncSuppressionReason }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["suppressionReason"], "stale_context")
+
+    def test_user_originated_seek_cancels_in_flight_correction(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, false);
+cancelSplitPlayerSyncCorrection("user-seek");
+console.log(JSON.stringify({ correctionState: state.localSplitSyncCorrectionState, suppressionReason: state.localSplitSyncSuppressionReason }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["correctionState"], "idle")
+        self.assertEqual(result["suppressionReason"], "user-seek")
+
+    def test_paused_player_preserves_paused_intent(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+state.localShouldBePlaying = false; video.paused = true; audio.paused = true;
+const action = syncSplitPlayer(video, audio, 0, true);
+console.log(JSON.stringify({ action, shouldPlay: state.localShouldBePlaying }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["action"], "pause")
+        self.assertFalse(result["shouldPlay"])
+
+    def test_playing_player_restores_playing_intent(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+state.localShouldBePlaying = true; video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, false);
+video.seeking = false; video._time = 10;
+state.localSplitSyncCorrectionState = "stabilizing";
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ action, shouldPlay: state.localShouldBePlaying }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["action"], "resume")
+        self.assertTrue(result["shouldPlay"])
+
+    def test_no_ended_or_next_song_event_during_recovery(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ advances }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["advances"], 0)
+
+    def test_video_ready_state_1_buffering_does_not_pause_healthy_audio(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(10); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false; video.readyState = 1;
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ action, audioPaused: audio.paused, audioPauseCalls: audio.pauseCalls }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["action"], "defer-video-recovery")
+        self.assertFalse(result["audioPaused"])
+        self.assertEqual(result["audioPauseCalls"], 0)
+
+    def test_positive_zero_and_negative_av_delay(self):
+        result = self.run_node(
+            """
+const v1 = new FakeMedia(0); const a1 = new FakeMedia(10);
+v1.dataset.playerMountId = "1"; a1.dataset.playerMountId = "1";
+const act1 = syncSplitPlayer(v1, a1, 0.5, true);
+cancelSplitPlayerSyncCorrection("reset");
+nowMs += 1000;
+
+const v2 = new FakeMedia(0); const a2 = new FakeMedia(10);
+v2.dataset.playerMountId = "2"; a2.dataset.playerMountId = "2";
+const act2 = syncSplitPlayer(v2, a2, 0.0, true);
+cancelSplitPlayerSyncCorrection("reset");
+nowMs += 1000;
+
+const v3 = new FakeMedia(0); const a3 = new FakeMedia(10);
+v3.dataset.playerMountId = "3"; a3.dataset.playerMountId = "3";
+const act3 = syncSplitPlayer(v3, a3, -0.5, true);
+console.log(JSON.stringify({ target1: v1.currentTime, target2: v2.currentTime, target3: v3.currentTime }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["target1"], 10.5)
+        self.assertEqual(result["target2"], 10.0)
+        self.assertEqual(result["target3"], 9.5)
+
+    def test_python_rust_av_delay_decision_equivalence(self):
+        actions = [
+            {"type": "snapshot"},
+            {"type": "adjust", "delta_ms": 100},
+            {"type": "adjust", "delta_ms": -200},
+            {"type": "set_effective", "effective_delay_ms": 300},
+            {"type": "set_persistent", "effective_delay_ms": 400},
+            {"type": "reset_local"},
+            {"type": "toggle_lock"},
+        ]
+        initial_state = {
+            "global_delay_ms": 100,
+            "local_delay_ms": 50,
+            "locked": False,
+        }
+        for act in actions:
+            py_res = _py_apply_av_delay_action(initial_state, act)
+            rust_res = try_apply_av_delay_action(
+                {"schema_version": 1, "state": initial_state, "action": act}
+            )[1]
+            if rust_res is not None:
+                self.assertEqual(py_res, rust_res)
+
+    def test_threshold_boundaries(self):
+        result = self.run_node(
+            """
+const v1 = new FakeMedia(10.01); const a1 = new FakeMedia(10.0);
+v1.dataset.playerMountId = "1"; a1.dataset.playerMountId = "1";
+const act1 = syncSplitPlayer(v1, a1, 0, false);
+cancelSplitPlayerSyncCorrection("reset");
+nowMs += 1000;
+
+const v2 = new FakeMedia(10.15); const a2 = new FakeMedia(10.0);
+v2.dataset.playerMountId = "2"; a2.dataset.playerMountId = "2";
+const act2 = syncSplitPlayer(v2, a2, 0, false);
+cancelSplitPlayerSyncCorrection("reset");
+nowMs += 1000;
+
+const v3 = new FakeMedia(10.6); const a3 = new FakeMedia(10.0);
+v3.dataset.playerMountId = "3"; a3.dataset.playerMountId = "3";
+const act3 = syncSplitPlayer(v3, a3, 0, false);
+console.log(JSON.stringify({ act1, act2, act3 }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["act1"], "none")
+        self.assertEqual(result["act2"], "seek")
+        self.assertEqual(result["act3"], "seek")
 
     def test_only_one_player_renderer_and_one_sync_interval_remain(self):
         self.assertEqual(self.source.count("function renderPlayer(currentItem, playbackMode)"), 1)

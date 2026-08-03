@@ -117,6 +117,16 @@ const state = {
   localPlayerStartupTimer: null,
   localPlayerEventCleanups: [],
   localPlayerRequestedRate: 1,
+  localPlayerMountId: 0,
+  localSplitSyncCorrectionToken: 0,
+  localSplitSyncCorrectionState: "idle",
+  localSplitSyncCorrectionContext: null,
+  localSplitSyncDecisionReason: "",
+  localSplitSyncSuppressionReason: "",
+  localSplitSyncSeekThresholdUsed: 0,
+  localSplitSyncCorrectionTarget: null,
+  localSplitSyncAudioPausedForRecovery: false,
+  localSplitSyncIntentWillBeRestored: false,
   localPlayerSyncLastSeekAt: 0,
   localPlayerSyncLastAction: "",
   localPlayerSyncLastDiagnosticAt: 0,
@@ -5936,6 +5946,7 @@ function setMediaCurrentTime(media, nextTime, toleranceSeconds = localPlayerForc
 }
 
 function clearLocalPlayerSyncTimer() {
+  cancelSplitPlayerSyncCorrection("player-teardown");
   if (state.localPlayerSyncTimer) {
     window.clearInterval(state.localPlayerSyncTimer);
     state.localPlayerSyncTimer = null;
@@ -6621,6 +6632,7 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
   if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
     return;
   }
+  cancelSplitPlayerSyncCorrection("user-seek");
 
   const resumeAfterSeek = Boolean(
     options.resumeAfterSeek
@@ -6727,11 +6739,15 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
   const audioTime = Number(audio?.currentTime || 0);
   const videoTime = Number(video?.currentTime || 0);
   const targetVideoTime = clampMediaTime(video, audioTime + offsetSeconds);
+  const drift = videoTime - targetVideoTime;
+  const absoluteDrift = Math.abs(drift);
   return {
     audio_current_time: audioTime,
     video_current_time: videoTime,
     target_video_time: targetVideoTime,
-    drift_seconds: videoTime - targetVideoTime,
+    drift_seconds: drift,
+    raw_signed_drift: drift,
+    effective_drift: absoluteDrift,
     effective_av_delay_seconds: offsetSeconds,
     audio_playback_rate: Number(audio?.playbackRate || 1),
     video_playback_rate: Number(video?.playbackRate || 1),
@@ -6748,6 +6764,24 @@ function splitSyncSnapshot(video, audio, offsetSeconds, action) {
     audio_buffered_end: bufferedMediaEnd(audio),
     video_buffered_end: bufferedMediaEnd(video),
     synchronization_action: action,
+    decision_action: action,
+    decision_reason: state.localSplitSyncDecisionReason || "",
+    selector_mode: state.playbackSelectorMode || "rust",
+    thresholds_used: {
+      seek_threshold: state.localSplitSyncSeekThresholdUsed || 0,
+      force_sync_epsilon: localPlayerForceSyncEpsilonSeconds,
+      drift_tolerance: localPlayerDriftToleranceSeconds,
+      moderate_sync_threshold: localPlayerModerateSyncThresholdSeconds,
+      hard_sync_threshold: localPlayerHardSyncThresholdSeconds,
+    },
+    correction_state: state.localSplitSyncCorrectionState || "idle",
+    correction_token: state.localSplitSyncCorrectionToken || 0,
+    correction_target: state.localSplitSyncCorrectionTarget ?? null,
+    player_mount_id: state.localPlayerMountId || 0,
+    media_revision: video?.dataset?.mediaRevision || state.localMediaRevision || "",
+    suppression_reason: state.localSplitSyncSuppressionReason || "",
+    audio_paused_for_recovery: state.localSplitSyncAudioPausedForRecovery || false,
+    intent_will_be_restored: state.localSplitSyncIntentWillBeRestored || false,
     local_should_be_playing: state.localShouldBePlaying,
     pause_reason: action === "transition-hold"
       ? "transition-hold"
@@ -6869,6 +6903,30 @@ function seekSlaveVideo(video, targetTime) {
   return changed;
 }
 
+function getSplitPlayerContextIdentity(video, audio) {
+  return {
+    mountId: Number(video?.dataset?.playerMountId || audio?.dataset?.playerMountId || state.localPlayerMountId || 0),
+    itemId: String(video?.dataset?.playerItemId || audio?.dataset?.playerItemId || currentItemIdFromData() || ""),
+    mediaRevision: String(video?.dataset?.mediaRevision || audio?.dataset?.mediaRevision || state.localMediaRevision || ""),
+    audioVariantId: String(video?.dataset?.audioVariantId || audio?.dataset?.audioVariantId || state.localAudioVariantId || ""),
+  };
+}
+
+function cancelSplitPlayerSyncCorrection(reason = "cancelled") {
+  if (state.localSplitSyncCorrectionState && state.localSplitSyncCorrectionState !== "idle") {
+    state.localSplitSyncCorrectionState = "cancelled";
+    state.localSplitSyncSuppressionReason = reason;
+  } else {
+    state.localSplitSyncSuppressionReason = reason;
+  }
+  state.localSplitSyncCorrectionContext = null;
+  state.localSplitSyncCorrectionTarget = null;
+  state.localSplitSyncAudioPausedForRecovery = false;
+  state.localSplitSyncIntentWillBeRestored = false;
+  state.localVideoDeferredRecovery = false;
+  state.localSplitSyncCorrectionState = "idle";
+}
+
 function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
   if (!video || !audio) {
     return "none";
@@ -6891,6 +6949,24 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
     return action;
   };
 
+  const currentCtx = getSplitPlayerContextIdentity(video, audio);
+  const activeCtx = state.localSplitSyncCorrectionContext;
+
+  if (activeCtx) {
+    const stale = (
+      activeCtx.mountId !== currentCtx.mountId
+      || activeCtx.itemId !== currentCtx.itemId
+      || activeCtx.mediaRevision !== currentCtx.mediaRevision
+      || activeCtx.audioVariantId !== currentCtx.audioVariantId
+    );
+    if (stale) {
+      cancelSplitPlayerSyncCorrection("stale_context");
+      state.localSplitSyncDecisionReason = "stale_context_ignored";
+      state.localSplitSyncSuppressionReason = "stale_context";
+      return reportAction("defer-video-recovery", true);
+    }
+  }
+
   if (shouldHoldCurrentItemForTransition(video.dataset.playerItemId)) {
     state.localShouldBePlaying = false;
     if (!audio.paused) {
@@ -6900,6 +6976,8 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
       video.dataset.bilikaraInternalPause = "true";
       video.pause();
     }
+    state.localSplitSyncDecisionReason = "transition_hold";
+    state.localSplitSyncSuppressionReason = "";
     return reportAction("transition-hold");
   }
 
@@ -6907,21 +6985,32 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
     if (!audio.paused) {
       audio.pause();
     }
+    state.localSplitSyncDecisionReason = "user_seek_settling";
+    state.localSplitSyncSuppressionReason = "seek_settling";
     return reportAction("pause");
   }
 
   if (video.seeking) {
     if (video.dataset.bilikaraInternalSeek === "true") {
       state.localVideoDeferredRecovery = true;
+      if (state.localSplitSyncCorrectionState === "requested") {
+        state.localSplitSyncCorrectionState = "seeking";
+      }
+      state.localSplitSyncDecisionReason = "in_flight_correction_active";
+      state.localSplitSyncSuppressionReason = "in_flight_correction";
       return reportAction("defer-video-recovery");
     }
     if (!audio.paused) {
       audio.pause();
     }
+    state.localSplitSyncDecisionReason = "external_video_seeking";
+    state.localSplitSyncSuppressionReason = "user_seek";
     return reportAction("pause");
   }
   if (audio.seeking && !forceSeek) {
     pauseSlaveVideo(video);
+    state.localSplitSyncDecisionReason = "audio_seeking";
+    state.localSplitSyncSuppressionReason = "audio_seeking";
     return reportAction("wait-for-audio");
   }
 
@@ -6929,6 +7018,8 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
     if (!audio.paused) {
       audio.pause();
     }
+    state.localSplitSyncDecisionReason = "local_should_not_be_playing";
+    state.localSplitSyncSuppressionReason = "";
     return reportAction("pause");
   }
 
@@ -6944,10 +7035,17 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
     }
     if (video.readyState < 2 || state.localVideoPlaybackBlocked) {
       state.localVideoDeferredRecovery = true;
+      if (state.localSplitSyncCorrectionState === "seeking") {
+        state.localSplitSyncCorrectionState = "waiting";
+      }
+      state.localSplitSyncDecisionReason = "startup_video_unready";
+      state.localSplitSyncSuppressionReason = "ready_state_low";
       return reportAction("defer-video-recovery");
     }
     state.localVideoHeldForAudio = false;
     playMediaBestEffort(video, { internalVideo: true });
+    state.localSplitSyncDecisionReason = "startup_offset_aligned";
+    state.localSplitSyncSuppressionReason = "";
     return reportAction("start");
   }
 
@@ -6956,13 +7054,19 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
     pauseSlaveVideo(video);
     if (audio.readyState >= 2) {
       playMediaBestEffort(audio);
+      state.localSplitSyncDecisionReason = "negative_target_audio_leading";
+      state.localSplitSyncSuppressionReason = "";
       return reportAction("start");
     }
+    state.localSplitSyncDecisionReason = "negative_target_audio_waiting";
+    state.localSplitSyncSuppressionReason = "ready_state_low";
     return reportAction("wait-for-audio");
   }
 
   if (audio.readyState < 2 || state.localAudioPlaybackBlocked) {
     pauseSlaveVideo(video);
+    state.localSplitSyncDecisionReason = "audio_unready";
+    state.localSplitSyncSuppressionReason = "ready_state_low";
     return reportAction("wait-for-audio");
   }
   playMediaBestEffort(audio);
@@ -6970,9 +7074,43 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
   const targetVideoTime = clampMediaTime(video, rawTargetVideoTime);
   const drift = videoTime - targetVideoTime;
   const absoluteDrift = Math.abs(drift);
+
   if (video.readyState < 2 || video.seeking || state.localVideoPlaybackBlocked) {
     state.localVideoDeferredRecovery = true;
+    if (state.localSplitSyncCorrectionContext) {
+      state.localSplitSyncCorrectionState = "waiting";
+      state.localSplitSyncDecisionReason = "in_flight_correction_active";
+      state.localSplitSyncSuppressionReason = "in_flight_correction";
+    } else {
+      state.localSplitSyncDecisionReason = "video_unready";
+      state.localSplitSyncSuppressionReason = "ready_state_low";
+    }
     return reportAction("defer-video-recovery");
+  }
+
+  if (state.localSplitSyncCorrectionContext) {
+    const currState = state.localSplitSyncCorrectionState;
+    if (currState === "requested" || currState === "seeking" || currState === "waiting") {
+      state.localSplitSyncDecisionReason = "in_flight_correction_active";
+      state.localSplitSyncSuppressionReason = "in_flight_correction";
+      return reportAction("defer-video-recovery");
+    }
+    if (currState === "stabilizing") {
+      if (absoluteDrift <= localPlayerDriftToleranceSeconds) {
+        state.localSplitSyncCorrectionState = "completed";
+        state.localSplitSyncCorrectionContext = null;
+        state.localSplitSyncCorrectionTarget = null;
+        state.localSplitSyncDecisionReason = "stabilized_within_tolerance";
+        state.localSplitSyncSuppressionReason = "";
+        state.localSplitSyncCorrectionState = "idle";
+        playMediaBestEffort(video, { internalVideo: true });
+        return reportAction("resume");
+      }
+      state.localSplitSyncDecisionReason = "stabilizing_absorbing_drift";
+      state.localSplitSyncSuppressionReason = "in_flight_correction";
+      playMediaBestEffort(video, { internalVideo: true });
+      return reportAction("resume");
+    }
   }
 
   const recovering = state.localVideoDeferredRecovery || state.localVideoHeldForAudio;
@@ -6984,13 +7122,40 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
       : absoluteDrift >= localPlayerHardSyncThresholdSeconds
         ? localPlayerHardSyncThresholdSeconds
         : localPlayerModerateSyncThresholdSeconds;
-  const seekAllowed = forceSeek || now - state.localPlayerSyncLastSeekAt >= localPlayerSyncSeekCooldownMs;
+
+  state.localSplitSyncSeekThresholdUsed = seekThreshold;
+  const seekAllowed = forceSeek || (now - state.localPlayerSyncLastSeekAt >= localPlayerSyncSeekCooldownMs);
+
   let action = "none";
   if (absoluteDrift >= seekThreshold && seekAllowed) {
+    state.localSplitSyncCorrectionToken = (state.localSplitSyncCorrectionToken || 0) + 1;
+    const newToken = state.localSplitSyncCorrectionToken;
+    state.localSplitSyncCorrectionState = "requested";
+    state.localSplitSyncCorrectionTarget = targetVideoTime;
+    state.localSplitSyncDecisionReason = "drift_exceeds_threshold";
+    state.localSplitSyncSuppressionReason = "";
+    state.localSplitSyncCorrectionContext = {
+      mountId: currentCtx.mountId,
+      itemId: currentCtx.itemId,
+      mediaRevision: currentCtx.mediaRevision,
+      audioVariantId: currentCtx.audioVariantId,
+      token: newToken,
+      targetTime: targetVideoTime,
+      restoreIntent: state.localShouldBePlaying,
+      audioPausedForRecovery: false,
+    };
+    video.dataset.bilikaraCorrectionToken = String(newToken);
+
     if (seekSlaveVideo(video, targetVideoTime)) {
       state.localPlayerSyncLastSeekAt = now;
+      state.localSplitSyncCorrectionState = "seeking";
       action = "seek";
+    } else {
+      cancelSplitPlayerSyncCorrection("seek_failed");
     }
+  } else {
+    state.localSplitSyncDecisionReason = absoluteDrift < seekThreshold ? "drift_within_threshold" : "cooldown_active";
+    state.localSplitSyncSuppressionReason = absoluteDrift >= seekThreshold && !seekAllowed ? "cooldown_active" : "";
   }
 
   state.localVideoDeferredRecovery = false;
@@ -7568,7 +7733,17 @@ function renderPlayer(currentItem, playbackMode) {
     return;
   }
 
+  state.localPlayerMountId = (state.localPlayerMountId || 0) + 1;
+  cancelSplitPlayerSyncCorrection("item-change");
+  video.dataset.playerMountId = String(state.localPlayerMountId);
+  audio.dataset.playerMountId = String(state.localPlayerMountId);
   video.dataset.playerItemId = currentItem.id;
+  audio.dataset.playerItemId = currentItem.id;
+  video.dataset.mediaRevision = String(currentItem.mediaRevision || currentItem.updatedAt || currentItem.id);
+  audio.dataset.mediaRevision = video.dataset.mediaRevision;
+  video.dataset.audioVariantId = String(selectedAudioVariantForItem(currentItem)?.id || "");
+  audio.dataset.audioVariantId = video.dataset.audioVariantId;
+
   state.localPlayerRequestedRate = Number(video.playbackRate || 1) || 1;
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
@@ -7680,8 +7855,12 @@ function renderPlayer(currentItem, playbackMode) {
 
   addMountedPlayerListener(video, "seeking", () => {
     if (video.dataset.bilikaraInternalSeek === "true") {
+      if (state.localSplitSyncCorrectionState === "requested") {
+        state.localSplitSyncCorrectionState = "seeking";
+      }
       return;
     }
+    cancelSplitPlayerSyncCorrection("user-seek");
     beginSplitPlayerSeek(video, audio, {
       resumeAfterSeek: !video.paused || state.localShouldBePlaying,
       onSettled: reportCurrentVideoStatus,
@@ -7691,8 +7870,14 @@ function renderPlayer(currentItem, playbackMode) {
   addMountedPlayerListener(video, "seeked", () => {
     if (video.dataset.bilikaraInternalSeek === "true") {
       delete video.dataset.bilikaraInternalSeek;
+      const ctx = getSplitPlayerContextIdentity(video, audio);
+      if (state.localSplitSyncCorrectionContext && state.localSplitSyncCorrectionContext.token === Number(video.dataset.bilikaraCorrectionToken || 0)) {
+        state.localSplitSyncCorrectionState = "stabilizing";
+      }
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
       return;
     }
+    cancelSplitPlayerSyncCorrection("user-seek");
     showMountedPlayerControls();
     if (!settleSplitPlayerSeek(video, audio)) {
       reportCurrentVideoStatus();
@@ -7702,8 +7887,24 @@ function renderPlayer(currentItem, playbackMode) {
 
   addMountedPlayerListener(video, "canplay", () => {
     state.localVideoPlaybackBlocked = false;
+    const ctx = getSplitPlayerContextIdentity(video, audio);
+    const activeCtx = state.localSplitSyncCorrectionContext;
+    if (activeCtx && (
+      activeCtx.mountId !== ctx.mountId
+      || activeCtx.itemId !== ctx.itemId
+      || activeCtx.mediaRevision !== ctx.mediaRevision
+      || activeCtx.audioVariantId !== ctx.audioVariantId
+      || activeCtx.token !== Number(video.dataset.bilikaraCorrectionToken || 0)
+    )) {
+      state.localSplitSyncSuppressionReason = "stale_context";
+      reportSplitSyncDiagnostic(currentItem.id, video, audio, "stale-callback", true);
+      return;
+    }
+    if (state.localSplitSyncCorrectionState === "seeking" || state.localSplitSyncCorrectionState === "waiting") {
+      state.localSplitSyncCorrectionState = "stabilizing";
+    }
     if (!settleSplitPlayerSeek(video, audio)) {
-      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), state.localVideoDeferredRecovery);
+      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
     }
   });
 
@@ -7720,11 +7921,22 @@ function renderPlayer(currentItem, playbackMode) {
 
   addMountedPlayerListener(video, "playing", () => {
     state.localVideoPlaybackBlocked = false;
-    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+  });
+
+  addMountedPlayerListener(video, "error", () => {
+    cancelSplitPlayerSyncCorrection("playback-error");
+  });
+
+  addMountedPlayerListener(audio, "error", () => {
+    cancelSplitPlayerSyncCorrection("playback-error");
   });
 
   addMountedPlayerListener(video, "waiting", () => {
     state.localVideoPlaybackBlocked = true;
+    if (state.localSplitSyncCorrectionState === "seeking") {
+      state.localSplitSyncCorrectionState = "waiting";
+    }
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
   });
 
