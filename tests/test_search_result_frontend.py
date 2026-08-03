@@ -295,7 +295,7 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
         remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
 
         self.assertEqual(host_js.count("if (openSearchResultDetail(event,"), 5)
-        self.assertEqual(remote_js.count("if (openSearchResultDetail(event,"), 4)
+        self.assertEqual(remote_js.count("if (openSearchResultDetail(event,"), 5)
         for source in (host_js, remote_js):
             self.assertIn("const searchResultItemByElement = new WeakMap();", source)
             self.assertIn("searchResultItemByElement.get(card)", source)

@@ -3203,6 +3203,115 @@ function appendSearchResultItems(container, items) {
   });
 }
 
+const canonicalBilikaraSearch = {
+  query: "",
+  items: [],
+  message: "",
+  isError: false,
+  hasSearched: false,
+  seq: 0,
+  loading: false,
+};
+
+function syncBilikaraSearchViews() {
+  const query = canonicalBilikaraSearch.query;
+  const items = canonicalBilikaraSearch.items;
+  const message = canonicalBilikaraSearch.message;
+  const isError = canonicalBilikaraSearch.isError;
+  const hasSearched = canonicalBilikaraSearch.hasSearched;
+
+  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== query) {
+    elements.larkSearchQuery.value = query;
+  }
+  if (elements.searchModalLarkQuery && elements.searchModalLarkQuery.value !== query) {
+    elements.searchModalLarkQuery.value = query;
+  }
+
+  setLarkSearchMessage(message, isError);
+  setSearchModalLarkMessage(message, isError);
+
+  const emptyText = hasSearched && !items.length ? (isError ? "" : t("search.larkNoResults")) : "";
+
+  if (elements.larkSearchResults) {
+    if (!hasSearched && !items.length && !message) {
+      elements.larkSearchResults.innerHTML = "";
+      elements.larkSearchResults.classList.add("hidden");
+    } else {
+      renderSearchResultItems(elements.larkSearchResults, items, emptyText);
+    }
+  }
+
+  if (elements.searchModalLarkResults) {
+    if (!hasSearched && !items.length && !message) {
+      elements.searchModalLarkResults.innerHTML = "";
+      elements.searchModalLarkResults.classList.add("hidden");
+    } else {
+      renderSearchResultItems(elements.searchModalLarkResults, items, emptyText);
+    }
+  }
+}
+
+async function executeCanonicalBilikaraSearch(queryStr) {
+  const query = String(queryStr || "").trim();
+  if (!query) {
+    canonicalBilikaraSearch.query = "";
+    canonicalBilikaraSearch.items = [];
+    canonicalBilikaraSearch.message = t("search.keywordRequired");
+    canonicalBilikaraSearch.isError = true;
+    canonicalBilikaraSearch.hasSearched = false;
+    syncBilikaraSearchViews();
+    return;
+  }
+
+  const searchSeq = canonicalBilikaraSearch.seq + 1;
+  canonicalBilikaraSearch.seq = searchSeq;
+  canonicalBilikaraSearch.query = query;
+  canonicalBilikaraSearch.loading = true;
+  canonicalBilikaraSearch.message = t("search.larkSearching");
+  canonicalBilikaraSearch.isError = false;
+  canonicalBilikaraSearch.hasSearched = true;
+  syncBilikaraSearchViews();
+
+  if (elements.larkSearchButton) elements.larkSearchButton.disabled = true;
+  if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = true;
+
+  try {
+    const poolItems = await searchLarkPool(query);
+    if (canonicalBilikaraSearch.seq !== searchSeq) {
+      return;
+    }
+    const seenBvids = new Set();
+    const freshItems = poolItems.filter((item) => {
+      const bvid = String(item?.bvid || "").trim();
+      if (!bvid || seenBvids.has(bvid)) {
+        return false;
+      }
+      seenBvids.add(bvid);
+      return true;
+    });
+
+    canonicalBilikaraSearch.items = freshItems;
+    canonicalBilikaraSearch.message = freshItems.length
+      ? t("search.larkFound", { count: freshItems.length })
+      : t("search.larkNoResults");
+    canonicalBilikaraSearch.isError = false;
+  } catch (error) {
+    if (canonicalBilikaraSearch.seq !== searchSeq) {
+      return;
+    }
+    canonicalBilikaraSearch.items = [];
+    canonicalBilikaraSearch.message = error.message || t("error.larkSearchFailed");
+    canonicalBilikaraSearch.isError = true;
+  } finally {
+    if (canonicalBilikaraSearch.seq === searchSeq) {
+      canonicalBilikaraSearch.loading = false;
+      if (elements.larkSearchButton) elements.larkSearchButton.disabled = false;
+      if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = false;
+      syncBilikaraSearchViews();
+    }
+  }
+}
+
 function normalizeD1BrowseTagForMerge(value) {
   return String(value || "")
     .normalize("NFKC")
@@ -4068,6 +4177,10 @@ function renderSearchModalView(target = state.searchModalView || "search") {
   elements.modalFollowBrowserView?.classList.toggle("hidden", nextTarget !== "follow");
   elements.favlistBrowserView?.classList.toggle("hidden", nextTarget !== "favlist");
   elements.searchModalOtherView?.classList.toggle("hidden", !["category", "name", "artist"].includes(nextTarget));
+
+  if (nextTarget === "search") {
+    syncBilikaraSearchViews();
+  }
 
   if (nextTarget === "follow") {
     if (!state.followBrowseData && !state.followBrowseLoading) {
@@ -6860,60 +6973,7 @@ elements.searchModalTabs?.forEach((button) => {
 
 elements.searchModalLarkForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const query = String(elements.searchModalLarkQuery?.value || "").trim();
-  if (!query) {
-    renderSearchResultItems(elements.searchModalLarkResults, [], t("search.keywordRequired"));
-    setSearchModalLarkMessage(t("search.keywordRequired"), true);
-    return;
-  }
-
-  state.searchModalLarkLoading = true;
-  if (elements.searchModalLarkButton) {
-    elements.searchModalLarkButton.disabled = true;
-  }
-  const searchSeq = state.searchModalLarkSeq + 1;
-  state.searchModalLarkSeq = searchSeq;
-  const seenBvids = new Set();
-  const collectedItems = [];
-  if (elements.searchModalLarkResults) {
-    elements.searchModalLarkResults.innerHTML = "";
-    elements.searchModalLarkResults.classList.remove("hidden");
-  }
-  setSearchModalLarkMessage(t("search.larkSearching"));
-  try {
-    const poolItems = await searchLarkPool(query);
-    if (state.searchModalLarkSeq !== searchSeq) {
-      return;
-    }
-    const freshItems = poolItems.filter((item) => {
-      const bvid = String(item?.bvid || "").trim();
-      if (!bvid || seenBvids.has(bvid)) {
-        return false;
-      }
-      seenBvids.add(bvid);
-      return true;
-    });
-    if (freshItems.length) {
-      collectedItems.push(...freshItems);
-      appendSearchResultItems(elements.searchModalLarkResults, freshItems);
-    }
-    if (!collectedItems.length) {
-      renderSearchResultItems(elements.searchModalLarkResults, [], t("search.larkNoResults"));
-    }
-    setSearchModalLarkMessage(
-      collectedItems.length ? t("search.larkFound", { count: collectedItems.length }) : t("search.larkNoResults"),
-    );
-  } catch (error) {
-    renderSearchResultItems(elements.searchModalLarkResults, [], "");
-    setSearchModalLarkMessage(error.message, true);
-  } finally {
-    if (state.searchModalLarkSeq === searchSeq) {
-      state.searchModalLarkLoading = false;
-      if (elements.searchModalLarkButton) {
-        elements.searchModalLarkButton.disabled = false;
-      }
-    }
-  }
+  await executeCanonicalBilikaraSearch(elements.searchModalLarkQuery?.value);
 });
 
 elements.searchModalLarkResults?.addEventListener("click", async (event) => {
@@ -7183,76 +7243,29 @@ elements.larkSearchToggle?.addEventListener("click", () => {
   renderFollowBrowse();
 });
 
-elements.larkSearchForm?.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const query = String(elements.larkSearchQuery?.value || "").trim();
-  if (!query) {
-    hideLarkSearchResults();
-    setLarkSearchMessage(t("search.keywordRequired"), true);
-    return;
-  }
-
-  state.larkSearchLoading = true;
-  if (elements.larkSearchButton) {
-    elements.larkSearchButton.disabled = true;
-  }
-  const searchSeq = state.larkSearchSeq + 1;
-  state.larkSearchSeq = searchSeq;
-  const seenBvids = new Set();
-  const collectedItems = [];
-  let partialFailure = false;
-  if (elements.larkSearchResults) {
-    elements.larkSearchResults.innerHTML = "";
-    elements.larkSearchResults.classList.remove("hidden");
-  }
-  setLarkSearchMessage(t("search.larkSearching"));
-  try {
-    const poolItems = await searchLarkPool(query);
-    if (state.larkSearchSeq !== searchSeq) {
-      return;
-    }
-    const freshItems = poolItems.filter((item) => {
-      const bvid = String(item?.bvid || "").trim();
-      if (!bvid || seenBvids.has(bvid)) {
-        return false;
-      }
-      seenBvids.add(bvid);
-      return true;
-    });
-    if (freshItems.length) {
-      collectedItems.push(...freshItems);
-      appendLarkSearchResults(freshItems);
-    }
-    if (state.larkSearchSeq !== searchSeq) {
-      return;
-    }
-    if (!collectedItems.length) {
-      renderLarkSearchResults([]);
-    }
-    setLarkSearchMessage(
-      collectedItems.length
-        ? partialFailure
-          ? t("search.larkFoundPartial", { count: collectedItems.length })
-          : t("search.larkFound", { count: collectedItems.length })
-        : partialFailure
-          ? t("search.larkPartialNoResults")
-          : t("search.larkNoResults"),
-      partialFailure && !collectedItems.length,
-    );
-  } catch (error) {
-    hideLarkSearchResults();
-    setLarkSearchMessage(error.message, true);
-  } finally {
-    if (state.larkSearchSeq === searchSeq) {
-      state.larkSearchLoading = false;
-      if (elements.larkSearchButton) {
-        elements.larkSearchButton.disabled = false;
-      }
-    }
+elements.larkSearchQuery?.addEventListener("input", () => {
+  canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");
+  if (elements.searchModalLarkQuery && elements.searchModalLarkQuery.value !== canonicalBilikaraSearch.query) {
+    elements.searchModalLarkQuery.value = canonicalBilikaraSearch.query;
   }
 });
 
+elements.searchModalLarkQuery?.addEventListener("input", () => {
+  canonicalBilikaraSearch.query = String(elements.searchModalLarkQuery?.value || "");
+  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== canonicalBilikaraSearch.query) {
+    elements.larkSearchQuery.value = canonicalBilikaraSearch.query;
+  }
+});
+
+elements.larkSearchForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await executeCanonicalBilikaraSearch(elements.larkSearchQuery?.value);
+});
+
 elements.larkSearchResults?.addEventListener("click", async (event) => {
+  if (openSearchResultDetail(event, elements.larkSearchResults, "lark")) {
+    return;
+  }
   const button = event.target.closest("button[data-url]");
   if (!button || button.disabled) {
     return;

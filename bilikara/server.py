@@ -61,7 +61,7 @@ from .lark_pool_client import (
     submit_cloudflare_song_rating,
     verify_cloudflare_bilikara_secret,
 )
-from .cache import CacheManager
+from .cache import CacheManager, MEDIA_LEASE_COORDINATOR
 from .config import (
     APP_RELEASES_URL,
     APP_VERSION,
@@ -1350,6 +1350,22 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 )
                 self._write_json({"ok": True, "data": identity})
                 return
+            if route == "/api/player/media-release/ack":
+                if not self._is_local_client():
+                    self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                request_id = str(body.get("request_id") or "").strip()
+                item_id = str(body.get("item_id") or "").strip()
+                media_revision = str(body.get("media_revision") or "").strip()
+                if not request_id or not item_id or not media_revision:
+                    self._write_json({"ok": False, "error": "invalid params"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                success = MEDIA_LEASE_COORDINATOR.ack_release_request(request_id, item_id, media_revision)
+                if not success:
+                    self._write_json({"ok": False, "error": "mismatched or expired release request"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self._write_json({"ok": True})
+                return
             if route == "/api/app/shutdown":
                 if not self._is_local_client() and not self._has_valid_shutdown_token():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
@@ -2121,20 +2137,60 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         )
 
     def _serve_media(self, route: str, *, head_only: bool = False) -> None:
-        # relative = route.removeprefix("/media/")  # Python 3.9+
+        parsed_route = urlparse(route)
         prefix = "/media/"
-        relative = route[len(prefix):] if route.startswith(prefix) else route
-        decoded = unquote(relative)
+        relative_path = parsed_route.path[len(prefix):] if parsed_route.path.startswith(prefix) else parsed_route.path
+        query = parse_qs(parsed_route.query)
+        requested_rev = str(query.get("rev", [""])[0] or "").strip()
+
+        decoded = unquote(relative_path)
+        cache_root = CACHE_DIR.resolve()
         media_path = (CACHE_DIR / decoded).resolve()
-        if not _is_path_within(media_path, CACHE_DIR.resolve()) or not media_path.exists():
+        if not _is_path_within(media_path, cache_root) or not media_path.exists():
             self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
             return
-        self._stream_file(
-            media_path,
-            content_type=self._guess_type(media_path),
-            allow_ranges=True,
-            head_only=head_only,
-        )
+
+        rel_to_cache = media_path.relative_to(cache_root)
+        if rel_to_cache.parts and rel_to_cache.parts[0].startswith("."):
+            self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        item_id = rel_to_cache.parts[0] if rel_to_cache.parts else ""
+        item = CONTEXT.store.get_item(item_id) if item_id else None
+        effective_rev = requested_rev or (item.media_revision if item else "")
+
+        if requested_rev and MEDIA_LEASE_COORDINATOR.is_draining(requested_rev):
+            self.send_response(HTTPStatus.GONE)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        if effective_rev and MEDIA_LEASE_COORDINATOR.is_draining(effective_rev):
+            self.send_response(HTTPStatus.GONE)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        req_id = str(uuid.uuid4())
+        if effective_rev:
+            registered = MEDIA_LEASE_COORDINATOR.register_reader(effective_rev, req_id)
+            if not registered:
+                self.send_response(HTTPStatus.GONE)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+        try:
+            self._stream_file(
+                media_path,
+                content_type=self._guess_type(media_path),
+                allow_ranges=True,
+                head_only=head_only,
+                revision=effective_rev,
+                reader_id=req_id,
+            )
+        finally:
+            if effective_rev:
+                MEDIA_LEASE_COORDINATOR.unregister_reader(effective_rev, req_id)
 
     def _read_json_body(self) -> dict:
         raw_length = self.headers.get("Content-Length", "0")
@@ -2461,6 +2517,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         allow_ranges: bool = False,
         cache_control: str | None = None,
         head_only: bool = False,
+        revision: str = "",
+        reader_id: str = "",
     ) -> None:
         with file_path.open("rb") as handle:
             file_size = os.fstat(handle.fileno()).st_size
@@ -2493,6 +2551,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 remaining = content_length
                 try:
                     while remaining > 0:
+                        if revision and (
+                            MEDIA_LEASE_COORDINATOR.is_draining(revision)
+                            or MEDIA_LEASE_COORDINATOR.is_request_cancelled(reader_id)
+                        ):
+                            break
                         chunk = handle.read(min(64 * 1024, remaining))
                         if not chunk:
                             break
@@ -2514,6 +2577,11 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             try:
                 while True:
+                    if revision and (
+                        MEDIA_LEASE_COORDINATOR.is_draining(revision)
+                        or MEDIA_LEASE_COORDINATOR.is_request_cancelled(reader_id)
+                    ):
+                        break
                     chunk = handle.read(64 * 1024)
                     if not chunk:
                         break

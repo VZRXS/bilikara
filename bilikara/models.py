@@ -42,6 +42,7 @@ class PlaylistItem:
     cache_message: str = "等待缓存"
     video_relative_path: str = ""
     video_media_url: str = ""
+    media_revision: str = ""
 
     def serialize(self) -> dict[str, Any]:
         return asdict(self)
@@ -53,6 +54,24 @@ class PlaylistItem:
             display_title=self.display_title,
             part_title=self.part_title,
         )
+        if self.media_revision:
+            rev = self.media_revision
+            if data.get("video_media_url") and "?rev=" not in data["video_media_url"]:
+                sep = "&" if "?" in data["video_media_url"] else "?"
+                data["video_media_url"] = f"{data['video_media_url']}{sep}rev={rev}"
+            if isinstance(data.get("audio_variants"), list):
+                formatted_variants = []
+                for var in data["audio_variants"]:
+                    if isinstance(var, dict):
+                        v_copy = dict(var)
+                        audio_url = str(v_copy.get("audio_url") or "").strip()
+                        if audio_url and "?rev=" not in audio_url:
+                            sep = "&" if "?" in audio_url else "?"
+                            v_copy["audio_url"] = f"{audio_url}{sep}rev={rev}"
+                        formatted_variants.append(v_copy)
+                    else:
+                        formatted_variants.append(var)
+                data["audio_variants"] = formatted_variants
         # LEGACY: old state files used local_media_url for one muxed file.
         # Split playback requires both video and audio.
         data["is_cached"] = bool(

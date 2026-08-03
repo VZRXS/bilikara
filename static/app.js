@@ -110,6 +110,7 @@ const state = {
   volumeControlsRenderSignature: "",
   queueCurrentRenderSignature: "",
   audioVariantBarRenderSignature: "",
+  handledMediaReleaseRequests: new Set(),
   playerSignature: "",
   playerContext: null,
   localPlayerSyncTimer: null,
@@ -4696,11 +4697,65 @@ function disconnectClient() {
   }).catch(() => {});
 }
 
+function handleMediaReleaseRequest(req) {
+  if (!req || !req.request_id || !req.item_id || !req.media_revision) {
+    return;
+  }
+  if (state.handledMediaReleaseRequests.has(req.request_id)) {
+    return;
+  }
+  state.handledMediaReleaseRequests.add(req.request_id);
+
+  const currentItem = state.data?.current_item;
+  if (currentItem && String(currentItem.id || "") === String(req.item_id)) {
+    const currentVideo = elements.playerFrame?.querySelector('video[data-player-role="video"]')
+      || elements.playerFrame?.querySelector("video");
+    if (currentVideo) {
+      captureLocalPlayerPreferences();
+      state.pendingPlaybackRestore = {
+        itemId: currentItem.id,
+        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
+        currentTime: Number(currentVideo.currentTime || 0),
+        wasPlaying: state.localShouldBePlaying || !currentVideo.paused,
+      };
+    }
+    stopSplitPlayerSync();
+    if (elements.playerFrame) {
+      const v = elements.playerFrame.querySelector("video");
+      const a = elements.playerFrame.querySelector("audio");
+      if (v) {
+        v.pause();
+        v.removeAttribute("src");
+        v.load();
+      }
+      if (a) {
+        a.pause();
+        a.removeAttribute("src");
+        a.load();
+      }
+      elements.playerFrame.innerHTML = "";
+    }
+    state.playerSignature = "";
+    state.playerContext = null;
+  }
+
+  fetch("/api/player/media-release/ack", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      request_id: req.request_id,
+      item_id: req.item_id,
+      media_revision: req.media_revision,
+    }),
+  }).catch(() => {});
+}
+
 function render() {
   const data = state.data;
   if (!data) {
     return;
   }
+  handleMediaReleaseRequest(data.media_release_request);
 
   const currentItem = data.current_item;
   const currentTitle = currentItem ? currentItem.display_title : t("player.noSong");

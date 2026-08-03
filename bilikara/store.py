@@ -416,8 +416,41 @@ class PlaylistStore:
             self._previous_session_count,
         ) = self._latest_previous_session_file_unlocked()
         self.updated_at = time.time()
+        self.media_release_request: dict[str, str] | None = None
         self._restore_persistent_state()
+        self._ensure_media_revisions_unlocked()
         self._save_session()
+
+    def _ensure_media_revisions_unlocked(self) -> None:
+        items = []
+        if self.current_item:
+            items.append(self.current_item)
+        items.extend(self.playlist)
+        for item in items:
+            if item.cache_status == "ready" and not item.media_revision:
+                item.media_revision = f"legacy-{item.id[:8]}"
+
+    def set_media_release_request(
+        self, request_id: str, item_id: str, media_revision: str
+    ) -> None:
+        with self.lock:
+            self.media_release_request = {
+                "request_id": str(request_id or ""),
+                "item_id": str(item_id or ""),
+                "media_revision": str(media_revision or ""),
+            }
+            self.updated_at = time.time()
+
+    def clear_media_release_request(
+        self, request_id: str | None = None
+    ) -> None:
+        with self.lock:
+            if request_id is None or (
+                self.media_release_request
+                and self.media_release_request.get("request_id") == request_id
+            ):
+                self.media_release_request = None
+                self.updated_at = time.time()
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -426,6 +459,11 @@ class PlaylistStore:
                 "playback_selector": playback_selector_snapshot(
                     self.playback_selector_mode,
                     self.playback_selector_warning,
+                ),
+                "media_release_request": (
+                    dict(self.media_release_request)
+                    if self.media_release_request
+                    else None
                 ),
                 "player_settings": {
                     "av_offset_ms": self.av_offset_ms,

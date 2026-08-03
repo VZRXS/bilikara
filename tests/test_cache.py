@@ -19,6 +19,7 @@ from bilikara import rust_backend
 from bilikara.cache import (
     CachePlan,
     CacheManager,
+    MEDIA_LEASE_COORDINATOR,
     DOWNLOAD_SOURCE_DOWNKYI,
     DOWNLOAD_SOURCE_YTDLP,
     DownloadCommandError,
@@ -1084,7 +1085,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 ), patch.object(manager, "_validate_cache_result"), patch.object(
                     manager,
                     "sync_with_playlist",
-                ) as sync_mock:
+                ) as sync_mock, patch.object(
+                    MEDIA_LEASE_COORDINATOR,
+                    "wait_for_release",
+                    return_value=True,
+                ):
                     should_resync = manager._cache_item_multi("song-a", item, allow_refresh_retry=True)
 
                 cached = self.store.get_item("song-a")
@@ -1114,12 +1119,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.desired_ids = {item.id}
                     manager.ordered_desired_ids = [item.id]
 
-                def prevalidated_result(*_args, **_kwargs):
-                    item_dir = self.cache_dir / item.id
+                def prevalidated_result(*args, **_kwargs):
+                    item_dir = args[3] if len(args) > 3 else (self.cache_dir / item.id)
                     video = item_dir / "video-p1" / ".attempt-video" / "video-p1.mp4"
                     audio = item_dir / "audio-p1" / ".attempt-audio" / "audio-p1.m4a"
-                    video.parent.mkdir(parents=True)
-                    audio.parent.mkdir(parents=True)
+                    video.parent.mkdir(parents=True, exist_ok=True)
+                    audio.parent.mkdir(parents=True, exist_ok=True)
                     video.write_bytes(b"video")
                     audio.write_bytes(b"audio")
                     return {
@@ -1149,7 +1154,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager, "_normalize_downkyi_cache_result"
                 ) as normalize_mock, patch.object(
                     manager, "_validate_cache_result"
-                ) as validate_mock:
+                ) as validate_mock, patch.object(
+                    MEDIA_LEASE_COORDINATOR,
+                    "wait_for_release",
+                    return_value=True,
+                ):
                     self.assertTrue(
                         manager._cache_item_multi(item.id, item, allow_refresh_retry=False)
                     )
