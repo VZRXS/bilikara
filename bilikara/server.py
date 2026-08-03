@@ -13,6 +13,7 @@ import socket
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from http.cookies import SimpleCookie
 from http import HTTPStatus
@@ -957,7 +958,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
         if route.startswith("/media/"):
-            self._serve_media(route, head_only=True)
+            self._serve_media(self.path, head_only=True)
             return
         self._serve_static(route, head_only=True)
 
@@ -1270,7 +1271,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": False, "error": str(e)}, status=HTTPStatus.BAD_REQUEST)
             return
         if route.startswith("/media/"):
-            self._serve_media(route)
+            self._serve_media(self.path)
             return
         self._serve_static(route)
 
@@ -2146,7 +2147,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         decoded = unquote(relative_path)
         cache_root = CACHE_DIR.resolve()
         media_path = (CACHE_DIR / decoded).resolve()
-        if not _is_path_within(media_path, cache_root) or not media_path.exists():
+        if not _is_path_within(media_path, cache_root):
             self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
             return
 
@@ -2157,6 +2158,17 @@ class BilikaraHandler(BaseHTTPRequestHandler):
 
         item_id = rel_to_cache.parts[0] if rel_to_cache.parts else ""
         item = CONTEXT.store.get_item(item_id) if item_id else None
+
+        if requested_rev and item and item.media_revision and requested_rev != item.media_revision:
+            self.send_response(HTTPStatus.GONE)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        if not media_path.exists():
+            self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
+            return
+
         effective_rev = requested_rev or (item.media_revision if item else "")
 
         if requested_rev and MEDIA_LEASE_COORDINATOR.is_draining(requested_rev):

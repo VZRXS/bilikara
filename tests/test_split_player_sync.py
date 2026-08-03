@@ -32,6 +32,9 @@ class SplitPlayerSyncTest(unittest.TestCase):
         cls.lifecycle_source = cls._slice(
             "function clearLocalPlayerSyncTimer", "function clearLocalPlayerSeekState"
         )
+        cls.audio_canplay_source = cls._slice(
+            "function handleSplitAudioCanPlay", "function renderPlayer"
+        )
 
     @classmethod
     def _slice(cls, start: str, end: str) -> str:
@@ -92,6 +95,8 @@ function setMediaCurrentTime(media, value, tolerance = localPlayerForceSyncEpsil
   media.currentTime = target;
   return true;
 }}
+function seekSlaveVideo(video, targetTime) {{ video.currentTime = targetTime; return true; }}
+function playMediaBestEffort(media) {{ if (media) media.paused = false; return Promise.resolve(); }}
 function currentAvOffsetSeconds() {{ return 0.2; }}
 function isActiveSplitPlayer() {{ return true; }}
 function showMountedPlayerControls() {{}}
@@ -611,6 +616,82 @@ console.log(JSON.stringify({ act1, act2, act3 }));
         self.assertEqual(result["act1"], "none")
         self.assertEqual(result["act2"], "seek")
         self.assertEqual(result["act3"], "seek")
+
+    def test_stabilizing_completes_with_moderate_residual_drift(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, false);
+// Video seek lands, but audio advanced in the meantime, leaving 60ms drift
+video.seeking = false; video._time = 10.0; audio._time = 10.06;
+state.localSplitSyncCorrectionState = "stabilizing";
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ action, state: state.localSplitSyncCorrectionState }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["action"], "resume")
+        self.assertEqual(result["state"], "idle")
+
+    def test_correction_timeout_prevents_permanent_state(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, false);
+nowMs += 3500;
+audio._time += 10.0; // Make drift large again so it seeks
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ action, state: state.localSplitSyncCorrectionState }));
+""",
+            self.sync_source,
+        )
+        # Should be cancelled, which sets it to idle, then triggers a seek due to drift
+        self.assertNotEqual(result["state"], "requested")
+        self.assertEqual(result["state"], "seeking")
+        self.assertEqual(result["action"], "seek")
+
+    def test_stale_callback_does_not_cancel_newer_correction(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(2); const audio = new FakeMedia(10);
+video.paused = false; audio.paused = false;
+syncSplitPlayer(video, audio, 0, false);
+
+state.localPlayerMountId = 2;
+cancelSplitPlayerSyncCorrection("item-change");
+nowMs += 1000; // bypass cooldown
+const video2 = new FakeMedia(2); const audio2 = new FakeMedia(10);
+video2.dataset.playerMountId = "2"; audio2.dataset.playerMountId = "2";
+video2.paused = false; audio2.paused = false;
+syncSplitPlayer(video2, audio2, 0, false);
+const secondToken = state.localSplitSyncCorrectionContext.token;
+
+const action = syncSplitPlayer(video, audio, 0, false);
+console.log(JSON.stringify({ action, finalToken: state.localSplitSyncCorrectionContext?.token }));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["action"], "defer-video-recovery")
+        self.assertEqual(result["finalToken"], 2)
+
+    def test_audio_canplay_uses_normal_sync(self):
+        result = self.run_node(
+            """
+const video = new FakeMedia(10); const audio = new FakeMedia(10);
+handleSplitAudioCanPlay(video, audio);
+console.log(JSON.stringify({ forceSeek: canplayForceSeek, blocked: state.localAudioPlaybackBlocked }));
+""",
+            """
+let canplayForceSeek = null;
+function settleSplitPlayerSeek() { return false; }
+function syncSplitPlayer(_video, _audio, _offset, forceSeek) { canplayForceSeek = forceSeek; }
+""",
+            self.audio_canplay_source,
+        )
+        self.assertFalse(result["forceSeek"])
+        self.assertFalse(result["blocked"])
 
     def test_only_one_player_renderer_and_one_sync_interval_remain(self):
         self.assertEqual(self.source.count("function renderPlayer(currentItem, playbackMode)"), 1)

@@ -626,10 +626,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
                 refreshed = self.store.get_item("song-a")
                 self.assertIsNotNone(refreshed)
-                self.assertEqual(refreshed.cache_status, "pending")
-                self.assertEqual(refreshed.video_media_url, "")
-                self.assertEqual(refreshed.audio_variants, [])
-                self.assertFalse(item_dir.exists())
+                self.assertEqual(refreshed.cache_status, "ready")
+                self.assertEqual(refreshed.video_media_url, "/media/song-a/video-p1/video.mp4")
+                self.assertTrue(item_dir.exists())
                 enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()
@@ -1323,9 +1322,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.retry_item("song-a", force=True)
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
-                    self.assertEqual(retried.cache_status, "pending")
-                    self.assertEqual(retried.cache_message, "准备重新下载")
-                    self.assertEqual(retried.video_media_url, "")
+                    self.assertEqual(retried.cache_status, "ready")
+                    self.assertEqual(retried.cache_message, "缓存完成")
+                    self.assertEqual(retried.video_media_url, "/media/song-a/video.mp4")
                     enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()

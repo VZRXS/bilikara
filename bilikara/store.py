@@ -390,6 +390,7 @@ class PlaylistStore:
         self.session_archive_dir = session_archive_dir or state_file.parent / "played_sessions"
         self.on_change = on_change
         self.lock = threading.RLock()
+        self.current_item_condition = threading.Condition(self.lock)
         self.playback_mode = "local"
         self.playback_selector_mode = DEFAULT_PLAYBACK_SELECTOR_MODE
         self.playback_selector_warning = ""
@@ -402,6 +403,9 @@ class PlaylistStore:
         self.key_shift = 0
         self.current_item: PlaylistItem | None = None
         self.current_item_started = False
+        self.current_item_generation = 0
+        self.current_item_publication_token = 0
+        self.current_item_publication_serial = 0
         self.playlist: list[PlaylistItem] = []
         self.history: list[HistoryEntry] = []
         self.session_history: list[HistoryEntry] = []
@@ -501,6 +505,49 @@ class PlaylistStore:
         with self.lock:
             return bool(self.current_item and self.current_item.id == item_id)
 
+    def capture_current_item_role(self, item_id: str) -> tuple[bool, int]:
+        with self.lock:
+            return (
+                bool(self.current_item and self.current_item.id == item_id),
+                self.current_item_generation,
+            )
+
+    def begin_current_item_publication(
+        self,
+        item_id: str,
+        *,
+        expected_is_current: bool,
+        expected_generation: int,
+    ) -> int | None:
+        """Reserve the current-item role while cache publication performs I/O.
+
+        Current-item transitions wait on the condition below, which releases the
+        store lock while publication performs filesystem work.
+        """
+
+        with self.current_item_condition:
+            while self.current_item_publication_token:
+                self.current_item_condition.wait()
+            is_current = bool(self.current_item and self.current_item.id == item_id)
+            if (
+                is_current != expected_is_current
+                or self.current_item_generation != expected_generation
+            ):
+                return None
+            self.current_item_publication_serial += 1
+            self.current_item_publication_token = self.current_item_publication_serial
+            return self.current_item_publication_token
+
+    def finish_current_item_publication(self, token: int) -> None:
+        with self.current_item_condition:
+            if token and self.current_item_publication_token == token:
+                self.current_item_publication_token = 0
+                self.current_item_condition.notify_all()
+
+    def _wait_for_current_item_publication_unlocked(self) -> None:
+        while self.current_item_publication_token:
+            self.current_item_condition.wait()
+
     def add_item(
         self,
         item: PlaylistItem,
@@ -517,9 +564,11 @@ class PlaylistStore:
             item.requester_name = normalized_requester
             item.queue_slot_type = "priority" if position == "next" else "cycle"
             if self.current_item is None:
+                self._wait_for_current_item_publication_unlocked()
                 self._clear_previous_session_unlocked()
                 self.current_item = item
                 self.current_item_started = False
+                self.current_item_generation += 1
                 if reset_av_delay:
                     assert playback_selector is not None
                     self._apply_av_delay_action_unlocked(
@@ -552,9 +601,11 @@ class PlaylistStore:
     def remove_item(self, item_id: str) -> bool:
         with self.lock:
             if self.current_item and self.current_item.id == item_id:
+                self._wait_for_current_item_publication_unlocked()
                 self._archive_current_item_unlocked()
                 self.current_item = None
                 self.current_item_started = False
+                self.current_item_generation += 1
                 self._rebuild_cycle_items_unlocked()
                 self._touch(persist_backup=True)
                 return True
@@ -610,9 +661,11 @@ class PlaylistStore:
         with self.lock:
             if not self.current_item and not self.playlist:
                 return False
+            self._wait_for_current_item_publication_unlocked()
             self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(0) if self.playlist else None
             self.current_item_started = False
+            self.current_item_generation += 1
             self.key_shift = 0
             if self.current_item and reset_av_delay:
                 assert playback_selector is not None
@@ -697,9 +750,14 @@ class PlaylistStore:
             index = self._find_index(item_id)
             if index is None:
                 return False
+            self._wait_for_current_item_publication_unlocked()
+            index = self._find_index(item_id)
+            if index is None:
+                return False
             self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(index)
             self.current_item_started = False
+            self.current_item_generation += 1
             if reset_av_delay:
                 assert playback_selector is not None
                 self._apply_av_delay_action_unlocked(
@@ -976,11 +1034,13 @@ class PlaylistStore:
             playlist_payload = payload.get("playlist") or []
             if not current_item_payload and not playlist_payload:
                 return False
+            self._wait_for_current_item_publication_unlocked()
             self.current_item = (
                 PlaylistItem.from_dict(self._sanitize_backup_payload(current_item_payload))
                 if current_item_payload
                 else None
             )
+            self.current_item_generation += 1
             self.playlist = [
                 PlaylistItem.from_dict(self._sanitize_backup_payload(item))
                 for item in playlist_payload
@@ -1001,8 +1061,10 @@ class PlaylistStore:
 
     def discard_backup(self) -> bool:
         with self.lock:
+            self._wait_for_current_item_publication_unlocked()
             existed = self.backup_file.exists() or self.current_item is not None or bool(self.playlist)
             self.current_item = None
+            self.current_item_generation += 1
             self.playlist = []
             if existed:
                 self._start_new_session_played_unlocked()
@@ -1013,6 +1075,7 @@ class PlaylistStore:
 
     def reset_runtime_data(self) -> None:
         with self.lock:
+            self._wait_for_current_item_publication_unlocked()
             self.playback_mode = "local"
             self.playback_selector_mode = DEFAULT_PLAYBACK_SELECTOR_MODE
             self.playback_selector_warning = ""
@@ -1025,6 +1088,7 @@ class PlaylistStore:
             self.key_shift = 0
             self.current_item = None
             self.current_item_started = False
+            self.current_item_generation += 1
             self.playlist = []
             self.history = []
             self.session_history = []

@@ -2945,6 +2945,7 @@ function renderSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "search-result-item";
+    searchResultItemByElement.set(row, item);
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -2985,6 +2986,7 @@ function renderLarkSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "search-result-item";
+    searchResultItemByElement.set(row, item);
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -3018,6 +3020,7 @@ function appendLarkSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "search-result-item";
+    searchResultItemByElement.set(row, item);
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -3204,7 +3207,8 @@ function appendSearchResultItems(container, items) {
 }
 
 const canonicalBilikaraSearch = {
-  query: "",
+  draftQuery: "",
+  resultQuery: "",
   items: [],
   message: "",
   isError: false,
@@ -3214,11 +3218,12 @@ const canonicalBilikaraSearch = {
 };
 
 function syncBilikaraSearchViews() {
-  const query = canonicalBilikaraSearch.query;
+  const query = canonicalBilikaraSearch.draftQuery;
   const items = canonicalBilikaraSearch.items;
   const message = canonicalBilikaraSearch.message;
   const isError = canonicalBilikaraSearch.isError;
   const hasSearched = canonicalBilikaraSearch.hasSearched;
+  const loading = canonicalBilikaraSearch.loading;
 
   if (elements.larkSearchQuery && elements.larkSearchQuery.value !== query) {
     elements.larkSearchQuery.value = query;
@@ -3233,16 +3238,15 @@ function syncBilikaraSearchViews() {
   const emptyText = hasSearched && !items.length ? (isError ? "" : t("search.larkNoResults")) : "";
 
   if (elements.larkSearchResults) {
-    if (!hasSearched && !items.length && !message) {
-      elements.larkSearchResults.innerHTML = "";
-      elements.larkSearchResults.classList.add("hidden");
+    if ((!hasSearched && !items.length) || (loading && !items.length)) {
+      hideLarkSearchResults();
     } else {
-      renderSearchResultItems(elements.larkSearchResults, items, emptyText);
+      renderLarkSearchResults(items);
     }
   }
 
   if (elements.searchModalLarkResults) {
-    if (!hasSearched && !items.length && !message) {
+    if ((!hasSearched && !items.length) || (loading && !items.length)) {
       elements.searchModalLarkResults.innerHTML = "";
       elements.searchModalLarkResults.classList.add("hidden");
     } else {
@@ -3251,29 +3255,52 @@ function syncBilikaraSearchViews() {
   }
 }
 
+function setCanonicalBilikaraSearchBusy(busy) {
+  canonicalBilikaraSearch.loading = Boolean(busy);
+  if (elements.larkSearchButton) elements.larkSearchButton.disabled = Boolean(busy);
+  if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = Boolean(busy);
+}
+
+function updateCanonicalBilikaraSearchDraft(value) {
+  const draftQuery = String(value || "");
+  canonicalBilikaraSearch.seq += 1;
+  canonicalBilikaraSearch.draftQuery = draftQuery;
+  setCanonicalBilikaraSearchBusy(false);
+  if (draftQuery.trim() !== canonicalBilikaraSearch.resultQuery) {
+    canonicalBilikaraSearch.resultQuery = "";
+    canonicalBilikaraSearch.items = [];
+    canonicalBilikaraSearch.message = "";
+    canonicalBilikaraSearch.isError = false;
+    canonicalBilikaraSearch.hasSearched = false;
+  }
+  syncBilikaraSearchViews();
+}
+
 async function executeCanonicalBilikaraSearch(queryStr) {
   const query = String(queryStr || "").trim();
   if (!query) {
-    canonicalBilikaraSearch.query = "";
+    canonicalBilikaraSearch.seq += 1;
+    canonicalBilikaraSearch.draftQuery = "";
+    canonicalBilikaraSearch.resultQuery = "";
     canonicalBilikaraSearch.items = [];
     canonicalBilikaraSearch.message = t("search.keywordRequired");
     canonicalBilikaraSearch.isError = true;
     canonicalBilikaraSearch.hasSearched = false;
+    setCanonicalBilikaraSearchBusy(false);
     syncBilikaraSearchViews();
     return;
   }
 
   const searchSeq = canonicalBilikaraSearch.seq + 1;
   canonicalBilikaraSearch.seq = searchSeq;
-  canonicalBilikaraSearch.query = query;
-  canonicalBilikaraSearch.loading = true;
+  canonicalBilikaraSearch.draftQuery = query;
+  canonicalBilikaraSearch.resultQuery = query;
+  canonicalBilikaraSearch.items = [];
+  setCanonicalBilikaraSearchBusy(true);
   canonicalBilikaraSearch.message = t("search.larkSearching");
   canonicalBilikaraSearch.isError = false;
   canonicalBilikaraSearch.hasSearched = true;
   syncBilikaraSearchViews();
-
-  if (elements.larkSearchButton) elements.larkSearchButton.disabled = true;
-  if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = true;
 
   try {
     const poolItems = await searchLarkPool(query);
@@ -3304,9 +3331,7 @@ async function executeCanonicalBilikaraSearch(queryStr) {
     canonicalBilikaraSearch.isError = true;
   } finally {
     if (canonicalBilikaraSearch.seq === searchSeq) {
-      canonicalBilikaraSearch.loading = false;
-      if (elements.larkSearchButton) elements.larkSearchButton.disabled = false;
-      if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = false;
+      setCanonicalBilikaraSearchBusy(false);
       syncBilikaraSearchViews();
     }
   }
@@ -7244,17 +7269,11 @@ elements.larkSearchToggle?.addEventListener("click", () => {
 });
 
 elements.larkSearchQuery?.addEventListener("input", () => {
-  canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");
-  if (elements.searchModalLarkQuery && elements.searchModalLarkQuery.value !== canonicalBilikaraSearch.query) {
-    elements.searchModalLarkQuery.value = canonicalBilikaraSearch.query;
-  }
+  updateCanonicalBilikaraSearchDraft(elements.larkSearchQuery?.value);
 });
 
 elements.searchModalLarkQuery?.addEventListener("input", () => {
-  canonicalBilikaraSearch.query = String(elements.searchModalLarkQuery?.value || "");
-  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== canonicalBilikaraSearch.query) {
-    elements.larkSearchQuery.value = canonicalBilikaraSearch.query;
-  }
+  updateCanonicalBilikaraSearchDraft(elements.searchModalLarkQuery?.value);
 });
 
 elements.larkSearchForm?.addEventListener("submit", async (event) => {

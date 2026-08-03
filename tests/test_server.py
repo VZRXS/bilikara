@@ -1110,7 +1110,7 @@ class MediaRangeEvidenceTest(unittest.TestCase):
         handler._serve_media = lambda route, *, head_only=False: calls.append((route, head_only))
         handler._serve_static = lambda route, *, head_only=False: self.fail("media HEAD routed to static")
         handler.do_HEAD()
-        self.assertEqual(calls, [("/media/song/video.mp4", True)])
+        self.assertEqual(calls, [("/media/song/video.mp4?cache=1", True)])
 
     def test_full_response_without_range(self):
         status, headers, body = self._serve(b"0123456789")

@@ -22,6 +22,8 @@ const fullscreenRequestToastMs = 4200;
 const fullscreenRequestToastFadeMs = 500;
 const localAdvanceOverlayFadeMs = 500;
 const localAdvanceOverlayMaxRows = 5;
+const mediaReleaseAckMaxEntries = 128;
+const mediaReleaseAckMaxAttempts = 5;
 const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
@@ -110,7 +112,8 @@ const state = {
   volumeControlsRenderSignature: "",
   queueCurrentRenderSignature: "",
   audioVariantBarRenderSignature: "",
-  handledMediaReleaseRequests: new Set(),
+  mediaReleaseAckEntries: new Map(),
+  activeMediaReleaseRequest: null,
   playerSignature: "",
   playerContext: null,
   localPlayerSyncTimer: null,
@@ -4707,48 +4710,32 @@ function disconnectClient() {
   }).catch(() => {});
 }
 
-function handleMediaReleaseRequest(req) {
-  if (!req || !req.request_id || !req.item_id || !req.media_revision) {
+function itemMediaRevision(item) {
+  return String(item?.media_revision || item?.mediaRevision || "");
+}
+
+function mediaReleaseRequestIsActive(req) {
+  const active = state.data?.media_release_request;
+  return Boolean(active && req && active.request_id === req.request_id);
+}
+
+function pruneMediaReleaseAckEntries() {
+  while (state.mediaReleaseAckEntries.size > mediaReleaseAckMaxEntries) {
+    const oldestKey = state.mediaReleaseAckEntries.keys().next().value;
+    const entry = state.mediaReleaseAckEntries.get(oldestKey);
+    if (entry?.timer) {
+      window.clearTimeout(entry.timer);
+    }
+    state.mediaReleaseAckEntries.delete(oldestKey);
+  }
+}
+
+function sendMediaReleaseAck(req, entry) {
+  if (!mediaReleaseRequestIsActive(req) || entry.status === "acknowledged" || entry.status === "in-flight") {
     return;
   }
-  if (state.handledMediaReleaseRequests.has(req.request_id)) {
-    return;
-  }
-  state.handledMediaReleaseRequests.add(req.request_id);
-
-  const currentItem = state.data?.current_item;
-  if (currentItem && String(currentItem.id || "") === String(req.item_id)) {
-    const currentVideo = elements.playerFrame?.querySelector('video[data-player-role="video"]')
-      || elements.playerFrame?.querySelector("video");
-    if (currentVideo) {
-      captureLocalPlayerPreferences();
-      state.pendingPlaybackRestore = {
-        itemId: currentItem.id,
-        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
-        currentTime: Number(currentVideo.currentTime || 0),
-        wasPlaying: state.localShouldBePlaying || !currentVideo.paused,
-      };
-    }
-    stopSplitPlayerSync();
-    if (elements.playerFrame) {
-      const v = elements.playerFrame.querySelector("video");
-      const a = elements.playerFrame.querySelector("audio");
-      if (v) {
-        v.pause();
-        v.removeAttribute("src");
-        v.load();
-      }
-      if (a) {
-        a.pause();
-        a.removeAttribute("src");
-        a.load();
-      }
-      elements.playerFrame.innerHTML = "";
-    }
-    state.playerSignature = "";
-    state.playerContext = null;
-  }
-
+  entry.status = "in-flight";
+  entry.attempts += 1;
   fetch("/api/player/media-release/ack", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -4757,7 +4744,121 @@ function handleMediaReleaseRequest(req) {
       item_id: req.item_id,
       media_revision: req.media_revision,
     }),
-  }).catch(() => {});
+  }).then((response) => {
+    if (!response.ok) {
+      throw new Error(`media release ACK failed: ${response.status}`);
+    }
+    entry.status = "acknowledged";
+    entry.timer = null;
+    pruneMediaReleaseAckEntries();
+  }).catch(() => {
+    if (!mediaReleaseRequestIsActive(req) || entry.attempts >= mediaReleaseAckMaxAttempts) {
+      entry.status = "failed";
+      entry.timer = null;
+      return;
+    }
+    entry.status = "retry-wait";
+    const retryDelay = Math.min(1000, 200 * (2 ** Math.max(0, entry.attempts - 1)));
+    entry.timer = window.setTimeout(() => {
+      entry.timer = null;
+      sendMediaReleaseAck(req, entry);
+    }, retryDelay);
+  });
+}
+
+function clearInactiveMediaReleaseRequest() {
+  const active = state.activeMediaReleaseRequest;
+  if (!active) {
+    return;
+  }
+  const entry = state.mediaReleaseAckEntries.get(active.requestId);
+  if (entry?.timer) {
+    window.clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (entry && entry.status !== "acknowledged") {
+    state.mediaReleaseAckEntries.delete(active.requestId);
+  }
+  state.activeMediaReleaseRequest = null;
+  state.playerSignature = "";
+  state.playerContext = null;
+}
+
+function handleMediaReleaseRequest(req) {
+  if (!req || !req.request_id || !req.item_id || !req.media_revision) {
+    clearInactiveMediaReleaseRequest();
+    return;
+  }
+
+  if (
+    state.activeMediaReleaseRequest
+    && state.activeMediaReleaseRequest.requestId !== req.request_id
+  ) {
+    clearInactiveMediaReleaseRequest();
+  }
+
+  if (state.activeMediaReleaseRequest?.requestId === req.request_id) {
+    const existingEntry = state.mediaReleaseAckEntries.get(req.request_id);
+    if (existingEntry) {
+      sendMediaReleaseAck(req, existingEntry);
+    }
+    return;
+  }
+
+  const currentItem = state.data?.current_item;
+  const video = elements.playerFrame?.querySelector('video[data-player-role="video"]')
+    || elements.playerFrame?.querySelector("video");
+  const audio = elements.playerFrame?.querySelector('audio[data-player-role="audio"]')
+    || elements.playerFrame?.querySelector("audio");
+  const mountedRevision = String(video?.dataset?.mediaRevision || audio?.dataset?.mediaRevision || "");
+  const mountedItemId = String(video?.dataset?.playerItemId || audio?.dataset?.playerItemId || "");
+  const matchesMountedRevision = Boolean(
+    currentItem
+    && String(currentItem.id || "") === String(req.item_id)
+    && itemMediaRevision(currentItem) === String(req.media_revision)
+    && (!mountedItemId || mountedItemId === String(req.item_id))
+    && (!mountedRevision || mountedRevision === String(req.media_revision))
+  );
+
+  let teardownPerformed = false;
+  let mountId = 0;
+  if (matchesMountedRevision && (video || audio)) {
+    captureLocalPlayerPreferences();
+    mountId = Number(video?.dataset?.playerMountId || audio?.dataset?.playerMountId || 0);
+    state.pendingPlaybackRestore = {
+      itemId: currentItem.id,
+      variantId: selectedAudioVariantForItem(currentItem)?.id || "",
+      currentTime: Number(video?.currentTime || 0),
+      wasPlaying: Boolean(state.localShouldBePlaying || (video && !video.paused)),
+    };
+    stopSplitPlayerSync();
+    for (const media of [video, audio]) {
+      if (!media) continue;
+      media.pause();
+      media.removeAttribute("src");
+      media.load();
+    }
+    elements.playerFrame.innerHTML = "";
+    state.playerSignature = "";
+    state.playerContext = null;
+    teardownPerformed = true;
+  }
+
+  state.activeMediaReleaseRequest = {
+    requestId: req.request_id,
+    itemId: String(req.item_id),
+    mediaRevision: String(req.media_revision),
+    mountId,
+    teardownPerformed,
+  };
+
+  let entry = state.mediaReleaseAckEntries.get(req.request_id);
+  if (!entry) {
+    entry = { status: "pending", attempts: 0, timer: null };
+    state.mediaReleaseAckEntries.set(req.request_id, entry);
+    pruneMediaReleaseAckEntries();
+  }
+  sendMediaReleaseAck(req, entry);
 }
 
 function render() {
@@ -6960,10 +7061,16 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
       || activeCtx.audioVariantId !== currentCtx.audioVariantId
     );
     if (stale) {
-      cancelSplitPlayerSyncCorrection("stale_context");
+      // Don't cancel - that would cancel the NEW player's correction
       state.localSplitSyncDecisionReason = "stale_context_ignored";
       state.localSplitSyncSuppressionReason = "stale_context";
       return reportAction("defer-video-recovery", true);
+    }
+    if (activeCtx.correctionStartedAt) {
+      const correctionAge = Date.now() - activeCtx.correctionStartedAt;
+      if (correctionAge > 3000) {
+        cancelSplitPlayerSyncCorrection("correction_timeout");
+      }
     }
   }
 
@@ -7096,16 +7203,21 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
       return reportAction("defer-video-recovery");
     }
     if (currState === "stabilizing") {
-      if (absoluteDrift <= localPlayerDriftToleranceSeconds) {
-        state.localSplitSyncCorrectionState = "completed";
+      const ctx = state.localSplitSyncCorrectionContext;
+      const frozenTarget = ctx ? ctx.targetTime : targetVideoTime;
+      const seekDelta = Math.abs(videoTime - frozenTarget);
+
+      // Complete if video is reasonably close to where we asked it to seek
+      if (seekDelta <= localPlayerModerateSyncThresholdSeconds) {
+        state.localSplitSyncCorrectionState = "idle";
         state.localSplitSyncCorrectionContext = null;
         state.localSplitSyncCorrectionTarget = null;
-        state.localSplitSyncDecisionReason = "stabilized_within_tolerance";
+        state.localSplitSyncDecisionReason = "correction_completed";
         state.localSplitSyncSuppressionReason = "";
-        state.localSplitSyncCorrectionState = "idle";
         playMediaBestEffort(video, { internalVideo: true });
         return reportAction("resume");
       }
+      // Still waiting - but with a bounded timeout
       state.localSplitSyncDecisionReason = "stabilizing_absorbing_drift";
       state.localSplitSyncSuppressionReason = "in_flight_correction";
       playMediaBestEffort(video, { internalVideo: true });
@@ -7143,6 +7255,7 @@ function syncSplitPlayer(video, audio, offsetSeconds, forceSeek = false) {
       targetTime: targetVideoTime,
       restoreIntent: state.localShouldBePlaying,
       audioPausedForRecovery: false,
+      correctionStartedAt: now,
     };
     video.dataset.bilikaraCorrectionToken = String(newToken);
 
@@ -7593,8 +7706,25 @@ function renderAvSyncControls(playbackMode, playerSettings) {
   }
 }
 
+function handleSplitAudioCanPlay(video, audio) {
+  state.localAudioPlaybackBlocked = false;
+  if (!settleSplitPlayerSeek(video, audio)) {
+    syncSplitPlayer(video, audio, currentAvOffsetSeconds(), false);
+  }
+}
+
 function renderPlayer(currentItem, playbackMode) {
   handleRatingCurrentItemChange(currentItem);
+  const releaseHold = state.activeMediaReleaseRequest;
+  if (
+    releaseHold?.teardownPerformed
+    && state.data?.media_release_request?.request_id === releaseHold.requestId
+    && String(currentItem?.id || "") === releaseHold.itemId
+    && itemMediaRevision(currentItem) === releaseHold.mediaRevision
+  ) {
+    state.playerSignature = `media-release|${releaseHold.requestId}|${releaseHold.mountId}`;
+    return;
+  }
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
@@ -7739,7 +7869,7 @@ function renderPlayer(currentItem, playbackMode) {
   audio.dataset.playerMountId = String(state.localPlayerMountId);
   video.dataset.playerItemId = currentItem.id;
   audio.dataset.playerItemId = currentItem.id;
-  video.dataset.mediaRevision = String(currentItem.mediaRevision || currentItem.updatedAt || currentItem.id);
+  video.dataset.mediaRevision = String(itemMediaRevision(currentItem) || currentItem.id);
   audio.dataset.mediaRevision = video.dataset.mediaRevision;
   video.dataset.audioVariantId = String(selectedAudioVariantForItem(currentItem)?.id || "");
   audio.dataset.audioVariantId = video.dataset.audioVariantId;
@@ -7913,10 +8043,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(audio, "canplay", () => {
-    state.localAudioPlaybackBlocked = false;
-    if (!settleSplitPlayerSeek(video, audio)) {
-      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
-    }
+    handleSplitAudioCanPlay(video, audio);
   });
 
   addMountedPlayerListener(video, "playing", () => {

@@ -59,6 +59,7 @@ from .bilibili import (
     fetch_dash_playurl,
 )
 from . import rust_backend
+from .models import PlaylistItem
 from .playback_selector import PlaybackCapabilityError, PlaybackSelector
 from .store import PlaylistStore
 
@@ -1234,9 +1235,172 @@ class CacheManager:
                 continue
             self._remove_obsolete_dir(path)
 
+    @staticmethod
+    def _publication_store_state(item: Any) -> dict[str, object]:
+        return {
+            "cache_status": getattr(item, "cache_status", "pending"),
+            "cache_progress": getattr(item, "cache_progress", 0.0),
+            "cache_message": getattr(item, "cache_message", ""),
+            "video_relative_path": getattr(item, "video_relative_path", ""),
+            "video_media_url": getattr(item, "video_media_url", ""),
+            "audio_variants": list(getattr(item, "audio_variants", []) or []),
+            "selected_audio_variant_id": getattr(item, "selected_audio_variant_id", ""),
+            "media_revision": getattr(item, "media_revision", ""),
+        }
+
+    def _write_publication_transaction(self, tx_file: Path, payload: dict[str, object]) -> None:
+        temp_file = tx_file.with_suffix(".tmp")
+        try:
+            with open(temp_file, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_file, tx_file)
+        except Exception:
+            self._safe_unlink(temp_file)
+            raise
+
+    def _update_publication_transaction(
+        self,
+        tx_file: Path,
+        payload: dict[str, object],
+        phase: str,
+    ) -> None:
+        payload["phase"] = phase
+        self._write_publication_transaction(tx_file, payload)
+
+    def _publication_paths_from_state(self, state: dict[str, object]) -> set[Path]:
+        paths: set[Path] = set()
+        video_relative_path = str(state.get("video_relative_path") or "").strip()
+        if video_relative_path:
+            video_path = self._cache_path_from_relative_path(video_relative_path)
+            if video_path:
+                paths.add(video_path)
+        for variant in list(state.get("audio_variants") or []):
+            if not isinstance(variant, dict):
+                continue
+            relative_path = str(variant.get("audio_relative_path") or "").strip()
+            audio_path = (
+                self._cache_path_from_relative_path(relative_path)
+                if relative_path
+                else self._cache_path_from_media_url(variant.get("audio_url"))
+            )
+            if audio_path:
+                paths.add(audio_path)
+        return paths
+
+    def _cleanup_replaced_publication_files(
+        self,
+        item_id: str,
+        old_state: dict[str, object],
+        new_state: dict[str, object],
+    ) -> None:
+        keep_paths = {path.resolve() for path in self._publication_paths_from_state(new_state)}
+        item_root = (CACHE_DIR / item_id).resolve()
+        for path in self._publication_paths_from_state(old_state):
+            try:
+                resolved = path.resolve()
+                if resolved in keep_paths or item_root not in resolved.parents:
+                    continue
+                resolved.unlink(missing_ok=True)
+                parent = resolved.parent
+                while parent != item_root and item_root in parent.parents:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+            except OSError:
+                # Old files are unreferenced after publication. Keeping a locked
+                # copy is safe and lets normal item cleanup retry later.
+                continue
+
+    def _force_restore_publication_store_state(
+        self,
+        item_id: str,
+        old_state: dict[str, object],
+    ) -> bool:
+        """Restore the serviceable in-memory item even if persistence is failing.
+
+        The transaction marker remains in that case, so startup recovery can
+        repair the persisted store before stale staging cleanup runs.
+        """
+
+        try:
+            with self.store.lock:
+                item = self.store._find_item_unlocked(item_id)  # noqa: SLF001
+                if not item:
+                    return False
+                for key, value in old_state.items():
+                    if key in PlaylistItem.__dataclass_fields__:
+                        setattr(item, key, value)
+                return all(getattr(item, key, None) == value for key, value in old_state.items())
+        except Exception as exc:  # noqa: BLE001
+            _debug_print(f"[bilikara-cache] emergency in-memory rollback failed: {exc}")
+            return False
+
+    def _recover_publication_transaction(self, tx_file: Path) -> bool:
+        try:
+            with open(tx_file, encoding="utf-8") as handle:
+                tx = json.load(handle)
+            if not isinstance(tx, dict):
+                return False
+            item_id = str(tx.get("item_id") or "").strip()
+            if not item_id:
+                return False
+
+            # Compatibility with the first transaction-marker implementation.
+            if "new_store_state" not in tx:
+                obsolete_name = str(tx.get("obsolete_dir") or "").strip()
+                if not obsolete_name:
+                    return False
+                active_dir = CACHE_DIR / item_id
+                obsolete_dir = CACHE_DIR / ".obsolete" / obsolete_name
+                if not active_dir.exists() and obsolete_dir.exists():
+                    obsolete_dir.rename(active_dir)
+                if active_dir.exists():
+                    tx_file.unlink(missing_ok=True)
+                    return True
+                return False
+
+            old_state = tx.get("old_store_state")
+            new_state = tx.get("new_store_state")
+            if not isinstance(old_state, dict) or not isinstance(new_state, dict):
+                return False
+            final_relative = str(tx.get("final_dir") or "").strip()
+            staging_relative = str(tx.get("staging_dir") or "").strip()
+            final_dir = self._cache_path_from_relative_path(final_relative) if final_relative else None
+            staging_dir = self._cache_path_from_relative_path(staging_relative) if staging_relative else None
+            current_item = self.store.get_item(item_id)
+            current_revision = str(getattr(current_item, "media_revision", "") or "")
+            new_revision = str(new_state.get("media_revision") or "")
+
+            if current_item and current_revision == new_revision and final_dir and final_dir.exists():
+                self._cleanup_replaced_publication_files(item_id, old_state, new_state)
+            else:
+                if current_item and not self.store.update_item(
+                    item_id,
+                    **old_state,
+                    persist_backup=False,
+                ):
+                    return False
+                if final_dir and final_dir.exists():
+                    self._safe_rmtree(final_dir)
+                    if final_dir.exists():
+                        return False
+            if staging_dir and staging_dir.exists():
+                self._safe_rmtree(staging_dir)
+            tx_file.unlink(missing_ok=True)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _debug_print(f"[bilikara-cache] warning: publication recovery failed for {tx_file}: {exc}")
+            return False
+
     def _cleanup_stale_staging_and_obsolete(self) -> None:
         if not CACHE_DIR.exists():
             return
+        for tx_file in CACHE_DIR.glob(".tx_*.json"):
+            self._recover_publication_transaction(tx_file)
         staging_root = CACHE_DIR / ".staging"
         if staging_root.exists():
             try:
@@ -1253,8 +1417,20 @@ class CacheManager:
                 pass
         obsolete_root = CACHE_DIR / ".obsolete"
         if obsolete_root.exists():
+            protected_obsolete_names: set[str] = set()
+            for tx_file in CACHE_DIR.glob(".tx_*.json"):
+                try:
+                    with open(tx_file, encoding="utf-8") as handle:
+                        tx = json.load(handle)
+                    obsolete_name = str(tx.get("obsolete_dir") or "").strip()
+                    if obsolete_name:
+                        protected_obsolete_names.add(obsolete_name)
+                except Exception:
+                    continue
             try:
                 for obs_dir in obsolete_root.iterdir():
+                    if obs_dir.name in protected_obsolete_names:
+                        continue
                     self._remove_obsolete_dir(obs_dir)
             except OSError:
                 pass
@@ -1408,23 +1584,26 @@ class CacheManager:
             if preempted_item_id:
                 self.cache_interrupted_messages[preempted_item_id] = "等待当前歌曲重新下载"
 
-        self.store.update_item(
-            item_id,
-            cache_status="pending",
-            cache_progress=0.0,
-            cache_message="准备重新下载",
-            video_relative_path="",
-            video_media_url="",
-            audio_variants=[],
-            persist_backup=False,
-        )
+        is_already_ready = item.cache_status == "ready"
+        if not is_already_ready:
+            self.store.update_item(
+                item_id,
+                cache_status="pending",
+                cache_progress=0.0,
+                cache_message="准备重新下载",
+                video_relative_path="",
+                video_media_url="",
+                audio_variants=[],
+                persist_backup=False,
+            )
         self._record_item_activity(item_id)
 
         if in_flight:
             self._terminate_processes(active_processes)
             return
 
-        self._remove_cache_dir(item_id)
+        if not is_already_ready:
+            self._remove_cache_dir(item_id)
         if start_concurrent_current_retry:
             self._append_log_line(
                 log_path,
@@ -1807,12 +1986,14 @@ class CacheManager:
         playback_selector = self.store.capture_playback_selector()
         if self.stop_event.is_set() or not self._should_cache(item_id):
             return False
-        if self._take_retry_request(item_id):
-            self._remove_cache_dir(item_id)
         item = self.store.get_item(item_id)
         if not item:
+            self._take_retry_request(item_id)
             self._remove_cache_dir(item_id)
             return False
+        if self._take_retry_request(item_id):
+            if item.cache_status != "ready":
+                self._remove_cache_dir(item_id)
         # Current cache flow keeps video and audio tracks separate so the host
         # can switch audio variants without remuxing a single output file.
         return self._cache_item_multi(
@@ -2025,126 +2206,233 @@ class CacheManager:
             self._record_item_activity(item_id)
             return False
 
-        old_media_revision = getattr(item, "media_revision", "") or ""
-        is_current = self.store.is_current_item(item_id)
-        release_req_id = uuid.uuid4().hex
+        old_store_state = self._publication_store_state(item)
+        old_media_revision = str(old_store_state.get("media_revision") or "")
+        replacement_build = bool(
+            old_store_state.get("cache_status") == "ready"
+            and old_media_revision
+            and old_store_state.get("video_media_url")
+        )
+        is_current, current_item_generation = self.store.capture_current_item_role(item_id)
+        release_req_id = uuid.uuid4().hex if replacement_build and is_current else ""
 
-        if is_current:
+        new_media_revision = uuid.uuid4().hex[:12]
+        revision_relative_root = f"{item_id}/revisions/{new_media_revision}"
+        final_revision_dir = CACHE_DIR / revision_relative_root
+        video_file_in_staging = Path(cache_result["video_file"])
+        try:
+            rel_video_in_stage = video_file_in_staging.relative_to(staging_dir)
+        except ValueError:
+            rel_video_in_stage = Path(video_file_in_staging.name)
+        rel_video_path = f"{revision_relative_root}/{rel_video_in_stage.as_posix()}"
+        video_media_url = f"/media/{urllib.parse.quote(rel_video_path)}?rev={new_media_revision}"
+
+        audio_variants: list[object] = []
+        for variant in cache_result.get("audio_variants", []):
+            if not isinstance(variant, dict):
+                audio_variants.append(variant)
+                continue
+            variant_copy = dict(variant)
+            current_url = str(variant_copy.get("audio_url") or "")
+            audio_path = self._cache_path_from_media_url(current_url) if current_url else None
+            if audio_path is None:
+                relative_audio = str(variant_copy.get("audio_relative_path") or "").strip()
+                audio_path = self._cache_path_from_relative_path(relative_audio) if relative_audio else None
+            if audio_path is not None:
+                try:
+                    rel_audio_in_stage = audio_path.relative_to(staging_dir)
+                except ValueError:
+                    rel_audio_in_stage = Path(audio_path.name)
+                rel_audio_path = f"{revision_relative_root}/{rel_audio_in_stage.as_posix()}"
+                variant_copy["audio_relative_path"] = rel_audio_path
+                variant_copy["audio_url"] = (
+                    f"/media/{urllib.parse.quote(rel_audio_path)}?rev={new_media_revision}"
+                )
+            audio_variants.append(variant_copy)
+
+        new_store_state: dict[str, object] = {
+            "cache_status": "ready",
+            "cache_progress": 100.0,
+            "cache_message": self._ready_message(item),
+            "video_relative_path": rel_video_path,
+            "video_media_url": video_media_url,
+            "audio_variants": audio_variants,
+            "selected_audio_variant_id": cache_result.get("selected_audio_variant_id", ""),
+            "media_revision": new_media_revision,
+        }
+
+        def notify_change() -> None:
+            callback = getattr(self.store, "on_change", None)
+            if callable(callback):
+                callback()
+
+        if replacement_build and is_current:
             self.store.set_media_release_request(release_req_id, item_id, old_media_revision)
             MEDIA_LEASE_COORDINATOR.start_release_request(release_req_id, item_id, old_media_revision)
-            if callable(getattr(self.store, "on_change", None)):
-                self.store.on_change()
-            released = MEDIA_LEASE_COORDINATOR.wait_for_release(release_req_id, old_media_revision, timeout=5.0)
-            if not released:
+            try:
+                notify_change()
+            except Exception as exc:  # noqa: BLE001
                 self.store.clear_media_release_request(release_req_id)
                 MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
-                if callable(getattr(self.store, "on_change", None)):
-                    self.store.on_change()
+                try:
+                    notify_change()
+                except Exception:
+                    pass
+                self._safe_rmtree(staging_dir)
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] release notification failed: {exc}")
+                return False
+            if not MEDIA_LEASE_COORDINATOR.wait_for_release(
+                release_req_id,
+                old_media_revision,
+                timeout=5.0,
+            ):
+                self.store.clear_media_release_request(release_req_id)
+                MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
+                try:
+                    notify_change()
+                except Exception:
+                    pass
                 self._safe_rmtree(staging_dir)
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] recache release timed out")
                 return False
-        else:
-            if old_media_revision:
-                MEDIA_LEASE_COORDINATOR.mark_draining(old_media_revision)
-                drained = MEDIA_LEASE_COORDINATOR.wait_for_drain(old_media_revision, timeout=2.0)
-                if not drained:
-                    MEDIA_LEASE_COORDINATOR.finish_release_request("", old_media_revision)
-                    self._safe_rmtree(staging_dir)
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] recache reader drain timed out")
-                    return False
-
-        active_dir = CACHE_DIR / item_id
-        obsolete_root = CACHE_DIR / ".obsolete"
-        obsolete_root.mkdir(parents=True, exist_ok=True)
-        obsolete_dir = obsolete_root / f"{item_id}-{old_media_revision or 'old'}-{uuid.uuid4().hex[:6]}"
-
-        if active_dir.exists():
-            try:
-                active_dir.rename(obsolete_dir)
-            except Exception as exc:  # noqa: BLE001
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] active to obsolete rename failed: {exc}")
-                if is_current:
-                    self.store.clear_media_release_request(release_req_id)
-                MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
-                if callable(getattr(self.store, "on_change", None)):
-                    self.store.on_change()
+        elif replacement_build and old_media_revision:
+            MEDIA_LEASE_COORDINATOR.mark_draining(old_media_revision)
+            if not MEDIA_LEASE_COORDINATOR.wait_for_drain(old_media_revision, timeout=2.0):
+                MEDIA_LEASE_COORDINATOR.finish_release_request("", old_media_revision)
                 self._safe_rmtree(staging_dir)
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] recache reader drain timed out")
                 return False
 
-        try:
-            staging_dir.rename(active_dir)
-        except Exception as exc:  # noqa: BLE001
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] staging to active rename failed: {exc}")
-            if obsolete_dir.exists():
-                try:
-                    obsolete_dir.rename(active_dir)
-                except Exception:  # noqa: BLE001
-                    pass
-            if is_current:
+        with self.lock:
+            superseded_before_publication = bool(
+                self.active_builds.get(item_id) != build_id
+                or item_id in self.retry_requested_ids
+            )
+        if (
+            superseded_before_publication
+            or self.stop_event.is_set()
+            or not self._should_cache(item_id)
+        ):
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] publication aborted because build is no longer current",
+            )
+            if release_req_id:
                 self.store.clear_media_release_request(release_req_id)
-            MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
-            if callable(getattr(self.store, "on_change", None)):
-                self.store.on_change()
+            if replacement_build and old_media_revision:
+                MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
+            try:
+                notify_change()
+            except Exception:
+                pass
             self._safe_rmtree(staging_dir)
             return False
 
-        new_media_revision = uuid.uuid4().hex[:12]
-        video_file_in_staging = cache_result["video_file"]
+        publication_token = self.store.begin_current_item_publication(
+            item_id,
+            expected_is_current=is_current,
+            expected_generation=current_item_generation,
+        )
+        if publication_token is None:
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] publication aborted due to role race")
+            if release_req_id:
+                self.store.clear_media_release_request(release_req_id)
+            if replacement_build and old_media_revision:
+                MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
+            try:
+                notify_change()
+            except Exception:
+                pass
+            self._safe_rmtree(staging_dir)
+            return False
+
+        tx_marker = CACHE_DIR / f".tx_{item_id}_{build_id}.json"
+        tx_payload: dict[str, object] = {
+            "item_id": item_id,
+            "build_id": build_id,
+            "phase": "prepared",
+            "staging_dir": str(staging_dir.relative_to(CACHE_DIR).as_posix()),
+            "final_dir": revision_relative_root,
+            "old_store_state": old_store_state,
+            "new_store_state": new_store_state,
+        }
+        store_published = False
+        publication_succeeded = False
         try:
-            rel_in_stage = video_file_in_staging.relative_to(staging_dir)
-            rel_video_path = f"{item_id}/{rel_in_stage.as_posix()}"
-        except ValueError:
-            video_file_name = video_file_in_staging.name
-            rel_video_path = f"{item_id}/{video_file_name}"
+            final_revision_dir.parent.mkdir(parents=True, exist_ok=True)
+            self._write_publication_transaction(tx_marker, tx_payload)
+            staging_dir.rename(final_revision_dir)
+            self._update_publication_transaction(tx_marker, tx_payload, "files_published")
 
-        rel_video_url = f"/media/{urllib.parse.quote(rel_video_path)}"
-        video_media_url = f"{rel_video_url}?rev={new_media_revision}"
+            if not self.store.update_item(item_id, **new_store_state, persist_backup=False):
+                raise RuntimeError("item disappeared before store publication")
+            store_published = True
+            self._update_publication_transaction(tx_marker, tx_payload, "store_published")
 
-        audio_variants = []
-        for var in cache_result.get("audio_variants", []):
-            if isinstance(var, dict):
-                v_copy = dict(var)
-                current_url = str(v_copy.get("audio_url") or "")
-                audio_path_obj = self._cache_path_from_media_url(current_url) if current_url else None
-                if audio_path_obj:
-                    try:
-                        rel_audio_in_stage = audio_path_obj.relative_to(staging_dir)
-                        rel_audio_path = f"{item_id}/{rel_audio_in_stage.as_posix()}"
-                    except ValueError:
-                        file_name = audio_path_obj.name
-                        sub_dir = audio_path_obj.parent.name
-                        if sub_dir and sub_dir != item_id and sub_dir != build_id:
-                            rel_audio_path = f"{item_id}/{sub_dir}/{file_name}"
-                        else:
-                            rel_audio_path = f"{item_id}/{file_name}"
-                    v_copy["audio_relative_path"] = rel_audio_path
-                    audio_url = f"/media/{urllib.parse.quote(rel_audio_path)}?rev={new_media_revision}"
-                    v_copy["audio_url"] = audio_url
-                audio_variants.append(v_copy)
-            else:
-                audio_variants.append(var)
+            if release_req_id:
+                self.store.clear_media_release_request(release_req_id)
+            notify_change()
+            self._update_publication_transaction(tx_marker, tx_payload, "notified")
+            publication_succeeded = True
+            try:
+                tx_marker.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] transaction marker cleanup deferred: {cleanup_exc}",
+                )
+            try:
+                self._cleanup_replaced_publication_files(item_id, old_store_state, new_store_state)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] replaced file cleanup deferred: {cleanup_exc}",
+                )
+        except Exception as publication_exc:  # noqa: BLE001
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] publication failed: {publication_exc}",
+            )
+            store_restored = not store_published
+            rollback_persisted = False
+            try:
+                store_restored = bool(
+                    self.store.update_item(item_id, **old_store_state, persist_backup=False)
+                )
+                rollback_persisted = store_restored
+            except Exception as rollback_exc:  # noqa: BLE001
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] store rollback failed: {rollback_exc}",
+                )
+                store_restored = self._force_restore_publication_store_state(
+                    item_id,
+                    old_store_state,
+                )
+            if store_restored:
+                self._safe_rmtree(final_revision_dir)
+            if release_req_id:
+                self.store.clear_media_release_request(release_req_id)
+            try:
+                notify_change()
+            except Exception:
+                pass
+            if rollback_persisted and store_restored and not final_revision_dir.exists():
+                tx_marker.unlink(missing_ok=True)
+            return False
+        finally:
+            if replacement_build and old_media_revision:
+                MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
+            self.store.finish_current_item_publication(publication_token)
+            if not publication_succeeded and staging_dir.exists():
+                self._safe_rmtree(staging_dir)
 
         self._clear_item_download_progress(item_id)
-        self.store.update_item(
-            item_id,
-            cache_status="ready",
-            cache_progress=100.0,
-            cache_message=self._ready_message(item),
-            video_relative_path=rel_video_path,
-            video_media_url=video_media_url,
-            audio_variants=audio_variants,
-            selected_audio_variant_id=cache_result.get("selected_audio_variant_id", ""),
-            media_revision=new_media_revision,
-            persist_backup=False,
-        )
-        if is_current:
-            self.store.clear_media_release_request(release_req_id)
-        MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
         self._record_item_activity(item_id)
-        if callable(getattr(self.store, "on_change", None)):
-            self.store.on_change()
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready (rev {new_media_revision}): {video_file_in_staging.name}")
-        self._remove_obsolete_dir(obsolete_dir)
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] ready (rev {new_media_revision}): {video_file_in_staging.name}",
+        )
         return True
 
     # LEGACY: old single-pass BBDown cache path. It produced one muxed media
@@ -4041,21 +4329,25 @@ class CacheManager:
                     self.retry_requested_ids.add(item_id)
 
         for item_id in item_ids:
-            self.store.update_item(
-                item_id,
-                cache_status="pending",
-                cache_progress=0.0,
-                cache_message=message,
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                selected_audio_variant_id="",
-                persist_backup=False,
-            )
+            item = self.store.get_item(item_id)
+            is_ready = item and item.cache_status == "ready"
+            if not is_ready:
+                self.store.update_item(
+                    item_id,
+                    cache_status="pending",
+                    cache_progress=0.0,
+                    cache_message=message,
+                    video_relative_path="",
+                    video_media_url="",
+                    audio_variants=[],
+                    selected_audio_variant_id="",
+                    persist_backup=False,
+                )
             self._record_item_activity(item_id)
             if item_id == active_item_id or item_id in pending_ids:
                 continue
-            self._remove_cache_dir(item_id)
+            if not is_ready:
+                self._remove_cache_dir(item_id)
             self.enqueue(item_id)
 
         self._terminate_processes(active_processes)
