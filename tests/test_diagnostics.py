@@ -108,6 +108,87 @@ class DiagnosticArtifactTest(unittest.TestCase):
         self.assertEqual(payload["access_token"], diagnostics.REDACTED)
         self.assertEqual(payload["session_users"], diagnostics.REDACTED)
 
+    def test_export_diagnostics_sanitization_bounds_and_redacts(self):
+        cache_manager = SimpleNamespace(diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}})
+        raw_export_records = ["malformed_non_dict_entry"] + [
+            {
+                "timestamp": "2026-08-05T00:00:00Z",
+                "surface": "host",
+                "runtime": "tauri",
+                "format": "csv",
+                "source": "played",
+                "pageSize": 200,
+                "stage": "complete",
+                "status": "saved",
+                "httpStatus": 200,
+                "contentType": "text/csv",
+                "bytes": 1024,
+                "filenameExtension": "csv",
+                "elapsedMs": 150,
+                "stageTimings": [{"stage": "request_backend", "elapsedMs": 100}],
+                "errorCode": None,
+                "errorMessage": None,
+                "requester": "AliceSecret",
+                "songTitle": "SongSecret",
+                "cookie": "SESSDATA=secret",
+            }
+            for _ in range(75)
+        ]
+
+        with (
+            patch.object(diagnostics, "APP_HOME", Path("/tmp")),
+            patch.object(diagnostics, "LOG_DIR", Path("/tmp/nonexistent_logs")),
+            patch.object(diagnostics, "DIAGNOSTIC_CONFIG_FILES", ()),
+            patch.object(diagnostics, "_local_usernames", return_value={"AliceSecret"}),
+            patch.object(
+                diagnostics.shutil,
+                "disk_usage",
+                return_value=SimpleNamespace(total=1000, used=400, free=600),
+            ),
+        ):
+            artifact = diagnostics.build_diagnostic_artifact(
+                cache_manager=cache_manager,
+                cache_policy={},
+                runtime_state={},
+                export_diagnostics=raw_export_records,
+                connectivity_probe=lambda: {},
+            )
+
+        with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
+            names = set(archive.namelist())
+            self.assertIn("export-diagnostics.json", names)
+            export_bytes = archive.read("export-diagnostics.json")
+            export_data = json.loads(export_bytes.decode("utf-8"))
+
+        self.assertEqual(len(export_data), 64)
+        for record in export_data:
+            self.assertNotIn("requester", record)
+            self.assertNotIn("songTitle", record)
+            self.assertNotIn("cookie", record)
+            self.assertEqual(record["format"], "csv")
+            self.assertEqual(record["status"], "saved")
+
+        self.assertIn("## Recent Export Pipeline Diagnostics", artifact.markdown)
+        self.assertNotIn("AliceSecret", artifact.markdown)
+        self.assertNotIn("SongSecret", artifact.markdown)
+
+    def test_stage_timings_capped_at_16_in_python_sanitizer(self):
+        many_timings = [{"stage": f"stage_{i}", "elapsedMs": i * 10} for i in range(25)]
+        sanitized = diagnostics._sanitize_export_diagnostics(
+            [
+                {
+                    "timestamp": "2026-08-05T00:00:00Z",
+                    "surface": "host",
+                    "runtime": "tauri",
+                    "format": "csv",
+                    "stageTimings": many_timings,
+                }
+            ]
+        )
+        self.assertEqual(len(sanitized[0]["stageTimings"]), 16)
+        self.assertEqual(sanitized[0]["stageTimings"][0]["stage"], "stage_0")
+        self.assertEqual(sanitized[0]["stageTimings"][-1]["stage"], "stage_15")
+
 
 if __name__ == "__main__":
     unittest.main()

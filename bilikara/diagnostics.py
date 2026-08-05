@@ -76,6 +76,7 @@ def build_diagnostic_artifact(
     cache_policy: dict[str, Any],
     runtime_state: dict[str, Any],
     browser_info: dict[str, Any] | None = None,
+    export_diagnostics: list[dict[str, Any]] | None = None,
     local_usernames: list[str] | None = None,
     connectivity_probe: Callable[[], dict[str, Any]] | None = None,
 ) -> DiagnosticArtifact:
@@ -88,6 +89,7 @@ def build_diagnostic_artifact(
     sanitized_policy = redact_value(cache_policy, local_usernames=redaction_names)
     sanitized_runtime = redact_value(runtime_state, local_usernames=redaction_names)
     sanitized_tools = redact_value(tools_and_tasks, local_usernames=redaction_names)
+    sanitized_export = _sanitize_export_diagnostics(export_diagnostics, local_usernames=redaction_names)
     configs = _collect_configs(redaction_names)
     logs = _collect_logs(redaction_names)
 
@@ -98,6 +100,7 @@ def build_diagnostic_artifact(
         "runtime-state.json": _json_bytes(sanitized_runtime),
         "disk.json": _json_bytes(disk),
         "connectivity.json": _json_bytes(connectivity),
+        "export-diagnostics.json": _json_bytes(sanitized_export),
     }
     for name, payload in configs.items():
         files[f"config/{name}"] = _json_bytes(payload)
@@ -112,6 +115,7 @@ def build_diagnostic_artifact(
         runtime=sanitized_runtime,
         disk=disk,
         connectivity=connectivity,
+        export_diagnostics=sanitized_export,
         logs=logs,
     )
     return DiagnosticArtifact(markdown=markdown, files=files)
@@ -259,6 +263,115 @@ def _collect_logs(local_usernames: list[str]) -> dict[str, str]:
     return logs
 
 
+def _sanitize_export_diagnostics(
+    raw_list: Any,
+    local_usernames: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_list, list):
+        return []
+
+    sanitized_items: list[dict[str, Any]] = []
+    for item in raw_list[-64:]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            timestamp = str(item.get("timestamp") or "").strip()[:64]
+            surface = str(item.get("surface") or "").strip()[:32]
+            runtime = str(item.get("runtime") or "").strip()[:32]
+            format_val = str(item.get("format"))[:32] if item.get("format") is not None else None
+            source_val = str(item.get("source"))[:64] if item.get("source") is not None else None
+
+            page_size = item.get("pageSize")
+            if page_size is not None and not isinstance(page_size, bool):
+                try:
+                    page_size = int(page_size)
+                except (ValueError, TypeError):
+                    page_size = None
+            else:
+                page_size = None
+
+            stage = str(item.get("stage"))[:64] if item.get("stage") is not None else None
+            status = str(item.get("status"))[:32] if item.get("status") is not None else None
+
+            http_status = item.get("httpStatus")
+            if http_status is not None and not isinstance(http_status, bool):
+                try:
+                    http_status = int(http_status)
+                except (ValueError, TypeError):
+                    http_status = None
+            else:
+                http_status = None
+
+            content_type = str(item.get("contentType"))[:128] if item.get("contentType") is not None else None
+
+            bytes_val = item.get("bytes")
+            if bytes_val is not None and not isinstance(bytes_val, bool):
+                try:
+                    bytes_val = int(bytes_val)
+                except (ValueError, TypeError):
+                    bytes_val = None
+            else:
+                bytes_val = None
+
+            filename_ext = str(item.get("filenameExtension"))[:32] if item.get("filenameExtension") is not None else None
+
+            elapsed_ms = item.get("elapsedMs")
+            if elapsed_ms is not None and not isinstance(elapsed_ms, bool):
+                try:
+                    elapsed_ms = int(elapsed_ms)
+                except (ValueError, TypeError):
+                    elapsed_ms = None
+            else:
+                elapsed_ms = None
+
+            stage_timings = None
+            raw_timings = item.get("stageTimings")
+            if isinstance(raw_timings, list):
+                valid_timings = []
+                for t in raw_timings[:16]:
+                    if isinstance(t, dict) and "stage" in t:
+                        t_stage = str(t.get("stage"))[:64]
+                        t_ms = t.get("elapsedMs")
+                        if t_ms is not None and not isinstance(t_ms, bool):
+                            try:
+                                t_ms = int(t_ms)
+                            except (ValueError, TypeError):
+                                t_ms = 0
+                        else:
+                            t_ms = 0
+                        valid_timings.append({"stage": t_stage, "elapsedMs": t_ms})
+                stage_timings = valid_timings
+
+            error_code = str(item.get("errorCode"))[:256] if item.get("errorCode") is not None else None
+            error_msg = str(item.get("errorMessage"))[:256] if item.get("errorMessage") is not None else None
+
+            sanitized_entry = {
+                "timestamp": timestamp,
+                "surface": surface,
+                "runtime": runtime,
+                "format": format_val,
+                "source": source_val,
+                "pageSize": page_size,
+                "stage": stage,
+                "status": status,
+                "httpStatus": http_status,
+                "contentType": content_type,
+                "bytes": bytes_val,
+                "filenameExtension": filename_ext,
+                "elapsedMs": elapsed_ms,
+                "stageTimings": stage_timings,
+                "errorCode": error_code,
+                "errorMessage": error_msg,
+            }
+
+            redacted_entry = redact_value(sanitized_entry, local_usernames=local_usernames)
+            sanitized_items.append(redacted_entry)
+        except Exception:
+            continue
+
+    return sanitized_items
+
+
 def _build_markdown(
     *,
     system: dict[str, Any],
@@ -268,6 +381,7 @@ def _build_markdown(
     runtime: dict[str, Any],
     disk: dict[str, Any],
     connectivity: dict[str, Any],
+    export_diagnostics: list[dict[str, Any]] | None = None,
     logs: dict[str, str],
 ) -> str:
     lines = [
@@ -322,8 +436,30 @@ def _build_markdown(
             "## Recent Tasks",
             "",
             _json_code_block({"cache": tasks, "runtime": runtime}),
+            "",
+            "## Recent Export Pipeline Diagnostics",
+            "",
         ]
     )
+    if export_diagnostics:
+        lines.extend(
+            [
+                "| Timestamp | Surface | Runtime | Format | Status | Stage | HTTP | Bytes | Elapsed | Error |",
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            ]
+        )
+        for item in export_diagnostics:
+            err_str = item.get("errorMessage") or item.get("errorCode") or "-"
+            lines.append(
+                f"| {item.get('timestamp') or '-'} | {item.get('surface') or '-'} | "
+                f"{item.get('runtime') or '-'} | {item.get('format') or '-'} | "
+                f"{item.get('status') or '-'} | {item.get('stage') or '-'} | "
+                f"{item.get('httpStatus') or '-'} | {item.get('bytes') or '-'} | "
+                f"{item.get('elapsedMs', '-')} ms | {err_str} |"
+            )
+    else:
+        lines.append("No recent export attempts recorded.")
+
     if logs:
         recent_lines: list[str] = []
         for name, text in logs.items():
