@@ -143,6 +143,26 @@ def _is_container_runtime() -> bool:
     return any(marker in cgroup for marker in CONTAINER_RUNTIME_MARKERS)
 
 
+def _local_host_ip_addresses() -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    try:
+        hostname = socket.gethostname()
+        for res in socket.getaddrinfo(hostname, None):
+            addr = _normalized_ip_address(res[4][0])
+            if addr:
+                addresses.add(addr)
+    except Exception:
+        pass
+    try:
+        for res in socket.getaddrinfo("localhost", None):
+            addr = _normalized_ip_address(res[4][0])
+            if addr:
+                addresses.add(addr)
+    except Exception:
+        pass
+    return addresses
+
+
 def _is_path_within(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -2288,7 +2308,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if peer_address.is_loopback:
             return True
         if local_address.is_unspecified:
-            return False
+            return peer_address in _local_host_ip_addresses()
         return peer_address == local_address
 
     def _has_valid_shutdown_token(self) -> bool:

@@ -671,6 +671,10 @@ fn write_backend_download(
     Ok(())
 }
 
+fn export_dialog_spec(response: &ValidatedBackendDownloadResponse) -> (&str, &str) {
+    (&response.filename, response.required_extension)
+}
+
 #[tauri::command]
 async fn save_backend_download(
     window: tauri::WebviewWindow,
@@ -696,6 +700,11 @@ async fn save_backend_download(
                 stage: "validate_request".to_string(),
                 elapsed_ms: t_stage.elapsed().as_millis() as u64,
             });
+            log_native_export_stage(
+                "validate_request",
+                &request.path,
+                &format!("status=failed error={error}"),
+            );
             return Ok(SaveBackendDownloadResult {
                 status: SaveBackendDownloadStatus::Failed,
                 stage: "validate_request".to_string(),
@@ -802,6 +811,11 @@ async fn save_backend_download(
             stage: "authorize_window".to_string(),
             elapsed_ms: t_stage.elapsed().as_millis() as u64,
         });
+        log_native_export_stage(
+            "authorize_window",
+            &validated.path,
+            "status=failed error=unauthorized",
+        );
         return Ok(SaveBackendDownloadResult {
             status: SaveBackendDownloadStatus::Failed,
             stage: "authorize_window".to_string(),
@@ -824,82 +838,13 @@ async fn save_backend_download(
         elapsed_ms: t_stage.elapsed().as_millis() as u64,
     });
 
-    // Stage 3: choose_destination
-    let t_stage = Instant::now();
-    log_native_export_stage("choose_destination", &validated.path, "");
-    let filename = validated.default_filename;
-    let mut dialog = window
-        .dialog()
-        .file()
-        .set_title("保存导出文件")
-        .set_file_name(filename);
-    if let Some(extension) = Path::new(&filename)
-        .extension()
-        .and_then(|value| value.to_str())
-    {
-        dialog = dialog.add_filter("导出文件", &[extension]);
-    }
-    let Some(file_path) = dialog.blocking_save_file() else {
-        stage_timings.push(StageTiming {
-            stage: "choose_destination".to_string(),
-            elapsed_ms: t_stage.elapsed().as_millis() as u64,
-        });
-        log_native_export_stage("complete", &validated.path, "status=cancelled");
-        return Ok(SaveBackendDownloadResult {
-            status: SaveBackendDownloadStatus::Cancelled,
-            stage: "choose_destination".to_string(),
-            format: req_format,
-            source: req_source,
-            page_size: req_page_size,
-            http_status: None,
-            content_type: None,
-            bytes: None,
-            filename_extension: None,
-            elapsed_ms: start_total.elapsed().as_millis() as u64,
-            stage_timings,
-            error_code: None,
-            error_message: None,
-        });
-    };
-    let target_path = match file_path.into_path() {
-        Ok(path) => {
-            stage_timings.push(StageTiming {
-                stage: "choose_destination".to_string(),
-                elapsed_ms: t_stage.elapsed().as_millis() as u64,
-            });
-            path
-        }
-        Err(error) => {
-            stage_timings.push(StageTiming {
-                stage: "choose_destination".to_string(),
-                elapsed_ms: t_stage.elapsed().as_millis() as u64,
-            });
-            return Ok(SaveBackendDownloadResult {
-                status: SaveBackendDownloadStatus::Failed,
-                stage: "choose_destination".to_string(),
-                format: req_format,
-                source: req_source,
-                page_size: req_page_size,
-                http_status: None,
-                content_type: None,
-                bytes: None,
-                filename_extension: None,
-                elapsed_ms: start_total.elapsed().as_millis() as u64,
-                stage_timings,
-                error_code: Some("CHOOSE_DESTINATION_FAILED".to_string()),
-                error_message: Some(staged_error(
-                    "choose_destination",
-                    format!("无法使用所选保存路径：{error}"),
-                )),
-            });
-        }
-    };
-
     let endpoint = validated.path.clone();
     let worker_endpoint = endpoint.clone();
-    let res = tauri::async_runtime::spawn_blocking(move || {
+
+    // Stage 3 & 4: request_backend and validate_response
+    let fetch_res = tauri::async_runtime::spawn_blocking(move || {
         let mut worker_timings = Vec::new();
-        // Stage 4: request_backend
+        // Stage 3: request_backend
         let t_req = Instant::now();
         log_native_export_stage("request_backend", &worker_endpoint, "");
         let raw_response = match request_backend_download(&base_url, &validated) {
@@ -915,7 +860,7 @@ async fn save_backend_download(
                     stage: "request_backend".to_string(),
                     elapsed_ms: t_req.elapsed().as_millis() as u64,
                 });
-                return (
+                return Err(Box::new((
                     "request_backend",
                     "REQUEST_BACKEND_FAILED",
                     staged_error("request_backend", error),
@@ -924,11 +869,11 @@ async fn save_backend_download(
                     None,
                     None,
                     worker_timings,
-                );
+                )));
             }
         };
 
-        // Stage 5: validate_response
+        // Stage 4: validate_response
         let t_val = Instant::now();
         log_native_export_stage("validate_response", &worker_endpoint, "");
         let response = match parse_backend_download_response(raw_response) {
@@ -938,7 +883,7 @@ async fn save_backend_download(
                     stage: "validate_response".to_string(),
                     elapsed_ms: t_val.elapsed().as_millis() as u64,
                 });
-                return (
+                return Err(Box::new((
                     "validate_response",
                     "VALIDATE_RESPONSE_FAILED",
                     staged_error("validate_response", error),
@@ -947,7 +892,7 @@ async fn save_backend_download(
                     None,
                     None,
                     worker_timings,
-                );
+                )));
             }
         };
         let http_status = response.status;
@@ -967,7 +912,7 @@ async fn save_backend_download(
                     stage: "validate_response".to_string(),
                     elapsed_ms: t_val.elapsed().as_millis() as u64,
                 });
-                return (
+                return Err(Box::new((
                     "validate_response",
                     "VALIDATE_RESPONSE_FAILED",
                     staged_error("validate_response", error),
@@ -976,10 +921,9 @@ async fn save_backend_download(
                     Some(bytes),
                     None,
                     worker_timings,
-                );
+                )));
             }
         };
-        let ext = validated_response.required_extension.to_string();
 
         eprintln!(
             "[tauri-export] response status={} bytes={} content_type={} filename={}",
@@ -989,119 +933,234 @@ async fn save_backend_download(
             validated_response.filename
         );
 
-        // Stage 6: write_file
-        let t_write = Instant::now();
-        log_native_export_stage("write_file", &worker_endpoint, "");
-        let (final_target_path, extension_corrected) =
-            final_download_target_path(&target_path, validated_response.required_extension);
-        if let Err(error) =
-            write_backend_download(&final_target_path, &response.body, !extension_corrected)
-        {
-            worker_timings.push(StageTiming {
-                stage: "write_file".to_string(),
-                elapsed_ms: t_write.elapsed().as_millis() as u64,
-            });
-            return (
-                "write_file",
-                "WRITE_FILE_FAILED",
-                error,
-                Some(http_status),
-                content_type,
-                Some(bytes),
-                Some(ext),
-                worker_timings,
-            );
-        }
-        worker_timings.push(StageTiming {
-            stage: "write_file".to_string(),
-            elapsed_ms: t_write.elapsed().as_millis() as u64,
-        });
-
-        // Stage 7: complete
-        worker_timings.push(StageTiming {
-            stage: "complete".to_string(),
-            elapsed_ms: 0,
-        });
-
-        (
-            "complete",
-            "OK",
-            String::new(),
-            Some(http_status),
-            content_type,
-            Some(bytes),
-            Some(ext),
-            worker_timings,
-        )
+        Ok((response, validated_response, worker_timings))
     })
     .await;
 
-    let (worker_stage, code, msg, http_status, content_type, bytes, filename_ext, worker_timings) =
-        match res {
-            Ok(tuple) => tuple,
-            Err(panic_err) => {
-                return Ok(SaveBackendDownloadResult {
-                    status: SaveBackendDownloadStatus::Failed,
-                    stage: "request_backend".to_string(),
-                    format: req_format,
-                    source: req_source,
-                    page_size: req_page_size,
-                    http_status: None,
-                    content_type: None,
-                    bytes: None,
-                    filename_extension: None,
-                    elapsed_ms: start_total.elapsed().as_millis() as u64,
-                    stage_timings,
-                    error_code: Some("WORKER_PANIC".to_string()),
-                    error_message: Some(staged_error(
-                        "request_backend",
-                        format!("导出工作线程失败：{panic_err}"),
-                    )),
-                });
-            }
-        };
+    let (response, validated_response, worker_timings) = match fetch_res {
+        Ok(Ok(tuple)) => tuple,
+        Ok(Err(error)) => {
+            let (stage, code, msg, http_status, content_type, bytes, filename_ext, worker_timings) =
+                *error;
+
+            stage_timings.extend(worker_timings);
+            log_native_export_stage(stage, &endpoint, &format!("status=failed error={msg}"));
+            return Ok(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Failed,
+                stage: stage.to_string(),
+                format: req_format,
+                source: req_source,
+                page_size: req_page_size,
+                http_status,
+                content_type,
+                bytes,
+                filename_extension: filename_ext,
+                elapsed_ms: start_total.elapsed().as_millis() as u64,
+                stage_timings,
+                error_code: Some(code.to_string()),
+                error_message: Some(msg),
+            });
+        }
+        Err(panic_err) => {
+            return Ok(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Failed,
+                stage: "request_backend".to_string(),
+                format: req_format,
+                source: req_source,
+                page_size: req_page_size,
+                http_status: None,
+                content_type: None,
+                bytes: None,
+                filename_extension: None,
+                elapsed_ms: start_total.elapsed().as_millis() as u64,
+                stage_timings,
+                error_code: Some("WORKER_PANIC".to_string()),
+                error_message: Some(staged_error(
+                    "request_backend",
+                    format!("导出工作线程失败：{panic_err}"),
+                )),
+            });
+        }
+    };
 
     stage_timings.extend(worker_timings);
 
-    if worker_stage != "complete" {
-        log_native_export_stage(
-            worker_stage,
-            &endpoint,
-            &format!("status=failed error={msg}"),
-        );
+    // Stage 5: choose_destination
+    let t_stage = Instant::now();
+    log_native_export_stage("choose_destination", &endpoint, "");
+    let (dialog_filename, filter_ext) = export_dialog_spec(&validated_response);
+
+    let dialog = window
+        .dialog()
+        .file()
+        .set_title("保存导出文件")
+        .set_file_name(dialog_filename)
+        .add_filter("导出文件", &[filter_ext]);
+
+    let Some(file_path) = dialog.blocking_save_file() else {
+        stage_timings.push(StageTiming {
+            stage: "choose_destination".to_string(),
+            elapsed_ms: t_stage.elapsed().as_millis() as u64,
+        });
+        log_native_export_stage("complete", &endpoint, "status=cancelled");
         return Ok(SaveBackendDownloadResult {
-            status: SaveBackendDownloadStatus::Failed,
-            stage: worker_stage.to_string(),
+            status: SaveBackendDownloadStatus::Cancelled,
+            stage: "choose_destination".to_string(),
             format: req_format,
             source: req_source,
             page_size: req_page_size,
-            http_status,
-            content_type,
-            bytes,
-            filename_extension: filename_ext,
+            http_status: None,
+            content_type: None,
+            bytes: None,
+            filename_extension: None,
             elapsed_ms: start_total.elapsed().as_millis() as u64,
             stage_timings,
-            error_code: Some(code.to_string()),
-            error_message: Some(msg),
+            error_code: None,
+            error_message: None,
         });
-    }
+    };
 
-    log_native_export_stage("complete", &endpoint, "status=saved");
-    Ok(SaveBackendDownloadResult {
-        status: SaveBackendDownloadStatus::Saved,
-        stage: "complete".to_string(),
-        format: req_format,
-        source: req_source,
-        page_size: req_page_size,
-        http_status,
-        content_type,
-        bytes,
-        filename_extension: filename_ext,
-        elapsed_ms: start_total.elapsed().as_millis() as u64,
-        stage_timings,
-        error_code: None,
-        error_message: None,
+    let target_path = match file_path.into_path() {
+        Ok(path) => {
+            stage_timings.push(StageTiming {
+                stage: "choose_destination".to_string(),
+                elapsed_ms: t_stage.elapsed().as_millis() as u64,
+            });
+            path
+        }
+        Err(error) => {
+            stage_timings.push(StageTiming {
+                stage: "choose_destination".to_string(),
+                elapsed_ms: t_stage.elapsed().as_millis() as u64,
+            });
+            log_native_export_stage(
+                "choose_destination",
+                &endpoint,
+                &format!("status=failed error={error}"),
+            );
+            return Ok(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Failed,
+                stage: "choose_destination".to_string(),
+                format: req_format,
+                source: req_source,
+                page_size: req_page_size,
+                http_status: Some(response.status),
+                content_type: backend_response_header(&response, "content-type")
+                    .map(str::to_string),
+                bytes: Some(response.body.len()),
+                filename_extension: Some(validated_response.required_extension.to_string()),
+                elapsed_ms: start_total.elapsed().as_millis() as u64,
+                stage_timings,
+                error_code: Some("CHOOSE_DESTINATION_FAILED".to_string()),
+                error_message: Some(staged_error(
+                    "choose_destination",
+                    format!("无法使用所选保存路径：{error}"),
+                )),
+            });
+        }
+    };
+
+    let http_status = response.status;
+    let content_type = backend_response_header(&response, "content-type").map(str::to_string);
+    let bytes = response.body.len();
+    let ext = validated_response.required_extension.to_string();
+
+    // Stage 6: write_file
+    let t_write = Instant::now();
+    log_native_export_stage("write_file", &endpoint, "");
+    let (final_target_path, extension_corrected) =
+        final_download_target_path(&target_path, validated_response.required_extension);
+
+    let write_res = tauri::async_runtime::spawn_blocking(move || {
+        write_backend_download(&final_target_path, &response.body, !extension_corrected)
     })
+    .await;
+
+    let write_elapsed = t_write.elapsed().as_millis() as u64;
+
+    match write_res {
+        Ok(Ok(())) => {
+            stage_timings.push(StageTiming {
+                stage: "write_file".to_string(),
+                elapsed_ms: write_elapsed,
+            });
+            stage_timings.push(StageTiming {
+                stage: "complete".to_string(),
+                elapsed_ms: 0,
+            });
+            log_native_export_stage("complete", &endpoint, "status=saved");
+            Ok(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Saved,
+                stage: "complete".to_string(),
+                format: req_format,
+                source: req_source,
+                page_size: req_page_size,
+                http_status: Some(http_status),
+                content_type,
+                bytes: Some(bytes),
+                filename_extension: Some(ext),
+                elapsed_ms: start_total.elapsed().as_millis() as u64,
+                stage_timings,
+                error_code: None,
+                error_message: None,
+            })
+        }
+        Ok(Err(error)) => {
+            stage_timings.push(StageTiming {
+                stage: "write_file".to_string(),
+                elapsed_ms: write_elapsed,
+            });
+            log_native_export_stage(
+                "write_file",
+                &endpoint,
+                &format!("status=failed error={error}"),
+            );
+            Ok(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Failed,
+                stage: "write_file".to_string(),
+                format: req_format,
+                source: req_source,
+                page_size: req_page_size,
+                http_status: Some(http_status),
+                content_type,
+                bytes: Some(bytes),
+                filename_extension: Some(ext),
+                elapsed_ms: start_total.elapsed().as_millis() as u64,
+                stage_timings,
+                error_code: Some("WRITE_FILE_FAILED".to_string()),
+                error_message: Some(error),
+            })
+        }
+        Err(panic_err) => {
+            stage_timings.push(StageTiming {
+                stage: "write_file".to_string(),
+                elapsed_ms: write_elapsed,
+            });
+            log_native_export_stage(
+                "write_file",
+                &endpoint,
+                &format!("status=failed panic={panic_err}"),
+            );
+            Ok(SaveBackendDownloadResult {
+                status: SaveBackendDownloadStatus::Failed,
+                stage: "write_file".to_string(),
+                format: req_format,
+                source: req_source,
+                page_size: req_page_size,
+                http_status: Some(http_status),
+                content_type,
+                bytes: Some(bytes),
+                filename_extension: Some(ext),
+                elapsed_ms: start_total.elapsed().as_millis() as u64,
+                stage_timings,
+                error_code: Some("WORKER_PANIC".to_string()),
+                error_message: Some(staged_error(
+                    "write_file",
+                    format!("写入工作线程失败：{panic_err}"),
+                )),
+            })
+        }
+    }
 }
 
 #[tauri::command]
@@ -1555,6 +1614,45 @@ mod tests {
     }
 
     #[test]
+    fn export_dialog_spec_selects_validated_filename_and_filter_extension() {
+        let csv_resp = ValidatedBackendDownloadResponse {
+            filename: "bilikara-played.csv".to_string(),
+            required_extension: "csv",
+        };
+        assert_eq!(
+            export_dialog_spec(&csv_resp),
+            ("bilikara-played.csv", "csv")
+        );
+
+        let single_image_resp = ValidatedBackendDownloadResponse {
+            filename: "bilikara-played.png".to_string(),
+            required_extension: "png",
+        };
+        assert_eq!(
+            export_dialog_spec(&single_image_resp),
+            ("bilikara-played.png", "png")
+        );
+
+        let multipage_image_resp = ValidatedBackendDownloadResponse {
+            filename: "bilikara-played-1-5.zip".to_string(),
+            required_extension: "zip",
+        };
+        assert_eq!(
+            export_dialog_spec(&multipage_image_resp),
+            ("bilikara-played-1-5.zip", "zip")
+        );
+
+        let diag_resp = ValidatedBackendDownloadResponse {
+            filename: "bilikara-diagnostics.zip".to_string(),
+            required_extension: "zip",
+        };
+        assert_eq!(
+            export_dialog_spec(&diag_resp),
+            ("bilikara-diagnostics.zip", "zip")
+        );
+    }
+
+    #[test]
     fn native_http_request_formats_get_and_post_without_exposing_body_in_logs() {
         let address = parse_local_http_url("http://127.0.0.1:8080").expect("address");
         let get = validate_backend_download_request(&download_request(
@@ -1695,6 +1793,37 @@ mod tests {
         assert_eq!(
             validate_backend_download_response(&mismatched, &request),
             Err("后端文件名与 Content-Type 不一致".to_string())
+        );
+    }
+
+    #[test]
+    fn native_diagnostics_response_contract_and_request_validation() {
+        let request_payload = SaveBackendDownloadRequest {
+            path: "/api/diagnostics/package".to_string(),
+            body: Some("{\"browser\":{}}".to_string()),
+            client_id: Some("client-1".to_string()),
+        };
+        let request =
+            validate_backend_download_request(&request_payload).expect("diagnostics request");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/api/diagnostics/package");
+        assert_eq!(request.kind, BackendDownloadKind::Diagnostics);
+        assert_eq!(request.format, "zip");
+        assert_eq!(request.body, "{\"browser\":{}}");
+
+        let raw_http = valid_download_response(
+            "HTTP/1.1",
+            "application/zip",
+            "bilikara-diagnostics-20260807-120000.zip",
+            b"fake-zip-payload",
+        );
+        let parsed = parse_backend_download_response(raw_http).expect("parsed response");
+        assert_eq!(
+            validate_backend_download_response(&parsed, &request),
+            Ok(ValidatedBackendDownloadResponse {
+                filename: "bilikara-diagnostics-20260807-120000.zip".to_string(),
+                required_extension: "zip",
+            })
         );
     }
 

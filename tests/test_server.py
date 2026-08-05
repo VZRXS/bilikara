@@ -1,5 +1,6 @@
 import csv
 import io
+import ipaddress
 from collections import deque
 import threading
 import unittest
@@ -1644,6 +1645,65 @@ class DiagnosticRouteTest(unittest.TestCase):
 
         self.assertEqual(markdown_writes[0][0]["data"]["markdown"], "# report")
         self.assertEqual(package_downloads[0][1], "application/zip")
+
+    def test_package_route_downloads_real_diagnostics_zip_from_local_authorized_client(self):
+        handler = self.make_handler("/api/diagnostics/package", {"browser": {}})
+        handler.client_address = ("127.0.0.1", 54321)
+        handler.connection = SimpleNamespace(getsockname=lambda: ("127.0.0.1", 8080))
+        sent_headers = {}
+        written_body = io.BytesIO()
+
+        def fake_send_response(code):
+            sent_headers["status"] = code
+
+        def fake_send_header(keyword, value):
+            sent_headers[keyword.lower()] = value
+
+        handler.send_response = fake_send_response
+        handler.send_header = fake_send_header
+        handler.end_headers = lambda: None
+        handler.wfile = written_body
+
+        with patch(
+            "bilikara.diagnostics.probe_connectivity",
+            return_value={"bilibili": {"reachable": True, "status": 200, "latency_ms": 10, "error": ""}},
+        ):
+            handler.do_POST()
+
+        self.assertEqual(sent_headers.get("status"), 200)
+        content_type = sent_headers.get("content-type", "")
+        self.assertEqual(content_type.split(";")[0].strip(), "application/zip")
+        content_disposition = sent_headers.get("content-disposition", "")
+        self.assertTrue(content_disposition.startswith("attachment"))
+        filename_part = content_disposition.split("filename=")[-1].strip('"')
+        self.assertTrue(filename_part.endswith(".zip"))
+        payload = written_body.getvalue()
+        content_length = int(sent_headers.get("content-length", "0"))
+        self.assertEqual(content_length, len(payload))
+
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            self.assertIn("diagnostics.md", archive.namelist())
+
+    def test_is_local_client_unspecified_bind_authorization(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+
+        # Allowed case: bound to 0.0.0.0, peer is local host IP 192.168.1.20
+        handler.client_address = ("192.168.1.20", 12345)
+        handler.connection = SimpleNamespace(getsockname=lambda: ("0.0.0.0", 8080))
+        with patch("bilikara.server._local_host_ip_addresses", return_value={ipaddress.ip_address("192.168.1.20")}):
+            self.assertTrue(handler._is_local_client())
+
+        # Rejected case: bound to 0.0.0.0, peer is remote IP 192.168.1.50
+        handler.client_address = ("192.168.1.50", 12345)
+        handler.connection = SimpleNamespace(getsockname=lambda: ("0.0.0.0", 8080))
+        with patch("bilikara.server._local_host_ip_addresses", return_value={ipaddress.ip_address("192.168.1.20")}):
+            self.assertFalse(handler._is_local_client())
+
+        # Allowed IPv6 unspecified case: bound to ::, peer is local IPv6 fe80::1
+        handler.client_address = ("fe80::1", 12345)
+        handler.connection = SimpleNamespace(getsockname=lambda: ("::", 8080))
+        with patch("bilikara.server._local_host_ip_addresses", return_value={ipaddress.ip_address("fe80::1")}):
+            self.assertTrue(handler._is_local_client())
 
 
 class CacheDownloaderRouteTest(unittest.TestCase):
