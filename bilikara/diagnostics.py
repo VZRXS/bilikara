@@ -190,14 +190,24 @@ def _system_snapshot(
 
 
 def _disk_snapshot(path: Path, local_usernames: list[str]) -> dict[str, Any]:
-    usage = shutil.disk_usage(path)
-    return {
-        "path": redact_text(str(path), local_usernames=local_usernames),
-        "total_bytes": usage.total,
-        "used_bytes": usage.used,
-        "free_bytes": usage.free,
-        "free_gib": round(usage.free / (1024 ** 3), 2),
-    }
+    try:
+        usage = shutil.disk_usage(path)
+        return {
+            "path": redact_text(str(path), local_usernames=local_usernames),
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+            "free_gib": round(usage.free / (1024 ** 3), 2),
+        }
+    except OSError as exc:
+        return {
+            "path": redact_text(str(path), local_usernames=local_usernames),
+            "error": redact_text(str(exc)),
+            "total_bytes": 0,
+            "used_bytes": 0,
+            "free_bytes": 0,
+            "free_gib": 0.0,
+        }
 
 
 def _probe_target(name: str, url: str, *, timeout: float) -> tuple[str, dict[str, Any]]:
@@ -228,9 +238,9 @@ def _connectivity_result(reachable: bool, status: int | None, started: float, er
 def _collect_configs(local_usernames: list[str]) -> dict[str, Any]:
     configs: dict[str, Any] = {}
     for path in DIAGNOSTIC_CONFIG_FILES:
-        if not path.exists() or not path.is_file():
-            continue
         try:
+            if not path.exists() or not path.is_file():
+                continue
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             configs[path.name] = {"error": redact_text(str(exc))}
@@ -240,26 +250,44 @@ def _collect_configs(local_usernames: list[str]) -> dict[str, Any]:
 
 
 def _collect_logs(local_usernames: list[str]) -> dict[str, str]:
-    if not LOG_DIR.exists():
+    try:
+        if not LOG_DIR.exists():
+            return {}
+    except OSError:
         return {}
-    candidates = sorted(
-        (path for path in LOG_DIR.rglob("*") if path.is_file()),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )[:MAX_LOG_FILES]
-    logs: dict[str, str] = {}
-    for path in candidates:
+
+    try:
+        raw_paths = list(LOG_DIR.rglob("*"))
+    except OSError:
+        return {}
+
+    candidate_files: list[tuple[float, Path]] = []
+    for path in raw_paths:
         try:
-            with path.open("rb") as handle:
-                handle.seek(max(0, path.stat().st_size - MAX_LOG_BYTES_PER_FILE))
-                raw = handle.read(MAX_LOG_BYTES_PER_FILE)
+            if not path.is_file():
+                continue
+            mtime = path.stat().st_mtime
+            candidate_files.append((mtime, path))
         except OSError:
             continue
-        relative = str(path.relative_to(LOG_DIR)).replace("\\", "__").replace("/", "__")
-        logs[relative] = redact_text(
-            raw.decode("utf-8", errors="replace"),
-            local_usernames=local_usernames,
-        )
+
+    candidate_files.sort(key=lambda item: item[0], reverse=True)
+    selected = candidate_files[:MAX_LOG_FILES]
+
+    logs: dict[str, str] = {}
+    for _mtime, path in selected:
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                handle.seek(max(0, size - MAX_LOG_BYTES_PER_FILE))
+                raw = handle.read(MAX_LOG_BYTES_PER_FILE)
+            relative = str(path.relative_to(LOG_DIR)).replace("\\", "__").replace("/", "__")
+            logs[relative] = redact_text(
+                raw.decode("utf-8", errors="replace"),
+                local_usernames=local_usernames,
+            )
+        except OSError:
+            continue
     return logs
 
 

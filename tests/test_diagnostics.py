@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import unittest
 import zipfile
 from pathlib import Path
@@ -188,6 +189,54 @@ class DiagnosticArtifactTest(unittest.TestCase):
         self.assertEqual(len(sanitized[0]["stageTimings"]), 16)
         self.assertEqual(sanitized[0]["stageTimings"][0]["stage"], "stage_0")
         self.assertEqual(sanitized[0]["stageTimings"][-1]["stage"], "stage_15")
+
+    def test_log_probe_einval_does_not_fail_diagnostics(self):
+        import errno
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            good_log = log_dir / "good.log"
+            bad_log = log_dir / "bad.log"
+            good_log.write_text("good log content", encoding="utf-8")
+            bad_log.write_text("bad log content", encoding="utf-8")
+
+            cache_manager = SimpleNamespace(diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}})
+
+            original_os_stat = os.stat
+
+            def mock_stat(path_obj, *args, **kwargs):
+                if Path(path_obj) == bad_log:
+                    raise OSError(errno.EINVAL, "Invalid argument")
+                return original_os_stat(path_obj, *args, **kwargs)
+
+            with (
+                patch.object(diagnostics, "APP_HOME", root),
+                patch.object(diagnostics, "LOG_DIR", log_dir),
+                patch.object(diagnostics, "DIAGNOSTIC_CONFIG_FILES", ()),
+                patch.object(diagnostics, "_local_usernames", return_value=set()),
+                patch.object(
+                    diagnostics.shutil,
+                    "disk_usage",
+                    return_value=SimpleNamespace(total=1000, used=400, free=600),
+                ),
+                patch("os.stat", side_effect=mock_stat),
+            ):
+                artifact = diagnostics.build_diagnostic_artifact(
+                    cache_manager=cache_manager,
+                    cache_policy={},
+                    runtime_state={},
+                    connectivity_probe=lambda: {},
+                )
+
+            self.assertIsNotNone(artifact)
+            self.assertIn("Bilikara Diagnostic Report", artifact.markdown)
+
+            with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
+                names = set(archive.namelist())
+                self.assertIn("diagnostics.md", names)
+                self.assertIn("logs/good.log", names)
+                self.assertNotIn("logs/bad.log", names)
 
 
 if __name__ == "__main__":
