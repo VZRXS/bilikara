@@ -362,6 +362,17 @@ console.log(JSON.stringify({{
         self.assertIn("min-width: 0;", cover_rule)
         self.assertIn("aspect-ratio: 16 / 9;", cover_rule)
 
+    def test_detail_cover_fallback_layering_is_behind_image(self):
+        detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
+        img_rule = detail_css.split(".song-detail-cover img {", 1)[1].split("}", 1)[0]
+        fallback_rule = detail_css.split(".song-detail-cover-fallback {", 1)[1].split("}", 1)[0]
+        duration_rule = detail_css.split(".song-detail-duration {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("z-index: 1;", img_rule)
+        self.assertIn("position: relative;", fallback_rule)
+        self.assertIn("z-index: 0;", fallback_rule)
+        self.assertIn("z-index: 2;", duration_rule)
+
     def test_detail_motion_matches_rating_and_playback_controls(self):
         detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
         remote_css = (ROOT / "static" / "remote.css").read_text(encoding="utf-8")

@@ -153,9 +153,12 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  z-index: 1;
 }
 
 .song-detail-cover-fallback {
+  position: relative;
+  z-index: 0;
   font-size: 34px;
   opacity: 0.34;
 }
