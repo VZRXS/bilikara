@@ -728,6 +728,7 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
             manager.store = store
             manager.stop_event = threading.Event()
             manager._should_cache = lambda item_id: True
+            manager._has_retry_request = lambda item_id: False
             manager._take_retry_request = lambda item_id: False
             manager._remove_cache_dir = lambda item_id: None
             store.get_item = lambda item_id: item

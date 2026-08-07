@@ -23,8 +23,14 @@ class RecachePublicationTest(unittest.TestCase):
         self.store.add_session_user("TestUser")
         self.cache_dir = self.root_dir / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        MEDIA_LEASE_COORDINATOR.active_release_requests.clear()
+        MEDIA_LEASE_COORDINATOR.draining_revisions.clear()
+        MEDIA_LEASE_COORDINATOR.acknowledged_requests.clear()
 
     def tearDown(self):
+        MEDIA_LEASE_COORDINATOR.active_release_requests.clear()
+        MEDIA_LEASE_COORDINATOR.draining_revisions.clear()
+        MEDIA_LEASE_COORDINATOR.acknowledged_requests.clear()
         self.temp_dir.cleanup()
 
     def _create_ready_item(self, item_id="test-id"):
@@ -81,7 +87,7 @@ class RecachePublicationTest(unittest.TestCase):
         audio = staging_dir / "audio.m4a"
         video.write_bytes(b"new-video")
         audio.write_bytes(b"new-audio")
-        audio_relative = audio.relative_to(self.cache_dir).as_posix()
+        audio_relative = audio.name
         return {
             "video_file": video,
             "audio_variants": [{
@@ -117,7 +123,7 @@ class RecachePublicationTest(unittest.TestCase):
              patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_drain", side_effect=drain_wait or (lambda *_args, **_kwargs: True)):
             return manager._cache_item_multi(item_id, item, allow_refresh_retry=False)
 
-    def test_retry_item_ready_preserves_published_fields(self):
+    def test_retry_item_ready_preserves_published_fields_until_release(self):
         item = self._create_ready_item("item-ready")
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), \
              patch.object(CacheManager, "_load_cache_policy", return_value=None), \
@@ -125,16 +131,50 @@ class RecachePublicationTest(unittest.TestCase):
              patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
              patch("bilikara.cache.threading.Thread"):
             manager = CacheManager(self.store)
-            with patch.object(manager, "_remove_cache_dir") as mock_rm:
-                manager.retry_item("item-ready", force=True)
-                updated = self.store.get_item("item-ready")
-                # Readiness and media fields must be preserved
-                self.assertEqual(updated.cache_status, "ready")
-                self.assertEqual(updated.video_relative_path, "item-ready/video.mp4")
-                self.assertEqual(updated.video_media_url, "/media/item-ready/video.mp4?rev=rev-old")
-                self.assertEqual(updated.media_revision, "rev-old")
-                self.assertTrue(len(updated.audio_variants) > 0)
-                mock_rm.assert_not_called()
+            manager.retry_item("item-ready", force=True)
+            updated = self.store.get_item("item-ready")
+            # Immediate release request created, but active media URLs and revision remain visible for release matching
+            self.assertIsNotNone(self.store.media_release_request)
+            self.assertEqual(self.store.media_release_request["item_id"], "item-ready")
+            self.assertEqual(self.store.media_release_request["media_revision"], "rev-old")
+            self.assertEqual(updated.cache_status, "pending")
+            self.assertEqual(updated.video_relative_path, "item-ready/video.mp4")
+            self.assertIn("video.mp4", updated.video_media_url)
+            self.assertEqual(updated.media_revision, "rev-old")
+
+    def test_repeated_retry_during_downloading_does_not_create_empty_revision_release_request(self):
+        item = PlaylistItem(
+            id="item-downloading",
+            original_url="https://www.bilibili.com/video/BV123456",
+            resolved_url="https://www.bilibili.com/video/BV123456",
+            title="Test Song",
+            aid=123,
+            bvid="BV123456",
+            cid=111,
+            page=1,
+            part_title="Part 1",
+            display_title="Test Song",
+            cover_url="",
+            embed_url="",
+            cache_status="downloading",
+            video_relative_path="",
+            media_revision="",
+            requester_name="TestUser",
+        )
+        self.store.add_item(item, requester_name="TestUser")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), \
+             patch.object(CacheManager, "_load_cache_policy", return_value=None), \
+             patch.object(CacheManager, "_cleanup_stale_staging_and_obsolete", return_value=None), \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch("bilikara.cache.threading.Thread"):
+            manager = CacheManager(self.store)
+            with manager.lock:
+                manager.pending_ids.add("item-downloading")
+                manager.active_builds["item-downloading"] = "build-1"
+            manager.retry_item("item-downloading", force=True)
+            self.assertIsNone(self.store.media_release_request)
+            with manager.lock:
+                self.assertIn("item-downloading", manager.retry_requested_ids)
 
     def test_retry_item_failed_clears_published_fields(self):
         item = PlaylistItem(
@@ -264,7 +304,7 @@ class RecachePublicationTest(unittest.TestCase):
         gen2 = self.store.current_item_generation
         self.assertGreater(gen2, gen1)
 
-    def test_public_retry_failure_keeps_ready_revision_and_files(self):
+    def test_public_retry_failure_sets_failed_cache_status_and_clears_revision(self):
         self._create_ready_item("item-failure")
         with self._manager() as manager, \
              patch.object(manager, "_ensure_downloader", side_effect=RuntimeError("offline")), \
@@ -278,9 +318,84 @@ class RecachePublicationTest(unittest.TestCase):
             )
         item = self.store.get_item("item-failure")
         self.assertFalse(result)
-        self.assertEqual(item.cache_status, "ready")
-        self.assertEqual(item.media_revision, "rev-old")
-        self.assertEqual((self.cache_dir / "item-failure" / "video.mp4").read_bytes(), b"old-video")
+        self.assertEqual(item.cache_status, "failed")
+        self.assertEqual(item.media_revision, "")
+
+    def test_destructive_recache_deletes_old_cache_before_downloader_and_ffmpeg_preflight(self):
+        self._create_ready_item("item-preflight-order")
+        events = []
+
+        original_remove = CacheManager._remove_cache_dir_for_forced_retry
+        def fake_remove(m, item_id):
+            events.append("delete_old_cache")
+            return original_remove(m, item_id)
+
+        def fake_downloader(m, source):
+            events.append("ensure_downloader")
+            return Path("downloader")
+
+        def fake_ffmpeg(m, force_refresh=False):
+            events.append("ensure_ffmpeg")
+            return Path("ffmpeg")
+
+        staging = self.cache_dir / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(CacheManager, "_remove_cache_dir_for_forced_retry", fake_remove), \
+             patch.object(CacheManager, "_ensure_downloader", fake_downloader), \
+             patch.object(CacheManager, "_ensure_ffmpeg", fake_ffmpeg), \
+             patch.object(manager, "_download_selected_streams", return_value=self._cache_result(staging)), \
+             patch.object(manager, "_validate_cache_result", return_value=None), \
+             patch.object(manager, "_should_cache", return_value=True), \
+             patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_release", return_value=True):
+            manager.retry_item("item-preflight-order", force=True)
+            result = manager._cache_item_multi(
+                "item-preflight-order",
+                self.store.get_item("item-preflight-order"),
+                allow_refresh_retry=False,
+            )
+            self.assertTrue(result)
+            self.assertEqual(events, ["delete_old_cache", "ensure_downloader", "ensure_ffmpeg"])
+
+    def test_downloader_failure_after_deletion_leaves_old_physical_media_deleted_and_revision_cleared(self):
+        self._create_ready_item("item-dl-fail")
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(CacheManager, "_ensure_downloader", side_effect=RuntimeError("downloader binary missing")), \
+             patch.object(manager, "_should_cache", return_value=True), \
+             patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_release", return_value=True):
+            manager.retry_item("item-dl-fail", force=True)
+            result = manager._cache_item_multi(
+                "item-dl-fail",
+                self.store.get_item("item-dl-fail"),
+                allow_refresh_retry=False,
+            )
+            self.assertFalse(result)
+            item = self.store.get_item("item-dl-fail")
+            self.assertEqual(item.cache_status, "failed")
+            self.assertEqual(item.media_revision, "")
+            self.assertFalse((self.cache_dir / "item-dl-fail").exists())
+
+    def test_ffmpeg_failure_after_deletion_leaves_old_physical_media_deleted_and_revision_cleared(self):
+        self._create_ready_item("item-ff-fail")
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(CacheManager, "_ensure_downloader", return_value=Path("downloader")), \
+             patch.object(CacheManager, "_ensure_ffmpeg", side_effect=RuntimeError("ffmpeg missing")), \
+             patch.object(manager, "_should_cache", return_value=True), \
+             patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_release", return_value=True):
+            manager.retry_item("item-ff-fail", force=True)
+            result = manager._cache_item_multi(
+                "item-ff-fail",
+                self.store.get_item("item-ff-fail"),
+                allow_refresh_retry=False,
+            )
+            self.assertFalse(result)
+            item = self.store.get_item("item-ff-fail")
+            self.assertEqual(item.cache_status, "failed")
+            self.assertEqual(item.media_revision, "")
+            self.assertFalse((self.cache_dir / "item-ff-fail").exists())
 
     def test_successful_publication_uses_revision_directory_and_only_then_replaces_store(self):
         self._create_ready_item("item-success")
@@ -290,9 +405,33 @@ class RecachePublicationTest(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(item.cache_status, "ready")
         self.assertNotEqual(item.media_revision, "rev-old")
-        self.assertIn(f"item-success/revisions/{item.media_revision}/", item.video_relative_path)
+        self.assertEqual(item.video_relative_path, "item-success/video.mp4")
         self.assertEqual((self.cache_dir / item.video_relative_path).read_bytes(), b"new-video")
-        self.assertFalse((self.cache_dir / "item-success" / "video.mp4").exists())
+
+    def test_successful_current_item_forced_recache_cleans_release_coordinator_and_context(self):
+        self._create_ready_item("item-clean")
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True):
+            manager.retry_item("item-clean", force=True)
+            release_req = self.store.media_release_request
+            self.assertIsNotNone(release_req)
+            release_req_id = release_req["request_id"]
+            MEDIA_LEASE_COORDINATOR.ack_release_request(release_req_id, "item-clean", "rev-old")
+
+            result = self._run_recache(manager, "item-clean")
+            self.assertTrue(result)
+
+            item = self.store.get_item("item-clean")
+            self.assertEqual(item.cache_status, "ready")
+            self.assertNotEqual(item.media_revision, "rev-old")
+            self.assertTrue((self.cache_dir / item.video_relative_path).exists())
+            self.assertIsNone(self.store.media_release_request)
+
+            with MEDIA_LEASE_COORDINATOR.lock:
+                self.assertNotIn(release_req_id, MEDIA_LEASE_COORDINATOR.active_release_requests)
+                self.assertNotIn(release_req_id, MEDIA_LEASE_COORDINATOR.acknowledged_requests)
+                self.assertNotIn("rev-old", MEDIA_LEASE_COORDINATOR.draining_revisions)
+            self.assertNotIn("item-clean", manager.active_recache_contexts)
 
     def test_marker_cleanup_failure_keeps_committed_new_revision_serviceable(self):
         self._create_ready_item("item-marker-locked")
@@ -316,12 +455,12 @@ class RecachePublicationTest(unittest.TestCase):
         self.assertFalse(markers[0].exists())
         self.assertEqual(self.store.get_item("item-marker-locked").media_revision, item.media_revision)
 
-    def test_store_publication_failure_rolls_back_old_ready_revision(self):
+    def test_store_publication_failure_sets_failed_cache_status(self):
         self._create_ready_item("item-store-failure")
         original_update = self.store.update_item
 
         def fail_new_revision(item_id, **changes):
-            if changes.get("media_revision") not in {None, "rev-old"}:
+            if changes.get("media_revision") not in {None, ""}:
                 raise OSError("state disk full")
             return original_update(item_id, **changes)
 
@@ -333,9 +472,8 @@ class RecachePublicationTest(unittest.TestCase):
             result = self._run_recache(manager, "item-store-failure")
         item = self.store.get_item("item-store-failure")
         self.assertFalse(result)
-        self.assertEqual(item.cache_status, "ready")
-        self.assertEqual(item.media_revision, "rev-old")
-        self.assertTrue((self.cache_dir / "item-store-failure" / "video.mp4").exists())
+        self.assertEqual(item.cache_status, "failed")
+        self.assertEqual(item.media_revision, "")
         self.assertEqual(list(self.cache_dir.glob(".tx_*.json")), [])
 
     def test_supersession_during_release_wait_never_publishes_completed_old_build(self):
@@ -354,11 +492,10 @@ class RecachePublicationTest(unittest.TestCase):
             )
         item = self.store.get_item("item-superseded")
         self.assertFalse(result)
-        self.assertEqual(item.media_revision, "rev-old")
-        self.assertTrue((self.cache_dir / "item-superseded" / "video.mp4").exists())
-        self.assertEqual(list((self.cache_dir / "item-superseded").glob("revisions/*")), [])
+        self.assertEqual(item.cache_status, "pending")
+        self.assertEqual(item.media_revision, "")
 
-    def test_release_timeout_restores_old_ready_revision(self):
+    def test_release_timeout_does_not_restore_old_ready_revision(self):
         self._create_ready_item("item-timeout")
         with self._manager() as manager:
             result = self._run_recache(
@@ -368,69 +505,21 @@ class RecachePublicationTest(unittest.TestCase):
             )
         item = self.store.get_item("item-timeout")
         self.assertFalse(result)
-        self.assertEqual(item.cache_status, "ready")
-        self.assertEqual(item.media_revision, "rev-old")
-        self.assertEqual((self.cache_dir / "item-timeout" / "video.mp4").read_bytes(), b"old-video")
+        self.assertEqual(item.cache_status, "failed")
+        self.assertEqual(item.media_revision, "")
 
-    def test_notification_failure_restores_old_revision_and_playable_files(self):
+    def test_notification_failure_sets_failed_status(self):
         self._create_ready_item("item-notify-failure")
         self.store.on_change = MagicMock(
-            side_effect=[None, None, RuntimeError("SSE unavailable"), None, None]
+            side_effect=[None, None, None, RuntimeError("SSE unavailable"), None, None]
         )
         with self._manager() as manager:
             result = self._run_recache(manager, "item-notify-failure")
         item = self.store.get_item("item-notify-failure")
         self.assertFalse(result)
-        self.assertEqual(item.media_revision, "rev-old")
-        self.assertEqual((self.cache_dir / "item-notify-failure" / "video.mp4").read_bytes(), b"old-video")
+        self.assertEqual(item.cache_status, "failed")
 
-    def test_rollback_persistence_failure_keeps_old_serviceable_and_marker_repairs_restart(self):
-        self._create_ready_item("item-rollback-failure")
-        self.store.on_change = MagicMock(
-            side_effect=[None, None, RuntimeError("SSE unavailable"), None]
-        )
-        original_update = self.store.update_item
-        publication_seen = False
-
-        def fail_rollback(item_id, **changes):
-            nonlocal publication_seen
-            revision = changes.get("media_revision")
-            if revision and revision != "rev-old":
-                publication_seen = True
-                return original_update(item_id, **changes)
-            if publication_seen and revision == "rev-old":
-                raise OSError("rollback persistence failed")
-            return original_update(item_id, **changes)
-
-        with self._manager() as manager, patch.object(
-            self.store,
-            "update_item",
-            side_effect=fail_rollback,
-        ):
-            result = self._run_recache(manager, "item-rollback-failure")
-        item = self.store.get_item("item-rollback-failure")
-        markers = list(self.cache_dir.glob(".tx_*.json"))
-        self.assertFalse(result)
-        self.assertEqual(item.media_revision, "rev-old")
-        self.assertTrue((self.cache_dir / "item-rollback-failure" / "video.mp4").exists())
-        self.assertEqual(len(markers), 1)
-
-        transaction = json.loads(markers[0].read_text(encoding="utf-8"))
-        self.store.on_change = None
-        self.assertTrue(self.store.update_item(
-            "item-rollback-failure",
-            **transaction["new_store_state"],
-            persist_backup=False,
-        ))
-        with self._manager() as manager:
-            self.assertTrue(manager._recover_publication_transaction(markers[0]))
-        restarted_item = self.store.get_item("item-rollback-failure")
-        self.assertIsNotNone(restarted_item)
-        self.assertEqual(restarted_item.media_revision, "rev-old")
-        self.assertTrue((self.cache_dir / "item-rollback-failure" / "video.mp4").exists())
-        self.assertFalse(markers[0].exists())
-
-    def test_rename_failure_keeps_old_revision_and_removes_staging(self):
+    def test_rename_failure_removes_staging_and_sets_failed_status(self):
         self._create_ready_item("item-rename-failure")
         original_rename = Path.rename
 
@@ -443,8 +532,8 @@ class RecachePublicationTest(unittest.TestCase):
             result = self._run_recache(manager, "item-rename-failure")
         item = self.store.get_item("item-rename-failure")
         self.assertFalse(result)
-        self.assertEqual(item.media_revision, "rev-old")
-        self.assertTrue((self.cache_dir / "item-rename-failure" / "video.mp4").exists())
+        self.assertEqual(item.cache_status, "failed")
+        self.assertEqual(item.media_revision, "")
         staging_item_root = self.cache_dir / ".staging" / "item-rename-failure"
         self.assertFalse(staging_item_root.exists() and any(staging_item_root.iterdir()))
 
@@ -473,8 +562,7 @@ class RecachePublicationTest(unittest.TestCase):
         current = self.store.get_item("item-role-race")
         self.assertFalse(result)
         self.assertTrue(self.store.is_current_item("item-role-race"))
-        self.assertEqual(current.media_revision, "rev-old")
-        self.assertTrue((self.cache_dir / "item-role-race" / "video.mp4").exists())
+        self.assertEqual(current.cache_status, "failed")
 
     def test_role_transition_waits_without_holding_store_lock_during_publication(self):
         self._create_ready_item("item-reserved")
@@ -529,6 +617,114 @@ class RecachePublicationTest(unittest.TestCase):
         self.assertTrue((self.cache_dir / "item-recover" / "video.mp4").exists())
         self.assertFalse(final_dir.exists())
         self.assertFalse(marker.exists())
+
+    def test_forced_recache_release_timeout_fails_without_restoring_old_ready_revision(self):
+        self._create_ready_item("item-timeout")
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_release", return_value=False), \
+             patch.object(manager, "_should_cache", return_value=True):
+            manager.retry_item("item-timeout", force=True)
+            updated_start = self.store.get_item("item-timeout")
+            self.assertEqual(updated_start.cache_status, "pending")
+
+            with manager.lock:
+                manager.desired_ids = {"item-timeout"}
+            result = manager._cache_item_multi(
+                "item-timeout",
+                self.store.get_item("item-timeout"),
+                allow_refresh_retry=False,
+            )
+            self.assertFalse(result)
+            failed_item = self.store.get_item("item-timeout")
+            self.assertEqual(failed_item.cache_status, "failed")
+            self.assertEqual(failed_item.media_revision, "")
+            self.assertIsNone(self.store.media_release_request)
+            self.assertEqual(len(MEDIA_LEASE_COORDINATOR.active_release_requests), 0)
+
+    def test_old_revision_deleted_before_new_download_starts(self):
+        self._create_ready_item("item-del-before-download")
+        item_dir = self.cache_dir / "item-del-before-download"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        (item_dir / "video.mp4").write_bytes(b"old-video")
+
+        deleted_before_download = False
+
+        def fake_download(item, binary_path, ffmpeg_path, staging_dir, log_path, **kwargs):
+            nonlocal deleted_before_download
+            deleted_before_download = not item_dir.exists()
+            return self._cache_result(staging_dir)
+
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(CacheManager, "_ensure_downloader", return_value=Path("downloader")), \
+             patch.object(CacheManager, "_ensure_ffmpeg", return_value=Path("ffmpeg")), \
+             patch.object(manager, "_download_selected_streams", side_effect=fake_download), \
+             patch.object(manager, "_validate_cache_result", return_value=None), \
+             patch.object(manager, "_should_cache", return_value=True), \
+             patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_release", return_value=True):
+            manager.retry_item("item-del-before-download", force=True)
+            result = manager._cache_item_multi(
+                "item-del-before-download",
+                self.store.get_item("item-del-before-download"),
+                allow_refresh_retry=False,
+            )
+            self.assertTrue(result)
+            self.assertTrue(deleted_before_download)
+
+    def test_deletion_failure_prevents_new_download(self):
+        self._create_ready_item("item-del-fail")
+        download_called = False
+
+        def fake_download(*args, **kwargs):
+            nonlocal download_called
+            download_called = True
+            return {}
+
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(CacheManager, "_remove_cache_dir_for_forced_retry", side_effect=RuntimeError("disk locked")), \
+             patch.object(manager, "_download_selected_streams", side_effect=fake_download), \
+             patch.object(manager, "_should_cache", return_value=True), \
+             patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_release", return_value=True):
+            manager.retry_item("item-del-fail", force=True)
+            result = manager._cache_item_multi(
+                "item-del-fail",
+                self.store.get_item("item-del-fail"),
+                allow_refresh_retry=False,
+            )
+            self.assertFalse(result)
+            self.assertFalse(download_called)
+            item = self.store.get_item("item-del-fail")
+            self.assertEqual(item.cache_status, "failed")
+            self.assertIn("旧缓存删除失败", item.cache_message)
+            self.assertEqual(len(MEDIA_LEASE_COORDINATOR.active_release_requests), 0)
+
+    def test_failed_destructive_recache_does_not_restore_deleted_old_media(self):
+        self._create_ready_item("item-fail-no-restore")
+        item_dir = self.cache_dir / "item-fail-no-restore"
+        item_dir.mkdir(parents=True, exist_ok=True)
+        (item_dir / "video.mp4").write_bytes(b"old-video")
+
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(CacheManager, "_ensure_downloader", return_value=Path("downloader")), \
+             patch.object(CacheManager, "_ensure_ffmpeg", return_value=Path("ffmpeg")), \
+             patch.object(manager, "_download_selected_streams", side_effect=RuntimeError("download crash")), \
+             patch.object(manager, "_should_cache", return_value=True), \
+             patch.object(MEDIA_LEASE_COORDINATOR, "wait_for_release", return_value=True):
+            manager.retry_item("item-fail-no-restore", force=True)
+            result = manager._cache_item_multi(
+                "item-fail-no-restore",
+                self.store.get_item("item-fail-no-restore"),
+                allow_refresh_retry=False,
+            )
+            self.assertFalse(result)
+            item = self.store.get_item("item-fail-no-restore")
+            self.assertEqual(item.cache_status, "failed")
+            self.assertEqual(item.media_revision, "")
+            self.assertFalse((self.cache_dir / "item-fail-no-restore").exists())
+            self.assertEqual(len(MEDIA_LEASE_COORDINATOR.active_release_requests), 0)
 
 
 if __name__ == "__main__":

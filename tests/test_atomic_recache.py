@@ -183,6 +183,77 @@ class AtomicRecacheTest(unittest.TestCase):
                 # Second attempt succeeds -> removed from pending cleanups
                 self.assertNotIn(str(obs_dir), manager.pending_obsolete_cleanups)
 
+    def test_unrelated_release_requests_survive_empty_revision_cleanup(self):
+        coordinator = MediaLeaseCoordinator()
+        coordinator.start_release_request("req-1", "item-1", "rev-1")
+        coordinator.start_release_request("req-2", "item-2", "")
+
+        # Finishing req-1 with empty revision must NOT remove req-2
+        coordinator.finish_release_request("req-1", "")
+        with coordinator.lock:
+            self.assertNotIn("req-1", coordinator.active_release_requests)
+            self.assertIn("req-2", coordinator.active_release_requests)
+
+    def test_urgent_cache_path_does_not_race_with_normal_queue_worker(self):
+        with patch("bilikara.cache.CACHE_DIR", self.root_dir), \
+             patch.object(CacheManager, "_load_cache_policy", return_value=None), \
+             patch.object(CacheManager, "_cleanup_stale_staging_and_obsolete", return_value=None), \
+             patch("bilikara.cache.threading.Thread"):
+            manager = CacheManager(self.store)
+            manager.tasks.put("item-urgent-race")
+            with manager.lock:
+                manager.pending_ids.add("item-urgent-race")
+
+            cache_item_calls = []
+            with patch.object(manager, "_cache_item", side_effect=lambda item_id: cache_item_calls.append(item_id) or False):
+                manager._start_urgent_cache("item-urgent-race")
+                # Simulate normal worker loop step attempting to process item dequeued from tasks
+                item_id = "item-urgent-race"
+                with manager.lock:
+                    if not (manager.stop_event.is_set() or item_id in manager.urgent_cache_ids):
+                        manager.active_item_id = item_id
+                        manager._cache_item(item_id)
+
+            # Normal worker must skip item because item_id is in urgent_cache_ids
+            self.assertEqual(cache_item_calls, [])
+            with manager.lock:
+                self.assertIn("item-urgent-race", manager.urgent_cache_ids)
+
+    def test_worker_loop_guarantees_exactly_one_task_done_per_get(self):
+        with patch("bilikara.cache.CACHE_DIR", self.root_dir), \
+             patch.object(CacheManager, "_load_cache_policy", return_value=None), \
+             patch.object(CacheManager, "_cleanup_stale_staging_and_obsolete", return_value=None), \
+             patch("bilikara.cache.threading.Thread"):
+            manager = CacheManager(self.store)
+            manager.tasks.put("item-skip")
+            with manager.lock:
+                manager.urgent_cache_ids.add("item-skip")
+
+            original_task_done = manager.tasks.task_done
+            def side_effect_task_done():
+                manager.stop_event.set()
+                original_task_done()
+
+            with patch.object(manager.tasks, "task_done", side_effect=side_effect_task_done):
+                manager._worker_loop()
+
+            self.assertEqual(manager.tasks.unfinished_tasks, 0)
+
+    def test_start_urgent_cache_cleans_stale_ownership_when_active_item_matches(self):
+        with patch("bilikara.cache.CACHE_DIR", self.root_dir), \
+             patch.object(CacheManager, "_load_cache_policy", return_value=None), \
+             patch.object(CacheManager, "_cleanup_stale_staging_and_obsolete", return_value=None), \
+             patch("bilikara.cache.threading.Thread"):
+            manager = CacheManager(self.store)
+            with manager.lock:
+                manager.active_item_id = "target-item"
+
+            manager._start_urgent_cache("target-item")
+
+            with manager.lock:
+                self.assertNotIn("target-item", manager.urgent_cache_ids)
+                self.assertNotIn("target-item", manager.urgent_workers)
+
 
 if __name__ == "__main__":
     unittest.main()

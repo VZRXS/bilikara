@@ -4932,13 +4932,19 @@ function handleMediaReleaseRequest(req) {
     || elements.playerFrame?.querySelector("audio");
   const mountedRevision = String(video?.dataset?.mediaRevision || audio?.dataset?.mediaRevision || "");
   const mountedItemId = String(video?.dataset?.playerItemId || audio?.dataset?.playerItemId || "");
-  const matchesMountedRevision = Boolean(
+  const isVisiblyMounted = Boolean(
+    (video || audio)
+    && (!mountedItemId || mountedItemId === String(req.item_id))
+    && (mountedRevision && mountedRevision === String(req.media_revision))
+  );
+  const matchesCurrentItemState = Boolean(
     currentItem
     && String(currentItem.id || "") === String(req.item_id)
     && itemMediaRevision(currentItem) === String(req.media_revision)
     && (!mountedItemId || mountedItemId === String(req.item_id))
     && (!mountedRevision || mountedRevision === String(req.media_revision))
   );
+  const matchesMountedRevision = isVisiblyMounted || matchesCurrentItemState;
 
   let teardownPerformed = false;
   let mountId = 0;
@@ -4951,13 +4957,7 @@ function handleMediaReleaseRequest(req) {
       currentTime: Number(video?.currentTime || 0),
       wasPlaying: Boolean(state.localShouldBePlaying || (video && !video.paused)),
     };
-    stopSplitPlayerSync();
-    for (const media of [video, audio]) {
-      if (!media) continue;
-      media.pause();
-      media.removeAttribute("src");
-      media.load();
-    }
+    teardownMountedPlayer();
     elements.playerFrame.innerHTML = "";
     state.playerSignature = "";
     state.playerContext = null;
@@ -5871,10 +5871,11 @@ function hostCacheDetailTextForItem(item) {
     return "";
   }
   const recache = item.recache_status || state.data?.recache_statuses?.[item.id];
-  if (recache && ["queued", "downloading", "validating", "waiting_release", "publishing"].includes(recache.state)) {
-    const progressText = Number.isFinite(recache.progress) && recache.progress > 0 ? ` ${Math.round(recache.progress)}%` : "";
+  if (recache && ["queued", "downloading", "validating", "waiting_release", "deleting_old_cache", "publishing"].includes(recache.state)) {
+    const progressVal = Number.isFinite(recache.progress) && recache.progress > 0 ? recache.progress : (item.cache_progress || 0);
+    const progressText = Number.isFinite(progressVal) && progressVal > 0 ? ` ${Math.round(progressVal)}%` : "";
     const msgText = recache.message ? `: ${recache.message}` : "";
-    return `[重新缓存 ${recache.state}${progressText}]${msgText} (旧缓存保持播放中)`;
+    return `[重新缓存 ${recache.state}${progressText}]${msgText}`;
   }
   if (item.cache_status === "ready") {
     return "";
@@ -7928,24 +7929,20 @@ function renderPlayer(currentItem, playbackMode) {
   const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
   const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
   const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
-  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
-
   const signature = [
     currentItem ? currentItem.id : "none",
     playbackMode,
     selectedVideoUrl,
     selectedAudioUrl,
     currentItem ? currentItem.cache_status : "",
-    playerCacheDetailText,
     state.language,
   ].join("|");
 
   if (signature === state.playerSignature) {
     if (hasSplitPlayback) {
       syncMountedLocalPlayer(false);
-    } else {
-      syncPlayerFrameCacheHint(currentItem);
     }
+    syncPlayerFrameCacheHint(currentItem);
     return;
   }
 

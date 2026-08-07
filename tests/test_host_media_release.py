@@ -15,9 +15,16 @@ class HostMediaReleaseTest(unittest.TestCase):
         if not cls.node:
             raise unittest.SkipTest("node is unavailable")
         source = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        cls.release_source = source[
-            source.index("function itemMediaRevision(") : source.index("function render()")
-        ]
+        cls.source = source
+        cls.release_source = cls._slice("function itemMediaRevision(", "function render()")
+        cls.teardown_source = cls._slice("function teardownMountedPlayer(", "function activeLocalPlayerElements()")
+        cls.sync_clear_source = cls._slice("function clearLocalPlayerSyncTimer(", "function playerDelayOverlay()")
+        cls.hide_clear_source = cls._slice("function clearLocalPlayerControlsHideTimer(", "function mountedLocalVideoElement()")
+
+    @classmethod
+    def _slice(cls, start: str, end: str) -> str:
+        start_index = cls.source.index(start)
+        return cls.source[start_index : cls.source.index(end, start_index)]
 
     def run_node(self, body: str) -> dict:
         script = f"""
@@ -27,6 +34,7 @@ const timers = [];
 const window = {{
   setTimeout(callback) {{ timers.push(callback); return timers.length; }},
   clearTimeout() {{}},
+  clearInterval() {{}},
 }};
 function media(kind, revision = "rev-new") {{
   return {{
@@ -36,6 +44,7 @@ function media(kind, revision = "rev-new") {{
     paused: false,
     pauseCalls: 0,
     loadCalls: 0,
+    srcRemoved: false,
     pause() {{ this.paused = true; this.pauseCalls += 1; }},
     load() {{ this.loadCalls += 1; }},
     removeAttribute(name) {{ if (name === "src") this.srcRemoved = true; }},
@@ -50,6 +59,10 @@ const playerFrame = {{
     if (selector.includes("audio")) return audio;
     return null;
   }},
+  querySelectorAll(selector) {{
+    if (selector.includes("video") || selector.includes("audio")) return [video, audio];
+    return [];
+  }},
 }};
 const elements = {{ playerFrame }};
 const state = {{
@@ -60,6 +73,7 @@ const state = {{
   localShouldBePlaying: true,
   playerSignature: "mounted",
   playerContext: {{ mounted: true }},
+  localPlayerEventCleanups: [],
 }};
 let fetchCalls = 0;
 const fetchResults = [];
@@ -71,8 +85,13 @@ function fetch() {{
 }}
 function captureLocalPlayerPreferences() {{}}
 function selectedAudioVariantForItem() {{ return {{ id: "default" }}; }}
-function stopSplitPlayerSync() {{ state.syncStopped = true; }}
+function cancelSplitPlayerSyncCorrection() {{}}
+function clearLocalPlayerSeekState() {{}}
+function clearLocalAdvanceDelay() {{}}
 
+{self.sync_clear_source}
+{self.hide_clear_source}
+{self.teardown_source}
 {self.release_source}
 
 async function flushPromises() {{ await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); }}
@@ -113,6 +132,30 @@ console.log(JSON.stringify({
         self.assertEqual(result["frame"], "mounted")
         self.assertFalse(result["teardown"])
 
+    def test_mounted_revision_matching_tears_down_even_if_current_item_store_fields_transitioned(self):
+        result = self.run_node(
+            """
+const request = { request_id: "transition-request", item_id: "item-1", media_revision: "rev-new" };
+state.data.media_release_request = request;
+// Simulate current_item media_revision cleared or transitioned in state
+state.data.current_item.media_revision = "";
+handleMediaReleaseRequest(request);
+await flushPromises();
+console.log(JSON.stringify({
+  fetchCalls,
+  videoPauseCalls: video.pauseCalls,
+  audioPauseCalls: audio.pauseCalls,
+  frame: playerFrame.innerHTML,
+  teardown: state.activeMediaReleaseRequest.teardownPerformed,
+}));
+"""
+        )
+        self.assertEqual(result["fetchCalls"], 1)
+        self.assertEqual(result["videoPauseCalls"], 1)
+        self.assertEqual(result["audioPauseCalls"], 1)
+        self.assertEqual(result["frame"], "")
+        self.assertTrue(result["teardown"])
+
     def test_matching_release_tears_down_once_and_retries_transient_ack(self):
         result = self.run_node(
             """
@@ -130,6 +173,10 @@ console.log(JSON.stringify({
   fetchCalls,
   videoPauseCalls: video.pauseCalls,
   audioPauseCalls: audio.pauseCalls,
+  videoLoadCalls: video.loadCalls,
+  audioLoadCalls: audio.loadCalls,
+  videoSrcRemoved: video.srcRemoved,
+  audioSrcRemoved: audio.srcRemoved,
   frame: playerFrame.innerHTML,
   ackStatus: state.mediaReleaseAckEntries.get("current-request").status,
   restorePlaying: state.pendingPlaybackRestore.wasPlaying,
@@ -139,6 +186,10 @@ console.log(JSON.stringify({
         self.assertEqual(result["fetchCalls"], 2)
         self.assertEqual(result["videoPauseCalls"], 1)
         self.assertEqual(result["audioPauseCalls"], 1)
+        self.assertEqual(result["videoLoadCalls"], 1)
+        self.assertEqual(result["audioLoadCalls"], 1)
+        self.assertTrue(result["videoSrcRemoved"])
+        self.assertTrue(result["audioSrcRemoved"])
         self.assertEqual(result["frame"], "")
         self.assertEqual(result["ackStatus"], "acknowledged")
         self.assertTrue(result["restorePlaying"])

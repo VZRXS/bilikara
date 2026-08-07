@@ -1322,9 +1322,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.retry_item("song-a", force=True)
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
-                    self.assertEqual(retried.cache_status, "ready")
-                    self.assertEqual(retried.cache_message, "缓存完成")
-                    self.assertEqual(retried.video_media_url, "/media/song-a/video.mp4")
+                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_message, "准备重新下载")
+                    self.assertEqual(retried.video_media_url, "")
                     enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()
@@ -1354,7 +1354,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a", "song-b"}
 
-                manager.retry_item("song-a", force=True)
+                with patch.object(manager, "enqueue") as enqueue_mock:
+                    manager.retry_item("song-a", force=True)
+                enqueue_mock.assert_called_once_with("song-a")
 
                 st_initial = manager.get_recache_status("song-a")
                 self.assertIsNotNone(st_initial)
@@ -1434,7 +1436,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertNotEqual(published_revision, "rev-old-a")
 
                 # Test worker failure path propagates to recache status
-                manager.retry_item("song-a", force=True)
+                with patch.object(manager, "enqueue") as enqueue_mock:
+                    manager.retry_item("song-a", force=True)
+                enqueue_mock.assert_called_once_with("song-a")
 
                 with patch.object(
                     manager,
@@ -1449,6 +1453,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     "_should_cache",
                     return_value=True,
                 ), patch.object(
+                    MEDIA_LEASE_COORDINATOR,
+                    "wait_for_release",
+                    return_value=True,
+                ), patch.object(
                     manager,
                     "_download_selected_streams",
                     side_effect=DownloadCommandError("network timeout"),
@@ -1460,7 +1468,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertIsNotNone(st_fail)
                 self.assertEqual(st_fail["state"], "failed")
                 self.assertIn("network timeout", st_fail["error"])
-                self.assertEqual(self.store.get_item("song-a").media_revision, published_revision)
+                self.assertEqual(self.store.get_item("song-a").cache_status, "failed")
             finally:
                 manager.shutdown()
 
@@ -1481,12 +1489,14 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
 
-                manager.retry_item("song-a", force=True)
+                with patch.object(manager, "enqueue") as enqueue_mock:
+                    manager.retry_item("song-a", force=True)
+                enqueue_mock.assert_called_once_with("song-a")
                 with patch.object(
                     manager,
                     "_ensure_downloader",
                     side_effect=RuntimeError("downloader missing"),
-                ):
+                ), patch("bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_release", return_value=True):
                     result = manager._cache_item("song-a")
 
                 self.assertFalse(result)
@@ -1495,9 +1505,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertEqual(st_fail["state"], "failed")
                 self.assertIn("downloader missing", st_fail["error"])
                 updated_item = self.store.get_item("song-a")
-                self.assertEqual(updated_item.cache_status, "ready")
-                self.assertEqual(updated_item.video_media_url, "/media/a.mp4")
-                self.assertEqual(updated_item.media_revision, "rev-old-a")
+                self.assertEqual(updated_item.cache_status, "failed")
+                self.assertEqual(updated_item.media_revision, "")
             finally:
                 manager.shutdown()
 
@@ -1518,7 +1527,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
 
-                manager.retry_item("song-a", force=True)
+                with patch.object(manager, "enqueue") as enqueue_mock:
+                    manager.retry_item("song-a", force=True)
+                enqueue_mock.assert_called_once_with("song-a")
                 with patch.object(
                     manager,
                     "_ensure_downloader",
@@ -1527,7 +1538,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager,
                     "_ensure_ffmpeg",
                     side_effect=RuntimeError("ffmpeg missing"),
-                ):
+                ), patch("bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_release", return_value=True):
                     result = manager._cache_item("song-a")
 
                 self.assertFalse(result)
@@ -1536,9 +1547,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertEqual(st_fail["state"], "failed")
                 self.assertIn("ffmpeg missing", st_fail["error"])
                 updated_item = self.store.get_item("song-a")
-                self.assertEqual(updated_item.cache_status, "ready")
-                self.assertEqual(updated_item.video_media_url, "/media/a.mp4")
-                self.assertEqual(updated_item.media_revision, "rev-old-a")
+                self.assertEqual(updated_item.cache_status, "failed")
+                self.assertEqual(updated_item.media_revision, "")
             finally:
                 manager.shutdown()
 
