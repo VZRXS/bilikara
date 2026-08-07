@@ -1,3 +1,4 @@
+import io
 import json
 import shutil
 import subprocess
@@ -654,6 +655,58 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
         self.assertEqual(result["firstStage"], "stage_0")
         self.assertEqual(result["lastStage"], "stage_15")
 
+    def test_save_tauri_backend_download_path_isolation(self):
+        save_source = self.function_source(
+            self.sources["host"],
+            "async function saveTauriBackendDownload",
+            "async function setTauriWindowFullscreen",
+        )
+        calls = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            const NativeURLSearchParams = global.URLSearchParams;
+            global.window = global;
+            window.BilikaraExportDownload = helper;
+            global.URLSearchParams = NativeURLSearchParams;
+            const state = { clientId: "client-1" };
+            function t(key) { return key; }
+            function clientHeaders() { return { "X-Bilikara-Client": state.clientId }; }
+            function tauriInvoke() { return window.__TAURI__?.core?.invoke || null; }
+            function isTauriCommandNotFoundError() { return false; }
+            const invokedArgs = [];
+            window.__TAURI__ = {
+              core: {
+                invoke(cmd, args) {
+                  invokedArgs.push({ cmd, args });
+                  return Promise.resolve({
+                    status: "saved", stage: "complete", format: "zip", source: "diagnostics",
+                    pageSize: 10, httpStatus: 200, contentType: "application/zip", bytes: 100,
+                    filenameExtension: "zip", elapsedMs: 10, stageTimings: [], errorCode: null, errorMessage: null,
+                  });
+                }
+              }
+            };
+            """ + save_source + """
+            (async () => {
+              await saveTauriBackendDownload("/api/diagnostics/package", JSON.stringify({ browser: {} }));
+              await saveTauriBackendDownload("/api/playlist/export?format=csv", null);
+              process.stdout.write(JSON.stringify(invokedArgs));
+            })().catch((err) => { console.error(err); process.exit(1); });
+            """,
+            str(self.helper),
+        )
+        self.assertEqual(len(calls), 2)
+
+        diag_path = calls[0]["args"]["request"]["path"]
+        self.assertEqual(diag_path, "/api/diagnostics/package")
+        self.assertNotIn("?", diag_path)
+        self.assertNotIn("request_id", diag_path)
+        self.assertNotIn("requestId", diag_path)
+
+        playlist_path = calls[1]["args"]["request"]["path"]
+        self.assertTrue(playlist_path.startswith("/api/playlist/export"))
+        self.assertIn("request_id=", playlist_path)
+
     def run_export_guard_error(self, frontend: str, rejection_kind: str) -> dict:
         next_marker = "function diagnosticBrowserInfo" if frontend == "host" else "async function submitAddRequest"
         function_source = self.function_source(
@@ -717,5 +770,276 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
                 self.assertFalse(result["busy"])
 
 
+class ImageExportDiagnosticsTest(unittest.TestCase):
+
+    def test_playlist_image_export_populates_structured_timing_keys(self):
+        from bilikara.playlist_export import playlist_image_export
+        items = [
+            {
+                "id": "song-1",
+                "title": "Test Song 1",
+                "display_title": "Test Song 1",
+                "bvid": "BV1234567890",
+                "requester_name": "Alice",
+            }
+        ]
+        timings: dict[str, Any] = {}
+        payload, content_type, filename = playlist_image_export(items, timings=timings)
+        self.assertTrue(len(payload) > 0)
+        self.assertEqual(content_type, "image/png")
+        self.assertEqual(filename, "bilikara-playlist.png")
+        expected_keys = {
+            "pillow_import",
+            "prepare_items_and_pages",
+            "font_discovery",
+            "font_load",
+            "font_cmap_cold_parse_ms",
+            "font_cmap_cold_miss_count",
+            "font_cmap_cold_bytes_read",
+            "page_count",
+            "page_render_total_ms",
+            "page_render_max_ms",
+            "png_encode_total_ms",
+            "zip_write_finalize_ms",
+            "total_image_export",
+        }
+        self.assertEqual(set(timings.keys()), expected_keys)
+        self.assertEqual(timings["page_count"], 1)
+        self.assertEqual(timings["zip_write_finalize_ms"], 0.0)
+        for key, val in timings.items():
+            if isinstance(val, float):
+                self.assertGreaterEqual(val, 0.0)
+
+    def test_cold_vs_warm_font_cmap_cache(self):
+        from bilikara.playlist_export import _font_codepoints_for_path, playlist_image_export
+        items = [
+            {
+                "id": "song-1",
+                "title": "Cold Font Test",
+                "display_title": "Cold Font Test",
+                "bvid": "BV1234567890",
+            }
+        ]
+        _font_codepoints_for_path.cache_clear()
+        timings_cold: dict[str, Any] = {}
+        playlist_image_export(items, timings=timings_cold)
+
+        timings_warm: dict[str, Any] = {}
+        playlist_image_export(items, timings=timings_warm)
+
+        self.assertGreater(timings_cold["font_cmap_cold_miss_count"], 0)
+        self.assertGreater(timings_cold["font_cmap_cold_bytes_read"], 0)
+        self.assertEqual(timings_warm["font_cmap_cold_miss_count"], 0)
+        self.assertEqual(timings_warm["font_cmap_cold_bytes_read"], 0)
+        self.assertEqual(timings_warm["font_cmap_cold_parse_ms"], 0.0)
+
+    def test_single_page_png_export(self):
+        from bilikara.playlist_export import playlist_image_export
+        items = [{"id": "s1", "title": "Single Item", "display_title": "Single Item"}]
+        timings: dict[str, Any] = {}
+        payload, content_type, filename = playlist_image_export(items, page_size=80, timings=timings)
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(content_type, "image/png")
+        self.assertEqual(filename, "bilikara-playlist.png")
+        self.assertEqual(timings["page_count"], 1)
+        self.assertEqual(timings["zip_write_finalize_ms"], 0.0)
+
+    def test_multipage_zip_export(self):
+        import zipfile
+        from bilikara.playlist_export import playlist_image_export
+        items = [
+            {"id": f"s-{i}", "title": f"Song {i}", "display_title": f"Song {i}"}
+            for i in range(100)
+        ]
+        timings: dict[str, Any] = {}
+        payload, content_type, filename = playlist_image_export(items, page_size=80, timings=timings)
+        self.assertTrue(payload.startswith(b"PK\x03\x04"))
+        self.assertEqual(content_type, "application/zip")
+        self.assertEqual(filename, "bilikara-playlist-images.zip")
+        self.assertEqual(timings["page_count"], 2)
+        self.assertGreaterEqual(timings["png_encode_total_ms"], 0.0)
+        self.assertGreaterEqual(timings["zip_write_finalize_ms"], 0.0)
+        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+            self.assertEqual(len(zf.namelist()), 2)
+            self.assertIn("bilikara-playlist-page-01.png", zf.namelist())
+            self.assertIn("bilikara-playlist-page-02.png", zf.namelist())
+
+    def test_image_export_diagnostics_propagation_to_artifact(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import MagicMock
+        from bilikara.server import CONTEXT, BilikaraHandler
+
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.connection = MagicMock()
+        handler.connection.getsockname.return_value = ("127.0.0.1", 8080)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.path = "/api/playlist/export?format=image"
+        handler.context = CONTEXT
+
+        context = {
+            "format": "image",
+            "source": "history",
+            "page_size": 80,
+            "request_id": "req-diag-123",
+            "item_count": 1,
+            "payload_size": 2048,
+            "started_at": 1000.0,
+            "image_export_timings": {
+                "pillow_import": 1.2,
+                "prepare_items_and_pages": 0.5,
+                "font_discovery": 12.3,
+                "font_load": 45.6,
+                "font_cmap_cold_parse_ms": 8.9,
+                "font_cmap_cold_miss_count": 1,
+                "font_cmap_cold_bytes_read": 10240,
+                "page_count": 1,
+                "page_render_total_ms": 30.1,
+                "page_render_max_ms": 30.1,
+                "png_encode_total_ms": 15.4,
+                "zip_write_finalize_ms": 0.0,
+                "total_image_export": 114.0,
+            },
+        }
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handler._log_export_stage("export_payload_ready", context)
+
+        artifact = CONTEXT.build_diagnostics()
+        self.assertIn("export-diagnostics.json", artifact.files)
+        sanitized_export = json.loads(artifact.files["export-diagnostics.json"].decode("utf-8"))
+        matched_entry = next((e for e in sanitized_export if e.get("requestId") == "req-diag-123"), None)
+        self.assertIsNotNone(matched_entry)
+        self.assertEqual(matched_entry["surface"], "server")
+        self.assertEqual(matched_entry["format"], "image")
+        self.assertIn("imageExportTimings", matched_entry)
+        self.assertEqual(matched_entry["imageExportTimings"]["font_discovery"], 12.3)
+        self.assertEqual(matched_entry["imageExportTimings"]["font_cmap_cold_miss_count"], 1)
+
+    def test_privacy_and_csv_export_isolation(self):
+        from bilikara.playlist_export import playlist_csv_bytes
+        from bilikara.server import CONTEXT
+
+        csv_bytes = playlist_csv_bytes([{"id": "c1", "title": "CSV Title", "display_title": "CSV Title"}])
+        self.assertTrue(len(csv_bytes) > 0)
+        self.assertTrue(csv_bytes.startswith(b"\xef\xbb\xbf"))
+
+    def test_backend_export_preserves_supplied_request_id(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import MagicMock
+        from bilikara.server import CONTEXT, BilikaraHandler
+
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.connection = MagicMock()
+        handler.connection.getsockname.return_value = ("127.0.0.1", 8080)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.path = "/api/playlist/export?format=image&request_id=req-correlation-123"
+        handler.context = CONTEXT
+
+        context = {
+            "format": "image",
+            "source": "history",
+            "page_size": 80,
+            "request_id": "req-correlation-123",
+            "item_count": 1,
+            "payload_size": 1024,
+            "started_at": 1000.0,
+            "image_export_timings": {"total_image_export": 50.0},
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handler._log_export_stage("export_payload_ready", context)
+
+        snapshot = CONTEXT.export_diagnostics_snapshot()
+        matched = next((e for e in snapshot if e.get("requestId") == "req-correlation-123"), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["surface"], "server")
+        self.assertEqual(matched["requestId"], "req-correlation-123")
+
+    def test_diagnostics_artifact_correlates_native_and_server_records(self):
+        from bilikara.server import CONTEXT
+
+        native_record = {
+            "timestamp": "2026-08-07T12:00:00Z",
+            "surface": "host",
+            "runtime": "tauri",
+            "format": "image",
+            "source": "history",
+            "pageSize": 80,
+            "stage": "complete",
+            "status": "saved",
+            "httpStatus": 200,
+            "contentType": "image/png",
+            "bytes": 2048,
+            "filenameExtension": "png",
+            "elapsedMs": 120,
+            "requestId": "req-corr-456",
+        }
+        server_record = {
+            "timestamp": "2026-08-07T12:00:00Z",
+            "surface": "server",
+            "runtime": "python",
+            "format": "image",
+            "source": "history",
+            "pageSize": 80,
+            "stage": "export_payload_ready",
+            "status": "completed",
+            "httpStatus": 200,
+            "bytes": 2048,
+            "elapsedMs": 95.0,
+            "requestId": "req-corr-456",
+            "imageExportTimings": {
+                "pillow_import": 1.0,
+                "total_image_export": 95.0,
+            },
+        }
+
+        CONTEXT.record_export_diagnostic(native_record)
+        CONTEXT.record_export_diagnostic(server_record)
+
+        artifact = CONTEXT.build_diagnostics()
+        self.assertIn("export-diagnostics.json", artifact.files)
+        data = json.loads(artifact.files["export-diagnostics.json"].decode("utf-8"))
+        correlated = [e for e in data if e.get("requestId") == "req-corr-456"]
+        self.assertEqual(len(correlated), 2)
+        surfaces = {e["surface"] for e in correlated}
+        self.assertEqual(surfaces, {"host", "server"})
+        server_item = next(e for e in correlated if e["surface"] == "server")
+        self.assertIn("imageExportTimings", server_item)
+        self.assertEqual(server_item["imageExportTimings"]["total_image_export"], 95.0)
+
+    def test_backend_export_generates_fallback_request_id_when_omitted(self):
+        from contextlib import redirect_stdout
+        from unittest.mock import MagicMock
+        from bilikara.server import CONTEXT, BilikaraHandler
+
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.connection = MagicMock()
+        handler.connection.getsockname.return_value = ("127.0.0.1", 8080)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.path = "/api/playlist/export?format=image"
+        handler.context = CONTEXT
+
+        context = {
+            "format": "image",
+            "source": "history",
+            "page_size": 80,
+            "request_id": "fallback-generated-id-789",
+            "item_count": 1,
+            "payload_size": 1024,
+            "started_at": 1000.0,
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            handler._log_export_stage("export_payload_ready", context)
+
+        snapshot = CONTEXT.export_diagnostics_snapshot()
+        matched = next((e for e in snapshot if e.get("requestId") == "fallback-generated-id-789"), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["surface"], "server")
+        self.assertTrue(len(matched["requestId"]) > 0)
+
+
 if __name__ == "__main__":
     unittest.main()
+

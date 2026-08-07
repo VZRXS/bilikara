@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 from collections import deque
+from datetime import datetime, timezone
 from email.utils import formatdate
 import hmac
 import ipaddress
@@ -263,6 +264,30 @@ class AppContext:
         self._rating_submission_key_order: deque[tuple[str, str]] = deque()
         self._repair_action_lock = threading.RLock()
         self._repair_actions: deque[dict[str, object]] = deque(maxlen=50)
+        self._export_diagnostic_lock = threading.RLock()
+        self._export_diagnostics: deque[dict[str, object]] = deque(maxlen=64)
+
+    def record_export_diagnostic(self, entry: dict[str, object]) -> None:
+        lock = getattr(self, "_export_diagnostic_lock", None)
+        ring = getattr(self, "_export_diagnostics", None)
+        if ring is None:
+            ring = deque(maxlen=64)
+            self._export_diagnostics = ring
+        if lock is not None:
+            with lock:
+                ring.append(entry)
+        else:
+            ring.append(entry)
+
+    def export_diagnostics_snapshot(self) -> list[dict[str, object]]:
+        lock = getattr(self, "_export_diagnostic_lock", None)
+        ring = getattr(self, "_export_diagnostics", None)
+        if ring is None:
+            return []
+        if lock is not None:
+            with lock:
+                return list(ring)
+        return list(ring)
 
     def snapshot(self) -> dict:
         self.cache_manager.reconcile_cache_state()
@@ -332,12 +357,15 @@ class AppContext:
             str(name)
             for name in store_snapshot.get("session_users") or []
         ]
+        combined_export = self.export_diagnostics_snapshot()
+        if export_diagnostics and isinstance(export_diagnostics, list):
+            combined_export.extend(export_diagnostics)
         return build_diagnostic_artifact(
             cache_manager=self.cache_manager,
             cache_policy=self.cache_manager.policy_snapshot(metrics),
             runtime_state=runtime_state,
             browser_info=browser_info,
-            export_diagnostics=export_diagnostics,
+            export_diagnostics=combined_export,
             local_usernames=local_usernames,
         )
 
@@ -1251,10 +1279,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 export_page_size = 200
             export_page_size = export_page_size if export_page_size in {200, 150, 100, 80, 60, 50} else 200
+            req_id = str(query.get("request_id", [""])[0] or query.get("requestId", [""])[0] or "").strip()
+            if not req_id:
+                req_id = uuid.uuid4().hex[:12]
             export_context = {
                 "started_at": time.monotonic(),
                 "format": export_format,
                 "source": export_source,
+                "page_size": export_page_size,
+                "request_id": req_id,
                 "item_count": 0,
                 "payload_size": 0,
             }
@@ -1312,12 +1345,16 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     )
                     return
                 if export_format == "image":
+                    image_export_timings: dict[str, float] = {}
                     payload, content_type, default_filename = playlist_image_export(
                         history,
                         logo_path=_playlist_export_logo_path(),
                         title=str(settings["title"]),
                         page_size=export_page_size,
+                        timings=image_export_timings,
                     )
+                    if image_export_timings:
+                        export_context["image_export_timings"] = image_export_timings
                     suffix = Path(default_filename).suffix or ".png"
                     filename = f"bilikara-{settings['filename']}-{timestamp}{suffix}"
                     export_context["payload_size"] = len(payload)
@@ -2413,9 +2450,35 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             "launch_mode": str(os.getenv("BILIKARA_LAUNCH_MODE", "") or "web")[:40],
             "request_path": str(getattr(self, "path", "")),
         }
+        if "image_export_timings" in context:
+            record["image_export_timings"] = context["image_export_timings"]
         if error:
             record["error"] = error
         print("[playlist-export] " + json.dumps(record, ensure_ascii=False, default=str), flush=True)
+
+        if stage in ("export_payload_ready", "export_failed", "export_download_completed"):
+            status_val = "failed" if error else ("saved" if stage == "export_download_completed" else "completed")
+            server_entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "surface": "server",
+                "runtime": "python",
+                "format": context.get("format"),
+                "source": context.get("source"),
+                "pageSize": context.get("page_size"),
+                "stage": stage,
+                "status": status_val,
+                "httpStatus": 200 if not error else 400,
+                "bytes": context.get("payload_size"),
+                "elapsedMs": round((time.monotonic() - float(context["started_at"])) * 1000, 1),
+                "requestId": context.get("request_id"),
+                "imageExportTimings": context.get("image_export_timings"),
+            }
+            if error:
+                server_entry["errorCode"] = "EXPORT_FAILED"
+                server_entry["errorMessage"] = str(error)
+            context_obj = getattr(self, "context", CONTEXT)
+            if hasattr(context_obj, "record_export_diagnostic"):
+                context_obj.record_export_diagnostic(server_entry)
 
     @staticmethod
     def _sanitized_diagnostic_error(error: BaseException) -> str:

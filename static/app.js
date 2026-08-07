@@ -1015,9 +1015,12 @@ async function saveTauriBackendDownload(path, body = null, fallback = t("history
   let parsedFormat = extraContext.format || null;
   let parsedSource = extraContext.source || null;
   let parsedPageSize = extraContext.pageSize || null;
-  if (path && typeof path === "string" && path.includes("?")) {
+
+  let requestId = extraContext.requestId || null;
+  let targetPath = path;
+  if (targetPath && typeof targetPath === "string") {
     try {
-      const dummyUrl = new URL(path, "http://bilikara.invalid");
+      const dummyUrl = new URL(targetPath, "http://bilikara.invalid");
       if (!parsedFormat && dummyUrl.searchParams.has("format")) {
         parsedFormat = dummyUrl.searchParams.get("format");
       }
@@ -1027,8 +1030,38 @@ async function saveTauriBackendDownload(path, body = null, fallback = t("history
       if (!parsedPageSize && dummyUrl.searchParams.has("page_size")) {
         parsedPageSize = Number(dummyUrl.searchParams.get("page_size")) || null;
       }
+      if (!requestId) {
+        if (dummyUrl.searchParams.has("request_id")) {
+          requestId = dummyUrl.searchParams.get("request_id");
+        } else if (dummyUrl.searchParams.has("requestId")) {
+          requestId = dummyUrl.searchParams.get("requestId");
+        }
+      }
+      const isPlaylistExport = dummyUrl.pathname === "/api/playlist/export";
+      if (isPlaylistExport) {
+        if (!requestId) {
+          requestId = exportDownload?.generateRequestId ? exportDownload.generateRequestId() : ("req_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4));
+        }
+        if (!dummyUrl.searchParams.has("request_id") && !dummyUrl.searchParams.has("requestId")) {
+          dummyUrl.searchParams.set("request_id", requestId);
+          targetPath = dummyUrl.pathname + dummyUrl.search;
+        }
+      } else {
+        targetPath = dummyUrl.pathname + dummyUrl.search;
+      }
     } catch {
-      // Ignore URL parsing errors.
+      if (targetPath.startsWith("/api/playlist/export")) {
+        if (!requestId) {
+          requestId = exportDownload?.generateRequestId ? exportDownload.generateRequestId() : ("req_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4));
+        }
+        if (!targetPath.includes("request_id=") && !targetPath.includes("requestId=")) {
+          targetPath += (targetPath.includes("?") ? "&" : "?") + "request_id=" + encodeURIComponent(requestId);
+        }
+      }
+    }
+  } else {
+    if (!requestId) {
+      requestId = exportDownload?.generateRequestId ? exportDownload.generateRequestId() : ("req_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4));
     }
   }
 
@@ -1036,7 +1069,7 @@ async function saveTauriBackendDownload(path, body = null, fallback = t("history
   try {
     result = await invoke("save_backend_download", {
       request: {
-        path,
+        path: targetPath,
         body,
         clientId: state.clientId,
       },
@@ -1061,6 +1094,7 @@ async function saveTauriBackendDownload(path, body = null, fallback = t("history
         pageSize: parsedPageSize,
         stage: "invoke",
         status: "failed",
+        requestId,
         errorCode: "INVOKE_REJECTED",
         errorMessage: errMessage,
         elapsedMs: Date.now() - startTime,
@@ -1087,6 +1121,7 @@ async function saveTauriBackendDownload(path, body = null, fallback = t("history
         pageSize: parsedPageSize,
         stage: "validate_native_result",
         status: "failed",
+        requestId,
         errorCode: "MALFORMED_NATIVE_RESULT",
         errorMessage: errMessage,
         elapsedMs: Date.now() - startTime,
@@ -1111,6 +1146,7 @@ async function saveTauriBackendDownload(path, body = null, fallback = t("history
       filenameExtension: result.filenameExtension || null,
       elapsedMs: typeof result.elapsedMs === "number" ? result.elapsedMs : (Date.now() - startTime),
       stageTimings: result.stageTimings || null,
+      requestId,
       errorCode: result.errorCode || null,
       errorMessage: result.errorMessage || null,
     });
@@ -10219,17 +10255,21 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
   if (!["csv", "image"].includes(normalizedFormat)) {
     return;
   }
+  const exportDownload = window.BilikaraExportDownload;
+  const requestId = exportDownload?.generateRequestId
+    ? exportDownload.generateRequestId()
+    : ("req_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4));
   const params = new URLSearchParams({
     format: normalizedFormat,
     source: normalizedSource,
     page_size: String(normalizedPageSize),
+    request_id: requestId,
   });
   const exportUrl = `/api/playlist/export?${params.toString()}`;
   const tauriStatus = await saveTauriBackendDownload(exportUrl);
   if (tauriStatus !== null) {
     return tauriStatus === "saved";
   }
-  const exportDownload = window.BilikaraExportDownload;
   if (!exportDownload
     || typeof exportDownload.downloadBrowserFile !== "function") {
     throw new Error(t("history.exportFailed"));
@@ -10245,6 +10285,7 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
     format: normalizedFormat,
     source: normalizedSource,
     pageSize: normalizedPageSize,
+    requestId,
   });
 }
 

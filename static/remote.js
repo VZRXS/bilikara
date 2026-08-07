@@ -2187,13 +2187,17 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
   if (!["csv", "image"].includes(normalizedFormat)) {
     return;
   }
+  const exportDownload = window.BilikaraExportDownload;
+  const requestId = exportDownload?.generateRequestId
+    ? exportDownload.generateRequestId()
+    : ("req_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4));
   const params = new URLSearchParams({
     format: normalizedFormat,
     source: normalizedSource,
     page_size: String(normalizedPageSize),
+    request_id: requestId,
   });
   const exportUrl = `/api/playlist/export?${params.toString()}`;
-  const exportDownload = window.BilikaraExportDownload;
   if (!exportDownload
     || typeof exportDownload.downloadBrowserFile !== "function") {
     throw new Error(t("history.exportFailed"));
@@ -2205,6 +2209,11 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     fallbackFilename,
     fallbackMessage: t("history.exportFailed"),
     headers: clientHeaders(),
+    surface: "remote",
+    format: normalizedFormat,
+    source: normalizedSource,
+    pageSize: normalizedPageSize,
+    requestId,
   });
 }
 

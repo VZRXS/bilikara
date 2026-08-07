@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import os
@@ -7,6 +8,8 @@ import re
 import shutil
 import struct
 import subprocess
+import threading
+import time
 import zipfile
 from datetime import datetime
 from functools import lru_cache
@@ -23,6 +26,47 @@ QR_QUIET_MODULES = 2
 
 _BV_RE = re.compile(r"(BV[0-9A-Za-z]+)", re.IGNORECASE)
 _AV_RE = re.compile(r"(av\d+)", re.IGNORECASE)
+
+_IMAGE_EXPORT_TRACKER = threading.local()
+
+
+class _ImageExportTimingTracker:
+    def __init__(self) -> None:
+        self.font_discovery_ms = 0.0
+        self.font_load_ms = 0.0
+        self.font_cmap_cold_parse_ms = 0.0
+        self.font_cmap_cold_miss_count = 0
+        self.font_cmap_cold_bytes_read = 0
+
+
+@contextlib.contextmanager
+def _export_timing_scope():
+    tracker = _ImageExportTimingTracker()
+    _IMAGE_EXPORT_TRACKER.current = tracker
+    try:
+        yield tracker
+    finally:
+        _IMAGE_EXPORT_TRACKER.current = None
+
+
+def _record_cmap_cold_parse(ms: float, *, bytes_read: int) -> None:
+    tracker = getattr(_IMAGE_EXPORT_TRACKER, "current", None)
+    if tracker is not None:
+        tracker.font_cmap_cold_parse_ms += ms
+        tracker.font_cmap_cold_miss_count += 1
+        tracker.font_cmap_cold_bytes_read += bytes_read
+
+
+def _record_font_discovery_ms(ms: float) -> None:
+    tracker = getattr(_IMAGE_EXPORT_TRACKER, "current", None)
+    if tracker is not None:
+        tracker.font_discovery_ms += ms
+
+
+def _record_font_load_ms(ms: float) -> None:
+    tracker = getattr(_IMAGE_EXPORT_TRACKER, "current", None)
+    if tracker is not None:
+        tracker.font_load_ms += ms
 
 
 def playlist_csv_bytes(items: list[dict[str, Any]], *, time_header: str = "点歌时间") -> bytes:
@@ -71,50 +115,105 @@ def playlist_image_export(
     logo_path: Path | None = None,
     title: str = "bilikara 歌单导出",
     page_size: int = PLAYLIST_IMAGE_PAGE_SIZE,
+    timings: dict[str, float] | None = None,
 ) -> tuple[bytes, str, str]:
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except ImportError as exc:  # pragma: no cover - depends on optional runtime dependency
-        raise RuntimeError("图片导出需要安装 Pillow：py -m pip install Pillow") from exc
+    t_start = time.perf_counter()
+    with _export_timing_scope() as tracker:
+        t0 = time.perf_counter()
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError as exc:  # pragma: no cover - depends on optional runtime dependency
+            raise RuntimeError("图片导出需要安装 Pillow：py -m pip install Pillow") from exc
+        t_pillow_import = (time.perf_counter() - t0) * 1000
 
-    ordered_items = _items_in_export_order(items)
-    try:
-        normalized_page_size = max(1, int(page_size))
-    except (TypeError, ValueError):
-        normalized_page_size = PLAYLIST_IMAGE_PAGE_SIZE
-    pages = [
-        ordered_items[index : index + normalized_page_size]
-        for index in range(0, max(1, len(ordered_items)), normalized_page_size)
-    ]
-    rendered_pages = [
-        _render_playlist_page(
-            page,
-            page_number=page_index + 1,
-            page_count=len(pages),
-            start_index=page_index * normalized_page_size,
-            total_count=len(ordered_items),
-            logo_path=logo_path,
-            title=title,
-            time_range=_calculate_time_range(ordered_items),
-            image_module=Image,
-            draw_module=ImageDraw,
-            font_module=ImageFont,
-        )
-        for page_index, page in enumerate(pages)
-    ]
+        t0 = time.perf_counter()
+        ordered_items = _items_in_export_order(items)
+        try:
+            normalized_page_size = max(1, int(page_size))
+        except (TypeError, ValueError):
+            normalized_page_size = PLAYLIST_IMAGE_PAGE_SIZE
+        pages = [
+            ordered_items[index : index + normalized_page_size]
+            for index in range(0, max(1, len(ordered_items)), normalized_page_size)
+        ]
+        time_range = _calculate_time_range(ordered_items)
+        t_prep = (time.perf_counter() - t0) * 1000
 
-    if len(rendered_pages) == 1:
-        output = io.BytesIO()
-        rendered_pages[0].save(output, format="PNG", optimize=True)
-        return output.getvalue(), "image/png", "bilikara-playlist.png"
+        page_render_times: list[float] = []
+        rendered_pages = []
+        for page_index, page in enumerate(pages):
+            t_p0 = time.perf_counter()
+            rendered_page = _render_playlist_page(
+                page,
+                page_number=page_index + 1,
+                page_count=len(pages),
+                start_index=page_index * normalized_page_size,
+                total_count=len(ordered_items),
+                logo_path=logo_path,
+                title=title,
+                time_range=time_range,
+                image_module=Image,
+                draw_module=ImageDraw,
+                font_module=ImageFont,
+            )
+            dt_p = (time.perf_counter() - t_p0) * 1000
+            page_render_times.append(dt_p)
+            rendered_pages.append(rendered_page)
 
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for index, page in enumerate(rendered_pages, start=1):
+        page_count = len(rendered_pages)
+        page_render_total_ms = sum(page_render_times)
+        page_render_max_ms = max(page_render_times) if page_render_times else 0.0
+
+        png_encode_times: list[float] = []
+        zip_write_finalize_ms = 0.0
+
+        if page_count == 1:
+            t0 = time.perf_counter()
             output = io.BytesIO()
-            page.save(output, format="PNG", optimize=True)
-            zf.writestr(f"bilikara-playlist-page-{index:02d}.png", output.getvalue())
-    return archive.getvalue(), "application/zip", "bilikara-playlist-images.zip"
+            rendered_pages[0].save(output, format="PNG", optimize=True)
+            dt_png = (time.perf_counter() - t0) * 1000
+            png_encode_times.append(dt_png)
+            res = (output.getvalue(), "image/png", "bilikara-playlist.png")
+        else:
+            png_bytes_list: list[bytes] = []
+            for page in rendered_pages:
+                t0 = time.perf_counter()
+                output = io.BytesIO()
+                page.save(output, format="PNG", optimize=True)
+                dt_png = (time.perf_counter() - t0) * 1000
+                png_encode_times.append(dt_png)
+                png_bytes_list.append(output.getvalue())
+
+            t0_zip = time.perf_counter()
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for index, png_data in enumerate(png_bytes_list, start=1):
+                    zf.writestr(f"bilikara-playlist-page-{index:02d}.png", png_data)
+            zip_write_finalize_ms = (time.perf_counter() - t0_zip) * 1000
+            res = (archive.getvalue(), "application/zip", "bilikara-playlist-images.zip")
+
+        png_encode_total_ms = sum(png_encode_times)
+        t_total = (time.perf_counter() - t_start) * 1000
+
+        measured_timings = {
+            "pillow_import": round(t_pillow_import, 1),
+            "prepare_items_and_pages": round(t_prep, 1),
+            "font_discovery": round(tracker.font_discovery_ms, 1),
+            "font_load": round(tracker.font_load_ms, 1),
+            "font_cmap_cold_parse_ms": round(tracker.font_cmap_cold_parse_ms, 1),
+            "font_cmap_cold_miss_count": tracker.font_cmap_cold_miss_count,
+            "font_cmap_cold_bytes_read": tracker.font_cmap_cold_bytes_read,
+            "page_count": page_count,
+            "page_render_total_ms": round(page_render_total_ms, 1),
+            "page_render_max_ms": round(page_render_max_ms, 1),
+            "png_encode_total_ms": round(png_encode_total_ms, 1),
+            "zip_write_finalize_ms": round(zip_write_finalize_ms, 1),
+            "total_image_export": round(t_total, 1),
+        }
+        if timings is not None:
+            timings.update(measured_timings)
+
+        return res
 
 
 def _render_playlist_page(
@@ -366,11 +465,16 @@ def _font_codepoints(font: Any) -> frozenset[int] | None:
 @lru_cache(maxsize=64)
 def _font_codepoints_for_path(path: str, face_index: int, mtime_ns: int, size: int) -> frozenset[int] | None:
     del mtime_ns, size
+    t0 = time.perf_counter()
+    bytes_read = 0
     try:
         data = Path(path).read_bytes()
+        bytes_read = len(data)
         codepoints = _parse_font_codepoints(data, face_index)
     except (OSError, struct.error, ValueError):
         return None
+    finally:
+        _record_cmap_cold_parse((time.perf_counter() - t0) * 1000, bytes_read=bytes_read)
     return frozenset(codepoints) if codepoints is not None else None
 
 
@@ -643,6 +747,11 @@ def _draw_text_with_fallback(draw: Any, xy: tuple[int, int], text: str, fill: st
 
 
 def _load_font(font_module: Any, size: int, *, bold: bool = False) -> list[Any]:
+    t_disc_start = time.perf_counter()
+    sys_font = _find_system_font(bold=bold)
+    t_disc_end = time.perf_counter()
+    _record_font_discovery_ms((t_disc_end - t_disc_start) * 1000)
+
     candidates = [
         "static/fonts/SourceHanSans-VF.ttf",
         # Windows Fonts
@@ -697,8 +806,9 @@ def _load_font(font_module: Any, size: int, *, bold: bool = False) -> list[Any]:
         "/usr/share/fonts/truetype/arphic/uming.ttc",
         "/usr/share/fonts/truetype/arphic/ukai.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        _find_system_font(bold=bold),
+        sys_font,
     ]
+    t_load_start = time.perf_counter()
     loaded_fonts = []
     seen_paths = set()
     for candidate in candidates:
@@ -735,6 +845,8 @@ def _load_font(font_module: Any, size: int, *, bold: bool = False) -> list[Any]:
 
     if not loaded_fonts:
         loaded_fonts.append(font_module.load_default())
+    t_load_end = time.perf_counter()
+    _record_font_load_ms((t_load_end - t_load_start) * 1000)
     return loaded_fonts
 
 
