@@ -48,6 +48,7 @@ pub enum UpdateAction {
     NormalUpgrade,
     PreviewToStable,
     DevelopmentToStable,
+    DevelopmentToPreview,
     NoAction,
 }
 
@@ -178,6 +179,10 @@ pub fn decide_release_update(
     let (action, reason) = match parsed_version_sort_key(&request.current_version) {
         None if selected_is_stable => (
             UpdateAction::DevelopmentToStable,
+            UpdateReason::DevelopmentBuild,
+        ),
+        None if request.include_preview => (
+            UpdateAction::DevelopmentToPreview,
             UpdateReason::DevelopmentBuild,
         ),
         None => (
@@ -516,6 +521,15 @@ mod tests {
                 releases: vec![("v0.6.4", false, false)],
                 selected_index: Some(0),
                 action: UpdateAction::DevelopmentToStable,
+                reason: UpdateReason::DevelopmentBuild,
+            },
+            Case {
+                name: "development build switches to preview when preview enabled",
+                current: "v0.7.0-preview.3-12-gabcdef",
+                include_preview: true,
+                releases: vec![("v0.7.0-preview.3", false, true)],
+                selected_index: Some(0),
+                action: UpdateAction::DevelopmentToPreview,
                 reason: UpdateReason::DevelopmentBuild,
             },
             Case {

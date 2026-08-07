@@ -10524,6 +10524,7 @@ async function checkAppUpdate(event) {
       "normal_upgrade",
       "preview_to_stable",
       "development_to_stable",
+      "development_to_preview",
     ]);
     const updateInstallable = updateAction
       ? installableActions.has(updateAction)
@@ -10533,6 +10534,7 @@ async function checkAppUpdate(event) {
     if (updateInstallable) {
       const isChannelSwitch = updateAction === "preview_to_stable"
         || updateAction === "development_to_stable"
+        || updateAction === "development_to_preview"
         || (!updateAction && result?.switch_to_release_available === true);
       const fallbackMessage = isChannelSwitch
         ? t("service.switchReleasePrompt")

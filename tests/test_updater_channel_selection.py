@@ -103,6 +103,51 @@ DECISION_CASES = (
         "reason": "development_build",
     },
     {
+        "name": "dev to preview with preview enabled",
+        "current": "v0.7.0-preview.3-12-gabcdef",
+        "include_preview": True,
+        "releases": [release("v0.7.0-preview.3")],
+        "latest": "v0.7.0-preview.3",
+        "action": "development_to_preview",
+        "reason": "development_build",
+    },
+    {
+        "name": "dev to preview dirty tag",
+        "current": "v0.7.0-preview.3-dirty",
+        "include_preview": True,
+        "releases": [release("v0.7.0-preview.4")],
+        "latest": "v0.7.0-preview.4",
+        "action": "development_to_preview",
+        "reason": "development_build",
+    },
+    {
+        "name": "dev to preview raw sha tag",
+        "current": "abcdef123",
+        "include_preview": True,
+        "releases": [release("v0.7.0-preview.3")],
+        "latest": "v0.7.0-preview.3",
+        "action": "development_to_preview",
+        "reason": "development_build",
+    },
+    {
+        "name": "dev to stable when latest is stable and preview enabled",
+        "current": "v0.7.0-preview.3-12-gabcdef",
+        "include_preview": True,
+        "releases": [release("v0.7.0")],
+        "latest": "v0.7.0",
+        "action": "development_to_stable",
+        "reason": "development_build",
+    },
+    {
+        "name": "dev preview off preview only releases",
+        "current": "v0.7.0-preview.3-12-gabcdef",
+        "include_preview": False,
+        "releases": [release("v0.7.0-preview.3")],
+        "latest": "",
+        "action": "no_action",
+        "reason": "no_stable_release",
+    },
+    {
         "name": "stable must not downgrade",
         "current": "v0.7.0",
         "include_preview": False,
@@ -265,7 +310,7 @@ class UpdateChannelDecisionTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     result["switch_to_release_available"],
-                    case["action"] in {"preview_to_stable", "development_to_stable"},
+                    case["action"] in {"preview_to_stable", "development_to_stable", "development_to_preview"},
                 )
                 expected_auto = case.get("auto_update_supported", installable)
                 self.assertEqual(result["auto_update_supported"], expected_auto)

@@ -979,6 +979,7 @@ def try_select_release(
                 "normal_upgrade",
                 "preview_to_stable",
                 "development_to_stable",
+                "development_to_preview",
                 "no_action",
             } or response.get("reason") not in {
                 "newer_version",

@@ -45,11 +45,13 @@ APP_UPDATE_CHUNK_SIZE = 1024 * 256
 UPDATE_ACTION_NORMAL_UPGRADE = "normal_upgrade"
 UPDATE_ACTION_PREVIEW_TO_STABLE = "preview_to_stable"
 UPDATE_ACTION_DEVELOPMENT_TO_STABLE = "development_to_stable"
+UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW = "development_to_preview"
 UPDATE_ACTION_NONE = "no_action"
 UPDATE_INSTALLABLE_ACTIONS = {
     UPDATE_ACTION_NORMAL_UPGRADE,
     UPDATE_ACTION_PREVIEW_TO_STABLE,
     UPDATE_ACTION_DEVELOPMENT_TO_STABLE,
+    UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW,
 }
 UPDATE_REASONS = {
     "newer_version",
@@ -504,12 +506,15 @@ def _py_release_decision_for_current(
     assert selected_key is not None
     selected_is_stable = _py_is_stable_version(selected.get("tag_name"))
     if current_key is None:
-        action = (
-            UPDATE_ACTION_DEVELOPMENT_TO_STABLE
-            if selected_is_stable
-            else UPDATE_ACTION_NONE
-        )
-        reason = "development_build" if selected_is_stable else "development_target_not_stable"
+        if selected_is_stable:
+            action = UPDATE_ACTION_DEVELOPMENT_TO_STABLE
+            reason = "development_build"
+        elif include_preview:
+            action = UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW
+            reason = "development_build"
+        else:
+            action = UPDATE_ACTION_NONE
+            reason = "development_target_not_stable"
     elif selected_key > current_key:
         action = UPDATE_ACTION_NORMAL_UPGRADE
         reason = "newer_version"
@@ -1012,6 +1017,7 @@ def check_for_update(
     switch_to_release_available = update_action in {
         UPDATE_ACTION_PREVIEW_TO_STABLE,
         UPDATE_ACTION_DEVELOPMENT_TO_STABLE,
+        UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW,
     }
     update_installable = update_action in UPDATE_INSTALLABLE_ACTIONS
     latest_channel = "预览版" if is_preview_version(latest_version) else "正式版"
@@ -1027,7 +1033,7 @@ def check_for_update(
             f"当前使用预览版 {current_version}，已关闭预览版更新；"
             f"可切换到最新正式版 {latest_version}。"
         )
-    elif update_action == UPDATE_ACTION_DEVELOPMENT_TO_STABLE:
+    elif update_action in {UPDATE_ACTION_DEVELOPMENT_TO_STABLE, UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW}:
         message = f"当前是开发版或非正式版（{current_version}），最新{latest_channel}是 {latest_version}。"
     elif update_action == UPDATE_ACTION_NORMAL_UPGRADE:
         message = f"发现新{latest_channel} {latest_version}，当前版本 {current_version}。"
@@ -1097,6 +1103,14 @@ def _is_update_decision_installable(
                 reason == "development_build"
                 and current_key is None
                 and latest_is_stable
+            )
+        if action == UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW:
+            latest_is_preview = _py_is_preview_version(latest)
+            return bool(
+                reason == "development_build"
+                and current_key is None
+                and include_preview
+                and latest_is_preview
             )
         return False
 
