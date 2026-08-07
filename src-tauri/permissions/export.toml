@@ -2,3 +2,8 @@
 identifier = "allow-save-backend-download"
 description = "Allows the main Host window to save approved backend export endpoints through the native Save As flow."
 commands.allow = ["save_backend_download"]
+
+[[permission]]
+identifier = "allow-write-clipboard-text"
+description = "Allows the main Host window to copy text into the system clipboard via native command."
+commands.allow = ["write_clipboard_text"]

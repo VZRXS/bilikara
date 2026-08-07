@@ -1,9 +1,14 @@
 import io
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class ExportDownloadBehaviorTest(unittest.TestCase):
@@ -770,7 +775,7 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
                 self.assertFalse(result["busy"])
 
 
-class ImageExportDiagnosticsTest(unittest.TestCase):
+class ImageExportDiagnosticsTest(ExportDownloadBehaviorTest):
 
     def test_playlist_image_export_populates_structured_timing_keys(self):
         from bilikara.playlist_export import playlist_image_export
@@ -1038,6 +1043,328 @@ class ImageExportDiagnosticsTest(unittest.TestCase):
         self.assertIsNotNone(matched)
         self.assertEqual(matched["surface"], "server")
         self.assertTrue(len(matched["requestId"]) > 0)
+
+    def test_diagnostics_package_route_handles_log_einval(self):
+        import errno
+        from unittest.mock import MagicMock
+        from bilikara.server import CONTEXT, BilikaraHandler, HTTPStatus
+        import bilikara.diagnostics as diagnostics
+
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.connection = MagicMock()
+        handler.connection.getsockname.return_value = ("127.0.0.1", 8080)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.path = "/api/diagnostics/package"
+        handler.context = CONTEXT
+        handler.headers = {"Content-Length": "0"}
+        handler.rfile = io.BytesIO(b"")
+
+        sent_headers = {}
+        written_bytes = bytearray()
+
+        def mock_send_response(code):
+            sent_headers["code"] = code
+
+        def mock_send_header(k, v):
+            sent_headers[k] = v
+
+        def mock_end_headers():
+            sent_headers["ended"] = True
+
+        handler.send_response = mock_send_response
+        handler.send_header = mock_send_header
+        handler.end_headers = mock_end_headers
+        handler.wfile = MagicMock()
+        handler.wfile.write.side_effect = lambda data: written_bytes.extend(data)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            bad_log = log_dir / "active.log"
+            bad_log.write_text("log content", encoding="utf-8")
+
+            original_os_stat = os.stat
+
+            def mock_stat(path_obj, *args, **kwargs):
+                if Path(path_obj) == bad_log:
+                    raise OSError(errno.EINVAL, "Invalid argument")
+                return original_os_stat(path_obj, *args, **kwargs)
+
+            with (
+                patch.object(diagnostics, "LOG_DIR", log_dir),
+                patch("os.stat", side_effect=mock_stat),
+            ):
+                handler.do_POST()
+
+        self.assertEqual(sent_headers.get("code"), HTTPStatus.OK)
+        self.assertEqual(sent_headers.get("Content-Type"), "application/zip")
+        self.assertTrue(len(written_bytes) > 0)
+
+        with zipfile.ZipFile(io.BytesIO(bytes(written_bytes))) as archive:
+            names = set(archive.namelist())
+            self.assertIn("diagnostics.md", names)
+
+    def test_diagnostics_during_active_cache_state(self):
+        import errno
+        from unittest.mock import MagicMock
+        from bilikara.server import CONTEXT, BilikaraHandler, HTTPStatus
+        import bilikara.diagnostics as diagnostics
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            active_log = log_dir / "cache_active.log"
+            active_log.write_text("active cache log content\n", encoding="utf-8")
+
+            handler = BilikaraHandler.__new__(BilikaraHandler)
+            handler.connection = MagicMock()
+            handler.connection.getsockname.return_value = ("127.0.0.1", 8080)
+            handler.client_address = ("127.0.0.1", 12345)
+            handler.path = "/api/diagnostics/package"
+            handler.context = CONTEXT
+            handler.headers = {"Content-Length": "0"}
+            handler.rfile = io.BytesIO(b"")
+
+            sent_headers = {}
+            written_bytes = bytearray()
+
+            handler.send_response = lambda code: sent_headers.update({"code": code})
+            handler.send_header = lambda k, v: sent_headers.update({k: v})
+            handler.end_headers = lambda: sent_headers.update({"ended": True})
+            handler.wfile = MagicMock()
+            handler.wfile.write.side_effect = lambda data: written_bytes.extend(data)
+
+            mock_cache_manager = SimpleNamespace(
+                diagnostic_snapshot=lambda *args, **kwargs: {
+                    "tools": {"yt-dlp": {"installed": True, "state": "ready"}},
+                    "tasks": {"cache_status": "downloading", "active_item_id": "item-active-1"},
+                },
+                policy_snapshot=lambda *args, **kwargs: {},
+                cache_metrics=lambda *args, **kwargs: {},
+            )
+
+            original_os_stat = os.stat
+
+            def mock_stat(path_obj, *args, **kwargs):
+                if Path(path_obj) == active_log:
+                    raise OSError(errno.EINVAL, "Invalid argument")
+                return original_os_stat(path_obj, *args, **kwargs)
+
+            with (
+                patch.object(CONTEXT, "cache_manager", mock_cache_manager),
+                patch.object(diagnostics, "LOG_DIR", log_dir),
+                patch("os.stat", side_effect=mock_stat),
+            ):
+                handler.do_POST()
+
+            self.assertEqual(sent_headers.get("code"), HTTPStatus.OK)
+            self.assertEqual(sent_headers.get("Content-Type"), "application/zip")
+            self.assertTrue(len(written_bytes) > 0)
+            with zipfile.ZipFile(io.BytesIO(bytes(written_bytes))) as archive:
+                self.assertIn("diagnostics.md", archive.namelist())
+
+    def test_copy_diagnostics_markdown_tauri_mode(self):
+        copy_source = self.function_source(
+            self.sources["host"],
+            "async function copyTextWithFallback",
+            "async function copyDiagnosticsMarkdown",
+        )
+        diag_source = self.function_source(
+            self.sources["host"],
+            "async function copyDiagnosticsMarkdown",
+            "async function downloadDiagnosticsPackage",
+        )
+        res = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            global.window = global;
+            window.BilikaraExportDownload = helper;
+            const state = { diagnosticsBusy: false };
+            function setDiagnosticsBusy(b) { state.diagnosticsBusy = b; }
+            function setAppMessage(msg) {}
+            function t(key) { return key; }
+            function tauriInvoke() { return window.__TAURI__?.core?.invoke || null; }
+            async function diagnosticResponse(route) {
+              return {
+                ok: true,
+                json: async () => ({ data: { markdown: "# Diagnostic Report\\nOK" } })
+              };
+            }
+            const invoked = [];
+            window.__TAURI__ = {
+              core: {
+                invoke(cmd, args) {
+                  invoked.push({ cmd, args });
+                  return Promise.resolve();
+                }
+              }
+            };
+            """ + copy_source + "\n" + diag_source + """
+            (async () => {
+              await copyDiagnosticsMarkdown();
+              process.stdout.write(JSON.stringify({ invoked, diagnosticsBusy: state.diagnosticsBusy }));
+            })().catch((err) => { console.error(err); process.exit(1); });
+            """,
+            str(self.helper),
+        )
+        self.assertEqual(len(res["invoked"]), 1)
+        self.assertEqual(res["invoked"][0]["cmd"], "write_clipboard_text")
+        self.assertEqual(res["invoked"][0]["args"]["text"], "# Diagnostic Report\nOK")
+        self.assertFalse(res["diagnosticsBusy"])
+
+    def test_copy_diagnostics_markdown_browser_mode(self):
+        copy_source = self.function_source(
+            self.sources["host"],
+            "async function copyTextWithFallback",
+            "async function copyDiagnosticsMarkdown",
+        )
+        diag_source = self.function_source(
+            self.sources["host"],
+            "async function copyDiagnosticsMarkdown",
+            "async function downloadDiagnosticsPackage",
+        )
+        res = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            global.window = global;
+            window.BilikaraExportDownload = helper;
+            const state = { diagnosticsBusy: false };
+            function setDiagnosticsBusy(b) { state.diagnosticsBusy = b; }
+            function setAppMessage(msg) {}
+            function t(key) { return key; }
+            function tauriInvoke() { return null; }
+            async function diagnosticResponse(route) {
+              return {
+                ok: true,
+                json: async () => ({ data: { markdown: "# Web Report" } })
+              };
+            }
+            const clipboardWrites = [];
+            Object.defineProperty(global, "navigator", {
+              value: {
+                clipboard: {
+                  writeText: async (text) => { clipboardWrites.push(text); }
+                }
+              },
+              configurable: true,
+              writable: true,
+            });
+            """ + copy_source + "\n" + diag_source + """
+            (async () => {
+              await copyDiagnosticsMarkdown();
+              process.stdout.write(JSON.stringify({ clipboardWrites }));
+            })().catch((err) => { console.error(err); process.exit(1); });
+            """,
+            str(self.helper),
+        )
+        self.assertEqual(res["clipboardWrites"], ["# Web Report"])
+
+    def test_copy_diagnostics_markdown_isolation(self):
+        copy_source = self.function_source(
+            self.sources["host"],
+            "async function copyTextWithFallback",
+            "async function copyDiagnosticsMarkdown",
+        )
+        diag_source = self.function_source(
+            self.sources["host"],
+            "async function copyDiagnosticsMarkdown",
+            "async function downloadDiagnosticsPackage",
+        )
+        res = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            global.window = global;
+            window.BilikaraExportDownload = helper;
+            const state = { diagnosticsBusy: false, cacheState: "ready" };
+            function setDiagnosticsBusy(b) { state.diagnosticsBusy = b; }
+            function setAppMessage(msg) {}
+            function t(key) { return key; }
+            function tauriInvoke() { return window.__TAURI__?.core?.invoke || null; }
+            const routesCalled = [];
+            async function diagnosticResponse(route) {
+              routesCalled.push(route);
+              return {
+                ok: true,
+                json: async () => ({ data: { markdown: "# Isolated Markdown" } })
+              };
+            }
+            const invoked = [];
+            window.__TAURI__ = {
+              core: {
+                invoke(cmd, args) {
+                  invoked.push({ cmd, args });
+                  return Promise.resolve();
+                }
+              }
+            };
+            """ + copy_source + "\n" + diag_source + """
+            (async () => {
+              await copyDiagnosticsMarkdown();
+              process.stdout.write(JSON.stringify({
+                routesCalled,
+                invokedCmds: invoked.map(i => i.cmd),
+                cacheState: state.cacheState,
+              }));
+            })().catch((err) => { console.error(err); process.exit(1); });
+            """,
+            str(self.helper),
+        )
+        self.assertEqual(res["routesCalled"], ["/api/diagnostics/markdown"])
+        self.assertNotIn("/api/diagnostics/package", res["routesCalled"])
+        self.assertEqual(res["invokedCmds"], ["write_clipboard_text"])
+        self.assertEqual(res["cacheState"], "ready")
+
+    def test_copy_diagnostics_markdown_error_stage_propagation(self):
+        copy_source = self.function_source(
+            self.sources["host"],
+            "async function copyTextWithFallback",
+            "async function copyDiagnosticsMarkdown",
+        )
+        diag_source = self.function_source(
+            self.sources["host"],
+            "async function copyDiagnosticsMarkdown",
+            "async function downloadDiagnosticsPackage",
+        )
+        res = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            global.window = global;
+            window.BilikaraExportDownload = helper;
+            const state = { diagnosticsBusy: false };
+            function setDiagnosticsBusy(b) { state.diagnosticsBusy = b; }
+            const loggedErrors = [];
+            function setAppMessage(msg, isErr) { if (isErr) loggedErrors.push(msg); }
+            function t(key) { return key; }
+            function tauriInvoke() { return window.__TAURI__?.core?.invoke || null; }
+            async function diagnosticResponse(route) {
+              return {
+                ok: true,
+                json: async () => ({ data: { markdown: "# Markdown" } })
+              };
+            }
+            const consoleErrors = [];
+            const origErr = console.error;
+            console.error = (...args) => consoleErrors.push(args.join(" "));
+            window.__TAURI__ = {
+              core: {
+                invoke(cmd, args) {
+                  return Promise.reject(new Error("Native clipboard rejected"));
+                }
+              }
+            };
+            """ + copy_source + "\n" + diag_source + """
+            (async () => {
+              await copyDiagnosticsMarkdown();
+              console.error = origErr;
+              process.stdout.write(JSON.stringify({ consoleErrors, loggedErrors }));
+            })().catch((err) => { console.error(err); process.exit(1); });
+            """,
+            str(self.helper),
+        )
+        self.assertTrue(any("stage=native_clipboard" in err for err in res["consoleErrors"]))
+        self.assertTrue(len(res["loggedErrors"]) > 0)
 
 
 if __name__ == "__main__":

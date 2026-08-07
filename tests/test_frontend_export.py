@@ -116,7 +116,7 @@ class FrontendExportBehaviorTest(unittest.TestCase):
             "async function copyDiagnosticsMarkdown",
         )
         self.assertIn("await navigator.clipboard.writeText(text)", fallback)
-        self.assertIn("catch {", fallback)
+        self.assertIn("catch", fallback)
         self.assertIn('document.execCommand("copy")', fallback)
         self.assertIn("if (!copied)", fallback)
 

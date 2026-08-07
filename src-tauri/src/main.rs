@@ -22,6 +22,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MAX_BACKEND_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024;
 const MAX_BACKEND_RESPONSE_BYTES: u64 = (MAX_BACKEND_DOWNLOAD_BYTES + 64 * 1024) as u64;
 const MAX_BACKEND_STDOUT_CHARS: usize = 2_048;
+const MAX_CLIPBOARD_TEXT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
 struct ReadyEvent {
@@ -297,6 +298,14 @@ fn window_origin_authorized(window_url: &str, backend_url: &str) -> bool {
     parsed_http_origin(window_url)
         .zip(parsed_http_origin(backend_url))
         .is_some_and(|(window_origin, backend_origin)| window_origin == backend_origin)
+}
+
+fn validate_clipboard_text_bytes(len: usize) -> Result<(), String> {
+    if len > MAX_CLIPBOARD_TEXT_BYTES {
+        Err("剪贴板内容超过大小限制".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_backend_download_request(
@@ -1170,6 +1179,36 @@ fn set_window_fullscreen(window: tauri::WebviewWindow, fullscreen: bool) -> Resu
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn write_clipboard_text(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, BackendProcess>,
+    text: String,
+) -> Result<(), String> {
+    validate_clipboard_text_bytes(text.len())?;
+
+    let base_url = state
+        .base_url
+        .lock()
+        .map_err(|_| "读取服务配置失败".to_string())?
+        .clone()
+        .ok_or_else(|| "服务未就绪".to_string())?;
+
+    let window_url = window
+        .url()
+        .map_err(|_| "无法获取页面地址".to_string())?
+        .to_string();
+
+    if !window_origin_authorized(&window_url, &base_url) {
+        return Err("当前页面无权调用剪贴板".to_string());
+    }
+
+    let mut clipboard = arboard::Clipboard::new().map_err(|_| "无法访问系统剪贴板".to_string())?;
+    clipboard
+        .set_text(text)
+        .map_err(|_| "无法写入系统剪贴板".to_string())
+}
+
 fn request_backend_shutdown(base_url: &str, shutdown_token: &str) -> bool {
     let Some(address) = parse_local_http_url(base_url) else {
         return false;
@@ -1278,7 +1317,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             set_window_fullscreen,
-            save_backend_download
+            save_backend_download,
+            write_clipboard_text
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
@@ -1584,6 +1624,11 @@ mod tests {
                 "http://127.0.0.1:8080/route?view=host",
                 "http://127.0.0.1:8080",
             ),
+            ("http://127.0.0.1:45678/", "http://127.0.0.1:45678"),
+            (
+                "http://127.0.0.1:45678/settings?x=1",
+                "http://127.0.0.1:45678/",
+            ),
             ("http://localhost:8080/", "http://LOCALHOST.:8080/"),
             (
                 "http://192.168.1.20:49152/host",
@@ -1601,9 +1646,14 @@ mod tests {
                 "http://127.0.0.1:8080.evil.invalid/",
                 "http://127.0.0.1:8080/",
             ),
+            ("http://127.0.0.1:45679/", "http://127.0.0.1:45678/"),
             ("http://127.0.0.1:8081/", "http://127.0.0.1:8080/"),
+            ("https://127.0.0.1:45678/", "http://127.0.0.1:45678/"),
             ("https://127.0.0.1:8080/", "http://127.0.0.1:8080/"),
+            ("http://localhost:45678/", "http://127.0.0.1:45678/"),
             ("http://localhost:8080/", "http://127.0.0.1:8080/"),
+            ("http://192.168.1.100:45678/", "http://127.0.0.1:45678/"),
+            ("http://user@127.0.0.1:45678/", "http://127.0.0.1:45678/"),
             ("http://user@127.0.0.1:8080/", "http://127.0.0.1:8080/"),
         ] {
             assert!(
@@ -1611,6 +1661,13 @@ mod tests {
                 "{window_url} must not match {backend_url}"
             );
         }
+    }
+
+    #[test]
+    fn clipboard_text_size_validation_contract() {
+        assert!(validate_clipboard_text_bytes(0).is_ok());
+        assert!(validate_clipboard_text_bytes(MAX_CLIPBOARD_TEXT_BYTES).is_ok());
+        assert!(validate_clipboard_text_bytes(MAX_CLIPBOARD_TEXT_BYTES + 1).is_err());
     }
 
     #[test]

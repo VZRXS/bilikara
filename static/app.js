@@ -10365,14 +10365,29 @@ async function diagnosticResponse(path) {
 }
 
 async function copyTextWithFallback(text) {
+  const invoke = tauriInvoke();
+  if (invoke) {
+    try {
+      await invoke("write_clipboard_text", { text });
+      return;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error || "Tauri native clipboard write failed"));
+      err.stage = "native_clipboard";
+      throw err;
+    }
+  }
+
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return;
-    } catch {
-      // Fall through to the legacy same-page copy path.
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error || "Browser clipboard write failed"));
+      err.stage = "browser_clipboard";
+      // Fall through to legacy same-page copy path
     }
   }
+
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "");
@@ -10383,11 +10398,17 @@ async function copyTextWithFallback(text) {
   let copied = false;
   try {
     copied = Boolean(document.execCommand("copy"));
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error || "Fallback copy failed"));
+    err.stage = "fallback_clipboard";
+    throw err;
   } finally {
     textarea.remove();
   }
   if (!copied) {
-    throw new Error(t("service.diagnosticsFailed"));
+    const err = new Error(t("service.diagnosticsFailed"));
+    err.stage = "fallback_clipboard";
+    throw err;
   }
 }
 
@@ -10398,24 +10419,41 @@ async function copyDiagnosticsMarkdown() {
   setDiagnosticsBusy(true);
   setAppMessage(t("service.diagnosticsGenerating"));
   try {
-    const response = await diagnosticResponse("/api/diagnostics/markdown");
-    const payload = await response.json();
+    let response;
+    try {
+      response = await diagnosticResponse("/api/diagnostics/markdown");
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error || "Fetch markdown failed"));
+      err.stage = "fetch_markdown";
+      throw err;
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error || "Invalid JSON markdown response"));
+      err.stage = "fetch_markdown";
+      throw err;
+    }
     const markdown = String(payload?.data?.markdown || "");
     if (!markdown) {
-      throw new Error(t("service.diagnosticsFailed"));
+      const err = new Error(t("service.diagnosticsFailed"));
+      err.stage = "fetch_markdown";
+      throw err;
     }
     await copyTextWithFallback(markdown);
     setDiagnosticsBusy(false);
     setAppMessage(t("service.diagnosticsCopied"));
   } catch (error) {
     setDiagnosticsBusy(false);
-    setAppMessage(
-      window.BilikaraExportDownload.normalizedErrorMessage(
-        error,
-        t("service.diagnosticsFailed"),
-      ),
-      true,
+    const stage = error?.stage || "unknown";
+    const errorType = error?.name || "Error";
+    const message = window.BilikaraExportDownload.normalizedErrorMessage(
+      error,
+      t("service.diagnosticsFailed"),
     );
+    console.error(`[diagnostics-copy-failed] stage=${stage} type=${errorType} message=${message}`);
+    setAppMessage(message, true);
   }
 }
 

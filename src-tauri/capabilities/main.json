@@ -15,6 +15,7 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-fullscreen",
-    "allow-save-backend-download"
+    "allow-save-backend-download",
+    "allow-write-clipboard-text"
   ]
 }
