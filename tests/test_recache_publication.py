@@ -726,6 +726,76 @@ class RecachePublicationTest(unittest.TestCase):
             self.assertFalse((self.cache_dir / "item-fail-no-restore").exists())
             self.assertEqual(len(MEDIA_LEASE_COORDINATOR.active_release_requests), 0)
 
+    def test_published_ready_item_survives_reconcile(self):
+        item_id = "item-ready-survives"
+        item = PlaylistItem(
+            id=item_id,
+            original_url="https://www.bilibili.com/video/BV123456",
+            resolved_url="https://www.bilibili.com/video/BV123456",
+            title="Test Song",
+            aid=123,
+            bvid="BV123456",
+            cid=111,
+            page=1,
+            part_title="Part 1",
+            display_title="Test Song",
+            cover_url="",
+            embed_url="",
+            cache_status="pending",
+            requester_name="TestUser",
+        )
+        self.store.add_item(item, requester_name="TestUser")
+
+        def mock_download(item, binary_path, ffmpeg_path, staging_dir, log_path, download_source=None, playback_selector=None):
+            video = staging_dir / "video_track.mp4"
+            audio = staging_dir / "audio_track_1.m4a"
+            video.write_bytes(b"v-data")
+            audio.write_bytes(b"a-data")
+            rel_audio = str(audio.relative_to(self.cache_dir))
+            return {
+                "video_file": video,
+                "video_relative_path": str(video.relative_to(self.cache_dir)),
+                "video_media_url": f"/media/{video.relative_to(self.cache_dir)}",
+                "audio_variants": [{
+                    "id": "default",
+                    "label": "Track 1",
+                    "page": 1,
+                    "audio_relative_path": rel_audio,
+                    "audio_url": f"/media/{rel_audio}",
+                }],
+                "selected_audio_variant_id": "default",
+                "validation_files": [
+                    {"path": video, "stream_kind": "video"},
+                    {"path": audio, "stream_kind": "audio"},
+                ],
+            }
+
+        with self._manager() as manager, \
+             patch.object(CacheManager, "_is_in_cache_window", return_value=True), \
+             patch.object(CacheManager, "_ensure_downloader", return_value=Path("downloader")), \
+             patch.object(CacheManager, "_ensure_ffmpeg", return_value=Path("ffmpeg")), \
+             patch.object(manager, "_download_selected_streams", side_effect=mock_download), \
+             patch.object(manager, "_validate_cache_result", return_value=None), \
+             patch.object(manager, "_should_cache", return_value=True):
+            published = manager._cache_item_multi(
+                item_id,
+                self.store.get_item(item_id),
+                allow_refresh_retry=False,
+            )
+            self.assertTrue(published)
+
+            latest = self.store.get_item(item_id)
+            self.assertEqual(latest.cache_status, "ready")
+            self.assertTrue(manager._item_cache_ready(latest))
+
+            manager.reconcile_cache_state()
+
+            reconciled = self.store.get_item(item_id)
+            self.assertEqual(reconciled.cache_status, "ready")
+            self.assertTrue(reconciled.video_relative_path)
+            self.assertTrue(reconciled.audio_variants)
+            self.assertEqual(len(manager.pending_ids), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2606,7 +2606,16 @@ class CacheManager:
         audio_variants = []
         for variant in cache_result.get("audio_variants", []):
             if isinstance(variant, dict):
-                rel_name = Path(variant.get("audio_relative_path", "audio.m4a")).name
+                audio_rel = str(variant.get("audio_relative_path") or "").strip()
+                if audio_rel:
+                    rel_name = Path(audio_rel).name
+                else:
+                    audio_url = str(variant.get("audio_url") or "").strip()
+                    parsed = urllib.parse.urlparse(audio_url)
+                    unquoted_path = urllib.parse.unquote(parsed.path or audio_url)
+                    rel_name = Path(unquoted_path).name
+                if not rel_name or rel_name in (".", "/"):
+                    rel_name = "audio.m4a"
                 variant_relative = f"{item_id}/{rel_name}"
                 audio_variants.append({
                     **variant,
@@ -3045,12 +3054,14 @@ class CacheManager:
 
         audio_variants = []
         for index, (page, audio_file, label) in enumerate(audio_files):
+            rel_path = str(audio_file.relative_to(CACHE_DIR))
             audio_variants.append(
                 {
                     "id": self._variant_id(page, label, index),
                     "label": label,
                     "page": page,
-                    "audio_url": self._build_media_url(str(audio_file.relative_to(CACHE_DIR))),
+                    "audio_relative_path": rel_path,
+                    "audio_url": self._build_media_url(rel_path),
                 }
             )
         existing_variant_id = str(item.selected_audio_variant_id or "").strip()
@@ -5206,12 +5217,20 @@ class CacheManager:
                 self._build_media_url(str(final.relative_to(CACHE_DIR)))
                 for source, final in published.items()
             }
+            rel_map = {
+                str(Path(source).relative_to(CACHE_DIR)):
+                str(final.relative_to(CACHE_DIR))
+                for source, final in published.items()
+            }
             for variant in variants:
                 if not isinstance(variant, dict):
                     continue
                 current_url = str(variant.get("audio_url") or "")
                 if current_url in url_map:
                     variant["audio_url"] = url_map[current_url]
+                current_rel = str(variant.get("audio_relative_path") or "")
+                if current_rel in rel_map:
+                    variant["audio_relative_path"] = rel_map[current_rel]
 
         for source, _final_path in publish_pairs:
             self._safe_rmtree(source.parent)
@@ -7600,19 +7619,26 @@ class CacheManager:
         return None
 
     def _item_cache_ready(self, item) -> bool:
-        video_path = self._cache_path_from_relative_path(item.video_relative_path)
+        video_rel = getattr(item, "video_relative_path", "")
+        video_url = getattr(item, "video_media_url", "")
+        video_path = self._cache_path_from_relative_path(video_rel) or self._cache_path_from_media_url(video_url)
         if not video_path or not video_path.exists():
             return False
 
         audio_variants = [
             variant
-            for variant in item.audio_variants
+            for variant in (getattr(item, "audio_variants", []) or [])
             if isinstance(variant, dict)
         ]
         if not audio_variants:
             return False
         for variant in audio_variants:
-            audio_path = self._cache_path_from_media_url(variant.get("audio_url"))
+            rel_path = variant.get("audio_relative_path")
+            audio_path = (
+                self._cache_path_from_relative_path(rel_path)
+                if rel_path
+                else self._cache_path_from_media_url(variant.get("audio_url"))
+            )
             if not audio_path or not audio_path.exists():
                 return False
         return True
