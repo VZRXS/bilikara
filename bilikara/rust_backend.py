@@ -1017,11 +1017,29 @@ def try_select_release(
 
     response = _call_json_capability("select_release", "rust_select_release", request)
     try:
-        if not isinstance(response, dict) or set(response) != {
-            "schema_version",
-            "status",
-            "selected_index",
-        }:
+        valid_actions = {
+            "normal_upgrade",
+            "preview_to_stable",
+            "development_to_stable",
+            "development_to_preview",
+            "no_action",
+        }
+        valid_reasons = {
+            "newer_version",
+            "preview_channel_disabled",
+            "development_build",
+            "already_current",
+            "stable_not_newer",
+            "preview_not_newer",
+            "development_target_not_stable",
+            "no_stable_release",
+            "no_eligible_release",
+        }
+
+        response_fields = set(response) if isinstance(response, dict) else set()
+        legacy_fields = {"schema_version", "status", "selected_index"}
+        decision_fields = legacy_fields | {"action", "reason"}
+        if response_fields not in (legacy_fields, decision_fields):
             return False, None
 
         schema_version = response.get("schema_version")
@@ -1046,16 +1064,23 @@ def try_select_release(
             if selected_index is not None:
                 return False, None
 
-        from .updater import _py_latest_release_for_current
+        if response_fields == decision_fields:
+            if response.get("action") not in valid_actions:
+                return False, None
+            if response.get("reason") not in valid_reasons:
+                return False, None
+
+        from .updater import _py_release_decision_for_current
 
         def reference() -> dict[str, Any]:
             releases = request.get("releases")
             assert isinstance(releases, list)
-            selected = _py_latest_release_for_current(
+            decision = _py_release_decision_for_current(
                 str(request.get("current_version") or ""),
                 releases,
                 include_preview=bool(request.get("include_preview")),
             )
+            selected = decision["release"]
             selected_index = None
             if selected:
                 selected_index = next(
@@ -1066,11 +1091,17 @@ def try_select_release(
                     ),
                     None,
                 )
-            return {
+            result = {
                 "schema_version": 1,
                 "status": "selected" if selected_index is not None else "no_match",
                 "selected_index": selected_index,
             }
+            if response_fields == decision_fields:
+                result.update(
+                    action=decision["action"],
+                    reason=decision["reason"],
+                )
+            return result
 
         return True, _strict_equivalence_result(
             "select_release", response, reference

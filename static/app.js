@@ -10053,8 +10053,23 @@ async function checkAppUpdate(event) {
   try {
     const query = state.updatePreviewEnabled ? "?include_preview=1" : "";
     const result = await apiGet(`/api/app/update${query}`, { signal: controller?.signal });
-    if (result?.update_available || result?.switch_to_release_available) {
-      const fallbackMessage = result?.switch_to_release_available
+    const updateAction = String(result?.update_action || "");
+    const installableActions = new Set([
+      "normal_upgrade",
+      "preview_to_stable",
+      "development_to_stable",
+      "development_to_preview",
+    ]);
+    const updateInstallable = updateAction
+      ? installableActions.has(updateAction)
+      : Boolean(result?.update_installable ?? (result?.update_available || result?.switch_to_release_available));
+
+    if (updateInstallable) {
+      const isChannelSwitch = updateAction === "preview_to_stable"
+        || updateAction === "development_to_stable"
+        || updateAction === "development_to_preview"
+        || (!updateAction && result?.switch_to_release_available === true);
+      const fallbackMessage = isChannelSwitch
         ? t("service.switchReleasePrompt")
         : t("service.updateFoundPrompt");
       const updateMessage = result?.message || fallbackMessage;
