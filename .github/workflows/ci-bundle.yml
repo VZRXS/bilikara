@@ -55,6 +55,14 @@ jobs:
           rustup show active-toolchain
           rustc --version
 
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust -> target
+            ./src-tauri -> target
+          shared-key: ci-bundle
+
       - name: Rust Checks and Build
         run: |
           cd rust
@@ -135,6 +143,14 @@ jobs:
           rustup toolchain install
           rustup show active-toolchain
           rustc --version
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./rust -> target
+            ./src-tauri -> target
+          shared-key: ci-bundle
 
       - name: Build Rust Backend Library
         run: |
