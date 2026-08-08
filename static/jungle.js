@@ -34,8 +34,6 @@ function createFadeBuffer(context, activeTime, fadeTime) {
     var buffer = context.createBuffer(1, length, context.sampleRate);
     var p = buffer.getChannelData(0);
     
-    console.log("createFadeBuffer() length = " + length);
-    
     var fadeLength = fadeTime * context.sampleRate;
 
     var fadeIndex1 = fadeLength;
@@ -72,8 +70,6 @@ function createDelayTimeBuffer(context, activeTime, fadeTime, shiftUp) {
     var buffer = context.createBuffer(1, length, context.sampleRate);
     var p = buffer.getChannelData(0);
 
-    console.log("createDelayTimeBuffer() length = " + length);
-    
     // 1st part of cycle
     for (var i = 0; i < length1; ++i) {
         if (shiftUp)
@@ -98,6 +94,7 @@ var bufferTime = 0.100;
 
 function Jungle(context) {
     this.context = context;
+    this.disposed = false;
     // Create nodes for the input and output of this "module".
     var input = context.createGain();
     var output = context.createGain();
@@ -183,6 +180,8 @@ function Jungle(context) {
 
     this.mod1 = mod1;
     this.mod2 = mod2;
+    this.mod3 = mod3;
+    this.mod4 = mod4;
     this.mod1Gain = mod1Gain;
     this.mod2Gain = mod2Gain;
     this.mod3Gain = mod3Gain;
@@ -200,6 +199,9 @@ function Jungle(context) {
 }
 
 Jungle.prototype.setDelay = function(delayTime) {
+    if (this.disposed) {
+        return;
+    }
     this.modGain1.gain.setTargetAtTime(0.5*delayTime, 0, 0.010);
     this.modGain2.gain.setTargetAtTime(0.5*delayTime, 0, 0.010);
 }
@@ -207,6 +209,9 @@ Jungle.prototype.setDelay = function(delayTime) {
 var previousPitch = -1;
 
 Jungle.prototype.setPitchOffset = function(mult) {
+        if (this.disposed) {
+            return;
+        }
         if (mult>0) { // pitch up
             this.mod1Gain.gain.value = 0;
             this.mod2Gain.gain.value = 0;
@@ -220,4 +225,78 @@ Jungle.prototype.setPitchOffset = function(mult) {
         }
         this.setDelay(delayTime*Math.abs(mult));
     previousPitch = mult;
+}
+
+Jungle.prototype.dispose = function() {
+    if (this.disposed) {
+        return;
+    }
+    this.disposed = true;
+
+    [this.mod1, this.mod2, this.mod3, this.mod4, this.fade1, this.fade2].forEach(function(source) {
+        if (!source) {
+            return;
+        }
+        try {
+            source.stop();
+        } catch (_) {
+            // A source may already have stopped as part of browser teardown.
+        }
+        try {
+            source.disconnect();
+        } catch (_) {
+            // Repeated or partial graph teardown is safe.
+        }
+        try {
+            source.buffer = null;
+        } catch (_) {
+            // Some Web Audio implementations expose a read-only buffer after stop.
+        }
+    });
+
+    [
+        this.input,
+        this.output,
+        this.mod1Gain,
+        this.mod2Gain,
+        this.mod3Gain,
+        this.mod4Gain,
+        this.modGain1,
+        this.modGain2,
+        this.delay1,
+        this.delay2,
+        this.mix1,
+        this.mix2,
+    ].forEach(function(node) {
+        if (!node) {
+            return;
+        }
+        try {
+            node.disconnect();
+        } catch (_) {
+            // Repeated or partial graph teardown is safe.
+        }
+    });
+
+    this.context = null;
+    this.shiftDownBuffer = null;
+    this.shiftUpBuffer = null;
+    this.mod1 = null;
+    this.mod2 = null;
+    this.mod3 = null;
+    this.mod4 = null;
+    this.fade1 = null;
+    this.fade2 = null;
+    this.input = null;
+    this.output = null;
+    this.mod1Gain = null;
+    this.mod2Gain = null;
+    this.mod3Gain = null;
+    this.mod4Gain = null;
+    this.modGain1 = null;
+    this.modGain2 = null;
+    this.delay1 = null;
+    this.delay2 = null;
+    this.mix1 = null;
+    this.mix2 = null;
 }

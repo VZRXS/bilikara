@@ -133,7 +133,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             self.app_source,
         )
 
-    def test_offset_changes_resynchronize_only_the_slave_video(self):
+    def test_offset_changes_resync_audio_only_when_effective_value_changes(self):
         offset_handler = self.function_source(
             "async function setAvOffset",
             "function updateCacheSliderFill",
@@ -142,14 +142,23 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "async function fetchState",
             "function renderSignatureForData",
         )
-        self.assertIn("resyncMountedLocalPlayerForOffsetChange()", offset_handler)
-        self.assertIn("resyncMountedLocalPlayerForOffsetChange()", snapshot_handler)
+        self.assertIn("resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs)", offset_handler)
+        self.assertIn("resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs)", snapshot_handler)
         resync_handler = self.function_source(
             "function resyncMountedLocalPlayerForOffsetChange",
             "function applyStoredVolumeToSinglePlayer",
         )
-        self.assertIn("syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true)", resync_handler)
+        self.assertIn(
+            "Number(video.currentTime || 0) - currentAvOffsetSeconds()",
+            resync_handler,
+        )
+        self.assertIn("setMediaCurrentTime(audio, targetAudioTime)", resync_handler)
+        self.assertIn('"av-delay-audio-resync"', resync_handler)
+        self.assertIn("if (Number(previousOffsetMs) === currentAvOffsetMs())", resync_handler)
+        self.assertEqual(resync_handler.count("resyncMountedLocalPlayerForOffsetChange();"), 1)
         self.assertNotIn("beginSplitPlayerSeek", resync_handler)
+        self.assertNotIn("seekVideoForNavigation", resync_handler)
+        self.assertNotIn("setMediaCurrentTime(video", resync_handler)
 
 
 if __name__ == "__main__":
