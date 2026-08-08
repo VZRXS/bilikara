@@ -16,16 +16,35 @@ Bilikara is a Bilibili-based Karaoke system consisting of a Host (PC display & d
 The architecture consists of the following primary layers:
 
 - `static/`: Frontend Host and Remote user interfaces built with vanilla JavaScript, HTML5, and CSS3. UI components use state-driven re-rendering and subscribe to real-time state updates via Server-Sent Events (SSE) at `/api/events`. Bundled and served by the Host server or packaged into the Tauri desktop shell.
-- `bilikara/`: Python Host application engine. Handles HTTP API routing (`http.server.ThreadingHTTPServer`), state management (`AppContext`), persistence (`PlaylistStore`), download management (`BBDown`, `FFmpeg`), version checks/updates, and Python reference fallbacks for migrated business logic.
+- `bilikara/`: Python Host application engine. Handles the current v0.7 HTTP routing (`http.server.ThreadingHTTPServer`), state management (`AppContext`), persistence (`PlaylistStore`), download management (`BBDown`, `FFmpeg`), version checks/updates, and frozen Python compatibility references created during earlier migration work.
 - `rust/`: Shared typed Rust domain core crate (`bilikara_rust`), compiled as both `cdylib` (for CFFI loading in Python) and `rlib` (for native Rust crate callers). Implements pure, deterministic business logic domains.
 - `src-tauri/`: Tauri 2 desktop shell providing native windowing, system tray integration, and cross-platform desktop application packaging.
 - `tests/`: Project test suite using standard Python `unittest`. Includes direct unit tests, integration tests enforcing native library loading (`BILIKARA_REQUIRE_RUST_LIB=1`), and tests that launch Node.js scripts to evaluate frontend JavaScript behavior.
 
-## 3. Rust Migration Decision Boundary
+## 3. Backend Ownership After Phase 2
 
-Before implementing new Python-side business logic, apply this classification rule to decide its target layer.
+Phase 2 is complete. Its existing Python reference implementations may remain
+frozen for compatibility and historical equivalence testing, but its rule of
+creating a complete Python fallback for each Rust migration no longer applies
+to new work.
 
-A business rule should normally be implemented in the typed Rust domain (`rust/`) first when **all** of the following criteria are met:
+For all **new backend or business functionality** from this point forward:
+
+- Rust is the authoritative implementation.
+- Do not add an equivalent Python business-rule implementation or a new
+  `_py_*` mirror of a new Rust capability.
+- Python may adapt objects, transport FFI payloads, validate native results,
+  and perform the current v0.7 I/O/orchestration listed in Section 4. That glue
+  must not independently recompute the new policy.
+- A new Rust-only capability must fail explicitly or report itself unavailable
+  when Rust cannot execute it. Do not silently add a Python semantic fallback.
+- New stateful backend features must either move the required ownership to Rust
+  first or wait for the relevant Rust Core ownership migration.
+- This boundary is not a new "Phase 3." The next architectural milestone is
+  **v0.8 Rust Core Convergence / Preview**.
+
+Pure deterministic policy remains a good small Rust-domain boundary when all
+of the following criteria are met:
 
 1. **Immutable Input**: It receives a complete, self-contained, immutable value model.
 2. **Deterministic**: Given the same inputs, it always produces the exact same output.
@@ -33,14 +52,14 @@ A business rule should normally be implemented in the typed Rust domain (`rust/`
 4. **Structured Decision**: It returns a structured decision, calculation result, or candidate ranking.
 5. **Canonical Policy**: It represents canonical application policy or is useful across multiple host environments.
 
-When migrating a rule to Rust:
-- **Reference Fallback**: Retain the complete Python implementation as a reference fallback.
+When adding such a Rust-authoritative rule:
+- **Frozen Compatibility Surface**: Leave pre-existing Python references unchanged unless the task explicitly requires modifying them; do not create a new one.
 - **Output Validation**: Validate native Rust outputs before applying decisions to application state.
 - **Semantic Error Handling**: Distinguish valid domain-level empty/`no_match` decisions from backend, JSON, or FFI execution failures.
 - **Separation of Concerns**: Keep pure typed domain logic separate from `serde`, JSON adapters, and FFI wire exports.
 - **ABI Compatibility**: Keep additive FFI exports ABI-compatible unless a deliberate FFI ABI migration is requested.
 
-## 4. Logic Outside the Pure Rust Domain Core
+## 4. Temporary v0.7 Host Responsibilities and UI Ownership
 
 Keep the following operations in their respective Host (Python / Tauri) or UI (JavaScript) layers:
 
@@ -50,10 +69,18 @@ Keep the following operations in their respective Host (Python / Tauri) or UI (J
 - Subprocess execution and management for `BBDown`, `yt-dlp`, `aria2c`, `FFmpeg`, or `ffprobe`.
 - Host runtime capability detection and environment variable evaluation.
 - Real-time clock acquisition and timestamping.
-- Mutable `PlaylistStore` state mutations, disk persistence, locks, queue ordering, cache scheduling, retries, and cancellation logic.
+- Existing mutable `PlaylistStore` state mutations, disk persistence, locks, queue ordering, cache scheduling, retries, and cancellation logic while the v0.7 Python Host remains in service.
 - Tauri application lifecycle, native menus, and OS shell integrations (`src-tauri/`).
 
-*Note: The presence of Python production code does not by itself imply Rust migration debt. Operational, I/O, and stateful logic belong in the Python/Host layer.*
+These are temporary retained responsibilities, not targets for new Python
+feature ownership. Existing operational code may be maintained for release
+safety, but new stateful backend capabilities belong under Rust ownership or
+must wait for Rust Core convergence.
+
+`bilikara/playlist_export.py` is an explicit frozen legacy exception for v0.7.
+Its Pillow renderer and `prewarm_playlist_export_fonts()` must remain together:
+a Rust prewarm would not warm Pillow's caches. A future migration should move
+the complete export/render pipeline instead of adding a parallel Rust prewarm.
 
 ## 5. UI Asynchronous-Action Policy
 
@@ -139,7 +166,7 @@ When completing a task, agents must report:
 | `store.py` | `PlaylistStore` managing JSON state persistence (`data/state.json`). |
 | `bilibili.py` | Bilibili API querying, metadata parsing, media-page selection wrapper. |
 | `cache.py` | Orchestration of `BBDown` downloads and `FFmpeg` audio extraction. |
-| `rust_backend.py` | Native FFI loader, JSON payload validation, Python reference fallbacks. |
+| `rust_backend.py` | Native FFI loader, JSON payload validation, frozen compatibility fallbacks for older domains, and fail-closed adapters for new Rust-authoritative capabilities. |
 | `updater.py` | GitHub release checking, semver comparison, update asset resolution. |
 | `config.py` | Global settings, path resolution, runtime tool discovery. |
 | `models.py` | Python data models (`PlaylistItem`, `VideoPage`, etc.). |
@@ -160,6 +187,8 @@ When completing a task, agents must report:
 | `src/cache_planning.rs` | Pure cache-window desired, pending, retention, and preemption planning policy. |
 | `src/playlist_planning.rs` | Pure playlist ordering and duplicate-identity planning policy. |
 | `src/av_delay.rs` | Pure global/local AV-delay transition, clamping, and lock-button state policy. |
+| `src/playback_selector_policy.rs` | Rust-authoritative selector-mode validation and persisted-mode normalization from explicit capability availability. |
+| `src/tool_prepare_policy.rs` | Rust-authoritative deterministic tool prepare routing from immutable host-gathered facts. |
 | `src/release_selection.rs` | Semantic version sorting and release filtering rules. |
 | `src/asset_selection.rs` | Update package scoring by platform and architecture. |
 | `src/ffi.rs` | FFI wrapper utilities, memory safety helpers, panic containment. |
