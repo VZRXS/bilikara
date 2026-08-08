@@ -9334,6 +9334,9 @@ async function confirmBindingModal() {
       selectedAudioPages,
     });
     closeBindingModal();
+    if (["modalSearch", "modalFollow", "modalFavlist", "modalBrowse"].includes(source)) {
+      searchDetailController?.close({ immediate: true });
+    }
     if (!intent.preserveInput) {
       elements.urlInput.value = "";
     }
@@ -10637,9 +10640,6 @@ elements.searchResults.addEventListener("click", async (event) => {
   }
   try {
     await handleAddByUrl(target.url, "tail", anchorPointForEvent(event, target.anchor), "search");
-    hideSearchResults();
-    setSearchMessage("");
-    elements.searchQuery.value = "";
   } finally {
     if (target.button) {
       target.button.disabled = false;

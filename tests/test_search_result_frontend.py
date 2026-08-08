@@ -70,8 +70,29 @@ console.log(JSON.stringify({{
         self.assertEqual(result["order"], expected_order)
         self.assertEqual(result["ownerChildren"], ["owner-badge", "owner-badge-name"])
 
+    def run_node(self, script: str) -> dict:
+        completed = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
     def test_host_places_bvid_after_rating(self):
         self.assert_metadata_order("static/app.js", remote=False)
+
+    def test_host_history_icon_button_matches_other_history_actions(self):
+        css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        menu_rule = css.index(".menu-content .icon-button {")
+        history_rule = css.index(".history-actions .icon-button {")
+        rule = css[history_rule : css.index("}", history_rule)]
+        self.assertLess(menu_rule, history_rule)
+        for declaration in ("width: 36px;", "height: 36px;", "min-width: 36px;", "min-height: 36px;"):
+            self.assertIn(declaration, rule)
 
     def test_remote_omits_bvid(self):
         self.assert_metadata_order("static/remote.js", remote=True)
@@ -343,6 +364,190 @@ console.log(JSON.stringify({{
         self.assertIn("const completed = await onRequest(activeUrl, position, activeItem);", detail_js)
         self.assertIn("if (completed === true && requestGeneration === generation)", detail_js)
         self.assertIn("elements.close.addEventListener(\"click\", () => close());", detail_js)
+
+    def test_nonexpanded_search_add_success_preserves_host_and_remote_results(self):
+        host = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        host_handler = host[
+            host.index('elements.searchResults.addEventListener("click"') :
+            host.index("async function handleLarkSearchSubmit", host.index('elements.searchResults.addEventListener("click"'))
+        ]
+        host_result = self.run_node(
+            f"""
+const listeners = {{}};
+const elements = {{
+  searchResults: {{
+    innerHTML: "existing results",
+    addEventListener(name, callback) {{ listeners[name] = callback; }},
+  }},
+  searchQuery: {{ value: "anime" }},
+}};
+function openSearchResultDetail() {{ return false; }}
+function searchResultRequestTarget() {{ return {{ url: "https://example.test/song", button: null, anchor: {{}} }}; }}
+function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
+async function handleAddByUrl() {{ return true; }}
+function hideSearchResults() {{ elements.searchResults.innerHTML = ""; }}
+function setSearchMessage() {{}}
+function t(key) {{ return key; }}
+{host_handler}
+(async () => {{
+  await listeners.click({{}});
+  console.log(JSON.stringify({{
+    query: elements.searchQuery.value,
+    results: elements.searchResults.innerHTML,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        )
+
+        remote = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
+        remote_add = remote[
+            remote.index("async function addByUrl") :
+            remote.index("async function confirmGatchaCandidate", remote.index("async function addByUrl"))
+        ]
+        remote_result = self.run_node(
+            f"""
+const state = {{ submitting: false, gatchaCandidate: null }};
+const elements = {{
+  searchQuery: {{ value: "anime" }},
+  searchResults: {{ innerHTML: "existing results" }},
+  larkSearchQuery: {{ value: "database" }},
+  larkSearchResults: {{ innerHTML: "existing database results" }},
+}};
+function selectedRequesterName() {{ return "tester"; }}
+function setMessageForSource() {{}}
+function t(key) {{ return key; }}
+async function submitAddRequestWithDuplicateConfirm() {{ return {{ cancelled: false, data: {{}} }}; }}
+function applyStateSnapshot() {{}}
+function renderGatchaUidView() {{}}
+function openBindingSheet() {{}}
+{remote_add}
+(async () => {{
+  const completed = await addByUrl("https://example.test/song", "tail", "search");
+  console.log(JSON.stringify({{
+    completed,
+    query: elements.searchQuery.value,
+    results: elements.searchResults.innerHTML,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        )
+
+        self.assertEqual(host_result, {"query": "anime", "results": "existing results"})
+        self.assertEqual(
+            remote_result,
+            {"completed": True, "query": "anime", "results": "existing results"},
+        )
+
+    def test_binding_success_preserves_lists_and_closes_only_expanded_details(self):
+        host = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        host_confirm = host[
+            host.index("async function confirmBindingModal") :
+            host.index("async function handleAdd", host.index("async function confirmBindingModal"))
+        ]
+        host_result = self.run_node(
+            f"""
+const state = {{ data: null, bindingIntent: null }};
+let detailCloseCount = 0;
+let bindingCloseCount = 0;
+const searchDetailController = {{ close(options) {{
+  if (options?.immediate === true) detailCloseCount += 1;
+}} }};
+const elements = {{
+  bindingModalConfirm: null,
+  urlInput: {{ value: "request URL" }},
+  searchQuery: {{ value: "anime" }},
+  searchResults: {{ innerHTML: "existing results" }},
+  searchModal: {{ open: true }},
+  gatchaResultView: {{ classList: {{ add() {{}} }} }},
+  gatchaInitView: {{ classList: {{ remove() {{}} }} }},
+  addForm: {{}},
+}};
+function currentBindingSelection() {{ return {{ selectedVideoPage: 1, selectedAudioPages: [2] }}; }}
+function setMessageForSource() {{}}
+function setAppMessage() {{}}
+function t(key) {{ return key; }}
+function selectedRequesterName() {{ return "tester"; }}
+async function submitAddRequest() {{ return {{ playlist: [] }}; }}
+function closeBindingModal() {{ bindingCloseCount += 1; }}
+function setGatchaMessage() {{}}
+function render() {{}}
+function openBindingModal() {{}}
+function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
+function openConfirm() {{}}
+function duplicateConfirmMessage() {{ return "duplicate"; }}
+{host_confirm}
+(async () => {{
+  state.bindingIntent = {{ url: "https://example.test/detail", source: "modalSearch", preserveInput: true }};
+  await confirmBindingModal();
+  const afterDetail = {{ detailCloseCount, bindingCloseCount, searchModalOpen: elements.searchModal.open }};
+  state.bindingIntent = {{ url: "https://example.test/list", source: "search", preserveInput: true }};
+  await confirmBindingModal();
+  console.log(JSON.stringify({{
+    afterDetail,
+    finalDetailCloseCount: detailCloseCount,
+    query: elements.searchQuery.value,
+    results: elements.searchResults.innerHTML,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        )
+
+        remote = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
+        remote_confirm = remote[
+            remote.index("async function confirmBindingSheet") :
+            remote.index("async function setRemoteAvOffset", remote.index("async function confirmBindingSheet"))
+        ]
+        remote_result = self.run_node(
+            f"""
+const state = {{ submitting: false, bindingIntent: null, gatchaCandidate: null }};
+let detailCloseCount = 0;
+let bindingCloseCount = 0;
+const searchDetailController = {{ close(options) {{
+  if (options?.immediate === true) detailCloseCount += 1;
+}} }};
+const elements = {{
+  bindingSheetConfirm: null,
+  urlInput: {{ value: "request URL" }},
+  searchQuery: {{ value: "anime" }},
+  searchResults: {{ innerHTML: "existing results" }},
+  searchModal: {{ open: true }},
+}};
+function currentBindingSelection() {{ return {{ selectedVideoPage: 1, selectedAudioPages: [2] }}; }}
+function setMessageForSource() {{}}
+function setAppMessage() {{}}
+function t(key) {{ return key; }}
+function selectedRequesterName() {{ return "tester"; }}
+async function submitAddRequestWithDuplicateConfirm() {{ return {{ cancelled: false, data: {{}} }}; }}
+function applyStateSnapshot() {{}}
+function closeBindingSheet() {{ bindingCloseCount += 1; }}
+function setFollowBrowseMessage() {{}}
+function renderGatchaUidView() {{}}
+function openBindingSheet() {{}}
+{remote_confirm}
+(async () => {{
+  state.bindingIntent = {{ url: "https://example.test/detail", source: "modalSearch", clearInput: false }};
+  await confirmBindingSheet();
+  const afterDetail = {{ detailCloseCount, bindingCloseCount, searchModalOpen: elements.searchModal.open }};
+  state.bindingIntent = {{ url: "https://example.test/list", source: "search", clearInput: false }};
+  await confirmBindingSheet();
+  console.log(JSON.stringify({{
+    afterDetail,
+    finalDetailCloseCount: detailCloseCount,
+    query: elements.searchQuery.value,
+    results: elements.searchResults.innerHTML,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        )
+
+        for result in (host_result, remote_result):
+            self.assertEqual(
+                result["afterDetail"],
+                {"detailCloseCount": 1, "bindingCloseCount": 1, "searchModalOpen": True},
+            )
+            self.assertEqual(result["finalDetailCloseCount"], 1)
+            self.assertEqual(result["query"], "anime")
+            self.assertEqual(result["results"], "existing results")
 
     def test_detail_actions_reuse_host_and_remote_button_styles(self):
         detail_js = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")

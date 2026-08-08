@@ -91,19 +91,19 @@ function hideLarkSearchResults() {{
   elements.larkSearchResults.classList.add("hidden");
 }}
 function renderLarkSearchResults(items) {{
-  elements.larkSearchResults.children = items.map((item) => {{
+  elements.larkSearchResults.children = items.length ? items.map((item) => {{
     const row = {{ view: "compact" }};
     searchResultItemByElement.set(row, item);
     return row;
-  }});
+  }}) : [{{ className: "search-empty", textContent: t("search.larkNoResults") }}];
   elements.larkSearchResults.classList.remove("hidden");
 }}
-function renderSearchResultItems(container, items) {{
-  container.children = items.map((item) => {{
+function renderSearchResultItems(container, items, emptyText = "") {{
+  container.children = items.length ? items.map((item) => {{
     const row = {{ view: "detailed" }};
     searchResultItemByElement.set(row, item);
     return row;
-  }});
+  }}) : [{{ className: "search-empty", textContent: emptyText || t("search.empty") }}];
   container.classList.remove("hidden");
 }}
 
@@ -207,6 +207,42 @@ console.log(JSON.stringify({
         self.assertEqual(result["inlineResultsCount"], 1)
         self.assertEqual(result["modalResultsCount"], 1)
         self.assertTrue(result["inlineRowMatchesItem"])
+
+    def test_no_results_appear_only_after_pending_request_resolves_empty(self):
+        result = self.run_node(
+            """
+elements.larkSearchQuery.value = "anime";
+const searchPromise = elements.larkSearchForm.dispatch("submit");
+
+const pending = {
+  message: elements.larkSearchMessage.textContent,
+  modalMessage: elements.searchModalLarkMessage.textContent,
+  inlineEmptyRows: elements.larkSearchResults.children.filter((row) => row.className === "search-empty").length,
+  modalEmptyRows: elements.searchModalLarkResults.children.filter((row) => row.className === "search-empty").length,
+};
+
+resolvers.get("anime").resolve([]);
+await searchPromise;
+
+console.log(JSON.stringify({
+  pending,
+  settled: {
+    inlineText: elements.larkSearchResults.children[0]?.textContent,
+    modalText: elements.searchModalLarkResults.children[0]?.textContent,
+    inlineEmptyRows: elements.larkSearchResults.children.filter((row) => row.className === "search-empty").length,
+    modalEmptyRows: elements.searchModalLarkResults.children.filter((row) => row.className === "search-empty").length,
+  },
+}));
+"""
+        )
+        self.assertEqual(result["pending"]["message"], "search.larkSearching")
+        self.assertEqual(result["pending"]["modalMessage"], "search.larkSearching")
+        self.assertEqual(result["pending"]["inlineEmptyRows"], 0)
+        self.assertEqual(result["pending"]["modalEmptyRows"], 0)
+        self.assertEqual(result["settled"]["inlineEmptyRows"], 1)
+        self.assertEqual(result["settled"]["modalEmptyRows"], 1)
+        self.assertEqual(result["settled"]["inlineText"], "search.larkNoResults")
+        self.assertEqual(result["settled"]["modalText"], "search.larkNoResults")
 
     def test_stale_request_completion_does_not_overwrite_newer_state(self):
         result = self.run_node(

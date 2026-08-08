@@ -3222,6 +3222,7 @@ function syncBilikaraSearchViews() {
   const message = canonicalBilikaraSearch.message;
   const isError = canonicalBilikaraSearch.isError;
   const hasSearched = canonicalBilikaraSearch.hasSearched;
+  const loading = canonicalBilikaraSearch.loading;
 
   if (elements.larkSearchQuery && elements.larkSearchQuery.value !== query) {
     elements.larkSearchQuery.value = query;
@@ -3233,10 +3234,10 @@ function syncBilikaraSearchViews() {
   setLarkSearchMessage(message, isError);
   setSearchModalLarkMessage(message, isError);
 
-  const emptyText = hasSearched && !items.length ? (isError ? "" : t("search.larkNoResults")) : "";
+  const emptyText = hasSearched && !loading && !items.length ? (isError ? "" : t("search.larkNoResults")) : "";
 
   if (elements.larkSearchResults) {
-    if (!hasSearched && !items.length && !message) {
+    if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
       elements.larkSearchResults.innerHTML = "";
       elements.larkSearchResults.classList.add("hidden");
     } else {
@@ -3245,7 +3246,7 @@ function syncBilikaraSearchViews() {
   }
 
   if (elements.searchModalLarkResults) {
-    if (!hasSearched && !items.length && !message) {
+    if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
       elements.searchModalLarkResults.innerHTML = "";
       elements.searchModalLarkResults.classList.add("hidden");
     } else {
@@ -5824,18 +5825,11 @@ async function confirmBindingSheet() {
     }
     applyStateSnapshot(result.data, { forceRender: true });
     closeBindingSheet();
+    if (["modalSearch", "modalFollow", "modalFavlist", "modalBrowse"].includes(source)) {
+      searchDetailController?.close({ immediate: true });
+    }
     if (intent.clearInput) {
       elements.urlInput.value = "";
-    }
-    if (intent.source === "search") {
-      hideSearchResults();
-      elements.searchQuery.value = "";
-    }
-    if (intent.source === "lark") {
-      hideLarkSearchResults();
-      if (elements.larkSearchQuery) {
-        elements.larkSearchQuery.value = "";
-      }
     }
     if (intent.source === "follow") {
       setFollowBrowseMessage("");
@@ -6778,16 +6772,6 @@ async function addByUrl(url, position = "tail", source = "search") {
       return false;
     }
     applyStateSnapshot(result.data, { forceRender: true });
-    if (source === "search") {
-      hideSearchResults();
-      elements.searchQuery.value = "";
-    }
-    if (source === "lark") {
-      hideLarkSearchResults();
-      if (elements.larkSearchQuery) {
-        elements.larkSearchQuery.value = "";
-      }
-    }
     if (source === "gatcha") {
       state.gatchaCandidate = null;
       renderGatchaUidView();
