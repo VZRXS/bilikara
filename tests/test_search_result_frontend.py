@@ -55,6 +55,7 @@ console.log(JSON.stringify({{
             ["node", "-e", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
             check=False,
         )
@@ -169,6 +170,7 @@ console.log(JSON.stringify(cases));
             ["node", "-e", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
             check=False,
         )
@@ -236,7 +238,7 @@ const after = {{
 console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
 """
         completed = subprocess.run(
-            ["node", "-e", script], capture_output=True, text=True, timeout=5, check=False
+            ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=5, check=False
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
@@ -322,6 +324,7 @@ console.log(JSON.stringify({{
             ["node", "-e", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
             check=False,
         )
