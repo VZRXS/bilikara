@@ -14,6 +14,7 @@ from bilikara.playlist_export import (
     _measure_text_with_fallback,
     _draw_text_with_fallback,
     playlist_image_export,
+    prewarm_playlist_export_fonts,
 )
 
 class PlaylistExportTest(unittest.TestCase):
@@ -98,6 +99,34 @@ class PlaylistExportTest(unittest.TestCase):
         with patch("bilikara.playlist_export._font_supports_char", side_effect=fake_supports):
             self.assertIs(_select_font_for_char([primary_font, symbol_font], "A"), primary_font)
             self.assertIs(_select_font_for_char([primary_font, symbol_font], "★"), symbol_font)
+
+    def test_prewarm_playlist_export_fonts_loads_exact_render_fonts_and_cmaps(self):
+        fonts = [[object(), object()], [object()], [object()], [object()], [object()]]
+        with patch(
+            "bilikara.playlist_export._load_font", side_effect=fonts
+        ) as load_font, patch(
+            "bilikara.playlist_export._font_codepoints"
+        ) as font_codepoints, patch(
+            "bilikara.playlist_export.playlist_image_export",
+            side_effect=AssertionError("prewarm must not render an image"),
+        ):
+            prewarm_playlist_export_fonts()
+
+        self.assertEqual(
+            [(call.args[1], call.kwargs["bold"]) for call in load_font.call_args_list],
+            [(72, True), (27, False), (25, True), (24, False), (22, False)],
+        )
+        self.assertEqual(
+            [call.args[0] for call in font_codepoints.call_args_list],
+            [font for group in fonts for font in group],
+        )
+
+    def test_prewarm_playlist_export_fonts_swallows_font_errors(self):
+        with patch(
+            "bilikara.playlist_export._load_font",
+            side_effect=RuntimeError("font discovery failed"),
+        ):
+            prewarm_playlist_export_fonts()
 
     def test_playlist_image_export_renders(self):
         entries = [

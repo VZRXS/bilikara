@@ -117,6 +117,24 @@ def playlist_image_export(
     return archive.getvalue(), "application/zip", "bilikara-playlist-images.zip"
 
 
+def prewarm_playlist_export_fonts() -> None:
+    try:
+        from PIL import ImageFont
+
+        for size, bold in (
+            (72, True),
+            (27, False),
+            (25, True),
+            (24, False),
+            (22, False),
+        ):
+            fonts = _load_font(ImageFont, size, bold=bold)
+            for font in fonts:
+                _font_codepoints(font)
+    except Exception:
+        return
+
+
 def _render_playlist_page(
     entries: list[dict[str, Any]],
     *,

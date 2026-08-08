@@ -82,7 +82,11 @@ from .config import (
 )
 from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
 from .networking import detect_lan_ipv4_addresses
-from .playlist_export import playlist_csv_bytes, playlist_image_export
+from .playlist_export import (
+    playlist_csv_bytes,
+    playlist_image_export,
+    prewarm_playlist_export_fonts,
+)
 from .remote_identity import RemoteIdentityStore
 from .store import PlaylistStore
 from .updater import AppUpdateManager, check_for_update
@@ -220,6 +224,7 @@ class AppContext:
         self._client_watchdog: threading.Thread | None = None
         self._owner_enrichment: threading.Thread | None = None
         self._cloudflare_prewarm: threading.Thread | None = None
+        self._playlist_export_prewarm: threading.Thread | None = None
         self._player_control_lock = threading.RLock()
         self._player_control_seq = 0
         self._player_control_ack_seq = 0
@@ -866,6 +871,12 @@ class AppContext:
                 name="bilikara-cloudflare-prewarm",
             )
             self._cloudflare_prewarm.start()
+            self._playlist_export_prewarm = threading.Thread(
+                target=prewarm_playlist_export_fonts,
+                daemon=True,
+                name="bilikara-playlist-export-font-prewarm",
+            )
+            self._playlist_export_prewarm.start()
             self.cache_manager.prewarm_binary()
             self._client_watchdog = threading.Thread(target=self._client_watchdog_loop, daemon=True)
             self._client_watchdog.start()

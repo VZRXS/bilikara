@@ -274,7 +274,7 @@ class AppContextRemoteIdentityTest(unittest.TestCase):
 
 
 class AppContextStateRevisionTest(unittest.TestCase):
-    def test_background_tasks_include_cloudflare_pool_prewarm(self):
+    def test_background_tasks_include_one_time_prewarm_targets(self):
         context = AppContext.__new__(AppContext)
         context._startup_lock = threading.RLock()
         context._startup_started = False
@@ -296,7 +296,9 @@ class AppContextStateRevisionTest(unittest.TestCase):
         with (
             patch.object(server_module.threading, "Thread", FakeThread),
             patch.object(server_module, "prewarm_cloudflare_pool") as prewarm,
+            patch.object(server_module, "prewarm_playlist_export_fonts") as export_prewarm,
         ):
+            context._start_background_tasks_once()
             context._start_background_tasks_once()
 
         prewarm_thread = next((thread for thread in created_threads if thread.name == "bilikara-cloudflare-prewarm"), None)
@@ -304,6 +306,25 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertIs(prewarm_thread.target, prewarm)
         self.assertTrue(prewarm_thread.daemon)
         self.assertTrue(prewarm_thread.started)
+        export_thread = next(
+            (
+                thread
+                for thread in created_threads
+                if thread.name == "bilikara-playlist-export-font-prewarm"
+            ),
+            None,
+        )
+        self.assertIsNotNone(export_thread)
+        self.assertIs(export_thread.target, export_prewarm)
+        self.assertTrue(export_thread.daemon)
+        self.assertTrue(export_thread.started)
+        self.assertEqual(
+            sum(
+                thread.name == "bilikara-playlist-export-font-prewarm"
+                for thread in created_threads
+            ),
+            1,
+        )
 
     def test_startup_gatcha_refresh_bypasses_global_lock_only_once(self):
         context = AppContext.__new__(AppContext)
