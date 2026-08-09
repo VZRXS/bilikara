@@ -296,6 +296,10 @@ jobs:
         if: runner.os == 'macOS'
         run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
 
+      - name: Embed signed backend in macOS Desktop bundle
+        if: runner.os == 'macOS'
+        run: python scripts/embed_macos_backend.py dist/bilikara.app dist/Bilikara-Desktop.app
+
       - name: Verify packaged BBDown vendor and clean runtime restore on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -348,13 +352,20 @@ jobs:
 
           echo "=== Verifying staged Bilikara-Desktop.app ==="
           test -x dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          embedded_backend="dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app"
+          test -x "$embedded_backend/Contents/MacOS/bilikara"
           plutil -lint dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          plutil -lint "$embedded_backend/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=4 "$embedded_backend"
           codesign --verify --deep --strict --verbose=4 dist_release/Bilikara-Desktop.app
           codesign -dv --verbose=4 dist_release/Bilikara-Desktop.app
 
           echo "=== Architecture checks ==="
           file dist_release/bilikara.app/Contents/MacOS/bilikara
           file dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          file "$embedded_backend/Contents/MacOS/bilikara"
+          test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara")"
+
 
           echo "=== Packaged portable FFmpeg checks ==="
           for binary_name in ffmpeg ffprobe; do
@@ -391,9 +402,14 @@ jobs:
 
           echo "=== Verifying extracted Bilikara-Desktop.app ==="
           test -x test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara
+          extracted_embedded_backend="test_extract/dist_release/Bilikara-Desktop.app/Contents/Frameworks/bilikara-backend.app"
+          test -x "$extracted_embedded_backend/Contents/MacOS/bilikara"
           plutil -lint test_extract/dist_release/Bilikara-Desktop.app/Contents/Info.plist
+          plutil -lint "$extracted_embedded_backend/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=4 "$extracted_embedded_backend"
           codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
+          test "$(lipo -archs test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara")"
 
           echo "=== Running extracted portable FFmpeg checks ==="
           for binary_name in ffmpeg ffprobe; do

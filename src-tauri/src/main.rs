@@ -40,6 +40,14 @@ struct BackendCommandResolution {
     candidate_type: &'static str,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PackagedBackendMissing {
+    command_path: PathBuf,
+    candidate_type: &'static str,
+    candidate_exists: bool,
+    candidate_executable: bool,
+}
+
 #[derive(Debug, Default)]
 struct BoundedOutputTail {
     lines: VecDeque<String>,
@@ -190,57 +198,75 @@ struct SaveBackendDownloadResult {
     status: SaveBackendDownloadStatus,
 }
 
-fn resolve_backend_command() -> BackendCommandResolution {
+fn resolve_backend_command() -> Result<BackendCommandResolution, PackagedBackendMissing> {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
-    #[allow(unused_mut)]
-    let mut current_dir = current_exe
+    let current_dir = current_exe
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
+    let packaged_macos = cfg!(target_os = "macos") && is_macos_app_bundle_executable(&current_exe);
+    resolve_backend_command_from(&current_exe, current_dir, packaged_macos)
+}
 
-    // On macOS, the executable is inside Contents/MacOS/, so we go up 3 levels to get next to the .app bundle
-    #[cfg(target_os = "macos")]
-    {
-        if current_dir.ends_with("MacOS") {
-            current_dir = current_dir
-                .parent()
-                .unwrap_or(current_dir)
-                .parent()
-                .unwrap_or(current_dir)
-                .parent()
-                .unwrap_or(current_dir);
+fn resolve_backend_command_from(
+    current_exe: &Path,
+    current_dir: &Path,
+    packaged_macos: bool,
+) -> Result<BackendCommandResolution, PackagedBackendMissing> {
+    if packaged_macos {
+        let embedded_backend = embedded_macos_backend_path(current_exe).unwrap_or_else(|| {
+            current_dir
+                .join("..")
+                .join("Frameworks")
+                .join("bilikara-backend.app")
+                .join("Contents")
+                .join("MacOS")
+                .join("bilikara")
+        });
+        if is_backend_candidate(&embedded_backend, current_exe) {
+            return Ok(BackendCommandResolution {
+                command: embedded_backend.to_string_lossy().to_string(),
+                args: vec![],
+                candidate_type: "macos-embedded-backend",
+            });
         }
+        return Err(PackagedBackendMissing {
+            candidate_exists: embedded_backend.is_file(),
+            candidate_executable: path_has_executable_bit(&embedded_backend),
+            command_path: embedded_backend,
+            candidate_type: "macos-embedded-backend",
+        });
     }
 
     // Windows packaged path
     let win_path = current_dir.join("bilikara").join("bilikara.exe");
-    if is_backend_candidate(&win_path, &current_exe) {
-        return BackendCommandResolution {
+    if is_backend_candidate(&win_path, current_exe) {
+        return Ok(BackendCommandResolution {
             command: win_path.to_string_lossy().to_string(),
             args: vec![],
             candidate_type: "windows-bundle-directory",
-        };
+        });
     }
 
     let win_path2 = current_dir.join("bilikara.exe");
-    if is_backend_candidate(&win_path2, &current_exe) {
-        return BackendCommandResolution {
+    if is_backend_candidate(&win_path2, current_exe) {
+        return Ok(BackendCommandResolution {
             command: win_path2.to_string_lossy().to_string(),
             args: vec![],
             candidate_type: "windows-adjacent",
-        };
+        });
     }
 
     // macOS packaged paths (dedicated backend candidate preferred over standalone app)
     let mac_dedicated = current_dir
         .join("bilikara-backend")
         .join("bilikara-backend");
-    if is_backend_candidate(&mac_dedicated, &current_exe) {
-        return BackendCommandResolution {
+    if is_backend_candidate(&mac_dedicated, current_exe) {
+        return Ok(BackendCommandResolution {
             command: mac_dedicated.to_string_lossy().to_string(),
             args: vec![],
             candidate_type: "macos-dedicated-backend",
-        };
+        });
     }
 
     let mac_path = current_dir
@@ -248,28 +274,62 @@ fn resolve_backend_command() -> BackendCommandResolution {
         .join("Contents")
         .join("MacOS")
         .join("bilikara");
-    if is_backend_candidate(&mac_path, &current_exe) {
-        return BackendCommandResolution {
+    if is_backend_candidate(&mac_path, current_exe) {
+        return Ok(BackendCommandResolution {
             command: mac_path.to_string_lossy().to_string(),
             args: vec![],
             candidate_type: "macos-sibling-app",
-        };
+        });
     }
 
     if let Some(script_path) = find_dev_launcher(current_dir) {
-        return BackendCommandResolution {
+        return Ok(BackendCommandResolution {
             command: "python".to_string(),
             args: vec![script_path.to_string_lossy().to_string()],
             candidate_type: "development-python-script",
-        };
+        });
     }
 
     // Default to Python script for development
-    BackendCommandResolution {
+    Ok(BackendCommandResolution {
         command: "python".to_string(),
         args: vec!["start_bilikara.py".to_string()],
         candidate_type: "python-fallback",
+    })
+}
+
+fn is_macos_app_bundle_executable(path: &Path) -> bool {
+    let Some(mac_os_dir) = path.parent() else {
+        return false;
+    };
+    let Some(contents_dir) = mac_os_dir.parent() else {
+        return false;
+    };
+    let Some(app_dir) = contents_dir.parent() else {
+        return false;
+    };
+    mac_os_dir.file_name().is_some_and(|name| name == "MacOS")
+        && contents_dir
+            .file_name()
+            .is_some_and(|name| name == "Contents")
+        && app_dir
+            .extension()
+            .is_some_and(|extension| extension == "app")
+}
+
+fn embedded_macos_backend_path(current_exe: &Path) -> Option<PathBuf> {
+    if !is_macos_app_bundle_executable(current_exe) {
+        return None;
     }
+    let contents_dir = current_exe.parent()?.parent()?;
+    Some(
+        contents_dir
+            .join("Frameworks")
+            .join("bilikara-backend.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("bilikara"),
+    )
 }
 
 fn find_dev_launcher(start_dir: &std::path::Path) -> Option<PathBuf> {
@@ -327,22 +387,7 @@ fn unix_timestamp_millis() -> u128 {
 fn is_packaged_macos_executable(path: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
-        let Some(mac_os_dir) = path.parent() else {
-            return false;
-        };
-        let Some(contents_dir) = mac_os_dir.parent() else {
-            return false;
-        };
-        let Some(app_dir) = contents_dir.parent() else {
-            return false;
-        };
-        mac_os_dir.file_name().is_some_and(|name| name == "MacOS")
-            && contents_dir
-                .file_name()
-                .is_some_and(|name| name == "Contents")
-            && app_dir
-                .extension()
-                .is_some_and(|extension| extension == "app")
+        is_macos_app_bundle_executable(path)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1178,7 +1223,23 @@ fn main() {
                 return Ok(());
             };
 
-            let mut resolution = resolve_backend_command();
+            let mut resolution = match resolve_backend_command() {
+                Ok(resolution) => resolution,
+                Err(missing) => {
+                    let detail = format!(
+                        "candidate_type={} command_path={} candidate_exists={} candidate_executable={}",
+                        missing.candidate_type,
+                        missing.command_path.display(),
+                        missing.candidate_exists,
+                        missing.candidate_executable,
+                    );
+                    if let Some(startup_log) = startup_log.as_ref() {
+                        startup_log.append("packaged_backend_missing", &detail);
+                    }
+                    fail_desktop_startup(app.handle(), startup_log.as_ref(), &detail);
+                    return Ok(());
+                }
+            };
             resolution.args.extend(vec![
                 "--no-browser".to_string(),
                 "--headless".to_string(),
@@ -2111,6 +2172,117 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn packaged_macos_resolves_embedded_backend_without_sibling_or_path() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "bilikara_embedded_backend_test_{}_{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let desktop_exe = temp_dir
+            .join("translocated")
+            .join("Bilikara-Desktop.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("bilikara");
+        let embedded_backend = temp_dir
+            .join("translocated")
+            .join("Bilikara-Desktop.app")
+            .join("Contents")
+            .join("Frameworks")
+            .join("bilikara-backend.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("bilikara");
+        fs::create_dir_all(desktop_exe.parent().expect("desktop parent"))
+            .expect("create desktop directory");
+        fs::create_dir_all(embedded_backend.parent().expect("backend parent"))
+            .expect("create embedded backend directory");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop executable");
+        fs::write(&embedded_backend, b"backend").expect("write backend executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&embedded_backend)
+                .expect("backend metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&embedded_backend, permissions).expect("mark backend executable");
+        }
+
+        let resolution = resolve_backend_command_from(
+            &desktop_exe,
+            desktop_exe.parent().expect("desktop executable directory"),
+            true,
+        )
+        .expect("packaged resolution");
+        assert_eq!(resolution.candidate_type, "macos-embedded-backend");
+        assert_eq!(PathBuf::from(resolution.command), embedded_backend);
+        assert!(resolution.args.is_empty());
+        assert!(!temp_dir.join("translocated").join("bilikara.app").exists());
+
+        fs::remove_dir_all(temp_dir).expect("remove embedded backend test directory");
+    }
+
+    #[test]
+    fn packaged_macos_missing_embedded_backend_never_falls_back_to_python() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "bilikara_missing_backend_test_{}_{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let desktop_exe = temp_dir
+            .join("Bilikara-Desktop.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("bilikara");
+        fs::create_dir_all(desktop_exe.parent().expect("desktop parent"))
+            .expect("create desktop directory");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop executable");
+        fs::write(temp_dir.join("start_bilikara.py"), b"print('dev')")
+            .expect("write development launcher decoy");
+
+        let missing = resolve_backend_command_from(
+            &desktop_exe,
+            desktop_exe.parent().expect("desktop executable directory"),
+            true,
+        )
+        .expect_err("missing packaged backend must fail closed");
+        assert_eq!(missing.candidate_type, "macos-embedded-backend");
+        assert!(!missing.candidate_exists);
+        assert!(!missing.candidate_executable);
+        assert!(
+            missing
+                .command_path
+                .ends_with("bilikara-backend.app/Contents/MacOS/bilikara")
+        );
+
+        fs::remove_dir_all(temp_dir).expect("remove missing backend test directory");
+    }
+
+    #[test]
+    fn source_tree_resolution_preserves_development_python_launcher() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "bilikara_dev_backend_test_{}_{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let target_dir = temp_dir.join("src-tauri").join("target").join("release");
+        fs::create_dir_all(&target_dir).expect("create source target directory");
+        let desktop_exe = target_dir.join("bilikara");
+        fs::write(&desktop_exe, b"desktop").expect("write desktop executable");
+        let launcher = temp_dir.join("start_bilikara.py");
+        fs::write(&launcher, b"print('dev')").expect("write development launcher");
+
+        let resolution = resolve_backend_command_from(&desktop_exe, &target_dir, false)
+            .expect("development resolution");
+        assert_eq!(resolution.candidate_type, "development-python-script");
+        assert_eq!(resolution.command, "python");
+        assert_eq!(resolution.args, [launcher.to_string_lossy().to_string()]);
+
+        fs::remove_dir_all(temp_dir).expect("remove development backend test directory");
     }
 
     #[test]

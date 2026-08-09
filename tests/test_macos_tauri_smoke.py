@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import platform
+import subprocess
 import tempfile
 import time
 import unittest
@@ -114,6 +115,15 @@ class MacOSTauriSmokeTest(unittest.TestCase):
             raise unittest.SkipTest(f"Tauri executable not found: {executable}")
         if not os.access(executable, os.X_OK):
             self.fail(f"Tauri executable is not executable: {executable}")
+        source_app = executable.parent.parent.parent
+        embedded_relative = Path(
+            "Contents/Frameworks/bilikara-backend.app/Contents/MacOS/bilikara"
+        )
+        source_embedded_backend = source_app / embedded_relative
+        if not source_embedded_backend.is_file():
+            self.fail(f"Embedded backend executable is missing: {source_embedded_backend}")
+        if not os.access(source_embedded_backend, os.X_OK):
+            self.fail(f"Embedded backend is not executable: {source_embedded_backend}")
 
         home = os.getenv("HOME", "").strip()
         if not home:
@@ -124,7 +134,32 @@ class MacOSTauriSmokeTest(unittest.TestCase):
             smoke_root_path = Path(smoke_root)
             for profile_name in ("shell-environment", "finder-like-environment"):
                 with self.subTest(profile=profile_name):
-                    unrelated_cwd = smoke_root_path / profile_name
+                    profile_root = smoke_root_path / profile_name
+                    isolated_dir = profile_root / "isolated-app"
+                    isolated_app = isolated_dir / "Bilikara-Desktop.app"
+                    isolated_dir.mkdir(parents=True)
+                    copied = subprocess.run(
+                        ["/usr/bin/ditto", str(source_app), str(isolated_app)],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        check=False,
+                    )
+                    self.assertEqual(copied.returncode, 0, copied.stdout + copied.stderr)
+                    isolated_executable = (
+                        isolated_app / "Contents" / "MacOS" / "bilikara"
+                    )
+                    isolated_backend = isolated_app / embedded_relative
+                    self.assertTrue(isolated_executable.is_file())
+                    self.assertTrue(os.access(isolated_executable, os.X_OK))
+                    self.assertTrue(isolated_backend.is_file())
+                    self.assertTrue(os.access(isolated_backend, os.X_OK))
+                    self.assertFalse(
+                        (isolated_dir / "bilikara.app").exists(),
+                        "isolated Desktop smoke must not have a sibling backend app",
+                    )
+
+                    unrelated_cwd = profile_root / "unrelated-cwd"
                     unrelated_cwd.mkdir()
                     startup_log = unrelated_cwd / DESKTOP_STARTUP_LOG_NAME
                     if profile_name == "finder-like-environment":
@@ -142,7 +177,7 @@ class MacOSTauriSmokeTest(unittest.TestCase):
 
                     start_time = time.monotonic()
                     capture = CapturedProcess.start(
-                        [str(executable)],
+                        [str(isolated_executable)],
                         cwd=unrelated_cwd,
                         env=launch_env,
                     )
@@ -163,7 +198,7 @@ class MacOSTauriSmokeTest(unittest.TestCase):
                             self.fail(
                                 "Tauri app did not report the backend ready handshake.\n"
                                 f"profile={profile_name}\n"
-                                f"executable={executable}\n"
+                                f"executable={isolated_executable}\n"
                                 f"cwd={unrelated_cwd}\n"
                                 f"timeout_configured={timeout_seconds}s\n"
                                 f"elapsed={elapsed:.2f}s\n"
@@ -186,12 +221,13 @@ class MacOSTauriSmokeTest(unittest.TestCase):
                         self.assertNotEqual(startup_text, "<missing>")
                         self.assertIn("event=desktop_start", startup_text)
                         self.assertIn("event=backend_resolved", startup_text)
-                        self.assertIn("candidate_type=macos-sibling-app", startup_text)
+                        self.assertIn("candidate_type=macos-embedded-backend", startup_text)
                         self.assertIn("candidate_exists=true", startup_text)
                         self.assertIn("candidate_executable=true", startup_text)
                         self.assertIn("event=backend_spawn status=ok child_pid=", startup_text)
                         self.assertIn("event=backend_ready", startup_text)
                         self.assertIn("ready_marker_received=true", startup_text)
+                        self.assertNotIn("event=packaged_backend_missing", startup_text)
                         for sensitive_marker in (
                             "Authorization:",
                             "BILIKARA_SHUTDOWN_TOKEN",
