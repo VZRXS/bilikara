@@ -17,7 +17,7 @@ class RemoteSearchExpansionTest(unittest.TestCase):
         source = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
         cls.search_source = source[
             source.index("const canonicalBilikaraSearch =") :
-            source.index("function normalizeD1BrowseTagForMerge(")
+            source.index("function d1BrowseTitle(")
         ]
         cls.input_handlers = source[
             source.index('elements.larkSearchQuery?.addEventListener("input"') :

@@ -8,8 +8,6 @@ const eventStreamMaxRetryMs = 15000;
 const larkSearchTableCount = 5;
 const d1BrowseItemLimit = 450;
 const d1BrowseTagLimit = 450;
-const d1BrowseMergeMinLength = 5;
-const d1BrowseCountConcurrency = 4;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
 const categoryBrowsePageSize = 100;
 const searchResultItemByElement = new WeakMap();
@@ -265,13 +263,10 @@ const state = {
   d1BrowseLetter: "",
   d1BrowseTag: "",
   d1BrowseLocale: "",
-  d1BrowseAliases: [],
   d1BrowseQuery: "",
   d1BrowseData: null,
   d1BrowseLoading: false,
   d1BrowseSeq: 0,
-  d1BrowseResolvedCounts: new Map(),
-  d1BrowseItemCache: new Map(),
   categoryBrowseSelectedId: "",
   categoryBrowseQuery: "",
   categoryBrowseItems: [],
@@ -3346,19 +3341,6 @@ async function executeCanonicalBilikaraSearch(queryStr) {
   }
 }
 
-function normalizeD1BrowseTagForMerge(value) {
-  return String(value || "")
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[\u200b-\u200d\ufeff]/g, "")
-    .replace(/[\s"'`._!?,:;~\-\/\\|()[\]{}<>]+/g, "")
-    .replace(/[\u2018-\u201f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g, "");
-}
-
-function d1BrowseMergeLength(value) {
-  return Array.from(value || "").length;
-}
-
 function d1BrowseTitle(kind = state.d1BrowseKind) {
   return kind === "artist" ? t("search.artistBrowse") : t("search.nameBrowse");
 }
@@ -3369,107 +3351,6 @@ function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
 
 function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
   return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
-}
-
-function d1BrowseMergeCandidate(entry) {
-  const tag = String(entry?.tag || "").trim();
-  const locale = String(entry?.locale || "").trim();
-  const normalized = normalizeD1BrowseTagForMerge(tag);
-  return {
-    tag,
-    locale,
-    normalized,
-    count: Number(entry?.count || 0),
-    yomi: String(entry?.yomi || ""),
-    letter: String(entry?.letter || ""),
-  };
-}
-
-function isBetterD1BrowseMergeLabel(candidate, current) {
-  const candidateLength = d1BrowseMergeLength(candidate.normalized);
-  const currentLength = d1BrowseMergeLength(current.normalized);
-  if (candidateLength !== currentLength) {
-    return candidateLength < currentLength;
-  }
-  if (candidate.count !== current.count) {
-    return candidate.count > current.count;
-  }
-  return false;
-}
-
-function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
-  const seen = new Set();
-  const results = [];
-  const source = Array.isArray(aliases) && aliases.length ? aliases : [{ tag: fallbackTag, locale: fallbackLocale }];
-  source.forEach((entry) => {
-    const tag = String(entry?.tag || "").trim();
-    const locale = String(entry?.locale || "").trim();
-    if (!tag) {
-      return;
-    }
-    const key = `${locale}\n${tag}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    results.push({ tag, locale });
-  });
-  return results;
-}
-
-function d1BrowseAliasKey(aliases, { kind = state.d1BrowseKind, query = state.d1BrowseQuery } = {}) {
-  const normalizedAliases = uniqueD1BrowseAliases(aliases)
-    .map((entry) => ({ tag: entry.tag, locale: entry.locale }))
-    .sort((left, right) => `${left.locale}\n${left.tag}`.localeCompare(`${right.locale}\n${right.tag}`));
-  return JSON.stringify({
-    kind: kind === "artist" ? "artist" : "name",
-    query: String(query || "").trim(),
-    aliases: normalizedAliases,
-  });
-}
-
-function mergeD1BrowseTags(tags) {
-  const groups = [];
-  (Array.isArray(tags) ? tags : []).forEach((entry) => {
-    const candidate = d1BrowseMergeCandidate(entry);
-    if (!candidate.tag) {
-      return;
-    }
-    const canMerge = d1BrowseMergeLength(candidate.normalized) >= d1BrowseMergeMinLength;
-    let group = null;
-    if (canMerge) {
-      group = groups.find((item) => (
-        item.canMerge
-        && item.normalized
-        && (candidate.normalized.startsWith(item.normalized) || item.normalized.startsWith(candidate.normalized))
-      ));
-    }
-    if (!group) {
-      groups.push({
-        ...candidate,
-        canMerge,
-        aliases: [{ tag: candidate.tag, locale: candidate.locale }],
-      });
-      return;
-    }
-    group.count += candidate.count;
-    group.aliases.push({ tag: candidate.tag, locale: candidate.locale });
-    if (isBetterD1BrowseMergeLabel(candidate, group)) {
-      group.tag = candidate.tag;
-      group.locale = candidate.locale;
-      group.normalized = candidate.normalized;
-      group.yomi = candidate.yomi;
-      group.letter = candidate.letter;
-    }
-  });
-  groups.forEach((group) => {
-    group.aliases = uniqueD1BrowseAliases(group.aliases, group.tag, group.locale);
-    group.aliasKey = d1BrowseAliasKey(group.aliases, { kind: state.d1BrowseKind, query: "" });
-    if (state.d1BrowseResolvedCounts.has(group.aliasKey)) {
-      group.count = state.d1BrowseResolvedCounts.get(group.aliasKey);
-    }
-  });
-  return groups;
 }
 
 function d1BrowseItemKey(item) {
@@ -3528,57 +3409,6 @@ function mergeCategoryBrowseItems(existingItems, nextItems) {
     items.push(item);
   });
   return items;
-}
-
-function mergeD1BrowseItemPayloads(payloads) {
-  const seen = new Set();
-  const items = [];
-  (Array.isArray(payloads) ? payloads : []).forEach((payload) => {
-    (Array.isArray(payload?.items) ? payload.items : []).forEach((item) => {
-      const key = d1BrowseItemKey(item);
-      if (!key || seen.has(key)) {
-        return;
-      }
-      seen.add(key);
-      items.push(item);
-    });
-  });
-  return items;
-}
-
-async function resolveD1BrowseMergedTagCounts(groups, { kind, letter, query } = {}) {
-  const targets = (Array.isArray(groups) ? groups : []).filter((group) => (
-    Array.isArray(group.aliases)
-    && group.aliases.length > 1
-    && group.aliasKey
-    && !state.d1BrowseResolvedCounts.has(group.aliasKey)
-  ));
-  if (!targets.length) {
-    return;
-  }
-  let targetIndex = 0;
-  const workerCount = Math.min(d1BrowseCountConcurrency, targets.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (targetIndex < targets.length) {
-      const group = targets[targetIndex];
-      targetIndex += 1;
-      try {
-        const payloads = await Promise.all(group.aliases.map((alias) => fetchD1Browse({
-          kind,
-          letter,
-          query,
-          tag: alias.tag,
-          locale: alias.locale,
-          limit: d1BrowseItemLimit,
-        })));
-        const items = mergeD1BrowseItemPayloads(payloads);
-        state.d1BrowseResolvedCounts.set(group.aliasKey, items.length);
-        state.d1BrowseItemCache.set(group.aliasKey, items);
-      } catch {
-        // Keep the aggregate count if exact merged counts fail.
-      }
-    }
-  }));
 }
 
 function ensureD1BrowseView() {
@@ -3660,7 +3490,7 @@ function renderD1BrowseView() {
     backButton.disabled = state.d1BrowseLoading;
   }
 
-  const tags = mergeD1BrowseTags(state.d1BrowseData?.tags);
+  const tags = Array.isArray(state.d1BrowseData?.tags) ? state.d1BrowseData.tags : [];
   const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
   if (current) {
     const parts = [title];
@@ -3698,7 +3528,6 @@ function renderD1BrowseView() {
           button.className = "tag-browser-tag";
           button.dataset.tag = String(entry.tag || "");
           button.dataset.locale = String(entry.locale || "");
-          button.dataset.aliases = JSON.stringify(entry.aliases || []);
           const name = document.createElement("span");
           name.className = "tag-browser-tag-name";
           name.textContent = String(entry.tag || "");
@@ -3731,7 +3560,7 @@ function renderD1BrowseView() {
   }
 }
 
-async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "", aliases = [] } = {}) {
+async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "" } = {}) {
   const searchSeq = state.d1BrowseSeq + 1;
   state.d1BrowseSeq = searchSeq;
   state.d1BrowseKind = kind === "artist" ? "artist" : "name";
@@ -3739,59 +3568,21 @@ async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = stat
   state.d1BrowseQuery = String(query || "").trim();
   state.d1BrowseTag = String(tag || "").trim();
   state.d1BrowseLocale = String(locale || "").trim();
-  state.d1BrowseAliases = state.d1BrowseTag ? uniqueD1BrowseAliases(aliases, state.d1BrowseTag, state.d1BrowseLocale) : [];
   state.d1BrowseLoading = true;
   renderD1BrowseView();
   try {
-    const requestAliases = state.d1BrowseTag ? state.d1BrowseAliases : [];
-    const requestAliasKey = requestAliases.length ? d1BrowseAliasKey(requestAliases, {
+    const data = await fetchD1Browse({
       kind: state.d1BrowseKind,
+      letter: state.d1BrowseLetter,
       query: state.d1BrowseQuery,
-    }) : "";
-    if (requestAliasKey && state.d1BrowseItemCache.has(requestAliasKey)) {
-      const items = state.d1BrowseItemCache.get(requestAliasKey) || [];
-      state.d1BrowseData = { kind: state.d1BrowseKind, letter: state.d1BrowseLetter, query: state.d1BrowseQuery, tag: state.d1BrowseTag, locale: state.d1BrowseLocale, tags: [], items };
-      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
-      return;
-    }
-    const payloads = requestAliases.length > 1
-      ? await Promise.all(requestAliases.map((alias) => fetchD1Browse({
-        kind: state.d1BrowseKind,
-        letter: state.d1BrowseLetter,
-        query: state.d1BrowseQuery,
-        tag: alias.tag,
-        locale: alias.locale,
-        limit: d1BrowseItemLimit,
-      })))
-      : [await fetchD1Browse({
-        kind: state.d1BrowseKind,
-        letter: state.d1BrowseLetter,
-        query: state.d1BrowseQuery,
-        tag: state.d1BrowseTag,
-        locale: state.d1BrowseLocale,
-        limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
-      })];
+      tag: state.d1BrowseTag,
+      locale: state.d1BrowseLocale,
+      limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
+    });
     if (state.d1BrowseSeq !== searchSeq) {
       return;
     }
-    const data = payloads[0] || {};
-    if (!state.d1BrowseTag) {
-      const mergedTags = mergeD1BrowseTags(data.tags);
-      await resolveD1BrowseMergedTagCounts(mergedTags, {
-        kind: state.d1BrowseKind,
-        letter: state.d1BrowseLetter,
-        query: "",
-      });
-      if (state.d1BrowseSeq !== searchSeq) {
-        return;
-      }
-    }
-    state.d1BrowseData = requestAliases.length > 1 ? { ...data, items: mergeD1BrowseItemPayloads(payloads) } : data;
-    if (requestAliasKey) {
-      const items = Array.isArray(state.d1BrowseData.items) ? state.d1BrowseData.items : [];
-      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
-      state.d1BrowseItemCache.set(requestAliasKey, items);
-    }
+    state.d1BrowseData = data || {};
   } catch (error) {
     const view = ensureD1BrowseView();
     const message = view?.querySelector("[data-d1-browse-message]");
@@ -4250,7 +4041,6 @@ function renderSearchModalView(target = state.searchModalView || "search") {
       state.d1BrowseLetter = "";
       state.d1BrowseTag = "";
       state.d1BrowseLocale = "";
-      state.d1BrowseAliases = [];
       state.d1BrowseQuery = "";
     }
     state.d1BrowseKind = nextTarget;
@@ -7133,7 +6923,6 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
     state.d1BrowseQuery = "";
     state.d1BrowseTag = "";
     state.d1BrowseLocale = "";
-    state.d1BrowseAliases = [];
     state.d1BrowseData = null;
     renderD1BrowseView();
     return;
@@ -7145,7 +6934,6 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
       query: input?.value || "",
       tag: state.d1BrowseTag,
       locale: state.d1BrowseLocale,
-      aliases: state.d1BrowseAliases,
     });
     return;
   }
@@ -7188,13 +6976,11 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
         query: "",
         tag: "",
         locale: "",
-        aliases: [],
       });
     } else if (state.d1BrowseLetter) {
       state.d1BrowseLetter = "";
       state.d1BrowseTag = "";
       state.d1BrowseLocale = "";
-      state.d1BrowseAliases = [];
       state.d1BrowseQuery = "";
       state.d1BrowseData = null;
       renderD1BrowseView();
@@ -7209,25 +6995,17 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
       query: "",
       tag: "",
       locale: "",
-      aliases: [],
     });
     return;
   }
   const tagButton = event.target.closest("[data-tag]");
   if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
-    let aliases = [];
-    try {
-      aliases = JSON.parse(tagButton.dataset.aliases || "[]");
-    } catch {
-      aliases = [];
-    }
     loadD1Browse({
       kind: state.d1BrowseKind || "name",
       letter: state.d1BrowseLetter,
       query: "",
       tag: tagButton.dataset.tag || "",
       locale: tagButton.dataset.locale || "",
-      aliases,
     });
   }
 });

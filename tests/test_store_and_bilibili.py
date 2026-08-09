@@ -2838,6 +2838,7 @@ class BilibiliParserTest(unittest.TestCase):
             patch("bilikara.bilibili.time.monotonic") as mock_monotonic,
             patch("bilikara.bilibili.request_json") as mock_request_json,
             patch("bilikara.bilibili.get_cached_wbi_keys") as mock_get_cached_wbi_keys,
+            patch("builtins.print") as mock_print,
         ):
             mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
             mock_monotonic.side_effect = [100.0, 100.0, 103.5, 103.5]
@@ -2865,6 +2866,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["bvid"], "BV1xx411c7mD")
         mock_sleep.assert_any_call(bilibili_module.GATCHA_RETRY_DELAY_SECONDS)
+        mock_print.assert_not_called()
 
 
     @patch("bilikara.bilibili.request_json")

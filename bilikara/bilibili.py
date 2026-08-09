@@ -1128,11 +1128,7 @@ def _fetch_gatcha_videos_for_uid(
             try:
                 payload = _request_gatcha_page(mid, page_number, page_size)
                 break
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    # f"[debug] gatcha page retry scheduled: mid={mid}, page={page_number}, "
-                    # f"cached_entries={len(all_entries)}, error={exc}"
-                )
+            except Exception:  # noqa: BLE001
                 time.sleep(GATCHA_RETRY_DELAY_SECONDS)
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         page_entries = _extract_gatcha_entries(str(mid), payload)
