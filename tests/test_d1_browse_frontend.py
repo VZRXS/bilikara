@@ -15,7 +15,17 @@ class D1BrowseFrontendTest(unittest.TestCase):
         if not cls.node:
             raise unittest.SkipTest("node is unavailable")
 
-    def run_load(self, relative_path: str, end_marker: str, item_limit: str, tag_limit: str) -> dict:
+    def run_load(
+        self,
+        relative_path: str,
+        end_marker: str,
+        item_limit: str,
+        tag_limit: str,
+        *,
+        letter: str = "A",
+        query: str = "",
+        tag: str = "Alias",
+    ) -> dict:
         source = (ROOT / relative_path).read_text(encoding="utf-8")
         load_source = source[
             source.index("async function loadD1Browse(") : source.index(end_marker)
@@ -31,8 +41,8 @@ const state = {{
   d1BrowseLoading: false,
   d1BrowseSeq: 0,
 }};
-const {item_limit} = 450;
-const {tag_limit} = 450;
+const {item_limit} = 451;
+const {tag_limit} = 199;
 const requests = [];
 function renderD1BrowseView() {{}}
 async function fetchD1Browse(options) {{
@@ -43,8 +53,9 @@ async function fetchD1Browse(options) {{
 (async () => {{
   await loadD1Browse({{
     kind: "name",
-    letter: "A",
-    tag: "Alias",
+    letter: {json.dumps(letter)},
+    query: {json.dumps(query)},
+    tag: {json.dumps(tag)},
     locale: "zh",
     aliases: [
       {{ tag: "Alias", locale: "zh" }},
@@ -79,6 +90,7 @@ async function fetchD1Browse(options) {{
 
         self.assertEqual(result["requestCount"], 1)
         self.assertEqual(result["request"]["tag"], "Alias")
+        self.assertEqual(result["request"]["limit"], 451)
         self.assertEqual(result["bvid"], "BV1xx411c7mD")
 
     def test_remote_uses_one_indexed_browse_request(self):
@@ -91,7 +103,31 @@ async function fetchD1Browse(options) {{
 
         self.assertEqual(result["requestCount"], 1)
         self.assertEqual(result["request"]["tag"], "Alias")
+        self.assertEqual(result["request"]["limit"], 451)
         self.assertEqual(result["bvid"], "BV1xx411c7mD")
+
+    def test_tagless_browse_uses_tag_limit_and_forwards_query_and_letter(self):
+        cases = (
+            ("static/app.js", "function ensurePendingReviewView(", "D1_BROWSE_ITEM_LIMIT", "D1_BROWSE_TAG_LIMIT"),
+            ("static/remote.js", "function ensureCategoryBrowseView(", "d1BrowseItemLimit", "d1BrowseTagLimit"),
+        )
+        for relative_path, end_marker, item_limit, tag_limit in cases:
+            with self.subTest(relative_path=relative_path):
+                result = self.run_load(
+                    relative_path,
+                    end_marker,
+                    item_limit,
+                    tag_limit,
+                    letter="b",
+                    query="Love Live",
+                    tag="",
+                )
+
+                self.assertEqual(result["requestCount"], 1)
+                self.assertEqual(result["request"]["tag"], "")
+                self.assertEqual(result["request"]["letter"], "B")
+                self.assertEqual(result["request"]["query"], "Love Live")
+                self.assertEqual(result["request"]["limit"], 199)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 import unittest
 from collections import defaultdict
@@ -2866,7 +2867,12 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["bvid"], "BV1xx411c7mD")
         mock_sleep.assert_any_call(bilibili_module.GATCHA_RETRY_DELAY_SECONDS)
-        mock_print.assert_not_called()
+        mock_print.assert_called_once_with(
+            "[bilikara] gatcha page request failed; retrying mid=123 page=1: "
+            "412 Precondition Failed",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
     @patch("bilikara.bilibili.request_json")

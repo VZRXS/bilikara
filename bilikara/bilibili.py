@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import threading
 import re
 import urllib.parse
@@ -1124,11 +1125,20 @@ def _fetch_gatcha_videos_for_uid(
     page_limit = max(1, int(max_pages)) if max_pages is not None else None
 
     while True:
+        retry_reported = False
         while True:
             try:
                 payload = _request_gatcha_page(mid, page_number, page_size)
                 break
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                if not retry_reported:
+                    error = str(exc).replace("\r", " ").replace("\n", " ")[:300]
+                    print(
+                        f"[bilikara] gatcha page request failed; retrying mid={mid} page={page_number}: {error}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    retry_reported = True
                 time.sleep(GATCHA_RETRY_DELAY_SECONDS)
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         page_entries = _extract_gatcha_entries(str(mid), payload)

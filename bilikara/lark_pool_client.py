@@ -1242,8 +1242,19 @@ def append_lark_pool_entries_in_background(entries: list[dict]) -> None:
 
     def _worker() -> None:
         try:
-            append_lark_pool_entries(normalized_entries)
-        except Exception:
-            pass
+            result = append_lark_pool_entries(normalized_entries)
+            error = str(result.get("error") or "").strip() if isinstance(result, dict) else ""
+            if error:
+                print(
+                    f"[bilikara:lark] background append failed for {len(normalized_entries)} item(s): {error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[bilikara:lark] background append failed for {len(normalized_entries)} item(s): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     threading.Thread(target=_worker, daemon=True, name="lark-pool-append").start()

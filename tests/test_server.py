@@ -844,6 +844,41 @@ class PlaylistAddRequestTest(unittest.TestCase):
         )
         self.assertEqual(writes, [({"ok": True, "data": {"playlist": []}}, None)])
 
+    def test_add_indexing_payload_falls_back_to_display_title_and_original_url(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler._write_json = lambda payload, status=None: None
+        item = SimpleNamespace(
+            owner_mid=123,
+            bvid="BV1xx411c7mD",
+            title="",
+            display_title="Display title",
+            resolved_url="",
+            original_url="https://b23.tv/example",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/123",
+            cover_url="https://example.com/cover.jpg",
+        )
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            store=SimpleNamespace(
+                session_request_for_item=lambda _item: None,
+                active_duplicate_for_item=lambda _item: None,
+            ),
+            add_item=lambda *_args, **_kwargs: None,
+            snapshot=lambda: {"playlist": []},
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.fetch_video_item",
+            return_value=item,
+        ), patch("bilikara.server.append_lark_pool_entries_in_background") as append_entries:
+            handler._handle_add({"url": item.original_url})
+
+        entry = append_entries.call_args.args[0][0]
+        self.assertEqual(entry["title"], item.display_title)
+        self.assertEqual(entry["url"], item.original_url)
+
     def test_missing_bilibili_video_error_deletes_pool_bvid(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
 

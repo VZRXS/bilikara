@@ -142,6 +142,22 @@ class LarkPoolClientTest(unittest.TestCase):
         cloudflare.assert_not_called()
         self.assertEqual(result, {"attempted": 0, "added": 0})
 
+    def test_background_append_reports_returned_error(self):
+        with (
+            patch.object(lark_pool, "append_lark_pool_entries", return_value={"error": "timeout"}),
+            patch.object(lark_pool.threading, "Thread") as thread_class,
+            patch("builtins.print") as mock_print,
+        ):
+            lark_pool.append_lark_pool_entries_in_background([{"bvid": "BV1xx411c7mD"}])
+            thread_class.call_args.kwargs["target"]()
+
+        thread_class.return_value.start.assert_called_once_with()
+        mock_print.assert_called_once_with(
+            "[bilikara:lark] background append failed for 1 item(s): timeout",
+            file=lark_pool.sys.stderr,
+            flush=True,
+        )
+
     def test_active_tables_skip_tables_without_search_fields(self):
         with (
             patch.object(lark_pool, "_TABLES_READY", False),
