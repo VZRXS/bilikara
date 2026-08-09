@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 from collections import deque
 import threading
 import unittest
@@ -387,6 +388,172 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertEqual(context._player_control_ack_seq, 7)
         self.assertIsNone(context._player_control_command)
         self.assertIsNone(context._player_status)
+
+
+class AppContextSsePayloadCacheTest(unittest.TestCase):
+    @staticmethod
+    def make_context(revision: int = 1) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._state_change_condition = threading.Condition()
+        context._state_revision = revision
+        context._sse_payload_condition = threading.Condition()
+        context._sse_payload_revision = -1
+        context._sse_payload = b""
+        context._sse_payload_building = False
+        return context
+
+    @staticmethod
+    def decode_state_event(payload: bytes) -> dict[str, object]:
+        lines = payload.decode("utf-8").splitlines()
+        data = "\n".join(line.removeprefix("data: ") for line in lines if line.startswith("data: "))
+        return json.loads(data)
+
+    def test_same_revision_reuses_one_snapshot_and_serialization(self):
+        context = self.make_context(revision=7)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            return {"state_revision": context._state_revision, "value": "same"}
+
+        context.snapshot = snapshot
+
+        first_revision, first_payload = context.serialized_sse_state_event()
+        second_revision, second_payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 1)
+        self.assertEqual(first_revision, 7)
+        self.assertEqual(second_revision, 7)
+        self.assertIs(first_payload, second_payload)
+        self.assertEqual(
+            self.decode_state_event(first_payload),
+            {"state_revision": 7, "value": "same"},
+        )
+
+    def test_revision_change_builds_and_publishes_new_payload(self):
+        context = self.make_context(revision=4)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            return {
+                "state_revision": context._state_revision,
+                "value": f"revision-{context._state_revision}",
+            }
+
+        context.snapshot = snapshot
+        old_revision, old_payload = context.serialized_sse_state_event()
+
+        context._notify_state_changed()
+        new_revision, new_payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 2)
+        self.assertEqual(old_revision, 4)
+        self.assertEqual(new_revision, 5)
+        self.assertNotEqual(old_payload, new_payload)
+        self.assertEqual(
+            self.decode_state_event(new_payload),
+            {"state_revision": 5, "value": "revision-5"},
+        )
+
+    def test_revision_change_during_build_discards_stale_payload(self):
+        context = self.make_context(revision=8)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            revision = context._state_revision
+            if snapshot_calls == 1:
+                context._notify_state_changed()
+                return {"state_revision": revision, "value": "stale"}
+            return {"state_revision": revision, "value": "current"}
+
+        context.snapshot = snapshot
+
+        revision, payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 2)
+        self.assertEqual(revision, 9)
+        self.assertEqual(
+            self.decode_state_event(payload),
+            {"state_revision": 9, "value": "current"},
+        )
+
+    def test_concurrent_cache_miss_has_one_builder_and_shared_result(self):
+        context = self.make_context(revision=11)
+        worker_count = 12
+        start_barrier = threading.Barrier(worker_count + 1)
+        builder_started = threading.Event()
+        release_builder = threading.Event()
+        count_lock = threading.Lock()
+        snapshot_calls = 0
+        results: list[tuple[int, bytes]] = []
+        errors: list[BaseException] = []
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            with count_lock:
+                snapshot_calls += 1
+            builder_started.set()
+            if not release_builder.wait(timeout=1.0):
+                raise TimeoutError("test did not release SSE payload builder")
+            return {"state_revision": context._state_revision, "value": "concurrent"}
+
+        def request_payload() -> None:
+            try:
+                start_barrier.wait(timeout=1.0)
+                results.append(context.serialized_sse_state_event())
+            except BaseException as exc:
+                errors.append(exc)
+
+        context.snapshot = snapshot
+        workers = [threading.Thread(target=request_payload) for _ in range(worker_count)]
+        for worker in workers:
+            worker.start()
+        start_barrier.wait(timeout=1.0)
+        self.assertTrue(builder_started.wait(timeout=1.0))
+        release_builder.set()
+        for worker in workers:
+            worker.join(timeout=1.0)
+
+        self.assertFalse(errors)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(snapshot_calls, 1)
+        self.assertEqual(len(results), worker_count)
+        self.assertEqual({revision for revision, _payload in results}, {11})
+        self.assertEqual(len({id(payload) for _revision, payload in results}), 1)
+        self.assertEqual(
+            self.decode_state_event(results[0][1]),
+            {"state_revision": 11, "value": "concurrent"},
+        )
+
+    def test_failed_build_does_not_poison_cache_or_waiters(self):
+        context = self.make_context(revision=3)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            if snapshot_calls == 1:
+                raise RuntimeError("snapshot failed")
+            return {"state_revision": context._state_revision, "value": "recovered"}
+
+        context.snapshot = snapshot
+
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            context.serialized_sse_state_event()
+        revision, payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 2)
+        self.assertFalse(context._sse_payload_building)
+        self.assertEqual(revision, 3)
+        self.assertEqual(
+            self.decode_state_event(payload),
+            {"state_revision": 3, "value": "recovered"},
+        )
 
 
 class AppContextRatingSubmissionTest(unittest.TestCase):

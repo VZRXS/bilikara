@@ -105,6 +105,14 @@ REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 CONTAINER_RUNTIME_MARKERS = ("docker", "containerd", "kubepods", "lxc")
 
 
+def _serialize_sse_event(event: str, payload: dict[str, object]) -> bytes:
+    encoded = json.dumps(payload, ensure_ascii=False)
+    chunks = [f"event: {event}\n".encode("utf-8")]
+    chunks.extend(f"data: {line}\n".encode("utf-8") for line in encoded.splitlines() or ["{}"])
+    chunks.append(b"\n")
+    return b"".join(chunks)
+
+
 def _normalized_ip_address(value: object) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     text = str(value or "").strip()
     if not text:
@@ -187,6 +195,10 @@ class AppContext:
         ensure_directories()
         self._state_change_condition = threading.Condition()
         self._state_revision = 0
+        self._sse_payload_condition = threading.Condition()
+        self._sse_payload_revision = -1
+        self._sse_payload = b""
+        self._sse_payload_building = False
         self.store = PlaylistStore(
             STATE_FILE,
             BACKUP_FILE,
@@ -268,6 +280,39 @@ class AppContext:
         payload["app_update"] = self.app_update_snapshot()
         payload["state_revision"] = state_revision
         return payload
+
+    def serialized_sse_state_event(self) -> tuple[int, bytes]:
+        while True:
+            with self._sse_payload_condition:
+                with self._state_change_condition:
+                    state_revision = self._state_revision
+                if self._sse_payload_revision == state_revision:
+                    return self._sse_payload_revision, self._sse_payload
+                if not self._sse_payload_building:
+                    self._sse_payload_building = True
+                    break
+                self._sse_payload_condition.wait()
+
+        try:
+            while True:
+                snapshot = self.snapshot()
+                snapshot_revision = int(snapshot.get("state_revision") or 0)
+                serialized = _serialize_sse_event("state", snapshot)
+                with self._sse_payload_condition:
+                    with self._state_change_condition:
+                        revision_is_current = self._state_revision == snapshot_revision
+                    if not revision_is_current:
+                        continue
+                    self._sse_payload_revision = snapshot_revision
+                    self._sse_payload = serialized
+                    self._sse_payload_building = False
+                    self._sse_payload_condition.notify_all()
+                    return snapshot_revision, serialized
+        except BaseException:
+            with self._sse_payload_condition:
+                self._sse_payload_building = False
+                self._sse_payload_condition.notify_all()
+            raise
 
     def refresh_gatcha_cache_in_background(self) -> bool:
         return refresh_gatcha_cache_in_background(
@@ -2334,9 +2379,8 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         self.end_headers()
         last_revision = -1
         try:
-            snapshot = CONTEXT.snapshot()
-            last_revision = int(snapshot.get("state_revision") or 0)
-            self._write_sse_event("state", snapshot)
+            last_revision, serialized = CONTEXT.serialized_sse_state_event()
+            self._write_serialized_sse_event(serialized)
             while not CONTEXT._closed:
                 if not CONTEXT.wait_for_state_change(last_revision, timeout=20.0):
                     if CONTEXT._closed:
@@ -2345,22 +2389,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
                     continue
-                snapshot = CONTEXT.snapshot()
-                next_revision = int(snapshot.get("state_revision") or 0)
+                next_revision, serialized = CONTEXT.serialized_sse_state_event()
                 if next_revision <= last_revision:
                     continue
                 last_revision = next_revision
                 CONTEXT.touch_client(client_id, is_host=False)
-                self._write_sse_event("state", snapshot)
+                self._write_serialized_sse_event(serialized)
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
 
     def _write_sse_event(self, event: str, payload: dict) -> None:
-        encoded = json.dumps(payload, ensure_ascii=False)
-        self.wfile.write(f"event: {event}\n".encode("utf-8"))
-        for line in encoded.splitlines() or ["{}"]:
-            self.wfile.write(f"data: {line}\n".encode("utf-8"))
-        self.wfile.write(b"\n")
+        self._write_serialized_sse_event(_serialize_sse_event(event, payload))
+
+    def _write_serialized_sse_event(self, payload: bytes) -> None:
+        self.wfile.write(payload)
         self.wfile.flush()
 
     @staticmethod

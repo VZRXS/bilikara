@@ -5,6 +5,7 @@ const avDelayRequestTimeoutMs = 8000;
 const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
+const eventStreamRetryJitterRatio = 0.2;
 const larkSearchTableCount = 5;
 const expandedSearchEagerCoverCount = 6;
 const d1BrowseItemLimit = 450;
@@ -2454,14 +2455,31 @@ function closeEventStream() {
   state.eventSource = null;
 }
 
+function eventStreamReconnectDelayMs(baseDelayMs, randomValue = Math.random()) {
+  const baseDelay = Math.max(
+    eventStreamInitialRetryMs,
+    Math.min(eventStreamMaxRetryMs, Number(baseDelayMs) || eventStreamInitialRetryMs),
+  );
+  const jitterSpan = Math.max(250, Math.round(baseDelay * eventStreamRetryJitterRatio));
+  const lowerBound = baseDelay >= eventStreamMaxRetryMs
+    ? Math.max(eventStreamInitialRetryMs, baseDelay - jitterSpan)
+    : baseDelay;
+  const upperBound = baseDelay >= eventStreamMaxRetryMs
+    ? baseDelay
+    : Math.min(eventStreamMaxRetryMs, baseDelay + jitterSpan);
+  const boundedRandom = Math.max(0, Math.min(1, Number(randomValue) || 0));
+  return Math.round(lowerBound + ((upperBound - lowerBound) * boundedRandom));
+}
+
 function scheduleEventStreamReconnect() {
   clearEventStreamReconnectTimer();
-  const delayMs = state.eventStreamRetryMs;
+  const baseDelayMs = state.eventStreamRetryMs;
+  const delayMs = eventStreamReconnectDelayMs(baseDelayMs);
   state.eventStreamReconnectTimer = window.setTimeout(() => {
     state.eventStreamReconnectTimer = null;
     connectStateStream();
   }, delayMs);
-  state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, delayMs * 2);
+  state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, baseDelayMs * 2);
 }
 
 function connectStateStream() {
