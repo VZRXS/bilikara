@@ -4306,23 +4306,23 @@ class CacheManager:
         if not isinstance(validation_files, list):
             return
 
-        requires_downkyi_validation = any(
+        requires_strict_validation = any(
             isinstance(entry, dict)
-            and str(entry.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI
+            and str(entry.get("download_source") or "") in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_BBDOWN)
             for entry in validation_files
         )
         ffprobe_path = self._ffprobe_path_for_ffmpeg(ffmpeg_path)
         if not ffprobe_path:
-            message = "缓存校验失败: DownKyi 下载需要可用的 ffprobe"
+            message = "缓存校验失败: BBDown/DownKyi 下载需要可用的 ffprobe"
             self._append_log_line(
                 log_path,
                 f"[{self._log_timestamp()}] ffprobe validate: failed, ffprobe unavailable",
             )
-            if requires_downkyi_validation:
+            if requires_strict_validation:
                 raise DownloadCommandError(message)
             self._append_log_line(
                 log_path,
-                f"[{self._log_timestamp()}] ffprobe validate: skipped for non-DownKyi source",
+                f"[{self._log_timestamp()}] ffprobe validate: skipped for non-strict source",
             )
             return
 
@@ -4544,7 +4544,7 @@ class CacheManager:
                     f"原始 {source_audio_duration:.3f} 秒，实际 {stream_duration:.3f} 秒，"
                     f"相差 {difference:.3f} 秒"
                 )
-        if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
+        if str(context.get("download_source") or "") in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_BBDOWN):
             self._validate_demux_file(
                 ffmpeg_path,
                 media_path,

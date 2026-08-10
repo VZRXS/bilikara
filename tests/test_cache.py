@@ -22,6 +22,7 @@ from bilikara import rust_backend
 from bilikara.cache import (
     CachePlan,
     CacheManager,
+    DOWNLOAD_SOURCE_BBDOWN,
     DOWNLOAD_SOURCE_DOWNKYI,
     DOWNLOAD_SOURCE_YTDLP,
     DownloadCommandError,
@@ -3558,6 +3559,60 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                                 "download_source": DOWNLOAD_SOURCE_DOWNKYI,
                                 "stream_kind": "audio",
                             },
+                        )
+            finally:
+                manager.shutdown()
+
+    def test_bbdown_full_demux_failure_is_rejected(self):
+        media = self.cache_dir / "song" / "video.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"partial")
+        probe = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(self._probe_payload("video", "120")),
+            stderr="",
+        )
+        demux = SimpleNamespace(returncode=1, stdout="", stderr="partial file: unexpected EOF")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", side_effect=[probe, demux]):
+                    with self.assertRaisesRegex(DownloadCommandError, "完整包扫描失败"):
+                        manager._validate_media_file(
+                            Path("/tools/ffprobe"),
+                            Path("/tools/ffmpeg"),
+                            media,
+                            label="视频 P2",
+                            required_streams={"video"},
+                            log_path=self.log_path,
+                            diagnostic_context={
+                                "download_source": DOWNLOAD_SOURCE_BBDOWN,
+                                "stream_kind": "video",
+                            },
+                        )
+            finally:
+                manager.shutdown()
+
+    def test_bbdown_cache_result_requires_ffprobe_for_strict_validation(self):
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=None):
+                    with self.assertRaisesRegex(DownloadCommandError, "BBDown/DownKyi"):
+                        manager._validate_cache_result(
+                            "test-id",
+                            {
+                                "validation_files": [
+                                    {
+                                        "download_source": DOWNLOAD_SOURCE_BBDOWN,
+                                        "path": Path("/fake/video.mp4"),
+                                        "required_streams": {"video"},
+                                        "label": "视频",
+                                    }
+                                ]
+                            },
+                            Path("/tools/ffmpeg"),
+                            self.log_path,
                         )
             finally:
                 manager.shutdown()
