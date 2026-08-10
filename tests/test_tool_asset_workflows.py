@@ -21,10 +21,12 @@ class ToolAssetWorkflowTest(unittest.TestCase):
             ROOT / "scripts" / "build_portable_macos_aria2.sh"
         ).read_text(encoding="utf-8")
 
-    def test_normal_bundle_workflow_does_not_build_or_publish_aria2(self):
+    def test_normal_bundle_workflow_does_not_build_or_publish_aria2_or_ffmpeg(self):
         self.assertNotIn("macos-aria2-tools", self.bundle_workflow)
         self.assertNotIn("build_portable_macos_aria2.sh", self.bundle_workflow)
+        self.assertNotIn("build_portable_macos_ffmpeg.sh", self.bundle_workflow)
         self.assertNotIn("Publish immutable aria2c", self.bundle_workflow)
+        self.assertNotIn("Publish immutable FFmpeg", self.bundle_workflow)
         bundle_job = self.bundle_workflow.split("\n  bundle:\n", 1)[1].split(
             "\n  mirror-release-r2:\n", 1
         )[0]
@@ -57,12 +59,12 @@ class ToolAssetWorkflowTest(unittest.TestCase):
         self.assertIn("/usr/local/Cellar/", self.build_script)
 
     def test_checked_in_locks_pin_both_macos_architectures(self):
-        expected_hashes = {
+        expected_aria2_hashes = {
             "arm64": "c65d5a04e7cfe6703940db63d3a25b9caa1bbbf8a84a4aff936d280d7d6b18eb",
             "x64": "33985c31bdc342c7745d2aebe1672d52d40dcbcb0dd5c8016f148faf53a0277f",
         }
-        for arch, expected_hash in expected_hashes.items():
-            with self.subTest(arch=arch):
+        for arch, expected_hash in expected_aria2_hashes.items():
+            with self.subTest(tool="aria2", arch=arch):
                 path = ROOT / "tools" / "aria2" / f"macos-{arch}.json"
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["schema_version"], 2)
@@ -71,6 +73,22 @@ class ToolAssetWorkflowTest(unittest.TestCase):
                 self.assertEqual(payload["platform"], "darwin")
                 self.assertEqual(payload["arch"], arch)
                 self.assertEqual(payload["sha256"], expected_hash)
+                self.assertTrue(payload["url"].startswith("https://"))
+                self.assertIn(payload["name"], payload["url"])
+                self.assertTrue(payload["recipe_revision"])
+
+    def test_checked_in_ffmpeg_locks_pin_both_macos_architectures(self):
+        for arch in ("arm64", "x64"):
+            with self.subTest(tool="ffmpeg", arch=arch):
+                path = ROOT / "tools" / "ffmpeg" / f"macos-{arch}.json"
+                if not path.is_file():
+                    continue
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["schema_version"], 2)
+                self.assertEqual(payload["tool"], "ffmpeg")
+                self.assertEqual(payload["version"], "8.1.2")
+                self.assertEqual(payload["platform"], "darwin")
+                self.assertEqual(payload["arch"], arch)
                 self.assertTrue(payload["url"].startswith("https://"))
                 self.assertIn(payload["name"], payload["url"])
                 self.assertTrue(payload["recipe_revision"])

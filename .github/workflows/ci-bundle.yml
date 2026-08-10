@@ -125,13 +125,68 @@ jobs:
         shell: pwsh
         run: choco install ffmpeg -y
 
-      - name: Build portable FFmpeg on macOS
+      - name: Prepare pinned portable FFmpeg asset
         if: runner.os == 'macOS'
         run: |
+          set -euo pipefail
+          runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else m)")"
+          metadata_file="tools/ffmpeg/macos-${runner_arch}.json"
+          test -f "$metadata_file"
+
+          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["tool"] == "ffmpeg"; assert data["version"] == "8.1.2"; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64' "$metadata_file" "$runner_arch"
+
+          asset_url="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["url"])' "$metadata_file")"
+          expected_sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$metadata_file")"
+
+          archive_path="$RUNNER_TEMP/ffmpeg-${runner_arch}.tar.gz"
           portable_ffmpeg_dir="$RUNNER_TEMP/bilikara-portable-ffmpeg"
-          ./scripts/build_portable_macos_ffmpeg.sh "$portable_ffmpeg_dir"
+          mkdir -p "$portable_ffmpeg_dir"
+
+          curl --fail --location --retry 5 --retry-delay 2 --show-error --silent "$asset_url" --output "$archive_path"
+          actual_sha="$(shasum -a 256 "$archive_path" | awk '{print $1}')"
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "FFmpeg asset SHA-256 mismatch: expected $expected_sha, got $actual_sha" >&2
+            exit 1
+          fi
+
+          tar -xzf "$archive_path" -C "$portable_ffmpeg_dir"
+
+          test -x "$portable_ffmpeg_dir/bin/ffmpeg"
+          test -x "$portable_ffmpeg_dir/bin/ffprobe"
+          test -f "$portable_ffmpeg_dir/source/ffmpeg-8.1.2.tar.xz"
+          test -f "$portable_ffmpeg_dir/licenses/COPYING.LGPLv2.1"
+
+          ffmpeg_ver="$("$portable_ffmpeg_dir/bin/ffmpeg" -version)"
+          ffprobe_ver="$("$portable_ffmpeg_dir/bin/ffprobe" -version)"
+          if ! printf '%s\n' "$ffmpeg_ver" | grep -F "ffmpeg version 8.1.2" >/dev/null; then
+            echo "Unexpected FFmpeg version" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$ffprobe_ver" | grep -F "ffprobe version 8.1.2" >/dev/null; then
+            echo "Unexpected ffprobe version" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$ffmpeg_ver" | grep -F "--enable-nonfree" >/dev/null; then
+            echo "Disallowed --enable-nonfree in FFmpeg build" >&2
+            exit 1
+          fi
+
+          for tool_binary in "$portable_ffmpeg_dir/bin/ffmpeg" "$portable_ffmpeg_dir/bin/ffprobe"; do
+            deps="$(/usr/bin/otool -L "$tool_binary")"
+            if printf '%s\n' "$deps" | grep -E '(@rpath|/opt/homebrew/|/usr/local/Cellar/)' >/dev/null; then
+              echo "Non-portable dependency in $tool_binary" >&2
+              exit 1
+            fi
+          done
+
           printf '%s\n' "$portable_ffmpeg_dir/bin" >> "$GITHUB_PATH"
-          cat "$portable_ffmpeg_dir/metadata.env" >> "$GITHUB_ENV"
+          printf '%s\n' \
+            "BILIKARA_FFMPEG_SOURCE_VERSION=8.1.2" \
+            "BILIKARA_FFMPEG_SOURCE_URL=https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz" \
+            "BILIKARA_FFMPEG_SOURCE_SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c" \
+            "BILIKARA_FFMPEG_SOURCE_ARCHIVE=$portable_ffmpeg_dir/source/ffmpeg-8.1.2.tar.xz" \
+            "BILIKARA_FFMPEG_LICENSE_FILE=$portable_ffmpeg_dir/licenses/COPYING.LGPLv2.1" \
+            >> "$GITHUB_ENV"
 
       - name: Prepare pinned BBDown vendor
         shell: bash
@@ -451,11 +506,6 @@ jobs:
             --cache-control "public, max-age=31536000, immutable" \
             --only-show-errors
           aws s3 cp release-metadata/tag.json "s3://${R2_BUCKET}/bilikara/releases/tags/${tag}.json" \
-            --endpoint-url "$endpoint" \
-            --content-type "application/json; charset=utf-8" \
-            --cache-control "public, max-age=300" \
-            --only-show-errors
-          aws s3 cp release-metadata/releases.json "s3://${R2_BUCKET}/bilikara/releases/releases.json" \
             --endpoint-url "$endpoint" \
             --content-type "application/json; charset=utf-8" \
             --cache-control "public, max-age=300" \

@@ -27,6 +27,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+ORIGINAL_PATH="$PATH"
 # Do not let Homebrew headers, libraries, pkg-config files, or tool shims leak
 # into the release binary. Xcode Command Line Tools are build-time only.
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -74,6 +75,21 @@ fi
   /usr/bin/make -j "$build_jobs" ffmpeg ffprobe
 )
 
+export PATH="$ORIGINAL_PATH"
+
+machine="$(uname -m)"
+case "$machine" in
+  arm64) target_arch="arm64" ;;
+  x86_64) target_arch="x64" ;;
+  *)
+    echo "Unsupported macOS FFmpeg architecture: $machine" >&2
+    exit 1
+    ;;
+esac
+
+readonly DEFAULT_PUBLIC_BASE="https://download.kevinx96.icu/bilikara/tools"
+readonly BUILD_RECIPE_REVISION="portable-macos-ffmpeg-v1"
+
 /bin/mkdir -p "$output_dir/bin" "$output_dir/licenses" "$output_dir/source"
 /usr/bin/install -m 0755 "$source_dir/ffmpeg" "$output_dir/bin/ffmpeg"
 /usr/bin/install -m 0755 "$source_dir/ffprobe" "$output_dir/bin/ffprobe"
@@ -91,3 +107,90 @@ printf '%s\n' \
 
 "$output_dir/bin/ffmpeg" -version
 "$output_dir/bin/ffprobe" -version
+
+/usr/bin/codesign --force --sign - --timestamp=none "$output_dir/bin/ffmpeg"
+/usr/bin/codesign --force --sign - --timestamp=none "$output_dir/bin/ffprobe"
+/usr/bin/codesign --verify --strict --verbose=4 "$output_dir/bin/ffmpeg"
+/usr/bin/codesign --verify --strict --verbose=4 "$output_dir/bin/ffprobe"
+
+for binary in "$output_dir/bin/ffmpeg" "$output_dir/bin/ffprobe"; do
+  dependencies="$(/usr/bin/otool -L "$binary")"
+  printf '%s\n' "$dependencies"
+  if printf '%s\n' "$dependencies" | /usr/bin/grep -E \
+    '(@rpath|/opt/homebrew/|/usr/local/Cellar/|/opt/homebrew/Cellar/)' >/dev/null; then
+    echo "FFmpeg binary $binary has a non-portable Homebrew or unresolved rpath dependency" >&2
+    exit 1
+  fi
+done
+
+printf '%s\n' \
+  "FFmpeg portable runtime provenance" \
+  "version=$FFMPEG_VERSION" \
+  "official_source_url=$FFMPEG_SOURCE_URL" \
+  "official_source_sha256=$FFMPEG_SOURCE_SHA256" \
+  "build_recipe_revision=$BUILD_RECIPE_REVISION" \
+  "architecture=$target_arch" \
+  "deployment_target=$MACOS_DEPLOYMENT_TARGET" \
+  > "$output_dir/PROVENANCE.txt"
+
+archive_staging="$output_dir/ffmpeg-${FFMPEG_VERSION}-macos-${target_arch}.tar.gz.partial"
+COPYFILE_DISABLE=1 /usr/bin/tar -cf - -C "$output_dir" bin licenses source PROVENANCE.txt \
+  | /usr/bin/gzip -n > "$archive_staging"
+archive_sha256="$(/usr/bin/shasum -a 256 "$archive_staging" | /usr/bin/awk '{print $1}')"
+asset_name="ffmpeg-${FFMPEG_VERSION}-macos-${target_arch}-${archive_sha256}.tar.gz"
+/bin/mv "$archive_staging" "$output_dir/$asset_name"
+
+public_base="${BILIKARA_TOOL_ASSET_PUBLIC_BASE:-$DEFAULT_PUBLIC_BASE}"
+public_base="${public_base%/}"
+object_key="bilikara/tools/ffmpeg/${FFMPEG_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${asset_name}"
+metadata_object_key="bilikara/tools/ffmpeg/${FFMPEG_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${archive_sha256}.json"
+asset_url="${public_base}/ffmpeg/${FFMPEG_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${asset_name}"
+
+python_cmd="$(command -v python3 || command -v python || echo "python3")"
+"$python_cmd" - \
+  "$output_dir/ffmpeg-macos-${target_arch}.json" \
+  "$target_arch" "$asset_name" "$asset_url" "$archive_sha256" \
+  "$FFMPEG_VERSION" "$FFMPEG_SOURCE_URL" "$FFMPEG_SOURCE_SHA256" \
+  "$BUILD_RECIPE_REVISION" "$object_key" "$metadata_object_key" \
+  <<'PY'
+import json
+import sys
+
+(
+    output_path,
+    arch,
+    name,
+    url,
+    sha256,
+    version,
+    source_url,
+    source_sha256,
+    recipe_revision,
+    object_key,
+    metadata_object_key,
+) = sys.argv[1:]
+payload = {
+    "schema_version": 2,
+    "tool": "ffmpeg",
+    "provider": "bilikara-r2",
+    "platform": "darwin",
+    "arch": arch,
+    "name": name,
+    "url": url,
+    "sha256": sha256,
+    "version": version,
+    "source_url": source_url,
+    "source_sha256": source_sha256,
+    "recipe_revision": recipe_revision,
+    "object_key": object_key,
+    "metadata_object_key": metadata_object_key,
+}
+with open(output_path, "w", encoding="utf-8", newline="\n") as output:
+    json.dump(payload, output, ensure_ascii=True, indent=2, sort_keys=True)
+    output.write("\n")
+PY
+
+printf '%s\n' "$asset_name" > "$output_dir/asset-name.txt"
+printf '%s\n' "$archive_sha256" > "$output_dir/asset-sha256.txt"
+printf 'Portable FFmpeg archive: %s\n' "$output_dir/$asset_name"
+

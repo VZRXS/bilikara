@@ -162,3 +162,165 @@ jobs:
           path: ${{ runner.temp }}/bilikara-portable-aria2/aria2-macos-${{ matrix.arch }}.json
           if-no-files-found: error
           retention-days: 30
+
+  ffmpeg-macos:
+    name: Publish FFmpeg (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS ARM64
+            arch: arm64
+          - os: macos-15-intel
+            label: macOS Intel
+            arch: x64
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_BUCKET: ${{ vars.R2_BUCKET || 'bilikara-releases' }}
+      BILIKARA_TOOL_ASSET_PUBLIC_BASE: https://download.kevinx96.icu/bilikara/tools
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Build and validate pinned portable FFmpeg
+        run: |
+          output_dir="$RUNNER_TEMP/bilikara-portable-ffmpeg"
+          ./scripts/build_portable_macos_ffmpeg.sh "$output_dir"
+          test -f "$output_dir/ffmpeg-macos-${{ matrix.arch }}.json"
+
+      - name: Install R2 publication client
+        run: python -m pip install --upgrade awscli
+
+      - name: Publish immutable content-addressed FFmpeg asset
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          output_dir="$RUNNER_TEMP/bilikara-portable-ffmpeg"
+          metadata_file="$output_dir/ffmpeg-macos-${TARGET_ARCH}.json"
+          asset_name="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["name"])' "$metadata_file")"
+          asset_sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$metadata_file")"
+          object_key="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["object_key"])' "$metadata_file")"
+          metadata_key="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["metadata_object_key"])' "$metadata_file")"
+          asset_path="$output_dir/$asset_name"
+          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          verify_remote_object() {
+            local key="$1"
+            local expected_sha="$2"
+            local destination="$3"
+            aws s3api get-object \
+              --bucket "$R2_BUCKET" \
+              --key "$key" \
+              "$destination" \
+              --endpoint-url "$endpoint" >/dev/null
+            local actual_sha
+            actual_sha="$(shasum -a 256 "$destination" | awk '{print $1}')"
+            test "$actual_sha" = "$expected_sha"
+          }
+
+          if aws s3api head-object --bucket "$R2_BUCKET" --key "$object_key" --endpoint-url "$endpoint" >/dev/null 2>&1; then
+            verify_remote_object "$object_key" "$asset_sha" "$RUNNER_TEMP/existing-ffmpeg.tar.gz"
+            publication_status="reused"
+          else
+            set +e
+            aws s3api put-object \
+              --bucket "$R2_BUCKET" \
+              --key "$object_key" \
+              --body "$asset_path" \
+              --content-type "application/gzip" \
+              --cache-control "public, max-age=31536000, immutable" \
+              --if-none-match '*' \
+              --endpoint-url "$endpoint" >/dev/null
+            put_status=$?
+            set -e
+            if [ "$put_status" -eq 0 ]; then
+              publication_status="uploaded"
+            elif aws s3api head-object --bucket "$R2_BUCKET" --key "$object_key" --endpoint-url "$endpoint" >/dev/null 2>&1; then
+              verify_remote_object "$object_key" "$asset_sha" "$RUNNER_TEMP/raced-ffmpeg.tar.gz"
+              publication_status="reused-after-race"
+            else
+              echo "Conditional immutable FFmpeg publication failed" >&2
+              exit "$put_status"
+            fi
+          fi
+
+          metadata_sha="$(shasum -a 256 "$metadata_file" | awk '{print $1}')"
+          if aws s3api head-object --bucket "$R2_BUCKET" --key "$metadata_key" --endpoint-url "$endpoint" >/dev/null 2>&1; then
+            verify_remote_object "$metadata_key" "$metadata_sha" "$RUNNER_TEMP/existing-ffmpeg.json"
+          else
+            set +e
+            aws s3api put-object \
+              --bucket "$R2_BUCKET" \
+              --key "$metadata_key" \
+              --body "$metadata_file" \
+              --content-type "application/json; charset=utf-8" \
+              --cache-control "public, max-age=31536000, immutable" \
+              --if-none-match '*' \
+              --endpoint-url "$endpoint" >/dev/null
+            metadata_put_status=$?
+            set -e
+            if [ "$metadata_put_status" -ne 0 ]; then
+              if aws s3api head-object --bucket "$R2_BUCKET" --key "$metadata_key" --endpoint-url "$endpoint" >/dev/null 2>&1; then
+                verify_remote_object "$metadata_key" "$metadata_sha" "$RUNNER_TEMP/raced-ffmpeg.json"
+              else
+                echo "Conditional immutable FFmpeg metadata publication failed" >&2
+                exit "$metadata_put_status"
+              fi
+            fi
+          fi
+
+          echo "FFmpeg publication status: $publication_status"
+          echo "FFmpeg object key: $object_key"
+          echo "FFmpeg SHA-256: $asset_sha"
+
+      - name: Verify public asset and portable runtime round-trip
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          output_dir="$RUNNER_TEMP/bilikara-portable-ffmpeg"
+          metadata_file="$output_dir/ffmpeg-macos-${TARGET_ARCH}.json"
+          asset_url="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["url"])' "$metadata_file")"
+          expected_sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$metadata_file")"
+          downloaded="$RUNNER_TEMP/ffmpeg-public-roundtrip.tar.gz"
+          extracted="$RUNNER_TEMP/ffmpeg-public-roundtrip"
+          curl --fail --location --retry 5 --retry-delay 2 --show-error --silent "$asset_url" --output "$downloaded"
+          actual_sha="$(shasum -a 256 "$downloaded" | awk '{print $1}')"
+          test "$actual_sha" = "$expected_sha"
+          mkdir -p "$extracted"
+          tar -xzf "$downloaded" -C "$extracted"
+          test -x "$extracted/bin/ffmpeg"
+          test -x "$extracted/bin/ffprobe"
+          "$extracted/bin/ffmpeg" -version
+          "$extracted/bin/ffprobe" -version
+          codesign --verify --strict --verbose=4 "$extracted/bin/ffmpeg"
+          codesign --verify --strict --verbose=4 "$extracted/bin/ffprobe"
+          for tool_binary in "$extracted/bin/ffmpeg" "$extracted/bin/ffprobe"; do
+            dependencies="$(otool -L "$tool_binary")"
+            printf '%s\n' "$dependencies"
+            if printf '%s\n' "$dependencies" | grep -E '(@rpath|/opt/homebrew/|/usr/local/Cellar/)' >/dev/null; then
+              echo "Published $tool_binary has a non-portable dependency" >&2
+              exit 1
+            fi
+          done
+
+      - name: Upload locked FFmpeg metadata
+        uses: actions/upload-artifact@v6
+        with:
+          name: ffmpeg-tool-lock-${{ matrix.arch }}
+          path: ${{ runner.temp }}/bilikara-portable-ffmpeg/ffmpeg-macos-${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 30
+
