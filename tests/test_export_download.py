@@ -58,7 +58,7 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
         self.assertEqual(result["object"], "translated fallback")
         self.assertEqual(result["translated"], "翻译后的失败消息")
 
-    def test_native_result_accepts_only_saved_and_cancelled(self):
+    def test_native_result_supports_saved_cancelled_and_failed(self):
         result = self.run_node(
             """
             const helper = require(process.argv[1]);
@@ -66,6 +66,7 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
             for (const [name, value] of Object.entries({
               saved: { status: "saved" },
               cancelled: { status: "cancelled" },
+              failed: { status: "failed", errorMessage: "custom native failure" },
               boolean: true,
               unknown: { status: "complete" },
               nullValue: null,
@@ -82,8 +83,51 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
         )
         self.assertEqual(result["saved"], {"status": "saved"})
         self.assertEqual(result["cancelled"], {"status": "cancelled"})
+        self.assertEqual(result["failed"], {"error": "custom native failure"})
         for name in ("boolean", "unknown", "nullValue"):
             self.assertEqual(result[name], {"error": "native fallback"})
+
+    def test_export_diagnostic_ring_caps_at_64_entries_and_whitelists_fields(self):
+        result = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            const ring = helper.createExportDiagnosticRing(64);
+            for (let i = 0; i < 70; i++) {
+              ring.push({
+                timestamp: "2026-08-05T00:00:00Z",
+                surface: "host",
+                runtime: "tauri",
+                format: "csv",
+                source: "played",
+                pageSize: 200,
+                stage: "complete",
+                status: "saved",
+                httpStatus: 200,
+                contentType: "text/csv",
+                bytes: 100,
+                filenameExtension: "csv",
+                elapsedMs: 50,
+                songTitle: "unauthorized_title_secret",
+                requester: "unauthorized_user_secret",
+                extraField: "should_be_stripped",
+                index: i,
+              });
+            }
+            const snapshot = ring.snapshot();
+            process.stdout.write(JSON.stringify({
+              length: snapshot.length,
+              firstIndex: snapshot[0].index,
+              hasSongTitle: "songTitle" in snapshot[0],
+              hasRequester: "requester" in snapshot[0],
+              hasExtraField: "extraField" in snapshot[0],
+            }));
+            """,
+            str(self.helper),
+        )
+        self.assertEqual(result["length"], 64)
+        self.assertFalse(result["hasSongTitle"])
+        self.assertFalse(result["hasRequester"])
+        self.assertFalse(result["hasExtraField"])
 
     def run_browser_download(self, *, response_mode: str, filename: str = "server-name.csv") -> dict:
         return self.run_node(
@@ -233,8 +277,133 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
         async function invoke() {
           events.invokeCalls += 1;
           const mode = process.argv[3];
+          if (mode === "command-not-found") throw "command save_backend_download not found";
+          if (mode === "command-quote-not-found") throw "command 'save_backend_download' not found";
+          if (mode === "unknown-command") throw "unknown command save_backend_download";
+          if (mode === "unknown-command-quote") throw "unknown command 'save_backend_download'";
+          if (mode === "backend-resource-not-found") throw "backend resource not found";
+          if (mode === "window-not-found") throw "window not found";
+          if (mode === "export-file-not-found") throw "export file not found";
           if (mode === "string-error") throw "[request_backend] backend unavailable";
           if (mode === "error-object") throw new Error("[write_file] permission denied");
+
+          if (mode === "saved") {
+            return {
+              status: "saved",
+              stage: "complete",
+              format: "csv",
+              source: "played",
+              pageSize: 200,
+              httpStatus: 200,
+              contentType: "text/csv",
+              bytes: 150,
+              filenameExtension: "csv",
+              elapsedMs: 50,
+              stageTimings: [{ stage: "complete", elapsedMs: 10 }],
+              errorCode: null,
+              errorMessage: null,
+            };
+          }
+          if (mode === "cancelled") {
+            return {
+              status: "cancelled",
+              stage: "choose_destination",
+              format: "csv",
+              source: "played",
+              pageSize: 200,
+              httpStatus: null,
+              contentType: null,
+              bytes: null,
+              filenameExtension: null,
+              elapsedMs: 30,
+              stageTimings: [{ stage: "choose_destination", elapsedMs: 10 }],
+              errorCode: null,
+              errorMessage: null,
+            };
+          }
+          if (mode === "failed") {
+            return {
+              status: "failed",
+              stage: "request_backend",
+              format: "csv",
+              source: "played",
+              pageSize: 200,
+              httpStatus: null,
+              contentType: null,
+              bytes: null,
+              filenameExtension: null,
+              elapsedMs: 40,
+              stageTimings: [{ stage: "request_backend", elapsedMs: 10 }],
+              errorCode: "REQUEST_BACKEND_FAILED",
+              errorMessage: "[request_backend] backend failed",
+            };
+          }
+
+          if (mode === "malformed-true") return true;
+          if (mode === "malformed-null") return null;
+          if (mode === "malformed-string") return "unexpected string";
+          if (mode === "malformed-partial-saved") return { status: "saved" };
+          if (mode === "malformed-partial-cancelled") return { status: "cancelled" };
+          if (mode === "malformed-partial-failed") return { status: "failed" };
+          if (mode === "malformed-object") return { foo: "bar", status: "invalid_status", extra: "secret" };
+          if (mode === "malformed-saved-wrong-stage") {
+            return {
+              status: "saved", stage: "choose_destination", format: "csv", source: "played",
+              pageSize: 200, httpStatus: 200, contentType: "text/csv", bytes: 100,
+              filenameExtension: "csv", elapsedMs: 10, stageTimings: [], errorCode: null, errorMessage: null,
+            };
+          }
+          if (mode === "malformed-saved-no-http-status") {
+            return {
+              status: "saved", stage: "complete", format: "csv", source: "played",
+              pageSize: 200, httpStatus: null, contentType: "text/csv", bytes: 100,
+              filenameExtension: "csv", elapsedMs: 10, stageTimings: [], errorCode: null, errorMessage: null,
+            };
+          }
+          if (mode === "malformed-cancelled-with-backend-response") {
+            return {
+              status: "cancelled", stage: "choose_destination", format: "csv", source: "played",
+              pageSize: 200, httpStatus: 200, contentType: "text/csv", bytes: 100,
+              filenameExtension: "csv", elapsedMs: 10, stageTimings: [], errorCode: null, errorMessage: null,
+            };
+          }
+          if (mode === "malformed-failed-no-error-code") {
+            return {
+              status: "failed", stage: "request_backend", format: "csv", source: "played",
+              pageSize: 200, httpStatus: null, contentType: null, bytes: null,
+              filenameExtension: null, elapsedMs: 10, stageTimings: [], errorCode: null, errorMessage: "error msg",
+            };
+          }
+          if (mode === "malformed-failed-no-error-message") {
+            return {
+              status: "failed", stage: "request_backend", format: "csv", source: "played",
+              pageSize: 200, httpStatus: null, contentType: null, bytes: null,
+              filenameExtension: null, elapsedMs: 10, stageTimings: [], errorCode: "ERR", errorMessage: null,
+            };
+          }
+          if (mode === "malformed-invalid-elapsed-ms") {
+            return {
+              status: "saved", stage: "complete", format: "csv", source: "played",
+              pageSize: 200, httpStatus: 200, contentType: "text/csv", bytes: 100,
+              filenameExtension: "csv", elapsedMs: -5, stageTimings: [], errorCode: null, errorMessage: null,
+            };
+          }
+          if (mode === "malformed-invalid-stage-timings") {
+            return {
+              status: "saved", stage: "complete", format: "csv", source: "played",
+              pageSize: 200, httpStatus: 200, contentType: "text/csv", bytes: 100,
+              filenameExtension: "csv", elapsedMs: 10, stageTimings: "invalid", errorCode: null, errorMessage: null,
+            };
+          }
+          if (mode === "malformed-inherited-properties") {
+            const proto = {
+              status: "saved", stage: "complete", format: "csv", source: "played",
+              pageSize: 200, httpStatus: 200, contentType: "text/csv", bytes: 100,
+              filenameExtension: "csv", elapsedMs: 10, stageTimings: [], errorCode: null, errorMessage: null,
+            };
+            return Object.create(proto);
+          }
+
           if (mode === "malformed") return true;
           return { status: mode };
         }
@@ -284,6 +453,7 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
               removed: link.removed,
             })),
             revoked: events.revoked,
+            diagnostics: window.BilikaraExportDownload ? window.BilikaraExportDownload.getExportDiagnosticsSnapshot() : [],
           }));
         }).catch((error) => {
           process.stdout.write(JSON.stringify({
@@ -291,6 +461,7 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
             error: error.message,
             invokeCalls: events.invokeCalls,
             fetchCalls: events.fetchCalls,
+            diagnostics: window.BilikaraExportDownload ? window.BilikaraExportDownload.getExportDiagnosticsSnapshot() : [],
           }));
         });
         """
@@ -330,14 +501,158 @@ class ExportDownloadBehaviorTest(unittest.TestCase):
         self.assertFalse(cancelled["result"])
         self.assertIsNone(cancelled["error"])
 
+        failed = self.run_adapter("host", tauri=True, native_mode="failed")
+        self.assertEqual(failed["error"], "[request_backend] backend failed")
+        self.assertEqual(failed["fetchCalls"], 0)
+
         string_error = self.run_adapter("host", tauri=True, native_mode="string-error")
         self.assertEqual(string_error["error"], "[request_backend] backend unavailable")
+        self.assertEqual(string_error["fetchCalls"], 0)
 
         error_object = self.run_adapter("host", tauri=True, native_mode="error-object")
         self.assertEqual(error_object["error"], "[write_file] permission denied")
+        self.assertEqual(error_object["fetchCalls"], 0)
 
-        malformed = self.run_adapter("host", tauri=True, native_mode="malformed")
-        self.assertEqual(malformed["error"], "history.exportFailed")
+    def test_tauri_command_unavailable_matching_is_narrow(self):
+        for mode in ("command-not-found", "command-quote-not-found", "unknown-command", "unknown-command-quote"):
+            res = self.run_adapter("host", tauri=True, native_mode=mode)
+            self.assertTrue(res["result"], f"Mode {mode} should fall back to browser and succeed")
+            self.assertEqual(res["fetchCalls"], 1, f"Mode {mode} should issue fetch")
+
+        for mode in ("backend-resource-not-found", "window-not-found", "export-file-not-found"):
+            res = self.run_adapter("host", tauri=True, native_mode=mode)
+            self.assertFalse(res["result"], f"Mode {mode} must fail closed")
+            self.assertIsNotNone(res["error"])
+            self.assertEqual(res["fetchCalls"], 0, f"Mode {mode} must NOT fall back to browser")
+
+    def test_malformed_native_results_fail_closed_and_record_diagnostics(self):
+        malformed_modes = (
+            "malformed-true",
+            "malformed-null",
+            "malformed-string",
+            "malformed-partial-saved",
+            "malformed-partial-cancelled",
+            "malformed-partial-failed",
+            "malformed-object",
+            "malformed-saved-wrong-stage",
+            "malformed-saved-no-http-status",
+            "malformed-cancelled-with-backend-response",
+            "malformed-failed-no-error-code",
+            "malformed-failed-no-error-message",
+            "malformed-invalid-elapsed-ms",
+            "malformed-invalid-stage-timings",
+            "malformed-inherited-properties",
+        )
+        for mode in malformed_modes:
+            res = self.run_adapter("host", tauri=True, native_mode=mode)
+            self.assertFalse(res["result"], f"Malformed mode {mode} must fail closed")
+            self.assertEqual(res["error"], "history.exportFailed", f"Mode {mode} error mismatch")
+            self.assertEqual(res["fetchCalls"], 0, f"Malformed mode {mode} must NOT fall back to browser")
+            diags = res.get("diagnostics") or []
+            self.assertEqual(len(diags), 1, f"Mode {mode} should yield exactly 1 diagnostic record")
+            entry = diags[0]
+            self.assertEqual(entry["runtime"], "tauri")
+            self.assertEqual(entry["status"], "failed")
+            self.assertEqual(entry["stage"], "validate_native_result")
+            self.assertEqual(entry["errorCode"], "MALFORMED_NATIVE_RESULT")
+            self.assertEqual(entry["errorMessage"], "history.exportFailed")
+            self.assertNotIn("foo", entry)
+            self.assertNotIn("extra", entry)
+
+    def test_is_valid_native_download_result_unit_contract(self):
+        result = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            const validSaved = {
+              status: "saved", stage: "complete", format: "csv", source: "played",
+              pageSize: 200, httpStatus: 200, contentType: "text/csv", bytes: 100,
+              filenameExtension: "csv", elapsedMs: 50, stageTimings: [{ stage: "complete", elapsedMs: 10 }],
+              errorCode: null, errorMessage: null,
+            };
+            const validCancelled = {
+              status: "cancelled", stage: "choose_destination", format: "csv", source: "played",
+              pageSize: 200, httpStatus: null, contentType: null, bytes: null,
+              filenameExtension: null, elapsedMs: 30, stageTimings: [], errorCode: null, errorMessage: null,
+            };
+            const validFailed = {
+              status: "failed", stage: "request_backend", format: "csv", source: "played",
+              pageSize: 200, httpStatus: null, contentType: null, bytes: null,
+              filenameExtension: null, elapsedMs: 40, stageTimings: [],
+              errorCode: "ERR_BACKEND", errorMessage: "Backend failed",
+            };
+
+            const checks = {
+              validSaved: helper.isValidNativeDownloadResult(validSaved),
+              validCancelled: helper.isValidNativeDownloadResult(validCancelled),
+              validFailed: helper.isValidNativeDownloadResult(validFailed),
+              primitiveNull: helper.isValidNativeDownloadResult(null),
+              primitiveNumber: helper.isValidNativeDownloadResult(123),
+              primitiveArray: helper.isValidNativeDownloadResult([]),
+              missingKey: helper.isValidNativeDownloadResult({ status: "saved" }),
+              inheritedKey: helper.isValidNativeDownloadResult(Object.create(validSaved)),
+              invalidStatus: helper.isValidNativeDownloadResult({ ...validSaved, status: "unknown" }),
+              savedWrongStage: helper.isValidNativeDownloadResult({ ...validSaved, stage: "choose_destination" }),
+              savedNoHttpStatus: helper.isValidNativeDownloadResult({ ...validSaved, httpStatus: null }),
+              cancelledWithBackend: helper.isValidNativeDownloadResult({ ...validCancelled, httpStatus: 200 }),
+              failedNoErrorCode: helper.isValidNativeDownloadResult({ ...validFailed, errorCode: null }),
+              failedNoErrorMessage: helper.isValidNativeDownloadResult({ ...validFailed, errorMessage: null }),
+              invalidElapsedMs: helper.isValidNativeDownloadResult({ ...validSaved, elapsedMs: -1 }),
+              invalidStageTimings: helper.isValidNativeDownloadResult({ ...validSaved, stageTimings: "invalid" }),
+            };
+            process.stdout.write(JSON.stringify(checks));
+            """,
+            str(self.helper),
+        )
+        self.assertTrue(result["validSaved"])
+        self.assertTrue(result["validCancelled"])
+        self.assertTrue(result["validFailed"])
+        self.assertFalse(result["primitiveNull"])
+        self.assertFalse(result["primitiveNumber"])
+        self.assertFalse(result["primitiveArray"])
+        self.assertFalse(result["missingKey"])
+        self.assertFalse(result["inheritedKey"])
+        self.assertFalse(result["invalidStatus"])
+        self.assertFalse(result["savedWrongStage"])
+        self.assertFalse(result["savedNoHttpStatus"])
+        self.assertFalse(result["cancelledWithBackend"])
+        self.assertFalse(result["failedNoErrorCode"])
+        self.assertFalse(result["failedNoErrorMessage"])
+        self.assertFalse(result["invalidElapsedMs"])
+        self.assertFalse(result["invalidStageTimings"])
+
+    def test_stage_timings_capped_at_16_on_frontend(self):
+        result = self.run_node(
+            """
+            const helper = require(process.argv[1]);
+            const ring = helper.createExportDiagnosticRing(64);
+            const manyTimings = Array.from({ length: 25 }, (_, i) => ({
+              stage: `stage_${i}`,
+              elapsedMs: i * 10,
+            }));
+            ring.push({
+              timestamp: "2026-08-05T00:00:00Z",
+              surface: "host",
+              runtime: "tauri",
+              format: "csv",
+              source: "played",
+              pageSize: 200,
+              stage: "complete",
+              status: "saved",
+              elapsedMs: 250,
+              stageTimings: manyTimings,
+            });
+            const snapshot = ring.snapshot();
+            process.stdout.write(JSON.stringify({
+              timingsCount: snapshot[0].stageTimings.length,
+              firstStage: snapshot[0].stageTimings[0].stage,
+              lastStage: snapshot[0].stageTimings[snapshot[0].stageTimings.length - 1].stage,
+            }));
+            """,
+            str(self.helper),
+        )
+        self.assertEqual(result["timingsCount"], 16)
+        self.assertEqual(result["firstStage"], "stage_0")
+        self.assertEqual(result["lastStage"], "stage_15")
 
     def run_export_guard_error(self, frontend: str, rejection_kind: str) -> dict:
         next_marker = "function diagnosticBrowserInfo" if frontend == "host" else "async function submitAddRequest"

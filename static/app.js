@@ -1003,27 +1003,146 @@ function tauriInvoke() {
   return window.__TAURI__?.core?.invoke || null;
 }
 
-async function saveTauriBackendDownload(path, body = null, fallback = t("history.exportFailed")) {
+function isTauriCommandNotFoundError(error) {
+  const msg = (
+    typeof error === "string"
+      ? error
+      : error && typeof error.message === "string"
+        ? error.message
+        : ""
+  ).toLowerCase();
+
+  if (!msg.includes("save_backend_download")) {
+    return false;
+  }
+
+  const patterns = [
+    /command\s+['"]?save_backend_download['"]?\s+not\s+found/,
+    /unknown\s+command\s+['"]?save_backend_download['"]?/,
+  ];
+  return patterns.some((re) => re.test(msg));
+}
+
+async function saveTauriBackendDownload(path, body = null, fallback = t("history.exportFailed"), extraContext = {}) {
   if (!window.__TAURI__) {
     return null;
   }
   const invoke = tauriInvoke();
   const exportDownload = window.BilikaraExportDownload;
   if (typeof invoke !== "function") {
-    throw new Error(exportDownload.normalizedErrorMessage(null, fallback));
+    return null;
   }
+  const startTime = Date.now();
+  const surface = extraContext.surface || "host";
+  let parsedFormat = extraContext.format || null;
+  let parsedSource = extraContext.source || null;
+  let parsedPageSize = extraContext.pageSize || null;
+  if (path && typeof path === "string" && path.includes("?")) {
+    try {
+      const dummyUrl = new URL(path, "http://bilikara.invalid");
+      if (!parsedFormat && dummyUrl.searchParams.has("format")) {
+        parsedFormat = dummyUrl.searchParams.get("format");
+      }
+      if (!parsedSource && dummyUrl.searchParams.has("source")) {
+        parsedSource = dummyUrl.searchParams.get("source");
+      }
+      if (!parsedPageSize && dummyUrl.searchParams.has("page_size")) {
+        parsedPageSize = Number(dummyUrl.searchParams.get("page_size")) || null;
+      }
+    } catch {
+      // Ignore URL parsing errors.
+    }
+  }
+
+  let result;
   try {
-    const result = await invoke("save_backend_download", {
+    result = await invoke("save_backend_download", {
       request: {
         path,
         body,
         clientId: state.clientId,
       },
     });
-    return exportDownload.nativeDownloadStatus(result, fallback);
   } catch (error) {
-    throw new Error(exportDownload.normalizedErrorMessage(error, fallback));
+    const isNotFound = exportDownload?.isTauriCommandNotFoundError
+      ? exportDownload.isTauriCommandNotFoundError(error)
+      : isTauriCommandNotFoundError(error);
+    if (isNotFound) {
+      return null;
+    }
+    const errMessage = exportDownload
+      ? exportDownload.normalizedErrorMessage(error, fallback)
+      : String(error || fallback);
+    if (exportDownload?.recordExportDiagnostic) {
+      exportDownload.recordExportDiagnostic({
+        timestamp: new Date().toISOString(),
+        surface,
+        runtime: "tauri",
+        format: parsedFormat,
+        source: parsedSource,
+        pageSize: parsedPageSize,
+        stage: "invoke",
+        status: "failed",
+        errorCode: "INVOKE_REJECTED",
+        errorMessage: errMessage,
+        elapsedMs: Date.now() - startTime,
+      });
+    }
+    throw new Error(errMessage);
   }
+
+  const isValidResult = exportDownload?.isValidNativeDownloadResult
+    ? exportDownload.isValidNativeDownloadResult(result)
+    : false;
+
+  if (!isValidResult) {
+    const errMessage = exportDownload
+      ? exportDownload.normalizedErrorMessage(null, fallback)
+      : String(fallback || "");
+    if (exportDownload?.recordExportDiagnostic) {
+      exportDownload.recordExportDiagnostic({
+        timestamp: new Date().toISOString(),
+        surface,
+        runtime: "tauri",
+        format: parsedFormat,
+        source: parsedSource,
+        pageSize: parsedPageSize,
+        stage: "validate_native_result",
+        status: "failed",
+        errorCode: "MALFORMED_NATIVE_RESULT",
+        errorMessage: errMessage,
+        elapsedMs: Date.now() - startTime,
+      });
+    }
+    throw new Error(errMessage);
+  }
+
+  if (exportDownload?.recordExportDiagnostic) {
+    exportDownload.recordExportDiagnostic({
+      timestamp: new Date().toISOString(),
+      surface,
+      runtime: "tauri",
+      format: result.format || parsedFormat,
+      source: result.source || parsedSource,
+      pageSize: result.pageSize || parsedPageSize,
+      stage: result.stage || null,
+      status: result.status || null,
+      httpStatus: result.httpStatus || null,
+      contentType: result.contentType || null,
+      bytes: result.bytes || null,
+      filenameExtension: result.filenameExtension || null,
+      elapsedMs: typeof result.elapsedMs === "number" ? result.elapsedMs : (Date.now() - startTime),
+      stageTimings: result.stageTimings || null,
+      errorCode: result.errorCode || null,
+      errorMessage: result.errorMessage || null,
+    });
+  }
+
+  if (!exportDownload || typeof exportDownload.nativeDownloadStatus !== "function") {
+    throw new Error(exportDownload ? exportDownload.normalizedErrorMessage(null, fallback) : fallback);
+  }
+
+  return exportDownload.nativeDownloadStatus(result, fallback);
 }
 
 async function setTauriWindowFullscreen(enabled) {
@@ -10885,6 +11004,10 @@ async function downloadHistoryExport(format, source = "played", pageSize = 200) 
     fallbackFilename,
     fallbackMessage: t("history.exportFailed"),
     headers: clientHeaders(),
+    surface: "host",
+    format: normalizedFormat,
+    source: normalizedSource,
+    pageSize: normalizedPageSize,
   });
 }
 
@@ -10938,11 +11061,17 @@ function setDiagnosticsBusy(busy) {
 }
 
 async function diagnosticResponse(path) {
+  const exportDiagnostics = window.BilikaraExportDownload?.getExportDiagnosticsSnapshot
+    ? window.BilikaraExportDownload.getExportDiagnosticsSnapshot()
+    : [];
   const response = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
     headers: clientHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ browser: diagnosticBrowserInfo() }),
+    body: JSON.stringify({
+      browser: diagnosticBrowserInfo(),
+      export_diagnostics: exportDiagnostics,
+    }),
   });
   if (!response.ok) {
     let message = t("service.diagnosticsFailed");
@@ -11019,10 +11148,17 @@ async function downloadDiagnosticsPackage() {
   setDiagnosticsBusy(true);
   setAppMessage(t("service.diagnosticsGenerating"));
   try {
+    const exportDiagnostics = window.BilikaraExportDownload?.getExportDiagnosticsSnapshot
+      ? window.BilikaraExportDownload.getExportDiagnosticsSnapshot()
+      : [];
     const tauriStatus = await saveTauriBackendDownload(
       "/api/diagnostics/package",
-      JSON.stringify({ browser: diagnosticBrowserInfo() }),
+      JSON.stringify({
+        browser: diagnosticBrowserInfo(),
+        export_diagnostics: exportDiagnostics,
+      }),
       t("service.diagnosticsFailed"),
+      { format: "zip", source: "diagnostics", surface: "host" },
     );
     if (tauriStatus !== null) {
       if (tauriStatus === "saved") {

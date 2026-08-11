@@ -435,7 +435,11 @@ class AppContext:
         with self._player_diagnostic_lock:
             return [dict(event) for event in self._player_diagnostics]
 
-    def build_diagnostics(self, browser_info: dict[str, object] | None = None) -> DiagnosticArtifact:
+    def build_diagnostics(
+        self,
+        browser_info: dict[str, object] | None = None,
+        export_diagnostics: list[dict[str, object]] | None = None,
+    ) -> DiagnosticArtifact:
         store_snapshot = self.store.snapshot()
         current_item = store_snapshot.get("current_item")
         playlist = store_snapshot.get("playlist") or []
@@ -453,12 +457,17 @@ class AppContext:
             "state_revision": self._state_revision,
         }
         metrics = self.cache_manager.cache_metrics()
+        local_usernames = [
+            str(name)
+            for name in store_snapshot.get("session_users") or []
+        ]
         return build_diagnostic_artifact(
             cache_manager=self.cache_manager,
             cache_policy=self.cache_manager.policy_snapshot(metrics),
             runtime_state=runtime_state,
             browser_info=browser_info,
-            local_usernames=[str(name) for name in store_snapshot.get("session_users") or []],
+            export_diagnostics=export_diagnostics,
+            local_usernames=local_usernames,
         )
 
     @staticmethod
@@ -1410,11 +1419,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         
         try:
             body = self._read_json_body()
+            export_diagnostics = body.get("export_diagnostics") if isinstance(body, dict) else None
             if route == "/api/diagnostics/markdown":
                 if not self._is_local_client():
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
                     return
-                artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
+                if export_diagnostics is not None:
+                    artifact = CONTEXT.build_diagnostics(
+                        self._diagnostic_browser_info(body),
+                        export_diagnostics=export_diagnostics,
+                    )
+                else:
+                    artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
                 self._write_json({"ok": True, "data": {"markdown": artifact.markdown}})
                 return
             if route == "/api/diagnostics/package":
@@ -1433,7 +1449,13 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     return
                 self._log_diagnostics_stage("diagnostics_authorized", diagnostic_context)
                 try:
-                    artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
+                    if export_diagnostics is not None:
+                        artifact = CONTEXT.build_diagnostics(
+                            self._diagnostic_browser_info(body),
+                            export_diagnostics=export_diagnostics,
+                        )
+                    else:
+                        artifact = CONTEXT.build_diagnostics(self._diagnostic_browser_info(body))
                     payload = artifact.zip_bytes()
                     diagnostic_context["payload_size"] = len(payload)
                     self._log_diagnostics_stage("diagnostics_artifact_ready", diagnostic_context)

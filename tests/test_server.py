@@ -797,6 +797,50 @@ class AppContextPlayerDiagnosticTest(unittest.TestCase):
         self.assertNotIn(media_url, artifact.markdown)
         self.assertIn('"player_diagnostics"', artifact.markdown)
 
+    def test_build_diagnostics_with_real_remote_identity_store(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            context = AppContext.__new__(AppContext)
+            context._closed = False
+            context.remote_identities = RemoteIdentityStore(root / "remote_identities.json")
+            self.assertFalse(hasattr(context.remote_identities, "registered_user_names"))
+
+            context.store = SimpleNamespace(
+                snapshot=lambda: {
+                    "current_item": None,
+                    "playlist": [],
+                    "playback_selector": "auto",
+                    "session_users": ["AliceSecretUser"],
+                }
+            )
+            context.update_manager = SimpleNamespace(snapshot=lambda: {})
+            context._diagnostic_item_snapshot = lambda item: item
+            context._diagnostic_rust_backend_status = lambda: {}
+            context.player_diagnostic_snapshot = lambda: []
+            context.cache_manager = SimpleNamespace(
+                diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}},
+                cache_metrics=lambda: {},
+                policy_snapshot=lambda metrics: {"user": "AliceSecretUser"},
+            )
+            context._state_revision = 1
+
+            with (
+                patch("bilikara.diagnostics.APP_HOME", root),
+                patch("bilikara.diagnostics.LOG_DIR", log_dir),
+                patch("bilikara.diagnostics.DIAGNOSTIC_CONFIG_FILES", ()),
+                patch("bilikara.diagnostics.probe_connectivity", return_value={}),
+            ):
+                artifact = context.build_diagnostics()
+
+            self.assertIsInstance(artifact, DiagnosticArtifact)
+            self.assertNotIn("AliceSecretUser", artifact.markdown)
+            with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
+                content = archive.read("download-policy.json").decode("utf-8")
+                self.assertNotIn("AliceSecretUser", content)
+                self.assertIn("[REDACTED]", content)
+
 
 class AppContextClientTrackingTest(unittest.TestCase):
     def make_context(self) -> AppContext:
