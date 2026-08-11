@@ -18,6 +18,7 @@ mod quality_policy;
 mod release_selection;
 mod title_cleanup;
 mod tool_download_candidate_planning;
+mod tool_prepare_policy;
 mod url_utils;
 mod version;
 mod video_stream_ranking;
@@ -46,13 +47,14 @@ pub use ffi::{
     rust_asset_has_universal, rust_asset_has_windows, rust_asset_has_x64, rust_asset_tokens,
     rust_backend_abi_version, rust_clean_display_title, rust_decide_audio_binding,
     rust_decide_playback_selector_policy, rust_decide_playlist_duplicate,
-    rust_decide_quality_policy, rust_format_download_proxy_url, rust_free_string,
-    rust_is_downloadable_archive, rust_normalize_machine_arch, rust_normalize_version_tag,
-    rust_plan_cache_window, rust_plan_media_download_candidates, rust_plan_playlist_order,
-    rust_plan_tool_download_candidates, rust_plan_update_download_candidates,
-    rust_release_list_api_from_latest, rust_safe_filename, rust_select_audio_stream,
-    rust_select_media_pages, rust_select_preferred_audio_source, rust_select_release,
-    rust_select_update_asset, rust_select_video_stream, rust_version_sort_key, rust_version_tuple,
+    rust_decide_quality_policy, rust_decide_tool_prepare_policy, rust_format_download_proxy_url,
+    rust_free_string, rust_is_downloadable_archive, rust_normalize_machine_arch,
+    rust_normalize_version_tag, rust_plan_cache_window, rust_plan_media_download_candidates,
+    rust_plan_playlist_order, rust_plan_tool_download_candidates,
+    rust_plan_update_download_candidates, rust_release_list_api_from_latest, rust_safe_filename,
+    rust_select_audio_stream, rust_select_media_pages, rust_select_preferred_audio_source,
+    rust_select_release, rust_select_update_asset, rust_select_video_stream, rust_version_sort_key,
+    rust_version_tuple,
 };
 pub use media_download_candidate_planning::{
     MediaCandidateSource, MediaDownloadPlan, MediaDownloadPlanError, MediaDownloadPlanMode,
@@ -90,6 +92,9 @@ pub use tool_download_candidate_planning::{
     PlannedToolCandidate, ToolAssetInput, ToolCandidateSource, ToolDownloadPlan,
     ToolDownloadPlanError, ToolDownloadPlanRequest, ToolFallbackBaseInput, ToolKind, ToolTarget,
     plan_tool_download_candidates,
+};
+pub use tool_prepare_policy::{
+    ToolPrepareAction, ToolPrepareDecision, ToolPrepareFacts, decide_tool_prepare,
 };
 pub use video_stream_ranking::{
     VideoCodec, VideoSelectionReason, VideoStreamDescriptor, VideoStreamSelection,

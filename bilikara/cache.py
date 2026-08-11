@@ -5243,16 +5243,51 @@ class CacheManager:
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         with self.binary_prepare_lock:
             override = Path(BB_DOWN_PATH_OVERRIDE) if BB_DOWN_PATH_OVERRIDE else None
-            if override and override.exists():
+            override_exists = bool(override and override.exists())
+            current_binary = self._local_binary_path()
+            local_version = ""
+            if not override_exists and BB_DOWN_VERSION_FILE.exists():
+                local_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
+            completed, prepare_decision = rust_backend.try_decide_tool_prepare_policy(
+                {
+                    "schema_version": 1,
+                    "override_exists": override_exists,
+                    "installed_exists": current_binary.exists(),
+                    "force_refresh": force_refresh,
+                    "version_metadata_present": bool(local_version),
+                }
+            )
+            if not completed or prepare_decision is None:
+                raise RuntimeError("Rust BBDown prepare policy is unavailable or invalid")
+
+            prepare_action = prepare_decision["action"]
+            if prepare_action == "use_override":
+                if override is None or not override.exists():
+                    raise RuntimeError("Rust BBDown prepare policy selected an invalid override")
                 with self.lock:
                     self.binary_state = "ready"
                     self.binary_message = f"使用外部 BBDown: {override}"
                 return override
 
-            current_binary = self._local_binary_path()
-            local_version = ""
-            if BB_DOWN_VERSION_FILE.exists():
-                local_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
+            if prepare_action == "use_installed":
+                if not current_binary.exists():
+                    raise RuntimeError(
+                        "Rust BBDown prepare policy selected a missing installed binary"
+                    )
+                current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
+                if prepare_decision["probe_installed_version"]:
+                    local_version = self._read_bbdown_version(current_binary)
+                with self.lock:
+                    self.binary_state = "ready"
+                    self.binary_version = local_version
+                    if local_version:
+                        self.binary_message = f"BBDown {local_version} 已就绪（未检查更新）"
+                    else:
+                        self.binary_message = "BBDown 已就绪（未检查更新）"
+                return current_binary
+
+            if prepare_action != "fetch_install_update":
+                raise RuntimeError("Rust BBDown prepare policy returned an unknown action")
 
             release: dict[str, Any] | None = None
             latest_version = ""
@@ -5264,16 +5299,6 @@ class CacheManager:
                 release_error = exc
 
             if release is None:
-                if current_binary.exists() and not force_refresh:
-                    current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
-                    with self.lock:
-                        self.binary_state = "ready"
-                        self.binary_version = local_version
-                        if local_version:
-                            self.binary_message = f"BBDown {local_version} 已就绪（未检查更新）"
-                        else:
-                            self.binary_message = "BBDown 已就绪（未检查更新）"
-                    return current_binary
                 if not TOOL_ASSET_BASE_URL:
                     raise RuntimeError(f"无法检查 BBDown 最新版本: {release_error}")
                 release = {"tag_name": "r2-fallback", "assets": [self._bbdown_fallback_asset()]}

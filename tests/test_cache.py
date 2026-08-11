@@ -4,6 +4,7 @@ import os
 import queue
 import shutil
 import ssl
+import stat
 import subprocess
 import sys
 import threading
@@ -1886,7 +1887,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(resolved, sibling_probe)
         self.assertEqual(run_mock.call_count, 2)
 
-    def test_ensure_bbdown_uses_local_binary_when_release_check_fails(self):
+    def test_ensure_bbdown_existing_binary_skips_release_request(self):
         suffix = ".exe" if os.name == "nt" else ""
         local_binary = Path(self.temp_dir.name) / "tools" / "bbdown" / f"BBDown{suffix}"
         local_binary.parent.mkdir(parents=True, exist_ok=True)
@@ -1900,15 +1901,76 @@ class CacheManagerPolicyTest(unittest.TestCase):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
-                    manager, "_fetch_latest_release", side_effect=RuntimeError("offline")
-                ):
+                    manager, "_fetch_latest_release"
+                ) as fetch_release, patch.object(
+                    manager, "_download_tool_asset"
+                ) as download_asset:
                     path = manager._ensure_bbdown()
             finally:
                 manager.shutdown()
 
         self.assertEqual(path, local_binary)
+        fetch_release.assert_not_called()
+        download_asset.assert_not_called()
+        self.assertTrue(local_binary.stat().st_mode & stat.S_IEXEC)
+        self.assertEqual(manager.binary_state, "ready")
         self.assertEqual(manager.binary_version, "1.6.3")
         self.assertIn("未检查更新", manager.binary_message)
+
+    def test_ensure_bbdown_existing_binary_reads_binary_version_without_metadata(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        local_binary = Path(self.temp_dir.name) / "tools" / "bbdown" / f"BBDown{suffix}"
+        local_binary.parent.mkdir(parents=True, exist_ok=True)
+        local_binary.write_bytes(b"bbdown-bin")
+        version_file = Path(self.temp_dir.name) / "tools" / "bbdown" / "VERSION"
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
+                    manager, "_read_bbdown_version", return_value="1.6.3"
+                ) as read_version, patch.object(
+                    manager, "_fetch_latest_release"
+                ) as fetch_release:
+                    path = manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, local_binary)
+        read_version.assert_called_once_with(local_binary)
+        fetch_release.assert_not_called()
+        self.assertEqual(manager.binary_state, "ready")
+        self.assertEqual(manager.binary_version, "1.6.3")
+
+    def test_ensure_bbdown_existing_override_keeps_override_precedence(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        override = Path(self.temp_dir.name) / "external" / f"BBDown{suffix}"
+        override.parent.mkdir(parents=True, exist_ok=True)
+        override.write_bytes(b"external-bbdown")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_PATH_OVERRIDE", str(override)
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(
+                    manager,
+                    "_fetch_latest_release",
+                ) as fetch_release, patch.object(
+                    manager,
+                    "_download_tool_asset",
+                ) as download_asset:
+                    path = manager._ensure_bbdown(force_refresh=True)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, override)
+        fetch_release.assert_not_called()
+        download_asset.assert_not_called()
+        self.assertEqual(manager.binary_state, "ready")
+        self.assertIn("外部 BBDown", manager.binary_message)
 
     def test_ensure_bbdown_raises_when_release_check_fails_and_no_local_binary(self):
         suffix = ".exe" if os.name == "nt" else ""
@@ -2000,12 +2062,13 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager,
                     "_fetch_latest_release",
                     side_effect=RuntimeError("offline"),
-                ), patch.object(manager, "_download_url", side_effect=fake_download):
+                ) as fetch_release, patch.object(manager, "_download_url", side_effect=fake_download):
                     path = manager._ensure_bbdown()
             finally:
                 manager.shutdown()
 
         self.assertEqual(path, local_binary)
+        fetch_release.assert_called_once_with()
         self.assertEqual(calls, ["https://download.example/bilikara/tools/BBDown_1.6.3_20240814_win-x64.zip"])
         self.assertEqual(local_binary.read_bytes(), b"bbdown-bin")
         self.assertEqual(version_file.read_text(encoding="utf-8"), "r2-fallback")
@@ -3541,11 +3604,13 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     "tag_name": "v1.6.3",
                     "assets": [{"name": "BBDown_1.6.3_win-x64.zip", "browser_download_url": "https://github.com/win-x64.zip"}]
                 }
-                with patch.object(manager, "_fetch_latest_release", return_value=release_data), patch.object(
+                with patch.object(manager, "_fetch_latest_release", return_value=release_data) as fetch_release, patch.object(
                     manager, "_download_url", side_effect=fake_download_url
                 ):
                     with self.assertRaises(Exception):
                         manager._ensure_bbdown(force_refresh=True)
+
+                fetch_release.assert_called_once_with()
 
                 self.assertTrue(existing_binary.exists())
                 self.assertEqual(existing_binary.read_bytes(), b"existing-binary-content")

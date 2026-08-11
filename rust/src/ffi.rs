@@ -333,6 +333,25 @@ pub unsafe extern "C" fn rust_decide_playback_selector_policy(
     })
 }
 
+/// Routes tool preparation from immutable filesystem facts.
+///
+/// The caller retains all filesystem, subprocess, HTTP, archive, and runtime
+/// status responsibilities.
+///
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_decide_tool_prepare_policy(
+    request_json: *const c_char,
+) -> *mut c_char {
+    ffi_string_result(|| {
+        // SAFETY: Required by this export's C ABI contract.
+        let request_json = unsafe { input(request_json)? };
+        crate::tool_prepare_policy::decide_tool_prepare_policy_json(request_json)
+    })
+}
+
 /// Plans ordered updater download candidates from a schema-v1 JSON request.
 ///
 /// Returns an owned JSON string that must be freed with [`rust_free_string`].

@@ -53,6 +53,7 @@ PHASE2_CAPABILITIES = (
 
 RUST_AUTHORITATIVE_POLICY_CAPABILITIES = (
     "decide_playback_selector_policy",
+    "decide_tool_prepare_policy",
 )
 
 MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS = 4096
@@ -315,6 +316,11 @@ _SYMBOLS = {
     ),
     "decide_playback_selector_policy": (
         "rust_decide_playback_selector_policy",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "decide_tool_prepare_policy": (
+        "rust_decide_tool_prepare_policy",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -813,6 +819,78 @@ def try_decide_playback_selector_policy(
         request,
     )
     if not _valid_playback_selector_policy_response(response):
+        return False, None
+    assert isinstance(response, dict)
+    return True, response
+
+
+def _tool_prepare_policy_request(request: object) -> bool:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "override_exists",
+        "installed_exists",
+        "force_refresh",
+        "version_metadata_present",
+    }:
+        return False
+    schema_version = request.get("schema_version")
+    return (
+        not isinstance(schema_version, bool)
+        and schema_version == 1
+        and all(
+            isinstance(request.get(field), bool)
+            for field in (
+                "override_exists",
+                "installed_exists",
+                "force_refresh",
+                "version_metadata_present",
+            )
+        )
+    )
+
+
+def _valid_tool_prepare_policy_response(
+    response: object,
+    request: dict[str, object],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "action",
+        "probe_installed_version",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    action = response.get("action")
+    probe = response.get("probe_installed_version")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or action not in {"use_override", "use_installed", "fetch_install_update"}
+        or not isinstance(probe, bool)
+        or (probe and action != "use_installed")
+        or (probe and request["version_metadata_present"] is not False)
+    ):
+        return False
+    if action == "use_override" and request["override_exists"] is not True:
+        return False
+    if action == "use_installed" and request["installed_exists"] is not True:
+        return False
+    return True
+
+
+def try_decide_tool_prepare_policy(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Invoke Rust tool-prepare routing; unavailable/invalid calls fail closed."""
+
+    if not _tool_prepare_policy_request(request):
+        return False, None
+    response = _call_json_capability(
+        "decide_tool_prepare_policy",
+        "rust_decide_tool_prepare_policy",
+        request,
+    )
+    if not _valid_tool_prepare_policy_response(response, request):
         return False, None
     assert isinstance(response, dict)
     return True, response
