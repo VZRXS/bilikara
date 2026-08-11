@@ -2828,11 +2828,8 @@ function firstSearchResultValue(item, keys) {
 }
 
 function searchResultCoverUrl(item) {
-  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
-  if (coverUrl.startsWith("//")) {
-    coverUrl = `https:${coverUrl}`;
-  }
-  return coverUrl;
+  const coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  return window.BilikaraSongDetail?.normalizeBilibiliImageUrl?.(coverUrl) || coverUrl;
 }
 
 function formatCompactCount(value) {

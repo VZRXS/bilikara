@@ -355,6 +355,52 @@ console.log(JSON.stringify({{
             {"collaboration": "vzrxs.jpg", "matchingUid": "kevin.jpg", "mismatchedUid": ""},
         )
 
+    def test_bilibili_image_urls_use_secure_transport_without_rewriting_other_hosts(self):
+        source = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        helper_source = source[
+            source.index("function stringValue"):source.index("function formatDuration")
+        ]
+        result = self.run_node(
+            f"""
+{helper_source}
+console.log(JSON.stringify({{
+  protocolRelative: normalizeBilibiliImageUrl("//i0.hdslb.com/bfs/archive/cover.jpg"),
+  insecureCover: normalizeBilibiliImageUrl("http://i0.hdslb.com/bfs/archive/cover.jpg?x=1&y=2"),
+  secureCover: normalizeBilibiliImageUrl("https://i0.hdslb.com/bfs/archive/cover.jpg"),
+  rootDomain: normalizeBilibiliImageUrl("http://hdslb.com/path"),
+  thirdParty: normalizeBilibiliImageUrl("http://images.example.test/path"),
+  lookalike: normalizeBilibiliImageUrl("http://hdslb.com.evil.test/path"),
+  coverField: normalizedCoverUrl({{ cover_url: "http://i1.hdslb.com/bfs/archive/a.jpg?q=2" }}),
+  avatarField: normalizedAvatarUrl({{ owner_avatar_url: "http://i2.hdslb.com/bfs/face/b.jpg" }}),
+}}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "protocolRelative": "https://i0.hdslb.com/bfs/archive/cover.jpg",
+                "insecureCover": "https://i0.hdslb.com/bfs/archive/cover.jpg?x=1&y=2",
+                "secureCover": "https://i0.hdslb.com/bfs/archive/cover.jpg",
+                "rootDomain": "https://hdslb.com/path",
+                "thirdParty": "http://images.example.test/path",
+                "lookalike": "http://hdslb.com.evil.test/path",
+                "coverField": "https://i1.hdslb.com/bfs/archive/a.jpg?q=2",
+                "avatarField": "https://i2.hdslb.com/bfs/face/b.jpg",
+            },
+        )
+
+    def test_search_list_and_expanded_detail_share_image_url_normalization(self):
+        detail = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
+        self.assertIn("image.src = coverUrl;", detail)
+        self.assertIn("elements.ownerAvatar.src = avatarUrl;", detail)
+        self.assertIn("normalizeBilibiliImageUrl(\n      firstValue(item", detail)
+
+        for source_path in ("static/app.js", "static/remote.js"):
+            source = (ROOT / source_path).read_text(encoding="utf-8")
+            helper = self.function_source(source, "searchResultCoverUrl", "formatCompactCount")
+            self.assertIn("BilikaraSongDetail?.normalizeBilibiliImageUrl?.(coverUrl)", helper)
+            self.assertNotIn('coverUrl.startsWith("//")', helper)
+
     def test_detail_actions_are_busy_guarded_and_close_only_after_success(self):
         detail_js = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
         self.assertIn("button.disabled = busy || !activeUrl;", detail_js)
