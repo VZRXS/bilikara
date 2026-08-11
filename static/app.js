@@ -9465,6 +9465,7 @@ async function confirmBindingModal() {
   let originalText = "";
   if (button) {
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     originalText = button.textContent;
     button.textContent = t("search.adding") || "添加中...";
   }
@@ -9477,7 +9478,7 @@ async function confirmBindingModal() {
       selectedAudioPages,
     });
     closeBindingModal();
-    if (["modalSearch", "modalFollow", "modalFavlist", "modalBrowse"].includes(source)) {
+    if (intent.originatedFromDetail) {
       searchDetailController?.close({ immediate: true });
     }
     if (!intent.preserveInput) {
@@ -9502,6 +9503,7 @@ async function confirmBindingModal() {
           requesterName: intent.requesterName || selectedRequesterName(),
           preserveInput: intent.preserveInput,
           allowRepeat: intent.allowRepeat,
+          originatedFromDetail: Boolean(intent.originatedFromDetail),
           source,
           title: intent.title,
         },
@@ -9518,6 +9520,7 @@ async function confirmBindingModal() {
         position: intent.position || "tail",
         requesterName: intent.requesterName || selectedRequesterName(),
         preserveInput: intent.preserveInput,
+        originatedFromDetail: Boolean(intent.originatedFromDetail),
         source,
         selectedVideoPage,
         selectedAudioPages,
@@ -9535,6 +9538,7 @@ async function confirmBindingModal() {
   } finally {
     if (button) {
       button.disabled = false;
+      button.removeAttribute("aria-busy");
       button.textContent = originalText;
     }
   }
@@ -9607,7 +9611,13 @@ async function handleAdd(position, anchorPoint) {
   }
 }
 
-async function handleAddByUrl(url, position, anchorPoint, source = "search") {
+async function handleAddByUrl(
+  url,
+  position,
+  anchorPoint,
+  source = "search",
+  { originatedFromDetail = false } = {},
+) {
   const requesterName = validatedRequesterNameForAdd();
   if (!requesterName) {
     return false;
@@ -9621,6 +9631,9 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
       : (position === "next" ? t("request.addedNext") : t("request.addedTail"));
     setMessageForSource(source, message);
     setAppMessage(message);
+    if (originatedFromDetail) {
+      searchDetailController?.close({ immediate: true });
+    }
     render();
     return true;
   } catch (error) {
@@ -9631,6 +9644,7 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
           position,
           requesterName,
           preserveInput: false,
+          originatedFromDetail: Boolean(originatedFromDetail),
           source,
         },
         error.payload?.binding,
@@ -9644,6 +9658,7 @@ async function handleAddByUrl(url, position, anchorPoint, source = "search") {
         position,
         requesterName,
         preserveInput: false,
+        originatedFromDetail: Boolean(originatedFromDetail),
         source,
         message: duplicateConfirmMessage(
           error.payload?.duplicate_item,
@@ -10758,6 +10773,7 @@ function initSearchDetailController() {
       position,
       anchorPointForEvent({}, searchDetailController?.root || container),
       String(item?.detailSource || "modalSearch"),
+      { originatedFromDetail: true },
     ),
   });
 }
@@ -11975,6 +11991,9 @@ elements.confirmOk.addEventListener("click", async () => {
         selectedAudioPages: Array.isArray(intent.selectedAudioPages) ? intent.selectedAudioPages : undefined,
       });
       closeConfirm();
+      if (intent.originatedFromDetail) {
+        searchDetailController?.close({ immediate: true });
+      }
       if (!intent.preserveInput) {
         elements.urlInput.value = "";
       } else {

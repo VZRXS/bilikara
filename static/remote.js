@@ -6,6 +6,7 @@ const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const larkSearchTableCount = 5;
+const expandedSearchEagerCoverCount = 6;
 const d1BrowseItemLimit = 450;
 const d1BrowseTagLimit = 450;
 const d1BrowseMergeMinLength = 5;
@@ -3089,31 +3090,41 @@ function setGatchaUidFlowMessage(target, message, isError = false) {
   setGatchaUidMessage(message, isError);
 }
 
-function createSearchResultRow(item) {
-  const row = document.createElement("article");
-  row.className = "search-result-item";
-  searchResultItemByElement.set(row, item);
-  const itemUrl = String(item?.url || "").trim();
-  if (itemUrl) {
-    row.dataset.url = itemUrl;
-  }
+function appendSearchResultCoverFallback(cover, item, stateName) {
+  const fallback = document.createElement("span");
+  fallback.className = "search-result-cover-fallback";
+  fallback.textContent = String(item?.bvid || "Bili");
+  cover.appendChild(fallback);
+  cover.classList.add("is-empty");
+  cover.classList.toggle("is-error", stateName === "error");
+  cover.dataset.coverState = stateName;
+}
 
+function createSearchResultCover(item, { eagerCover = false } = {}) {
   const coverUrl = searchResultCoverUrl(item);
   const cover = document.createElement("div");
   cover.className = "search-result-cover";
   if (coverUrl) {
     const image = document.createElement("img");
-    image.src = coverUrl;
     image.alt = "";
-    image.loading = "lazy";
+    image.loading = eagerCover ? "eager" : "lazy";
     image.decoding = "async";
     image.referrerPolicy = "no-referrer";
+    cover.dataset.coverState = "loading";
+    image.onload = () => {
+      cover.dataset.coverState = "loaded";
+    };
+    image.onerror = () => {
+      if (cover.dataset.coverState === "error") {
+        return;
+      }
+      image.remove();
+      appendSearchResultCoverFallback(cover, item, "error");
+    };
     cover.appendChild(image);
+    image.src = coverUrl;
   } else {
-    const fallback = document.createElement("span");
-    fallback.textContent = String(item?.bvid || "Bili");
-    cover.appendChild(fallback);
-    cover.classList.add("is-empty");
+    appendSearchResultCoverFallback(cover, item, "missing");
   }
 
   const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
@@ -3127,6 +3138,19 @@ function createSearchResultRow(item) {
   if (ratingStars) {
     cover.appendChild(ratingStars);
   }
+  return cover;
+}
+
+function createSearchResultRow(item, { eagerCover = false } = {}) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  searchResultItemByElement.set(row, item);
+  const itemUrl = String(item?.url || "").trim();
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+
+  const cover = createSearchResultCover(item, { eagerCover });
 
   const meta = document.createElement("div");
   meta.className = "search-result-meta search-result-body";
@@ -3187,8 +3211,10 @@ function renderSearchResultItems(container, items, emptyText = "") {
     container.appendChild(empty);
     return;
   }
-  normalizedItems.forEach((item) => {
-    container.appendChild(createSearchResultRow(item));
+  normalizedItems.forEach((item, index) => {
+    container.appendChild(createSearchResultRow(item, {
+      eagerCover: index < expandedSearchEagerCoverCount,
+    }));
   });
 }
 
@@ -3248,7 +3274,10 @@ function syncBilikaraSearchViews() {
   if (elements.searchModalLarkResults) {
     if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
       elements.searchModalLarkResults.innerHTML = "";
-      elements.searchModalLarkResults.classList.add("hidden");
+      elements.searchModalLarkResults.classList.toggle(
+        "hidden",
+        !loading && !hasSearched && !message,
+      );
     } else {
       renderSearchResultItems(elements.searchModalLarkResults, items, emptyText);
     }
@@ -8049,6 +8078,7 @@ function makeElementDraggable(element, onClick) {
   let suppressClickUntil = 0;
   let pctX = null;
   let pctY = null;
+  let activeTouchId = null;
 
   const invokeClick = () => {
     if (typeof onClick === "function") {
@@ -8065,14 +8095,18 @@ function makeElementDraggable(element, onClick) {
       return;
     }
 
+    clearDragListeners();
     const rect = element.getBoundingClientRect();
     initialLeft = rect.left;
     initialTop = rect.top;
 
     if (e.type === "touchstart") {
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
+      const touch = e.changedTouches?.[0] || e.touches[0];
+      activeTouchId = Number.isFinite(touch?.identifier) ? touch.identifier : null;
+      startX = touch.clientX;
+      startY = touch.clientY;
     } else {
+      activeTouchId = null;
       startX = e.clientX;
       startY = e.clientY;
     }
@@ -8097,11 +8131,18 @@ function makeElementDraggable(element, onClick) {
     let currentY = 0;
 
     if (e.type === "touchmove") {
+      const touch = activeTouchId === null
+        ? e.touches[0]
+        : [...e.touches].find((candidate) => candidate.identifier === activeTouchId);
+      if (!touch) {
+        dragCancel();
+        return;
+      }
       if (e.cancelable) {
         e.preventDefault();
       }
-      currentX = e.touches[0].clientX;
-      currentY = e.touches[0].clientY;
+      currentX = touch.clientX;
+      currentY = touch.clientY;
     } else {
       currentX = e.clientX;
       currentY = e.clientY;
@@ -8147,7 +8188,15 @@ function makeElementDraggable(element, onClick) {
   };
 
   const dragEnd = (e) => {
+    if (
+      e.type === "touchend"
+      && activeTouchId !== null
+      && ![...(e.changedTouches || [])].some((touch) => touch.identifier === activeTouchId)
+    ) {
+      return;
+    }
     isDragging = false;
+    activeTouchId = null;
     element.classList.remove("dragging");
     clearDragListeners();
 
@@ -8165,11 +8214,15 @@ function makeElementDraggable(element, onClick) {
   };
 
   function dragCancel() {
+    const wasDragging = isDragging;
     isDragging = false;
+    activeTouchId = null;
     moved = false;
     element.classList.remove("dragging");
     clearDragListeners();
-    suppressNextClick();
+    if (wasDragging) {
+      suppressNextClick();
+    }
   }
 
   element.addEventListener("click", (event) => {
@@ -8182,6 +8235,13 @@ function makeElementDraggable(element, onClick) {
   });
   element.addEventListener("mousedown", dragStart);
   element.addEventListener("touchstart", dragStart);
+  window.addEventListener("blur", dragCancel);
+  window.addEventListener("pagehide", dragCancel);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      dragCancel();
+    }
+  });
 
   window.addEventListener("resize", () => {
     if (pctX === null || pctY === null) {

@@ -438,7 +438,7 @@ function openBindingSheet() {{}}
             {"completed": True, "query": "anime", "results": "existing results"},
         )
 
-    def test_binding_success_preserves_lists_and_closes_only_expanded_details(self):
+    def test_binding_success_preserves_lists_and_closes_only_detail_origins(self):
         host = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         host_confirm = host[
             host.index("async function confirmBindingModal") :
@@ -477,13 +477,19 @@ function openConfirm() {{}}
 function duplicateConfirmMessage() {{ return "duplicate"; }}
 {host_confirm}
 (async () => {{
-  state.bindingIntent = {{ url: "https://example.test/detail", source: "modalSearch", preserveInput: true }};
+  state.bindingIntent = {{ url: "https://example.test/inline-detail", source: "search",
+    preserveInput: true, originatedFromDetail: true }};
   await confirmBindingModal();
-  const afterDetail = {{ detailCloseCount, bindingCloseCount, searchModalOpen: elements.searchModal.open }};
+  const afterInlineDetail = {{ detailCloseCount, bindingCloseCount, searchModalOpen: elements.searchModal.open }};
+  state.bindingIntent = {{ url: "https://example.test/modal-detail", source: "modalSearch",
+    preserveInput: true, originatedFromDetail: true }};
+  await confirmBindingModal();
+  const afterExpandedDetail = {{ detailCloseCount, bindingCloseCount, searchModalOpen: elements.searchModal.open }};
   state.bindingIntent = {{ url: "https://example.test/list", source: "search", preserveInput: true }};
   await confirmBindingModal();
   console.log(JSON.stringify({{
-    afterDetail,
+    afterInlineDetail,
+    afterExpandedDetail,
     finalDetailCloseCount: detailCloseCount,
     query: elements.searchQuery.value,
     results: elements.searchResults.innerHTML,
@@ -540,14 +546,303 @@ function openBindingSheet() {{}}
 """
         )
 
-        for result in (host_result, remote_result):
-            self.assertEqual(
-                result["afterDetail"],
-                {"detailCloseCount": 1, "bindingCloseCount": 1, "searchModalOpen": True},
-            )
-            self.assertEqual(result["finalDetailCloseCount"], 1)
-            self.assertEqual(result["query"], "anime")
-            self.assertEqual(result["results"], "existing results")
+        self.assertEqual(
+            host_result["afterInlineDetail"],
+            {"detailCloseCount": 1, "bindingCloseCount": 1, "searchModalOpen": True},
+        )
+        self.assertEqual(
+            host_result["afterExpandedDetail"],
+            {"detailCloseCount": 2, "bindingCloseCount": 2, "searchModalOpen": True},
+        )
+        self.assertEqual(host_result["finalDetailCloseCount"], 2)
+        self.assertEqual(host_result["query"], "anime")
+        self.assertEqual(host_result["results"], "existing results")
+
+        self.assertEqual(
+            remote_result["afterDetail"],
+            {"detailCloseCount": 1, "bindingCloseCount": 1, "searchModalOpen": True},
+        )
+        self.assertEqual(remote_result["finalDetailCloseCount"], 1)
+        self.assertEqual(remote_result["query"], "anime")
+        self.assertEqual(remote_result["results"], "existing results")
+
+    def test_host_detail_manual_binding_success_closes_detail_without_clearing_search(self):
+        host = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        host_confirm = host[
+            host.index("async function confirmBindingModal") :
+            host.index("async function handleAdd", host.index("async function confirmBindingModal"))
+        ]
+        host_add = host[
+            host.index("async function handleAddByUrl") :
+            host.index("async function discardBackup", host.index("async function handleAddByUrl"))
+        ]
+        result = self.run_node(
+            f"""
+const state = {{ data: null, bindingIntent: null }};
+let detailCloseCount = 0;
+let bindingCloseCount = 0;
+let bindingOpenCount = 0;
+let failConfirmation = false;
+let validSelection = true;
+const searchDetailController = {{ close(options) {{
+  if (options?.immediate === true) detailCloseCount += 1;
+}} }};
+const elements = {{
+  bindingModalConfirm: null,
+  urlInput: {{ value: "request URL" }},
+  searchQuery: {{ value: "anime" }},
+  searchResults: {{ innerHTML: "existing results" }},
+  searchModal: {{ open: true }},
+  gatchaResultView: {{ classList: {{ add() {{}} }} }},
+  gatchaInitView: {{ classList: {{ remove() {{}} }} }},
+  addForm: {{}},
+}};
+function validatedRequesterNameForAdd() {{ return "tester"; }}
+function currentBindingSelection() {{
+  return validSelection
+    ? {{ selectedVideoPage: 1, selectedAudioPages: [2] }}
+    : {{ selectedVideoPage: null, selectedAudioPages: [] }};
+}}
+function setMessageForSource() {{}}
+function setAppMessage() {{}}
+function t(key) {{ return key; }}
+function selectedRequesterName() {{ return "tester"; }}
+async function submitAddRequest(_url, _position, options) {{
+  if (!Number.isInteger(options.selectedVideoPage)) {{
+    const error = new Error("binding required");
+    error.code = "manual_binding_required";
+    error.payload = {{ binding: {{ pages: [{{ page: 1 }}, {{ page: 2 }}] }} }};
+    throw error;
+  }}
+  if (failConfirmation) {{
+    throw new Error("network failure");
+  }}
+  return {{ playlist: [] }};
+}}
+function closeBindingModal() {{ bindingCloseCount += 1; state.bindingIntent = null; }}
+function openBindingModal(intent, binding) {{
+  bindingOpenCount += 1;
+  state.bindingIntent = {{ ...intent, binding }};
+}}
+function setGatchaMessage() {{}}
+function render() {{}}
+function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
+function openConfirm() {{}}
+function duplicateConfirmMessage() {{ return "duplicate"; }}
+{host_confirm}
+{host_add}
+(async () => {{
+  const inlineCompleted = await handleAddByUrl(
+    "https://example.test/inline-detail", "tail", {{ x: 0, y: 0 }}, "search",
+    {{ originatedFromDetail: true }},
+  );
+  const inlinePending = {{
+    completed: inlineCompleted,
+    detailCloseCount,
+    bindingOpenCount,
+    originTracked: state.bindingIntent?.originatedFromDetail === true,
+  }};
+  await confirmBindingModal();
+  const inlineSuccess = {{
+    detailCloseCount,
+    bindingCloseCount,
+    query: elements.searchQuery.value,
+    results: elements.searchResults.innerHTML,
+    searchModalOpen: elements.searchModal.open,
+  }};
+
+  const expandedCompleted = await handleAddByUrl(
+    "https://example.test/expanded-detail", "tail", {{ x: 0, y: 0 }}, "modalSearch",
+    {{ originatedFromDetail: true }},
+  );
+  await confirmBindingModal();
+
+  await handleAddByUrl(
+    "https://example.test/failing-detail", "tail", {{ x: 0, y: 0 }}, "search",
+    {{ originatedFromDetail: true }},
+  );
+  failConfirmation = true;
+  await confirmBindingModal();
+  const afterNetworkFailure = {{
+    detailCloseCount,
+    bindingCloseCount,
+    bindingStillOpen: Boolean(state.bindingIntent),
+  }};
+  failConfirmation = false;
+  validSelection = false;
+  await confirmBindingModal();
+  console.log(JSON.stringify({{
+    inlinePending,
+    inlineSuccess,
+    expandedCompleted,
+    expandedSuccess: {{
+      detailCloseCount,
+      bindingCloseCount,
+      query: elements.searchQuery.value,
+      results: elements.searchResults.innerHTML,
+      searchModalOpen: elements.searchModal.open,
+    }},
+    afterNetworkFailure,
+    afterValidationFailure: {{
+      detailCloseCount,
+      bindingCloseCount,
+      bindingStillOpen: Boolean(state.bindingIntent),
+      query: elements.searchQuery.value,
+      results: elements.searchResults.innerHTML,
+    }},
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        )
+
+        self.assertEqual(
+            result["inlinePending"],
+            {"completed": False, "detailCloseCount": 0, "bindingOpenCount": 1, "originTracked": True},
+        )
+        self.assertEqual(
+            result["inlineSuccess"],
+            {
+                "detailCloseCount": 1,
+                "bindingCloseCount": 1,
+                "query": "anime",
+                "results": "existing results",
+                "searchModalOpen": True,
+            },
+        )
+        self.assertFalse(result["expandedCompleted"])
+        self.assertEqual(
+            result["expandedSuccess"],
+            {
+                "detailCloseCount": 2,
+                "bindingCloseCount": 2,
+                "query": "anime",
+                "results": "existing results",
+                "searchModalOpen": True,
+            },
+        )
+        self.assertEqual(
+            result["afterNetworkFailure"],
+            {"detailCloseCount": 2, "bindingCloseCount": 2, "bindingStillOpen": True},
+        )
+        self.assertEqual(
+            result["afterValidationFailure"],
+            {
+                "detailCloseCount": 2,
+                "bindingCloseCount": 2,
+                "bindingStillOpen": True,
+                "query": "anime",
+                "results": "existing results",
+            },
+        )
+
+    def test_host_detail_direct_success_closes_only_detail_and_preserves_search(self):
+        host = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+        host_add = host[
+            host.index("async function handleAddByUrl") :
+            host.index("async function discardBackup", host.index("async function handleAddByUrl"))
+        ]
+        result = self.run_node(
+            f"""
+const state = {{ data: null }};
+let detailCloseCount = 0;
+let renderCount = 0;
+const searchDetailController = {{ close(options) {{
+  if (options?.immediate === true) detailCloseCount += 1;
+}} }};
+const elements = {{
+  searchQuery: {{ value: "anime" }},
+  searchResults: {{ innerHTML: "existing results" }},
+  searchModal: {{ open: true }},
+  addForm: {{}},
+  historyList: {{}},
+}};
+function validatedRequesterNameForAdd() {{ return "tester"; }}
+function setMessageForSource() {{}}
+function setAppMessage() {{}}
+function t(key) {{ return key; }}
+async function submitAddRequest() {{ return {{ playlist: [] }}; }}
+function render() {{ renderCount += 1; }}
+function openBindingModal() {{}}
+function openConfirm() {{}}
+function duplicateConfirmMessage() {{ return "duplicate"; }}
+function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
+{host_add}
+(async () => {{
+  const inlineCompleted = await handleAddByUrl(
+    "https://example.test/inline-detail", "tail", {{ x: 0, y: 0 }}, "search",
+    {{ originatedFromDetail: true }},
+  );
+  const inline = {{
+    completed: inlineCompleted,
+    detailCloseCount,
+    query: elements.searchQuery.value,
+    results: elements.searchResults.innerHTML,
+    searchModalOpen: elements.searchModal.open,
+  }};
+
+  const expandedCompleted = await handleAddByUrl(
+    "https://example.test/expanded-detail", "tail", {{ x: 0, y: 0 }}, "modalSearch",
+    {{ originatedFromDetail: true }},
+  );
+  const expanded = {{
+    completed: expandedCompleted,
+    detailCloseCount,
+    query: elements.searchQuery.value,
+    results: elements.searchResults.innerHTML,
+    searchModalOpen: elements.searchModal.open,
+  }};
+
+  const ordinaryCompleted = await handleAddByUrl(
+    "https://example.test/result", "tail", {{ x: 0, y: 0 }}, "search",
+  );
+  console.log(JSON.stringify({{
+    inline,
+    expanded,
+    ordinary: {{
+      completed: ordinaryCompleted,
+      detailCloseCount,
+      query: elements.searchQuery.value,
+      results: elements.searchResults.innerHTML,
+      searchModalOpen: elements.searchModal.open,
+    }},
+    renderCount,
+  }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        )
+
+        self.assertEqual(
+            result["inline"],
+            {
+                "completed": True,
+                "detailCloseCount": 1,
+                "query": "anime",
+                "results": "existing results",
+                "searchModalOpen": True,
+            },
+        )
+        self.assertEqual(
+            result["expanded"],
+            {
+                "completed": True,
+                "detailCloseCount": 2,
+                "query": "anime",
+                "results": "existing results",
+                "searchModalOpen": True,
+            },
+        )
+        self.assertEqual(
+            result["ordinary"],
+            {
+                "completed": True,
+                "detailCloseCount": 2,
+                "query": "anime",
+                "results": "existing results",
+                "searchModalOpen": True,
+            },
+        )
+        self.assertEqual(result["renderCount"], 3)
+
 
     def test_detail_actions_reuse_host_and_remote_button_styles(self):
         detail_js = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
