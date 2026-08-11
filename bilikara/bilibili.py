@@ -2847,10 +2847,18 @@ def _requires_manual_binding(pages: list[VideoPage]) -> bool:
 def decide_audio_binding(
     pages: list[VideoPage],
     tolerance_seconds: int = DURATION_TOLERANCE_SECONDS,
+    *,
+    playback_selector: PlaybackSelector | None = None,
 ) -> AudioBindingDecision | None:
     descriptors: list[dict[str, object]] = []
     for original_index, page in enumerate(pages):
         if not isinstance(page, VideoPage):
+            if playback_selector is not None:
+                return playback_selector.dispatch(
+                    "decide_audio_binding",
+                    python=lambda: _py_decide_audio_binding(pages, tolerance_seconds),
+                    rust=lambda: (False, None),
+                )
             return rust_backend.python_fallback(
                 "decide_audio_binding",
                 lambda: _py_decide_audio_binding(pages, tolerance_seconds),
@@ -2869,6 +2877,28 @@ def decide_audio_binding(
         "tolerance_seconds": int(tolerance_seconds),
         "pages": descriptors,
     }
+
+    def decode_native(response: object) -> AudioBindingDecision | None:
+        if not isinstance(response, dict):
+            return None
+        if response.get("status") == "no_match":
+            return None
+        return AudioBindingDecision(
+            mode=str(response["mode"]),
+            selected_indices=tuple(response["selected_indices"]),
+            automatic_video_index=response.get("automatic_video_index"),
+        )
+
+    if playback_selector is not None:
+        return playback_selector.decide(
+            "decide_audio_binding",
+            python=lambda: _py_decide_audio_binding(pages, tolerance_seconds),
+            rust=lambda: rust_backend.try_decide_audio_binding(
+                request, allow_python_reference=False
+            ),
+            decode_rust=decode_native,
+        )
+
     completed, response = rust_backend.try_decide_audio_binding(request)
     if completed and response is not None:
         if response["status"] == "no_match":
@@ -2914,6 +2944,7 @@ def fetch_video_item(
     *,
     selected_video_page: int | None = None,
     selected_audio_pages: list[int] | None = None,
+    playback_selector: PlaybackSelector | None = None,
 ) -> PlaylistItem:
     reference = resolve_video_reference(raw_input)
     if reference.bvid:
@@ -2938,7 +2969,9 @@ def fetch_video_item(
         raise BilibiliError("视频没有可播放的分 P 信息")
 
     preferred_page = min(reference.page, len(pages))
-    binding_decision = decide_audio_binding(pages)
+    binding_decision = decide_audio_binding(
+        pages, playback_selector=playback_selector
+    )
     if binding_decision is None:
         raise BilibiliError("视频没有可播放的分 P 信息")
     manual_selection = binding_decision.mode == "manual_required"

@@ -263,6 +263,17 @@
 
             <!-- COLLAPSIBLE INLINE ADVANCED VIEW -->
             <div class="cache-advanced-inline-view hidden" id="cache-advanced-inline-view">
+              <div class="cache-panel-row cache-panel-selector-row" id="playback-selector-container" hidden>
+                <div>
+                  <p class="cache-panel-label" data-i18n="service.playbackSelector">播放处理引擎</p>
+                  <p class="cache-panel-hint playback-selector-hint" id="playback-selector-hint"
+                    data-i18n="service.playbackSelectorHint">对下一次媒体处理生效</p>
+                </div>
+                <select id="playback-selector-select" class="cache-quality-select" disabled>
+                  <option value="rust" data-i18n="service.playbackSelectorRust">Rust</option>
+                  <option value="python" data-i18n="service.playbackSelectorPython">Python（稳定）</option>
+                </select>
+              </div>
               <div class="cache-panel-row cache-panel-update-row">
                 <div>
                   <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>

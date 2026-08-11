@@ -45,6 +45,10 @@ EXPECTED_PHASE2_CAPABILITIES = {
     "apply_av_delay_action",
 }
 
+EXPECTED_RUST_AUTHORITATIVE_POLICY_CAPABILITIES = {
+    "decide_playback_selector_policy",
+}
+
 
 class FakeFunction:
     def __init__(self, result=None):
@@ -80,6 +84,23 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
         )
         self.assertTrue(all(status["capabilities"].values()))
         self.assertEqual(set(rust_backend.PHASE2_CAPABILITIES), EXPECTED_PHASE2_CAPABILITIES)
+        self.assertEqual(
+            set(rust_backend.RUST_AUTHORITATIVE_POLICY_CAPABILITIES),
+            EXPECTED_RUST_AUTHORITATIVE_POLICY_CAPABILITIES,
+        )
+        completed, selector_decision = (
+            rust_backend.try_decide_playback_selector_policy(
+                {
+                    "schema_version": 1,
+                    "operation": "resolve_persisted",
+                    "rust_available": True,
+                    "is_set": False,
+                    "mode": None,
+                }
+            )
+        )
+        self.assertTrue(completed)
+        self.assertEqual(selector_decision["effective_mode"], "rust")
 
         # These are Rust-only backend calls. None/False completion sentinels
         # fail the gate instead of silently reaching the public Python fallback.

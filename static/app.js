@@ -238,6 +238,11 @@ const state = {
   categoryBrowseOffset: 0,
   categoryBrowseHasMore: false,
   categoryBrowseLoading: false,
+  playbackSelectorAuthorized: false,
+  playbackSelectorCapability: null,
+  playbackSelectorCapabilityRevision: -1,
+  playbackSelectorCapabilityRequestId: 0,
+  playbackSelectorSaving: false,
   categoryBrowseSeq: 0,
   categoryBrowseError: "",
   pendingReviewItems: [],
@@ -307,6 +312,9 @@ const elements = {
   advanceDelayScale: document.getElementById("advance-delay-scale"),
   cacheQualitySelect: document.getElementById("cache-quality-select"),
   cacheDownloadSourceSelect: document.getElementById("cache-download-source-select"),
+  playbackSelectorContainer: document.getElementById("playback-selector-container"),
+  playbackSelectorSelect: document.getElementById("playback-selector-select"),
+  playbackSelectorHint: document.getElementById("playback-selector-hint"),
   cacheHiresCheckbox: document.getElementById("cache-hires-checkbox"),
   resetOffsetCheckbox: document.getElementById("reset-offset-checkbox"),
   dataResetButton: document.getElementById("data-reset-button"),
@@ -1883,7 +1891,9 @@ async function fetchState() {
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
-  state.data = payload.data;
+  if (!applyFreshStateSnapshot(payload.data)) {
+    return;
+  }
   maybeShowIncomingRequestToast(previousData, state.data);
   maybeShowSongTransitionOverlay(previousData, state.data);
 
@@ -5399,6 +5409,160 @@ function renderCachePolicyControls(cachePolicy) {
   if (elements.resetOffsetCheckbox) {
     elements.resetOffsetCheckbox.checked = resetOffsetOnNext;
     elements.resetOffsetCheckbox.disabled = state.cachePolicySaving;
+  }
+  renderPlaybackSelectorControl();
+}
+
+function hostStateRevision(snapshot = state.data) {
+  const revision = Number(snapshot?.state_revision || 0);
+  return Number.isFinite(revision) && revision >= 0 ? revision : 0;
+}
+
+function applyFreshStateSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return false;
+  }
+  const currentRevision = hostStateRevision(state.data);
+  const nextRevision = hostStateRevision(snapshot);
+  if (currentRevision > 0 && (nextRevision === 0 || nextRevision < currentRevision)) {
+    return false;
+  }
+  state.data = snapshot;
+  return true;
+}
+
+function validatedPlaybackSelectorCapability(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const selector = payload.playback_selector;
+  const modes = selector?.modes;
+  const revision = Number(payload.state_revision);
+  if (
+    !selector
+    || typeof selector !== "object"
+    || !["python", "rust"].includes(selector.mode)
+    || !Array.isArray(modes)
+    || modes.length !== 2
+    || modes[0] !== "python"
+    || modes[1] !== "rust"
+    || typeof selector.rust_available !== "boolean"
+    || typeof selector.warning !== "string"
+    || !Number.isInteger(revision)
+    || revision < 0
+  ) {
+    return null;
+  }
+  return { selector: { ...selector }, revision };
+}
+
+function authorizedPlaybackSelectorState() {
+  if (!state.playbackSelectorAuthorized) {
+    return null;
+  }
+  const stateSelector = state.data?.playback_selector;
+  if (
+    stateSelector
+    && ["python", "rust"].includes(stateSelector.mode)
+    && hostStateRevision(state.data) >= state.playbackSelectorCapabilityRevision
+  ) {
+    return stateSelector;
+  }
+  return state.playbackSelectorCapability;
+}
+
+function renderPlaybackSelectorControl() {
+  if (!elements.playbackSelectorContainer || !elements.playbackSelectorSelect) {
+    return;
+  }
+  const selector = authorizedPlaybackSelectorState();
+  const authorized = Boolean(selector);
+  elements.playbackSelectorContainer.hidden = !authorized;
+  if (!authorized) {
+    elements.playbackSelectorSelect.disabled = true;
+    elements.playbackSelectorSelect.removeAttribute("aria-busy");
+    return;
+  }
+  const mode = String(selector?.mode || "python");
+  elements.playbackSelectorSelect.value = mode;
+  elements.playbackSelectorSelect.disabled = Boolean(
+    state.playbackSelectorSaving || (selector.rust_available === false && mode !== "rust")
+  );
+  elements.playbackSelectorSelect.toggleAttribute(
+    "aria-busy",
+    Boolean(state.playbackSelectorSaving)
+  );
+  const rustOption = elements.playbackSelectorSelect.querySelector('option[value="rust"]');
+  if (rustOption) {
+    rustOption.disabled = selector.rust_available === false;
+  }
+  if (elements.playbackSelectorHint) {
+    const warning = String(selector.warning || "").trim();
+    elements.playbackSelectorHint.textContent = warning || t("service.playbackSelectorHint");
+    elements.playbackSelectorHint.classList.toggle("is-warning", Boolean(warning));
+  }
+}
+
+async function loadPlaybackSelectorCapability() {
+  const requestId = ++state.playbackSelectorCapabilityRequestId;
+  state.playbackSelectorAuthorized = false;
+  state.playbackSelectorCapability = null;
+  state.playbackSelectorCapabilityRevision = -1;
+  renderPlaybackSelectorControl();
+  try {
+    const payload = await apiGet("/api/player/playback-selector");
+    if (requestId !== state.playbackSelectorCapabilityRequestId) {
+      return false;
+    }
+    const capability = validatedPlaybackSelectorCapability(payload);
+    if (!capability) {
+      renderPlaybackSelectorControl();
+      return false;
+    }
+    state.playbackSelectorAuthorized = true;
+    state.playbackSelectorCapability = capability.selector;
+    state.playbackSelectorCapabilityRevision = capability.revision;
+    renderPlaybackSelectorControl();
+    return true;
+  } catch {
+    if (requestId === state.playbackSelectorCapabilityRequestId) {
+      state.playbackSelectorAuthorized = false;
+      state.playbackSelectorCapability = null;
+      state.playbackSelectorCapabilityRevision = -1;
+      renderPlaybackSelectorControl();
+    }
+    return false;
+  }
+}
+
+async function setPlaybackSelectorMode(mode) {
+  if (state.playbackSelectorSaving || !state.playbackSelectorAuthorized) {
+    return;
+  }
+  const currentMode = String(authorizedPlaybackSelectorState()?.mode || "python");
+  if (!mode || mode === currentMode) {
+    renderPlaybackSelectorControl();
+    return;
+  }
+  state.playbackSelectorSaving = true;
+  renderPlaybackSelectorControl();
+  try {
+    const snapshot = await apiPost("/api/player/playback-selector", { mode });
+    if (applyFreshStateSnapshot(snapshot)) {
+      const capability = validatedPlaybackSelectorCapability(snapshot);
+      if (capability) {
+        state.playbackSelectorCapability = capability.selector;
+        state.playbackSelectorCapabilityRevision = capability.revision;
+      }
+    }
+    setAppMessage(t("service.playbackSelectorUpdated", { mode: mode === "rust" ? "Rust" : "Python" }));
+    render();
+  } catch (error) {
+    setAppMessage(error.message, true);
+    renderPlaybackSelectorControl();
+  } finally {
+    state.playbackSelectorSaving = false;
+    renderPlaybackSelectorControl();
   }
 }
 
@@ -10974,6 +11138,10 @@ elements.cacheDownloadSourceSelect?.addEventListener("change", async (event) => 
   await setDownloadSourcePreference(downloadSource, selectedLabel);
 });
 
+elements.playbackSelectorSelect?.addEventListener("change", async (event) => {
+  await setPlaybackSelectorMode(String(event.target.value || ""));
+});
+
 elements.cacheHiresCheckbox?.addEventListener("change", async (event) => {
   const audioHires = Boolean(event.target.checked);
   if (audioHires === Boolean(state.data?.cache_policy?.audio_hires)) {
@@ -12589,6 +12757,7 @@ async function startPolling() {
   } catch (error) {
     setAppMessage(error.message, true);
   }
+  await loadPlaybackSelectorCapability();
   window.setInterval(async () => {
     try {
       await fetchState();

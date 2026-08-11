@@ -1715,6 +1715,21 @@ h2 {
   padding: 0;
 }
 
+.cache-panel-selector-row {
+  align-items: center;
+}
+
+.cache-panel-selector-row .cache-quality-select {
+  flex: 0 0 auto;
+  width: fit-content;
+  min-width: 0;
+  padding: 0 8px 0 8px;
+}
+
+.playback-selector-hint.is-warning {
+  color: var(--danger-color, #b54732);
+}
+
 .app-shell.layout-mode-basic .bottom-grid,
 .app-shell.layout-mode-basic .search-sub-card {
   display: none;
