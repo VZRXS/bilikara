@@ -6,6 +6,7 @@ from email.utils import formatdate
 import hmac
 import ipaddress
 import json
+import math
 import mimetypes
 import os
 import re
@@ -80,7 +81,7 @@ from .config import (
     STATIC_DIR,
     ensure_directories,
 )
-from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact
+from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact, redact_text
 from .networking import detect_lan_ipv4_addresses
 from .playlist_export import (
     playlist_csv_bytes,
@@ -98,11 +99,102 @@ mimetypes.add_type("audio/mp4", ".m4a")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 BVID_IN_TEXT_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 RATING_SUBMISSION_KEY_LIMIT = 2000
+PLAYER_DIAGNOSTIC_LIMIT = 128
+PLAYER_DIAGNOSTIC_URL_RE = re.compile(r"(?i)\b(?:https?|file)://[^\s<>\"']+")
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
 RATING_PROMPT_THRESHOLD = 0.5
 REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
 REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 CONTAINER_RUNTIME_MARKERS = ("docker", "containerd", "kubepods", "lxc")
+
+
+def _player_diagnostic_number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _player_diagnostic_text(value: object, limit: int, *, redact_urls: bool = True) -> str:
+    text = str(value or "")
+    if redact_urls:
+        text = PLAYER_DIAGNOSTIC_URL_RE.sub("[REDACTED_MEDIA_URL]", text)
+    return redact_text(text)[:limit]
+
+
+def _player_diagnostic_basename(value: object) -> str:
+    text = str(value or "").split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+    return redact_text(text.rsplit("/", 1)[-1])[:255]
+
+
+def _normalize_player_diagnostic(body: dict[str, object]) -> dict[str, object]:
+    numeric_fields = (
+        "current_time",
+        "duration",
+        "ready_state",
+        "network_state",
+        "playback_rate",
+        "buffered_end",
+        "error_code",
+        "audio_current_time",
+        "video_current_time",
+        "target_video_time",
+        "drift_seconds",
+        "effective_av_delay_seconds",
+        "audio_playback_rate",
+        "video_playback_rate",
+        "audio_ready_state",
+        "video_ready_state",
+        "audio_network_state",
+        "video_network_state",
+        "audio_buffered_end",
+        "video_buffered_end",
+        "dropped_video_frames",
+        "total_video_frames",
+    )
+    boolean_fields = (
+        "paused",
+        "seeking",
+        "ended",
+        "audio_paused",
+        "video_paused",
+        "audio_seeking",
+        "video_seeking",
+        "audio_ended",
+        "video_ended",
+        "local_should_be_playing",
+        "local_audio_playback_blocked",
+        "local_video_playback_blocked",
+        "is_webkit_runtime",
+        "is_tauri_runtime",
+        "is_tauri_webkit_runtime",
+    )
+    event: dict[str, object] = {
+        "event": _player_diagnostic_text(body.get("event"), 40),
+        "item_id": _player_diagnostic_text(body.get("item_id"), 80),
+        "media_kind": _player_diagnostic_text(body.get("media_kind"), 20),
+        "error_message": _player_diagnostic_text(
+            body.get("error_message"),
+            500,
+            redact_urls=True,
+        ),
+        "play_rejection_name": _player_diagnostic_text(body.get("play_rejection_name"), 80),
+        "url_basename": _player_diagnostic_basename(body.get("url_basename")),
+        "synchronization_action": _player_diagnostic_text(
+            body.get("synchronization_action") or "none",
+            40,
+        ),
+        "playback_start_state": _player_diagnostic_text(
+            body.get("playback_start_state"),
+            40,
+        ),
+    }
+    event.update({field: _player_diagnostic_number(body.get(field)) for field in numeric_fields})
+    event.update({field: bool(body.get(field)) for field in boolean_fields})
+    return event
 
 
 def _serialize_sse_event(event: str, payload: dict[str, object]) -> bytes:
@@ -243,6 +335,11 @@ class AppContext:
         self._player_control_command: dict[str, object] | None = None
         self._player_status_lock = threading.RLock()
         self._player_status: dict[str, object] | None = None
+        self._player_diagnostic_lock = threading.RLock()
+        self._player_diagnostic_sequence = 0
+        self._player_diagnostics: deque[dict[str, object]] = deque(
+            maxlen=PLAYER_DIAGNOSTIC_LIMIT
+        )
         self._remote_access_lock = threading.RLock()
         self._remote_access = self._build_remote_access_payload(self._host, self._port, [])
         self._startup_lock = threading.RLock()
@@ -323,6 +420,21 @@ class AppContext:
     def app_update_snapshot(self) -> dict[str, object]:
         return self.update_manager.snapshot()
 
+    def record_player_diagnostic(self, event: dict[str, object]) -> dict[str, object]:
+        with self._player_diagnostic_lock:
+            self._player_diagnostic_sequence += 1
+            retained = {
+                **event,
+                "sequence": self._player_diagnostic_sequence,
+                "received_at_unix_ms": int(time.time() * 1000),
+            }
+            self._player_diagnostics.append(retained)
+            return dict(retained)
+
+    def player_diagnostic_snapshot(self) -> list[dict[str, object]]:
+        with self._player_diagnostic_lock:
+            return [dict(event) for event in self._player_diagnostics]
+
     def build_diagnostics(self, browser_info: dict[str, object] | None = None) -> DiagnosticArtifact:
         store_snapshot = self.store.snapshot()
         current_item = store_snapshot.get("current_item")
@@ -337,6 +449,7 @@ class AppContext:
             "queue_count": len(playlist),
             "gatcha_task": gatcha_task_snapshot(),
             "app_update": self.app_update_snapshot(),
+            "player_diagnostics": self.player_diagnostic_snapshot(),
             "state_revision": self._state_revision,
         }
         metrics = self.cache_manager.cache_metrics()
@@ -1784,45 +1897,7 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True})
                 return
             if route == "/api/player/diagnostic":
-                event = {
-                    "event": str(body.get("event") or "")[:40],
-                    "item_id": str(body.get("item_id") or "")[:80],
-                    "media_kind": str(body.get("media_kind") or "")[:20],
-                    "current_time": body.get("current_time"),
-                    "duration": body.get("duration"),
-                    "ready_state": body.get("ready_state"),
-                    "network_state": body.get("network_state"),
-                    "paused": bool(body.get("paused")),
-                    "seeking": bool(body.get("seeking")),
-                    "ended": bool(body.get("ended")),
-                    "playback_rate": body.get("playback_rate"),
-                    "buffered_end": body.get("buffered_end"),
-                    "error_code": body.get("error_code"),
-                    "error_message": str(body.get("error_message") or "")[:500],
-                    "url_basename": str(body.get("url_basename") or "")[:255],
-                    "audio_current_time": body.get("audio_current_time"),
-                    "video_current_time": body.get("video_current_time"),
-                    "target_video_time": body.get("target_video_time"),
-                    "drift_seconds": body.get("drift_seconds"),
-                    "effective_av_delay_seconds": body.get("effective_av_delay_seconds"),
-                    "audio_playback_rate": body.get("audio_playback_rate"),
-                    "video_playback_rate": body.get("video_playback_rate"),
-                    "audio_ready_state": body.get("audio_ready_state"),
-                    "video_ready_state": body.get("video_ready_state"),
-                    "audio_network_state": body.get("audio_network_state"),
-                    "video_network_state": body.get("video_network_state"),
-                    "audio_paused": bool(body.get("audio_paused")),
-                    "video_paused": bool(body.get("video_paused")),
-                    "audio_seeking": bool(body.get("audio_seeking")),
-                    "video_seeking": bool(body.get("video_seeking")),
-                    "audio_ended": bool(body.get("audio_ended")),
-                    "video_ended": bool(body.get("video_ended")),
-                    "audio_buffered_end": body.get("audio_buffered_end"),
-                    "video_buffered_end": body.get("video_buffered_end"),
-                    "dropped_video_frames": body.get("dropped_video_frames"),
-                    "total_video_frames": body.get("total_video_frames"),
-                    "synchronization_action": str(body.get("synchronization_action") or "none")[:40],
-                }
+                event = CONTEXT.record_player_diagnostic(_normalize_player_diagnostic(body))
                 print(f"[player-media] {json.dumps(event, ensure_ascii=False, sort_keys=True)}", flush=True)
                 self._write_json({"ok": True})
                 return

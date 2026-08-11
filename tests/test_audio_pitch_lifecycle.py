@@ -141,11 +141,13 @@ const elements = {{
   playerFrame: {{ querySelectorAll() {{ return mountedMedia; }} }},
 }};
 function addMountedPlayerListener(_media, _name, _callback) {{}}
+function clearWebKitAudioStarvationTimer() {{}}
 function clearLocalPlayerSyncTimer() {{}}
 function clearLocalPlayerControlsHideTimer() {{}}
 function clearLocalPlayerSeekState() {{}}
 function clearLocalPlayerEventListeners() {{ state.localPlayerEventCleanups = []; }}
 function clearLocalAdvanceDelay() {{}}
+function clearTauriMediaSessionState() {{}}
 function persistLocalVolumePreferences() {{}}
 async function apiPost() {{ return {{ player_settings: {{ key_shift: 0 }} }}; }}
 function closeConfirm() {{}}

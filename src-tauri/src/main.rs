@@ -17,6 +17,10 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg(target_os = "macos")]
+use objc2::{MainThreadMarker, rc::Retained};
+#[cfg(target_os = "macos")]
+use objc2_web_kit::{WKAudiovisualMediaTypes, WKWebViewConfiguration};
+#[cfg(target_os = "macos")]
 use tauri_plugin_dialog::MessageDialogKind;
 
 #[cfg(target_os = "windows")]
@@ -1185,6 +1189,39 @@ where
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn macos_autoplay_webview_configuration() -> Retained<WKWebViewConfiguration> {
+    let main_thread = MainThreadMarker::new()
+        .expect("the macOS Tauri setup hook must execute on the main thread");
+    // SAFETY: The configuration is created on the main thread, and the public
+    // WebKit setter accepts the pinned crate's no-media option-set value.
+    let configuration = unsafe { WKWebViewConfiguration::new(main_thread) };
+    unsafe {
+        configuration.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::None);
+    }
+    configuration
+}
+
+#[cfg(target_os = "macos")]
+fn create_macos_main_webview_window(app: &tauri::App) -> tauri::Result<()> {
+    if app.get_webview_window("main").is_some() {
+        return Err(tauri::Error::WebviewLabelAlreadyExists("main".into()));
+    }
+    let window_config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == "main")
+        .ok_or(tauri::Error::WindowNotFound)?
+        .clone();
+
+    tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
+        .with_webview_configuration(macos_autoplay_webview_configuration())
+        .build()?;
+    Ok(())
+}
+
 fn main() {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
@@ -1213,6 +1250,9 @@ fn main() {
         ])
         .setup(move |app| {
             let startup_log = startup_log_for_setup.clone();
+
+            #[cfg(target_os = "macos")]
+            create_macos_main_webview_window(app)?;
 
             let Some(window) = app.get_webview_window("main") else {
                 fail_desktop_startup(

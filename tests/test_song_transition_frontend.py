@@ -208,7 +208,7 @@ const video = {{ dataset: {{ playerItemId: "new" }} }}; const audio = {{}};
 const state = {{
   data: {{ current_item: {{ id: "new" }} }},
   manualTransitionHoldItemId: "new", manualTransitionHoldGeneration: 2,
-  localShouldBePlaying: false,
+  localShouldBePlaying: false, localPlaybackStartState: "established",
 }};
 function currentItemIdFromData(data) {{ return String(data?.current_item?.id || ""); }}
 function activeLocalPlayerElements() {{ return {{ video, audio }}; }}

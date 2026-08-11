@@ -1,0 +1,17 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "fullscreen": false,
+        "height": 768,
+        "resizable": true,
+        "title": "bilikara",
+        "width": 1024,
+        "visible": false,
+        "dragDropEnabled": false,
+        "create": false
+      }
+    ]
+  }
+}

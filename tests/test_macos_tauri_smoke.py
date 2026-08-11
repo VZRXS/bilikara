@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import platform
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 import urllib.request
 from pathlib import Path
@@ -88,6 +90,101 @@ class TauriSmokeTimeoutPolicyTest(unittest.TestCase):
                 "TMPDIR",
             },
         )
+
+
+class MacOSTauriAutoplayConfigurationTest(unittest.TestCase):
+    def test_macos_defers_exactly_one_configured_main_window(self):
+        base_config = json.loads(
+            (ROOT_DIR / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+        macos_config = json.loads(
+            (ROOT_DIR / "src-tauri" / "tauri.macos.conf.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        capability = json.loads(
+            (ROOT_DIR / "src-tauri" / "capabilities" / "main.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        base_windows = [
+            window
+            for window in base_config["app"]["windows"]
+            if window["label"] == "main"
+        ]
+        macos_windows = [
+            window
+            for window in macos_config["app"]["windows"]
+            if window["label"] == "main"
+        ]
+
+        self.assertEqual(len(base_windows), 1)
+        self.assertEqual(len(macos_windows), 1)
+        self.assertNotIn("create", base_windows[0])
+        self.assertFalse(macos_windows[0]["create"])
+        self.assertEqual(
+            {key: value for key, value in macos_windows[0].items() if key != "create"},
+            base_windows[0],
+        )
+        self.assertEqual(capability["windows"], ["main"])
+
+    def test_macos_main_webview_uses_creation_time_autoplay_policy(self):
+        source = (ROOT_DIR / "src-tauri" / "src" / "main.rs").read_text(
+            encoding="utf-8"
+        )
+        configuration_start = source.index("fn macos_autoplay_webview_configuration")
+        creation_start = source.index("fn create_macos_main_webview_window")
+        main_start = source.index("fn main()")
+        configuration = source[configuration_start:creation_start]
+        creation = source[creation_start:main_start]
+        setup_start = source.index(".setup(move |app| {")
+        backend_start = source.index("let mut resolution", setup_start)
+        setup = source[setup_start:backend_start]
+
+        self.assertIn('#[cfg(target_os = "macos")]', source[:configuration_start][-80:])
+        self.assertIn("WKWebViewConfiguration::new(main_thread)", configuration)
+        self.assertIn(
+            ".setMediaTypesRequiringUserActionForPlayback(", configuration
+        )
+        self.assertIn("WKAudiovisualMediaTypes::None", configuration)
+        self.assertIn('#[cfg(target_os = "macos")]', source[:creation_start][-80:])
+        self.assertIn('app.get_webview_window("main").is_some()', creation)
+        self.assertIn('.find(|config| config.label == "main")', creation)
+        self.assertIn("WebviewWindowBuilder::from_config", creation)
+        self.assertIn(".with_webview_configuration(", creation)
+        self.assertEqual(creation.count(".build()?;"), 1)
+        self.assertIn('#[cfg(target_os = "macos")]', setup)
+        self.assertLess(
+            setup.index("create_macos_main_webview_window(app)?;"),
+            setup.index('app.get_webview_window("main")'),
+        )
+
+    def test_native_dependencies_remain_pinned_to_the_locked_graph(self):
+        cargo_toml = tomllib.loads(
+            (ROOT_DIR / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        cargo_lock = tomllib.loads(
+            (ROOT_DIR / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")
+        )
+        macos_dependencies = cargo_toml["target"][
+            'cfg(target_os = "macos")'
+        ]["dependencies"]
+        self.assertEqual(macos_dependencies["objc2"], "=0.6.4")
+        self.assertEqual(macos_dependencies["objc2-web-kit"]["version"], "=0.3.2")
+        self.assertFalse(macos_dependencies["objc2-web-kit"]["default-features"])
+        self.assertEqual(
+            macos_dependencies["objc2-web-kit"]["features"],
+            ["std", "WKWebViewConfiguration"],
+        )
+
+        locked_versions = {
+            package["name"]: package["version"] for package in cargo_lock["package"]
+        }
+        self.assertEqual(locked_versions["tauri"], "2.11.2")
+        self.assertEqual(locked_versions["tauri-runtime-wry"], "2.11.2")
+        self.assertEqual(locked_versions["wry"], "0.55.1")
+        self.assertEqual(locked_versions["objc2"], "0.6.4")
+        self.assertEqual(locked_versions["objc2-web-kit"], "0.3.2")
 
 
 class MacOSTauriSmokeTest(unittest.TestCase):

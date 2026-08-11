@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
+import bilikara.diagnostics as diagnostics
 from bilikara.diagnostics import DiagnosticArtifact
 from bilikara.remote_identity import RemoteIdentityStore
 from bilikara.server import AppContext, BilikaraHandler, run
@@ -723,6 +724,78 @@ class AppContextPlayerStatusTest(unittest.TestCase):
         self.assertIsNotNone(snapshot)
         self.assertEqual(snapshot["duration"], 123.4)
         self.assertEqual(snapshot["current_time"], 13.0)
+
+
+class AppContextPlayerDiagnosticTest(unittest.TestCase):
+    @staticmethod
+    def make_context() -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._player_diagnostic_lock = threading.RLock()
+        context._player_diagnostic_sequence = 0
+        context._player_diagnostics = deque(maxlen=server_module.PLAYER_DIAGNOSTIC_LIMIT)
+        return context
+
+    def test_player_diagnostic_ring_is_bounded_and_ordered(self):
+        context = self.make_context()
+
+        for index in range(server_module.PLAYER_DIAGNOSTIC_LIMIT + 3):
+            context.record_player_diagnostic({"event": f"event-{index}"})
+
+        snapshot = context.player_diagnostic_snapshot()
+        self.assertEqual(len(snapshot), server_module.PLAYER_DIAGNOSTIC_LIMIT)
+        self.assertEqual(snapshot[0]["sequence"], 4)
+        self.assertEqual(snapshot[-1]["sequence"], server_module.PLAYER_DIAGNOSTIC_LIMIT + 3)
+        self.assertGreater(snapshot[-1]["received_at_unix_ms"], 0)
+
+    def test_exported_markdown_contains_sanitized_player_startup_event(self):
+        context = self.make_context()
+        media_url = "https://media.example/audio/track.m4a?token=secret"
+        event = server_module._normalize_player_diagnostic(
+            {
+                "event": "autoplay-audio-play-rejected",
+                "media_kind": "audio",
+                "error_message": f"NotAllowedError: autoplay denied at {media_url}",
+                "url_basename": "track.m4a",
+            }
+        )
+        context.record_player_diagnostic(event)
+        context.store = SimpleNamespace(
+            snapshot=lambda: {"current_item": None, "playlist": [], "session_users": []}
+        )
+        context.cache_manager = SimpleNamespace(
+            cache_metrics=lambda: {},
+            policy_snapshot=lambda metrics: {},
+            diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}},
+        )
+        context.update_manager = SimpleNamespace(snapshot=lambda: {})
+        context._state_revision = 1
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            with (
+                patch.object(diagnostics, "APP_HOME", root),
+                patch.object(diagnostics, "LOG_DIR", log_dir),
+                patch.object(diagnostics, "DIAGNOSTIC_CONFIG_FILES", ()),
+                patch.object(diagnostics, "_local_usernames", return_value=set()),
+                patch.object(diagnostics, "probe_connectivity", return_value={}),
+                patch.object(
+                    diagnostics.shutil,
+                    "disk_usage",
+                    return_value=SimpleNamespace(total=1000, used=400, free=600),
+                ),
+                patch("bilikara.server.gatcha_task_snapshot", return_value={}),
+            ):
+                artifact = context.build_diagnostics()
+
+        self.assertIn("autoplay-audio-play-rejected", artifact.markdown)
+        self.assertIn(
+            "NotAllowedError: autoplay denied at [REDACTED_MEDIA_URL]",
+            artifact.markdown,
+        )
+        self.assertNotIn(media_url, artifact.markdown)
+        self.assertIn('"player_diagnostics"', artifact.markdown)
 
 
 class AppContextClientTrackingTest(unittest.TestCase):
@@ -1521,6 +1594,45 @@ class DiagnosticRouteTest(unittest.TestCase):
         self.assertEqual(writes, [{"ok": True, "data": {"markdown": "# report"}}])
         self.assertEqual(browser_infos[0]["user_agent"], "Browser/1.0")
         self.assertEqual(browser_infos[0]["brands"], [{"brand": "Browser", "version": "1"}])
+
+    def test_player_diagnostic_route_retains_only_sanitized_bounded_fields(self):
+        media_url = "https://media.example/video/track.m4a?token=secret"
+        handler = self.make_handler(
+            "/api/player/diagnostic",
+            {
+                "event": "autoplay-audio-play-rejected",
+                "media_kind": "audio",
+                "current_time": media_url,
+                "error_message": f"NotAllowedError: failed to play {media_url}",
+                "url_basename": media_url,
+                "play_rejection_name": "NotAllowedError",
+                "playback_start_state": "starting",
+                "local_should_be_playing": True,
+                "authorization": "Bearer must-not-be-retained",
+            },
+        )
+        writes = []
+        retained = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            record_player_diagnostic=lambda event: retained.append(event)
+            or {**event, "sequence": 1, "received_at_unix_ms": 1},
+        )
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context), patch("builtins.print"):
+            handler.do_POST()
+
+        self.assertEqual(writes, [{"ok": True}])
+        self.assertEqual(retained[0]["event"], "autoplay-audio-play-rejected")
+        self.assertEqual(retained[0]["play_rejection_name"], "NotAllowedError")
+        self.assertEqual(retained[0]["playback_start_state"], "starting")
+        self.assertTrue(retained[0]["local_should_be_playing"])
+        self.assertIsNone(retained[0]["current_time"])
+        self.assertEqual(retained[0]["url_basename"], "track.m4a")
+        self.assertIn("[REDACTED_MEDIA_URL]", retained[0]["error_message"])
+        self.assertNotIn(media_url, json.dumps(retained[0]))
+        self.assertNotIn("authorization", retained[0])
 
     def test_package_route_downloads_zip(self):
         handler = self.make_handler("/api/diagnostics/package", {"browser": {}})

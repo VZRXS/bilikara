@@ -70,10 +70,43 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "total_video_frames",
             "error_code",
             "error_message",
+            "play_rejection_name",
             "url_basename",
+            "playback_start_state",
+            "local_should_be_playing",
+            "local_audio_playback_blocked",
+            "local_video_playback_blocked",
+            "is_webkit_runtime",
+            "is_tauri_runtime",
+            "is_tauri_webkit_runtime",
         ):
             self.assertIn(field, diagnostics)
         self.assertIn('apiPost("/api/player/diagnostic", payload).catch(() => {})', diagnostics)
+
+    def test_startup_decision_diagnostics_bypass_sync_throttle(self):
+        direct_reporter = self.function_source(
+            "function reportSplitStartupDiagnostic",
+            "function reportSplitSyncDiagnostic",
+        )
+        startup = self.function_source(
+            "function requireSplitPlaybackUserGesture",
+            "function createSplitPlaybackStartOverlay",
+        )
+        synchronizer = self.function_source(
+            "function createSplitPlayerStartupSynchronizer",
+            "function renderPlayer",
+        )
+
+        self.assertIn('reportMediaDiagnostic(itemId, "split"', direct_reporter)
+        for event_name in (
+            "autoplay-attempt",
+            "user-start-attempt",
+            "autoplay-success",
+            "user-start-success",
+        ):
+            self.assertIn(event_name, startup)
+        self.assertIn("startup-ready-no-play-intent", synchronizer)
+        self.assertNotIn("localPlayerSyncDiagnosticThrottleMs", direct_reporter)
 
     def test_health_events_have_no_control_side_effects(self):
         diagnostics = self.function_source(
@@ -106,7 +139,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
     def test_video_ended_defers_to_audio_and_audio_completion_advances_once(self):
         handler = self.function_source(
             "async function handleSplitVideoEnded",
-            "function syncSplitPlayer",
+            "function holdVideoForAudio",
         )
         self.assertIn("if (!audio.ended)", handler)
         self.assertIn('"defer-video-recovery"', handler)
