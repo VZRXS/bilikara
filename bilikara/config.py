@@ -226,6 +226,7 @@ def _env_truthy(name: str) -> bool:
 
 ROOT_DIR = _resource_root()
 APP_HOME = _default_app_home()
+PACKAGED_RUNTIME = bool(getattr(sys, "frozen", False))
 STATIC_DIR = ROOT_DIR / "static"
 APP_VERSION_FILE = ROOT_DIR / "APP_VERSION"
 DATA_DIR = APP_HOME / "data"
@@ -240,6 +241,7 @@ TOOLS_DIR = APP_HOME / "tools"
 VENDOR_DIR = ROOT_DIR / "vendor"
 INTERNAL_VENDOR_DIR = ROOT_DIR / "_internal" / "vendor"
 BB_DOWN_DIR = TOOLS_DIR / "bbdown"
+BB_DOWN_BUNDLED_PATH = VENDOR_DIR / ("BBDown.exe" if os.name == "nt" else "BBDown")
 FFMPEG_TOOLS_DIR = BB_DOWN_DIR
 FFMPEG_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 FFPROBE_RUNTIME_PATH = FFMPEG_TOOLS_DIR / ("ffprobe.exe" if os.name == "nt" else "ffprobe")

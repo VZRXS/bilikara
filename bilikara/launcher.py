@@ -147,6 +147,11 @@ def run_with_startup_logging() -> None:
     parser.add_argument("--host", type=str, default=None, help="Bind host")
     parser.add_argument("--port", type=int, default=None, help="Bind port")
     parser.add_argument("--https-smoke", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--tool-smoke",
+        choices=("bbdown", "aria2c"),
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
     _ensure_std_streams()
@@ -170,6 +175,11 @@ def run_with_startup_logging() -> None:
             )
         if args.https_smoke:
             print(packaged_https_smoke_json(), flush=True)
+            return
+        if args.tool_smoke:
+            from .tool_smoke import packaged_tool_smoke_json
+
+            print(packaged_tool_smoke_json(args.tool_smoke), flush=True)
             return
 
         from .config import APP_HOME, ROOT_DIR, STATIC_DIR

@@ -14,7 +14,7 @@ APP_NAME = "bilikara"
 APP_PUBLISHER = "VZRXS"
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
-REQUIRED_TOOL_BINARIES = ("ffmpeg",)
+REQUIRED_TOOL_BINARIES = ("ffmpeg", "BBDown")
 OPTIONAL_TOOL_BINARIES = ("ffprobe",)
 LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
 PYTHON_HTTPS_HIDDEN_IMPORTS = (
@@ -284,11 +284,12 @@ def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate
         missing_text = ", ".join(missing_required)
         raise RuntimeError(
             f"Missing required external tools for bundle build: {missing_text}. "
-            "Install ffmpeg and ensure it is available on PATH."
+            "Prepare the pinned release tools and ensure they are available on PATH."
         )
 
     if validate:
         _validate_ffmpeg_redistribution_metadata(bundled_paths)
+        _validate_bbdown_redistribution_metadata(bundled_paths)
 
     bundled = [str(path.resolve()) for path in bundled_paths.values()]
     for source in bundled:
@@ -403,6 +404,25 @@ def _validate_ffmpeg_redistribution_metadata(bundled_paths: dict[str, Path]) -> 
             _validate_macos_tool_portability(binary_path)
 
 
+def _validate_bbdown_redistribution_metadata(bundled_paths: dict[str, Path]) -> None:
+    binary_path = bundled_paths.get("BBDown")
+    if not binary_path:
+        return
+    return_code, output = _run_tool_command(binary_path, "--help")
+    expected_version = _bbdown_source_metadata().get("version")
+    if return_code != 0 or not output.strip():
+        raise RuntimeError(
+            f"BBDown failed its release build execution check: {output.strip()}"
+        )
+    if expected_version and expected_version not in output:
+        raise RuntimeError(
+            f"BBDown release build version does not match pinned {expected_version}: "
+            f"{output.strip()}"
+        )
+    if platform.system() == "Darwin":
+        _validate_macos_tool_portability(binary_path)
+
+
 def _macos_dynamic_dependencies(binary_path: Path) -> list[str]:
     otool = Path("/usr/bin/otool")
     otool_command = str(otool) if otool.is_file() else shutil.which("otool")
@@ -482,7 +502,12 @@ def _write_release_compliance_files() -> None:
         licenses_dir / "ffmpeg-source.txt",
         _ffmpeg_source_notice(bundled_paths, missing_tools),
     )
+    _write_text(
+        licenses_dir / "bbdown-source.txt",
+        _bbdown_source_notice(bundled_paths),
+    )
     _copy_ffmpeg_source_material(target_dir, licenses_dir)
+    _copy_bbdown_license(licenses_dir)
     for binary_name in ("ffmpeg", "ffprobe"):
         binary_path = bundled_paths.get(binary_name)
         if binary_path:
@@ -490,6 +515,12 @@ def _write_release_compliance_files() -> None:
                 licenses_dir / f"{binary_name}-version.txt",
                 _tool_version_output(binary_path),
             )
+    bbdown_path = bundled_paths.get("BBDown")
+    if bbdown_path:
+        _write_text(
+            licenses_dir / "bbdown-version.txt",
+            _tool_output(bbdown_path, "--help"),
+        )
 
 
 def _release_compliance_dir() -> Path | None:
@@ -551,6 +582,48 @@ def _ffmpeg_source_metadata() -> dict[str, str]:
     }
 
 
+def _bbdown_source_metadata() -> dict[str, str]:
+    return {
+        key: os.getenv(environment_name, "").strip()
+        for key, environment_name in BBDOWN_SOURCE_ENV.items()
+    }
+
+
+def _bbdown_source_notice(bundled_paths: dict[str, Path]) -> str:
+    metadata = _bbdown_source_metadata()
+    bundled_path = bundled_paths.get("BBDown")
+    return "\n".join(
+        [
+            "BBDown redistribution notes",
+            "",
+            "The packaged runtime includes a pinned BBDown vendor executable and restores",
+            "the writable runtime copy from that immutable vendor instead of polling releases.",
+            "",
+            f"- Bundled build path: {bundled_path.resolve() if bundled_path else 'not bundled'}",
+            f"- Version: {metadata.get('version') or 'not recorded'}",
+            f"- Upstream release commit: {metadata.get('commit') or 'not recorded'}",
+            f"- Asset: {metadata.get('archive') or 'not recorded'}",
+            f"- Source URL: {metadata.get('url') or 'not recorded'}",
+            f"- Asset SHA-256: {metadata.get('sha256') or 'not recorded'}",
+            "- Upstream repository: https://github.com/nilaoda/BBDown",
+            "- License: MIT; see BBDown-LICENSE.txt",
+            "",
+        ]
+    )
+
+
+def _copy_bbdown_license(licenses_dir: Path) -> None:
+    license_value = _bbdown_source_metadata().get("license")
+    license_path = (
+        Path(license_value).expanduser()
+        if license_value
+        else ROOT_DIR / "third_party" / "BBDown-LICENSE.txt"
+    )
+    if not license_path.is_file():
+        raise RuntimeError(f"Configured BBDown license file not found: {license_path}")
+    shutil.copy2(license_path, licenses_dir / "BBDown-LICENSE.txt")
+
+
 def _copy_ffmpeg_source_material(target_dir: Path, licenses_dir: Path) -> None:
     metadata = _ffmpeg_source_metadata()
     archive_value = metadata.get("archive")
@@ -600,6 +673,29 @@ def _run_tool_version(binary_path: Path) -> tuple[int | None, str]:
 
 def _tool_version_output(binary_path: Path) -> str:
     return _run_tool_version(binary_path)[1]
+
+
+def _tool_output(binary_path: Path, argument: str) -> str:
+    return _run_tool_command(binary_path, argument)[1]
+
+
+def _run_tool_command(binary_path: Path, argument: str) -> tuple[int | None, str]:
+    try:
+        process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            [str(binary_path), argument],
+            shell=False,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"Unable to run {binary_path}: {exc}\n"
+    output = (process.stdout or "") + (process.stderr or "")
+    if not output:
+        output = f"{binary_path} exited with code {process.returncode} and produced no output\n"
+    return process.returncode, output
 
 
 def _write_text(path: Path, content: str) -> None:

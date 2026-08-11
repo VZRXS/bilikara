@@ -34,6 +34,7 @@ from .config import (
     ARIA2_MACOS_METADATA_PATH,
     ARIA2_RELEASE_API,
     BB_DOWN_DIR,
+    BB_DOWN_BUNDLED_PATH,
     BB_DOWN_PATH_OVERRIDE,
     BB_DOWN_RELEASE_API,
     BB_DOWN_VERSION_FILE,
@@ -47,6 +48,7 @@ from .config import (
     INTERNAL_VENDOR_DIR,
     LOG_DIR,
     MAX_CACHE_ITEMS,
+    PACKAGED_RUNTIME,
     TOOL_ASSET_BASE_URL,
     VENDOR_DIR,
     YTDLP_DIR,
@@ -5266,9 +5268,21 @@ class CacheManager:
 
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         with self.binary_prepare_lock:
-            override = Path(BB_DOWN_PATH_OVERRIDE) if BB_DOWN_PATH_OVERRIDE else None
+            override = Path(BB_DOWN_PATH_OVERRIDE).expanduser() if BB_DOWN_PATH_OVERRIDE else None
             override_exists = bool(override and override.exists())
             current_binary = self._local_binary_path()
+            if PACKAGED_RUNTIME:
+                if override_exists:
+                    with self.lock:
+                        self.binary_state = "ready"
+                        self.binary_version = self._read_bbdown_version(override)
+                        self.binary_message = f"使用外部 BBDown: {override}"
+                    return override
+                return self._ensure_packaged_bbdown(
+                    current_binary,
+                    force_refresh=force_refresh,
+                )
+
             local_version = ""
             if not override_exists and BB_DOWN_VERSION_FILE.exists():
                 local_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
@@ -5415,6 +5429,81 @@ class CacheManager:
                 self.binary_message = f"BBDown {latest_version} 已更新"
 
             return current_binary
+
+    def _ensure_packaged_bbdown(
+        self,
+        current_binary: Path,
+        *,
+        force_refresh: bool,
+    ) -> Path:
+        current_version = ""
+        if current_binary.is_file() and not force_refresh:
+            current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
+            current_version = self._read_bbdown_version(current_binary)
+            if current_version:
+                self._write_bbdown_version_metadata(current_version)
+                with self.lock:
+                    self.binary_state = "ready"
+                    self.binary_version = current_version
+                    self.binary_message = f"BBDown {current_version} 已就绪（内置版本）"
+                return current_binary
+
+        vendor_binary = self._bundled_bbdown_path()
+        if vendor_binary is None:
+            raise RuntimeError(
+                "打包版缺少内置 BBDown，无法离线修复；请重新安装应用或设置 BB_DOWN_PATH"
+            )
+
+        with self.lock:
+            self.binary_state = "installing"
+            self.binary_message = "正在从应用内置副本修复 BBDown"
+
+        BB_DOWN_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = ".exe" if current_binary.suffix.lower() == ".exe" else ""
+        temporary_binary = BB_DOWN_DIR / f".BBDown.install-{uuid.uuid4().hex}{suffix}"
+        try:
+            shutil.copy2(vendor_binary, temporary_binary)
+            temporary_binary.chmod(temporary_binary.stat().st_mode | stat.S_IEXEC)
+            installed_version = self._read_bbdown_version(temporary_binary)
+            if not installed_version:
+                raise RuntimeError(f"内置 BBDown 无法执行: {vendor_binary}")
+            os.replace(temporary_binary, current_binary)
+            self._write_bbdown_version_metadata(installed_version)
+        except Exception as exc:
+            temporary_binary.unlink(missing_ok=True)
+            with self.lock:
+                self.binary_state = "error"
+                self.binary_message = f"修复 BBDown 失败: {exc}"
+            raise
+
+        with self.lock:
+            self.binary_state = "ready"
+            self.binary_version = installed_version
+            self.binary_message = f"BBDown {installed_version} 已从应用内置副本恢复"
+        return current_binary
+
+    @staticmethod
+    def _bundled_bbdown_path() -> Path | None:
+        binary_name = "BBDown.exe" if os.name == "nt" else "BBDown"
+        for candidate in (
+            BB_DOWN_BUNDLED_PATH,
+            INTERNAL_VENDOR_DIR / binary_name,
+        ):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _write_bbdown_version_metadata(version: str) -> None:
+        BB_DOWN_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = BB_DOWN_VERSION_FILE.with_name(
+            f".{BB_DOWN_VERSION_FILE.name}.write-{uuid.uuid4().hex}"
+        )
+        try:
+            temporary_path.write_text(version, encoding="utf-8")
+            os.replace(temporary_path, BB_DOWN_VERSION_FILE)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     def _ensure_ytdlp(self) -> Path:
         with self.binary_prepare_lock:
@@ -6663,7 +6752,7 @@ class CacheManager:
             return ""
         try:
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-                [str(binary_path), "--version"],
+                [str(binary_path), "--help"],
                 shell=False,
                 capture_output=True,
                 text=True,
@@ -6673,6 +6762,8 @@ class CacheManager:
                 **CacheManager._hidden_process_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
+            return ""
+        if process.returncode != 0:
             return ""
         output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
         match = re.search(r"(?i)\b(?:v|version\s*)?(\d+(?:\.\d+){1,3}(?:[-+._0-9A-Za-z]*)?)", output)
@@ -7368,9 +7459,9 @@ class CacheManager:
             with self.lock:
                 if self.binary_state == "idle":
                     self.binary_state = "checking"
-                    self.binary_message = "后台检查 BBDown 更新中"
+                    self.binary_message = "后台准备 BBDown 中"
             self._ensure_bbdown()
         except Exception as exc:  # noqa: BLE001
             with self.lock:
                 self.binary_state = "failed"
-                self.binary_message = f"BBDown 检查失败: {exc}"
+                self.binary_message = f"BBDown 准备失败: {exc}"

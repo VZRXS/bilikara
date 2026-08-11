@@ -2161,6 +2161,31 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(manager.binary_state, "ready")
         self.assertEqual(manager.binary_version, "1.6.3")
 
+    def test_bbdown_version_probe_uses_supported_help_command_and_requires_success(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        binary = Path(self.temp_dir.name) / f"BBDown{suffix}"
+        binary.write_bytes(b"bbdown-bin")
+        with patch(
+            "bilikara.cache.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout="BBDown version 1.6.3, Bilibili Downloader.\n",
+                stderr="",
+            ),
+        ) as run_mock:
+            self.assertEqual(CacheManager._read_bbdown_version(binary), "1.6.3")
+        self.assertEqual(run_mock.call_args.args[0], [str(binary), "--help"])
+
+        with patch(
+            "bilikara.cache.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=1,
+                stdout="BBDown version 1.6.3, Bilibili Downloader.\n",
+                stderr="probe failed",
+            ),
+        ):
+            self.assertEqual(CacheManager._read_bbdown_version(binary), "")
+
     def test_ensure_bbdown_existing_override_keeps_override_precedence(self):
         suffix = ".exe" if os.name == "nt" else ""
         override = Path(self.temp_dir.name) / "external" / f"BBDown{suffix}"
@@ -2188,6 +2213,121 @@ class CacheManagerPolicyTest(unittest.TestCase):
         download_asset.assert_not_called()
         self.assertEqual(manager.binary_state, "ready")
         self.assertIn("外部 BBDown", manager.binary_message)
+
+    def test_packaged_bbdown_valid_runtime_never_uses_network(self):
+        bbdown_dir = Path(self.temp_dir.name) / "packaged" / "tools" / "bbdown"
+        runtime = bbdown_dir / ("BBDown.exe" if os.name == "nt" else "BBDown")
+        runtime.parent.mkdir(parents=True)
+        runtime.write_bytes(b"valid-runtime")
+        version_file = bbdown_dir / "VERSION"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.PACKAGED_RUNTIME", True
+        ), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ), patch("bilikara.cache.BB_DOWN_PATH_OVERRIDE", ""):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=runtime), patch.object(
+                    manager, "_read_bbdown_version", return_value="1.6.3"
+                ), patch.object(manager, "_fetch_latest_release") as fetch_release, patch.object(
+                    manager, "_download_tool_asset"
+                ) as download_asset:
+                    resolved = manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(resolved, runtime)
+        self.assertEqual(runtime.read_bytes(), b"valid-runtime")
+        self.assertEqual(version_file.read_text(encoding="utf-8"), "1.6.3")
+        fetch_release.assert_not_called()
+        download_asset.assert_not_called()
+
+    def test_packaged_bbdown_missing_or_corrupt_runtime_restores_vendor_atomically(self):
+        for initial_runtime in (None, b"corrupt-runtime"):
+            with self.subTest(initial_runtime=initial_runtime):
+                root = Path(self.temp_dir.name) / f"restore-{initial_runtime is not None}"
+                bbdown_dir = root / "tools" / "bbdown"
+                runtime = bbdown_dir / ("BBDown.exe" if os.name == "nt" else "BBDown")
+                vendor = root / "vendor" / runtime.name
+                vendor.parent.mkdir(parents=True)
+                vendor.write_bytes(b"pinned-vendor")
+                if initial_runtime is not None:
+                    runtime.parent.mkdir(parents=True)
+                    runtime.write_bytes(initial_runtime)
+                version_file = bbdown_dir / "VERSION"
+
+                def fake_version(path: Path) -> str:
+                    return "1.6.3" if path.read_bytes() == b"pinned-vendor" else ""
+
+                with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+                    "bilikara.cache.PACKAGED_RUNTIME", True
+                ), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir), patch(
+                    "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+                ), patch("bilikara.cache.BB_DOWN_BUNDLED_PATH", vendor), patch(
+                    "bilikara.cache.BB_DOWN_PATH_OVERRIDE", ""
+                ):
+                    manager = CacheManager(self.store, max_cache_items=3)
+                    try:
+                        with patch.object(manager, "_local_binary_path", return_value=runtime), patch.object(
+                            manager, "_read_bbdown_version", side_effect=fake_version
+                        ), patch.object(manager, "_fetch_latest_release") as fetch_release, patch.object(
+                            manager, "_download_tool_asset"
+                        ) as download_asset:
+                            resolved = manager._ensure_bbdown()
+                    finally:
+                        manager.shutdown()
+
+                self.assertEqual(resolved, runtime)
+                self.assertEqual(runtime.read_bytes(), b"pinned-vendor")
+                self.assertEqual(version_file.read_text(encoding="utf-8"), "1.6.3")
+                self.assertEqual(list(bbdown_dir.glob(".BBDown.install-*")), [])
+                fetch_release.assert_not_called()
+                download_asset.assert_not_called()
+
+    def test_packaged_bbdown_force_refresh_restores_vendor_and_override_still_wins(self):
+        root = Path(self.temp_dir.name) / "force-restore"
+        bbdown_dir = root / "tools" / "bbdown"
+        runtime = bbdown_dir / ("BBDown.exe" if os.name == "nt" else "BBDown")
+        vendor = root / "vendor" / runtime.name
+        override = root / "override" / runtime.name
+        runtime.parent.mkdir(parents=True)
+        vendor.parent.mkdir(parents=True)
+        override.parent.mkdir(parents=True)
+        runtime.write_bytes(b"old-valid-runtime")
+        vendor.write_bytes(b"pinned-vendor")
+        override.write_bytes(b"override")
+        version_file = bbdown_dir / "VERSION"
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.PACKAGED_RUNTIME", True
+        ), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ), patch("bilikara.cache.BB_DOWN_BUNDLED_PATH", vendor), patch(
+            "bilikara.cache.BB_DOWN_PATH_OVERRIDE", ""
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=runtime), patch.object(
+                    manager, "_read_bbdown_version", return_value="1.6.3"
+                ):
+                    self.assertEqual(manager._ensure_bbdown(force_refresh=True), runtime)
+            finally:
+                manager.shutdown()
+        self.assertEqual(runtime.read_bytes(), b"pinned-vendor")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.PACKAGED_RUNTIME", True
+        ), patch("bilikara.cache.BB_DOWN_PATH_OVERRIDE", str(override)):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_bundled_bbdown_path") as bundled, patch.object(
+                    manager, "_fetch_latest_release"
+                ) as fetch_release:
+                    self.assertEqual(manager._ensure_bbdown(force_refresh=True), override)
+            finally:
+                manager.shutdown()
+        bundled.assert_not_called()
+        fetch_release.assert_not_called()
 
     def test_ensure_bbdown_raises_when_release_check_fails_and_no_local_binary(self):
         suffix = ".exe" if os.name == "nt" else ""

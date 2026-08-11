@@ -212,6 +212,14 @@ jobs:
           printf '%s\n' "$portable_ffmpeg_dir/bin" >> "$GITHUB_PATH"
           cat "$portable_ffmpeg_dir/metadata.env" >> "$GITHUB_ENV"
 
+      - name: Prepare pinned BBDown vendor
+        shell: bash
+        run: |
+          bbdown_dir="$RUNNER_TEMP/bilikara-bbdown-vendor"
+          python scripts/prepare_bbdown_vendor.py "$bbdown_dir"
+          printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
+          cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
+
       - name: Download pinned macOS aria2c metadata
         if: runner.os == 'macOS'
         uses: actions/download-artifact@v7
@@ -287,6 +295,27 @@ jobs:
       - name: Inject Tauri into macOS Bundle
         if: runner.os == 'macOS'
         run: ditto src-tauri/target/release/bundle/macos/bilikara.app dist/Bilikara-Desktop.app
+
+      - name: Verify packaged BBDown vendor and clean runtime restore on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vendor = Get-ChildItem -Path dist/bilikara -Recurse -File -Filter BBDown.exe | Where-Object { $_.FullName -match '[\\/]vendor[\\/]' } | Select-Object -First 1
+          if (-not $vendor) { throw 'Packaged BBDown vendor executable was not found' }
+          & $vendor.FullName --help
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged BBDown vendor version check failed' }
+          $runtimeHome = Join-Path $env:RUNNER_TEMP 'bilikara-bbdown-runtime-smoke'
+          if (Test-Path $runtimeHome) { Remove-Item -Recurse -Force $runtimeHome }
+          New-Item -ItemType Directory -Path $runtimeHome | Out-Null
+          $env:BILIKARA_HOME = $runtimeHome
+          # The PyInstaller backend uses the Windows GUI subsystem, so invoking it
+          # directly from PowerShell can return before the smoke process exits.
+          $smoke = Start-Process -FilePath dist/bilikara/bilikara.exe -ArgumentList @('--tool-smoke', 'bbdown') -Wait -PassThru
+          if ($smoke.ExitCode -ne 0) { throw "Packaged BBDown runtime restore smoke failed with exit code $($smoke.ExitCode)" }
+          $runtime = Join-Path $runtimeHome 'tools/bbdown/BBDown.exe'
+          if (-not (Test-Path $runtime)) { throw "Runtime BBDown was not restored: $runtime" }
+          & $runtime --help
+          if ($LASTEXITCODE -ne 0) { throw 'Restored BBDown version check failed' }
 
       - name: Resolve bundle archive name
         id: bundle-name

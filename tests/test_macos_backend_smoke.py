@@ -347,6 +347,102 @@ class MacOSBackendSmokeTest(unittest.TestCase):
                     env=minimal_env,
                 )
 
+    def _run_packaged_tool_smoke(self, tool_name: str) -> tuple[dict, Path, dict[str, str]]:
+        executable = self._require_packaged_backend_executable()
+        home = os.getenv("HOME", "").strip()
+        if not home:
+            self.fail("Packaged tool smoke requires HOME")
+        smoke_root = self._tool_smoke_root.resolve()
+        app_home = (smoke_root / f"{tool_name}-app-home").resolve()
+        app_home.mkdir(parents=True, exist_ok=True)
+        minimal_env = {
+            "BILIKARA_HOME": str(app_home),
+            "HOME": home,
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "PYTHONUNBUFFERED": "1",
+            "TMPDIR": str(smoke_root),
+        }
+        process = subprocess.run(
+            [str(executable), "--tool-smoke", tool_name],
+            cwd=smoke_root,
+            env=minimal_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            check=False,
+        )
+        marker = None
+        for line in process.stdout.splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and payload.get("event") == "bilikara.tool_smoke":
+                marker = payload
+                break
+        if process.returncode != 0 or marker is None:
+            self.fail(
+                f"Packaged {tool_name} deployment smoke failed.\n"
+                f"exit_code={process.returncode}\nstdout={process.stdout}\nstderr={process.stderr}"
+            )
+        self.assertEqual(marker.get("tool"), tool_name)
+        runtime_path = Path(str(marker.get("path") or "")).resolve()
+        self.assertTrue(runtime_path.is_file(), f"Runtime tool is missing: {runtime_path}")
+        self.assertTrue(os.access(runtime_path, os.X_OK), f"Runtime tool is not executable: {runtime_path}")
+        self.assertTrue(runtime_path.is_relative_to(app_home))
+        return marker, runtime_path, minimal_env
+
+    def test_packaged_bbdown_restores_offline_vendor_to_clean_runtime(self):
+        if platform.system() != "Darwin":
+            if os.getenv("BILIKARA_REQUIRE_BACKEND_SMOKE") == "1":
+                self.fail("Required packaged BBDown smoke test must run on macOS")
+            raise unittest.SkipTest("Packaged BBDown smoke test requires macOS")
+        executable = self._require_packaged_backend_executable()
+        vendor = executable.parent.parent / "Frameworks" / "vendor" / "BBDown"
+        self.assertTrue(vendor.is_file(), f"Packaged BBDown vendor is missing: {vendor}")
+        with tempfile.TemporaryDirectory(prefix="bilikara-bbdown-smoke-") as temp_dir:
+            self._tool_smoke_root = Path(temp_dir)
+            marker, runtime, env = self._run_packaged_tool_smoke("bbdown")
+            process = subprocess.run(
+                [str(runtime), "--help"],
+                cwd=temp_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+            self.assertEqual(marker.get("version"), "1.6.3")
+
+    def test_packaged_macos_aria2_prepares_on_demand_with_minimal_path(self):
+        if platform.system() != "Darwin":
+            if os.getenv("BILIKARA_REQUIRE_BACKEND_SMOKE") == "1":
+                self.fail("Required packaged aria2c smoke test must run on macOS")
+            raise unittest.SkipTest("Packaged aria2c smoke test requires macOS")
+        with tempfile.TemporaryDirectory(prefix="bilikara-aria2-smoke-") as temp_dir:
+            self._tool_smoke_root = Path(temp_dir)
+            marker, runtime, env = self._run_packaged_tool_smoke("aria2c")
+            process = subprocess.run(
+                [str(runtime), "--version"],
+                cwd=temp_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+            output = (process.stdout or "") + (process.stderr or "")
+            self.assertEqual(process.returncode, 0, output)
+            self.assertIn("aria2 version 1.37.0", output)
+            self.assertEqual(marker.get("version"), "1.37.0")
+
     def test_packaged_https_uses_macos_system_trust(self):
         if platform.system() != "Darwin":
             if os.getenv("BILIKARA_REQUIRE_BACKEND_SMOKE") == "1":

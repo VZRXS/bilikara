@@ -110,25 +110,35 @@ class BuildBundleTest(unittest.TestCase):
 
     def test_bundled_binary_args_allows_missing_optional_ffprobe(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
+        bbdown = Path("/usr/bin/BBDown")
         data_separator = ";" if build_bundle.platform.system() == "Windows" else ":"
 
         def fake_resolve(binary_name: str):
-            return ffmpeg if binary_name == "ffmpeg" else None
+            return {"ffmpeg": ffmpeg, "BBDown": bbdown}.get(binary_name)
 
         with patch("build_bundle.platform.system", return_value="Linux"), patch(
             "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
         ):
             args = build_bundle._bundled_binary_args(data_separator)
 
-        self.assertEqual(args, ["--add-binary", f"{ffmpeg.resolve()}{data_separator}vendor"])
+        self.assertEqual(
+            args,
+            [
+                "--add-binary",
+                f"{ffmpeg.resolve()}{data_separator}vendor",
+                "--add-binary",
+                f"{bbdown.resolve()}{data_separator}vendor",
+            ],
+        )
 
     def test_bundled_binary_args_includes_resolved_optional_ffprobe(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
         ffprobe = Path("/usr/bin/ffprobe")
+        bbdown = Path("/usr/bin/BBDown")
         data_separator = ";" if build_bundle.platform.system() == "Windows" else ":"
 
         def fake_resolve(binary_name: str):
-            return {"ffmpeg": ffmpeg, "ffprobe": ffprobe}.get(binary_name)
+            return {"ffmpeg": ffmpeg, "BBDown": bbdown, "ffprobe": ffprobe}.get(binary_name)
 
         with patch("build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve):
             args = build_bundle._bundled_binary_args(data_separator)
@@ -138,6 +148,8 @@ class BuildBundleTest(unittest.TestCase):
             [
                 "--add-binary",
                 f"{ffmpeg.resolve()}{data_separator}vendor",
+                "--add-binary",
+                f"{bbdown.resolve()}{data_separator}vendor",
                 "--add-binary",
                 f"{ffprobe.resolve()}{data_separator}vendor",
             ],
@@ -174,6 +186,38 @@ class BuildBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "release build execution check"):
                 build_bundle._validate_ffmpeg_redistribution_metadata({"ffmpeg": ffmpeg})
 
+    def test_bbdown_release_validation_checks_pinned_version_and_macos_portability(self):
+        bbdown = Path("/tools/BBDown")
+        with patch(
+            "build_bundle._run_tool_command",
+            return_value=(0, "BBDown version 1.6.3\n"),
+        ) as run_tool, patch(
+            "build_bundle._validate_macos_tool_portability"
+        ) as portability, patch(
+            "build_bundle.platform.system", return_value="Darwin"
+        ), patch.dict(
+            build_bundle.os.environ,
+            {"BILIKARA_BBDOWN_VERSION": "1.6.3"},
+            clear=False,
+        ):
+            build_bundle._validate_bbdown_redistribution_metadata({"BBDown": bbdown})
+        run_tool.assert_called_once_with(bbdown, "--help")
+        portability.assert_called_once_with(bbdown)
+
+    def test_bbdown_release_validation_rejects_unexpected_version(self):
+        with patch(
+            "build_bundle._run_tool_command",
+            return_value=(0, "BBDown version 1.6.2\n"),
+        ), patch.dict(
+            build_bundle.os.environ,
+            {"BILIKARA_BBDOWN_VERSION": "1.6.3"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "does not match pinned 1.6.3"):
+                build_bundle._validate_bbdown_redistribution_metadata(
+                    {"BBDown": Path("/tools/BBDown")}
+                )
+
     def test_macos_portability_rejects_homebrew_and_rpath_dependencies(self):
         ffmpeg = Path("/tools/ffmpeg")
         for dependency in (
@@ -205,13 +249,17 @@ class BuildBundleTest(unittest.TestCase):
             dist_dir.mkdir(parents=True)
             ffmpeg = root_dir / "tools" / "ffmpeg"
             ffprobe = root_dir / "tools" / "ffprobe"
+            bbdown = root_dir / "tools" / "BBDown"
             ffmpeg.parent.mkdir()
             ffmpeg.write_bytes(b"ffmpeg-bin")
             ffprobe.write_bytes(b"ffprobe-bin")
+            bbdown.write_bytes(b"bbdown-bin")
             source_archive = root_dir / "tools" / "ffmpeg-8.1.2.tar.xz"
             source_archive.write_bytes(b"official source archive")
             license_file = root_dir / "tools" / "COPYING.LGPLv2.1"
             license_file.write_text("LGPL text\n", encoding="utf-8")
+            bbdown_license = root_dir / "tools" / "BBDown-LICENSE.txt"
+            bbdown_license.write_text("BBDown MIT text\n", encoding="utf-8")
             for document_name in build_bundle.LEGAL_DOCUMENTS:
                 (root_dir / document_name).write_text(f"{document_name}\n", encoding="utf-8")
 
@@ -220,7 +268,7 @@ class BuildBundleTest(unittest.TestCase):
                 return_value="Linux",
             ), patch(
                 "build_bundle._resolved_bundle_binary_paths",
-                return_value=({"ffmpeg": ffmpeg, "ffprobe": ffprobe}, []),
+                return_value=({"ffmpeg": ffmpeg, "ffprobe": ffprobe, "BBDown": bbdown}, []),
             ), patch(
                 "build_bundle.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout="tool version\n", stderr=""),
@@ -232,6 +280,12 @@ class BuildBundleTest(unittest.TestCase):
                     "BILIKARA_FFMPEG_SOURCE_SHA256": hashlib.sha256(source_archive.read_bytes()).hexdigest(),
                     "BILIKARA_FFMPEG_SOURCE_ARCHIVE": str(source_archive),
                     "BILIKARA_FFMPEG_LICENSE_FILE": str(license_file),
+                    "BILIKARA_BBDOWN_VERSION": "1.6.3",
+                    "BILIKARA_BBDOWN_RELEASE_COMMIT": "45622f79cd766e0fc6f5cbd49fcf4960340f35c3",
+                    "BILIKARA_BBDOWN_SOURCE_URL": "https://github.com/nilaoda/BBDown/releases/download/1.6.3/asset.zip",
+                    "BILIKARA_BBDOWN_ARCHIVE_NAME": "asset.zip",
+                    "BILIKARA_BBDOWN_SHA256": "a" * 64,
+                    "BILIKARA_BBDOWN_LICENSE_FILE": str(bbdown_license),
                 },
                 clear=False,
             ):
@@ -247,6 +301,18 @@ class BuildBundleTest(unittest.TestCase):
             self.assertEqual(
                 (licenses_dir / "FFmpeg-COPYING.LGPLv2.1.txt").read_text(encoding="utf-8"),
                 "LGPL text\n",
+            )
+            self.assertIn(
+                "pinned BBDown vendor executable",
+                (licenses_dir / "bbdown-source.txt").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                (licenses_dir / "BBDown-LICENSE.txt").read_text(encoding="utf-8"),
+                "BBDown MIT text\n",
+            )
+            self.assertEqual(
+                (licenses_dir / "bbdown-version.txt").read_text(encoding="utf-8"),
+                "tool version\n",
             )
             self.assertEqual(
                 (dist_dir / "THIRD_PARTY_SOURCES" / source_archive.name).read_bytes(),
