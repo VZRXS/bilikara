@@ -40,9 +40,11 @@ Important notes:
 - FFmpeg is generally licensed under LGPL when built with LGPL-compatible options.
 - Some optional components and build flags may cause a distributed FFmpeg binary to be licensed under GPL.
 - Builds using nonfree components may have additional redistribution restrictions.
-- bilikara release bundles may include `ffmpeg` and `ffprobe` binaries from the build machine. The exact binary and license obligations depend on that build.
+- Windows release bundles may include `ffmpeg` and `ffprobe` binaries from the build environment. The exact binary and license obligations depend on that build.
+- macOS release bundles build FFmpeg and FFprobe from a versioned, SHA-256-pinned official FFmpeg source archive with external-library autodetection disabled. The exact source archive, applicable FFmpeg license text, source URL/hash, and generated `-version` configuration output are retained in the packaged compliance material.
 - The bilikara build script rejects FFmpeg / FFprobe binaries whose version output contains `--enable-nonfree`.
 - If the version output contains `--enable-gpl`, the build script prints a notice so the release maintainer can verify GPL redistribution obligations.
+- The macOS build also rejects non-system Mach-O dependencies, including Homebrew Cellar paths and unresolved `@rpath` dependencies, before PyInstaller packaging.
 
 If you bundle or redistribute FFmpeg / FFprobe with bilikara, you must verify the exact binaries you ship.
 
@@ -72,7 +74,16 @@ Notes:
 - PyInstaller's bootloader exception allows distributing executable bundles generated from your own code under your chosen license, provided you comply with the licenses of your dependencies.
 - If you modify PyInstaller itself, review PyInstaller's own license terms.
 
-## 5. Bilibili and External Services
+## 5. Truststore
+
+- Project: truststore
+- Repository: https://github.com/sethmlarson/truststore
+- Description: Native operating-system certificate-store integration for packaged macOS HTTPS
+- License: MIT License
+
+The packaged macOS backend uses truststore so strict Python HTTPS validation follows the effective macOS system trust configuration. It does not disable certificate or hostname verification.
+
+## 6. Bilibili and External Services
 
 - Bilibili: bilikara can parse Bilibili URLs, use Bilibili embedded playback, interact with Bilibili APIs, and rely on user-provided account login data.
 - GitHub: bilikara may check GitHub Releases to download or update BBDown.

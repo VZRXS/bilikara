@@ -16,6 +16,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 TAURI_SMOKE_TIMEOUT_ENV = "BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS"
 DEFAULT_TAURI_SMOKE_TIMEOUT_SECONDS = 90.0
 MAX_TAURI_SMOKE_TIMEOUT_SECONDS = 300.0
+FINDER_LIKE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+DESKTOP_STARTUP_LOG_NAME = "desktop-startup.log"
 
 
 def _tauri_smoke_timeout_seconds() -> float:
@@ -34,6 +36,22 @@ def _tauri_smoke_timeout_seconds() -> float:
     return timeout
 
 
+def _finder_like_environment(home: str, temp_dir: Path, startup_log: Path) -> dict[str, str]:
+    return {
+        "BILIKARA_DESKTOP_STARTUP_LOG": str(startup_log),
+        "HOME": home,
+        "PATH": FINDER_LIKE_PATH,
+        "RUST_BACKTRACE": "1",
+        "TMPDIR": str(temp_dir),
+    }
+
+
+def _read_startup_log(path: Path) -> str:
+    if not path.is_file():
+        return "<missing>"
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 class TauriSmokeTimeoutPolicyTest(unittest.TestCase):
     def test_default_and_valid_override(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -49,6 +67,26 @@ class TauriSmokeTimeoutPolicyTest(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(AssertionError, TAURI_SMOKE_TIMEOUT_ENV):
                     _tauri_smoke_timeout_seconds()
+
+    def test_finder_like_environment_is_minimal_and_preserves_home(self):
+        environment = _finder_like_environment(
+            "/Users/runner",
+            Path("/tmp/finder-smoke"),
+            Path("/tmp/finder-smoke/desktop-startup.log"),
+        )
+
+        self.assertEqual(environment["HOME"], "/Users/runner")
+        self.assertEqual(environment["PATH"], FINDER_LIKE_PATH)
+        self.assertEqual(
+            set(environment),
+            {
+                "BILIKARA_DESKTOP_STARTUP_LOG",
+                "HOME",
+                "PATH",
+                "RUST_BACKTRACE",
+                "TMPDIR",
+            },
+        )
 
 
 class MacOSTauriSmokeTest(unittest.TestCase):
@@ -77,45 +115,96 @@ class MacOSTauriSmokeTest(unittest.TestCase):
         if not os.access(executable, os.X_OK):
             self.fail(f"Tauri executable is not executable: {executable}")
 
-        with tempfile.TemporaryDirectory(prefix="bilikara-tauri-smoke-") as unrelated_cwd:
+        home = os.getenv("HOME", "").strip()
+        if not home:
+            self.fail("Tauri smoke test requires HOME for Finder-like launch coverage")
+
+        with tempfile.TemporaryDirectory(prefix="bilikara-tauri-smoke-") as smoke_root:
             timeout_seconds = _tauri_smoke_timeout_seconds()
-            start_time = time.monotonic()
-            capture = CapturedProcess.start(
-                [str(executable)],
-                cwd=unrelated_cwd,
-                env={**os.environ, "RUST_BACKTRACE": "1"},
-            )
-            ready_url = None
-            try:
-                marker = "Backend ready at "
-                ready_url = capture.wait_for_output(
-                    lambda name, line: (
-                        line.split(marker, 1)[1].strip()
-                        if name == "stdout" and marker in line
-                        else None
-                    ),
-                    timeout_seconds,
-                )
+            smoke_root_path = Path(smoke_root)
+            for profile_name in ("shell-environment", "finder-like-environment"):
+                with self.subTest(profile=profile_name):
+                    unrelated_cwd = smoke_root_path / profile_name
+                    unrelated_cwd.mkdir()
+                    startup_log = unrelated_cwd / DESKTOP_STARTUP_LOG_NAME
+                    if profile_name == "finder-like-environment":
+                        launch_env = _finder_like_environment(
+                            home,
+                            unrelated_cwd,
+                            startup_log,
+                        )
+                    else:
+                        launch_env = {
+                            **os.environ,
+                            "BILIKARA_DESKTOP_STARTUP_LOG": str(startup_log),
+                            "RUST_BACKTRACE": "1",
+                        }
 
-                if not ready_url:
-                    elapsed = time.monotonic() - start_time
-                    self.fail(
-                        "Tauri app did not report the backend ready handshake.\n"
-                        f"executable={executable}\n"
-                        f"cwd={unrelated_cwd}\n"
-                        f"timeout_configured={timeout_seconds}s\n"
-                        f"elapsed={elapsed:.2f}s\n"
-                        f"exit_code={capture.process.poll()}\n"
-                        f"stdout={capture.captured_text('stdout')}\n"
-                        f"stderr={capture.captured_text('stderr')}"
+                    start_time = time.monotonic()
+                    capture = CapturedProcess.start(
+                        [str(executable)],
+                        cwd=unrelated_cwd,
+                        env=launch_env,
                     )
+                    ready_url = None
+                    try:
+                        marker = "Backend ready at "
+                        ready_url = capture.wait_for_output(
+                            lambda name, line: (
+                                line.split(marker, 1)[1].strip()
+                                if name == "stdout" and marker in line
+                                else None
+                            ),
+                            timeout_seconds,
+                        )
 
-                with urllib.request.urlopen(f"{str(ready_url).rstrip('/')}/", timeout=5) as response:
-                    self.assertEqual(response.status, 200)
-                self.assertIsNone(capture.process.poll(), "Tauri exited immediately after backend readiness")
-            finally:
-                if not capture.terminate_process_group():
-                    self.fail("Tauri process group did not terminate cleanly")
+                        if not ready_url:
+                            elapsed = time.monotonic() - start_time
+                            self.fail(
+                                "Tauri app did not report the backend ready handshake.\n"
+                                f"profile={profile_name}\n"
+                                f"executable={executable}\n"
+                                f"cwd={unrelated_cwd}\n"
+                                f"timeout_configured={timeout_seconds}s\n"
+                                f"elapsed={elapsed:.2f}s\n"
+                                f"exit_code={capture.process.poll()}\n"
+                                f"stdout={capture.captured_text('stdout')}\n"
+                                f"stderr={capture.captured_text('stderr')}\n"
+                                f"startup_log={_read_startup_log(startup_log)}"
+                            )
+
+                        with urllib.request.urlopen(
+                            f"{str(ready_url).rstrip('/')}/", timeout=5
+                        ) as response:
+                            self.assertEqual(response.status, 200)
+                        self.assertIsNone(
+                            capture.process.poll(),
+                            "Tauri exited immediately after backend readiness",
+                        )
+
+                        startup_text = _read_startup_log(startup_log)
+                        self.assertNotEqual(startup_text, "<missing>")
+                        self.assertIn("event=desktop_start", startup_text)
+                        self.assertIn("event=backend_resolved", startup_text)
+                        self.assertIn("candidate_type=macos-sibling-app", startup_text)
+                        self.assertIn("candidate_exists=true", startup_text)
+                        self.assertIn("candidate_executable=true", startup_text)
+                        self.assertIn("event=backend_spawn status=ok child_pid=", startup_text)
+                        self.assertIn("event=backend_ready", startup_text)
+                        self.assertIn("ready_marker_received=true", startup_text)
+                        for sensitive_marker in (
+                            "Authorization:",
+                            "BILIKARA_SHUTDOWN_TOKEN",
+                            "Cookie:",
+                            "SESSDATA=",
+                            "qrcode_key=",
+                        ):
+                            self.assertNotIn(sensitive_marker, startup_text)
+                    finally:
+                        if not capture.terminate_process_group():
+                            self.fail(
+                                f"Tauri process group did not terminate cleanly ({profile_name})"
+                            )
 
 
 if __name__ == "__main__":

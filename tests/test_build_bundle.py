@@ -1,3 +1,4 @@
+import hashlib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -114,7 +115,9 @@ class BuildBundleTest(unittest.TestCase):
         def fake_resolve(binary_name: str):
             return ffmpeg if binary_name == "ffmpeg" else None
 
-        with patch("build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve):
+        with patch("build_bundle.platform.system", return_value="Linux"), patch(
+            "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
+        ):
             args = build_bundle._bundled_binary_args(data_separator)
 
         self.assertEqual(args, ["--add-binary", f"{ffmpeg.resolve()}{data_separator}vendor"])
@@ -144,11 +147,56 @@ class BuildBundleTest(unittest.TestCase):
         ffmpeg = Path("/usr/bin/ffmpeg")
 
         with patch("build_bundle._resolve_bundle_binary_path", return_value=ffmpeg), patch(
-            "build_bundle._tool_version_output",
-            return_value="configuration: --enable-nonfree\n",
+            "build_bundle._run_tool_version",
+            return_value=(0, "configuration: --enable-nonfree\n"),
         ):
             with self.assertRaisesRegex(RuntimeError, "enable-nonfree"):
                 build_bundle._bundled_binary_args(":", validate=True)
+
+    def test_bundled_binary_args_requires_ffprobe_for_macos(self):
+        ffmpeg = Path("/usr/bin/ffmpeg")
+
+        def fake_resolve(binary_name: str):
+            return ffmpeg if binary_name == "ffmpeg" else None
+
+        with patch("build_bundle.platform.system", return_value="Darwin"), patch(
+            "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
+        ):
+            with self.assertRaisesRegex(RuntimeError, "ffprobe"):
+                build_bundle._bundled_binary_args(":")
+
+    def test_release_validation_rejects_tool_that_does_not_execute(self):
+        ffmpeg = Path("/tools/ffmpeg")
+        with patch(
+            "build_bundle._run_tool_version",
+            return_value=(1, "dyld: Library not loaded: @rpath/libavdevice.62.dylib\n"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "release build execution check"):
+                build_bundle._validate_ffmpeg_redistribution_metadata({"ffmpeg": ffmpeg})
+
+    def test_macos_portability_rejects_homebrew_and_rpath_dependencies(self):
+        ffmpeg = Path("/tools/ffmpeg")
+        for dependency in (
+            "/opt/homebrew/Cellar/ffmpeg/8.1.2/lib/libavdevice.62.dylib",
+            "/usr/local/Cellar/ffmpeg/8.1.2/lib/libavdevice.62.dylib",
+            "@rpath/libavdevice.62.dylib",
+        ):
+            with self.subTest(dependency=dependency), patch(
+                "build_bundle._macos_dynamic_dependencies", return_value=[dependency]
+            ):
+                with self.assertRaisesRegex(RuntimeError, "non-portable dynamic dependencies"):
+                    build_bundle._validate_macos_tool_portability(ffmpeg)
+
+    def test_macos_portability_allows_only_system_dependencies(self):
+        ffmpeg = Path("/tools/ffmpeg")
+        with patch(
+            "build_bundle._macos_dynamic_dependencies",
+            return_value=[
+                "/usr/lib/libSystem.B.dylib",
+                "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+            ],
+        ):
+            build_bundle._validate_macos_tool_portability(ffmpeg)
 
     def test_write_release_compliance_files_copies_notices_and_tool_versions(self):
         with TemporaryDirectory() as temp_dir:
@@ -160,6 +208,10 @@ class BuildBundleTest(unittest.TestCase):
             ffmpeg.parent.mkdir()
             ffmpeg.write_bytes(b"ffmpeg-bin")
             ffprobe.write_bytes(b"ffprobe-bin")
+            source_archive = root_dir / "tools" / "ffmpeg-8.1.2.tar.xz"
+            source_archive.write_bytes(b"official source archive")
+            license_file = root_dir / "tools" / "COPYING.LGPLv2.1"
+            license_file.write_text("LGPL text\n", encoding="utf-8")
             for document_name in build_bundle.LEGAL_DOCUMENTS:
                 (root_dir / document_name).write_text(f"{document_name}\n", encoding="utf-8")
 
@@ -172,6 +224,16 @@ class BuildBundleTest(unittest.TestCase):
             ), patch(
                 "build_bundle.subprocess.run",
                 return_value=SimpleNamespace(returncode=0, stdout="tool version\n", stderr=""),
+            ), patch.dict(
+                build_bundle.os.environ,
+                {
+                    "BILIKARA_FFMPEG_SOURCE_VERSION": "8.1.2",
+                    "BILIKARA_FFMPEG_SOURCE_URL": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+                    "BILIKARA_FFMPEG_SOURCE_SHA256": hashlib.sha256(source_archive.read_bytes()).hexdigest(),
+                    "BILIKARA_FFMPEG_SOURCE_ARCHIVE": str(source_archive),
+                    "BILIKARA_FFMPEG_LICENSE_FILE": str(license_file),
+                },
+                clear=False,
             ):
                 build_bundle._write_release_compliance_files()
 
@@ -182,6 +244,56 @@ class BuildBundleTest(unittest.TestCase):
             self.assertIn("FFmpeg / FFprobe redistribution notes", (licenses_dir / "ffmpeg-source.txt").read_text(encoding="utf-8"))
             self.assertEqual((licenses_dir / "ffmpeg-version.txt").read_text(encoding="utf-8"), "tool version\n")
             self.assertEqual((licenses_dir / "ffprobe-version.txt").read_text(encoding="utf-8"), "tool version\n")
+            self.assertEqual(
+                (licenses_dir / "FFmpeg-COPYING.LGPLv2.1.txt").read_text(encoding="utf-8"),
+                "LGPL text\n",
+            )
+            self.assertEqual(
+                (dist_dir / "THIRD_PARTY_SOURCES" / source_archive.name).read_bytes(),
+                source_archive.read_bytes(),
+            )
+
+    def test_macos_aria2_metadata_is_validated_and_bundled_as_data(self):
+        with TemporaryDirectory() as temp_dir:
+            metadata = Path(temp_dir) / "aria2.json"
+            metadata.write_text(
+                '{"schema_version":1,"tool":"aria2c","provider":"bilikara-r2",'
+                '"platform":"darwin","arch":"arm64","sha256":"' + "a" * 64
+                + '","url":"https://download.example/aria2.tar.gz"}',
+                encoding="utf-8",
+            )
+            with patch("build_bundle.platform.system", return_value="Darwin"), patch(
+                "build_bundle.platform.machine", return_value="arm64"
+            ), patch.dict(
+                build_bundle.os.environ,
+                {build_bundle.ARIA2_MACOS_METADATA_ENV: str(metadata)},
+                clear=False,
+            ):
+                args = build_bundle._macos_aria2_metadata_args(":")
+
+        self.assertEqual(
+            args,
+            ["--add-data", f"{metadata.resolve()}:vendor/aria2-macos.json"],
+        )
+
+    def test_macos_aria2_metadata_rejects_wrong_architecture(self):
+        with TemporaryDirectory() as temp_dir:
+            metadata = Path(temp_dir) / "aria2.json"
+            metadata.write_text(
+                '{"schema_version":1,"tool":"aria2c","provider":"bilikara-r2",'
+                '"platform":"darwin","arch":"x64","sha256":"' + "a" * 64
+                + '","url":"https://download.example/aria2.tar.gz"}',
+                encoding="utf-8",
+            )
+            with patch("build_bundle.platform.system", return_value="Darwin"), patch(
+                "build_bundle.platform.machine", return_value="arm64"
+            ), patch.dict(
+                build_bundle.os.environ,
+                {build_bundle.ARIA2_MACOS_METADATA_ENV: str(metadata)},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "bundle target is arm64"):
+                    build_bundle._macos_aria2_metadata_args(":")
 
     def test_python_https_args_includes_hidden_imports(self):
         with patch("build_bundle.platform.system", return_value="Linux"):
@@ -190,6 +302,14 @@ class BuildBundleTest(unittest.TestCase):
         for module_name in build_bundle.PYTHON_HTTPS_HIDDEN_IMPORTS:
             self.assertIn("--hidden-import", args)
             self.assertIn(module_name, args)
+
+    def test_python_https_args_includes_macos_truststore_backend(self):
+        with patch("build_bundle.platform.system", return_value="Darwin"):
+            args = build_bundle._python_https_args(":")
+
+        self.assertIn("truststore", args)
+        self.assertIn("truststore._macos", args)
+        self.assertNotIn("truststore._windows", args)
 
     def test_python_https_binary_paths_collects_windows_openssl_dlls(self):
         with TemporaryDirectory() as temp_dir:

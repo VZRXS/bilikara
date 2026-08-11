@@ -4,14 +4,20 @@
 )]
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
+
+#[cfg(target_os = "macos")]
+use tauri_plugin_dialog::MessageDialogKind;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -21,7 +27,88 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const MAX_BACKEND_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024;
 const MAX_BACKEND_RESPONSE_BYTES: u64 = (MAX_BACKEND_DOWNLOAD_BYTES + 64 * 1024) as u64;
-const MAX_BACKEND_STDOUT_CHARS: usize = 2_048;
+const MAX_BACKEND_OUTPUT_CHARS: usize = 2_048;
+const MAX_BACKEND_TAIL_LINES: usize = 40;
+const MAX_DESKTOP_STARTUP_LOG_BYTES: u64 = 512 * 1024;
+const BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(90);
+const DESKTOP_STARTUP_LOG_NAME: &str = "desktop-startup.log";
+
+#[derive(Debug, PartialEq, Eq)]
+struct BackendCommandResolution {
+    command: String,
+    args: Vec<String>,
+    candidate_type: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct BoundedOutputTail {
+    lines: VecDeque<String>,
+}
+
+impl BoundedOutputTail {
+    fn push(&mut self, line: String) {
+        if self.lines.len() == MAX_BACKEND_TAIL_LINES {
+            self.lines.pop_front();
+        }
+        self.lines.push_back(line);
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.lines.iter().cloned().collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DesktopStartupLog {
+    path: PathBuf,
+    write_lock: Arc<Mutex<()>>,
+}
+
+impl DesktopStartupLog {
+    fn open(path: PathBuf) -> io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if path
+            .metadata()
+            .map(|metadata| metadata.len() > MAX_DESKTOP_STARTUP_LOG_BYTES)
+            .unwrap_or(false)
+        {
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)?;
+        }
+        Ok(Self {
+            path,
+            write_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    fn append(&self, event: &str, detail: impl AsRef<str>) {
+        let Ok(_guard) = self.write_lock.lock() else {
+            eprintln!("Desktop startup log lock is unavailable");
+            return;
+        };
+        let result = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .and_then(|mut file| {
+                writeln!(
+                    file,
+                    "[unix_ms={}] event={} {}",
+                    unix_timestamp_millis(),
+                    event,
+                    sanitized_backend_stdout_line(detail.as_ref())
+                )
+            });
+        if let Err(error) = result {
+            eprintln!("Failed to write desktop startup log: {error}");
+        }
+    }
+}
 
 #[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
 struct ReadyEvent {
@@ -103,7 +190,7 @@ struct SaveBackendDownloadResult {
     status: SaveBackendDownloadStatus,
 }
 
-fn resolve_backend_command() -> (String, Vec<String>) {
+fn resolve_backend_command() -> BackendCommandResolution {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
     #[allow(unused_mut)]
@@ -128,12 +215,20 @@ fn resolve_backend_command() -> (String, Vec<String>) {
     // Windows packaged path
     let win_path = current_dir.join("bilikara").join("bilikara.exe");
     if is_backend_candidate(&win_path, &current_exe) {
-        return (win_path.to_string_lossy().to_string(), vec![]);
+        return BackendCommandResolution {
+            command: win_path.to_string_lossy().to_string(),
+            args: vec![],
+            candidate_type: "windows-bundle-directory",
+        };
     }
 
     let win_path2 = current_dir.join("bilikara.exe");
     if is_backend_candidate(&win_path2, &current_exe) {
-        return (win_path2.to_string_lossy().to_string(), vec![]);
+        return BackendCommandResolution {
+            command: win_path2.to_string_lossy().to_string(),
+            args: vec![],
+            candidate_type: "windows-adjacent",
+        };
     }
 
     // macOS packaged paths (dedicated backend candidate preferred over standalone app)
@@ -141,7 +236,11 @@ fn resolve_backend_command() -> (String, Vec<String>) {
         .join("bilikara-backend")
         .join("bilikara-backend");
     if is_backend_candidate(&mac_dedicated, &current_exe) {
-        return (mac_dedicated.to_string_lossy().to_string(), vec![]);
+        return BackendCommandResolution {
+            command: mac_dedicated.to_string_lossy().to_string(),
+            args: vec![],
+            candidate_type: "macos-dedicated-backend",
+        };
     }
 
     let mac_path = current_dir
@@ -150,18 +249,27 @@ fn resolve_backend_command() -> (String, Vec<String>) {
         .join("MacOS")
         .join("bilikara");
     if is_backend_candidate(&mac_path, &current_exe) {
-        return (mac_path.to_string_lossy().to_string(), vec![]);
+        return BackendCommandResolution {
+            command: mac_path.to_string_lossy().to_string(),
+            args: vec![],
+            candidate_type: "macos-sibling-app",
+        };
     }
 
     if let Some(script_path) = find_dev_launcher(current_dir) {
-        return (
-            "python".to_string(),
-            vec![script_path.to_string_lossy().to_string()],
-        );
+        return BackendCommandResolution {
+            command: "python".to_string(),
+            args: vec![script_path.to_string_lossy().to_string()],
+            candidate_type: "development-python-script",
+        };
     }
 
     // Default to Python script for development
-    ("python".to_string(), vec!["start_bilikara.py".to_string()])
+    BackendCommandResolution {
+        command: "python".to_string(),
+        args: vec!["start_bilikara.py".to_string()],
+        candidate_type: "python-fallback",
+    }
 }
 
 fn find_dev_launcher(start_dir: &std::path::Path) -> Option<PathBuf> {
@@ -207,6 +315,119 @@ fn current_executable_string() -> String {
         .and_then(|path| path.canonicalize().ok().or(Some(path)))
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default()
+}
+
+fn unix_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn is_packaged_macos_executable(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(mac_os_dir) = path.parent() else {
+            return false;
+        };
+        let Some(contents_dir) = mac_os_dir.parent() else {
+            return false;
+        };
+        let Some(app_dir) = contents_dir.parent() else {
+            return false;
+        };
+        mac_os_dir.file_name().is_some_and(|name| name == "MacOS")
+            && contents_dir
+                .file_name()
+                .is_some_and(|name| name == "Contents")
+            && app_dir
+                .extension()
+                .is_some_and(|extension| extension == "app")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn desktop_startup_log_path(current_exe: &Path) -> Option<PathBuf> {
+    if let Some(override_path) = std::env::var_os("BILIKARA_DESKTOP_STARTUP_LOG")
+        && !override_path.is_empty()
+    {
+        return Some(PathBuf::from(override_path));
+    }
+    if !is_packaged_macos_executable(current_exe) {
+        return None;
+    }
+    let home = std::env::var_os("HOME")?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("bilikara")
+            .join("data")
+            .join("logs")
+            .join(DESKTOP_STARTUP_LOG_NAME),
+    )
+}
+
+fn command_path_for_diagnostics(command: &str) -> PathBuf {
+    let path = PathBuf::from(command);
+    if path.is_absolute() || path.components().count() > 1 {
+        return path;
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .map(|directory| directory.join(command))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or(path)
+}
+
+fn path_has_executable_bit(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn open_desktop_startup_log(current_exe: &Path) -> Option<DesktopStartupLog> {
+    let path = desktop_startup_log_path(current_exe)?;
+    match DesktopStartupLog::open(path.clone()) {
+        Ok(log) => Some(log),
+        Err(error) => {
+            eprintln!(
+                "Failed to open desktop startup log at {}: {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn install_desktop_panic_hook(startup_log: Option<&DesktopStartupLog>) {
+    let Some(startup_log) = startup_log.cloned() else {
+        return;
+    };
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        startup_log.append("desktop_panic", format!("message={panic_info}"));
+        previous_hook(panic_info);
+    }));
 }
 
 fn make_shutdown_token() -> String {
@@ -763,33 +984,124 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
     }
 }
 
+fn sanitized_diagnostic_line(line: &str) -> String {
+    let mut sanitized = line
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\t'))
+        .take(MAX_BACKEND_OUTPUT_CHARS + 1)
+        .collect::<String>();
+    if sanitized.chars().count() > MAX_BACKEND_OUTPUT_CHARS {
+        sanitized = sanitized
+            .chars()
+            .take(MAX_BACKEND_OUTPUT_CHARS)
+            .collect::<String>();
+        sanitized.push('…');
+    }
+    sanitized
+}
+
 fn sanitized_backend_stdout_line(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
     if [
         "cookie",
         "authorization",
+        "sessdata",
+        "bili_jct",
+        "csrf",
+        "qrcode_key",
+        "qrcode-key",
+        "access_token",
+        "access-token",
+        "refresh_token",
+        "refresh-token",
         "shutdown_token",
         "shutdown-token",
+        "secret",
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+        || ((lower.contains("http://") || lower.contains("https://")) && line.contains('?'))
     {
         return "[redacted sensitive backend output]".to_string();
     }
+    sanitized_diagnostic_line(line)
+}
 
-    let mut sanitized = line
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, '\t'))
-        .take(MAX_BACKEND_STDOUT_CHARS + 1)
-        .collect::<String>();
-    if sanitized.chars().count() > MAX_BACKEND_STDOUT_CHARS {
-        sanitized = sanitized
-            .chars()
-            .take(MAX_BACKEND_STDOUT_CHARS)
-            .collect::<String>();
-        sanitized.push('…');
+fn push_backend_tail(tail: &Arc<Mutex<BoundedOutputTail>>, line: String) {
+    if let Ok(mut output_tail) = tail.lock() {
+        output_tail.push(line);
     }
-    sanitized
+}
+
+fn persist_backend_tail(
+    startup_log: Option<&DesktopStartupLog>,
+    stream: &str,
+    tail: &Arc<Mutex<BoundedOutputTail>>,
+) {
+    let Some(startup_log) = startup_log else {
+        return;
+    };
+    let lines = tail
+        .lock()
+        .map(|output_tail| output_tail.snapshot())
+        .unwrap_or_default();
+    startup_log.append(
+        "backend_tail_summary",
+        format!("stream={stream} lines={}", lines.len()),
+    );
+    for (index, line) in lines.iter().enumerate() {
+        startup_log.append(
+            "backend_tail",
+            format!("stream={stream} index={index} output={line}"),
+        );
+    }
+}
+
+fn persist_backend_tails(
+    startup_log: Option<&DesktopStartupLog>,
+    stdout_tail: &Arc<Mutex<BoundedOutputTail>>,
+    stderr_tail: &Arc<Mutex<BoundedOutputTail>>,
+) {
+    persist_backend_tail(startup_log, "stdout", stdout_tail);
+    persist_backend_tail(startup_log, "stderr", stderr_tail);
+}
+
+fn fail_desktop_startup(
+    app_handle: &tauri::AppHandle,
+    startup_log: Option<&DesktopStartupLog>,
+    reason: &str,
+) {
+    eprintln!("Bilikara desktop startup failed: {reason}");
+    if let Some(startup_log) = startup_log {
+        startup_log.append("desktop_failure", format!("reason={reason}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let diagnostic_location = startup_log
+            .map(|log| {
+                format!(
+                    "Startup details were written to:\n\n{}",
+                    log.path.to_string_lossy()
+                )
+            })
+            .unwrap_or_else(|| {
+                "The startup log could not be written. Launch the app from Terminal to capture the OS error."
+                    .to_string()
+            });
+        let exit_handle = app_handle.clone();
+        app_handle
+            .dialog()
+            .message(format!(
+                "Bilikara's backend stopped or could not start.\n\n{diagnostic_location}"
+            ))
+            .title("Bilikara backend failure")
+            .kind(MessageDialogKind::Error)
+            .show(move |_| exit_handle.exit(1));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    app_handle.exit(1);
 }
 
 fn process_backend_stdout_line(line: &str, ready_handled: &mut bool) -> BackendStdoutLine {
@@ -829,29 +1141,73 @@ where
 }
 
 fn main() {
-    tauri::Builder::default()
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let startup_log = open_desktop_startup_log(&current_exe);
+    if let Some(startup_log) = startup_log.as_ref() {
+        startup_log.append(
+            "desktop_start",
+            format!(
+                "desktop_executable={} cwd={} log_path={}",
+                current_exe.display(),
+                current_dir.display(),
+                startup_log.path.display()
+            ),
+        );
+    }
+    install_desktop_panic_hook(startup_log.as_ref());
+
+    let startup_log_for_setup = startup_log.clone();
+    let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             set_window_fullscreen,
             save_backend_download
         ])
-        .setup(|app| {
-            let window = app.get_webview_window("main").unwrap();
+        .setup(move |app| {
+            let startup_log = startup_log_for_setup.clone();
 
-            let (cmd, mut args) = resolve_backend_command();
-            args.extend(vec![
+            let Some(window) = app.get_webview_window("main") else {
+                fail_desktop_startup(
+                    app.handle(),
+                    startup_log.as_ref(),
+                    "main Tauri window is unavailable",
+                );
+                return Ok(());
+            };
+
+            let mut resolution = resolve_backend_command();
+            resolution.args.extend(vec![
                 "--no-browser".to_string(),
                 "--headless".to_string(),
                 "--port".to_string(),
                 "0".to_string(),
             ]);
+            let diagnostic_command_path = command_path_for_diagnostics(&resolution.command);
+            let candidate_exists = diagnostic_command_path.is_file();
+            let candidate_executable = path_has_executable_bit(&diagnostic_command_path);
+            if let Some(startup_log) = startup_log.as_ref() {
+                startup_log.append(
+                    "backend_resolved",
+                    format!(
+                        "candidate_type={} command_path={} candidate_exists={} candidate_executable={} args_count={}",
+                        resolution.candidate_type,
+                        diagnostic_command_path.display(),
+                        candidate_exists,
+                        candidate_executable,
+                        resolution.args.len()
+                    ),
+                );
+            }
 
             let shutdown_token = make_shutdown_token();
             let desktop_executable = current_executable_string();
 
-            let mut command = Command::new(&cmd);
+            let mut command = Command::new(&resolution.command);
             command
-                .args(args)
+                .args(resolution.args)
                 .env("PYTHONUNBUFFERED", "1")
                 .env("BILIKARA_STARTUP_LOG", "1")
                 .env("BILIKARA_LAUNCH_MODE", "tauri")
@@ -864,14 +1220,47 @@ fn main() {
             #[cfg(target_os = "windows")]
             command.creation_flags(CREATE_NO_WINDOW);
 
-            let mut child = command.spawn()?;
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    let detail = format!(
+                        "status=error kind={:?} raw_os_error={:?} message={}",
+                        error.kind(),
+                        error.raw_os_error(),
+                        error
+                    );
+                    if let Some(startup_log) = startup_log.as_ref() {
+                        startup_log.append("backend_spawn", &detail);
+                    }
+                    fail_desktop_startup(app.handle(), startup_log.as_ref(), &detail);
+                    return Ok(());
+                }
+            };
+            if let Some(startup_log) = startup_log.as_ref() {
+                startup_log.append(
+                    "backend_spawn",
+                    format!("status=ok child_pid={}", child.id()),
+                );
+            }
 
-            let stdout = child.stdout.take().unwrap();
+            let Some(stdout) = child.stdout.take() else {
+                let _ = child.kill();
+                let _ = child.wait();
+                fail_desktop_startup(
+                    app.handle(),
+                    startup_log.as_ref(),
+                    "backend child started without a stdout pipe",
+                );
+                return Ok(());
+            };
             let stderr = child.stderr.take();
             let window_clone = window.clone();
             let child_arc = Arc::new(Mutex::new(Some(child)));
             let base_url = Arc::new(Mutex::new(None));
             let base_url_for_reader = base_url.clone();
+            let ready_received = Arc::new(AtomicBool::new(false));
+            let stdout_tail = Arc::new(Mutex::new(BoundedOutputTail::default()));
+            let stderr_tail = Arc::new(Mutex::new(BoundedOutputTail::default()));
 
             app.manage(BackendProcess {
                 child: child_arc.clone(),
@@ -879,75 +1268,226 @@ fn main() {
                 shutdown_token: shutdown_token.clone(),
             });
 
-            let app_handle = app.handle().clone();
-            let child_for_monitor = child_arc.clone();
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(Duration::from_millis(500));
-                    let should_exit = match child_for_monitor.lock() {
-                        Ok(mut child_lock) => {
-                            if let Some(child) = child_lock.as_mut() {
-                                match child.try_wait() {
-                                    Ok(Some(_)) | Err(_) => {
-                                        *child_lock = None;
-                                        true
-                                    }
-                                    Ok(None) => false,
-                                }
-                            } else {
-                                false
-                            }
-                        }
-                        Err(_) => true,
-                    };
-                    if should_exit {
-                        app_handle.exit(0);
-                        break;
-                    }
-                }
-            });
-
             if let Some(stderr) = stderr {
+                let stderr_tail_for_reader = stderr_tail.clone();
+                let startup_log_for_stderr = startup_log.clone();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(stderr);
-                    #[allow(clippy::manual_flatten)]
                     for line in reader.lines() {
-                        if let Ok(line) = line {
-                            eprintln!("Backend stderr: {}", line);
+                        match line {
+                            Ok(line) => {
+                                let sanitized = sanitized_backend_stdout_line(&line);
+                                push_backend_tail(&stderr_tail_for_reader, sanitized.clone());
+                                eprintln!("Backend stderr: {sanitized}");
+                            }
+                            Err(error) => {
+                                if let Some(startup_log) = startup_log_for_stderr.as_ref() {
+                                    startup_log.append(
+                                        "backend_stderr_reader",
+                                        format!("status=error message={error}"),
+                                    );
+                                }
+                                break;
+                            }
                         }
                     }
                 });
+            } else if let Some(startup_log) = startup_log.as_ref() {
+                startup_log.append("backend_stderr_reader", "status=missing-pipe");
             }
 
+            let ready_for_reader = ready_received.clone();
+            let stdout_tail_for_reader = stdout_tail.clone();
+            let startup_log_for_stdout = startup_log.clone();
             std::thread::spawn(move || {
                 let reader = BufReader::new(stdout);
                 let result = drain_backend_stdout(
                     reader,
                     |ready| {
+                        ready_for_reader.store(true, Ordering::Release);
+                        if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                            let address = parse_local_http_url(&ready.base_url)
+                                .map(|address| {
+                                    format!("{}:{}", address.connect_host, address.port)
+                                })
+                                .unwrap_or_else(|| "unparsed".to_string());
+                            startup_log.append(
+                                "backend_ready",
+                                format!("ready_marker_received=true address={address}"),
+                            );
+                        }
                         if let Err(error) =
                             write_and_flush_ready_marker(io::stdout(), &ready.base_url)
                         {
                             eprintln!("Failed to flush backend readiness output: {error}");
+                            if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                                startup_log.append(
+                                    "ready_forward",
+                                    format!("status=error message={error}"),
+                                );
+                            }
                         }
                         if let Ok(mut stored_url) = base_url_for_reader.lock() {
                             *stored_url = Some(ready.base_url.clone());
                         }
                         if let Err(error) = window_clone.show() {
                             eprintln!("Failed to show window: {}", error);
+                            if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                                startup_log.append(
+                                    "window_show",
+                                    format!("status=error message={error}"),
+                                );
+                            }
+                        } else if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                            startup_log.append("window_show", "status=ok");
                         }
-                        let _ = window_clone.set_always_on_top(true);
-                        let _ = window_clone.set_always_on_top(false);
-                        let _ = window_clone.set_focus();
+                        if let Err(error) = window_clone.set_always_on_top(true)
+                            && let Some(startup_log) = startup_log_for_stdout.as_ref()
+                        {
+                            startup_log.append(
+                                "window_raise",
+                                format!("status=error phase=enable message={error}"),
+                            );
+                        }
+                        if let Err(error) = window_clone.set_always_on_top(false)
+                            && let Some(startup_log) = startup_log_for_stdout.as_ref()
+                        {
+                            startup_log.append(
+                                "window_raise",
+                                format!("status=error phase=disable message={error}"),
+                            );
+                        }
+                        if let Err(error) = window_clone.set_focus() {
+                            if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                                startup_log.append(
+                                    "window_focus",
+                                    format!("status=error message={error}"),
+                                );
+                            }
+                        } else if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                            startup_log.append("window_focus", "status=ok");
+                        }
                         if let Err(error) = window_clone
                             .eval(format!("window.location.replace('{}');", ready.base_url))
                         {
                             eprintln!("Failed to navigate to backend: {}", error);
+                            if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                                startup_log.append(
+                                    "window_navigate",
+                                    format!("status=error message={error}"),
+                                );
+                            }
+                        } else if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                            startup_log.append("window_navigate", "status=ok");
                         }
                     },
-                    |line| println!("Backend stdout: {line}"),
+                    |line| {
+                        push_backend_tail(&stdout_tail_for_reader, line.clone());
+                        println!("Backend stdout: {line}");
+                    },
                 );
                 if let Err(error) = result {
                     eprintln!("Failed to read backend stdout: {error}");
+                    if let Some(startup_log) = startup_log_for_stdout.as_ref() {
+                        startup_log.append(
+                            "backend_stdout_reader",
+                            format!("status=error message={error}"),
+                        );
+                    }
+                }
+            });
+
+            let app_handle = app.handle().clone();
+            let child_for_monitor = child_arc.clone();
+            let ready_for_monitor = ready_received.clone();
+            let stdout_tail_for_monitor = stdout_tail.clone();
+            let stderr_tail_for_monitor = stderr_tail.clone();
+            let startup_log_for_monitor = startup_log.clone();
+            std::thread::spawn(move || {
+                let ready_deadline = Instant::now() + BACKEND_READY_TIMEOUT;
+                loop {
+                    std::thread::sleep(Duration::from_millis(250));
+                    let ready = ready_for_monitor.load(Ordering::Acquire);
+                    let mut failure_reason = None;
+                    let mut monitor_complete = false;
+                    match child_for_monitor.lock() {
+                        Ok(mut child_lock) => {
+                            if let Some(child) = child_lock.as_mut() {
+                                match child.try_wait() {
+                                    Ok(Some(status)) => {
+                                        let phase = if ready { "after-ready" } else { "before-ready" };
+                                        let detail = format!(
+                                            "phase={phase} status={status} ready_marker_received={ready}"
+                                        );
+                                        if let Some(startup_log) =
+                                            startup_log_for_monitor.as_ref()
+                                        {
+                                            startup_log.append("backend_exit", &detail);
+                                        }
+                                        *child_lock = None;
+                                        failure_reason = Some(format!("backend exited {detail}"));
+                                    }
+                                    Ok(None) if !ready && Instant::now() >= ready_deadline => {
+                                        let kill_result = child.kill();
+                                        let wait_result = child.wait();
+                                        let detail = format!(
+                                            "ready_marker_received=false timeout_seconds={} kill_result={kill_result:?} exit_status={wait_result:?}",
+                                            BACKEND_READY_TIMEOUT.as_secs()
+                                        );
+                                        if let Some(startup_log) =
+                                            startup_log_for_monitor.as_ref()
+                                        {
+                                            startup_log.append("backend_ready_timeout", &detail);
+                                        }
+                                        *child_lock = None;
+                                        failure_reason = Some(format!(
+                                            "backend ready marker timed out: {detail}"
+                                        ));
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        let detail = format!(
+                                            "ready_marker_received={ready} kind={:?} raw_os_error={:?} message={error}",
+                                            error.kind(),
+                                            error.raw_os_error()
+                                        );
+                                        if let Some(startup_log) =
+                                            startup_log_for_monitor.as_ref()
+                                        {
+                                            startup_log.append("backend_wait", &detail);
+                                        }
+                                        *child_lock = None;
+                                        failure_reason =
+                                            Some(format!("failed to wait for backend: {detail}"));
+                                    }
+                                }
+                            } else {
+                                monitor_complete = true;
+                            }
+                        }
+                        Err(_) => {
+                            failure_reason =
+                                Some("backend process lock became unavailable".to_string());
+                        }
+                    }
+
+                    if let Some(reason) = failure_reason {
+                        std::thread::sleep(Duration::from_millis(100));
+                        persist_backend_tails(
+                            startup_log_for_monitor.as_ref(),
+                            &stdout_tail_for_monitor,
+                            &stderr_tail_for_monitor,
+                        );
+                        fail_desktop_startup(
+                            &app_handle,
+                            startup_log_for_monitor.as_ref(),
+                            &reason,
+                        );
+                        break;
+                    }
+                    if monitor_complete {
+                        break;
+                    }
                 }
             });
 
@@ -980,8 +1520,21 @@ fn main() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    match run_result {
+        Ok(()) => {
+            if let Some(startup_log) = startup_log.as_ref() {
+                startup_log.append("desktop_exit", "status=ok");
+            }
+        }
+        Err(error) => {
+            if let Some(startup_log) = startup_log.as_ref() {
+                startup_log.append("tauri_run", format!("status=error message={error}"));
+            }
+            panic!("error while running tauri application: {error}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1562,13 +2115,64 @@ mod tests {
 
     #[test]
     fn stdout_forwarding_is_bounded_and_redacts_sensitive_lines() {
-        assert_eq!(
-            sanitized_backend_stdout_line("Cookie: private"),
-            "[redacted sensitive backend output]"
-        );
-        let long_line = "x".repeat(MAX_BACKEND_STDOUT_CHARS + 100);
+        for line in [
+            "Cookie: private",
+            "Authorization: Bearer private",
+            "SESSDATA=private",
+            "csrf=private",
+            "qrcode_key=private",
+            "access_token=private",
+            "secret=private",
+            "request https://example.invalid/path?token=private",
+        ] {
+            assert_eq!(
+                sanitized_backend_stdout_line(line),
+                "[redacted sensitive backend output]"
+            );
+        }
+        let long_line = "x".repeat(MAX_BACKEND_OUTPUT_CHARS + 100);
         let sanitized = sanitized_backend_stdout_line(&long_line);
-        assert_eq!(sanitized.chars().count(), MAX_BACKEND_STDOUT_CHARS + 1);
+        assert_eq!(sanitized.chars().count(), MAX_BACKEND_OUTPUT_CHARS + 1);
         assert!(sanitized.ends_with('…'));
+    }
+
+    #[test]
+    fn backend_output_tail_keeps_only_recent_bounded_lines() {
+        let mut tail = BoundedOutputTail::default();
+        for index in 0..(MAX_BACKEND_TAIL_LINES + 5) {
+            tail.push(format!("line-{index}"));
+        }
+        let snapshot = tail.snapshot();
+        assert_eq!(snapshot.len(), MAX_BACKEND_TAIL_LINES);
+        assert_eq!(snapshot.first().map(String::as_str), Some("line-5"));
+        assert_eq!(
+            snapshot.last().map(String::as_str),
+            Some(format!("line-{}", MAX_BACKEND_TAIL_LINES + 4).as_str())
+        );
+    }
+
+    #[test]
+    fn desktop_startup_log_is_persistent_bounded_and_control_safe() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "bilikara_desktop_log_test_{}_{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let log_path = temp_dir.join(DESKTOP_STARTUP_LOG_NAME);
+        fs::create_dir_all(&temp_dir).expect("create temp log directory");
+        fs::write(
+            &log_path,
+            vec![b'x'; MAX_DESKTOP_STARTUP_LOG_BYTES as usize + 1],
+        )
+        .expect("write oversized prior log");
+
+        let log = DesktopStartupLog::open(log_path.clone()).expect("open startup log");
+        log.append("desktop_start", "cwd=/tmp/control\nsecond-line");
+        let contents = fs::read_to_string(&log_path).expect("read startup log");
+        assert!(contents.contains("event=desktop_start"));
+        assert!(contents.contains("cwd=/tmp/controlsecond-line"));
+        assert!(contents.len() < MAX_DESKTOP_STARTUP_LOG_BYTES as usize);
+
+        fs::remove_dir_all(temp_dir).expect("remove temp log directory");
     }
 }

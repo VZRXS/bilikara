@@ -52,3 +52,23 @@ If macOS blocks execution because the file was downloaded from the Internet (`co
    open "/Applications/bilikara.app"
    open "/Applications/Bilikara-Desktop.app"
    ```
+
+---
+
+## 3. Desktop Startup Diagnostics
+
+Packaged `Bilikara-Desktop.app` launches write a bounded diagnostic log to:
+
+```text
+~/Library/Application Support/bilikara/data/logs/desktop-startup.log
+```
+
+The log records the desktop executable and working directory, the resolved backend candidate,
+spawn status and child PID, the ready handshake, window show/focus/navigation errors, and bounded
+sanitized backend output tails when startup fails. It deliberately omits the shutdown token,
+cookies, authorization values, QR secrets, and other authentication data.
+
+The Preview 4 archive intentionally keeps `bilikara.app` and `Bilikara-Desktop.app` as sibling
+applications. These diagnostics preserve that v0.7 layout and are intended to identify the exact
+cause of a Finder-only failure on a physical Mac; their presence alone does not prove that Finder
+launch or App Translocation behavior is fixed.

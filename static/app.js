@@ -136,6 +136,7 @@ const state = {
   cacheLimitSaving: false,
   cachePolicySaving: false,
   diagnosticsBusy: false,
+  diagnosticsCopyController: null,
   avOffsetSaving: false,
   volumeSaveSeq: 0,
   playerSettingsEchoSuppressUntil: 0,
@@ -10036,31 +10037,30 @@ async function diagnosticResponse(path) {
   return response;
 }
 
-async function copyTextWithFallback(text) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall through to the legacy same-page copy path.
+async function generateDiagnosticsMarkdown() {
+  const response = await diagnosticResponse("/api/diagnostics/markdown");
+  const payload = await response.json();
+  return typeof payload?.data?.markdown === "string"
+    ? payload.data.markdown
+    : "";
+}
+
+function diagnosticsCopyController() {
+  if (!state.diagnosticsCopyController) {
+    const helper = window.BilikaraDiagnosticsCopy;
+    if (!helper || typeof helper.createRetryController !== "function"
+      || typeof helper.copyText !== "function") {
+      throw new Error(t("service.diagnosticsFailed"));
     }
+    state.diagnosticsCopyController = helper.createRetryController({
+      generate: generateDiagnosticsMarkdown,
+      copyText: (markdown) => helper.copyText(markdown, {
+        fallbackMessage: t("service.diagnosticsFailed"),
+      }),
+      invalidMessage: t("service.diagnosticsFailed"),
+    });
   }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  let copied = false;
-  try {
-    copied = Boolean(document.execCommand("copy"));
-  } finally {
-    textarea.remove();
-  }
-  if (!copied) {
-    throw new Error(t("service.diagnosticsFailed"));
-  }
+  return state.diagnosticsCopyController;
 }
 
 async function copyDiagnosticsMarkdown() {
@@ -10068,19 +10068,18 @@ async function copyDiagnosticsMarkdown() {
     return;
   }
   setDiagnosticsBusy(true);
-  setAppMessage(t("service.diagnosticsGenerating"));
   try {
-    const response = await diagnosticResponse("/api/diagnostics/markdown");
-    const payload = await response.json();
-    const markdown = String(payload?.data?.markdown || "");
-    if (!markdown) {
-      throw new Error(t("service.diagnosticsFailed"));
+    const controller = diagnosticsCopyController();
+    setAppMessage(controller.hasPendingMarkdown()
+      ? t("service.diagnosticsReadyToCopy")
+      : t("service.diagnosticsGenerating"));
+    const result = await controller.copy();
+    if (result.status === "copied") {
+      setAppMessage(t("service.diagnosticsCopied"));
+    } else {
+      setAppMessage(t("service.diagnosticsReadyToCopy"), true);
     }
-    await copyTextWithFallback(markdown);
-    setDiagnosticsBusy(false);
-    setAppMessage(t("service.diagnosticsCopied"));
   } catch (error) {
-    setDiagnosticsBusy(false);
     setAppMessage(
       window.BilikaraExportDownload.normalizedErrorMessage(
         error,
@@ -10088,6 +10087,8 @@ async function copyDiagnosticsMarkdown() {
       ),
       true,
     );
+  } finally {
+    setDiagnosticsBusy(false);
   }
 }
 

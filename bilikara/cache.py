@@ -5,6 +5,7 @@ from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import http.cookiejar
 import json
 import math
@@ -16,6 +17,7 @@ import shutil
 import ssl
 import stat
 import subprocess
+import sys
 import tarfile
 import threading
 import urllib.error
@@ -23,12 +25,13 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, TextIO
 
 from .config import (
     ARIA2C_DIR,
     ARIA2C_PATH_OVERRIDE,
+    ARIA2_MACOS_METADATA_PATH,
     ARIA2_RELEASE_API,
     BB_DOWN_DIR,
     BB_DOWN_PATH_OVERRIDE,
@@ -83,6 +86,17 @@ BILIBILI_QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcod
 BILIBILI_QR_WAITING_SCAN = 86101
 BILIBILI_QR_WAITING_CONFIRMATION = 86090
 BILIBILI_QR_EXPIRED = 86038
+BILIBILI_LOGIN_LOG_NAME = "bilibili-login.log"
+DESKTOP_STARTUP_LOG_NAME = "desktop-startup.log"
+PERSISTENT_DIAGNOSTIC_LOG_NAMES = frozenset(
+    {BILIBILI_LOGIN_LOG_NAME, DESKTOP_STARTUP_LOG_NAME}
+)
+BILIBILI_LOGIN_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+BILIBILI_LOGIN_SENSITIVE_FIELD_RE = re.compile(
+    r"(?i)([\"']?(?:sessdata|bili_jct|csrf|access_token|refresh_token|qrcode_key|"
+    r"authorization|cookie|shutdown_token|secret|token)[\"']?\s*[:=]\s*[\"']?)"
+    r"([^\"'&;,\s<>]+)"
+)
 BILIBILI_LOGIN_COOKIE_ORDER = (
     "SESSDATA",
     "bili_jct",
@@ -92,6 +106,14 @@ BILIBILI_LOGIN_COOKIE_ORDER = (
     "buvid3",
     "buvid4",
     "b_nut",
+)
+ARIA2_MACOS_VERSION = "1.37.0"
+ARIA2_MACOS_SOURCE_URL = (
+    "https://github.com/aria2/aria2/releases/download/release-1.37.0/"
+    "aria2-1.37.0.tar.xz"
+)
+ARIA2_MACOS_SOURCE_SHA256 = (
+    "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
 )
 SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS = 2.0
 try:
@@ -983,8 +1005,8 @@ class CacheManager:
         exists = binary_path.exists()
         version = self._read_aria2c_version(binary_path) if exists else ""
         system, arch = self._current_platform_tokens()
-        auto_prepare_supported = not exists and self._aria2_auto_prepare_supported(system, arch)
         ready = bool(version)
+        auto_prepare_supported = not ready and self._aria2_auto_prepare_supported(system, arch)
         if ready:
             if override and binary_path == override:
                 message = f"使用外部 aria2c: {override}"
@@ -992,6 +1014,8 @@ class CacheManager:
                 message = f"使用系统 aria2c: {system_path}"
             else:
                 message = f"aria2c {version} 已就绪"
+        elif exists and auto_prepare_supported:
+            message = f"aria2c 不可执行，将在确认后自动修复: {binary_path}"
         elif exists:
             message = f"aria2c 不可执行: {binary_path}"
         elif auto_prepare_supported:
@@ -5451,7 +5475,8 @@ class CacheManager:
                     return system_path
 
             binary_path = self._local_aria2c_binary_path()
-            if not binary_path.exists():
+            local_version = self._read_aria2c_version(binary_path) if binary_path.exists() else ""
+            if not local_version:
                 system, arch = self._current_platform_tokens()
                 if not self._aria2_auto_prepare_supported(system, arch):
                     raise RuntimeError(
@@ -5527,30 +5552,106 @@ class CacheManager:
         else:
             self._download_tool_asset(asset, target_path, tool="ytdlp")
 
-    def _install_aria2c(self, target_path: Path) -> None:
+    def _install_aria2c(
+        self,
+        target_path: Path,
+        *,
+        allow_brew_fallback: bool = True,
+    ) -> None:
         system, arch = self._current_platform_tokens()
         if system == "linux" and shutil.which("apt-get") and shutil.which("dpkg-deb"):
             self._install_aria2_apt(target_path)
             return
-        if system == "darwin" and shutil.which("brew"):
-            self._install_aria2_brew(target_path)
+        if system == "darwin":
+            self._install_macos_aria2c(
+                target_path,
+                arch,
+                allow_brew_fallback=allow_brew_fallback,
+            )
             return
         try:
             release = self._fetch_aria2_release()
             asset = self._select_aria2_asset(release)
         except Exception:
             asset = self._aria2_fallback_asset()
-        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
-        name = str(asset.get("name") or "aria2c.zip")
+        self._install_aria2_asset(target_path, asset)
+
+    def _install_macos_aria2c(
+        self,
+        target_path: Path,
+        arch: str,
+        *,
+        allow_brew_fallback: bool,
+    ) -> None:
+        # aria2 1.37.0 publishes Windows binaries but no macOS release asset.
+        # The bundled, build-pinned project metadata is therefore the first
+        # viable direct-download source and avoids a needless GitHub API poll.
+        failures = ["official release: aria2 1.37.0 has no macOS binary asset"]
+
+        mirror_asset = self._macos_aria2_asset("darwin", arch)
+        if mirror_asset is not None:
+            try:
+                self._install_aria2_asset(target_path, mirror_asset)
+                return
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"project mirror: {type(exc).__name__}: {exc}")
+        else:
+            failures.append("project mirror: no trusted asset metadata for this architecture")
+
+        brew_path = self._brew_executable() if allow_brew_fallback else None
+        if brew_path is not None:
+            try:
+                self._install_aria2_brew(target_path, brew_path=brew_path)
+                version = self._read_aria2c_version(target_path)
+                if not version:
+                    raise RuntimeError("Homebrew aria2c did not pass version validation")
+                return
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"Homebrew fallback: {type(exc).__name__}: {exc}")
+
+        raise RuntimeError("macOS aria2c automatic preparation failed: " + "; ".join(failures))
+
+    def _install_aria2_asset(self, target_path: Path, asset: dict[str, Any]) -> None:
+        name = str(asset.get("name") or "")
+        if not name or Path(name).name != name or not name.lower().endswith(
+            (".zip", ".tar.gz", ".tgz")
+        ):
+            raise RuntimeError("aria2 release asset has an unsafe or unsupported name")
         download_url = str(asset.get("browser_download_url") or "")
         if not download_url and not self._tool_fallback_url(name, tool="aria2c"):
             raise RuntimeError("aria2 release asset missing download URL")
-        archive_path = ARIA2C_DIR / name
-        self._download_tool_asset(asset, archive_path, tool="aria2c")
+
+        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
+        attempt_dir = ARIA2C_DIR / f".prepare-{uuid.uuid4().hex}"
+        attempt_dir.mkdir(parents=True, exist_ok=False)
+        archive_path = attempt_dir / name
         try:
-            self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
+            self._download_tool_asset(asset, archive_path, tool="aria2c")
+            expected_sha256 = str(asset.get("sha256") or "").lower()
+            if expected_sha256:
+                actual_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                if actual_sha256 != expected_sha256:
+                    raise RuntimeError(
+                        f"aria2c archive SHA-256 mismatch: expected {expected_sha256}, "
+                        f"got {actual_sha256}"
+                    )
+            extracted = self._extract_tool_binary_from_archive(
+                archive_path,
+                attempt_dir,
+                target_path.name,
+            )
+            extracted.chmod(extracted.stat().st_mode | stat.S_IEXEC)
+            version = self._read_aria2c_version(extracted)
+            expected_version = str(asset.get("version") or "")
+            if not version or expected_version and version != expected_version:
+                raise RuntimeError(
+                    f"aria2c version validation failed: expected "
+                    f"{expected_version or 'an executable version'}, got {version or 'no version'}"
+                )
+            os.replace(extracted, target_path)
+            target_path.chmod(target_path.stat().st_mode | stat.S_IEXEC)
         finally:
-            archive_path.unlink(missing_ok=True)
+            shutil.rmtree(attempt_dir, ignore_errors=True)
 
     def _install_aria2_apt(self, target_path: Path) -> None:
         import tempfile
@@ -5636,13 +5737,19 @@ class CacheManager:
                         else:
                             shutil.copy2(candidate, dest)
 
-    def _install_aria2_brew(self, target_path: Path) -> None:
+    def _install_aria2_brew(
+        self,
+        target_path: Path,
+        *,
+        brew_path: Path | None = None,
+    ) -> None:
         import subprocess
 
+        brew = str(brew_path or self._brew_executable() or "brew")
         ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
         try:
             subprocess.run(
-                ["brew", "fetch", "--bottle", "aria2"],
+                [brew, "fetch", "--bottle", "aria2"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -5651,7 +5758,7 @@ class CacheManager:
         except (subprocess.CalledProcessError, subprocess.SubprocessError):
             try:
                 subprocess.run(
-                    ["brew", "fetch", "aria2"],
+                    [brew, "fetch", "aria2"],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -5665,7 +5772,7 @@ class CacheManager:
 
         try:
             res = subprocess.run(
-                ["brew", "--cache", "--bottle", "aria2"],
+                [brew, "--cache", "--bottle", "aria2"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -5675,7 +5782,7 @@ class CacheManager:
         except (subprocess.CalledProcessError, subprocess.SubprocessError):
             try:
                 res = subprocess.run(
-                    ["brew", "--cache", "aria2"],
+                    [brew, "--cache", "aria2"],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -5696,7 +5803,7 @@ class CacheManager:
         if not cache_file_path.exists():
             try:
                 res = subprocess.run(
-                    ["brew", "--cache"],
+                    [brew, "--cache"],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -5972,15 +6079,89 @@ class CacheManager:
             return "aria2-1.37.0-win-32bit-build1.zip"
         return "aria2-1.37.0-win-64bit-build1.zip"
 
-    @staticmethod
-    def _aria2_auto_prepare_supported(system: str, arch: str) -> bool:
+    @classmethod
+    def _aria2_auto_prepare_supported(cls, system: str, arch: str) -> bool:
         if system == "windows":
             return True
         if system == "linux":
             return bool(shutil.which("apt-get") and shutil.which("dpkg-deb"))
         if system == "darwin":
-            return bool(shutil.which("brew"))
+            return bool(cls._macos_aria2_asset(system, arch) or cls._brew_executable())
         return False
+
+    @staticmethod
+    def _brew_executable() -> Path | None:
+        resolved = shutil.which("brew")
+        if resolved:
+            return Path(resolved)
+        for raw_path in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
+            candidate = Path(raw_path)
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _macos_aria2_asset(system: str, arch: str) -> dict[str, str] | None:
+        if system != "darwin" or arch not in {"arm64", "x64"}:
+            return None
+        metadata_paths = [
+            ARIA2_MACOS_METADATA_PATH,
+            INTERNAL_VENDOR_DIR / "aria2-macos.json",
+        ]
+        if PACKAGED_RUNTIME:
+            metadata_paths.append(
+                Path(sys.executable).resolve().parent.parent
+                / "Resources"
+                / "vendor"
+                / "aria2-macos.json"
+            )
+        for metadata_path in metadata_paths:
+            if not metadata_path.is_file():
+                continue
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            required = {
+                "schema_version": 1,
+                "tool": "aria2c",
+                "provider": "bilikara-r2",
+                "platform": "darwin",
+                "arch": arch,
+                "version": ARIA2_MACOS_VERSION,
+                "source_url": ARIA2_MACOS_SOURCE_URL,
+                "source_sha256": ARIA2_MACOS_SOURCE_SHA256,
+            }
+            if any(payload.get(key) != value for key, value in required.items()):
+                continue
+            name = str(payload.get("name") or "")
+            url = str(payload.get("url") or "")
+            sha256 = str(payload.get("sha256") or "").lower()
+            build_revision = str(payload.get("build_revision") or "").lower()
+            parsed_url = urllib.parse.urlsplit(url)
+            configured_base = urllib.parse.urlsplit(TOOL_ASSET_BASE_URL)
+            expected_path_prefix = f"{configured_base.path.rstrip('/')}/aria2/{ARIA2_MACOS_VERSION}/"
+            if (
+                not name
+                or Path(name).name != name
+                or not name.endswith(".tar.gz")
+                or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+                or not re.fullmatch(r"[0-9a-f]{40}", build_revision)
+                or build_revision not in name
+                or parsed_url.scheme != "https"
+                or not configured_base.hostname
+                or parsed_url.hostname != configured_base.hostname
+                or not parsed_url.path.startswith(expected_path_prefix)
+                or not parsed_url.path.endswith(f"/{urllib.parse.quote(name)}")
+            ):
+                continue
+            return {
+                "name": name,
+                "browser_download_url": url,
+                "sha256": sha256,
+                "version": ARIA2_MACOS_VERSION,
+            }
+        return None
 
     def _aria2_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
@@ -6047,30 +6228,71 @@ class CacheManager:
 
     @staticmethod
     def _extract_tool_binary_from_archive(archive_path: Path, output_dir: Path, binary_name: str) -> Path:
-        extract_dir = output_dir / f".extract-{archive_path.stem}"
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
-        extract_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target_path = output_dir / binary_name
+        temporary_path = output_dir / f".{binary_name}.extract-{uuid.uuid4().hex}"
+        expected_name = binary_name.lower()
         try:
             lower_name = archive_path.name.lower()
             if lower_name.endswith(".zip"):
                 with zipfile.ZipFile(archive_path) as zf:
-                    zf.extractall(extract_dir)
+                    for info in zf.infolist():
+                        if not CacheManager._safe_tool_archive_member(info.filename):
+                            raise RuntimeError(
+                                f"unsafe archive member in {archive_path.name}: {info.filename}"
+                            )
+                    matches = [
+                        info
+                        for info in zf.infolist()
+                        if not info.is_dir()
+                        and PurePosixPath(info.filename.replace("\\", "/")).name.lower()
+                        == expected_name
+                        and not stat.S_ISLNK(info.external_attr >> 16)
+                    ]
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            f"{binary_name} not uniquely present in {archive_path.name}"
+                        )
+                    with zf.open(matches[0]) as source, temporary_path.open("wb") as output:
+                        shutil.copyfileobj(source, output)
             elif lower_name.endswith((".tar.gz", ".tgz")):
                 with tarfile.open(archive_path, "r:gz") as tf:
-                    tf.extractall(extract_dir)
+                    members = tf.getmembers()
+                    for member in members:
+                        if not CacheManager._safe_tool_archive_member(member.name):
+                            raise RuntimeError(
+                                f"unsafe archive member in {archive_path.name}: {member.name}"
+                            )
+                    matches = [
+                        member
+                        for member in members
+                        if member.isfile()
+                        and PurePosixPath(member.name.replace("\\", "/")).name.lower()
+                        == expected_name
+                    ]
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            f"{binary_name} not uniquely present in {archive_path.name}"
+                        )
+                    source = tf.extractfile(matches[0])
+                    if source is None:
+                        raise RuntimeError(f"unable to read {binary_name} from {archive_path.name}")
+                    with source, temporary_path.open("wb") as output:
+                        shutil.copyfileobj(source, output)
             else:
                 raise RuntimeError(f"unsupported archive format: {archive_path.name}")
-
-            expected_name = binary_name.lower()
-            for candidate in extract_dir.rglob("*"):
-                if candidate.is_file() and candidate.name.lower() == expected_name:
-                    target_path = output_dir / binary_name
-                    shutil.copy2(candidate, target_path)
-                    return target_path
-            raise RuntimeError(f"{binary_name} not found in {archive_path.name}")
+            if not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+                raise RuntimeError(f"empty {binary_name} in {archive_path.name}")
+            os.replace(temporary_path, target_path)
+            return target_path
         finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
+            temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _safe_tool_archive_member(name: str) -> bool:
+        normalized = str(name or "").replace("\\", "/")
+        path = PurePosixPath(normalized)
+        return bool(normalized) and not path.is_absolute() and ".." not in path.parts
 
     @staticmethod
     def _aria2c_env(binary_path: Path) -> dict[str, str]:
@@ -6094,7 +6316,9 @@ class CacheManager:
                 env=CacheManager._aria2c_env(binary_path),
                 **CacheManager._hidden_process_kwargs(),
             )
-            first_line = (process.stdout or "").split("\n")[0].strip()
+            if process.returncode != 0:
+                return ""
+            first_line = (process.stdout or process.stderr or "").split("\n")[0].strip()
             for part in first_line.split():
                 if part[0:1].isdigit() and "." in part:
                     return part
@@ -6751,6 +6975,8 @@ class CacheManager:
         if not self.log_dir.exists():
             return
         for child in self.log_dir.iterdir():
+            if child.is_file() and child.name in PERSISTENT_DIAGNOSTIC_LOG_NAMES:
+                continue
             if child.is_dir():
                 self._safe_rmtree(child)
             else:
@@ -6918,6 +7144,38 @@ class CacheManager:
         return payload
 
     @staticmethod
+    def _sanitized_bilibili_login_error(exc: BaseException) -> str:
+        message = " ".join(str(exc).split())
+
+        def sanitize_url(match: re.Match[str]) -> str:
+            raw_url = match.group(0)
+            trailing = ""
+            while raw_url and raw_url[-1] in ".,)]}":
+                trailing = raw_url[-1] + trailing
+                raw_url = raw_url[:-1]
+            parsed = urllib.parse.urlsplit(raw_url)
+            sanitized = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, "<redacted>" if parsed.query else "", "")
+            )
+            return sanitized + trailing
+
+        message = BILIBILI_LOGIN_URL_RE.sub(sanitize_url, message)
+        message = BILIBILI_LOGIN_SENSITIVE_FIELD_RE.sub(
+            lambda match: f"{match.group(1)}<redacted>",
+            message,
+        )
+        return message[:500] if message else "(no exception message)"
+
+    def _log_bilibili_login_failure(self, stage: str, exc: BaseException) -> None:
+        safe_stage = re.sub(r"[^a-z0-9_-]+", "-", stage.lower()).strip("-") or "unknown"
+        safe_message = self._sanitized_bilibili_login_error(exc)
+        self._append_log_line(
+            self.log_dir / BILIBILI_LOGIN_LOG_NAME,
+            f"[{self._log_timestamp()}] QR login failure: stage={safe_stage} "
+            f"type={type(exc).__name__} message={safe_message}",
+        )
+
+    @staticmethod
     def _write_bbdown_login_qr(qr_url: str, target_path: Path) -> str:
         try:
             import qrcode  # type: ignore[import-not-found]
@@ -6980,6 +7238,7 @@ class CacheManager:
         opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(cookie_jar)
         )
+        login_stage = "generate"
 
         try:
             generated = self._bilibili_login_request_json(
@@ -6994,6 +7253,7 @@ class CacheManager:
             if not qr_url or not qr_key:
                 raise ValueError("Bilibili QR response is incomplete")
 
+            login_stage = "render-qr"
             qr_image = self._write_bbdown_login_qr(
                 qr_url,
                 self._bbdown_qr_image_path(),
@@ -7006,6 +7266,7 @@ class CacheManager:
                 self.bbdown_login_qr_image = qr_image
 
             while not cancel_event.wait(1.0):
+                login_stage = "poll"
                 query = urllib.parse.urlencode(
                     {"qrcode_key": qr_key, "source": "main-fe-header"}
                 )
@@ -7044,16 +7305,20 @@ class CacheManager:
                         "SESSDATA 和 bili_jct"
                     )
                     break
+                login_stage = "save-cookie"
                 if not self._save_bbdown_login_cookie(cookie_text):
                     failure_message = "Bilibili 登录完成，但 Cookie 保存或验证失败"
                     break
                 login_succeeded = True
                 break
-        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+            self._log_bilibili_login_failure(login_stage, exc)
             failure_message = "Bilibili 登录请求失败，请重试"
         except RuntimeError as exc:
+            self._log_bilibili_login_failure(login_stage, exc)
             failure_message = str(exc)
-        except Exception:  # noqa: BLE001 - never expose login response details
+        except Exception as exc:  # noqa: BLE001 - never expose login response details
+            self._log_bilibili_login_failure(login_stage, exc)
             failure_message = "Bilibili 登录请求失败，请重试"
         finally:
             with self.lock:

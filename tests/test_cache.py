@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -7,6 +8,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import tarfile
 import threading
 import unittest
 import urllib.error
@@ -448,6 +450,194 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertFalse(status["requires_prepare"])
         self.assertEqual(status["path"], str(target_path))
         self.assertEqual(status["version"], "1.37.0")
+
+    def test_macos_direct_metadata_enables_prepare_without_homebrew_or_path(self):
+        root = Path(self.temp_dir.name) / "macos-direct-status"
+        executable = root / "bilikara.app" / "Contents" / "MacOS" / "bilikara"
+        metadata_path = (
+            executable.parent.parent / "Resources" / "vendor" / "aria2-macos.json"
+        )
+        metadata_path.parent.mkdir(parents=True)
+        revision = "a" * 40
+        asset_name = f"aria2-1.37.0-macos-arm64-{revision}.tar.gz"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "tool": "aria2c",
+                    "provider": "bilikara-r2",
+                    "platform": "darwin",
+                    "arch": "arm64",
+                    "name": asset_name,
+                    "url": f"https://download.example/bilikara/tools/aria2/1.37.0/{revision}/{asset_name}",
+                    "sha256": "b" * 64,
+                    "version": "1.37.0",
+                    "source_url": (
+                        "https://github.com/aria2/aria2/releases/download/"
+                        "release-1.37.0/aria2-1.37.0.tar.xz"
+                    ),
+                    "source_sha256": (
+                        "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
+                    ),
+                    "build_revision": revision,
+                }
+            ),
+            encoding="utf-8",
+        )
+        aria2_dir = root / "tools" / "aria2c"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.ARIA2_MACOS_METADATA_PATH",
+            root / "missing-vendor" / "aria2-macos.json",
+        ), patch("bilikara.cache.INTERNAL_VENDOR_DIR", root / "missing-internal"), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL",
+            "https://download.example/bilikara/tools",
+        ), patch("bilikara.cache.PACKAGED_RUNTIME", True), patch(
+            "bilikara.cache.sys.executable", str(executable)
+        ), patch.object(CacheManager, "_system_aria2c_path", return_value=None), patch.object(
+            CacheManager, "_brew_executable", return_value=None
+        ), patch.object(
+            CacheManager, "_current_platform_tokens", return_value=("darwin", "arm64")
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                status = manager.downloader_status(DOWNLOAD_SOURCE_DOWNKYI)
+            finally:
+                manager.shutdown()
+
+        self.assertFalse(status["ready"])
+        self.assertTrue(status["auto_prepare_supported"])
+        self.assertTrue(status["requires_prepare"])
+
+    def test_macos_direct_prepare_downloads_validates_and_publishes_atomically(self):
+        root = Path(self.temp_dir.name) / "macos-direct-install"
+        aria2_dir = root / "tools" / "aria2c"
+        metadata_path = root / "vendor" / "aria2-macos.json"
+        metadata_path.parent.mkdir(parents=True)
+        source_archive = root / "source.tar.gz"
+        binary_bytes = b"portable-aria2c"
+        with tarfile.open(source_archive, "w:gz") as bundle:
+            entry = tarfile.TarInfo("aria2c")
+            entry.size = len(binary_bytes)
+            bundle.addfile(entry, io.BytesIO(binary_bytes))
+        archive_sha = hashlib.sha256(source_archive.read_bytes()).hexdigest()
+        revision = "c" * 40
+        asset_name = f"aria2-1.37.0-macos-arm64-{revision}.tar.gz"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "tool": "aria2c",
+                    "provider": "bilikara-r2",
+                    "platform": "darwin",
+                    "arch": "arm64",
+                    "name": asset_name,
+                    "url": f"https://download.example/bilikara/tools/aria2/1.37.0/{revision}/{asset_name}",
+                    "sha256": archive_sha,
+                    "version": "1.37.0",
+                    "source_url": (
+                        "https://github.com/aria2/aria2/releases/download/"
+                        "release-1.37.0/aria2-1.37.0.tar.xz"
+                    ),
+                    "source_sha256": (
+                        "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
+                    ),
+                    "build_revision": revision,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def fake_download(_asset: dict, target: Path, **_kwargs) -> None:
+            shutil.copy2(source_archive, target)
+
+        target = aria2_dir / "aria2c"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2_MACOS_METADATA_PATH", metadata_path), patch(
+            "bilikara.cache.INTERNAL_VENDOR_DIR", root / "missing-internal"
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL",
+            "https://download.example/bilikara/tools",
+        ), patch.object(CacheManager, "_current_platform_tokens", return_value=("darwin", "arm64")):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_fetch_aria2_release") as fetch_release, patch.object(
+                    manager, "_download_tool_asset", side_effect=fake_download
+                ) as download, patch.object(
+                    manager, "_read_aria2c_version", return_value="1.37.0"
+                ), patch.object(CacheManager, "_brew_executable", return_value=None):
+                    manager._install_aria2c(target, allow_brew_fallback=False)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(target.read_bytes(), binary_bytes)
+        if os.name != "nt":
+            self.assertTrue(target.stat().st_mode & stat.S_IEXEC)
+        fetch_release.assert_not_called()
+        download.assert_called_once()
+        self.assertEqual(list(aria2_dir.glob(".prepare-*")), [])
+
+    def test_macos_failed_direct_prepare_preserves_existing_runtime_and_source(self):
+        root = Path(self.temp_dir.name) / "macos-direct-failure"
+        aria2_dir = root / "tools" / "aria2c"
+        target = aria2_dir / "aria2c"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"existing-runtime")
+        bad_archive = root / "bad.tar.gz"
+        bad_archive.write_bytes(b"not-an-archive")
+        mirror_asset = {
+            "name": "aria2-1.37.0-macos-arm64-test.tar.gz",
+            "browser_download_url": "https://download.example/aria2.tar.gz",
+            "sha256": "d" * 64,
+            "version": "1.37.0",
+        }
+
+        def fake_download(_asset: dict, destination: Path, **_kwargs) -> None:
+            shutil.copy2(bad_archive, destination)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch.object(CacheManager, "_current_platform_tokens", return_value=("darwin", "arm64")):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_fetch_aria2_release", return_value={"assets": []}), patch.object(
+                    manager, "_macos_aria2_asset", return_value=mirror_asset
+                ), patch.object(manager, "_download_tool_asset", side_effect=fake_download), patch.object(
+                    manager, "_brew_executable", return_value=None
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "automatic preparation failed"):
+                        manager._install_aria2c(target, allow_brew_fallback=False)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(target.read_bytes(), b"existing-runtime")
+        self.assertEqual(manager.download_source, "bbdown")
+
+    def test_existing_runtime_aria2c_skips_all_preparation_network(self):
+        aria2_dir = Path(self.temp_dir.name) / "existing-aria2" / "tools" / "aria2c"
+        target = aria2_dir / ("aria2c.exe" if os.name == "nt" else "aria2c")
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"existing-aria2")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_aria2c_binary_path", return_value=target), patch.object(
+                    manager, "_read_aria2c_version", return_value="1.37.0"
+                ), patch.object(manager, "_install_aria2c") as install, patch.object(
+                    manager, "_fetch_aria2_release"
+                ) as fetch:
+                    self.assertEqual(manager._ensure_aria2c(), target)
+            finally:
+                manager.shutdown()
+        install.assert_not_called()
+        fetch.assert_not_called()
+
     def test_bbdown_stream_preference_args_use_cache_policy(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -650,6 +840,33 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertIn("缓存中", log_path.read_text(encoding="utf-8"))
             finally:
                 manager.shutdown()
+
+    def test_clear_log_root_preserves_startup_diagnostics(self):
+        log_dir = Path(self.temp_dir.name) / "logs"
+        log_dir.mkdir(parents=True)
+        desktop_log = log_dir / "desktop-startup.log"
+        login_log = log_dir / "bilibili-login.log"
+        transient_log = log_dir / "transient.log"
+        transient_dir = log_dir / "bbdown"
+        desktop_log.write_text("desktop diagnostic\n", encoding="utf-8")
+        login_log.write_text("login diagnostic\n", encoding="utf-8")
+        transient_log.write_text("temporary\n", encoding="utf-8")
+        transient_dir.mkdir()
+        (transient_dir / "item.log").write_text("temporary\n", encoding="utf-8")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.LOG_DIR", log_dir
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager._clear_log_root()
+            finally:
+                manager.shutdown()
+
+        self.assertTrue(desktop_log.is_file())
+        self.assertTrue(login_log.is_file())
+        self.assertFalse(transient_log.exists())
+        self.assertFalse(transient_dir.exists())
 
     def test_drop_item_cache_removes_related_log_file(self):
         log_dir = Path(self.temp_dir.name) / "logs"
@@ -2353,6 +2570,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 ), patch.object(
                     manager, "_local_aria2c_binary_path", return_value=target_path
                 ), patch.object(
+                    manager, "_fetch_aria2_release", return_value={"assets": []}
+                ), patch.object(
+                    manager, "_macos_aria2_asset", return_value=None
+                ), patch.object(
                     manager, "_extract_tool_binary_from_archive",
                     side_effect=lambda archive, out_dir, bin_name: target_path.write_bytes(b"fake-brew-aria2c-bin")
                 ), patch.object(
@@ -2655,6 +2876,89 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertEqual(manager.bbdown_login_status()["state"], "logged_in")
             finally:
                 manager.shutdown()
+
+    def test_bbdown_login_generate_failure_logs_sanitized_exception(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        log_dir = Path(self.temp_dir.name) / "logs"
+        cancel_event = Mock()
+        cancel_event.is_set.return_value = False
+        secret_values = (
+            "synthetic-qr-secret",
+            "synthetic-session-secret",
+            "synthetic-access-secret",
+        )
+        request_error = urllib.error.URLError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain "
+            "at https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+            f"?qrcode_key={secret_values[0]} Cookie: SESSDATA={secret_values[1]} "
+            f"access_token={secret_values[2]}"
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR", bbdown_dir
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            manager.log_dir = log_dir
+            try:
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=request_error,
+                ):
+                    manager._bbdown_login_worker(cancel_event)
+                status = manager.bbdown_login_status()
+            finally:
+                manager.shutdown()
+
+        log_text = (log_dir / "bilibili-login.log").read_text(encoding="utf-8")
+        self.assertIn("stage=generate", log_text)
+        self.assertIn("type=URLError", log_text)
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", log_text)
+        for secret_value in secret_values:
+            self.assertNotIn(secret_value, log_text)
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["message"], "Bilibili 登录请求失败，请重试")
+
+    def test_bbdown_login_poll_failure_logs_poll_stage_without_qr_secret(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        log_dir = Path(self.temp_dir.name) / "logs"
+        cancel_event = Mock()
+        cancel_event.wait.return_value = False
+        cancel_event.is_set.return_value = False
+        qr_secret = "synthetic-poll-qr-secret"
+        poll_error = urllib.error.URLError(
+            "timed out requesting "
+            f"https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={qr_secret}"
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR", bbdown_dir
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            manager.log_dir = log_dir
+            try:
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=[
+                        {"data": {"url": "synthetic-qr-url", "qrcode_key": qr_secret}},
+                        poll_error,
+                    ],
+                ), patch.object(
+                    manager,
+                    "_write_bbdown_login_qr",
+                    return_value="data:image/png;base64,synthetic",
+                ):
+                    manager._bbdown_login_worker(cancel_event)
+            finally:
+                manager.shutdown()
+
+        log_text = (log_dir / "bilibili-login.log").read_text(encoding="utf-8")
+        self.assertIn("stage=poll", log_text)
+        self.assertIn("type=URLError", log_text)
+        self.assertNotIn(qr_secret, log_text)
 
     def test_bbdown_login_rejects_ticket_only_data_after_zero_exit(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"

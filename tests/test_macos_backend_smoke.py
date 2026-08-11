@@ -5,6 +5,7 @@ import math
 import os
 import platform
 import secrets
+import subprocess
 import sys
 import tempfile
 import time
@@ -252,22 +253,164 @@ class BackendSmokeTimeoutPolicyTest(unittest.TestCase):
 
 
 class MacOSBackendSmokeTest(unittest.TestCase):
-    def test_backend_ready_handshake_and_graceful_shutdown(self):
+    def _packaged_backend_executable(self) -> Path:
         override_exe = os.getenv("BILIKARA_TEST_BACKEND_EXE", "").strip()
         if override_exe:
-            executable = Path(override_exe).resolve()
-        else:
-            executable = ROOT_DIR / "dist" / "bilikara.app" / "Contents" / "MacOS" / "bilikara"
+            return Path(override_exe).resolve()
+        return ROOT_DIR / "dist" / "bilikara.app" / "Contents" / "MacOS" / "bilikara"
 
+    def _require_packaged_backend_executable(self) -> Path:
+        executable = self._packaged_backend_executable()
         if not executable.is_file():
             if os.getenv("BILIKARA_REQUIRE_BACKEND_SMOKE") == "1":
                 raise AssertionError(f"Required backend executable not found: {executable}")
             raise unittest.SkipTest(
                 f"Backend executable not found at {executable}; skipping smoke test."
             )
-
         if not os.access(executable, os.X_OK):
             raise AssertionError(f"Backend binary is not executable: {executable}")
+        return executable
+
+    @staticmethod
+    def _assert_tool_version(binary_path: Path, tool_name: str, *, cwd: Path, env: dict[str, str]) -> None:
+        process = subprocess.run(
+            [str(binary_path), "-version"],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        output = (process.stdout or "") + (process.stderr or "")
+        if process.returncode != 0 or f"{tool_name} version" not in output.lower():
+            raise AssertionError(
+                f"{tool_name} -version failed for {binary_path}\n"
+                f"exit_code={process.returncode}\noutput={output}"
+            )
+
+    def test_packaged_ffmpeg_and_runtime_copy_execute(self):
+        if platform.system() != "Darwin":
+            if os.getenv("BILIKARA_REQUIRE_BACKEND_SMOKE") == "1":
+                self.fail("Required packaged FFmpeg smoke test must run on macOS")
+            raise unittest.SkipTest("Packaged FFmpeg smoke test requires macOS")
+
+        executable = self._require_packaged_backend_executable()
+        contents_dir = executable.parent.parent
+        vendor_dir = contents_dir / "Frameworks" / "vendor"
+
+        with tempfile.TemporaryDirectory(prefix="bilikara-ffmpeg-smoke-") as temp_dir_value:
+            temp_dir = Path(temp_dir_value)
+            runtime_dir = (
+                temp_dir
+                / "Library"
+                / "Application Support"
+                / "bilikara"
+                / "tools"
+                / "bbdown"
+            )
+            runtime_dir.mkdir(parents=True)
+            minimal_env = {
+                "HOME": str(temp_dir),
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "TMPDIR": str(temp_dir),
+            }
+
+            from bilikara.cache import CacheManager
+
+            for tool_name in ("ffmpeg", "ffprobe"):
+                packaged_tool = vendor_dir / tool_name
+                if not packaged_tool.is_file():
+                    self.fail(f"Packaged {tool_name} not found: {packaged_tool}")
+                if not os.access(packaged_tool, os.X_OK):
+                    self.fail(f"Packaged {tool_name} is not executable: {packaged_tool}")
+                self._assert_tool_version(
+                    packaged_tool,
+                    tool_name,
+                    cwd=temp_dir,
+                    env=minimal_env,
+                )
+
+                runtime_tool = runtime_dir / tool_name
+                CacheManager._sync_runtime_tool(
+                    packaged_tool,
+                    runtime_tool,
+                    force_refresh=True,
+                )
+                self.assertTrue(os.access(runtime_tool, os.X_OK))
+                self._assert_tool_version(
+                    runtime_tool,
+                    tool_name,
+                    cwd=temp_dir,
+                    env=minimal_env,
+                )
+
+    def test_packaged_https_uses_macos_system_trust(self):
+        if platform.system() != "Darwin":
+            if os.getenv("BILIKARA_REQUIRE_BACKEND_SMOKE") == "1":
+                self.fail("Required packaged HTTPS smoke test must run on macOS")
+            raise unittest.SkipTest("Packaged HTTPS smoke test requires macOS")
+
+        executable = self._require_packaged_backend_executable()
+        home = os.getenv("HOME", "").strip()
+        if not home:
+            self.fail("Packaged HTTPS smoke test requires HOME for macOS system trust")
+
+        with tempfile.TemporaryDirectory(prefix="bilikara-https-smoke-") as temp_dir:
+            startup_log = Path(temp_dir) / "startup.log"
+            minimal_env = {
+                "BILIKARA_STARTUP_LOG": "1",
+                "DEBUG_LOG_FILE": str(startup_log),
+                "HOME": home,
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "PYTHONUNBUFFERED": "1",
+                "TMPDIR": temp_dir,
+            }
+            process = subprocess.run(
+                [str(executable), "--https-smoke"],
+                cwd=temp_dir,
+                env=minimal_env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                check=False,
+            )
+            marker = None
+            for line in process.stdout.splitlines():
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and payload.get("event") == "bilikara.https_smoke":
+                    marker = payload
+                    break
+
+            if process.returncode != 0 or marker is None:
+                startup_text = (
+                    startup_log.read_text(encoding="utf-8", errors="replace")
+                    if startup_log.is_file()
+                    else "<missing>"
+                )
+                self.fail(
+                    "Packaged HTTPS smoke failed.\n"
+                    f"exit_code={process.returncode}\n"
+                    f"stdout={process.stdout}\n"
+                    f"stderr={process.stderr}\n"
+                    f"startup_log={startup_text}"
+                )
+
+            self.assertEqual(marker.get("trustBackend"), "macos-system")
+            self.assertEqual(marker.get("verifyMode"), "CERT_REQUIRED")
+            self.assertIs(marker.get("checkHostname"), True)
+            self.assertGreaterEqual(int(marker.get("status", 0)), 200)
+            self.assertLess(int(marker.get("status", 0)), 400)
+
+    def test_backend_ready_handshake_and_graceful_shutdown(self):
+        executable = self._require_packaged_backend_executable()
 
         shutdown_token = secrets.token_urlsafe(32)
         cmd = [
