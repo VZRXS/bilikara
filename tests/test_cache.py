@@ -463,7 +463,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         metadata_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "tool": "aria2c",
                     "provider": "bilikara-r2",
                     "platform": "darwin",
@@ -479,7 +479,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     "source_sha256": (
                         "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
                     ),
-                    "build_revision": revision,
+                    "recipe_revision": revision,
                 }
             ),
             encoding="utf-8",
@@ -527,7 +527,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         metadata_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "tool": "aria2c",
                     "provider": "bilikara-r2",
                     "platform": "darwin",
@@ -543,7 +543,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     "source_sha256": (
                         "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
                     ),
-                    "build_revision": revision,
+                    "recipe_revision": revision,
                 }
             ),
             encoding="utf-8",

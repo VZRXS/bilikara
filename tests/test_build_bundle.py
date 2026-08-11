@@ -1,4 +1,5 @@
 import hashlib
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -6,6 +7,29 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import build_bundle
+
+
+def aria2_metadata(arch: str) -> dict[str, object]:
+    recipe_revision = "portable-macos-appletls-v2"
+    sha256 = "a" * 64
+    name = f"aria2-1.37.0-macos-{arch}-{sha256}.tar.gz"
+    return {
+        "schema_version": 2,
+        "tool": "aria2c",
+        "provider": "bilikara-r2",
+        "platform": "darwin",
+        "arch": arch,
+        "name": name,
+        "url": (
+            f"{build_bundle.ARIA2_MACOS_PUBLIC_BASE}/aria2/1.37.0/"
+            f"{recipe_revision}/macos-{arch}/{name}"
+        ),
+        "sha256": sha256,
+        "version": build_bundle.ARIA2_MACOS_VERSION,
+        "source_url": build_bundle.ARIA2_MACOS_SOURCE_URL,
+        "source_sha256": build_bundle.ARIA2_MACOS_SOURCE_SHA256,
+        "recipe_revision": recipe_revision,
+    }
 
 
 class BuildBundleTest(unittest.TestCase):
@@ -321,14 +345,12 @@ class BuildBundleTest(unittest.TestCase):
 
     def test_macos_aria2_metadata_is_validated_and_bundled_as_data(self):
         with TemporaryDirectory() as temp_dir:
-            metadata = Path(temp_dir) / "aria2.json"
-            metadata.write_text(
-                '{"schema_version":1,"tool":"aria2c","provider":"bilikara-r2",'
-                '"platform":"darwin","arch":"arm64","sha256":"' + "a" * 64
-                + '","url":"https://download.example/aria2.tar.gz"}',
-                encoding="utf-8",
-            )
-            with patch("build_bundle.platform.system", return_value="Darwin"), patch(
+            root = Path(temp_dir)
+            metadata = root / "aria2.json"
+            metadata.write_text(json.dumps(aria2_metadata("arm64")), encoding="utf-8")
+            with patch("build_bundle.ROOT_DIR", root), patch(
+                "build_bundle.platform.system", return_value="Darwin"
+            ), patch(
                 "build_bundle.platform.machine", return_value="arm64"
             ), patch.dict(
                 build_bundle.os.environ,
@@ -337,20 +359,17 @@ class BuildBundleTest(unittest.TestCase):
             ):
                 args = build_bundle._macos_aria2_metadata_args(":")
 
-        self.assertEqual(
-            args,
-            ["--add-data", f"{metadata.resolve()}:vendor/aria2-macos.json"],
-        )
+            staged = root / "build" / "aria2-macos.json"
+            self.assertTrue(staged.is_file())
+            self.assertEqual(
+                args,
+                ["--add-data", f"{staged.resolve()}:vendor"],
+            )
 
     def test_macos_aria2_metadata_rejects_wrong_architecture(self):
         with TemporaryDirectory() as temp_dir:
             metadata = Path(temp_dir) / "aria2.json"
-            metadata.write_text(
-                '{"schema_version":1,"tool":"aria2c","provider":"bilikara-r2",'
-                '"platform":"darwin","arch":"x64","sha256":"' + "a" * 64
-                + '","url":"https://download.example/aria2.tar.gz"}',
-                encoding="utf-8",
-            )
+            metadata.write_text(json.dumps(aria2_metadata("x64")), encoding="utf-8")
             with patch("build_bundle.platform.system", return_value="Darwin"), patch(
                 "build_bundle.platform.machine", return_value="arm64"
             ), patch.dict(
@@ -359,6 +378,56 @@ class BuildBundleTest(unittest.TestCase):
                 clear=False,
             ):
                 with self.assertRaisesRegex(RuntimeError, "bundle target is arm64"):
+                    build_bundle._macos_aria2_metadata_args(":")
+
+    def test_macos_aria2_lock_selects_target_architecture_without_environment(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lock_dir = root / "tools" / "aria2"
+            lock_dir.mkdir(parents=True)
+            for arch in ("arm64", "x64"):
+                (lock_dir / f"macos-{arch}.json").write_text(
+                    json.dumps(aria2_metadata(arch)),
+                    encoding="utf-8",
+                )
+            for machine, expected_arch in (("arm64", "arm64"), ("x86_64", "x64")):
+                with self.subTest(machine=machine), patch(
+                    "build_bundle.ROOT_DIR", root
+                ), patch(
+                    "build_bundle.platform.system", return_value="Darwin"
+                ), patch(
+                    "build_bundle.platform.machine", return_value=machine
+                ), patch(
+                    "build_bundle.ARIA2_MACOS_LOCK_DIR", lock_dir
+                ), patch.dict(
+                    build_bundle.os.environ, {}, clear=True
+                ):
+                    args = build_bundle._macos_aria2_metadata_args(":")
+                staged = root / "build" / "aria2-macos.json"
+                self.assertTrue(staged.is_file())
+                self.assertEqual(
+                    args,
+                    [
+                        "--add-data",
+                        f"{staged.resolve()}:vendor",
+                    ],
+                )
+
+    def test_macos_aria2_lock_rejects_malformed_identity(self):
+        with TemporaryDirectory() as temp_dir:
+            lock_dir = Path(temp_dir)
+            malformed = aria2_metadata("arm64")
+            malformed["recipe_revision"] = "../../unsafe"
+            (lock_dir / "macos-arm64.json").write_text(
+                json.dumps(malformed),
+                encoding="utf-8",
+            )
+            with patch("build_bundle.platform.system", return_value="Darwin"), patch(
+                "build_bundle.platform.machine", return_value="arm64"
+            ), patch("build_bundle.ARIA2_MACOS_LOCK_DIR", lock_dir), patch.dict(
+                build_bundle.os.environ, {}, clear=True
+            ):
+                with self.assertRaisesRegex(RuntimeError, "recipe revision"):
                     build_bundle._macos_aria2_metadata_args(":")
 
     def test_python_https_args_includes_hidden_imports(self):

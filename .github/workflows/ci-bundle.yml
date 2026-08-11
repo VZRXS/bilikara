@@ -88,88 +88,9 @@ jobs:
           BILIKARA_REQUIRE_RUST_LIB: "1"
           BILIKARA_RUST_STRICT_EQUIVALENCE: "1"
 
-  macos-aria2-tools:
-    name: Portable aria2c (${{ matrix.label }})
-    needs: test
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            label: macOS ARM64
-            arch: arm64
-          - os: macos-15-intel
-            label: macOS Intel
-            arch: x64
-    env:
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      AWS_DEFAULT_REGION: auto
-      R2_BUCKET: ${{ vars.R2_BUCKET || 'bilikara-releases' }}
-      BILIKARA_TOOL_ASSET_PUBLIC_BASE: https://download.kevinx96.icu/bilikara/tools
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Build and validate portable aria2c
-        run: |
-          output_dir="$RUNNER_TEMP/bilikara-portable-aria2"
-          ./scripts/build_portable_macos_aria2.sh "$output_dir"
-          test -f "$output_dir/aria2-macos-${{ matrix.arch }}.json"
-
-      - name: Publish immutable aria2c tool asset to R2
-        run: |
-          python -m pip install --upgrade awscli
-          output_dir="$RUNNER_TEMP/bilikara-portable-aria2"
-          metadata_file="$output_dir/aria2-macos-${{ matrix.arch }}.json"
-          asset_name="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["name"])' "$metadata_file")"
-          asset_path="$output_dir/$asset_name"
-          endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          object_prefix="bilikara/tools/aria2/1.37.0/${GITHUB_SHA}"
-          aws s3 cp "$asset_path" "s3://${R2_BUCKET}/${object_prefix}/${asset_name}" \
-            --endpoint-url "$endpoint" \
-            --content-type "application/gzip" \
-            --cache-control "public, max-age=31536000, immutable" \
-            --only-show-errors
-          aws s3 cp "$metadata_file" "s3://${R2_BUCKET}/${object_prefix}/aria2-macos-${{ matrix.arch }}.json" \
-            --endpoint-url "$endpoint" \
-            --content-type "application/json; charset=utf-8" \
-            --cache-control "public, max-age=31536000, immutable" \
-            --only-show-errors
-
-      - name: Verify public aria2c mirror round-trip
-        run: |
-          output_dir="$RUNNER_TEMP/bilikara-portable-aria2"
-          metadata_file="$output_dir/aria2-macos-${{ matrix.arch }}.json"
-          asset_url="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["url"])' "$metadata_file")"
-          expected_sha="$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$metadata_file")"
-          downloaded="$RUNNER_TEMP/aria2-mirror-roundtrip.tar.gz"
-          curl --fail --location --retry 5 --retry-delay 2 --show-error --silent "$asset_url" --output "$downloaded"
-          actual_sha="$(shasum -a 256 "$downloaded" | awk '{print $1}')"
-          test "$actual_sha" = "$expected_sha"
-
-      - name: Upload aria2c bundle metadata
-        uses: actions/upload-artifact@v6
-        with:
-          name: bilikara-aria2-metadata-${{ matrix.arch }}
-          path: ${{ runner.temp }}/bilikara-portable-aria2/aria2-macos-${{ matrix.arch }}.json
-          if-no-files-found: error
-          retention-days: 7
-
   bundle:
     name: Bundle (${{ matrix.label }})
-    needs:
-      - test
-      - macos-aria2-tools
+    needs: test
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
     strategy:
@@ -219,22 +140,6 @@ jobs:
           python scripts/prepare_bbdown_vendor.py "$bbdown_dir"
           printf '%s\n' "$bbdown_dir/bin" >> "$GITHUB_PATH"
           cat "$bbdown_dir/metadata.env" >> "$GITHUB_ENV"
-
-      - name: Download pinned macOS aria2c metadata
-        if: runner.os == 'macOS'
-        uses: actions/download-artifact@v7
-        with:
-          pattern: bilikara-aria2-metadata-*
-          path: ${{ runner.temp }}/bilikara-aria2-metadata
-          merge-multiple: true
-
-      - name: Select macOS aria2c metadata for this architecture
-        if: runner.os == 'macOS'
-        run: |
-          runner_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64' if m in ('arm64','aarch64') else m)")"
-          metadata_file="$RUNNER_TEMP/bilikara-aria2-metadata/aria2-macos-${runner_arch}.json"
-          test -f "$metadata_file"
-          echo "BILIKARA_ARIA2_MACOS_METADATA_FILE=$metadata_file" >> "$GITHUB_ENV"
 
       - name: Install packaging dependencies
         run: |
@@ -366,6 +271,17 @@ jobs:
           file "$embedded_backend/Contents/MacOS/bilikara"
           test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara")"
 
+          echo "=== Locked aria2c metadata-only checks ==="
+          aria2_metadata="$embedded_backend/Contents/Resources/vendor/aria2-macos.json"
+          test -f "$aria2_metadata"
+          expected_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
+          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64; print("locked aria2c metadata: arch={} sha256={}".format(data["arch"], data["sha256"]))' "$aria2_metadata" "$expected_arch"
+          unexpected_aria2="$(find dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
+          if [ -n "$unexpected_aria2" ]; then
+            echo "Unexpected bundled aria2c executable candidate(s):" >&2
+            printf '%s\n' "$unexpected_aria2" >&2
+            exit 1
+          fi
 
           echo "=== Packaged portable FFmpeg checks ==="
           for binary_name in ffmpeg ffprobe; do
@@ -410,6 +326,15 @@ jobs:
           codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           test "$(lipo -archs test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara")"
+          extracted_aria2_metadata="$extracted_embedded_backend/Contents/Resources/vendor/aria2-macos.json"
+          test -f "$extracted_aria2_metadata"
+          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64' "$extracted_aria2_metadata" "$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
+          unexpected_aria2="$(find test_extract/dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
+          if [ -n "$unexpected_aria2" ]; then
+            echo "Unexpected archived aria2c executable candidate(s):" >&2
+            printf '%s\n' "$unexpected_aria2" >&2
+            exit 1
+          fi
 
           echo "=== Running extracted portable FFmpeg checks ==="
           for binary_name in ffmpeg ffprobe; do

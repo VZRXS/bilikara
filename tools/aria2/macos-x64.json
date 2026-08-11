@@ -1,0 +1,14 @@
+{
+  "arch": "x64",
+  "name": "aria2-1.37.0-macos-x64-5d188fb6a370d20ecb0b4edc1764ddf2a9439a9e.tar.gz",
+  "platform": "darwin",
+  "provider": "bilikara-r2",
+  "recipe_revision": "5d188fb6a370d20ecb0b4edc1764ddf2a9439a9e",
+  "schema_version": 2,
+  "sha256": "33985c31bdc342c7745d2aebe1672d52d40dcbcb0dd5c8016f148faf53a0277f",
+  "source_sha256": "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b",
+  "source_url": "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz",
+  "tool": "aria2c",
+  "url": "https://download.kevinx96.icu/bilikara/tools/aria2/1.37.0/5d188fb6a370d20ecb0b4edc1764ddf2a9439a9e/aria2-1.37.0-macos-x64-5d188fb6a370d20ecb0b4edc1764ddf2a9439a9e.tar.gz",
+  "version": "1.37.0"
+}

@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 APP_NAME = "bilikara"
@@ -48,6 +49,16 @@ BBDOWN_SOURCE_ENV = {
     "license": "BILIKARA_BBDOWN_LICENSE_FILE",
 }
 ARIA2_MACOS_METADATA_ENV = "BILIKARA_ARIA2_MACOS_METADATA_FILE"
+ARIA2_MACOS_LOCK_DIR = ROOT_DIR / "tools" / "aria2"
+ARIA2_MACOS_VERSION = "1.37.0"
+ARIA2_MACOS_SOURCE_URL = (
+    "https://github.com/aria2/aria2/releases/download/"
+    "release-1.37.0/aria2-1.37.0.tar.xz"
+)
+ARIA2_MACOS_SOURCE_SHA256 = (
+    "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
+)
+ARIA2_MACOS_PUBLIC_BASE = "https://download.kevinx96.icu/bilikara/tools"
 MACOS_SYSTEM_DEPENDENCY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
 
@@ -322,44 +333,83 @@ def _macos_aria2_metadata_args(
     if platform.system() != "Darwin":
         return []
     raw_path = os.getenv(ARIA2_MACOS_METADATA_ENV, "").strip()
-    if not raw_path:
-        raise RuntimeError(
-            f"{ARIA2_MACOS_METADATA_ENV} is required for a macOS release bundle"
-        )
-    metadata_path = Path(raw_path).expanduser()
+    metadata_path = (
+        Path(raw_path).expanduser()
+        if raw_path
+        else _locked_macos_aria2_metadata_path(platform.machine())
+    )
     if not metadata_path.is_file():
         raise RuntimeError(f"Configured macOS aria2c metadata not found: {metadata_path}")
     try:
         payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Invalid macOS aria2c metadata: {metadata_path}") from exc
+    expected_arch = _normalized_macos_arch(platform.machine())
     required = {
-        "schema_version": 1,
+        "schema_version": 2,
         "tool": "aria2c",
         "provider": "bilikara-r2",
         "platform": "darwin",
+        "version": ARIA2_MACOS_VERSION,
+        "source_url": ARIA2_MACOS_SOURCE_URL,
+        "source_sha256": ARIA2_MACOS_SOURCE_SHA256,
     }
     if any(payload.get(key) != value for key, value in required.items()):
         raise RuntimeError(f"Unexpected macOS aria2c metadata identity: {metadata_path}")
-    metadata_arch = payload.get("arch")
-    if metadata_arch not in {"arm64", "x64"}:
-        raise RuntimeError(f"Invalid macOS aria2c metadata architecture: {metadata_path}")
-    machine = platform.machine().lower()
-    expected_arch = "arm64" if machine in {"arm64", "aarch64"} else "x64"
+    metadata_arch = str(payload.get("arch") or "")
     if metadata_arch != expected_arch:
         raise RuntimeError(
             f"macOS aria2c metadata targets {metadata_arch}, but the bundle target is {expected_arch}"
         )
     if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("sha256") or "")):
         raise RuntimeError(f"Invalid macOS aria2c asset SHA-256: {metadata_path}")
-    if not str(payload.get("url") or "").startswith("https://"):
+    name = str(payload.get("name") or "")
+    url = str(payload.get("url") or "")
+    recipe_revision = str(payload.get("recipe_revision") or "")
+    if not name or Path(name).name != name or not name.endswith(".tar.gz"):
+        raise RuntimeError(f"Invalid macOS aria2c asset name: {metadata_path}")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", recipe_revision):
+        raise RuntimeError(f"Invalid macOS aria2c recipe revision: {metadata_path}")
+    parsed_url = urllib.parse.urlsplit(url)
+    configured_base = urllib.parse.urlsplit(ARIA2_MACOS_PUBLIC_BASE)
+    expected_path_prefix = (
+        f"{configured_base.path.rstrip('/')}/aria2/{ARIA2_MACOS_VERSION}/"
+    )
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.netloc != configured_base.netloc
+        or not parsed_url.path.startswith(expected_path_prefix)
+        or f"/{urllib.parse.quote(recipe_revision)}/" not in parsed_url.path
+        or not parsed_url.path.endswith(f"/{urllib.parse.quote(name)}")
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
         raise RuntimeError(f"macOS aria2c asset URL must use HTTPS: {metadata_path}")
     if verbose:
         print(f"Bundling pinned macOS aria2c download metadata: {metadata_path}")
+    # PyInstaller --add-data treats the destination as a directory name, not a
+    # file path.  Stage a copy with the canonical basename so it lands in the
+    # bundle as ``vendor/aria2-macos.json`` (a file, not a directory).
+    staged_metadata = ROOT_DIR / "build" / "aria2-macos.json"
+    staged_metadata.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(metadata_path.resolve(), staged_metadata)
     return [
         "--add-data",
-        f"{metadata_path.resolve()}{data_separator}vendor/aria2-macos.json",
+        f"{staged_metadata.resolve()}{data_separator}vendor",
     ]
+
+
+def _normalized_macos_arch(machine: str) -> str:
+    normalized = str(machine or "").strip().lower()
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    if normalized in {"x64", "x86_64", "amd64"}:
+        return "x64"
+    raise RuntimeError(f"Unsupported macOS bundle architecture: {machine}")
+
+
+def _locked_macos_aria2_metadata_path(machine: str) -> Path:
+    return ARIA2_MACOS_LOCK_DIR / f"macos-{_normalized_macos_arch(machine)}.json"
 
 
 def _rust_library_args(data_separator: str, *, verbose: bool = False) -> list[str]:

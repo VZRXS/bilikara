@@ -420,8 +420,12 @@ class MacOSBackendSmokeTest(unittest.TestCase):
             self.assertEqual(marker.get("version"), "1.6.3")
 
     def test_packaged_macos_aria2_prepares_on_demand_with_minimal_path(self):
+        if os.getenv("BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE") != "1":
+            raise unittest.SkipTest(
+                "Full aria2c download is reserved for the Tool Assets publication gate"
+            )
         if platform.system() != "Darwin":
-            if os.getenv("BILIKARA_REQUIRE_BACKEND_SMOKE") == "1":
+            if os.getenv("BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE") == "1":
                 self.fail("Required packaged aria2c smoke test must run on macOS")
             raise unittest.SkipTest("Packaged aria2c smoke test requires macOS")
         with tempfile.TemporaryDirectory(prefix="bilikara-aria2-smoke-") as temp_dir:

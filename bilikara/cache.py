@@ -6212,7 +6212,7 @@ class CacheManager:
             except (OSError, json.JSONDecodeError):
                 continue
             required = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "tool": "aria2c",
                 "provider": "bilikara-r2",
                 "platform": "darwin",
@@ -6226,7 +6226,7 @@ class CacheManager:
             name = str(payload.get("name") or "")
             url = str(payload.get("url") or "")
             sha256 = str(payload.get("sha256") or "").lower()
-            build_revision = str(payload.get("build_revision") or "").lower()
+            recipe_revision = str(payload.get("recipe_revision") or "")
             parsed_url = urllib.parse.urlsplit(url)
             configured_base = urllib.parse.urlsplit(TOOL_ASSET_BASE_URL)
             expected_path_prefix = f"{configured_base.path.rstrip('/')}/aria2/{ARIA2_MACOS_VERSION}/"
@@ -6235,13 +6235,15 @@ class CacheManager:
                 or Path(name).name != name
                 or not name.endswith(".tar.gz")
                 or not re.fullmatch(r"[0-9a-f]{64}", sha256)
-                or not re.fullmatch(r"[0-9a-f]{40}", build_revision)
-                or build_revision not in name
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", recipe_revision)
                 or parsed_url.scheme != "https"
-                or not configured_base.hostname
-                or parsed_url.hostname != configured_base.hostname
+                or not configured_base.netloc
+                or parsed_url.netloc != configured_base.netloc
                 or not parsed_url.path.startswith(expected_path_prefix)
+                or f"/{urllib.parse.quote(recipe_revision)}/" not in parsed_url.path
                 or not parsed_url.path.endswith(f"/{urllib.parse.quote(name)}")
+                or parsed_url.query
+                or parsed_url.fragment
             ):
                 continue
             return {

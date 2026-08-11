@@ -5,6 +5,7 @@ readonly ARIA2_VERSION="1.37.0"
 readonly ARIA2_SOURCE_URL="https://github.com/aria2/aria2/releases/download/release-${ARIA2_VERSION}/aria2-${ARIA2_VERSION}.tar.xz"
 readonly ARIA2_SOURCE_SHA256="60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
 readonly DEFAULT_PUBLIC_BASE="https://download.kevinx96.icu/bilikara/tools"
+readonly BUILD_RECIPE_REVISION="portable-macos-appletls-v2"
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "Portable aria2c builds must run on macOS" >&2
@@ -17,11 +18,6 @@ if [ "$#" -ne 1 ]; then
 fi
 
 output_dir="$1"
-build_revision="${GITHUB_SHA:-local}"
-if ! [[ "$build_revision" =~ ^[0-9a-fA-F]{40}$ ]]; then
-  echo "GITHUB_SHA must be a full commit SHA for a publishable aria2c build" >&2
-  exit 2
-fi
 
 machine="$(uname -m)"
 case "$machine" in
@@ -115,7 +111,6 @@ if ! printf '%s\n' "$file_output" | /usr/bin/grep -F "$machine" >/dev/null; then
   exit 1
 fi
 
-asset_name="aria2-${ARIA2_VERSION}-macos-${target_arch}-${build_revision}.tar.gz"
 mkdir -p "$package_dir" "$output_dir"
 /bin/cp "$aria2_binary" "$package_dir/aria2c"
 /bin/cp "$source_dir/COPYING" "$package_dir/COPYING"
@@ -124,23 +119,30 @@ printf '%s\n' \
   "version=$ARIA2_VERSION" \
   "official_source_url=$ARIA2_SOURCE_URL" \
   "official_source_sha256=$ARIA2_SOURCE_SHA256" \
-  "build_revision=$build_revision" \
+  "build_recipe_revision=$BUILD_RECIPE_REVISION" \
   "architecture=$target_arch" \
   "deployment_target=$MACOSX_DEPLOYMENT_TARGET" \
   "tls_backend=AppleTLS" \
   "features=HTTP/HTTPS (BitTorrent, Metalink, SFTP, and external libraries disabled)" \
   > "$package_dir/PROVENANCE.txt"
 
-/usr/bin/tar -czf "$output_dir/$asset_name" -C "$package_dir" aria2c COPYING PROVENANCE.txt
-archive_sha256="$(/usr/bin/shasum -a 256 "$output_dir/$asset_name" | /usr/bin/awk '{print $1}')"
+archive_staging="$output_dir/aria2-${ARIA2_VERSION}-macos-${target_arch}.tar.gz.partial"
+COPYFILE_DISABLE=1 /usr/bin/tar -cf - -C "$package_dir" aria2c COPYING PROVENANCE.txt \
+  | /usr/bin/gzip -n > "$archive_staging"
+archive_sha256="$(/usr/bin/shasum -a 256 "$archive_staging" | /usr/bin/awk '{print $1}')"
+asset_name="aria2-${ARIA2_VERSION}-macos-${target_arch}-${archive_sha256}.tar.gz"
+/bin/mv "$archive_staging" "$output_dir/$asset_name"
 public_base="${BILIKARA_TOOL_ASSET_PUBLIC_BASE:-$DEFAULT_PUBLIC_BASE}"
 public_base="${public_base%/}"
-asset_url="${public_base}/aria2/${ARIA2_VERSION}/${build_revision}/${asset_name}"
+object_key="bilikara/tools/aria2/${ARIA2_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${asset_name}"
+metadata_object_key="bilikara/tools/aria2/${ARIA2_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${archive_sha256}.json"
+asset_url="${public_base}/aria2/${ARIA2_VERSION}/${BUILD_RECIPE_REVISION}/macos-${target_arch}/${asset_name}"
 
 python - \
   "$output_dir/aria2-macos-${target_arch}.json" \
   "$target_arch" "$asset_name" "$asset_url" "$archive_sha256" \
-  "$ARIA2_VERSION" "$ARIA2_SOURCE_URL" "$ARIA2_SOURCE_SHA256" "$build_revision" \
+  "$ARIA2_VERSION" "$ARIA2_SOURCE_URL" "$ARIA2_SOURCE_SHA256" \
+  "$BUILD_RECIPE_REVISION" "$object_key" "$metadata_object_key" \
   <<'PY'
 import json
 import sys
@@ -154,10 +156,12 @@ import sys
     version,
     source_url,
     source_sha256,
-    revision,
+    recipe_revision,
+    object_key,
+    metadata_object_key,
 ) = sys.argv[1:]
 payload = {
-    "schema_version": 1,
+    "schema_version": 2,
     "tool": "aria2c",
     "provider": "bilikara-r2",
     "platform": "darwin",
@@ -168,7 +172,9 @@ payload = {
     "version": version,
     "source_url": source_url,
     "source_sha256": source_sha256,
-    "build_revision": revision,
+    "recipe_revision": recipe_revision,
+    "object_key": object_key,
+    "metadata_object_key": metadata_object_key,
 }
 with open(output_path, "w", encoding="utf-8", newline="\n") as output:
     json.dump(payload, output, ensure_ascii=True, indent=2, sort_keys=True)

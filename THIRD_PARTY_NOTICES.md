@@ -71,11 +71,13 @@ Recommended release notes:
 - Description: Experimental, opt-in transfer engine used by the DownKyi download source
 - License: GPL-2.0-or-later
 
-macOS packaged builds do not include aria2c by default. CI builds an HTTP/HTTPS-focused
-portable executable from the SHA-256-pinned official aria2 1.37.0 source archive using
-AppleTLS and system libraries only. The archive published to the project-controlled tool
-mirror includes the upstream license and provenance. It is downloaded only after the user
-selects DownKyi and confirms preparation. Homebrew is an optional fallback, not a prerequisite.
+macOS packaged builds do not include aria2c by default. The manual Tool Assets workflow
+builds an HTTP/HTTPS-focused portable executable from the SHA-256-pinned official aria2
+1.37.0 source archive using AppleTLS and system libraries only. Application bundles consume
+checked-in architecture-specific URL and SHA-256 locks; ordinary application CI does not
+rebuild or republish the tool. The project-controlled mirror archive includes the upstream
+license and provenance. It is downloaded only after the user selects DownKyi and confirms
+preparation. Homebrew is an optional fallback, not a prerequisite.
 
 ## 5. PyInstaller
 
