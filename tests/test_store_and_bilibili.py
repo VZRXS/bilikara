@@ -1577,7 +1577,6 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
                 patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
                 patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
                 patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
                 patch.object(bilibili_module, "_request_gatcha_uid_profile", side_effect=fake_profile),
                 patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
@@ -1716,7 +1715,6 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
                 patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
                 patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
                 patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
                 patch.object(
                     bilibili_module,
@@ -1832,19 +1830,12 @@ class BilibiliParserTest(unittest.TestCase):
             self.assertEqual(favlist_payload["items"][0]["cover_url"], "https://example.com/fav-cover.jpg")
 
     def test_nonblocking_gatcha_rebuild_status_does_not_report_busy(self):
-        task_status = {
-            "status": "idle",
-            "message": "",
-            "error": "",
-            "updated_at": 0,
-            "result": None,
-        }
-        with (
-            patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
-            patch.object(bilibili_module, "_GATCHA_TASK_STATUS", task_status),
-        ):
+        bilibili_module.rust_runtime.reset_gatcha_status_service()
+        try:
             bilibili_module._set_gatcha_task_status("running", message="rebuilding", blocking=False)
             snapshot = bilibili_module.gatcha_task_snapshot()
+        finally:
+            bilibili_module.rust_runtime.reset_gatcha_status_service()
 
         self.assertFalse(snapshot["busy"])
         self.assertTrue(snapshot["background_busy"])
@@ -1941,7 +1932,6 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
                 patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
                 patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
                 patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
                 patch.object(
                     bilibili_module,
@@ -1971,21 +1961,24 @@ class BilibiliParserTest(unittest.TestCase):
             cache_file = data_dir / "gatcha_cache.json"
             uid_file.write_text(json.dumps({"uids": ["1"]}), encoding="utf-8")
             cache_file.write_text(json.dumps({"schema_version": 2, "uids": {}, "profiles": {}}), encoding="utf-8")
-            refresh_lock = threading.Lock()
-            self.assertTrue(refresh_lock.acquire(blocking=False))
+            bilibili_module.rust_runtime.reset_gatcha_status_service()
+            self.assertTrue(
+                bilibili_module.rust_runtime.try_begin_gatcha_refresh(
+                    busy_message="test busy"
+                )
+            )
             try:
                 with (
                     patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
                     patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
                     patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
-                    patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", refresh_lock),
                     patch.object(bilibili_module, "preview_gatcha_uid") as preview,
                 ):
                     with self.assertRaisesRegex(bilibili_module.BilibiliError, "拉取任务执行中，请等待任务结束"):
                         bilibili_module.add_gatcha_uid("42")
                     preview.assert_not_called()
             finally:
-                refresh_lock.release()
+                bilibili_module.rust_runtime.release_gatcha_refresh()
 
             self.assertEqual(json.loads(uid_file.read_text(encoding="utf-8"))["uids"], ["1"])
 
@@ -2099,7 +2092,6 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module.cfg, "DATA_DIR", data_dir),
                 patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
                 patch.object(bilibili_module, "_GATCHA_FAVLIST_LOCK", threading.Lock()),
-                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
                 patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders),
                 patch.object(bilibili_module, "_fetch_gatcha_favlist_entries_for_folder", side_effect=fake_fetch),
             ):
@@ -2286,7 +2278,6 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module, "_GATCHA_UIDS_FILE", uid_file),
                 patch.object(bilibili_module, "_GATCHA_CACHE_FILE", cache_file),
                 patch.object(bilibili_module, "_GATCHA_FAVLIST_FILE", favlist_file),
-                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
                 patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
                 patch.object(bilibili_module, "_request_gatcha_favlist_page", side_effect=fake_fav_page),
             ):
@@ -2303,11 +2294,14 @@ class BilibiliParserTest(unittest.TestCase):
             def start(self):
                 self.target()
 
-        refresh_lock = threading.Lock()
-        self.assertTrue(refresh_lock.acquire(blocking=False))
+        bilibili_module.rust_runtime.reset_gatcha_status_service()
+        self.assertTrue(
+            bilibili_module.rust_runtime.try_begin_gatcha_refresh(
+                busy_message="test busy"
+            )
+        )
         try:
             with (
-                patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", refresh_lock),
                 patch.object(bilibili_module, "refresh_gatcha_cache", return_value={}) as refresh,
                 patch.object(bilibili_module.threading, "Thread", FakeThread),
             ):
@@ -2315,9 +2309,9 @@ class BilibiliParserTest(unittest.TestCase):
                 self.assertTrue(bilibili_module.refresh_gatcha_cache_in_background(use_global_lock=False))
 
             self.assertEqual(refresh.call_count, 1)
-            self.assertTrue(refresh_lock.locked())
+            self.assertTrue(bilibili_module.gatcha_task_snapshot()["busy"])
         finally:
-            refresh_lock.release()
+            bilibili_module.rust_runtime.release_gatcha_refresh()
 
     def test_startup_schema_rebuild_skips_regular_refresh(self):
         class FakeThread:
@@ -2359,17 +2353,8 @@ class BilibiliParserTest(unittest.TestCase):
             def start(self):
                 self.target()
 
-        task_status = {
-            "status": "idle",
-            "message": "",
-            "error": "",
-            "updated_at": 0.0,
-            "result": None,
-        }
+        bilibili_module.rust_runtime.reset_gatcha_status_service()
         with (
-            patch.object(bilibili_module, "_GATCHA_REFRESH_LOCK", threading.Lock()),
-            patch.object(bilibili_module, "_GATCHA_TASK_STATUS_LOCK", threading.Lock()),
-            patch.object(bilibili_module, "_GATCHA_TASK_STATUS", task_status),
             patch.object(bilibili_module, "refresh_gatcha_cache", side_effect=RuntimeError("boom")),
             patch.object(bilibili_module.threading, "Thread", FakeThread),
         ):

@@ -335,10 +335,8 @@ class CacheManager:
         self.cache_interrupted_messages: dict[str, str] = {}
         self.log_dir = LOG_DIR
         self.bbdown_login_cancel_event: threading.Event | None = None
-        self.bbdown_login_state = "idle"
-        self.bbdown_login_message = "未登录"
-        # self.bbdown_login_qr_text = ""
-        self.bbdown_login_qr_image = ""
+        self.bbdown_login_generation: int | None = None
+        rust_runtime.reset_bilibili_login_status()
         self._load_cache_policy()
         runtime_status = rust_runtime.runtime_status()
         self.binary_state = "ready" if runtime_status["loaded"] else "failed"
@@ -416,37 +414,21 @@ class CacheManager:
         data_path = self._bbdown_data_path()
         data_exists = data_path.exists()
         logged_in = bool(cookie_from_bbdown_data(data_path))
-        with self.lock:
-            if self.bbdown_login_state == "failed":
-                logged_in = False
-                state = "failed"
-                message = self.bbdown_login_message
-            elif logged_in:
-                state = "logged_in"
-                message = "BBDown 已登录"
-            elif data_exists and self.bbdown_login_state not in {"starting", "waiting"}:
-                state = "failed"
-                message = "BBDown 登录完成，但 BBDown.data 中未检测到有效的 SESSDATA 和 bili_jct"
-            else:
-                state = self.bbdown_login_state
-                message = self.bbdown_login_message
-            return {
-                "logged_in": logged_in,
-                "state": state,
-                "message": message,
-                "data_path": str(self._bbdown_data_path()),
-                # "qr_text": "" if logged_in else self.bbdown_login_qr_text,
-                "qr_image": "" if logged_in else self.bbdown_login_qr_image,
-            }
+        return rust_runtime.bilibili_login_snapshot(
+            logged_in=logged_in,
+            data_exists=data_exists,
+            data_path=data_path,
+        )
 
     def start_bbdown_login(self, *, force_refresh_qr: bool = False) -> dict[str, Any]:
         if cookie_from_bbdown_data(self._bbdown_data_path()):
             return self.bbdown_login_status()
+        login_status = self.bbdown_login_status()
         with self.lock:
             active_login = (
                 self.bbdown_login_cancel_event is not None
                 and not self.bbdown_login_cancel_event.is_set()
-                and self.bbdown_login_state in {"starting", "waiting"}
+                and login_status.get("state") in {"starting", "waiting"}
             )
             if active_login and not force_refresh_qr:
                 return self.bbdown_login_status()
@@ -454,14 +436,14 @@ class CacheManager:
                 self.bbdown_login_cancel_event.set()
             cancel_event = threading.Event()
             self.bbdown_login_cancel_event = cancel_event
-            self.bbdown_login_state = "starting"
-            self.bbdown_login_message = "正在启动 BBDown 登录"
-            # self.bbdown_login_qr_text = ""
-            self.bbdown_login_qr_image = ""
+            generation = rust_runtime.begin_bilibili_login(
+                message="正在启动 BBDown 登录"
+            )
+            self.bbdown_login_generation = generation
         self._remove_bbdown_qr_image()
         threading.Thread(
             target=self._bbdown_login_worker,
-            args=(cancel_event,),
+            args=(cancel_event, generation),
             daemon=True,
         ).start()
         return self.bbdown_login_status()
@@ -471,19 +453,16 @@ class CacheManager:
             if self.bbdown_login_cancel_event is not None:
                 self.bbdown_login_cancel_event.set()
             self.bbdown_login_cancel_event = None
+            self.bbdown_login_generation = None
         self._remove_bbdown_qr_image()
         try:
             self._bbdown_data_path().unlink(missing_ok=True)
         except OSError as exc:
-            with self.lock:
-                self.bbdown_login_state = "failed"
-                self.bbdown_login_message = f"退出登录失败: {exc}"
+            rust_runtime.set_bilibili_login_status(
+                "failed", message=f"退出登录失败: {exc}"
+            )
             return self.bbdown_login_status()
-        with self.lock:
-            self.bbdown_login_state = "idle"
-            self.bbdown_login_message = "未登录"
-            # self.bbdown_login_qr_text = ""
-            self.bbdown_login_qr_image = ""
+        rust_runtime.reset_bilibili_login_status()
         return self.bbdown_login_status()
 
     def policy_snapshot(self, metrics: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1088,6 +1067,7 @@ class CacheManager:
             if self.bbdown_login_cancel_event is not None:
                 self.bbdown_login_cancel_event.set()
                 self.bbdown_login_cancel_event = None
+                self.bbdown_login_generation = None
         self._terminate_processes(processes, wait=True)
         current_thread = threading.current_thread()
         for worker in urgent_workers:
@@ -7680,11 +7660,22 @@ class CacheManager:
             return False
         return bool(cookie_from_bbdown_data(data_path))
 
-    def _bbdown_login_worker(self, cancel_event: threading.Event | None = None) -> None:
+    def _bbdown_login_worker(
+        self,
+        cancel_event: threading.Event | None = None,
+        generation: int | None = None,
+    ) -> None:
         cancel_event = cancel_event or threading.Event()
         with self.lock:
             if self.bbdown_login_cancel_event is None:
                 self.bbdown_login_cancel_event = cancel_event
+            if generation is None:
+                generation = self.bbdown_login_generation
+            if generation is None:
+                generation = rust_runtime.begin_bilibili_login(
+                    message="正在启动 BBDown 登录"
+                )
+                self.bbdown_login_generation = generation
 
         login_succeeded = False
         notify_success = False
@@ -7714,11 +7705,18 @@ class CacheManager:
                 self._bbdown_qr_image_path(),
             )
             with self.lock:
-                if self.bbdown_login_cancel_event is not cancel_event:
+                if (
+                    self.bbdown_login_cancel_event is not cancel_event
+                    or self.bbdown_login_generation != generation
+                ):
                     return
-                self.bbdown_login_state = "waiting"
-                self.bbdown_login_message = "请使用哔哩哔哩 App 扫码登录"
-                self.bbdown_login_qr_image = qr_image
+                if not rust_runtime.set_bilibili_login_status(
+                    "waiting",
+                    message="请使用哔哩哔哩 App 扫码登录",
+                    qr_image=qr_image,
+                    generation=generation,
+                ):
+                    return
 
             while not cancel_event.wait(1.0):
                 login_stage = "poll"
@@ -7737,8 +7735,16 @@ class CacheManager:
                     continue
                 if code == BILIBILI_QR_WAITING_CONFIRMATION:
                     with self.lock:
-                        if self.bbdown_login_cancel_event is cancel_event:
-                            self.bbdown_login_message = "扫码成功，请在哔哩哔哩 App 中确认"
+                        if (
+                            self.bbdown_login_cancel_event is cancel_event
+                            and self.bbdown_login_generation == generation
+                        ):
+                            rust_runtime.set_bilibili_login_status(
+                                "waiting",
+                                message="扫码成功，请在哔哩哔哩 App 中确认",
+                                qr_image=qr_image,
+                                generation=generation,
+                            )
                     continue
                 if code == BILIBILI_QR_EXPIRED:
                     failure_message = "二维码已过期，请重新生成"
@@ -7778,21 +7784,28 @@ class CacheManager:
         finally:
             with self.lock:
                 is_current_login = self.bbdown_login_cancel_event is cancel_event
+                is_current_login = (
+                    is_current_login
+                    and self.bbdown_login_generation == generation
+                )
                 if is_current_login:
                     self.bbdown_login_cancel_event = None
+                    self.bbdown_login_generation = None
                     self._remove_bbdown_qr_image()
-                    self.bbdown_login_qr_image = ""
                     if cancel_event.is_set():
-                        if self.bbdown_login_state not in {"idle", "logged_in"}:
-                            self.bbdown_login_state = "idle"
-                            self.bbdown_login_message = "未登录"
+                        rust_runtime.reset_bilibili_login_status()
                     elif login_succeeded:
-                        self.bbdown_login_state = "logged_in"
-                        self.bbdown_login_message = "BBDown 已登录"
-                        notify_success = True
+                        notify_success = rust_runtime.set_bilibili_login_status(
+                            "logged_in",
+                            message="BBDown 已登录",
+                            generation=generation,
+                        )
                     else:
-                        self.bbdown_login_state = "failed"
-                        self.bbdown_login_message = failure_message
+                        rust_runtime.set_bilibili_login_status(
+                            "failed",
+                            message=failure_message,
+                            generation=generation,
+                        )
 
         if notify_success:
             self._notify_bbdown_login_success()

@@ -19,6 +19,7 @@ def packaged_tool_smoke_json(tool: str) -> str:
         or not runtime_path.is_file()
         or not capabilities.get("http_download")
         or not capabilities.get("media_backend")
+        or not capabilities.get("status_service")
     ):
         raise RuntimeError(
             f"native runtime validation failed: {status.get('error') or runtime_path}"

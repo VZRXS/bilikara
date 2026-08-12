@@ -196,6 +196,72 @@ class RustRuntimeAdapterTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
+    def test_native_status_service_owns_gatcha_lease_and_task_state(self):
+        rust_runtime.reset_gatcha_status_service()
+        try:
+            self.assertTrue(
+                rust_runtime.try_begin_gatcha_refresh(
+                    busy_message="refresh busy",
+                    task={
+                        "status": "running",
+                        "message": "refreshing",
+                        "blocking": True,
+                    },
+                )
+            )
+            self.assertFalse(
+                rust_runtime.try_begin_gatcha_refresh(busy_message="duplicate")
+            )
+            self.assertTrue(rust_runtime.gatcha_task_snapshot()["busy"])
+
+            rust_runtime.release_gatcha_refresh()
+            snapshot = rust_runtime.set_gatcha_task_status(
+                "running", message="schema rebuild", blocking=False
+            )
+            self.assertFalse(snapshot["busy"])
+            self.assertTrue(snapshot["background_busy"])
+        finally:
+            rust_runtime.reset_gatcha_status_service()
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
+    def test_native_status_service_rejects_stale_bilibili_login_updates(self):
+        rust_runtime.reset_bilibili_login_status()
+        first_generation = rust_runtime.begin_bilibili_login(message="first")
+        current_generation = rust_runtime.begin_bilibili_login(message="second")
+
+        self.assertFalse(
+            rust_runtime.set_bilibili_login_status(
+                "failed",
+                message="stale failure",
+                generation=first_generation,
+            )
+        )
+        self.assertTrue(
+            rust_runtime.set_bilibili_login_status(
+                "waiting",
+                message="scan current code",
+                qr_image="data:image/png;base64,current",
+                generation=current_generation,
+            )
+        )
+        snapshot = rust_runtime.bilibili_login_snapshot(
+            logged_in=False,
+            data_exists=False,
+            data_path=Path("BBDown.data"),
+        )
+        self.assertEqual(snapshot["state"], "waiting")
+        self.assertEqual(snapshot["message"], "scan current code")
+        self.assertEqual(snapshot["qr_image"], "data:image/png;base64,current")
+
 
 class RustRuntimeCacheRoutingTest(unittest.TestCase):
     def make_manager(self):

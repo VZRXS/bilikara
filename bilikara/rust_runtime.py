@@ -39,6 +39,10 @@ class RustMediaError(RuntimeError):
         self.response = response
 
 
+class RustStatusServiceError(RuntimeError):
+    pass
+
+
 def _runtime_library_name() -> str:
     system = platform.system()
     if system == "Windows":
@@ -89,6 +93,8 @@ def _load_runtime_library(path: Path | None):
         library.bilikara_runtime_media_probe.restype = ctypes.c_void_p
         library.bilikara_runtime_media_normalize.argtypes = [ctypes.c_char_p]
         library.bilikara_runtime_media_normalize.restype = ctypes.c_void_p
+        library.bilikara_runtime_status_service.argtypes = [ctypes.c_char_p]
+        library.bilikara_runtime_status_service.restype = ctypes.c_void_p
         library.bilikara_runtime_free_string.argtypes = [ctypes.c_void_p]
         library.bilikara_runtime_free_string.restype = None
         return library, ""
@@ -110,6 +116,7 @@ def runtime_status() -> dict[str, Any]:
         "capabilities": {
             "http_download": _runtime_lib is not None,
             "media_backend": _runtime_lib is not None,
+            "status_service": _runtime_lib is not None,
         },
     }
 
@@ -120,6 +127,219 @@ def http_download_available() -> bool:
 
 def media_backend_available() -> bool:
     return _runtime_lib is not None
+
+
+def status_service_available() -> bool:
+    return _runtime_lib is not None
+
+
+def gatcha_task_snapshot() -> dict[str, Any]:
+    return _validated_gatcha_snapshot(
+        _call_status_service({"command": "gacha_snapshot"})
+    )
+
+
+def try_begin_gatcha_refresh(
+    *,
+    busy_message: str,
+    task: dict[str, Any] | None = None,
+) -> bool:
+    request: dict[str, Any] = {
+        "command": "gacha_try_begin",
+        "busy_message": str(busy_message),
+    }
+    if task is not None:
+        request["task"] = _gatcha_task_update(task)
+    result = _call_status_service(request)
+    if not isinstance(result.get("started"), bool):
+        raise RustStatusServiceError("Rust status service returned an invalid lease result")
+    _validated_gatcha_snapshot(result.get("snapshot"))
+    return bool(result["started"])
+
+
+def set_gatcha_task_status(
+    status: str,
+    *,
+    message: str = "",
+    error: str = "",
+    result: dict[str, Any] | None = None,
+    blocking: bool = True,
+    busy_message: str = "",
+) -> dict[str, Any]:
+    task = _gatcha_task_update(
+        {
+            "status": status,
+            "message": message,
+            "error": error,
+            "result": result,
+            "blocking": blocking,
+        }
+    )
+    return _validated_gatcha_snapshot(
+        _call_status_service(
+            {
+                "command": "gacha_set",
+                "task": task,
+                "busy_message": str(busy_message),
+            }
+        )
+    )
+
+
+def release_gatcha_refresh() -> dict[str, Any]:
+    return _validated_gatcha_snapshot(
+        _call_status_service({"command": "gacha_release"})
+    )
+
+
+def reset_gatcha_status_service() -> dict[str, Any]:
+    return _validated_gatcha_snapshot(
+        _call_status_service({"command": "gacha_reset"})
+    )
+
+
+def begin_bilibili_login(*, message: str) -> int:
+    result = _call_status_service(
+        {"command": "bilibili_begin", "message": str(message)}
+    )
+    generation = result.get("generation")
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
+        raise RustStatusServiceError("Rust status service returned an invalid login generation")
+    return generation
+
+
+def set_bilibili_login_status(
+    state: str,
+    *,
+    message: str = "",
+    qr_image: str = "",
+    generation: int | None = None,
+) -> bool:
+    request: dict[str, Any] = {
+        "command": "bilibili_set",
+        "state": str(state),
+        "message": str(message),
+        "qr_image": str(qr_image),
+    }
+    if generation is not None:
+        request["generation"] = int(generation)
+    result = _call_status_service(request)
+    if not isinstance(result.get("applied"), bool):
+        raise RustStatusServiceError("Rust status service returned an invalid update result")
+    return bool(result["applied"])
+
+
+def bilibili_login_snapshot(
+    *, logged_in: bool, data_exists: bool, data_path: Path
+) -> dict[str, Any]:
+    result = _call_status_service(
+        {
+            "command": "bilibili_snapshot",
+            "facts": {
+                "logged_in": bool(logged_in),
+                "data_exists": bool(data_exists),
+                "data_path": str(data_path),
+            },
+        }
+    )
+    required = {"logged_in", "state", "message", "data_path", "qr_image"}
+    if not isinstance(result, dict) or not required.issubset(result):
+        raise RustStatusServiceError("Rust status service returned an invalid login snapshot")
+    if not isinstance(result.get("logged_in"), bool):
+        raise RustStatusServiceError("Rust status service returned an invalid login flag")
+    return {
+        "logged_in": result["logged_in"],
+        "state": str(result["state"]),
+        "message": str(result["message"]),
+        "data_path": str(result["data_path"]),
+        "qr_image": str(result["qr_image"]),
+    }
+
+
+def reset_bilibili_login_status() -> None:
+    result = _call_status_service({"command": "bilibili_reset"})
+    if result.get("reset") is not True:
+        raise RustStatusServiceError("Rust status service did not reset login state")
+
+
+def _call_status_service(request: dict[str, Any]) -> dict[str, Any]:
+    if _runtime_lib is None:
+        raise RustRuntimeUnavailableError(_runtime_error or "Rust runtime is unavailable")
+    payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    pointer = _runtime_lib.bilikara_runtime_status_service(payload)
+    if not pointer:
+        raise RustStatusServiceError("Rust status service returned no response")
+    try:
+        response_bytes = ctypes.string_at(pointer)
+    finally:
+        _runtime_lib.bilikara_runtime_free_string(pointer)
+    try:
+        response = json.loads(response_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RustStatusServiceError("Rust status service returned malformed JSON") from exc
+    if (
+        not isinstance(response, dict)
+        or response.get("schema_version") != 1
+        or response.get("status") != "completed"
+        or not isinstance(response.get("result"), dict)
+    ):
+        raise RustStatusServiceError("Rust status service returned an invalid response")
+    return response["result"]
+
+
+def _gatcha_task_update(task: dict[str, Any]) -> dict[str, Any]:
+    status = str(task.get("status") or "").strip().lower()
+    if status not in {"idle", "running", "success", "partial", "failed"}:
+        raise ValueError(f"unsupported gatcha task status: {status}")
+    result = task.get("result")
+    if result is not None and not isinstance(result, dict):
+        raise ValueError("gatcha task result must be an object or null")
+    return {
+        "status": status,
+        "message": str(task.get("message") or ""),
+        "error": str(task.get("error") or ""),
+        "result": result,
+        "blocking": bool(task.get("blocking", True)),
+    }
+
+
+def _validated_gatcha_snapshot(snapshot: object) -> dict[str, Any]:
+    required = {
+        "busy",
+        "background_busy",
+        "blocking",
+        "message",
+        "last_status",
+        "last_message",
+        "last_error",
+        "last_updated_at",
+        "last_result",
+    }
+    if not isinstance(snapshot, dict) or not required.issubset(snapshot):
+        raise RustStatusServiceError("Rust status service returned an invalid gatcha snapshot")
+    if any(
+        not isinstance(snapshot.get(key), bool)
+        for key in ("busy", "background_busy", "blocking")
+    ):
+        raise RustStatusServiceError("Rust status service returned invalid gatcha flags")
+    try:
+        updated_at = float(snapshot.get("last_updated_at") or 0)
+    except (TypeError, ValueError) as exc:
+        raise RustStatusServiceError("Rust status service returned an invalid timestamp") from exc
+    last_result = snapshot.get("last_result")
+    if last_result is not None and not isinstance(last_result, dict):
+        raise RustStatusServiceError("Rust status service returned an invalid task result")
+    return {
+        "busy": snapshot["busy"],
+        "background_busy": snapshot["background_busy"],
+        "blocking": snapshot["blocking"],
+        "message": str(snapshot["message"]),
+        "last_status": str(snapshot["last_status"]),
+        "last_message": str(snapshot["last_message"]),
+        "last_error": str(snapshot["last_error"]),
+        "last_updated_at": updated_at,
+        "last_result": last_result,
+    }
 
 
 def download_to_path(

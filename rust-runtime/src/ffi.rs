@@ -2,9 +2,15 @@ use crate::http_downloader::{DownloadError, DownloadProgress, DownloadRequest, d
 use crate::media_backend::{
     MediaError, MediaNormalizeRequest, MediaPathRequest, normalize_media, probe_media,
 };
-use serde::Serialize;
+use crate::status_service::{
+    BilibiliLoginFacts, BilibiliLoginStatus, BilibiliLoginUpdate, GachaTaskUpdate,
+    RuntimeStatusService,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Mutex, OnceLock};
 
 const RUNTIME_ABI_VERSION: u32 = 1;
 
@@ -30,6 +36,49 @@ struct MediaWireResponse<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<MediaError>,
 }
+
+#[derive(Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+enum StatusServiceCommand {
+    GachaSnapshot,
+    GachaTryBegin {
+        busy_message: String,
+        #[serde(default)]
+        task: Option<GachaTaskUpdate>,
+    },
+    GachaSet {
+        task: GachaTaskUpdate,
+        #[serde(default)]
+        busy_message: String,
+    },
+    GachaRelease,
+    GachaReset,
+    BilibiliBegin {
+        message: String,
+    },
+    BilibiliSet {
+        #[serde(default)]
+        generation: Option<u64>,
+        state: BilibiliLoginStatus,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        qr_image: String,
+    },
+    BilibiliSnapshot {
+        facts: BilibiliLoginFacts,
+    },
+    BilibiliReset,
+}
+
+#[derive(Serialize)]
+struct StatusServiceWireResponse {
+    schema_version: u32,
+    status: &'static str,
+    result: Value,
+}
+
+static STATUS_SERVICE: OnceLock<Mutex<RuntimeStatusService>> = OnceLock::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bilikara_runtime_abi_version() -> u32 {
@@ -107,6 +156,85 @@ pub unsafe extern "C" fn bilikara_runtime_media_normalize(
     media_call(request_json, |request: MediaNormalizeRequest| {
         normalize_media(&request)
     })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 status-service command.
+pub unsafe extern "C" fn bilikara_runtime_status_service(
+    request_json: *const c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if request_json.is_null() {
+            return None;
+        }
+        // SAFETY: This C ABI entrypoint requires a valid null-terminated UTF-8 string.
+        let request_text = unsafe { CStr::from_ptr(request_json) }.to_str().ok()?;
+        let command: StatusServiceCommand = serde_json::from_str(request_text).ok()?;
+        let service = STATUS_SERVICE.get_or_init(|| Mutex::new(RuntimeStatusService::default()));
+        let mut service = service
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = match command {
+            StatusServiceCommand::GachaSnapshot => json!(service.gacha_snapshot()),
+            StatusServiceCommand::GachaTryBegin { busy_message, task } => {
+                let started = service.try_begin_gacha_refresh(busy_message, task);
+                json!({"started": started, "snapshot": service.gacha_snapshot()})
+            }
+            StatusServiceCommand::GachaSet { task, busy_message } => {
+                service.set_gacha_busy_message(busy_message);
+                service.set_gacha_task(task);
+                json!(service.gacha_snapshot())
+            }
+            StatusServiceCommand::GachaRelease => {
+                service.release_gacha_refresh();
+                json!(service.gacha_snapshot())
+            }
+            StatusServiceCommand::GachaReset => {
+                service.reset_gacha();
+                json!(service.gacha_snapshot())
+            }
+            StatusServiceCommand::BilibiliBegin { message } => {
+                let generation = service.begin_bilibili_login(message);
+                json!({"generation": generation})
+            }
+            StatusServiceCommand::BilibiliSet {
+                generation,
+                state,
+                message,
+                qr_image,
+            } => {
+                let applied = service.set_bilibili_login(
+                    generation,
+                    BilibiliLoginUpdate {
+                        state,
+                        message,
+                        qr_image,
+                    },
+                );
+                json!({"applied": applied})
+            }
+            StatusServiceCommand::BilibiliSnapshot { facts } => {
+                json!(service.bilibili_snapshot(facts))
+            }
+            StatusServiceCommand::BilibiliReset => {
+                service.reset_bilibili_login();
+                json!({"reset": true})
+            }
+        };
+        let response = StatusServiceWireResponse {
+            schema_version: 1,
+            status: "completed",
+            result,
+        };
+        CString::new(serde_json::to_string(&response).ok()?)
+            .ok()
+            .map(CString::into_raw)
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
 }
 
 fn media_call<Request, ResultValue, Operation>(

@@ -33,6 +33,10 @@ instead of using Rust only as a library of deterministic rules.
 
 - Introduce Rust runtime/application services and Rust `AppState` ownership for
   stateful store, session, playlist, and cache behavior.
+- The first stateful application-service slice is implemented in
+  `rust-runtime`: it owns the Bilibili QR-login state machine and generation
+  guard, plus Gacha task status and the exclusive refresh lease. Python still
+  performs cookie/filesystem checks, HTTP requests, and worker orchestration.
 - Make the Rust server/runtime the normal path. Retain Python only as a desktop
   compatibility/startup fallback during the transition.
 - Select one stateful core mode at startup: Rust Core mode for the process, or
