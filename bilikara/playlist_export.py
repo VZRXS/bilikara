@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .config import APP_VERSION
+from .config import APP_VERSION, STATIC_DIR
 from .title_cleanup import clean_display_title
 
 PLAYLIST_IMAGE_PAGE_SIZE = 80
@@ -660,9 +660,13 @@ def _draw_text_with_fallback(draw: Any, xy: tuple[int, int], text: str, fill: st
         x += _measure_text_run(draw, run_text, font)
 
 
+def _bundled_source_han_sans_path() -> Path:
+    return (STATIC_DIR / "fonts" / "SourceHanSans-VF.ttf").resolve()
+
+
 def _load_font(font_module: Any, size: int, *, bold: bool = False) -> list[Any]:
     candidates = [
-        "static/fonts/SourceHanSans-VF.ttf",
+        str(_bundled_source_han_sans_path()),
         # Windows Fonts
         "C:/Windows/Fonts/msyhbd.ttc" if bold else "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/msjhbd.ttc" if bold else "C:/Windows/Fonts/msjh.ttc",
