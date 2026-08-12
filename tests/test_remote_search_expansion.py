@@ -17,7 +17,7 @@ class RemoteSearchExpansionTest(unittest.TestCase):
         source = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
         cls.search_source = source[
             source.index("const canonicalBilikaraSearch =") :
-            source.index("function normalizeD1BrowseTagForMerge(")
+            source.index("function d1BrowseTitle(")
         ]
         cls.modal_submit_handler = source[
             source.index('elements.searchModalLarkForm?.addEventListener("submit"') :

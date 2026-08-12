@@ -912,6 +912,142 @@ class PlaylistAddRequestTest(unittest.TestCase):
 
         fetch_video.assert_not_called()
 
+    def test_successful_add_queues_video_for_cloudflare_indexing(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+        item = SimpleNamespace(
+            owner_mid=123,
+            bvid="BV1xx411c7mD",
+            title="Song title",
+            display_title="Display title",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            original_url="https://b23.tv/example",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/123",
+            cover_url="https://example.com/cover.jpg",
+        )
+        added = []
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            store=SimpleNamespace(
+                session_request_for_item=lambda _item: None,
+                active_duplicate_for_item=lambda _item: None,
+            ),
+            add_item=lambda added_item, **kwargs: added.append((added_item, kwargs)),
+            snapshot=lambda: {"playlist": []},
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.fetch_video_item",
+            return_value=item,
+        ), patch("bilikara.server.append_lark_pool_entries_in_background") as append_entries:
+            handler._handle_add(
+                {
+                    "url": item.original_url,
+                    "position": "tail",
+                    "requester_name": "VZRXS",
+                }
+            )
+
+        self.assertEqual(len(added), 1)
+        append_entries.assert_called_once_with(
+            [
+                {
+                    "mid": "123",
+                    "bvid": item.bvid,
+                    "title": item.title,
+                    "url": item.resolved_url,
+                    "owner_name": item.owner_name,
+                    "owner_url": item.owner_url,
+                    "cover_url": item.cover_url,
+                }
+            ]
+        )
+        self.assertEqual(writes, [({"ok": True, "data": {"playlist": []}}, None)])
+
+    def test_add_indexing_payload_falls_back_to_display_title_and_original_url(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler._write_json = lambda payload, status=None: None
+        item = SimpleNamespace(
+            owner_mid=123,
+            bvid="BV1xx411c7mD",
+            title="",
+            display_title="Display title",
+            resolved_url="",
+            original_url="https://b23.tv/example",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/123",
+            cover_url="https://example.com/cover.jpg",
+        )
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            store=SimpleNamespace(
+                session_request_for_item=lambda _item: None,
+                active_duplicate_for_item=lambda _item: None,
+            ),
+            add_item=lambda *_args, **_kwargs: None,
+            snapshot=lambda: {"playlist": []},
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.fetch_video_item",
+            return_value=item,
+        ), patch("bilikara.server.append_lark_pool_entries_in_background") as append_entries:
+            handler._handle_add({"url": item.original_url})
+
+        entry = append_entries.call_args.args[0][0]
+        self.assertEqual(entry["title"], item.display_title)
+        self.assertEqual(entry["url"], item.original_url)
+
+    def test_successful_add_is_not_failed_by_indexing_scheduler_error(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+        item = SimpleNamespace(
+            owner_mid=123,
+            bvid="BV1xx411c7mD",
+            title="Song title",
+            display_title="Display title",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            original_url="https://b23.tv/example",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/123",
+            cover_url="https://example.com/cover.jpg",
+        )
+        added = []
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            store=SimpleNamespace(
+                session_request_for_item=lambda _item: None,
+                active_duplicate_for_item=lambda _item: None,
+            ),
+            add_item=lambda added_item, **kwargs: added.append((added_item, kwargs)),
+            snapshot=lambda: {"playlist": [item.bvid]},
+        )
+
+        with (
+            patch("bilikara.server.CONTEXT", context),
+            patch("bilikara.server.fetch_video_item", return_value=item),
+            patch(
+                "bilikara.server.append_lark_pool_entries_in_background",
+                side_effect=RuntimeError("scheduler failed"),
+            ),
+            patch("builtins.print") as mock_print,
+        ):
+            handler._handle_add({"url": item.original_url})
+
+        self.assertEqual(len(added), 1)
+        self.assertEqual(writes, [({"ok": True, "data": {"playlist": [item.bvid]}}, None)])
+        mock_print.assert_called_once_with(
+            "[bilikara:lark] background append scheduling failed: scheduler failed",
+            file=server_module.sys.stderr,
+            flush=True,
+        )
+
     def test_missing_bilibili_video_error_deletes_pool_bvid(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
 

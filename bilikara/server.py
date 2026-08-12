@@ -47,6 +47,7 @@ from .bilibili import (
 )
 from .lark_pool_client import (
     LarkPoolError,
+    append_lark_pool_entries_in_background,
     approve_cloudflare_review_items,
     browse_d1_category_pool,
     browse_d1_pool,
@@ -2164,6 +2165,27 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         if (existing_session_entry or active_duplicate) and not allow_repeat:
             raise DuplicateSessionRequestError(item, existing_session_entry, active_duplicate)
         CONTEXT.add_item(item, position=position, requester_name=requester_name)
+        try:
+            append_lark_pool_entries_in_background(
+                [
+                    {
+                        "mid": str(item.owner_mid or ""),
+                        "bvid": item.bvid,
+                        "title": item.title or item.display_title,
+                        "url": item.resolved_url or item.original_url,
+                        "owner_name": item.owner_name,
+                        "owner_url": item.owner_url,
+                        "cover_url": item.cover_url,
+                    }
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001
+            error = " ".join(str(exc).split())[:300] or type(exc).__name__
+            print(
+                f"[bilikara:lark] background append scheduling failed: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
         self._write_json({"ok": True, "data": CONTEXT.snapshot()})
 
     def _delete_missing_bvid_from_pool_if_needed(self, body: dict, error: Exception) -> None:
