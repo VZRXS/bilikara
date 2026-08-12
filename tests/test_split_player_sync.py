@@ -112,6 +112,8 @@ const state = {{
   localSeekSettleCallback: null,
   localPlayerSyncTimer: null,
   localPlayerStartupTimer: null,
+  localPlayerControlsHideTimer: null,
+  localPlayerControlsHideGeneration: 0,
   localPlaybackStartupWatchdogTimer: null,
   localPlayerEventCleanups: [],
   tauriMediaSessionOwner: null,
@@ -190,7 +192,7 @@ let effectiveOffsetSeconds = 0.2;
 function currentAvOffsetSeconds() {{ return effectiveOffsetSeconds; }}
 function currentAvOffsetMs() {{ return effectiveOffsetSeconds * 1000; }}
 function isActiveSplitPlayer() {{ return true; }}
-function showMountedPlayerControls() {{}}
+function revealMountedPlayerControlsForUserInteraction() {{}}
 function resumeAudioContextBestEffort() {{}}
 function reportPlayerStatus() {{}}
 let advances = 0;
@@ -2474,41 +2476,197 @@ console.log(JSON.stringify({
 
     def test_native_controls_are_unavailable_until_split_start_is_established(self):
         controls_source = self._slice(
-            "function showMountedPlayerControls",
+            "function clearLocalPlayerControlsHideTimer",
             "function toggleMountedLocalPlayback",
         )
         result = self.run_node(
             """
-const attributes = new Set(["controls"]);
 const video = new FakeMedia(0);
-video.controls = true;
+const attributes = new Set();
+video.controls = false;
 video.setAttribute = (name) => attributes.add(name);
 video.removeAttribute = (name) => attributes.delete(name);
 const audio = {};
 mountedVideo = video;
 mountedAudio = audio;
 state.localPlaybackStartState = "pending";
-showMountedPlayerControls();
+revealMountedPlayerControlsForUserInteraction();
 const pending = { controls: video.controls, hasAttribute: attributes.has("controls") };
+state.localPlaybackStartState = "starting";
+revealMountedPlayerControlsForUserInteraction();
+const starting = { controls: video.controls, hasAttribute: attributes.has("controls") };
 state.localPlaybackStartState = "established";
-showMountedPlayerControls();
+revealMountedPlayerControlsForUserInteraction();
 const established = { controls: video.controls, hasAttribute: attributes.has("controls") };
-console.log(JSON.stringify({ pending, established }));
-""",
-            """
-function mountedLocalVideoElement() { return mountedVideo; }
-function clearLocalPlayerControlsHideTimer() {}
-function scheduleMountedPlayerControlsHide() {}
+console.log(JSON.stringify({ pending, starting, established }));
 """,
             controls_source,
+            """
+function mountedLocalVideoElement() { return mountedVideo; }
+const playerControlsAutoHideMs = 5000;
+window.setTimeout = () => ({ timer: "controls" });
+window.clearTimeout = () => {};
+""",
         )
         self.assertEqual(
             result,
             {
                 "pending": {"controls": False, "hasAttribute": False},
+                "starting": {"controls": False, "hasAttribute": False},
                 "established": {"controls": True, "hasAttribute": True},
             },
         )
+
+    def test_player_surface_interactions_reveal_controls_only_after_startup_and_hide_on_leave(self):
+        controls_source = self._slice(
+            "function clearLocalPlayerControlsHideTimer",
+            "function toggleMountedLocalPlayback",
+        )
+        interaction_source = self._slice(
+            '  ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach',
+            '  addMountedPlayerListener(video, "ended",',
+        )
+        result = self.run_node(
+            """
+const attributes = new Set();
+const video = new FakeMedia(0);
+video.controls = false;
+video.setAttribute = (name) => attributes.add(name);
+video.removeAttribute = (name) => attributes.delete(name);
+mountedVideo = video;
+mountedAudio = {};
+registerPlayerSurfaceInteractions(video);
+
+state.localPlaybackStartState = "established";
+video.dispatchMediaEvent("pointerenter");
+const entered = { controls: video.controls, hasAttribute: attributes.has("controls") };
+video.dispatchMediaEvent("pointerleave");
+const left = { controls: video.controls, hasAttribute: attributes.has("controls") };
+video.dispatchMediaEvent("pointermove");
+const moved = { controls: video.controls, hasAttribute: attributes.has("controls") };
+video.dispatchMediaEvent("pointerleave");
+video.dispatchMediaEvent("touchstart");
+const touched = { controls: video.controls, hasAttribute: attributes.has("controls") };
+video.dispatchMediaEvent("pointerleave");
+video.dispatchMediaEvent("focus");
+const focused = { controls: video.controls, hasAttribute: attributes.has("controls") };
+state.localPlaybackStartState = "pending";
+video.dispatchMediaEvent("pointermove");
+const pending = { controls: video.controls, hasAttribute: attributes.has("controls") };
+state.localPlaybackStartState = "starting";
+video.dispatchMediaEvent("touchstart");
+const starting = { controls: video.controls, hasAttribute: attributes.has("controls") };
+console.log(JSON.stringify({ entered, left, moved, touched, focused, pending, starting }));
+""",
+            controls_source,
+            """
+function mountedLocalVideoElement() { return mountedVideo; }
+const playerControlsAutoHideMs = 5000;
+window.setTimeout = () => ({ timer: "controls" });
+window.clearTimeout = () => {};
+function registerPlayerSurfaceInteractions(video) {
+"""
+            + interaction_source
+            + """
+}
+""",
+        )
+        self.assertEqual(
+            result,
+            {
+                "entered": {"controls": True, "hasAttribute": True},
+                "left": {"controls": False, "hasAttribute": False},
+                "moved": {"controls": True, "hasAttribute": True},
+                "touched": {"controls": True, "hasAttribute": True},
+                "focused": {"controls": True, "hasAttribute": True},
+                "pending": {"controls": False, "hasAttribute": False},
+                "starting": {"controls": False, "hasAttribute": False},
+            },
+        )
+
+    def test_stale_controls_hide_callback_cannot_mutate_a_replacement_video(self):
+        controls_source = self._slice(
+            "function clearLocalPlayerControlsHideTimer",
+            "function toggleMountedLocalPlayback",
+        )
+        result = self.run_node(
+            """
+const scheduled = [];
+window.setTimeout = (callback) => {
+  const timer = { id: scheduled.length + 1 };
+  scheduled.push({ timer, callback });
+  return timer;
+};
+window.clearTimeout = () => {};
+function makeVideo() {
+  const video = new FakeMedia(0);
+  const attributes = new Set();
+  video.controls = false;
+  video.setAttribute = (name) => attributes.add(name);
+  video.removeAttribute = (name) => attributes.delete(name);
+  video.hasControlsAttribute = () => attributes.has("controls");
+  return video;
+}
+const oldVideo = makeVideo();
+mountedVideo = oldVideo;
+mountedAudio = {};
+state.localPlaybackStartState = "established";
+revealMountedPlayerControlsForUserInteraction();
+
+const replacement = makeVideo();
+mountedVideo = replacement;
+revealMountedPlayerControlsForUserInteraction();
+scheduled[0].callback();
+const afterStale = {
+  controls: replacement.controls,
+  hasAttribute: replacement.hasControlsAttribute(),
+  activeTimer: scheduled.indexOf(scheduled.find((entry) => entry.timer === state.localPlayerControlsHideTimer)),
+};
+scheduled[1].callback();
+const afterCurrent = {
+  controls: replacement.controls,
+  hasAttribute: replacement.hasControlsAttribute(),
+};
+console.log(JSON.stringify({ afterStale, afterCurrent }));
+""",
+            controls_source,
+            """
+function mountedLocalVideoElement() { return mountedVideo; }
+const playerControlsAutoHideMs = 5000;
+""",
+        )
+        self.assertEqual(
+            result,
+            {
+                "afterStale": {"controls": True, "hasAttribute": True, "activeTimer": 1},
+                "afterCurrent": {"controls": False, "hasAttribute": False},
+            },
+        )
+
+    def test_automatic_player_lifecycle_never_requests_native_control_visibility(self):
+        renderer = self._slice("function renderPlayer(currentItem, playbackMode)", "function applyRemotePlayerControl")
+        automatic_renderer = renderer[: renderer.index('  ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach')]
+        automatic_sources = (
+            automatic_renderer,
+            self._slice("function startLocalAdvanceDelay", "function clearLocalAdvanceDelay"),
+            self._slice("async function handleSplitVideoEnded", "function holdVideoForAudio"),
+            self._slice("function requireSplitPlaybackUserGesture", "function setSplitPlaybackIntent"),
+            self._slice("function failSplitPlaybackStartup", "function scheduleWebKitSplitPlaybackRetry"),
+            self._slice("function startSplitPlaybackPair", "function playMediaBestEffort"),
+            self._slice('document.addEventListener("visibilitychange",', "function handleFullscreenChange"),
+            self._slice('window.addEventListener("pageshow",', "startPolling();"),
+        )
+
+        self.assertIn("videoElement.controls = false", automatic_renderer)
+        self.assertIn('videoElement.removeAttribute("controls")', automatic_renderer)
+        self.assertIn("videoElement.tabIndex = 0", automatic_renderer)
+        self.assertNotIn("showMountedPlayerControls", self.source)
+        self.assertEqual(self.source.count("revealMountedPlayerControlsForUserInteraction"), 4)
+        for source in automatic_sources:
+            self.assertNotIn("revealMountedPlayerControlsForUserInteraction", source)
+
+        teardown = self._slice("function teardownMountedPlayer", "function activeLocalPlayerElements")
+        self.assertIn("clearLocalPlayerControlsHideTimer()", teardown)
 
     def test_policy_rejection_stops_periodic_play_retry_storm(self):
         result = self.run_node(

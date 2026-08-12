@@ -134,6 +134,7 @@ const state = {
   localPlaybackStartPromisesSettled: false,
   localPlaybackEndHandled: false,
   localPlayerControlsHideTimer: null,
+  localPlayerControlsHideGeneration: 0,
   webKitAudioStarvationTimer: null,
   localWebKitStartRetryDone: false,
   listView: "queue",
@@ -1273,7 +1274,8 @@ function clearPlayerFrameClickTimer() {
 }
 
 function clearLocalPlayerControlsHideTimer() {
-  if (!state.localPlayerControlsHideTimer) {
+  state.localPlayerControlsHideGeneration = (state.localPlayerControlsHideGeneration || 0) + 1;
+  if (state.localPlayerControlsHideTimer === null) {
     return;
   }
   window.clearTimeout(state.localPlayerControlsHideTimer);
@@ -1285,14 +1287,17 @@ function mountedLocalVideoElement() {
     || elements.playerFrame.querySelector("video");
 }
 
-function hideMountedPlayerControls() {
-  clearLocalPlayerControlsHideTimer();
-  const video = mountedLocalVideoElement();
+function hidePlayerControls(video) {
   if (!video) {
     return;
   }
   video.controls = false;
   video.removeAttribute("controls");
+}
+
+function hideMountedPlayerControls() {
+  clearLocalPlayerControlsHideTimer();
+  hidePlayerControls(mountedLocalVideoElement());
 }
 
 function scheduleMountedPlayerControlsHide() {
@@ -1301,13 +1306,22 @@ function scheduleMountedPlayerControlsHide() {
   if (!video || !video.controls) {
     return;
   }
-  state.localPlayerControlsHideTimer = window.setTimeout(() => {
+  const hideGeneration = state.localPlayerControlsHideGeneration;
+  const hideTimer = window.setTimeout(() => {
+    if (
+      state.localPlayerControlsHideTimer !== hideTimer
+      || state.localPlayerControlsHideGeneration !== hideGeneration
+      || mountedLocalVideoElement() !== video
+    ) {
+      return;
+    }
     state.localPlayerControlsHideTimer = null;
-    hideMountedPlayerControls();
+    hidePlayerControls(video);
   }, playerControlsAutoHideMs);
+  state.localPlayerControlsHideTimer = hideTimer;
 }
 
-function showMountedPlayerControls() {
+function revealMountedPlayerControlsForUserInteraction() {
   const video = mountedLocalVideoElement();
   if (!video) {
     return;
@@ -1321,9 +1335,7 @@ function showMountedPlayerControls() {
       || state.localPlaybackStartState === "starting"
     )
   ) {
-    clearLocalPlayerControlsHideTimer();
-    video.controls = false;
-    video.removeAttribute("controls");
+    hideMountedPlayerControls();
     return;
   }
   video.controls = true;
@@ -6657,7 +6669,6 @@ function startLocalAdvanceDelay(delaySeconds) {
   state.localAdvanceDelayDeadline = state.localAdvanceDelayStartAt + state.localAdvanceOverlayDurationMs;
   stopMountedPlayerForAdvanceDelay(currentItemId);
   updateLocalAdvanceDelayOverlay();
-  showMountedPlayerControls();
   state.localAdvanceCountdownTimer = window.setInterval(updateLocalAdvanceDelayOverlay, 250);
   state.localAdvanceDelayTimer = window.setTimeout(() => {
     finishLocalAdvanceDelay(token, currentItemId).catch(() => {});
@@ -7116,7 +7127,6 @@ function attachSplitPlayerDiagnostics(itemId, video, audio) {
 }
 
 async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
-  showMountedPlayerControls();
   reportStatus();
   if (!audio.ended) {
     state.localVideoDeferredRecovery = true;
@@ -7137,7 +7147,6 @@ async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
-  showMountedPlayerControls();
   reportStatus();
   await handleLocalPlaybackEnded("media-ended");
 }
@@ -7324,7 +7333,6 @@ function requireSplitPlaybackUserGesture(video, audio, action) {
     video.dataset.bilikaraInternalPause = "true";
     video.pause();
   }
-  showMountedPlayerControls();
   if (newlyRequired) {
     reportSplitSyncDiagnostic(video.dataset.playerItemId || "", video, audio, action, true);
     if (action !== "user-start-required") {
@@ -7636,7 +7644,6 @@ function failSplitPlaybackStartup(
     "startup-failed",
     true,
   );
-  showMountedPlayerControls();
   syncTauriMediaSessionState(video, { forcePosition: true });
   return true;
 }
@@ -7878,7 +7885,6 @@ function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
       delete video.dataset.bilikaraInternalPlay;
       setSplitPlaybackStartState("established", video, audio);
       state.localShouldBePlaying = true;
-      showMountedPlayerControls();
       syncTauriMediaSessionState(video, { forcePosition: true });
       if (state.localWebKitStartRetryDone) {
         reportSplitStartupDiagnostic(
@@ -7959,7 +7965,6 @@ function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
     delete video.dataset.bilikaraInternalPlay;
     setSplitPlaybackStartState("established", video, audio);
     state.localShouldBePlaying = true;
-    showMountedPlayerControls();
     syncTauriMediaSessionState(video, { forcePosition: true });
     reportSplitStartupDiagnostic(
       video.dataset.playerItemId || "",
@@ -8914,11 +8919,13 @@ function renderPlayer(currentItem, playbackMode) {
   const videoElement = document.createElement("video");
   videoElement.dataset.playerRole = "video";
   videoElement.controls = false;
+  videoElement.removeAttribute("controls");
   videoElement.setAttribute("controlsList", "nofullscreen");
   // Start the split pair together once both streams expose metadata. Waiting
   // for canplay deadlocks WebKit when the video intentionally preloads metadata.
   videoElement.autoplay = false;
   videoElement.playsInline = true;
+  videoElement.tabIndex = 0;
   videoElement.preload = "metadata";
   videoElement.src = selectedVideoUrl;
   const audioElement = document.createElement("audio");
@@ -8942,7 +8949,6 @@ function renderPlayer(currentItem, playbackMode) {
   setupAudioPitchShifter(audio);
   attachSplitPlayerDiagnostics(currentItem.id, video, audio);
   createSplitPlaybackStartOverlay(video, audio);
-  showMountedPlayerControls();
   ensureTauriMediaSessionHandlers();
   syncTauriMediaSessionState(video, { forcePosition: true });
 
@@ -8985,7 +8991,6 @@ function renderPlayer(currentItem, playbackMode) {
   );
 
   addMountedPlayerListener(video, "loadedmetadata", () => {
-    showMountedPlayerControls();
     synchronizeStartupPlayer();
     reportCurrentVideoStatus();
   });
@@ -9015,7 +9020,6 @@ function renderPlayer(currentItem, playbackMode) {
       source: "native-video-play-intent",
       synchronizeStartupPlayer,
     });
-    showMountedPlayerControls();
     reportCurrentVideoStatus();
   });
 
@@ -9040,7 +9044,6 @@ function renderPlayer(currentItem, playbackMode) {
       return;
     }
     setSplitPlaybackIntent(video, audio, false, { source: "native-video-pause-intent" });
-    showMountedPlayerControls();
     reportCurrentVideoStatus();
   });
 
@@ -9059,7 +9062,6 @@ function renderPlayer(currentItem, playbackMode) {
       delete video.dataset.bilikaraInternalSeek;
       return;
     }
-    showMountedPlayerControls();
     if (!settleSplitPlayerSeek(video, audio)) {
       reportCurrentVideoStatus();
     }
@@ -9126,19 +9128,21 @@ function renderPlayer(currentItem, playbackMode) {
   addMountedPlayerListener(video, "ratechange", () => {
     state.localPlayerRequestedRate = Number(video.playbackRate || 1) || 1;
     audio.playbackRate = state.localPlayerRequestedRate;
-    showMountedPlayerControls();
     syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
   });
 
   addMountedPlayerListener(video, "volumechange", () => {
-    showMountedPlayerControls();
     syncSplitPlayerVolumeFromVideo(video, audio);
   });
 
-  ["pointermove", "pointerdown", "touchstart"].forEach((eventName) => {
+  ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach((eventName) => {
     addMountedPlayerListener(video, eventName, () => {
-      showMountedPlayerControls();
+      revealMountedPlayerControlsForUserInteraction();
     }, { passive: true });
+  });
+
+  addMountedPlayerListener(video, "pointerleave", () => {
+    hideMountedPlayerControls();
   });
 
   addMountedPlayerListener(video, "ended", async () => {
@@ -9192,7 +9196,6 @@ function renderPlayer(currentItem, playbackMode) {
 
   state.localPlayerStartupTimer = window.setTimeout(() => {
     state.localPlayerStartupTimer = null;
-    showMountedPlayerControls();
     synchronizeStartupPlayer();
     reportCurrentVideoStatus();
   }, 0);
@@ -12642,7 +12645,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     if (video && audio) {
       requestSplitPlaybackStartFromUserGesture(video, audio, "tauri-video-click-start-intent");
     }
-    showMountedPlayerControls();
+    revealMountedPlayerControlsForUserInteraction();
     return;
   }
   if (
@@ -12651,7 +12654,7 @@ elements.playerFrame?.addEventListener("click", (event) => {
     && requestSplitPlaybackStartFromUserGesture(video, audio, "host-video-click-start-intent")
   ) {
     clearPlayerFrameClickTimer();
-    showMountedPlayerControls();
+    revealMountedPlayerControlsForUserInteraction();
     return;
   }
   queuePlayerFrameSingleClick();
@@ -13278,9 +13281,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    showMountedPlayerControls();
-  }
   if (
     !state.localShouldBePlaying
     || shouldHoldCurrentItemForTransition(state.data?.current_item)
@@ -14110,7 +14110,6 @@ window.addEventListener("pagehide", () => {
 });
 window.addEventListener("beforeunload", disconnectClient);
 window.addEventListener("pageshow", () => {
-  showMountedPlayerControls();
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
 });
 
