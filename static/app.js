@@ -17,6 +17,7 @@ const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
 const playerClickDelayMs = 220;
 const playerControlsAutoHideMs = 5000;
+const listFlipFallbackPaddingMs = 80;
 const defaultSongAdvanceDelaySeconds = 3;
 const maxSongAdvanceDelaySeconds = 30;
 const appUpdateCheckTimeoutMs = 10000;
@@ -139,6 +140,8 @@ const state = {
   listStageView: "",
   listFlipTimer: null,
   listFlipFrame: null,
+  listFlipGeneration: 0,
+  listFlipTransitionCleanup: null,
   cacheSettingsOpen: false,
   cacheAdvancedOpen: false,
   displaySettingsOpen: false,
@@ -4749,14 +4752,60 @@ function render() {
   state.lastPollRenderSignature = renderSignatureForData(data);
 }
 
-function syncListStageView() {
-  const nextView = state.listView === "history" ? "history" : "queue";
-  const isInitialRender = !state.listStageView;
-  if (state.listStageView === nextView) {
-    return;
+function parseCssTimeMs(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  const amount = Number.parseFloat(normalized);
+  if (!Number.isFinite(amount)) {
+    return 0;
   }
-  state.listStageView = nextView;
+  return normalized.endsWith("ms") ? amount : amount * 1000;
+}
 
+function transitionTotalMsForProperty(element, propertyName) {
+  if (!element || typeof window.getComputedStyle !== "function") {
+    return 0;
+  }
+  const style = window.getComputedStyle(element);
+  const properties = String(style.transitionProperty || "all").split(",");
+  const durations = String(style.transitionDuration || "0s").split(",");
+  const delays = String(style.transitionDelay || "0s").split(",");
+  let longestMs = 0;
+  properties.forEach((property, index) => {
+    const normalizedProperty = property.trim();
+    if (normalizedProperty !== "all" && normalizedProperty !== propertyName) {
+      return;
+    }
+    const durationMs = parseCssTimeMs(durations[index % durations.length]);
+    const delayMs = parseCssTimeMs(delays[index % delays.length]);
+    longestMs = Math.max(longestMs, durationMs + delayMs);
+  });
+  return longestMs;
+}
+
+function setListFlipFaceOwnership(view) {
+  const showBack = view === "history";
+  setClassToggle(elements.listStage, "flip-show-front", !showBack);
+  setClassToggle(elements.listStage, "flip-show-back", showBack);
+}
+
+function listFlipViewFromTransform(inner, midpointView) {
+  if (!inner || typeof window.getComputedStyle !== "function") {
+    return midpointView;
+  }
+  const transform = String(window.getComputedStyle(inner).transform || "");
+  const matrix3d = transform.match(/^matrix3d\(([^)]+)\)$/);
+  const matrix2d = transform.match(/^matrix\(([^)]+)\)$/);
+  const values = (matrix3d || matrix2d)?.[1]
+    ?.split(",")
+    .map((value) => Number.parseFloat(value.trim()));
+  const horizontalScale = values?.[0];
+  if (!Number.isFinite(horizontalScale) || Math.abs(horizontalScale) < 0.0001) {
+    return midpointView;
+  }
+  return horizontalScale < 0 ? "history" : "queue";
+}
+
+function clearListFlipCallbacks() {
   if (state.listFlipTimer) {
     window.clearTimeout(state.listFlipTimer);
     state.listFlipTimer = null;
@@ -4765,22 +4814,101 @@ function syncListStageView() {
     window.cancelAnimationFrame(state.listFlipFrame);
     state.listFlipFrame = null;
   }
+  if (state.listFlipTransitionCleanup) {
+    state.listFlipTransitionCleanup();
+    state.listFlipTransitionCleanup = null;
+  }
+}
+
+function finishListStageFlip(generation, nextView) {
+  if (generation !== state.listFlipGeneration) {
+    return false;
+  }
+  clearListFlipCallbacks();
+  setClassToggle(elements.listStage, "is-history-view", nextView === "history");
+  setListFlipFaceOwnership(nextView);
+  elements.listStage?.classList.remove("is-flipping");
+  return true;
+}
+
+function monitorListFlipFaceOwnership(inner, nextView, generation) {
+  if (generation !== state.listFlipGeneration) {
+    return;
+  }
+  setListFlipFaceOwnership(listFlipViewFromTransform(inner, nextView));
+  let monitorFrame = null;
+  monitorFrame = window.requestAnimationFrame(() => {
+    if (
+      generation !== state.listFlipGeneration
+      || state.listFlipFrame !== monitorFrame
+    ) {
+      return;
+    }
+    state.listFlipFrame = null;
+    monitorListFlipFaceOwnership(inner, nextView, generation);
+  });
+  state.listFlipFrame = monitorFrame;
+}
+
+function syncListStageView() {
+  const nextView = state.listView === "history" ? "history" : "queue";
+  const isInitialRender = !state.listStageView;
+  if (state.listStageView === nextView) {
+    return;
+  }
+  state.listStageView = nextView;
+  state.listFlipGeneration += 1;
+  const generation = state.listFlipGeneration;
+  clearListFlipCallbacks();
 
   if (isInitialRender) {
     setClassToggle(elements.listStage, "is-history-view", nextView === "history");
+    setListFlipFaceOwnership(nextView);
     elements.listStage?.classList.remove("is-flipping");
     return;
   }
 
+  const inner = elements.listStage?.querySelector(".list-stage-inner");
+  if (!elements.listStage || !inner) {
+    finishListStageFlip(generation, nextView);
+    return;
+  }
+
+  const currentView = elements.listStage.classList.contains("is-history-view")
+    ? "history"
+    : "queue";
+  setListFlipFaceOwnership(listFlipViewFromTransform(inner, currentView));
   elements.listStage?.classList.add("is-flipping");
+  const transitionMs = transitionTotalMsForProperty(inner, "transform");
+
+  const handleTransitionEnd = (event) => {
+    if (
+      event.target === inner
+      && (event.propertyName === "transform" || event.propertyName === "-webkit-transform")
+    ) {
+      finishListStageFlip(generation, nextView);
+    }
+  };
+  inner.addEventListener("transitionend", handleTransitionEnd);
+  state.listFlipTransitionCleanup = () => {
+    inner.removeEventListener("transitionend", handleTransitionEnd);
+  };
+
   state.listFlipFrame = window.requestAnimationFrame(() => {
+    if (generation !== state.listFlipGeneration) {
+      return;
+    }
     state.listFlipFrame = null;
     setClassToggle(elements.listStage, "is-history-view", nextView === "history");
+    if (transitionMs <= 0) {
+      finishListStageFlip(generation, nextView);
+      return;
+    }
+    monitorListFlipFaceOwnership(inner, nextView, generation);
   });
   state.listFlipTimer = window.setTimeout(() => {
-    elements.listStage?.classList.remove("is-flipping");
-    state.listFlipTimer = null;
-  }, 440);
+    finishListStageFlip(generation, nextView);
+  }, transitionMs + listFlipFallbackPaddingMs);
 }
 
 function activeScrollableList() {

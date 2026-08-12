@@ -3152,12 +3152,17 @@ select:disabled {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
+  visibility: hidden;
+  content-visibility: hidden;
   pointer-events: none;
 }
 
 .list-face-front {
   gap: 10px;
+  visibility: visible;
+  content-visibility: visible;
   pointer-events: auto;
 }
 
@@ -3165,21 +3170,24 @@ select:disabled {
   transform: rotateY(180deg);
 }
 
-.list-stage.is-history-view .list-face-front {
-  pointer-events: none;
-}
-
-.list-stage.is-history-view .list-face-back {
+.list-stage.flip-show-front .list-face-front {
+  visibility: visible;
+  content-visibility: visible;
   pointer-events: auto;
 }
 
-.list-stage:not(.is-history-view):not(.is-flipping) .list-face-back,
-.list-stage.is-history-view:not(.is-flipping) .list-face-front {
+.list-stage.flip-show-front .list-face-back,
+.list-stage.flip-show-back .list-face-front {
   visibility: hidden;
   content-visibility: hidden;
+  pointer-events: none;
 }
 
-
+.list-stage.flip-show-back .list-face-back {
+  visibility: visible;
+  content-visibility: visible;
+  pointer-events: auto;
+}
 
 .queue-card-head h2 {
   display: inline-flex;
@@ -3238,8 +3246,6 @@ select:disabled {
   box-shadow: 0 4px 20px rgba(88, 56, 30, 0.04);
   align-items: center;
   min-height: 96px;
-  transform: translateZ(0);
-  will-change: transform;
 }
 
 .queue-current.hidden,
