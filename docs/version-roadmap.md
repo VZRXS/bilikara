@@ -60,6 +60,9 @@ External-tool direction:
   segmentation, resume, validators, proxy support, and crash recovery may
   follow incrementally. Keep aria2c as an explicit transition fallback until
   the Rust path is proven.
+- The initial `rust-runtime` downloader slice implements that baseline and is
+  wired into the v0.7 desktop host through a temporary C ABI. It does not yet
+  replace stream selection, BBDown metadata resolution, or media remuxing.
 - Media backend: introduce a `MediaBackend` abstraction. Prefer direct FFmpeg
   libraries, primarily the required `libavformat`/`libavutil` functionality;
   remove ffprobe CLI use where the library backend covers current metadata

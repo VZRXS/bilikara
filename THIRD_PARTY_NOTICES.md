@@ -79,7 +79,18 @@ rebuild or republish the tool. The project-controlled mirror archive includes th
 license and provenance. It is downloaded only after the user selects DownKyi and confirms
 preparation. Homebrew is an optional fallback, not a prerequisite.
 
-## 5. PyInstaller
+## 5. Reqwest
+
+- Project: Reqwest
+- Repository: https://github.com/seanmonstar/reqwest
+- Description: Rust HTTP client used by the native media downloader
+- License: MIT License or Apache License 2.0
+
+The native downloader is an independent bilikara implementation. It does not
+port or link aria2 source code. Reqwest and its transitive dependencies are
+distributed under their respective licenses.
+
+## 6. PyInstaller
 
 - Project: PyInstaller
 - Website: https://pyinstaller.org/
@@ -92,7 +103,7 @@ Notes:
 - PyInstaller's bootloader exception allows distributing executable bundles generated from your own code under your chosen license, provided you comply with the licenses of your dependencies.
 - If you modify PyInstaller itself, review PyInstaller's own license terms.
 
-## 6. Truststore
+## 7. Truststore
 
 - Project: truststore
 - Repository: https://github.com/sethmlarson/truststore
@@ -101,7 +112,7 @@ Notes:
 
 The packaged macOS backend uses truststore so strict Python HTTPS validation follows the effective macOS system trust configuration. It does not disable certificate or hostname verification.
 
-## 7. Bilibili and External Services
+## 8. Bilibili and External Services
 
 - Bilibili: bilikara can parse Bilibili URLs, use Bilibili embedded playback, interact with Bilibili APIs, and rely on user-provided account login data.
 - GitHub: non-packaged development mode may use GitHub Releases to acquire BBDown; packaged builds do not poll for BBDown updates. aria2 release metadata is checked for an official matching asset before the project mirror is used.

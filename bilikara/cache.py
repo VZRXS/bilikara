@@ -61,7 +61,7 @@ from .bilibili import (
     effective_bilibili_cookie,
     fetch_dash_playurl,
 )
-from . import rust_backend
+from . import rust_backend, rust_runtime
 from .playback_selector import PlaybackCapabilityError, PlaybackSelector
 from .store import PlaylistStore
 
@@ -3070,7 +3070,7 @@ class CacheManager:
                 )
                 media_path: Path | None = None
                 try:
-                    media_path = self._download_stream_with_aria2c(
+                    media_path = self._download_stream_with_native_or_aria2c(
                         item_id, binary_path, ffmpeg_path, target_dir, log_path,
                         urls=urls,
                         out_name=out_name,
@@ -3592,6 +3592,157 @@ class CacheManager:
             target_bytes=final_size,
             done=mark_done,
             measure_path=False,
+        )
+        return expected_path
+
+    def _download_stream_with_native_or_aria2c(
+        self,
+        item_id: str,
+        binary_path: Path,
+        ffmpeg_path: Path,
+        target_dir: Path,
+        log_path: Path,
+        **kwargs,
+    ) -> Path:
+        if rust_runtime.http_download_available():
+            try:
+                return self._download_stream_with_rust(
+                    item_id,
+                    target_dir,
+                    log_path,
+                    **kwargs,
+                )
+            except CacheCancelledError:
+                raise
+            except DownloadCommandError as exc:
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] Rust HTTP downloader failed; "
+                    f"falling back to aria2c: {self._compact_probe_error(str(exc))}",
+                )
+        else:
+            status = rust_runtime.runtime_status()
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] Rust HTTP downloader unavailable; "
+                f"using aria2c: {status.get('error') or 'unknown error'}",
+            )
+        return self._download_stream_with_aria2c(
+            item_id,
+            binary_path,
+            ffmpeg_path,
+            target_dir,
+            log_path,
+            **kwargs,
+        )
+
+    def _download_stream_with_rust(
+        self,
+        item_id: str,
+        target_dir: Path,
+        log_path: Path,
+        *,
+        urls: list[str],
+        out_name: str,
+        cookie: str,
+        stage_label: str,
+        track_key: str,
+        stream_kind: str,
+        page: int = 0,
+        cid: int = 0,
+        stream_metadata: dict[str, object] | None = None,
+        mark_done: bool = True,
+    ) -> Path:
+        download_urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not download_urls:
+            raise DownloadCommandError(f"{stage_label}: no download URL is available")
+
+        attempt_dir = target_dir / f".attempt-{uuid.uuid4().hex}"
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            attempt_dir.mkdir(parents=False, exist_ok=False)
+        except OSError as exc:
+            raise DownloadCommandError(
+                f"{stage_label}: unable to prepare Rust download output"
+            ) from exc
+        expected_path = attempt_dir / out_name
+        metadata = stream_metadata or {}
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] media_diagnostic: "
+            f"{json.dumps({'event': 'rust_downloader_selected', 'item_id': item_id, 'page': page, 'cid': cid, 'stream_kind': stream_kind, 'quality_id': int(metadata.get('quality_id') or 0), 'codec_name': str(metadata.get('codec_name') or ''), 'bandwidth': int(metadata.get('bandwidth') or 0), 'backup_url_count': max(0, len(download_urls) - 1), 'expected_output': str(expected_path)}, ensure_ascii=False, sort_keys=True)}",
+        )
+
+        headers = [
+            ("Origin", "https://www.bilibili.com"),
+            ("Referer", "https://www.bilibili.com"),
+        ]
+        if cookie:
+            headers.append(("Cookie", cookie))
+        user_agent = BILIBILI_HEADERS.get("User-Agent", "")
+        if user_agent:
+            headers.append(("User-Agent", user_agent))
+
+        cancellation: list[CacheCancelledError] = []
+
+        def should_cancel() -> bool:
+            try:
+                if self.stop_event.is_set():
+                    raise CacheCancelledError("cache stopped")
+                self._raise_if_retry_requested(item_id)
+                self._raise_if_priority_shift(item_id)
+                return False
+            except CacheCancelledError as exc:
+                cancellation.append(exc)
+                return True
+
+        def on_progress(current_bytes: int, target_bytes: int) -> None:
+            self._update_download_track_progress(
+                item_id,
+                track_key=track_key,
+                target_dir=attempt_dir,
+                current_bytes=current_bytes,
+                target_bytes=target_bytes,
+                done=False,
+                measure_path=False,
+            )
+
+        try:
+            result = rust_runtime.download_to_path(
+                urls=download_urls,
+                destination=expected_path,
+                headers=headers,
+                on_progress=on_progress,
+                should_cancel=should_cancel,
+            )
+        except rust_runtime.RustDownloadCancelledError as exc:
+            self._safe_rmtree(attempt_dir)
+            if cancellation:
+                raise cancellation[-1] from exc
+            raise CacheCancelledError("Rust HTTP download cancelled") from exc
+        except rust_runtime.RustDownloadError as exc:
+            self._safe_rmtree(attempt_dir)
+            raise DownloadCommandError(
+                f"{stage_label}: Rust HTTP downloader failed ({exc.kind})"
+            ) from exc
+
+        final_size = int(result.get("bytes_written") or 0)
+        if final_size <= 0 or not expected_path.is_file():
+            self._safe_rmtree(attempt_dir)
+            raise DownloadCommandError(f"{stage_label}: Rust HTTP downloader produced no output")
+        self._update_download_track_progress(
+            item_id,
+            track_key=track_key,
+            target_dir=attempt_dir,
+            current_bytes=final_size,
+            target_bytes=final_size,
+            done=mark_done,
+            measure_path=False,
+        )
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] media_diagnostic: "
+            f"{json.dumps({'event': 'rust_downloader_output', 'item_id': item_id, 'stream_kind': stream_kind, 'page': page, 'cid': cid, 'bytes_written': final_size, 'candidate_index': int(result.get('candidate_index') or 0), 'status': 'ok'}, ensure_ascii=False, sort_keys=True)}",
         )
         return expected_path
 

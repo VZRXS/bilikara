@@ -37,15 +37,32 @@ class BuildBundleTest(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             library = root / "rust" / "target" / "release" / "libbilikara_rust.so"
+            runtime_library = (
+                root
+                / "rust-runtime"
+                / "target"
+                / "release"
+                / "libbilikara_runtime.so"
+            )
             library.parent.mkdir(parents=True)
             library.touch()
+            runtime_library.parent.mkdir(parents=True)
+            runtime_library.touch()
 
             with patch("build_bundle.ROOT_DIR", root), patch(
                 "build_bundle.platform.system", return_value="Linux"
             ):
                 args = build_bundle._rust_library_args(":")
 
-        self.assertEqual(args, ["--add-binary", f"{library.resolve()}:rust"])
+        self.assertEqual(
+            args,
+            [
+                "--add-binary",
+                f"{library.resolve()}:rust",
+                "--add-binary",
+                f"{runtime_library.resolve()}:rust",
+            ],
+        )
 
     def test_rust_library_args_allows_missing_library(self):
         with TemporaryDirectory() as temp_dir, patch("build_bundle.ROOT_DIR", Path(temp_dir)), patch(

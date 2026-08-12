@@ -11,5 +11,6 @@ bilikara-api/
 src-tauri/target/
 node_modules/
 rust/target/
+rust-runtime/target/
 src-tauri/gen/
 .agent/

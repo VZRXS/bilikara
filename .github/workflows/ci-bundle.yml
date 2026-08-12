@@ -60,12 +60,18 @@ jobs:
         with:
           workspaces: |
             ./rust -> target
+            ./rust-runtime -> target
             ./src-tauri -> target
           shared-key: ci-bundle
 
       - name: Rust Checks and Build
         run: |
           cd rust
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+          cargo build --release --locked
+          cd ../rust-runtime
           cargo fmt --check
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
@@ -212,12 +218,15 @@ jobs:
         with:
           workspaces: |
             ./rust -> target
+            ./rust-runtime -> target
             ./src-tauri -> target
           shared-key: ci-bundle
 
       - name: Build Rust Backend Library
         run: |
           cd rust
+          cargo build --release --locked
+          cd ../rust-runtime
           cargo build --release --locked
           cd ..
 

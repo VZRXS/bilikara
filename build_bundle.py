@@ -325,6 +325,15 @@ def _rust_library_name() -> str:
     return "libbilikara_rust.so"
 
 
+def _rust_runtime_library_name() -> str:
+    system = platform.system()
+    if system == "Windows":
+        return "bilikara_runtime.dll"
+    if system == "Darwin":
+        return "libbilikara_runtime.dylib"
+    return "libbilikara_runtime.so"
+
+
 def _macos_aria2_metadata_args(
     data_separator: str,
     *,
@@ -413,19 +422,40 @@ def _locked_macos_aria2_metadata_path(machine: str) -> Path:
 
 
 def _rust_library_args(data_separator: str, *, verbose: bool = False) -> list[str]:
-    library_path = ROOT_DIR / "rust" / "target" / "release" / _rust_library_name()
-    if library_path.is_file():
+    libraries = (
+        ROOT_DIR / "rust" / "target" / "release" / _rust_library_name(),
+        ROOT_DIR
+        / "rust-runtime"
+        / "target"
+        / "release"
+        / _rust_runtime_library_name(),
+    )
+    found = [path for path in libraries if path.is_file()]
+    missing = [path for path in libraries if not path.is_file()]
+    if missing:
+        message = "Rust library not found: " + ", ".join(str(path) for path in missing)
+        if os.getenv(RUST_STRICT_ENV, "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            raise RuntimeError(message)
         if verbose:
-            print("Bundling Rust title cleanup library:")
+            print(f"Warning: {message}")
+    if verbose and found:
+        print("Bundling Rust libraries:")
+        for library_path in found:
             print(f"  - {library_path}")
-        return ["--add-binary", f"{library_path.resolve()}{data_separator}{RUST_BUNDLE_DIR}"]
-
-    message = f"Rust library not found; using Python fallback: {library_path}"
-    if os.getenv(RUST_STRICT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
-        raise RuntimeError(message)
-    if verbose:
-        print(f"Warning: {message}")
-    return []
+    args: list[str] = []
+    for library_path in found:
+        args.extend(
+            [
+                "--add-binary",
+                f"{library_path.resolve()}{data_separator}{RUST_BUNDLE_DIR}",
+            ]
+        )
+    return args
 
 
 def _validate_ffmpeg_redistribution_metadata(bundled_paths: dict[str, Path]) -> None:

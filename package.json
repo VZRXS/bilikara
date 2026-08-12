@@ -6,7 +6,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build:rust": "cd rust && cargo build --release --locked",
+    "build:rust": "cd rust && cargo build --release --locked && cd ../rust-runtime && cargo build --release --locked",
     "tauri": "tauri",
     "dev": "tauri dev",
     "dev:rust": "npm run build:rust && tauri dev",
