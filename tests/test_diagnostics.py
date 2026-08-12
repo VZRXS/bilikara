@@ -1,6 +1,5 @@
 import io
 import json
-import os
 import unittest
 import zipfile
 from pathlib import Path
@@ -190,25 +189,13 @@ class DiagnosticArtifactTest(unittest.TestCase):
         self.assertEqual(sanitized[0]["stageTimings"][0]["stage"], "stage_0")
         self.assertEqual(sanitized[0]["stageTimings"][-1]["stage"], "stage_15")
 
-    def test_log_probe_einval_does_not_fail_diagnostics(self):
-        import errno
+    def test_unreadable_log_root_does_not_fail_diagnostics(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             log_dir = root / "logs"
-            log_dir.mkdir()
-            good_log = log_dir / "good.log"
-            bad_log = log_dir / "bad.log"
-            good_log.write_text("good log content", encoding="utf-8")
-            bad_log.write_text("bad log content", encoding="utf-8")
+            log_dir.write_text("not a directory", encoding="utf-8")
 
             cache_manager = SimpleNamespace(diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}})
-
-            original_os_stat = os.stat
-
-            def mock_stat(path_obj, *args, **kwargs):
-                if Path(path_obj) == bad_log:
-                    raise OSError(errno.EINVAL, "Invalid argument")
-                return original_os_stat(path_obj, *args, **kwargs)
 
             with (
                 patch.object(diagnostics, "APP_HOME", root),
@@ -220,7 +207,6 @@ class DiagnosticArtifactTest(unittest.TestCase):
                     "disk_usage",
                     return_value=SimpleNamespace(total=1000, used=400, free=600),
                 ),
-                patch("os.stat", side_effect=mock_stat),
             ):
                 artifact = diagnostics.build_diagnostic_artifact(
                     cache_manager=cache_manager,
@@ -235,7 +221,6 @@ class DiagnosticArtifactTest(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
                 names = set(archive.namelist())
                 self.assertIn("diagnostics.md", names)
-                self.assertIn("logs/good.log", names)
                 self.assertNotIn("logs/bad.log", names)
 
 

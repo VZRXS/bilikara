@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
-import json
 import os
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -92,77 +90,20 @@ def _pick_windows_physical_host(adapter_configs: object) -> str | None:
 
 
 def _detect_windows_physical_host() -> str | None:
-    command = (
-        "Get-NetIPConfiguration | "
-        "Select-Object InterfaceAlias,InterfaceDescription,IPv4Address,IPv4DefaultGateway | "
-        "ConvertTo-Json -Depth 6 -Compress"
-    )
     try:
-        process = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", command],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            check=False,
-            timeout=8,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
+        from .rust_runtime import detect_lan_ipv4_addresses
 
-    if process.returncode != 0:
+        addresses = detect_lan_ipv4_addresses(platform_name="win32")
+    except Exception:  # noqa: BLE001
         return None
-
-    raw = (process.stdout or "").strip()
-    if not raw:
-        return None
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-
-    return _pick_windows_physical_host(payload)
+    return addresses[0] if addresses else None
 
 
 def _detect_windows_bind_host() -> str:
-    candidates: list[str] = []
-
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("1.1.1.1", 80))
-            candidates.append(sock.getsockname()[0])
-    except OSError:
-        pass
-
-    try:
-        for entry in socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET):
-            candidates.append(entry[4][0])
-    except OSError:
-        pass
-
-    preferred: list[str] = []
-    fallback: list[str] = []
-    seen: set[str] = set()
-    for ip in candidates:
-        if not ip or ip in seen:
-            continue
-        seen.add(ip)
-        try:
-            address = ipaddress.ip_address(ip)
-        except ValueError:
-            continue
-        if address.version != 4 or address.is_loopback or address.is_unspecified:
-            continue
-        if address.is_private and not address.is_link_local:
-            preferred.append(ip)
-        elif not address.is_multicast:
-            fallback.append(ip)
-
-    if preferred:
-        return preferred[0]
-    if fallback:
-        return fallback[0]
-    return "0.0.0.0"
+        return _detect_windows_physical_host() or "0.0.0.0"
+    except Exception:  # noqa: BLE001
+        return "0.0.0.0"
 
 
 def _default_host() -> str:

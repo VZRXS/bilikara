@@ -1,13 +1,20 @@
+use crate::diagnostics::{DiagnosticRequest, build_diagnostic_artifact, probe_connectivity_only};
 use crate::http_downloader::{DownloadError, DownloadProgress, DownloadRequest, download_to_path};
+use crate::json_http::{JsonHttpRequest, execute_json_request};
 use crate::media_backend::{
     MediaError, MediaNormalizeRequest, MediaPathRequest, normalize_media, probe_media,
 };
+use crate::networking::{NetworkAddressRequest, detect_lan_ipv4_addresses};
 use crate::status_service::{
     BilibiliLoginFacts, BilibiliLoginStatus, BilibiliLoginUpdate, GachaTaskUpdate,
     RuntimeStatusService,
 };
+use crate::update_installer::{
+    LaunchUpdateHelperRequest, PrepareUpdateRequest, launch_update_helper, prepare_update,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Mutex, OnceLock};
@@ -76,6 +83,37 @@ struct StatusServiceWireResponse {
     schema_version: u32,
     status: &'static str,
     result: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "service",
+    content = "request",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum RuntimeServiceCommand {
+    JsonHttp(JsonHttpRequest),
+    NetworkAddresses(NetworkAddressRequest),
+    PrepareUpdate(PrepareUpdateRequest),
+    LaunchUpdateHelper(LaunchUpdateHelperRequest),
+    BuildDiagnostics(DiagnosticRequest),
+    ProbeConnectivity {
+        targets: BTreeMap<String, String>,
+        timeout_ms: u64,
+        #[serde(default)]
+        local_usernames: Vec<String>,
+    },
+}
+
+#[derive(Serialize)]
+struct RuntimeServiceWireResponse {
+    schema_version: u32,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<Value>,
 }
 
 static STATUS_SERVICE: OnceLock<Mutex<RuntimeStatusService>> = OnceLock::new();
@@ -235,6 +273,93 @@ pub unsafe extern "C" fn bilikara_runtime_status_service(
     .ok()
     .flatten()
     .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 runtime-service command.
+pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        if request_json.is_null() {
+            return None;
+        }
+        // SAFETY: This C ABI entrypoint requires a valid null-terminated UTF-8 string.
+        let request_text = unsafe { CStr::from_ptr(request_json) }.to_str().ok()?;
+        let command: RuntimeServiceCommand = serde_json::from_str(request_text).ok()?;
+        let response = match command {
+            RuntimeServiceCommand::JsonHttp(request) => {
+                service_result(execute_json_request(&request))
+            }
+            RuntimeServiceCommand::NetworkAddresses(request) => RuntimeServiceWireResponse {
+                schema_version: 1,
+                status: "completed",
+                result: serde_json::to_value(detect_lan_ipv4_addresses(&request)).ok(),
+                error: None,
+            },
+            RuntimeServiceCommand::PrepareUpdate(request) => {
+                service_result(prepare_update(&request))
+            }
+            RuntimeServiceCommand::LaunchUpdateHelper(request) => {
+                match launch_update_helper(&request) {
+                    Ok(()) => RuntimeServiceWireResponse {
+                        schema_version: 1,
+                        status: "completed",
+                        result: Some(json!({"launched": true})),
+                        error: None,
+                    },
+                    Err(error) => failed_service_response(error),
+                }
+            }
+            RuntimeServiceCommand::BuildDiagnostics(request) => {
+                service_result(build_diagnostic_artifact(&request))
+            }
+            RuntimeServiceCommand::ProbeConnectivity {
+                targets,
+                timeout_ms,
+                local_usernames,
+            } => RuntimeServiceWireResponse {
+                schema_version: 1,
+                status: "completed",
+                result: Some(probe_connectivity_only(
+                    &targets,
+                    timeout_ms,
+                    &local_usernames,
+                )),
+                error: None,
+            },
+        };
+        let encoded = serde_json::to_string(&response).ok()?;
+        CString::new(encoded).ok().map(CString::into_raw)
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+fn service_result<T, E>(result: Result<T, E>) -> RuntimeServiceWireResponse
+where
+    T: Serialize,
+    E: Serialize,
+{
+    match result {
+        Ok(result) => RuntimeServiceWireResponse {
+            schema_version: 1,
+            status: "completed",
+            result: serde_json::to_value(result).ok(),
+            error: None,
+        },
+        Err(error) => failed_service_response(error),
+    }
+}
+
+fn failed_service_response<E: Serialize>(error: E) -> RuntimeServiceWireResponse {
+    RuntimeServiceWireResponse {
+        schema_version: 1,
+        status: "failed",
+        result: None,
+        error: serde_json::to_value(error).ok(),
+    }
 }
 
 fn media_call<Request, ResultValue, Operation>(

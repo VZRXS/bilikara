@@ -7,13 +7,12 @@ import re
 import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 import bilikara.config as cfg
+from bilikara import rust_runtime
 
 APP_ID = os.environ.get("BILIKARA_LARK_APP_ID") or "cli_a97321a5a7b89bde"
 APP_SECRET = os.environ.get("BILIKARA_LARK_APP_SECRET") or "tTUE3SUe57v1YTvjLQGNAd8Hm4RHyJlf"
@@ -65,25 +64,26 @@ def _post_json(url: str, payload: dict[str, Any], *, token: str | None = None, t
     headers = {"Content-Type": "application/json; charset=utf-8"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        result = rust_runtime.json_http_request(
+            "POST", url, headers=headers, payload=payload, timeout=timeout
+        )
+        if not isinstance(result, dict):
+            raise LarkPoolError("Lark request returned a non-object response")
+        return result
+    except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
         raise LarkPoolError(f"Lark request failed: {exc}") from exc
 
 
 def _get_json(url: str, *, token: str, timeout: float = 12.0) -> dict:
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        result = rust_runtime.json_http_request(
+            "GET", url, headers={"Authorization": f"Bearer {token}"}, timeout=timeout
+        )
+        if not isinstance(result, dict):
+            raise LarkPoolError("Lark request returned a non-object response")
+        return result
+    except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
         raise LarkPoolError(f"Lark request failed: {exc}") from exc
 
 
@@ -93,46 +93,39 @@ def _cloudflare_json(method: str, path: str, payload: dict[str, Any] | None = No
         "Accept": "application/json",
         "User-Agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
     }
-    data = None
     if payload is not None:
         headers["Content-Type"] = "application/json; charset=utf-8"
-        data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
     _log_lark_debug(
         "cloudflare request",
         {"method": method.upper(), "url": url, "timeout": timeout, "payload_keys": sorted((payload or {}).keys())},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw_body = response.read().decode("utf-8")
-            parsed = json.loads(raw_body)
-            _log_lark_debug(
-                "cloudflare response",
-                {
-                    "status": getattr(response, "status", None),
-                    "url": url,
-                    "shape": type(parsed).__name__,
-                    "preview": raw_body[:500],
-                },
-            )
-            return parsed
-    except urllib.error.HTTPError as exc:
-        try:
-            error_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            error_body = ""
+        parsed = rust_runtime.json_http_request(
+            method.upper(), url, headers=headers, payload=payload, timeout=timeout
+        )
+        _log_lark_debug(
+            "cloudflare response",
+            {
+                "url": url,
+                "shape": type(parsed).__name__,
+                "preview": json.dumps(parsed, ensure_ascii=False)[:500],
+            },
+        )
+        return parsed
+    except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
+        response = getattr(exc, "response", {})
+        error = response.get("error") if isinstance(response, dict) else {}
         _log_lark_debug(
             "cloudflare request failed",
             {
                 "url": url,
-                "status": exc.code,
+                "status": error.get("status_code") if isinstance(error, dict) else None,
                 "error": str(exc),
-                "body": error_body[:1000],
+                "body": str(error.get("body_preview") or "")[:1000]
+                if isinstance(error, dict)
+                else "",
             },
         )
-        raise LarkPoolError(f"Cloudflare request failed: {exc}") from exc
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        _log_lark_debug("cloudflare request failed", {"url": url, "error": str(exc)})
         raise LarkPoolError(f"Cloudflare request failed: {exc}") from exc
 
 
@@ -148,24 +141,25 @@ def _cloudflare_admin_get_json(path: str, secret: str, *, timeout: float = 60.0)
         "Pragma": "no-cache",
         "User-Agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
     }
-    request = urllib.request.Request(url, headers=headers, method="GET")
     _log_lark_debug("cloudflare admin request", {"url": url, "timeout": timeout})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw_body = response.read().decode("utf-8")
-            return json.loads(raw_body)
-    except urllib.error.HTTPError as exc:
-        try:
-            error_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            error_body = ""
+        return rust_runtime.json_http_request(
+            "GET", url, headers=headers, timeout=timeout
+        )
+    except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
+        response = getattr(exc, "response", {})
+        error = response.get("error") if isinstance(response, dict) else {}
         _log_lark_debug(
             "cloudflare admin request failed",
-            {"url": url, "status": exc.code, "error": str(exc), "body": error_body[:1000]},
+            {
+                "url": url,
+                "status": error.get("status_code") if isinstance(error, dict) else None,
+                "error": str(exc),
+                "body": str(error.get("body_preview") or "")[:1000]
+                if isinstance(error, dict)
+                else "",
+            },
         )
-        raise LarkPoolError(f"Cloudflare request failed: {exc}") from exc
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        _log_lark_debug("cloudflare admin request failed", {"url": url, "error": str(exc)})
         raise LarkPoolError(f"Cloudflare request failed: {exc}") from exc
 
 

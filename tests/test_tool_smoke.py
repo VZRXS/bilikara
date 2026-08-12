@@ -27,6 +27,10 @@ class PackagedToolSmokeTest(unittest.TestCase):
                         "http_download": True,
                         "media_backend": True,
                         "status_service": True,
+                        "json_http": True,
+                        "networking": True,
+                        "update_installer": True,
+                        "diagnostics": True,
                     },
                 },
             ):
@@ -37,6 +41,7 @@ class PackagedToolSmokeTest(unittest.TestCase):
         self.assertEqual(payload["version"], "ABI 1")
         self.assertTrue(payload["capabilities"]["media_backend"])
         self.assertTrue(payload["capabilities"]["status_service"])
+        self.assertTrue(payload["capabilities"]["diagnostics"])
 
 
 if __name__ == "__main__":

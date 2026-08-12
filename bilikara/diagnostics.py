@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import getpass
 import io
 import json
@@ -17,6 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from . import rust_runtime
 
 from .config import (
     APP_HOME,
@@ -60,8 +64,11 @@ TEXT_SECRET_PATTERNS = (
 class DiagnosticArtifact:
     markdown: str
     files: dict[str, bytes]
+    _zip_payload: bytes | None = None
 
     def zip_bytes(self) -> bytes:
+        if self._zip_payload is not None:
+            return self._zip_payload
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("diagnostics.md", self.markdown.encode("utf-8"))
@@ -81,55 +88,75 @@ def build_diagnostic_artifact(
     connectivity_probe: Callable[[], dict[str, Any]] | None = None,
 ) -> DiagnosticArtifact:
     generated_at = datetime.now(timezone.utc).isoformat()
-    redaction_names = list(local_usernames or [])
-    system = _system_snapshot(browser_info or {}, generated_at, redaction_names)
-    tools_and_tasks = cache_manager.diagnostic_snapshot()
-    disk = _disk_snapshot(APP_HOME, redaction_names)
-    connectivity = (connectivity_probe or probe_connectivity)()
-    sanitized_policy = redact_value(cache_policy, local_usernames=redaction_names)
-    sanitized_runtime = redact_value(runtime_state, local_usernames=redaction_names)
-    sanitized_tools = redact_value(tools_and_tasks, local_usernames=redaction_names)
-    sanitized_export = _sanitize_export_diagnostics(export_diagnostics, local_usernames=redaction_names)
-    configs = _collect_configs(redaction_names)
-    logs = _collect_logs(redaction_names)
-
-    files: dict[str, bytes] = {
-        "system.json": _json_bytes(system),
-        "tools-and-tasks.json": _json_bytes(sanitized_tools),
-        "download-policy.json": _json_bytes(sanitized_policy),
-        "runtime-state.json": _json_bytes(sanitized_runtime),
-        "disk.json": _json_bytes(disk),
-        "connectivity.json": _json_bytes(connectivity),
-        "export-diagnostics.json": _json_bytes(sanitized_export),
-    }
-    for name, payload in configs.items():
-        files[f"config/{name}"] = _json_bytes(payload)
-    for name, text in logs.items():
-        files[f"logs/{name}"] = text.encode("utf-8", errors="replace")
-
-    markdown = _build_markdown(
-        system=system,
-        tools=sanitized_tools.get("tools", {}),
-        tasks=sanitized_tools.get("tasks", {}),
-        policy=sanitized_policy,
-        runtime=sanitized_runtime,
-        disk=disk,
-        connectivity=connectivity,
-        export_diagnostics=sanitized_export,
-        logs=logs,
+    redaction_names = sorted(
+        _local_usernames()
+        | {
+            str(value).strip()
+            for value in (local_usernames or [])
+            if len(str(value).strip()) >= 2
+        }
     )
-    return DiagnosticArtifact(markdown=markdown, files=files)
+    tools_and_tasks = cache_manager.diagnostic_snapshot()
+    request: dict[str, Any] = {
+        "app_home": str(APP_HOME),
+        "log_dir": str(LOG_DIR),
+        "config_files": [str(path) for path in DIAGNOSTIC_CONFIG_FILES],
+        "system": {
+            "generated_at": generated_at,
+            "app_version": APP_VERSION,
+            "system": platform.platform(),
+            "system_name": platform.system(),
+            "system_release": platform.release(),
+            "machine": platform.machine(),
+            "python_version": platform.python_version(),
+            "python_implementation": platform.python_implementation(),
+            "frozen_bundle": bool(getattr(sys, "frozen", False)),
+            "browser": browser_info or {},
+        },
+        "tools_and_tasks": tools_and_tasks,
+        "cache_policy": cache_policy,
+        "runtime_state": runtime_state,
+        "export_diagnostics": list(export_diagnostics or []),
+        "local_usernames": redaction_names,
+        "connectivity_targets": _connectivity_targets(),
+        "connectivity_timeout_ms": 5000,
+    }
+    if connectivity_probe is not None:
+        request["connectivity_override"] = connectivity_probe()
+    result = rust_runtime.build_diagnostic_artifact(request)
+    try:
+        files = {
+            str(name): base64.b64decode(str(payload), validate=True)
+            for name, payload in result["files"].items()
+        }
+        zip_payload = base64.b64decode(result["zip_base64"], validate=True)
+    except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+        raise rust_runtime.RustRuntimeServiceError(
+            "invalid_response",
+            "Rust diagnostics service returned invalid binary data",
+            response=result,
+        ) from exc
+    return DiagnosticArtifact(
+        markdown=result["markdown"],
+        files=files,
+        _zip_payload=zip_payload,
+    )
 
 
 def probe_connectivity(timeout: float = 5.0) -> dict[str, Any]:
-    targets = {
+    return rust_runtime.probe_connectivity(
+        _connectivity_targets(),
+        timeout=timeout,
+        local_usernames=sorted(_local_usernames()),
+    )
+
+
+def _connectivity_targets() -> dict[str, str]:
+    return {
         "bilibili": "https://api.bilibili.com/x/web-interface/nav",
         "github": APP_RELEASE_API,
         "r2_mirror": APP_RELEASE_API_FALLBACKS[0] if APP_RELEASE_API_FALLBACKS else "",
     }
-    with ThreadPoolExecutor(max_workers=len(targets)) as executor:
-        results = list(executor.map(lambda item: _probe_target(*item, timeout=timeout), targets.items()))
-    return {name: result for name, result in results}
 
 
 def redact_value(value: Any, *, key: str = "", local_usernames: list[str] | None = None) -> Any:

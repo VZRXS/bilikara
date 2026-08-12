@@ -43,6 +43,13 @@ class RustStatusServiceError(RuntimeError):
     pass
 
 
+class RustRuntimeServiceError(RuntimeError):
+    def __init__(self, kind: str, message: str, *, response: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.response = response
+
+
 def _runtime_library_name() -> str:
     system = platform.system()
     if system == "Windows":
@@ -95,6 +102,8 @@ def _load_runtime_library(path: Path | None):
         library.bilikara_runtime_media_normalize.restype = ctypes.c_void_p
         library.bilikara_runtime_status_service.argtypes = [ctypes.c_char_p]
         library.bilikara_runtime_status_service.restype = ctypes.c_void_p
+        library.bilikara_runtime_service.argtypes = [ctypes.c_char_p]
+        library.bilikara_runtime_service.restype = ctypes.c_void_p
         library.bilikara_runtime_free_string.argtypes = [ctypes.c_void_p]
         library.bilikara_runtime_free_string.restype = None
         return library, ""
@@ -117,6 +126,10 @@ def runtime_status() -> dict[str, Any]:
             "http_download": _runtime_lib is not None,
             "media_backend": _runtime_lib is not None,
             "status_service": _runtime_lib is not None,
+            "json_http": _runtime_lib is not None,
+            "networking": _runtime_lib is not None,
+            "update_installer": _runtime_lib is not None,
+            "diagnostics": _runtime_lib is not None,
         },
     }
 
@@ -131,6 +144,121 @@ def media_backend_available() -> bool:
 
 def status_service_available() -> bool:
     return _runtime_lib is not None
+
+
+def json_http_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    payload: Any = None,
+    timeout: float = 12.0,
+) -> Any:
+    request: dict[str, Any] = {
+        "method": str(method),
+        "url": str(url),
+        "headers": [
+            {"name": str(name), "value": str(value)}
+            for name, value in (headers or {}).items()
+        ],
+        "timeout_ms": max(100, int(float(timeout) * 1000)),
+    }
+    if payload is not None:
+        request["payload"] = payload
+    result = _call_runtime_service("json_http", request)
+    if "payload" not in result:
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust JSON HTTP service returned no payload",
+            response=result,
+        )
+    return result["payload"]
+
+
+def detect_lan_ipv4_addresses(
+    *,
+    platform_name: str = "",
+    candidates: list[dict[str, Any]] | None = None,
+    route_sources: list[str] | None = None,
+) -> list[str]:
+    request: dict[str, Any] = {"platform_name": str(platform_name)}
+    if candidates is not None:
+        request["candidates"] = candidates
+    if route_sources is not None:
+        request["route_sources"] = [str(value) for value in route_sources]
+    result = _call_runtime_service("network_addresses", request)
+    addresses = result.get("addresses")
+    if not isinstance(addresses, list) or not all(
+        isinstance(address, str) for address in addresses
+    ):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust networking service returned invalid addresses",
+            response=result,
+        )
+    return addresses
+
+
+def prepare_update_install(request: dict[str, Any]) -> list[str]:
+    result = _call_runtime_service("prepare_update", request)
+    command = result.get("command")
+    if not isinstance(command, list) or not command or not all(
+        isinstance(value, str) and value for value in command
+    ):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust update installer returned an invalid helper command",
+            response=result,
+        )
+    return command
+
+
+def launch_update_helper(command: list[str]) -> None:
+    result = _call_runtime_service(
+        "launch_update_helper", {"command": [str(value) for value in command]}
+    )
+    if result.get("launched") is not True:
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust update installer did not launch the helper",
+            response=result,
+        )
+
+
+def build_diagnostic_artifact(request: dict[str, Any]) -> dict[str, Any]:
+    result = _call_runtime_service("build_diagnostics", request)
+    if not isinstance(result.get("markdown"), str):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust diagnostics service returned invalid markdown",
+            response=result,
+        )
+    if not isinstance(result.get("files"), dict) or not isinstance(
+        result.get("zip_base64"), str
+    ):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust diagnostics service returned invalid files",
+            response=result,
+        )
+    return result
+
+
+def probe_connectivity(
+    targets: dict[str, str],
+    *,
+    timeout: float = 5.0,
+    local_usernames: list[str] | None = None,
+) -> dict[str, Any]:
+    result = _call_runtime_service(
+        "probe_connectivity",
+        {
+            "targets": {str(name): str(url) for name, url in targets.items()},
+            "timeout_ms": max(100, int(float(timeout) * 1000)),
+            "local_usernames": [str(value) for value in (local_usernames or [])],
+        },
+    )
+    return result
 
 
 def gatcha_task_snapshot() -> dict[str, Any]:
@@ -285,6 +413,52 @@ def _call_status_service(request: dict[str, Any]) -> dict[str, Any]:
     ):
         raise RustStatusServiceError("Rust status service returned an invalid response")
     return response["result"]
+
+
+def _call_runtime_service(service: str, request: dict[str, Any]) -> dict[str, Any]:
+    if _runtime_lib is None:
+        raise RustRuntimeUnavailableError(_runtime_error or "Rust runtime is unavailable")
+    payload = json.dumps(
+        {"service": str(service), "request": request},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    pointer = _runtime_lib.bilikara_runtime_service(payload)
+    if not pointer:
+        raise RustRuntimeServiceError(
+            "no_response", "Rust runtime service returned no response", response={}
+        )
+    try:
+        response_bytes = ctypes.string_at(pointer)
+    finally:
+        _runtime_lib.bilikara_runtime_free_string(pointer)
+    try:
+        response = json.loads(response_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RustRuntimeServiceError(
+            "invalid_json", "Rust runtime service returned malformed JSON", response={}
+        ) from exc
+    if not isinstance(response, dict) or response.get("schema_version") != 1:
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust runtime service returned an invalid response",
+            response=response if isinstance(response, dict) else {},
+        )
+    if response.get("status") != "completed":
+        error = response.get("error") if isinstance(response.get("error"), dict) else {}
+        raise RustRuntimeServiceError(
+            str(error.get("kind") or "service_failed"),
+            str(error.get("message") or "Rust runtime service failed"),
+            response=response,
+        )
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust runtime service returned an invalid result",
+            response=response,
+        )
+    return result
 
 
 def _gatcha_task_update(task: dict[str, Any]) -> dict[str, Any]:

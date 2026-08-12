@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -49,7 +50,64 @@ class FakeMediaLibrary:
         return None
 
 
+class FakeServiceLibrary:
+    def __init__(self, response: dict) -> None:
+        self.buffer = ctypes.create_string_buffer(json.dumps(response).encode("utf-8"))
+        self.request = None
+
+    def bilikara_runtime_service(self, payload):
+        self.request = json.loads(payload.decode("utf-8"))
+        return ctypes.addressof(self.buffer)
+
+    def bilikara_runtime_free_string(self, _pointer):
+        return None
+
+
 class RustRuntimeAdapterTest(unittest.TestCase):
+    def test_runtime_service_sends_structured_json_http_request(self):
+        library = FakeServiceLibrary(
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "result": {"status_code": 200, "payload": {"ok": True}},
+            }
+        )
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            result = rust_runtime.json_http_request(
+                "POST",
+                "https://example.test/api",
+                headers={"Authorization": "Bearer secret"},
+                payload={"bvid": "BV1xx411c7mD"},
+                timeout=3,
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(library.request["service"], "json_http")
+        self.assertEqual(library.request["request"]["timeout_ms"], 3000)
+        self.assertEqual(
+            library.request["request"]["headers"],
+            [{"name": "Authorization", "value": "Bearer secret"}],
+        )
+
+    def test_runtime_service_preserves_typed_native_failure(self):
+        library = FakeServiceLibrary(
+            {
+                "schema_version": 1,
+                "status": "failed",
+                "error": {
+                    "kind": "http_status",
+                    "message": "HTTP 503",
+                    "status_code": 503,
+                },
+            }
+        )
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            with self.assertRaises(rust_runtime.RustRuntimeServiceError) as raised:
+                rust_runtime.json_http_request("GET", "https://example.test/api")
+
+        self.assertEqual(raised.exception.kind, "http_status")
+        self.assertEqual(raised.exception.response["error"]["status_code"], 503)
+
     def test_library_lookup_prefers_release_and_supports_bundle(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -195,6 +253,83 @@ class RustRuntimeAdapterTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    @unittest.skipUnless(
+        os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "native Rust runtime is optional outside the release gate",
+    )
+    def test_native_runtime_services_use_the_real_abi(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.dumps({"ok": True, "source": "rust"}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = rust_runtime.json_http_request(
+                "POST",
+                f"http://127.0.0.1:{server.server_port}/json",
+                payload={"request": True},
+            )
+            addresses = rust_runtime.detect_lan_ipv4_addresses(
+                platform_name="win32",
+                candidates=[
+                    {
+                        "name": "vEthernet (WSL)",
+                        "address": "172.28.32.1",
+                        "is_up": True,
+                        "interface_type": "virtual",
+                    },
+                    {
+                        "name": "Wi-Fi",
+                        "address": "192.168.31.8",
+                        "is_up": True,
+                        "interface_type": "physical",
+                    },
+                ],
+                route_sources=["192.168.31.8"],
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(result, {"ok": True, "source": "rust"})
+        self.assertEqual(addresses, ["192.168.31.8"])
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            archive_path = root / "update.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("bundle/bilikara.exe", b"native update")
+            command = rust_runtime.prepare_update_install(
+                {
+                    "platform": "windows",
+                    "archive_path": str(archive_path),
+                    "extract_dir": str(root / "extracted"),
+                    "script_path": str(root / "apply.cmd"),
+                    "install_root": str(root / "installed"),
+                    "executable_name": "bilikara.exe",
+                    "launch_executable_name": "bilikara-desktop.exe",
+                    "wait_pids": [42],
+                }
+            )
+            self.assertEqual(command[:2], ["cmd", "/c"])
+            self.assertTrue((root / "extracted" / "bundle" / "bilikara.exe").is_file())
+            self.assertIn(
+                "/XD runtime data updates __pycache__",
+                (root / "apply.cmd").read_text(encoding="utf-8"),
+            )
 
     @unittest.skipUnless(
         os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
