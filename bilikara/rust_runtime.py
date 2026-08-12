@@ -59,7 +59,7 @@ def _runtime_library_name() -> str:
     return "libbilikara_runtime.so"
 
 
-def _get_runtime_lib_path() -> Path | None:
+def _runtime_library_candidates() -> list[Path]:
     root_dir = Path(__file__).resolve().parent.parent
     lib_name = _runtime_library_name()
     candidates = [
@@ -75,6 +75,11 @@ def _get_runtime_lib_path() -> Path | None:
             Path(sys.executable).resolve().parent / lib_name,
         ]
     )
+    return candidates
+
+
+def _get_runtime_lib_path() -> Path | None:
+    candidates = _runtime_library_candidates()
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -82,14 +87,29 @@ def _get_runtime_lib_path() -> Path | None:
 
 
 def _load_runtime_library(path: Path | None):
+    details: dict[str, Any] = {
+        "stage": "locate_library" if path is None else "load_library",
+        "selected_path": str(path or ""),
+        "exception_type": "",
+        "exception_message": "",
+        "actual_abi_version": None,
+    }
     if path is None:
-        return None, "Rust runtime library not found"
+        return None, "Rust runtime library not found", details
     try:
         library = ctypes.CDLL(str(path))
+        details["stage"] = "resolve_symbols"
         library.bilikara_runtime_abi_version.argtypes = []
         library.bilikara_runtime_abi_version.restype = ctypes.c_uint32
-        if int(library.bilikara_runtime_abi_version()) != EXPECTED_RUNTIME_ABI_VERSION:
-            return None, "Rust runtime ABI version mismatch"
+        actual_abi_version = int(library.bilikara_runtime_abi_version())
+        details["actual_abi_version"] = actual_abi_version
+        if actual_abi_version != EXPECTED_RUNTIME_ABI_VERSION:
+            details["stage"] = "validate_abi"
+            return (
+                None,
+                "Rust runtime ABI version mismatch",
+                details,
+            )
         library.bilikara_runtime_download.argtypes = [
             ctypes.c_char_p,
             _PROGRESS_CALLBACK,
@@ -106,22 +126,50 @@ def _load_runtime_library(path: Path | None):
         library.bilikara_runtime_service.restype = ctypes.c_void_p
         library.bilikara_runtime_free_string.argtypes = [ctypes.c_void_p]
         library.bilikara_runtime_free_string.restype = None
-        return library, ""
+        details["stage"] = "ready"
+        return library, "", details
     except (AttributeError, OSError, TypeError, ValueError) as exc:
-        return None, f"Rust runtime load failed: {type(exc).__name__}"
+        details["exception_type"] = type(exc).__name__
+        details["exception_message"] = str(exc)
+        return None, f"Rust runtime load failed: {type(exc).__name__}", details
 
 
-_runtime_lib_path = _get_runtime_lib_path()
-_runtime_lib, _runtime_error = _load_runtime_library(_runtime_lib_path)
+_runtime_lib_candidates = _runtime_library_candidates()
+_runtime_python_executable = str(Path(sys.executable).resolve())
+_runtime_process_bits = ctypes.sizeof(ctypes.c_void_p) * 8
+_runtime_machine = platform.machine()
+_runtime_frozen_bundle = bool(getattr(sys, "frozen", False))
+_runtime_lib_path = next(
+    (candidate for candidate in _runtime_lib_candidates if candidate.is_file()),
+    None,
+)
+_runtime_lib, _runtime_error, _runtime_load_diagnostics = _load_runtime_library(
+    _runtime_lib_path
+)
 
 
 def runtime_status() -> dict[str, Any]:
+    candidates = []
+    for path in _runtime_lib_candidates:
+        try:
+            exists = path.is_file()
+        except OSError:
+            exists = False
+        candidates.append({"path": str(path), "exists": exists})
     return {
         "loaded": _runtime_lib is not None,
         "path": str(_runtime_lib_path or ""),
         "error": _runtime_error,
         "abi_version": EXPECTED_RUNTIME_ABI_VERSION if _runtime_lib is not None else None,
         "expected_abi_version": EXPECTED_RUNTIME_ABI_VERSION,
+        "load_diagnostics": {
+            **_runtime_load_diagnostics,
+            "candidate_paths": candidates,
+            "process_bits": _runtime_process_bits,
+            "machine": _runtime_machine,
+            "python_executable": _runtime_python_executable,
+            "frozen_bundle": _runtime_frozen_bundle,
+        },
         "capabilities": {
             "http_download": _runtime_lib is not None,
             "media_backend": _runtime_lib is not None,

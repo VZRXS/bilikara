@@ -119,6 +119,21 @@ class RustRuntimeAdapterTest(unittest.TestCase):
             ):
                 self.assertEqual(rust_runtime._get_runtime_lib_path(), release)
 
+    def test_runtime_load_failure_records_actionable_details(self):
+        path = Path("C:/bundle/rust/bilikara_runtime.dll")
+        with patch(
+            "bilikara.rust_runtime.ctypes.CDLL",
+            side_effect=OSError("VCRUNTIME140.dll was not found"),
+        ):
+            library, error, details = rust_runtime._load_runtime_library(path)
+
+        self.assertIsNone(library)
+        self.assertEqual(error, "Rust runtime load failed: OSError")
+        self.assertEqual(details["stage"], "load_library")
+        self.assertEqual(details["exception_type"], "OSError")
+        self.assertIn("VCRUNTIME140.dll", details["exception_message"])
+        self.assertEqual(details["selected_path"], str(path))
+
     def test_download_validates_success_and_reports_progress(self):
         with TemporaryDirectory() as temp_dir:
             destination = Path(temp_dir) / "track.m4s"

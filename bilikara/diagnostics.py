@@ -123,7 +123,23 @@ def build_diagnostic_artifact(
     }
     if connectivity_probe is not None:
         request["connectivity_override"] = connectivity_probe()
-    result = rust_runtime.build_diagnostic_artifact(request)
+    try:
+        result = rust_runtime.build_diagnostic_artifact(request)
+    except (
+        rust_runtime.RustRuntimeUnavailableError,
+        rust_runtime.RustRuntimeServiceError,
+    ) as exc:
+        return _build_emergency_diagnostic_artifact(
+            generated_at=generated_at,
+            tools_and_tasks=tools_and_tasks,
+            cache_policy=cache_policy,
+            runtime_state=runtime_state,
+            browser_info=browser_info or {},
+            export_diagnostics=export_diagnostics or [],
+            local_usernames=redaction_names,
+            connectivity_probe=connectivity_probe,
+            native_error=exc,
+        )
     try:
         files = {
             str(name): base64.b64decode(str(payload), validate=True)
@@ -141,6 +157,88 @@ def build_diagnostic_artifact(
         files=files,
         _zip_payload=zip_payload,
     )
+
+
+def _build_emergency_diagnostic_artifact(
+    *,
+    generated_at: str,
+    tools_and_tasks: dict[str, Any],
+    cache_policy: dict[str, Any],
+    runtime_state: dict[str, Any],
+    browser_info: dict[str, Any],
+    export_diagnostics: list[dict[str, Any]],
+    local_usernames: list[str],
+    connectivity_probe: Callable[[], dict[str, Any]] | None,
+    native_error: BaseException,
+) -> DiagnosticArtifact:
+    system = _system_snapshot(browser_info, generated_at, local_usernames)
+    tools_and_tasks = redact_value(
+        tools_and_tasks, local_usernames=local_usernames
+    )
+    tools = dict(tools_and_tasks.get("tools") or {})
+    tasks = dict(tools_and_tasks.get("tasks") or {})
+    policy = redact_value(cache_policy, local_usernames=local_usernames)
+    runtime = redact_value(runtime_state, local_usernames=local_usernames)
+    runtime["diagnostic_builder"] = "python_emergency"
+    runtime["native_diagnostics_error"] = redact_text(
+        f"{type(native_error).__name__}: {native_error}",
+        local_usernames=local_usernames,
+    )
+    runtime["native_runtime"] = tools.get("Rust Native", {})
+    disk = _disk_snapshot(APP_HOME, local_usernames)
+    if connectivity_probe is not None:
+        try:
+            connectivity = redact_value(
+                connectivity_probe(), local_usernames=local_usernames
+            )
+        except Exception as exc:  # noqa: BLE001
+            connectivity = {
+                "probe": {
+                    "reachable": False,
+                    "status": None,
+                    "latency_ms": None,
+                    "error": redact_text(str(exc), local_usernames=local_usernames),
+                }
+            }
+    else:
+        targets = _connectivity_targets()
+        with ThreadPoolExecutor(max_workers=max(1, len(targets))) as executor:
+            connectivity = dict(
+                executor.map(
+                    lambda item: _probe_target(item[0], item[1], timeout=5.0),
+                    targets.items(),
+                )
+            )
+    configs = _collect_configs(local_usernames)
+    logs = _collect_logs(local_usernames)
+    exports = _sanitize_export_diagnostics(export_diagnostics, local_usernames)
+    files = {
+        "system.json": _json_bytes(system),
+        "tools-and-tasks.json": _json_bytes(tools_and_tasks),
+        "download-policy.json": _json_bytes(policy),
+        "runtime-state.json": _json_bytes(runtime),
+        "disk.json": _json_bytes(disk),
+        "connectivity.json": _json_bytes(connectivity),
+        "export-diagnostics.json": _json_bytes(exports),
+    }
+    files.update(
+        {f"config/{name}": _json_bytes(payload) for name, payload in configs.items()}
+    )
+    files.update(
+        {f"logs/{name}": payload.encode("utf-8") for name, payload in logs.items()}
+    )
+    markdown = _build_markdown(
+        system=system,
+        tools=tools,
+        tasks=tasks,
+        policy=policy,
+        runtime=runtime,
+        disk=disk,
+        connectivity=connectivity,
+        export_diagnostics=exports,
+        logs=logs,
+    )
+    return DiagnosticArtifact(markdown=markdown, files=files)
 
 
 def probe_connectivity(timeout: float = 5.0) -> dict[str, Any]:

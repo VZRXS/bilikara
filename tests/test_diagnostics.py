@@ -11,6 +11,54 @@ import bilikara.diagnostics as diagnostics
 
 
 class DiagnosticArtifactTest(unittest.TestCase):
+    def test_native_runtime_failure_uses_emergency_diagnostic_builder(self):
+        cache_manager = SimpleNamespace(
+            diagnostic_snapshot=lambda: {
+                "tools": {
+                    "Rust Native": {
+                        "installed": False,
+                        "state": "failed",
+                        "message": "Rust runtime load failed: OSError",
+                        "load_diagnostics": {
+                            "stage": "load_library",
+                            "exception_type": "OSError",
+                            "exception_message": "VCRUNTIME140.dll was not found",
+                        },
+                    }
+                },
+                "tasks": {},
+            }
+        )
+        with TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(diagnostics, "APP_HOME", Path(tmpdir)),
+                patch.object(diagnostics, "LOG_DIR", Path(tmpdir) / "logs"),
+                patch.object(diagnostics, "DIAGNOSTIC_CONFIG_FILES", ()),
+                patch.object(diagnostics, "_local_usernames", return_value=set()),
+                patch.object(
+                    diagnostics.rust_runtime,
+                    "build_diagnostic_artifact",
+                    side_effect=diagnostics.rust_runtime.RustRuntimeUnavailableError(
+                        "Rust runtime library not found"
+                    ),
+                ),
+            ):
+                artifact = diagnostics.build_diagnostic_artifact(
+                    cache_manager=cache_manager,
+                    cache_policy={"download_source": "native"},
+                    runtime_state={},
+                    connectivity_probe=lambda: {},
+                )
+
+        with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
+            tools = json.loads(archive.read("tools-and-tasks.json"))
+
+        self.assertIn("VCRUNTIME140.dll", artifact.markdown)
+        self.assertEqual(
+            tools["tools"]["Rust Native"]["load_diagnostics"]["stage"],
+            "load_library",
+        )
+
     def test_artifact_redacts_credentials_and_local_usernames(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

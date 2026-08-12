@@ -1,10 +1,13 @@
+use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{ACCEPT_ENCODING, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, HeaderMap, HeaderName, HeaderValue, RANGE};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::Duration;
 
 const DOWNLOAD_SCHEMA_VERSION: u32 = 1;
@@ -13,7 +16,10 @@ const MAX_HEADERS: usize = 64;
 const MAX_HEADER_VALUE_BYTES: usize = 16 * 1024;
 const MAX_ATTEMPTS_PER_CANDIDATE: u32 = 5;
 const MAX_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
-const COPY_BUFFER_BYTES: usize = 64 * 1024;
+const COPY_BUFFER_BYTES: usize = 256 * 1024;
+const MULTIPART_SEGMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_MULTIPART_WORKERS: usize = 16;
+const BILIBILI_UPOS_MIRROR_HOST: &str = "upos-sz-mirrorcoso1.bilivideo.com";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn default_connect_timeout_ms() -> u64 {
@@ -117,6 +123,8 @@ pub struct DownloadResult {
     pub content_length: Option<u64>,
     pub candidate_index: usize,
     pub attempt: u32,
+    pub segments_used: usize,
+    pub host_rewritten: bool,
 }
 
 pub fn download_to_path<F>(
@@ -152,29 +160,38 @@ where
             DownloadError::new(DownloadErrorKind::InvalidRequest, error)
                 .for_candidate(candidate_index)
         })?;
-        for attempt in 1..=request.attempts_per_candidate {
-            if !continue_download(DownloadProgress {
-                downloaded_bytes: 0,
-                total_bytes: None,
-            }) {
-                return Err(
-                    DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
-                        .for_candidate(candidate_index),
-                );
-            }
+        let mut variants = Vec::with_capacity(2);
+        if let Some(url) = bilibili_mirror_url(candidate.url.trim()) {
+            variants.push((url, true));
+        }
+        variants.push((candidate.url.trim().to_string(), false));
+        for (url, host_rewritten) in variants {
+            for attempt in 1..=request.attempts_per_candidate {
+                if !continue_download(DownloadProgress {
+                    downloaded_bytes: 0,
+                    total_bytes: None,
+                }) {
+                    return Err(DownloadError::new(
+                        DownloadErrorKind::Cancelled,
+                        "download cancelled",
+                    )
+                    .for_candidate(candidate_index));
+                }
 
-            match download_candidate(
-                &client,
-                candidate,
-                headers.clone(),
-                &request.destination,
-                candidate_index,
-                attempt,
-                &mut continue_download,
-            ) {
-                Ok(result) => return Ok(result),
-                Err(error) if error.kind == DownloadErrorKind::Cancelled => return Err(error),
-                Err(error) => last_error = error,
+                match download_candidate(
+                    &client,
+                    &url,
+                    headers.clone(),
+                    &request.destination,
+                    candidate_index,
+                    attempt,
+                    host_rewritten,
+                    &mut continue_download,
+                ) {
+                    Ok(result) => return Ok(result),
+                    Err(error) if error.kind == DownloadErrorKind::Cancelled => return Err(error),
+                    Err(error) => last_error = error,
+                }
             }
         }
     }
@@ -269,21 +286,23 @@ fn candidate_headers(candidate: &DownloadCandidate) -> Result<HeaderMap, String>
     Ok(headers)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn download_candidate<F>(
     client: &Client,
-    candidate: &DownloadCandidate,
+    url: &str,
     headers: HeaderMap,
     destination: &Path,
     candidate_index: usize,
     attempt: u32,
+    host_rewritten: bool,
     continue_download: &mut F,
 ) -> Result<DownloadResult, DownloadError>
 where
     F: FnMut(DownloadProgress) -> bool,
 {
     let response = client
-        .get(candidate.url.trim())
-        .headers(headers)
+        .get(url)
+        .headers(headers.clone())
         .send()
         .map_err(|_| {
             DownloadError::new(DownloadErrorKind::Network, "HTTP request failed")
@@ -300,15 +319,63 @@ where
         return Err(error);
     }
 
+    let content_length = response.content_length();
     let temp_path = temporary_path(destination);
-    let result = stream_response(
-        response,
-        &temp_path,
-        destination,
-        candidate_index,
-        attempt,
-        continue_download,
-    );
+    let result = if content_length.is_some_and(|length| length > MULTIPART_SEGMENT_BYTES) {
+        drop(response);
+        match stream_multipart(
+            client,
+            url,
+            headers.clone(),
+            content_length.expect("checked multipart content length"),
+            &temp_path,
+            destination,
+            candidate_index,
+            attempt,
+            host_rewritten,
+            continue_download,
+        ) {
+            Err(MultipartError::RangeUnsupported) => {
+                let _ = fs::remove_file(&temp_path);
+                let fallback = client.get(url).headers(headers).send().map_err(|_| {
+                    DownloadError::new(DownloadErrorKind::Network, "HTTP fallback request failed")
+                        .for_candidate(candidate_index)
+                })?;
+                let status = fallback.status();
+                if !status.is_success() {
+                    let mut error = DownloadError::new(
+                        DownloadErrorKind::HttpStatus,
+                        format!("HTTP fallback request returned status {}", status.as_u16()),
+                    )
+                    .for_candidate(candidate_index);
+                    error.http_status = Some(status.as_u16());
+                    Err(error)
+                } else {
+                    stream_response(
+                        fallback,
+                        &temp_path,
+                        destination,
+                        candidate_index,
+                        attempt,
+                        host_rewritten,
+                        continue_download,
+                    )
+                }
+            }
+            Err(MultipartError::Download(error)) => Err(error),
+            Ok(result) => Ok(result),
+        }
+    } else {
+        stream_response(
+            response,
+            &temp_path,
+            destination,
+            candidate_index,
+            attempt,
+            host_rewritten,
+            continue_download,
+        )
+    };
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
@@ -321,6 +388,7 @@ fn stream_response<F>(
     destination: &Path,
     candidate_index: usize,
     attempt: u32,
+    host_rewritten: bool,
     continue_download: &mut F,
 ) -> Result<DownloadResult, DownloadError>
 where
@@ -371,6 +439,332 @@ where
         )
         .for_candidate(candidate_index));
     }
+    publish_download(
+        output,
+        temp_path,
+        destination,
+        downloaded_bytes,
+        content_length,
+        candidate_index,
+        attempt,
+        1,
+        host_rewritten,
+    )
+}
+
+#[derive(Debug)]
+enum MultipartError {
+    RangeUnsupported,
+    Download(DownloadError),
+}
+
+enum SegmentMessage {
+    Progress(u64),
+    Failed(MultipartError),
+    Finished,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_multipart<F>(
+    client: &Client,
+    url: &str,
+    headers: HeaderMap,
+    content_length: u64,
+    temp_path: &Path,
+    destination: &Path,
+    candidate_index: usize,
+    attempt: u32,
+    host_rewritten: bool,
+    continue_download: &mut F,
+) -> Result<DownloadResult, MultipartError>
+where
+    F: FnMut(DownloadProgress) -> bool,
+{
+    let output = create_temp_file(temp_path, candidate_index).map_err(MultipartError::Download)?;
+    output.set_len(content_length).map_err(|_| {
+        MultipartError::Download(
+            DownloadError::new(
+                DownloadErrorKind::Io,
+                "failed to preallocate multipart download",
+            )
+            .for_candidate(candidate_index),
+        )
+    })?;
+
+    let segments: Vec<(u64, u64)> = (0..content_length)
+        .step_by(MULTIPART_SEGMENT_BYTES as usize)
+        .map(|start| {
+            let end = start
+                .saturating_add(MULTIPART_SEGMENT_BYTES - 1)
+                .min(content_length - 1);
+            (start, end)
+        })
+        .collect();
+    let available_workers = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(4);
+    let worker_count = segments
+        .len()
+        .min(available_workers)
+        .clamp(1, MAX_MULTIPART_WORKERS);
+    let segments = Arc::new(segments);
+    let next_segment = Arc::new(AtomicUsize::new(0));
+    let stopped = Arc::new(AtomicBool::new(false));
+    let (sender, receiver) = mpsc::channel();
+    let mut downloaded_bytes = 0_u64;
+    let mut first_error = None;
+    let mut range_unsupported = false;
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let client = client.clone();
+            let url = url.to_string();
+            let headers = headers.clone();
+            let temp_path = temp_path.to_path_buf();
+            let segments = Arc::clone(&segments);
+            let next_segment = Arc::clone(&next_segment);
+            let stopped = Arc::clone(&stopped);
+            let sender = sender.clone();
+            scope.spawn(move || {
+                while !stopped.load(Ordering::Acquire) {
+                    let index = next_segment.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(start, end)) = segments.get(index) else {
+                        break;
+                    };
+                    if let Err(error) = download_segment(
+                        &client,
+                        &url,
+                        headers.clone(),
+                        &temp_path,
+                        start,
+                        end,
+                        content_length,
+                        candidate_index,
+                        &sender,
+                    ) {
+                        stopped.store(true, Ordering::Release);
+                        let _ = sender.send(SegmentMessage::Failed(error));
+                        break;
+                    }
+                }
+                let _ = sender.send(SegmentMessage::Finished);
+            });
+        }
+        drop(sender);
+
+        let mut finished = 0_usize;
+        while finished < worker_count {
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(SegmentMessage::Progress(count)) => {
+                    downloaded_bytes = downloaded_bytes.saturating_add(count);
+                    if first_error.is_none()
+                        && !continue_download(DownloadProgress {
+                            downloaded_bytes,
+                            total_bytes: Some(content_length),
+                        })
+                    {
+                        stopped.store(true, Ordering::Release);
+                        first_error = Some(MultipartError::Download(
+                            DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
+                                .for_candidate(candidate_index),
+                        ));
+                    }
+                }
+                Ok(SegmentMessage::Failed(error)) => {
+                    if matches!(error, MultipartError::RangeUnsupported) {
+                        range_unsupported = true;
+                    }
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Ok(SegmentMessage::Finished) => finished += 1,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if first_error.is_none()
+                        && !continue_download(DownloadProgress {
+                            downloaded_bytes,
+                            total_bytes: Some(content_length),
+                        })
+                    {
+                        stopped.store(true, Ordering::Release);
+                        first_error = Some(MultipartError::Download(
+                            DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
+                                .for_candidate(candidate_index),
+                        ));
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+
+    if range_unsupported {
+        return Err(MultipartError::RangeUnsupported);
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    if downloaded_bytes != content_length {
+        return Err(MultipartError::Download(
+            DownloadError::new(
+                DownloadErrorKind::LengthMismatch,
+                "multipart response length did not match Content-Length",
+            )
+            .for_candidate(candidate_index),
+        ));
+    }
+
+    publish_download(
+        output,
+        temp_path,
+        destination,
+        downloaded_bytes,
+        Some(content_length),
+        candidate_index,
+        attempt,
+        segments.len(),
+        host_rewritten,
+    )
+    .map_err(MultipartError::Download)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn download_segment(
+    client: &Client,
+    url: &str,
+    headers: HeaderMap,
+    temp_path: &Path,
+    start: u64,
+    end: u64,
+    total: u64,
+    candidate_index: usize,
+    sender: &mpsc::Sender<SegmentMessage>,
+) -> Result<(), MultipartError> {
+    let mut response = client
+        .get(url)
+        .headers(headers)
+        .header(RANGE, format!("bytes={start}-{end}"))
+        .send()
+        .map_err(|_| {
+            MultipartError::Download(
+                DownloadError::new(DownloadErrorKind::Network, "HTTP range request failed")
+                    .for_candidate(candidate_index),
+            )
+        })?;
+    if response.status() == StatusCode::OK {
+        return Err(MultipartError::RangeUnsupported);
+    }
+    if response.status() != StatusCode::PARTIAL_CONTENT {
+        let status = response.status();
+        let mut error = DownloadError::new(
+            DownloadErrorKind::HttpStatus,
+            format!("HTTP range request returned status {}", status.as_u16()),
+        )
+        .for_candidate(candidate_index);
+        error.http_status = Some(status.as_u16());
+        return Err(MultipartError::Download(error));
+    }
+    let expected_content_range = format!("bytes {start}-{end}/{total}");
+    let content_range_matches = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case(&expected_content_range));
+    if !content_range_matches {
+        return Err(MultipartError::Download(
+            DownloadError::new(
+                DownloadErrorKind::LengthMismatch,
+                "HTTP range response returned an unexpected Content-Range",
+            )
+            .for_candidate(candidate_index),
+        ));
+    }
+
+    let expected_length = end - start + 1;
+    if response
+        .content_length()
+        .is_some_and(|length| length != expected_length)
+    {
+        return Err(MultipartError::Download(
+            DownloadError::new(
+                DownloadErrorKind::LengthMismatch,
+                "HTTP range response returned an unexpected Content-Length",
+            )
+            .for_candidate(candidate_index),
+        ));
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .open(temp_path)
+        .map_err(|_| {
+            MultipartError::Download(
+                DownloadError::new(
+                    DownloadErrorKind::Io,
+                    "failed to open multipart temporary download",
+                )
+                .for_candidate(candidate_index),
+            )
+        })?;
+    output.seek(SeekFrom::Start(start)).map_err(|_| {
+        MultipartError::Download(
+            DownloadError::new(
+                DownloadErrorKind::Io,
+                "failed to seek multipart temporary download",
+            )
+            .for_candidate(candidate_index),
+        )
+    })?;
+
+    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
+    let mut written = 0_u64;
+    while written < expected_length {
+        let remaining = expected_length - written;
+        let limit = remaining.min(buffer.len() as u64) as usize;
+        let count = response.read(&mut buffer[..limit]).map_err(|_| {
+            MultipartError::Download(
+                DownloadError::new(
+                    DownloadErrorKind::Network,
+                    "HTTP range response body failed",
+                )
+                .for_candidate(candidate_index),
+            )
+        })?;
+        if count == 0 {
+            return Err(MultipartError::Download(
+                DownloadError::new(
+                    DownloadErrorKind::LengthMismatch,
+                    "HTTP range response ended before its requested boundary",
+                )
+                .for_candidate(candidate_index),
+            ));
+        }
+        output.write_all(&buffer[..count]).map_err(|_| {
+            MultipartError::Download(
+                DownloadError::new(
+                    DownloadErrorKind::Io,
+                    "failed to write multipart temporary download",
+                )
+                .for_candidate(candidate_index),
+            )
+        })?;
+        written += count as u64;
+        let _ = sender.send(SegmentMessage::Progress(count as u64));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_download(
+    output: File,
+    temp_path: &Path,
+    destination: &Path,
+    downloaded_bytes: u64,
+    content_length: Option<u64>,
+    candidate_index: usize,
+    attempt: u32,
+    segments_used: usize,
+    host_rewritten: bool,
+) -> Result<DownloadResult, DownloadError> {
     output.sync_all().map_err(|_| {
         DownloadError::new(DownloadErrorKind::Io, "failed to flush temporary download")
             .for_candidate(candidate_index)
@@ -398,7 +792,24 @@ where
         content_length,
         candidate_index,
         attempt,
+        segments_used,
+        host_rewritten,
     })
+}
+
+fn bilibili_mirror_url(raw_url: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(raw_url).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let is_bilibili_media = host.ends_with(".bilivideo.com")
+        || host.ends_with(".bilivideo.cn")
+        || host.ends_with(".bilibilivideo.com")
+        || host.ends_with(".akamaized.net");
+    if !is_bilibili_media || host == BILIBILI_UPOS_MIRROR_HOST {
+        return None;
+    }
+    url.set_host(Some(BILIBILI_UPOS_MIRROR_HOST)).ok()?;
+    url.set_port(None).ok()?;
+    Some(url.into())
 }
 
 fn create_temp_file(path: &Path, candidate_index: usize) -> Result<File, DownloadError> {
@@ -426,8 +837,12 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::{Duration, Instant};
+
+    const TEST_MULTIPART_BYTES: usize = 20 * 1024 * 1024 * 2 + 17;
 
     fn test_dir(label: &str) -> PathBuf {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -482,6 +897,115 @@ mod tests {
     }
 
     #[test]
+    fn bilibili_media_urls_prefer_the_bbdown_mirror_without_changing_the_signature() {
+        let source =
+            "https://example.mcdn.bilivideo.cn:4483/upgcxcode/track.m4s?deadline=1&upsig=secret";
+        let mirrored = bilibili_mirror_url(source).expect("Bilibili media URL is rewritten");
+        let parsed = reqwest::Url::parse(&mirrored).expect("parse mirrored URL");
+
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some(BILIBILI_UPOS_MIRROR_HOST));
+        assert_eq!(parsed.port(), None);
+        assert_eq!(parsed.path(), "/upgcxcode/track.m4s");
+        assert_eq!(parsed.query(), Some("deadline=1&upsig=secret"));
+        assert!(bilibili_mirror_url("https://example.test/file").is_none());
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn serve_range_file() -> (
+        String,
+        Arc<Mutex<Vec<(u64, u64)>>>,
+        Arc<AtomicUsize>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind range test server");
+        listener
+            .set_nonblocking(true)
+            .expect("make range listener nonblocking");
+        let address = listener.local_addr().expect("range test server address");
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let maximum_active = Arc::new(AtomicUsize::new(0));
+        let captured_ranges = Arc::clone(&ranges);
+        let captured_maximum = Arc::clone(&maximum_active);
+        let handle = thread::spawn(move || {
+            let active = Arc::new(AtomicUsize::new(0));
+            let mut handlers = Vec::new();
+            let mut last_request = Instant::now();
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("make range stream blocking");
+                        last_request = Instant::now();
+                        let ranges = Arc::clone(&captured_ranges);
+                        let active = Arc::clone(&active);
+                        let maximum = Arc::clone(&captured_maximum);
+                        handlers.push(thread::spawn(move || {
+                            let mut request = vec![0_u8; 16 * 1024];
+                            let count = stream.read(&mut request).expect("read range request");
+                            let request = String::from_utf8_lossy(&request[..count]);
+                            let range = request.lines().find_map(|line| {
+                                let value = line.strip_prefix("range: bytes=")?;
+                                let (start, end) = value.split_once('-')?;
+                                Some((start.parse::<u64>().ok()?, end.parse::<u64>().ok()?))
+                            });
+                            if let Some((start, end)) = range {
+                                ranges.lock().expect("capture range").push((start, end));
+                                let current = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                                maximum.fetch_max(current, AtomicOrdering::SeqCst);
+                                thread::sleep(Duration::from_millis(75));
+                                let length = end - start + 1;
+                                let headers = format!(
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {length}\r\nContent-Range: bytes {start}-{end}/{TEST_MULTIPART_BYTES}\r\nConnection: close\r\n\r\n"
+                                );
+                                stream
+                                    .write_all(headers.as_bytes())
+                                    .expect("write range response headers");
+                                let block = vec![b'x'; 256 * 1024];
+                                let mut remaining = length;
+                                while remaining > 0 {
+                                    let count = remaining.min(block.len() as u64) as usize;
+                                    stream
+                                        .write_all(&block[..count])
+                                        .expect("write range response body");
+                                    remaining -= count as u64;
+                                }
+                                active.fetch_sub(1, AtomicOrdering::SeqCst);
+                            } else {
+                                let headers = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: {TEST_MULTIPART_BYTES}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+                                );
+                                let _ = stream.write_all(headers.as_bytes());
+                                let block = vec![b'x'; 256 * 1024];
+                                let mut remaining = TEST_MULTIPART_BYTES;
+                                while remaining > 0 {
+                                    let count = remaining.min(block.len());
+                                    if stream.write_all(&block[..count]).is_err() {
+                                        break;
+                                    }
+                                    remaining -= count;
+                                }
+                            }
+                        }));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if last_request.elapsed() >= Duration::from_secs(1) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept range request: {error}"),
+                }
+            }
+            for handler in handlers {
+                handler.join().expect("range handler joins");
+            }
+        });
+        (format!("http://{address}"), ranges, maximum_active, handle)
+    }
+
+    #[test]
     fn falls_back_to_the_next_candidate_and_publishes_atomically() {
         let (base, _, server) = serve(vec![
             "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -527,6 +1051,49 @@ mod tests {
         let request_text = &requests.lock().expect("request capture")[0];
         assert!(request_text.contains("cookie: SESSDATA=secret"));
         assert!(request_text.contains("accept-encoding: identity"));
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn large_range_capable_response_uses_concurrent_segments() {
+        let (base, ranges, maximum_active, server) = serve_range_file();
+        let root = test_dir("multipart");
+        let destination = root.join("track.m4s");
+        let result = download_to_path(
+            &request(
+                destination.clone(),
+                vec![candidate(format!("{base}/media"))],
+            ),
+            |_| true,
+        );
+        server.join().expect("range server joins");
+        let result = result.expect("multipart download succeeds");
+
+        let mut captured = ranges.lock().expect("read captured ranges").clone();
+        captured.sort_unstable();
+        assert!(
+            captured.len() > 1,
+            "large downloads must use multiple ranges"
+        );
+        assert!(
+            maximum_active.load(AtomicOrdering::SeqCst) > 1,
+            "range requests must overlap"
+        );
+        assert_eq!(captured.first().map(|range| range.0), Some(0));
+        assert_eq!(
+            captured.last().map(|range| range.1),
+            Some(TEST_MULTIPART_BYTES as u64 - 1)
+        );
+        for pair in captured.windows(2) {
+            assert_eq!(pair[0].1 + 1, pair[1].0);
+        }
+        assert_eq!(result.bytes_written, TEST_MULTIPART_BYTES as u64);
+        assert_eq!(
+            fs::metadata(&destination)
+                .expect("read output metadata")
+                .len(),
+            TEST_MULTIPART_BYTES as u64
+        );
         fs::remove_dir_all(root).expect("remove test directory");
     }
 

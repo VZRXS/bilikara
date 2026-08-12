@@ -390,6 +390,7 @@ class CacheManager:
                     "path": str(runtime.get("path") or ""),
                     "capabilities": dict(runtime.get("capabilities") or {}),
                     "message": str(runtime.get("error") or ""),
+                    "load_diagnostics": dict(runtime.get("load_diagnostics") or {}),
                 }
             },
             "tasks": {
@@ -3926,7 +3927,7 @@ class CacheManager:
         self._append_log_line(
             log_path,
             f"[{self._log_timestamp()}] media_diagnostic: "
-            f"{json.dumps({'event': 'rust_downloader_output', 'item_id': item_id, 'stream_kind': stream_kind, 'page': page, 'cid': cid, 'bytes_written': final_size, 'candidate_index': int(result.get('candidate_index') or 0), 'status': 'ok'}, ensure_ascii=False, sort_keys=True)}",
+            f"{json.dumps({'event': 'rust_downloader_output', 'item_id': item_id, 'stream_kind': stream_kind, 'page': page, 'cid': cid, 'bytes_written': final_size, 'candidate_index': int(result.get('candidate_index') or 0), 'segments_used': int(result.get('segments_used') or 1), 'host_rewritten': bool(result.get('host_rewritten')), 'status': 'ok'}, ensure_ascii=False, sort_keys=True)}",
         )
         return expected_path
 
