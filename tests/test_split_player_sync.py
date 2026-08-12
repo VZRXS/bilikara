@@ -100,6 +100,7 @@ const state = {{
   localVideoPlaybackBlocked: false,
   localPlaybackStartState: "established",
   localPlaybackStartGeneration: 0,
+  localPlaybackStartPromisesSettled: false,
   localWebKitStartRetryDone: false,
   localShouldBePlaying: true,
   localPlaybackEndHandled: false,
@@ -111,6 +112,7 @@ const state = {{
   localSeekSettleCallback: null,
   localPlayerSyncTimer: null,
   localPlayerStartupTimer: null,
+  localPlaybackStartupWatchdogTimer: null,
   localPlayerEventCleanups: [],
   tauriMediaSessionOwner: null,
   lastTauriMediaSessionPositionAt: 0,
@@ -122,6 +124,7 @@ const localPlayerHardSyncThresholdSeconds = 0.5;
 const localPlayerSyncSeekCooldownMs = 750;
 const localPlayerSeekSettlePollMs = 50;
 const localPlayerSeekSettleMaxMs = 1400;
+const splitPlaybackStartupWatchdogMs = 3000;
 const tauriMediaSessionPositionUpdateMs = 1000;
 const mediaPlayPromisesInFlight = new WeakSet();
 let nowMs = 1000;
@@ -144,6 +147,11 @@ const elements = {{
 }};
 function t(key) {{ return key; }}
 function activeLocalPlayerElements() {{ return {{ video: mountedVideo, audio: mountedAudio }}; }}
+function clearSplitPlaybackStartupWatchdog() {{
+  if (!state.localPlaybackStartupWatchdogTimer) return;
+  window.clearTimeout(state.localPlaybackStartupWatchdogTimer);
+  state.localPlaybackStartupWatchdogTimer = null;
+}}
 function syncSplitPlayerVolumeFromVideo() {{}}
 function isSplitPlayerSeekSettling(video, audio) {{
   return state.localSeekSettling && isActiveSplitPlayer(video, audio);
@@ -779,19 +787,22 @@ console.log(JSON.stringify({ afterVideo, advances }));
 let intervalClears = 0; let timeoutClears = 0; let listenerCleanups = 0;
 global.window = { clearInterval() { intervalClears += 1; }, clearTimeout() { timeoutClears += 1; } };
 state.localPlayerSyncTimer = 1; state.localPlayerStartupTimer = 2;
+state.localPlaybackStartupWatchdogTimer = 3;
 state.localPlayerEventCleanups.push(() => { listenerCleanups += 1; });
 clearLocalPlayerSyncTimer(); clearLocalPlayerEventListeners();
 console.log(JSON.stringify({ intervalClears, timeoutClears, listenerCleanups,
   syncTimer: state.localPlayerSyncTimer, startupTimer: state.localPlayerStartupTimer,
+  watchdogTimer: state.localPlaybackStartupWatchdogTimer,
   cleanupCount: state.localPlayerEventCleanups.length }));
 """,
             self.lifecycle_source,
         )
         self.assertEqual(result["intervalClears"], 1)
-        self.assertEqual(result["timeoutClears"], 1)
+        self.assertEqual(result["timeoutClears"], 2)
         self.assertEqual(result["listenerCleanups"], 1)
         self.assertIsNone(result["syncTimer"])
         self.assertIsNone(result["startupTimer"])
+        self.assertIsNone(result["watchdogTimer"])
         self.assertEqual(result["cleanupCount"], 0)
 
     def test_ordinary_render_does_not_synchronize_or_seek_mounted_player(self):
@@ -973,7 +984,7 @@ console.log(JSON.stringify({
 Object.defineProperty(globalThis, "navigator", { value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)" }, configurable: true, writable: true });
 window.__TAURI__ = { core: {}, webviewWindow: {} };
 const video = new FakeMedia(0); const audio = new FakeMedia(0);
-video.readyState = 1; audio.readyState = 0;
+video.readyState = 1; audio.readyState = 2;
 mountedVideo = video; mountedAudio = audio;
 mountedOverlay = {
   hidden: true,
@@ -990,10 +1001,6 @@ const synchronizeStartupPlayer = createSplitPlayerStartupSynchronizer(
   audio,
   () => false,
 );
-synchronizeStartupPlayer();
-video.readyState = 4;
-synchronizeStartupPlayer();
-audio.readyState = 4;
 synchronizeStartupPlayer();
 await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 console.log(JSON.stringify({
@@ -1043,13 +1050,89 @@ console.log(JSON.stringify({
             },
         )
 
-    def test_packaged_tauri_webkit_early_native_play_preserves_pending_startup(self):
+    def test_webkit_metadata_only_pair_attempts_autoplay_before_canplay(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+}, configurable: true, writable: true });
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 1; audio.readyState = 1;
+mountedVideo = video; mountedAudio = audio;
+state.localShouldBePlaying = true;
+state.localPlaybackStartState = "pending";
+const synchronizeStartupPlayer = createSplitPlayerStartupSynchronizer(
+  video,
+  audio,
+  () => false,
+);
+const handled = synchronizeStartupPlayer();
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  handled,
+  startState: state.localPlaybackStartState,
+  videoPlayCalls: video.playCalls,
+  audioPlayCalls: audio.playCalls,
+  startupEvents: startupDiagnostics.map((entry) => entry.eventName),
+}));
+""",
+            self.sync_source,
+            self.startup_source,
+        )
+        self.assertEqual(result["startState"], "established")
+        self.assertTrue(result["handled"])
+        self.assertEqual(result["videoPlayCalls"], 1)
+        self.assertEqual(result["audioPlayCalls"], 1)
+        self.assertIn("autoplay-attempt", result["startupEvents"])
+        self.assertIn("autoplay-success", result["startupEvents"])
+
+    def test_chromium_initial_start_keeps_existing_canplay_gate(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+}, configurable: true, writable: true });
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 1; audio.readyState = 1;
+mountedVideo = video; mountedAudio = audio;
+state.localShouldBePlaying = true;
+state.localPlaybackStartState = "pending";
+const synchronizeStartupPlayer = createSplitPlayerStartupSynchronizer(
+  video,
+  audio,
+  () => false,
+);
+synchronizeStartupPlayer();
+const atMetadata = {
+  startState: state.localPlaybackStartState,
+  playCalls: [video.playCalls, audio.playCalls],
+};
+video.readyState = 2; audio.readyState = 2;
+synchronizeStartupPlayer();
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  atMetadata,
+  finalState: state.localPlaybackStartState,
+  finalPlayCalls: [video.playCalls, audio.playCalls],
+}));
+""",
+            self.sync_source,
+            self.startup_source,
+        )
+        self.assertEqual(
+            result["atMetadata"],
+            {"startState": "pending", "playCalls": [0, 0]},
+        )
+        self.assertEqual(result["finalState"], "established")
+        self.assertEqual(result["finalPlayCalls"], [1, 1])
+
+    def test_packaged_tauri_metadata_start_ignores_internal_native_play_echo(self):
         result = self.run_node(
             """
 synchronizeStartupPlayer = createSplitPlayerStartupSynchronizer(video, audio, () => false);
 synchronizeStartupPlayer();
 
-// WebKit/Now Playing exposes an early native play event before video readiness.
+// WebKit/Now Playing echoes the application-owned video play event.
 video.paused = false;
 video.dispatchMediaEvent("play");
 const afterEarlyPlay = {
@@ -1059,8 +1142,6 @@ const afterEarlyPlay = {
   videoPauseCalls: video.pauseCalls,
 };
 
-video.readyState = 4;
-synchronizeStartupPlayer();
 await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 console.log(JSON.stringify({
   afterEarlyPlay,
@@ -1102,7 +1183,7 @@ function reportCurrentVideoStatus() {}
         self.assertEqual(
             result["afterEarlyPlay"],
             {
-                "startState": "pending",
+                "startState": "starting",
                 "shouldPlay": True,
                 "overlayHidden": True,
                 "videoPauseCalls": 0,
@@ -1116,13 +1197,108 @@ function reportCurrentVideoStatus() {}
         self.assertEqual(
             [event["eventName"] for event in result["startupDiagnostics"]],
             [
-                "native-video-play-intent",
                 "autoplay-attempt",
                 "autoplay-video-play-resolved",
                 "autoplay-audio-play-resolved",
                 "autoplay-success",
             ],
         )
+
+    def test_host_pending_first_video_click_is_immediate_start_not_toggle(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/17 Safari/605.1.15",
+}, configurable: true, writable: true });
+delete window.__TAURI__;
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 1; audio.readyState = 1;
+mountedVideo = video; mountedAudio = audio;
+state.localShouldBePlaying = true;
+state.localPlaybackStartState = "pending";
+let insideClickHandler = false;
+const activationObservations = [];
+video.play = function() {
+  this.playCalls += 1; this.paused = false;
+  activationObservations.push(["video", insideClickHandler]);
+  return Promise.resolve();
+};
+audio.play = function() {
+  this.playCalls += 1; this.paused = false;
+  activationObservations.push(["audio", insideClickHandler]);
+  return Promise.resolve();
+};
+insideClickHandler = true;
+frameClickHandler({
+  target: { closest(selector) { return selector === "video" ? video : null; } },
+});
+insideClickHandler = false;
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  startState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  activationObservations,
+  queuedToggleCalls,
+  playCalls: [video.playCalls, audio.playCalls],
+}));
+""",
+            self.sync_source,
+            """
+let frameClickHandler = null;
+let queuedToggleCalls = 0;
+function clearPlayerFrameClickTimer() {}
+function queuePlayerFrameSingleClick() { queuedToggleCalls += 1; }
+elements.playerFrame.addEventListener = (eventName, listener) => {
+  if (eventName === "click") frameClickHandler = listener;
+};
+""",
+            self.player_frame_click_listener_source,
+        )
+        self.assertEqual(result["startState"], "established")
+        self.assertTrue(result["shouldPlay"])
+        self.assertEqual(result["activationObservations"], [["video", True], ["audio", True]])
+        self.assertEqual(result["queuedToggleCalls"], 0)
+        self.assertEqual(result["playCalls"], [1, 1])
+
+    def test_packaged_tauri_pending_video_click_is_one_explicit_start(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15",
+}, configurable: true, writable: true });
+window.__TAURI__ = { core: {}, webviewWindow: {} };
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 1; audio.readyState = 1;
+mountedVideo = video; mountedAudio = audio;
+state.localShouldBePlaying = true;
+state.localPlaybackStartState = "pending";
+frameClickHandler({
+  target: { closest(selector) { return selector === "video" ? video : null; } },
+});
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  startState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  queuedToggleCalls,
+  playCalls: [video.playCalls, audio.playCalls],
+}));
+""",
+            self.sync_source,
+            """
+let frameClickHandler = null;
+let queuedToggleCalls = 0;
+function clearPlayerFrameClickTimer() {}
+function queuePlayerFrameSingleClick() { queuedToggleCalls += 1; }
+elements.playerFrame.addEventListener = (eventName, listener) => {
+  if (eventName === "click") frameClickHandler = listener;
+};
+""",
+            self.player_frame_click_listener_source,
+        )
+        self.assertEqual(result["startState"], "established")
+        self.assertTrue(result["shouldPlay"])
+        self.assertEqual(result["queuedToggleCalls"], 0)
+        self.assertEqual(result["playCalls"], [1, 1])
 
     def test_packaged_tauri_native_pause_and_play_ignore_outer_video_click(self):
         result = self.run_node(
@@ -1385,6 +1561,54 @@ elements.playerFrame.addEventListener = (eventName, listener) => {
             result,
             {"safari": 1, "chrome": 1, "webview2": 1, "tauriWebKit": 0},
         )
+
+    def test_remote_toggle_during_pending_start_is_deterministic_play(self):
+        remote_control_source = self._slice(
+            "function applyRemotePlayerControl",
+            "async function ackRemotePlayerControl",
+        )
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15",
+}, configurable: true, writable: true });
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 1; audio.readyState = 1;
+mountedVideo = video; mountedAudio = audio;
+elements.playerFrame.querySelector = (selector) => {
+  if (selector === "video") return video;
+  if (selector === 'audio[data-player-role="audio"]') return audio;
+  if (selector === ".split-playback-start-overlay") return mountedOverlay;
+  return null;
+};
+state.lastAppliedPlayerControlSeq = 0;
+state.localShouldBePlaying = true;
+state.localPlaybackStartState = "pending";
+applyRemotePlayerControl(
+  { seq: 1, action: "toggle-play", item_id: "item" },
+  { id: "item" },
+  "local",
+);
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  startState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  playCalls: [video.playCalls, audio.playCalls],
+  appliedSeq: state.lastAppliedPlayerControlSeq,
+  startupEvents: startupDiagnostics.map((entry) => entry.eventName),
+}));
+""",
+            self.sync_source,
+            """
+function ackRemotePlayerControl() {}
+""",
+            remote_control_source,
+        )
+        self.assertEqual(result["startState"], "established")
+        self.assertTrue(result["shouldPlay"])
+        self.assertEqual(result["playCalls"], [1, 1])
+        self.assertEqual(result["appliedSeq"], 1)
+        self.assertIn("remote-play-intent", result["startupEvents"])
 
     def test_packaged_tauri_media_session_pause_and_play_follow_logical_intent(self):
         result = self.run_node(
@@ -1802,6 +2026,12 @@ console.log(JSON.stringify({ forceCalls, actions,
             """
 const video = new FakeMedia(0); const audio = new FakeMedia(0);
 mountedVideo = video; mountedAudio = audio;
+mountedOverlay = {
+  hidden: true,
+  classList: { toggle(name, force) { if (name === "hidden") mountedOverlay.hidden = Boolean(force); } },
+  setAttribute() {},
+  querySelector() { return { disabled: false, textContent: "", removeAttribute() {} }; },
+};
 state.localPlaybackStartState = "pending";
 video.play = function() {
   this.playCalls += 1;
@@ -1818,6 +2048,7 @@ console.log(JSON.stringify({
   audioPlayCalls: audio.playCalls,
   videoPaused: video.paused,
   audioPaused: audio.paused,
+  overlayHidden: mountedOverlay.hidden,
   actions,
 }));
 """,
@@ -1829,6 +2060,7 @@ console.log(JSON.stringify({
         self.assertEqual(result["audioPlayCalls"], 1)
         self.assertTrue(result["videoPaused"])
         self.assertTrue(result["audioPaused"])
+        self.assertFalse(result["overlayHidden"])
         self.assertIn("autoplay-video-blocked", result["actions"])
         self.assertIn("user-start-required", result["actions"])
 
@@ -1948,7 +2180,7 @@ console.log(JSON.stringify({
         )
         self.assertIn('button.addEventListener("click"', overlay_source)
         self.assertIn(
-            "startSplitPlaybackPair(video, audio, { userGesture: true })",
+            "requestSplitPlaybackStartFromUserGesture(video, audio, \"overlay-start-intent\")",
             overlay_source,
         )
 
@@ -1976,12 +2208,82 @@ console.log(JSON.stringify({{
                 self.assertEqual(result["playCalls"], [1, 1])
                 self.assertEqual(result["startState"], "established")
 
-    def test_pending_play_promises_keep_starting_state_without_retry_storm(self):
+    def test_pending_without_play_attempt_times_out_to_manual_recovery(self):
         result = self.run_node(
             """
+const nativeSetTimeout = window.setTimeout;
+const nativeClearTimeout = window.clearTimeout;
+const watchdogCallbacks = new Map();
+window.setTimeout = (callback, delay) => {
+  if (delay === splitPlaybackStartupWatchdogMs) {
+    const token = {};
+    watchdogCallbacks.set(token, callback);
+    return token;
+  }
+  return nativeSetTimeout(callback, delay);
+};
+window.clearTimeout = (token) => {
+  if (!watchdogCallbacks.delete(token)) nativeClearTimeout(token);
+};
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 0; audio.readyState = 0;
+mountedVideo = video; mountedAudio = audio;
+mountedOverlay = {
+  hidden: true,
+  classList: { toggle(name, force) { if (name === "hidden") mountedOverlay.hidden = Boolean(force); } },
+  setAttribute() {},
+  querySelector() { return { disabled: false, textContent: "", removeAttribute() {} }; },
+};
+state.localShouldBePlaying = true;
+setSplitPlaybackStartState("pending", video, audio);
+const scheduledWatchdogs = watchdogCallbacks.size;
+const callback = [...watchdogCallbacks.values()][0];
+watchdogCallbacks.clear();
+callback();
+console.log(JSON.stringify({
+  scheduledWatchdogs,
+  startState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  overlayHidden: mountedOverlay.hidden,
+  playCalls: [video.playCalls, audio.playCalls],
+  startupEvents: startupDiagnostics.map((entry) => entry.eventName),
+}));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["scheduledWatchdogs"], 1)
+        self.assertEqual(result["startState"], "startup-failed")
+        self.assertFalse(result["shouldPlay"])
+        self.assertFalse(result["overlayHidden"])
+        self.assertEqual(result["playCalls"], [0, 0])
+        self.assertIn("startup-timeout-before-play-attempt", result["startupEvents"])
+
+    def test_unsettled_play_promises_time_out_without_retry_storm(self):
+        result = self.run_node(
+            """
+const nativeSetTimeout = window.setTimeout;
+const nativeClearTimeout = window.clearTimeout;
+const watchdogCallbacks = new Map();
+window.setTimeout = (callback, delay) => {
+  if (delay === splitPlaybackStartupWatchdogMs) {
+    const token = {};
+    watchdogCallbacks.set(token, callback);
+    return token;
+  }
+  return nativeSetTimeout(callback, delay);
+};
+window.clearTimeout = (token) => {
+  if (!watchdogCallbacks.delete(token)) nativeClearTimeout(token);
+};
 const video = new FakeMedia(0); const audio = new FakeMedia(0);
 video.readyState = 1; audio.readyState = 1;
 mountedVideo = video; mountedAudio = audio;
+mountedOverlay = {
+  hidden: true,
+  classList: { toggle(name, force) { if (name === "hidden") mountedOverlay.hidden = Boolean(force); } },
+  setAttribute() {},
+  querySelector() { return { disabled: false, textContent: "", removeAttribute() {} }; },
+};
 state.localPlaybackStartState = "needs-user-gesture";
 video.play = function() {
   this.playCalls += 1;
@@ -1998,19 +2300,121 @@ const tickActions = [];
 for (let index = 0; index < 5; index += 1) {
   tickActions.push(syncSplitPlayer(video, audio, 0, false));
 }
+const callback = [...watchdogCallbacks.values()][0];
+watchdogCallbacks.clear();
+callback();
 console.log(JSON.stringify({
   startStateAfterClick,
+  finalState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  overlayHidden: mountedOverlay.hidden,
   callsAfterClick,
   tickActions,
   finalCalls: [video.playCalls, audio.playCalls],
+  startupEvents: startupDiagnostics.map((entry) => entry.eventName),
 }));
 """,
             self.sync_source,
         )
         self.assertEqual(result["startStateAfterClick"], "starting")
+        self.assertEqual(result["finalState"], "startup-failed")
+        self.assertFalse(result["shouldPlay"])
+        self.assertFalse(result["overlayHidden"])
         self.assertEqual(result["callsAfterClick"], [1, 1])
         self.assertEqual(set(result["tickActions"]), {"startup-pending"})
         self.assertEqual(result["finalCalls"], [1, 1])
+        self.assertIn("startup-play-promise-timeout", result["startupEvents"])
+
+    def test_resolved_playing_pair_establishes_and_cancels_watchdog(self):
+        result = self.run_node(
+            """
+const nativeSetTimeout = window.setTimeout;
+const nativeClearTimeout = window.clearTimeout;
+const watchdogCallbacks = new Map();
+let watchdogClearCalls = 0;
+window.setTimeout = (callback, delay) => {
+  if (delay === splitPlaybackStartupWatchdogMs) {
+    const token = {};
+    watchdogCallbacks.set(token, callback);
+    return token;
+  }
+  return nativeSetTimeout(callback, delay);
+};
+window.clearTimeout = (token) => {
+  if (watchdogCallbacks.delete(token)) {
+    watchdogClearCalls += 1;
+  } else {
+    nativeClearTimeout(token);
+  }
+};
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 2; audio.readyState = 2;
+mountedVideo = video; mountedAudio = audio;
+state.localPlaybackStartState = "pending";
+effectiveOffsetSeconds = 0;
+startSplitPlaybackPair(video, audio);
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  startState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused,
+  audioPaused: audio.paused,
+  activeWatchdogs: watchdogCallbacks.size,
+  watchdogClearCalls,
+}));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["startState"], "established")
+        self.assertTrue(result["shouldPlay"])
+        self.assertFalse(result["videoPaused"])
+        self.assertFalse(result["audioPaused"])
+        self.assertEqual(result["activeWatchdogs"], 0)
+        self.assertEqual(result["watchdogClearCalls"], 1)
+
+    def test_stale_pending_watchdog_cannot_fail_newer_start_generation(self):
+        result = self.run_node(
+            """
+const nativeSetTimeout = window.setTimeout;
+const nativeClearTimeout = window.clearTimeout;
+const watchdogCallbacks = new Map();
+window.setTimeout = (callback, delay) => {
+  if (delay === splitPlaybackStartupWatchdogMs) {
+    const token = {};
+    watchdogCallbacks.set(token, callback);
+    return token;
+  }
+  return nativeSetTimeout(callback, delay);
+};
+window.clearTimeout = (token) => {
+  if (!watchdogCallbacks.delete(token)) nativeClearTimeout(token);
+};
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 2; audio.readyState = 2;
+video.play = function() { this.playCalls += 1; return new Promise(() => {}); };
+audio.play = function() { this.playCalls += 1; return new Promise(() => {}); };
+mountedVideo = video; mountedAudio = audio;
+state.localShouldBePlaying = true;
+setSplitPlaybackStartState("pending", video, audio);
+const staleWatchdog = [...watchdogCallbacks.values()][0];
+startSplitPlaybackPair(video, audio);
+const activeWatchdogsBeforeStaleCallback = watchdogCallbacks.size;
+staleWatchdog();
+console.log(JSON.stringify({
+  startState: state.localPlaybackStartState,
+  generation: state.localPlaybackStartGeneration,
+  activeWatchdogsBeforeStaleCallback,
+  activeWatchdogsAfterStaleCallback: watchdogCallbacks.size,
+  startupEvents: startupDiagnostics.map((entry) => entry.eventName),
+}));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(result["startState"], "starting")
+        self.assertEqual(result["generation"], 1)
+        self.assertEqual(result["activeWatchdogsBeforeStaleCallback"], 1)
+        self.assertEqual(result["activeWatchdogsAfterStaleCallback"], 1)
+        self.assertNotIn("startup-failed", result["startupEvents"])
 
     def test_superseded_startup_promises_cannot_establish_newer_attempt(self):
         result = self.run_node(
@@ -2184,6 +2588,9 @@ console.log(JSON.stringify({
     def test_song_switch_resets_policy_state_and_attempts_new_pair_once(self):
         result = self.run_node(
             """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15",
+}, configurable: true, writable: true });
 const oldVideo = new FakeMedia(0); const oldAudio = new FakeMedia(0);
 mountedVideo = oldVideo; mountedAudio = oldAudio;
 state.localPlaybackStartState = "pending";
@@ -2197,23 +2604,37 @@ await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 const oldState = state.localPlaybackStartState;
 
 state.localPlaybackStartState = "idle";
+state.localPlaybackStartGeneration = 0;
+state.localPlaybackStartPromisesSettled = false;
+state.localWebKitStartRetryDone = false;
 const newVideo = new FakeMedia(0); const newAudio = new FakeMedia(0);
+newVideo.readyState = 1; newAudio.readyState = 1;
 mountedVideo = newVideo; mountedAudio = newAudio;
-state.localPlaybackStartState = "pending";
-startSplitPlaybackPair(newVideo, newAudio);
+// A new song defaults to play even though the replaced song ended blocked/paused.
+state.localShouldBePlaying = true;
+setSplitPlaybackStartState("pending", newVideo, newAudio);
+const synchronizeNewSong = createSplitPlayerStartupSynchronizer(
+  newVideo,
+  newAudio,
+  () => false,
+);
+synchronizeNewSong();
 await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 console.log(JSON.stringify({
   oldState,
   oldCalls: [oldVideo.playCalls, oldAudio.playCalls],
   newState: state.localPlaybackStartState,
+  newIntent: state.localShouldBePlaying,
   newCalls: [newVideo.playCalls, newAudio.playCalls],
 }));
 """,
             self.sync_source,
+            self.startup_source,
         )
         self.assertEqual(result["oldState"], "needs-user-gesture")
         self.assertEqual(result["oldCalls"], [1, 1])
         self.assertEqual(result["newState"], "established")
+        self.assertTrue(result["newIntent"])
         self.assertEqual(result["newCalls"], [1, 1])
         teardown = self._slice("function teardownMountedPlayer", "function activeLocalPlayerElements")
         renderer = self._slice("function renderPlayer(currentItem, playbackMode)", "function applyRemotePlayerControl")
@@ -2837,7 +3258,7 @@ console.log(JSON.stringify({
                 "autoplay-video-play-resolved",
                 "autoplay-audio-play-resolved",
                 "autoplay-resolved-but-still-paused",
-                "autoplay-retry-exhausted",
+                "resolved-but-still-paused",
                 "startup-failed",
             ],
         )
