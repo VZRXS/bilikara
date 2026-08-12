@@ -93,15 +93,20 @@ class ToolAssetWorkflowTest(unittest.TestCase):
                 self.assertIn(payload["name"], payload["url"])
                 self.assertTrue(payload["recipe_revision"])
 
-    def test_normal_macos_bundle_embeds_metadata_but_not_aria2_executable(self):
-        self.assertIn("Locked aria2c metadata-only checks", self.bundle_workflow)
-        self.assertIn(
+    def test_normal_bundle_does_not_embed_external_media_tools_or_metadata(self):
+        for marker in (
+            "Locked aria2c metadata-only checks",
             "Contents/Resources/vendor/aria2-macos.json",
-            self.bundle_workflow,
-        )
-        self.assertIn("Unexpected bundled aria2c executable", self.bundle_workflow)
-        self.assertIn("-name aria2c", self.bundle_workflow)
-        self.assertNotIn("--tool-smoke', 'aria2c", self.bundle_workflow)
+            "Unexpected bundled aria2c executable",
+            "Install FFmpeg",
+            "Prepare portable macOS FFmpeg",
+            "Prepare pinned BBDown vendor asset",
+        ):
+            self.assertNotIn(marker, self.bundle_workflow)
+        self.assertIn("Verify native backend bundle on Windows", self.bundle_workflow)
+        self.assertIn("Verify native backend bundle on macOS", self.bundle_workflow)
+        self.assertIn("bilikara_runtime.dll", self.bundle_workflow)
+        self.assertIn("libbilikara_runtime.dylib", self.bundle_workflow)
 
     def test_macos_desktop_embedding_is_part_of_final_signing_and_smoke_gate(self):
         self.assertIn("scripts/embed_macos_backend.py", self.bundle_workflow)

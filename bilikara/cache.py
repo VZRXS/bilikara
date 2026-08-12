@@ -148,8 +148,14 @@ DEFAULT_AUDIO_HIRES = True
 DOWNLOAD_SOURCE_BBDOWN = "bbdown"
 DOWNLOAD_SOURCE_YTDLP = "ytdlp"
 DOWNLOAD_SOURCE_DOWNKYI = "downkyi"
-DOWNLOAD_SOURCE_CHOICES = (DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_YTDLP, DOWNLOAD_SOURCE_DOWNKYI)
-DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_BBDOWN
+DOWNLOAD_SOURCE_NATIVE = "native"
+DOWNLOAD_SOURCE_CHOICES = (DOWNLOAD_SOURCE_NATIVE,)
+LEGACY_DOWNLOAD_SOURCES = {
+    DOWNLOAD_SOURCE_BBDOWN,
+    DOWNLOAD_SOURCE_YTDLP,
+    DOWNLOAD_SOURCE_DOWNKYI,
+}
+DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_NATIVE
 
 
 class CacheCancelledError(RuntimeError):
@@ -334,6 +340,12 @@ class CacheManager:
         # self.bbdown_login_qr_text = ""
         self.bbdown_login_qr_image = ""
         self._load_cache_policy()
+        runtime_status = rust_runtime.runtime_status()
+        self.binary_state = "ready" if runtime_status["loaded"] else "failed"
+        self.binary_version = "Rust ABI 1" if runtime_status["loaded"] else ""
+        self.binary_message = str(
+            runtime_status.get("error") or "Rust Native ready"
+        )
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
 
@@ -355,13 +367,13 @@ class CacheManager:
             }
 
     def ffmpeg_status(self) -> dict[str, Any]:
-        with self.lock:
-            return {
-                "state": self.ffmpeg_state,
-                "version": self.ffmpeg_version,
-                "message": self.ffmpeg_message,
-                "path": str(FFMPEG_RUNTIME_PATH),
-            }
+        runtime = rust_runtime.runtime_status()
+        return {
+            "state": "ready" if runtime["loaded"] else "failed",
+            "version": "Rust MediaBackend ABI 1" if runtime["loaded"] else "",
+            "message": str(runtime.get("error") or "Rust MediaBackend ready"),
+            "path": str(runtime.get("path") or ""),
+        }
 
     def diagnostic_snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -369,46 +381,18 @@ class CacheManager:
             urgent_item_ids = list(self.urgent_cache_ids)
             pending_ids = list(self.pending_ids)
             desired_ids = list(self.ordered_desired_ids)
-            binary_state = self.binary_state
-            binary_version = self.binary_version
-            ffmpeg_state = self.ffmpeg_state
-            ffmpeg_version = self.ffmpeg_version
-            download_source = self.download_source
 
-        bbdown_path = Path(BB_DOWN_PATH_OVERRIDE).expanduser() if BB_DOWN_PATH_OVERRIDE else self._local_binary_path()
-        ytdlp_path = Path(YTDLP_PATH_OVERRIDE).expanduser() if YTDLP_PATH_OVERRIDE else self._local_ytdlp_binary_path()
-        aria2c_path = Path(ARIA2C_PATH_OVERRIDE).expanduser() if ARIA2C_PATH_OVERRIDE else self._local_aria2c_binary_path()
-        ffmpeg_path = Path(FFMPEG_PATH_OVERRIDE).expanduser() if FFMPEG_PATH_OVERRIDE else FFMPEG_RUNTIME_PATH
-
-        bbdown_version = ""
-        if BB_DOWN_VERSION_FILE.exists():
-            try:
-                bbdown_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
-            except OSError:
-                bbdown_version = ""
-        if not bbdown_version and download_source == DOWNLOAD_SOURCE_BBDOWN:
-            bbdown_version = binary_version
-        if not bbdown_version:
-            bbdown_version = self._read_bbdown_version(bbdown_path)
-
+        runtime = rust_runtime.runtime_status()
         return {
             "tools": {
-                "BBDown": self._diagnostic_tool_entry(bbdown_path, bbdown_version, binary_state),
-                "yt-dlp": self._diagnostic_tool_entry(
-                    ytdlp_path,
-                    self._read_ytdlp_version(ytdlp_path),
-                    binary_state if download_source == DOWNLOAD_SOURCE_YTDLP else "",
-                ),
-                "aria2c": self._diagnostic_tool_entry(
-                    aria2c_path,
-                    self._read_aria2c_version(aria2c_path) if aria2c_path.exists() else "",
-                    binary_state if download_source == DOWNLOAD_SOURCE_DOWNKYI else "",
-                ),
-                "FFmpeg": self._diagnostic_tool_entry(
-                    ffmpeg_path,
-                    ffmpeg_version or self._read_ffmpeg_version(ffmpeg_path),
-                    ffmpeg_state,
-                ),
+                "Rust Native": {
+                    "installed": bool(runtime["loaded"]),
+                    "version": f"ABI {runtime.get('abi_version')}" if runtime["loaded"] else "",
+                    "state": "ready" if runtime["loaded"] else "failed",
+                    "path": str(runtime.get("path") or ""),
+                    "capabilities": dict(runtime.get("capabilities") or {}),
+                    "message": str(runtime.get("error") or ""),
+                }
             },
             "tasks": {
                 "active_item_id": active_item_id,
@@ -518,16 +502,8 @@ class CacheManager:
                 "reset_offset_on_next": self.reset_offset_on_next,
                 "download_source_choices": [
                     {
-                        "value": DOWNLOAD_SOURCE_BBDOWN,
-                        "label": "BBDown",
-                    },
-                    # {
-                    #     "value": DOWNLOAD_SOURCE_YTDLP,
-                    #     "label": "yt-dlp",
-                    # },
-                    {
-                        "value": DOWNLOAD_SOURCE_DOWNKYI,
-                        "label": "Downkyi (aria2c)",
+                        "value": DOWNLOAD_SOURCE_NATIVE,
+                        "label": "Rust Native",
                     },
                 ],
                 "force_avc": self._should_force_avc_locked(),
@@ -944,50 +920,57 @@ class CacheManager:
         value = str(download_source or "").strip().lower()
         if value in DOWNLOAD_SOURCE_CHOICES:
             return value
+        if value in LEGACY_DOWNLOAD_SOURCES:
+            return DOWNLOAD_SOURCE_NATIVE
         return DEFAULT_DOWNLOAD_SOURCE
 
     def downloader_status(self, download_source: object) -> dict[str, Any]:
-        normalized_source = self._normalize_download_source(download_source)
-        if normalized_source == DOWNLOAD_SOURCE_DOWNKYI:
+        requested_source = str(download_source or "").strip().lower()
+        if requested_source == DOWNLOAD_SOURCE_DOWNKYI:
             return self._aria2c_status()
+        normalized_source = self._normalize_download_source(download_source)
+        status = rust_runtime.runtime_status()
         return {
             "download_source": normalized_source,
             "tool": self._download_source_label(normalized_source),
-            "ready": True,
+            "ready": bool(status["loaded"]),
             "requires_prepare": False,
+            "message": str(status.get("error") or "Rust Native ready"),
         }
 
     def prepare_downloader(self, download_source: object) -> dict[str, Any]:
-        normalized_source = self._normalize_download_source(download_source)
-        if normalized_source != DOWNLOAD_SOURCE_DOWNKYI:
-            return self.downloader_status(normalized_source)
-        status = self._aria2c_status()
-        if status.get("ready"):
-            return status
-        if not status.get("auto_prepare_supported"):
-            raise RuntimeError(str(status.get("message") or "aria2c requires manual installation"))
-
-        restore_binary_state = normalized_source != self._current_download_source()
-        with self.lock:
-            previous_binary = (self.binary_state, self.binary_version, self.binary_message)
-        try:
-            self._ensure_aria2c()
-        except urllib.error.HTTPError as exc:
-            if restore_binary_state:
-                self._restore_binary_status(previous_binary)
-            if exc.code == 404:
+        requested_source = str(download_source or "").strip().lower()
+        if requested_source == DOWNLOAD_SOURCE_DOWNKYI:
+            status = self._aria2c_status()
+            if status.get("ready"):
+                return status
+            if not status.get("auto_prepare_supported"):
                 raise RuntimeError(
-                    f"未找到可用的 aria2c 自动下载包。请安装 aria2c，"
-                    f"或将可执行文件放入 {self._local_aria2c_binary_path()} 后再切换。"
-                ) from exc
-            raise
-        except Exception:
-            if restore_binary_state:
-                self._restore_binary_status(previous_binary)
-            raise
-        status = self._aria2c_status()
-        status["prepared"] = True
-        return status
+                    str(status.get("message") or "aria2c requires manual installation")
+                )
+            restore_binary_state = DOWNLOAD_SOURCE_DOWNKYI != self._current_download_source()
+            with self.lock:
+                previous_binary = (self.binary_state, self.binary_version, self.binary_message)
+            try:
+                self._ensure_aria2c()
+            except urllib.error.HTTPError as exc:
+                if restore_binary_state:
+                    self._restore_binary_status(previous_binary)
+                if exc.code == 404:
+                    raise RuntimeError(
+                        f"未找到可用的 aria2c 自动下载包。请安装 aria2c，"
+                        f"或将可执行文件放入 {self._local_aria2c_binary_path()} 后再切换。"
+                    ) from exc
+                raise
+            except Exception:
+                if restore_binary_state:
+                    self._restore_binary_status(previous_binary)
+                raise
+            status = self._aria2c_status()
+            status["prepared"] = True
+            return status
+        normalized_source = self._normalize_download_source(download_source)
+        return self.downloader_status(normalized_source)
 
     def _restore_binary_status(self, status: tuple[str, str, str]) -> None:
         with self.lock:
@@ -1646,35 +1629,25 @@ class CacheManager:
         item_dir = CACHE_DIR / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
         download_source = self._current_download_source()
-        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
             self._cleanup_attempt_dirs(item_dir)
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, "")
         self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
 
-        try:
-            binary_path = self._ensure_downloader(download_source)
-        except Exception as exc:  # noqa: BLE001
-            label = self._download_source_label(download_source)
+        if not rust_runtime.http_download_available() or not rust_runtime.media_backend_available():
+            status = rust_runtime.runtime_status()
+            message = str(status.get("error") or "Rust runtime is unavailable")
+            self._append_log_line(log_path, f"[{self._log_timestamp()}] Rust runtime unavailable: {message}")
             self.store.update_item(
                 item_id,
                 cache_status="failed",
-                cache_message=f"{label} 不可用: {exc}",
+                cache_message=f"Rust Native 不可用: {message}",
                 persist_backup=False,
             )
             return False
-
-        try:
-            ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
-        except Exception as exc:  # noqa: BLE001
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"FFmpeg 不可用: {exc}",
-                persist_backup=False,
-            )
-            return False
+        binary_path = Path()
+        ffmpeg_path = Path()
 
         if not self._should_cache(item_id):
             return False
@@ -1699,14 +1672,12 @@ class CacheManager:
             )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-            downkyi_tracks_prevalidated = bool(cache_result.get("downkyi_tracks_prevalidated"))
-            if download_source == DOWNLOAD_SOURCE_DOWNKYI and not downkyi_tracks_prevalidated:
-                self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
-            if not downkyi_tracks_prevalidated:
+            native_tracks_prevalidated = bool(cache_result.get("native_tracks_prevalidated"))
+            if not native_tracks_prevalidated:
                 self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-            if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            if download_source == DOWNLOAD_SOURCE_NATIVE:
                 self._publish_validated_cache_result(cache_result, log_path)
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
@@ -2044,18 +2015,19 @@ class CacheManager:
                     download_source=download_source,
                     playback_selector=playback_selector,
                 )
-        elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
-            dash_streams = self._resolve_dash_streams(item, playback_selector=playback_selector)
-            result_paths = self._download_dash_streams_with_aria2c(
+        elif download_source == DOWNLOAD_SOURCE_NATIVE:
+            dash_streams = self._resolve_dash_streams(
                 item,
-                binary_path,
-                ffmpeg_path,
+                playback_selector=playback_selector,
+                native_media=True,
+            )
+            result_paths = self._download_dash_streams_native(
+                item,
                 item_dir,
                 log_path,
                 dash_streams=dash_streams,
                 video_track=video_track,
                 audio_tracks=audio_tracks,
-                validate_tracks=True,
                 playback_selector=playback_selector,
             )
         else:
@@ -2211,17 +2183,17 @@ class CacheManager:
             "selected_audio_variant_id": selected_audio_variant_id,
             "validation_files": validation_files,
         }
-        if download_source == DOWNLOAD_SOURCE_DOWNKYI:
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
             validation_metadata = [
                 dict(track.get("validation_metadata") or {})
                 for track in download_tracks
                 if isinstance(track.get("validation_metadata"), dict)
             ]
             if len(validation_metadata) != len(download_tracks):
-                raise DownloadCommandError("缓存校验失败: DownKyi 轨道缺少独立校验结果")
+                raise DownloadCommandError("缓存校验失败: Rust Native 轨道缺少独立校验结果")
             result["validation_metadata"] = validation_metadata
             result["validation_failure_count"] = 0
-            result["downkyi_tracks_prevalidated"] = True
+            result["native_tracks_prevalidated"] = True
         return result
 
     @staticmethod
@@ -2522,6 +2494,7 @@ class CacheManager:
         cid: int | None = None,
         *,
         playback_selector: PlaybackSelector | None = None,
+        native_media: bool = False,
     ) -> dict:
         """Resolve DASH stream URLs from Bilibili API for the given item.
 
@@ -2553,7 +2526,7 @@ class CacheManager:
             audio_hires = self.audio_hires
 
         video_streams = dash.get("video") or []
-        codec_filter = "avc" if force_avc else None
+        codec_filter = "avc" if force_avc or native_media else None
         max_quality_id = self._dash_max_quality_id(
             video_quality, playback_selector=playback_selector
         )
@@ -2564,6 +2537,8 @@ class CacheManager:
             avc_quality_cap=avc_quality_cap,
             playback_selector=playback_selector,
         )
+        if native_media and filtered_video and filtered_video.get("codec_name") != "avc":
+            raise BilibiliError("Rust Native 未找到可用的 AVC 视频流")
         audio_streams = dash.get("audio") or []
         selected_audio = self._select_dash_audio_stream(
             audio_streams, audio_hires=audio_hires, playback_selector=playback_selector
@@ -2574,8 +2549,8 @@ class CacheManager:
         result = {
             "video": [filtered_video] if filtered_video else [],
             "audio": [selected_audio] if selected_audio else [],
-            "flac": flac_info if audio_hires and flac_info else None,
-            "dolby": dolby_info if audio_hires and dolby_info else None,
+            "flac": flac_info if audio_hires and flac_info and not native_media else None,
+            "dolby": dolby_info if audio_hires and dolby_info and not native_media else None,
         }
 
         if not result["video"]:
@@ -2939,6 +2914,235 @@ class CacheManager:
                 audio_hires=audio_hires,
             ),
         )
+
+    def _download_dash_streams_native(
+        self,
+        item,
+        item_dir: Path,
+        log_path: Path,
+        *,
+        dash_streams: dict,
+        video_track: dict,
+        audio_tracks: list[dict],
+        playback_selector: PlaybackSelector | None = None,
+    ) -> dict[str, Path]:
+        item_id = item.id
+        cookie = effective_bilibili_cookie()
+        selected_pages = self._selected_pages_for_item(item)
+        video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
+        video_stream = (dash_streams.get("video") or [{}])[0]
+        video_urls = self._dash_stream_urls(
+            dash_streams, "video", playback_selector=playback_selector
+        )
+        if not video_urls or str(video_stream.get("codec_name") or "") != "avc":
+            raise DownloadCommandError("Rust Native 未找到可用的 AVC 视频流")
+
+        track_args: list[tuple[dict, list[str], str, Path, str, str, dict[str, object]]] = [
+            (
+                video_track,
+                video_urls,
+                f"video-p{video_page}.mp4",
+                item_dir / f"video-p{video_page}",
+                f"下载视频轨 P{video_page}",
+                "video",
+                video_stream,
+            )
+        ]
+        for track in audio_tracks:
+            page = int(track["page"])
+            cid = self._cid_for_page(item, page)
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] resolve native audio DASH: page={page}, cid={cid}",
+            )
+            try:
+                page_dash = self._resolve_dash_streams(
+                    item,
+                    cid=cid,
+                    playback_selector=playback_selector,
+                    native_media=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise DownloadCommandError(f"P{page} 音频解析失败: {exc}") from exc
+            audio_stream = (page_dash.get("audio") or [{}])[0]
+            audio_urls = self._preferred_audio_urls(
+                audio_stream, playback_selector=playback_selector
+            )
+            if not audio_urls:
+                raise DownloadCommandError(f"Rust Native 未找到音频轨 P{page} 的下载地址")
+            track_args.append(
+                (
+                    track,
+                    audio_urls,
+                    f"audio-p{page}.m4a",
+                    item_dir / f"audio-p{page}",
+                    f"下载音轨 P{page}",
+                    "audio",
+                    audio_stream,
+                )
+            )
+
+        def download_track(args: tuple) -> tuple[str, Path]:
+            track, urls, out_name, target_dir, stage_label, stream_kind, stream_metadata = args
+            track["stream_metadata"] = dict(stream_metadata)
+            track_key = str(track["key"])
+            page = int(track["page"])
+            cid = self._cid_for_page(item, page)
+            last_error = "unknown error"
+            for attempt in range(1, DOWNKYI_TRACK_MAX_ATTEMPTS + 1):
+                self._raise_if_retry_requested(item_id)
+                self._raise_if_priority_shift(item_id)
+                if attempt > 1:
+                    self._reset_download_track_progress(item_id, track_key)
+                self._set_download_track_phase(
+                    item_id,
+                    track_key,
+                    phase="downloading",
+                    attempt=attempt,
+                    max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
+                )
+                raw_path: Path | None = None
+                try:
+                    raw_name = f".{Path(out_name).stem}.raw-{uuid.uuid4().hex}{Path(out_name).suffix}"
+                    raw_path = self._download_stream_with_rust(
+                        item_id,
+                        target_dir,
+                        log_path,
+                        urls=urls,
+                        out_name=raw_name,
+                        cookie=cookie,
+                        stage_label=stage_label,
+                        track_key=track_key,
+                        stream_kind=stream_kind,
+                        page=page,
+                        cid=cid,
+                        stream_metadata=stream_metadata,
+                        mark_done=False,
+                    )
+                    self._set_download_track_phase(
+                        item_id,
+                        track_key,
+                        phase="validating",
+                        attempt=attempt,
+                        max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
+                    )
+                    normalized_path = raw_path.with_name(out_name)
+                    normalized = rust_runtime.normalize_media(
+                        source=raw_path,
+                        destination=normalized_path,
+                        expected_kind=stream_kind,
+                    )
+                    raw_path.unlink(missing_ok=True)
+                    output = normalized["output"]
+                    duration = float(output.get("duration_seconds") or 0)
+                    if duration < 1.0:
+                        raise DownloadCommandError(
+                            f"{stage_label}: Rust media validation reported an invalid duration"
+                        )
+                    expected_duration = (
+                        self._duration_for_page(item, page) if stream_kind == "video" else None
+                    )
+                    if expected_duration:
+                        tolerance = self._duration_tolerance(expected_duration)
+                        if duration + tolerance < expected_duration:
+                            raise DownloadCommandError(
+                                f"{stage_label}: duration {duration:.1f}s is shorter than "
+                                f"expected {expected_duration:.1f}s"
+                            )
+                    metadata = {
+                        **dict(output),
+                        "label": str(track.get("label") or stage_label),
+                        "page": page,
+                        "stream_kind": stream_kind,
+                        "expected_duration": expected_duration,
+                        "stream_metadata": dict(stream_metadata),
+                    }
+                    track["validation_metadata"] = metadata
+                    final_size = normalized_path.stat().st_size
+                    self._update_download_track_progress(
+                        item_id,
+                        track_key=track_key,
+                        target_dir=normalized_path.parent,
+                        current_bytes=final_size,
+                        target_bytes=final_size,
+                        done=True,
+                        measure_path=False,
+                    )
+                    self._set_download_track_phase(
+                        item_id,
+                        track_key,
+                        phase="ready",
+                        attempt=attempt,
+                        max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
+                    )
+                    self._append_log_line(
+                        log_path,
+                        f"[{self._log_timestamp()}] media_diagnostic: "
+                        f"{json.dumps({'event': 'rust_media_ready', 'item_id': item_id, 'track_key': track_key, 'page': page, 'stream_kind': stream_kind, 'codec': output.get('codec'), 'duration': duration, 'sample_count': output.get('sample_count'), 'file_size': final_size}, ensure_ascii=False, sort_keys=True)}",
+                    )
+                    return track_key, normalized_path
+                except CacheCancelledError:
+                    if raw_path is not None:
+                        self._safe_rmtree(raw_path.parent)
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    last_error = self._compact_probe_error(str(exc))
+                    if raw_path is not None:
+                        self._safe_rmtree(raw_path.parent)
+                    self._append_log_line(
+                        log_path,
+                        f"[{self._log_timestamp()}] Rust Native track attempt "
+                        f"{attempt}/{DOWNKYI_TRACK_MAX_ATTEMPTS} failed: {last_error}",
+                    )
+                    if attempt < DOWNKYI_TRACK_MAX_ATTEMPTS:
+                        self._set_download_track_phase(
+                            item_id,
+                            track_key,
+                            phase="retrying",
+                            attempt=attempt,
+                            max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
+                        )
+                        if self.stop_event.wait(DOWNKYI_TRACK_RETRY_WAIT_SECONDS):
+                            raise CacheCancelledError("cache stopped") from exc
+            raise DownloadCommandError(
+                f"{stage_label}: Rust Native failed after "
+                f"{DOWNKYI_TRACK_MAX_ATTEMPTS} attempts: {last_error}"
+            )
+
+        result_paths: dict[str, Path] = {}
+        max_workers = max(1, min(len(track_args), MAX_PARALLEL_TRACK_DOWNLOADS))
+        executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="bilikara-native-track"
+        )
+        future_to_track = {
+            executor.submit(download_track, args): args[0] for args in track_args
+        }
+        try:
+            done, pending = wait(future_to_track, return_when=FIRST_EXCEPTION)
+            exceptions: list[Exception] = []
+            for future in done:
+                try:
+                    track_key, media_path = future.result()
+                    result_paths[track_key] = media_path
+                except Exception as exc:  # noqa: BLE001
+                    exceptions.append(exc)
+            if exceptions:
+                for future in pending:
+                    future.cancel()
+                for future in pending:
+                    if future.cancelled():
+                        continue
+                    try:
+                        future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        exceptions.append(exc)
+                raise self._preferred_download_exception(exceptions)
+            for future in pending:
+                track_key, media_path = future.result()
+                result_paths[track_key] = media_path
+        finally:
+            executor.shutdown(wait=True)
+        return result_paths
 
     def _download_dash_streams_with_aria2c(
         self,
@@ -3617,15 +3821,15 @@ class CacheManager:
             except DownloadCommandError as exc:
                 self._append_log_line(
                     log_path,
-                    f"[{self._log_timestamp()}] Rust HTTP downloader failed; "
-                    f"falling back to aria2c: {self._compact_probe_error(str(exc))}",
+                    f"[{self._log_timestamp()}] legacy Downkyi Rust download failed; "
+                    f"using aria2c compatibility adapter: {self._compact_probe_error(str(exc))}",
                 )
         else:
             status = rust_runtime.runtime_status()
             self._append_log_line(
                 log_path,
-                f"[{self._log_timestamp()}] Rust HTTP downloader unavailable; "
-                f"using aria2c: {status.get('error') or 'unknown error'}",
+                f"[{self._log_timestamp()}] legacy Downkyi Rust downloader unavailable; "
+                f"using aria2c compatibility adapter: {status.get('error') or 'unknown error'}",
             )
         return self._download_stream_with_aria2c(
             item_id,
@@ -5404,6 +5608,8 @@ class CacheManager:
 
     @staticmethod
     def _download_source_label(download_source: str) -> str:
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
+            return "Rust Native"
         if download_source == DOWNLOAD_SOURCE_YTDLP:
             return "yt-dlp"
         if download_source == DOWNLOAD_SOURCE_DOWNKYI:
@@ -5411,6 +5617,11 @@ class CacheManager:
         return "BBDown"
 
     def _ensure_downloader(self, download_source: str, *, force_refresh: bool = False) -> Path:
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
+            if not rust_runtime.http_download_available():
+                status = rust_runtime.runtime_status()
+                raise RuntimeError(status.get("error") or "Rust runtime unavailable")
+            return Path()
         if download_source == DOWNLOAD_SOURCE_YTDLP:
             return self._ensure_ytdlp()
         if download_source == DOWNLOAD_SOURCE_DOWNKYI:

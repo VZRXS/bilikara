@@ -1,4 +1,7 @@
 use crate::http_downloader::{DownloadError, DownloadProgress, DownloadRequest, download_to_path};
+use crate::media_backend::{
+    MediaError, MediaNormalizeRequest, MediaPathRequest, normalize_media, probe_media,
+};
 use serde::Serialize;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -16,6 +19,16 @@ struct DownloadWireResponse<T> {
     result: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<DownloadError>,
+}
+
+#[derive(Serialize)]
+struct MediaWireResponse<T> {
+    schema_version: u32,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<MediaError>,
 }
 
 #[unsafe(no_mangle)]
@@ -68,6 +81,67 @@ pub unsafe extern "C" fn bilikara_runtime_download(
         };
         let encoded = serde_json::to_string(&response).ok()?;
         CString::new(encoded).ok().map(CString::into_raw)
+    }))
+    .ok()
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 media probe request.
+pub unsafe extern "C" fn bilikara_runtime_media_probe(request_json: *const c_char) -> *mut c_char {
+    media_call(request_json, |request: MediaPathRequest| {
+        probe_media(&request)
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 media normalize request.
+pub unsafe extern "C" fn bilikara_runtime_media_normalize(
+    request_json: *const c_char,
+) -> *mut c_char {
+    media_call(request_json, |request: MediaNormalizeRequest| {
+        normalize_media(&request)
+    })
+}
+
+fn media_call<Request, ResultValue, Operation>(
+    request_json: *const c_char,
+    operation: Operation,
+) -> *mut c_char
+where
+    Request: serde::de::DeserializeOwned,
+    ResultValue: Serialize,
+    Operation: FnOnce(Request) -> Result<ResultValue, MediaError>,
+{
+    catch_unwind(AssertUnwindSafe(|| {
+        if request_json.is_null() {
+            return None;
+        }
+        // SAFETY: The C ABI entrypoints require a valid null-terminated UTF-8 string.
+        let request_text = unsafe { CStr::from_ptr(request_json) }.to_str().ok()?;
+        let request: Request = serde_json::from_str(request_text).ok()?;
+        let response = match operation(request) {
+            Ok(result) => MediaWireResponse {
+                schema_version: 1,
+                status: "completed",
+                result: Some(result),
+                error: None,
+            },
+            Err(error) => MediaWireResponse {
+                schema_version: 1,
+                status: "failed",
+                result: None,
+                error: Some(error),
+            },
+        };
+        CString::new(serde_json::to_string(&response).ok()?)
+            .ok()
+            .map(CString::into_raw)
     }))
     .ok()
     .flatten()

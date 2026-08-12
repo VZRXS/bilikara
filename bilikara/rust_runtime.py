@@ -32,6 +32,13 @@ class RustDownloadCancelledError(RustDownloadError):
     pass
 
 
+class RustMediaError(RuntimeError):
+    def __init__(self, kind: str, message: str, *, response: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.response = response
+
+
 def _runtime_library_name() -> str:
     system = platform.system()
     if system == "Windows":
@@ -78,6 +85,10 @@ def _load_runtime_library(path: Path | None):
             ctypes.c_void_p,
         ]
         library.bilikara_runtime_download.restype = ctypes.c_void_p
+        library.bilikara_runtime_media_probe.argtypes = [ctypes.c_char_p]
+        library.bilikara_runtime_media_probe.restype = ctypes.c_void_p
+        library.bilikara_runtime_media_normalize.argtypes = [ctypes.c_char_p]
+        library.bilikara_runtime_media_normalize.restype = ctypes.c_void_p
         library.bilikara_runtime_free_string.argtypes = [ctypes.c_void_p]
         library.bilikara_runtime_free_string.restype = None
         return library, ""
@@ -96,11 +107,18 @@ def runtime_status() -> dict[str, Any]:
         "error": _runtime_error,
         "abi_version": EXPECTED_RUNTIME_ABI_VERSION if _runtime_lib is not None else None,
         "expected_abi_version": EXPECTED_RUNTIME_ABI_VERSION,
-        "capabilities": {"http_download": _runtime_lib is not None},
+        "capabilities": {
+            "http_download": _runtime_lib is not None,
+            "media_backend": _runtime_lib is not None,
+        },
     }
 
 
 def http_download_available() -> bool:
+    return _runtime_lib is not None
+
+
+def media_backend_available() -> bool:
     return _runtime_lib is not None
 
 
@@ -196,3 +214,129 @@ def download_to_path(
     message = str(error.get("message") or "Rust download failed")
     error_type = RustDownloadCancelledError if status == "cancelled" else RustDownloadError
     raise error_type(kind, message, response=response)
+
+
+def probe_media(*, source: Path, expected_kind: str) -> dict[str, Any]:
+    request = {
+        "schema_version": 1,
+        "source": str(source.resolve()),
+        "expected_kind": _normalized_media_kind(expected_kind),
+    }
+    result = _call_media_api("bilikara_runtime_media_probe", request)
+    _validate_media_probe(result, expected_path=source, expected_kind=expected_kind)
+    return result
+
+
+def normalize_media(
+    *, source: Path, destination: Path, expected_kind: str
+) -> dict[str, Any]:
+    request = {
+        "schema_version": 1,
+        "source": str(source.resolve()),
+        "destination": str(destination.resolve()),
+        "expected_kind": _normalized_media_kind(expected_kind),
+    }
+    result = _call_media_api("bilikara_runtime_media_normalize", request)
+    source_result = result.get("source")
+    output_result = result.get("output")
+    if not isinstance(source_result, dict) or not isinstance(output_result, dict):
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend omitted normalization metadata",
+            response=result,
+        )
+    _validate_media_probe(source_result, expected_path=source, expected_kind=expected_kind)
+    _validate_media_probe(output_result, expected_path=destination, expected_kind=expected_kind)
+    if not bool(output_result.get("fast_start")):
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend returned a non-fast-start output",
+            response=result,
+        )
+    return result
+
+
+def _normalized_media_kind(expected_kind: str) -> str:
+    value = str(expected_kind or "").strip().lower()
+    if value not in {"video", "audio"}:
+        raise ValueError("expected_kind must be video or audio")
+    return value
+
+
+def _call_media_api(symbol: str, request: dict[str, Any]) -> dict[str, Any]:
+    if _runtime_lib is None:
+        raise RustRuntimeUnavailableError(_runtime_error or "Rust runtime is unavailable")
+    payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    function = getattr(_runtime_lib, symbol)
+    pointer = function(payload)
+    if not pointer:
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend returned no response",
+            response={},
+        )
+    try:
+        response_bytes = ctypes.string_at(pointer)
+    finally:
+        _runtime_lib.bilikara_runtime_free_string(pointer)
+    try:
+        response = json.loads(response_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend returned malformed JSON",
+            response={},
+        ) from exc
+    if not isinstance(response, dict) or response.get("schema_version") != 1:
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend returned an unsupported response",
+            response={},
+        )
+    if response.get("status") == "completed":
+        result = response.get("result")
+        if isinstance(result, dict):
+            return result
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend omitted its result",
+            response=response,
+        )
+    error = response.get("error")
+    error = error if isinstance(error, dict) else {}
+    raise RustMediaError(
+        str(error.get("kind") or "unknown"),
+        str(error.get("message") or "Rust media operation failed"),
+        response=response,
+    )
+
+
+def _validate_media_probe(
+    probe: dict[str, Any], *, expected_path: Path, expected_kind: str
+) -> None:
+    try:
+        result_path = Path(str(probe.get("path") or "")).resolve()
+        duration = float(probe.get("duration_seconds") or 0)
+        sample_count = int(probe.get("sample_count") or 0)
+        sample_bytes = int(probe.get("sample_bytes") or 0)
+        file_bytes = int(probe.get("file_bytes") or 0)
+    except (OSError, TypeError, ValueError) as exc:
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend returned invalid probe metadata",
+            response=probe,
+        ) from exc
+    if (
+        result_path != expected_path.resolve()
+        or str(probe.get("kind") or "") != _normalized_media_kind(expected_kind)
+        or not str(probe.get("codec") or "")
+        or duration <= 0
+        or sample_count <= 0
+        or sample_bytes <= 0
+        or file_bytes <= 0
+    ):
+        raise RustMediaError(
+            "invalid_response",
+            "Rust media backend returned invalid probe metadata",
+            response=probe,
+        )

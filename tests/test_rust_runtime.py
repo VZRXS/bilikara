@@ -27,6 +27,28 @@ class FakeRuntimeLibrary:
         return None
 
 
+class FakeMediaLibrary:
+    def __init__(self, responses: dict[str, dict]) -> None:
+        self.responses = responses
+        self.buffers = []
+
+    def _response(self, name: str):
+        buffer = ctypes.create_string_buffer(
+            json.dumps(self.responses[name]).encode("utf-8")
+        )
+        self.buffers.append(buffer)
+        return ctypes.addressof(buffer)
+
+    def bilikara_runtime_media_probe(self, _payload):
+        return self._response("probe")
+
+    def bilikara_runtime_media_normalize(self, _payload):
+        return self._response("normalize")
+
+    def bilikara_runtime_free_string(self, _pointer):
+        return None
+
+
 class RustRuntimeAdapterTest(unittest.TestCase):
     def test_library_lookup_prefers_release_and_supports_bundle(self):
         with TemporaryDirectory() as temp_dir:
@@ -89,6 +111,55 @@ class RustRuntimeAdapterTest(unittest.TestCase):
         self.assertEqual(raised.exception.kind, "http_status")
         self.assertNotIn("secret-token", str(raised.exception))
         self.assertNotIn("SESSDATA", str(raised.exception))
+
+    def test_media_probe_and_normalize_validate_native_metadata(self):
+        with TemporaryDirectory() as temp_dir:
+            source = (Path(temp_dir) / "source.mp4").resolve()
+            destination = (Path(temp_dir) / "output.mp4").resolve()
+            source.write_bytes(b"source")
+
+            def probe(path: Path, *, fast_start: bool) -> dict:
+                return {
+                    "path": str(path),
+                    "kind": "video",
+                    "codec": "h264",
+                    "duration_seconds": 12.5,
+                    "sample_count": 375,
+                    "sample_bytes": 1024,
+                    "file_bytes": 1200,
+                    "fragmented": not fast_start,
+                    "fast_start": fast_start,
+                }
+
+            responses = {
+                "probe": {
+                    "schema_version": 1,
+                    "status": "completed",
+                    "result": probe(source, fast_start=False),
+                },
+                "normalize": {
+                    "schema_version": 1,
+                    "status": "completed",
+                    "result": {
+                        "source": probe(source, fast_start=False),
+                        "output": probe(destination, fast_start=True),
+                    },
+                },
+            }
+            with patch(
+                "bilikara.rust_runtime._runtime_lib", FakeMediaLibrary(responses)
+            ):
+                probed = rust_runtime.probe_media(
+                    source=source, expected_kind="video"
+                )
+                normalized = rust_runtime.normalize_media(
+                    source=source,
+                    destination=destination,
+                    expected_kind="video",
+                )
+
+        self.assertEqual(probed["sample_count"], 375)
+        self.assertTrue(normalized["output"]["fast_start"])
 
     @unittest.skipUnless(
         os.getenv("BILIKARA_REQUIRE_RUST_LIB", "").strip().lower()
@@ -154,6 +225,65 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
 
         self.assertEqual(result, native_path)
         manager._download_stream_with_aria2c.assert_not_called()
+
+    def test_native_selected_stream_path_never_calls_legacy_downloader(self):
+        with TemporaryDirectory() as temp_dir, patch(
+            "bilikara.cache.CACHE_DIR", Path(temp_dir)
+        ):
+            cache_dir = Path(temp_dir)
+            item_dir = cache_dir / "song-a"
+            video_path = item_dir / "video-p1" / "video-p1.mp4"
+            audio_path = item_dir / "audio-p1" / "audio-p1.m4a"
+            video_path.parent.mkdir(parents=True)
+            audio_path.parent.mkdir(parents=True)
+            video_path.write_bytes(b"video")
+            audio_path.write_bytes(b"audio")
+
+            manager = self.make_manager()
+            manager.store = Mock()
+            manager._raise_if_priority_shift = Mock()
+            manager._raise_if_retry_requested = Mock()
+            manager._selected_pages_for_item = Mock(return_value=[1])
+            manager._begin_download_progress = Mock()
+            manager._record_item_activity = Mock()
+            manager._part_label_for_page = Mock(return_value="P1")
+            manager._cid_for_validation = Mock(return_value=123)
+            manager._duration_for_page = Mock(return_value=12)
+            manager._resolve_dash_streams = Mock(
+                return_value={"video": [{"codec_name": "avc"}], "audio": [{}]}
+            )
+            manager._download_page_stream = Mock()
+
+            def native_download(*_args, video_track, audio_tracks, **_kwargs):
+                video_track["validation_metadata"] = {"kind": "video"}
+                audio_tracks[0]["validation_metadata"] = {"kind": "audio"}
+                return {
+                    str(video_track["key"]): video_path,
+                    str(audio_tracks[0]["key"]): audio_path,
+                }
+
+            manager._download_dash_streams_native = Mock(
+                side_effect=native_download
+            )
+            item = Mock(
+                id="song-a",
+                video_page=1,
+                selected_audio_variant_id="",
+            )
+
+            result = manager._download_selected_streams(
+                item,
+                Path(),
+                Path(),
+                item_dir,
+                cache_dir / "native.log",
+                download_source="native",
+            )
+
+        manager._download_dash_streams_native.assert_called_once()
+        manager._download_page_stream.assert_not_called()
+        self.assertTrue(result["native_tracks_prevalidated"])
+        self.assertEqual(len(result["validation_metadata"]), 2)
 
     def test_native_failure_falls_back_but_cancellation_does_not(self):
         manager = self.make_manager()

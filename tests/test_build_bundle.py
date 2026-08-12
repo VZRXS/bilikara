@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import json
 import unittest
 from pathlib import Path
@@ -33,6 +34,12 @@ def aria2_metadata(arch: str) -> dict[str, object]:
 
 
 class BuildBundleTest(unittest.TestCase):
+    def test_main_bundles_rust_runtime_without_external_media_tools(self):
+        source = inspect.getsource(build_bundle.main)
+        self.assertIn("_rust_library_args", source)
+        self.assertNotIn("_bundled_binary_args", source)
+        self.assertNotIn("_macos_aria2_metadata_args", source)
+
     def test_rust_library_args_includes_release_library(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -283,7 +290,7 @@ class BuildBundleTest(unittest.TestCase):
         ):
             build_bundle._validate_macos_tool_portability(ffmpeg)
 
-    def test_write_release_compliance_files_copies_notices_and_tool_versions(self):
+    def test_write_release_compliance_files_copies_only_application_notices(self):
         with TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
             dist_dir = root_dir / "dist" / build_bundle.APP_NAME
@@ -335,30 +342,8 @@ class BuildBundleTest(unittest.TestCase):
             self.assertTrue((dist_dir / "LICENSE").exists())
             self.assertTrue((dist_dir / "LEGAL.md").exists())
             self.assertTrue((dist_dir / "THIRD_PARTY_NOTICES.md").exists())
-            licenses_dir = dist_dir / "THIRD_PARTY_LICENSES"
-            self.assertIn("FFmpeg / FFprobe redistribution notes", (licenses_dir / "ffmpeg-source.txt").read_text(encoding="utf-8"))
-            self.assertEqual((licenses_dir / "ffmpeg-version.txt").read_text(encoding="utf-8"), "tool version\n")
-            self.assertEqual((licenses_dir / "ffprobe-version.txt").read_text(encoding="utf-8"), "tool version\n")
-            self.assertEqual(
-                (licenses_dir / "FFmpeg-COPYING.LGPLv2.1.txt").read_text(encoding="utf-8"),
-                "LGPL text\n",
-            )
-            self.assertIn(
-                "pinned BBDown vendor executable",
-                (licenses_dir / "bbdown-source.txt").read_text(encoding="utf-8"),
-            )
-            self.assertEqual(
-                (licenses_dir / "BBDown-LICENSE.txt").read_text(encoding="utf-8"),
-                "BBDown MIT text\n",
-            )
-            self.assertEqual(
-                (licenses_dir / "bbdown-version.txt").read_text(encoding="utf-8"),
-                "tool version\n",
-            )
-            self.assertEqual(
-                (dist_dir / "THIRD_PARTY_SOURCES" / source_archive.name).read_bytes(),
-                source_archive.read_bytes(),
-            )
+            self.assertFalse((dist_dir / "THIRD_PARTY_LICENSES").exists())
+            self.assertFalse((dist_dir / "THIRD_PARTY_SOURCES").exists())
 
     def test_macos_aria2_metadata_is_validated_and_bundled_as_data(self):
         with TemporaryDirectory() as temp_dir:

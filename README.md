@@ -38,7 +38,7 @@
 ### 核心播放与缓存
 
 - 通过 B 站视频链接或 BV 号加入点歌列表（支持链接指定分 p），后台自动进入本地缓存流程
-- 本地播放基于 BBDown 和 FFmpeg 缓存媒体，浏览器端使用分离视频 / 音频播放器同步播放
+- 本地播放由 Rust Native 下载与媒体后端缓存媒体，浏览器端使用分离视频 / 音频播放器同步播放
 - 支持毫秒级音画延迟补偿、独立音量控制、静音，以及 -6 ~ +6 key 的音调调整（切歌时自动复位）
 - 音量、音画延迟、切歌延迟等播放器设置会本地记忆并在重新打开后恢复
 - 可设置 1 ~ 5 秒切歌延迟；切歌时显示过渡画面，包含即将播放、倒计时和后续点歌列表
@@ -229,7 +229,7 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - 发布包元数据中的发布者 / CompanyName 设置为 `VZRXS`；Windows 安全提示中的“已验证发布者”仍需要代码签名证书
 - Tauri 桌面壳 `bilikara-desktop.exe` 会通过 `scripts/sign_windows.ps1` 签名；CI 可配置 `WINDOWS_SIGN_CERTIFICATE_BASE64` + `WINDOWS_SIGN_CERTIFICATE_PASSWORD`，也可改用 `WINDOWS_SIGN_CERTIFICATE_PATH` 或 `WINDOWS_SIGN_CERTIFICATE_THUMBPRINT`，未配置证书时会跳过签名并继续显示未知发布者
 - 打包后的 `data/`、日志、缓存和工具文件默认都会写到可写运行目录；macOS 使用 `~/Library/Application Support/bilikara/`，Windows 使用包内 `runtime/`；可通过 `BILIKARA_HOME` 指定其他目录
-- 打包脚本会把经过验证的 `ffmpeg` / `ffprobe` 和按目标架构固定为 1.6.3 的 `BBDown` 放进不可变 vendor；运行时以复制方式安装到 `tools/bbdown/`
+- 打包脚本会构建并嵌入 `bilikara_rust` 与 `bilikara_runtime`；正式包不再包含 BBDown、FFmpeg、ffprobe 或 aria2c 可执行文件
 - Tauri 桌面壳启动后会拉起同目录或相邻目录里的 Python 后端包；开发模式下会回退到 `python start_bilikara.py`
 - 当前 Tauri 桌面版采用类似 sidecar 的 Python 后端进程方案；长期规划中，会考虑逐步将更适合桌面集成、进程管理和跨平台适配的能力迁移到 Rust / Tauri 侧
 - Windows 和 macOS 的最终包通常需要在各自系统上分别构建；也就是说，Windows 包最好在 Windows 上打，macOS 包最好在 macOS 上打
@@ -249,10 +249,7 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - `BILIKARA_PORT`：监听端口，默认 `8080`
 - `BILIKARA_HOME`：自定义应用数据目录；不设置时，打包版默认写入应用目录内的 `runtime/`
 - `BILIKARA_MAX_CACHE_ITEMS`：自动缓存窗口大小，默认 `3`
-- `BILIKARA_BILIBILI_COOKIE`：用于 BBDown 下载会员清晰度或受限内容的 cookie
-- `BB_DOWN_PATH`：自定义本地 `BBDown` 可执行文件路径
-- `FFMPEG_PATH`：自定义本地 `ffmpeg` 可执行文件路径
-- `ARIA2C_PATH`：自定义实验性 DownKyi 下载源使用的 `aria2c` 可执行文件路径
+- `BILIKARA_BILIBILI_COOKIE`：用于获取会员清晰度或受限内容播放地址的 cookie
 - `BILIKARA_STARTUP_LOG`：设为 `1` 时，启动日志会写入 `runtime/data/logs/startup.log`，用于排查打包版启动问题
 - `BILIKARA_RUST_STRICT_EQUIVALENCE`：设为 `1` 时，对已迁移能力同时运行 Rust 与 Python 参考实现并比较规范结果；仅建议用于测试、CI 和开发诊断
 - `BILIKARA_RUST_TIMING_DIAGNOSTICS`：设为 `1` 时，在后端状态中聚合 Rust FFI、JSON、Python 回退和严格等价检查耗时；默认关闭且不会逐调用打印日志
@@ -265,15 +262,14 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - 桌面版使用 Tauri v2 / Rust 作为窗口壳，负责启动后端、承载本地 WebView，并在窗口关闭时请求后端退出
 - 当前桌面壳不是纯 Rust 后端：它会启动一个类似 sidecar 的 Python 后端进程，后端仍负责 HTTP API、缓存、下载和状态管理
 - Tauri 开发配置指向 `http://127.0.0.1:8080`，实际启动时会以 `--no-browser --headless --port 0` 拉起后端，并在收到 `bilikara.ready` 事件后跳转到真实本地地址
-- 播放流程以本地缓存和本地媒体播放为主，缓存媒体由 `BBDown` 下载并由 `FFmpeg` 处理
-- 打包版会优先使用已验证的运行时 `BBDown`；缺失、损坏或显式修复时，从应用内固定 vendor 原子恢复，不检查 GitHub 最新版本
-- 启动后也会在后台准备 `FFmpeg`，并把可用版本同步到应用目录内的 `runtime/tools/bbdown/`
-- Windows 打包版会以隐藏进程方式调用 `BBDown`，避免点歌时弹出命令行窗口
+- 播放流程以本地缓存和本地媒体播放为主，缓存媒体由 `bilikara_runtime` 直接下载、校验并重封装
+- Rust Native 以临时文件下载和完整 sample 校验后原子发布，视频输出使用 fast-start MP4
+- 当前原生媒体链路选择 AVC/H.264 视频和常规 AAC 音轨，以兼容 Windows WebView 与 macOS Safari；高解析音频设置不会让正式缓存链路回退到外部工具
+- 正式包不启动外部下载器或媒体工具进程
 - 手机访问 URL 的首选地址来自系统路由决定的源 IPv4；其他活动物理网卡地址可作为备用，虚拟和隧道地址会被降级
-- `BBDown` 下载日志会写到应用数据目录下的 `data/logs/bbdown/`
+- Rust Native 下载日志会写到应用数据目录下的 `data/logs/`
 - 本次已唱记录会单独写入 `data/played_sessions/played-YYYY-MM-DD_HH-MM-SS-ffffff.json`
-- 如果 `BBDown` 返回“请尝试升级到最新版本后重试”这类提示，打包版会从内置固定版本重新修复一次本地 BBDown 并重试当前下载
-- DownKyi / aria2c 仍是实验性、非默认下载源；只在用户明确选择并确认后准备。macOS 打包版读取仓库内按架构锁定的 URL/SHA-256 元数据，并从项目工具镜像下载由手动 Tool Assets 工作流从固定官方源码构建的便携版本；普通应用 CI 不会重建或重新发布 aria2c，无 Homebrew 时也不会因此退回手动安装
+- 旧 DownKyi / aria2c、BBDown 与 yt-dlp 入口仅保留为不可从设置选择的兼容代码，不参与正式缓存链路或打包
 - 如果当前歌曲已经缓存完成，前端会使用浏览器里的分离视频 / 音频播放器播放本地文件
 - 本地播放时，视频与音频流会分开同步，用来支持独立的音画延迟补偿、音量控制、静音和升降 key
 - Host 页面和手机端控制台会共享同一套播放器设置，包括音画延迟、音量、静音状态和音调调整
@@ -282,10 +278,10 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 
 ## 注意
 
-- 本地缓存依赖运行环境能访问 B 站；打包版首次准备 BBDown 不需要网络。用户选择实验性 DownKyi 时，自动准备 aria2c 需要访问项目工具镜像，Homebrew 仅作为 macOS 可用时的后备路线
+- 本地缓存依赖运行环境能访问 B 站；Rust Native 后端随应用打包，不需要首次下载工具
 - 音画延迟补偿、音量控制、静音、远程暂停 / 跳转 / 切换音轨、升降 key 等能力依赖本地缓存媒体和浏览器媒体能力
 - 图片导出需要 Pillow；打包依赖中已包含 Pillow，脚本运行环境如果缺失则只能导出 CSV
-- `FFmpeg` 状态会显示在右上角 `BBDown` 展开面板中，方便定位“BBDown 已就绪但混流失败”这类问题
+- Rust 下载与媒体后端状态会显示在右上角服务设置面板中
 - 如果 Windows 后端打包版出现启动异常或页面打不开，可先尝试 `python build_bundle.py --console`，或设置 `BILIKARA_STARTUP_LOG=1` 收集启动日志
 - Tauri 桌面入口会设置 `BILIKARA_LAUNCH_MODE=tauri` 和 `BILIKARA_STARTUP_LOG=1`，桌面启动问题通常可先查看 `runtime/data/logs/startup.log`
 - 为了让本地播放支持拖动和快进，后端对缓存媒体实现了 `Range` 请求支持
