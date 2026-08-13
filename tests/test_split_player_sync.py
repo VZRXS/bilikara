@@ -1612,6 +1612,472 @@ function ackRemotePlayerControl() {}
         self.assertEqual(result["appliedSeq"], 1)
         self.assertIn("remote-play-intent", result["startupEvents"])
 
+    def test_tauri_webkit_host_manual_play_then_remote_toggle_uses_session_intent(self):
+        remote_control_source = self._slice(
+            "function applyRemotePlayerControl",
+            "async function ackRemotePlayerControl",
+        )
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+}, configurable: true, writable: true });
+window.__TAURI__ = { core: {}, webviewWindow: {} };
+const video = new FakeMedia(30); const audio = new FakeMedia(29.8);
+mountedVideo = video; mountedAudio = audio;
+elements.playerFrame.querySelector = (selector) => {
+  if (selector === "video") return video;
+  if (selector === 'audio[data-player-role="audio"]') return audio;
+  if (selector === ".split-playback-start-overlay") return mountedOverlay;
+  return null;
+};
+state.lastAppliedPlayerControlSeq = 0;
+state.localPlaybackStartState = "established";
+state.localShouldBePlaying = false;
+const productionRequestStart = requestSplitPlaybackStart;
+let startupRequestCalls = 0;
+requestSplitPlaybackStart = (...args) => {
+  startupRequestCalls += 1;
+  return productionRequestStart(...args);
+};
+
+setSplitPlaybackIntent(video, audio, true, {
+  source: "host-manual-play",
+  userGesture: true,
+});
+await Promise.resolve(); await Promise.resolve();
+const afterHostManualPlay = {
+  shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused,
+  audioPaused: audio.paused,
+  videoPlayCalls: video.playCalls,
+  audioPlayCalls: audio.playCalls,
+};
+
+applyRemotePlayerControl(
+  { seq: 1, action: "toggle-play", item_id: "item" },
+  { id: "item" },
+  "local",
+);
+const afterPause = {
+  shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused,
+  audioPaused: audio.paused,
+};
+applyRemotePlayerControl(
+  { seq: 2, action: "toggle-play", item_id: "item" },
+  { id: "item" },
+  "local",
+);
+await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  afterHostManualPlay,
+  afterPause,
+  afterPlay: {
+    shouldPlay: state.localShouldBePlaying,
+    videoPaused: video.paused,
+    audioPaused: audio.paused,
+    videoPlayCalls: video.playCalls,
+    audioPlayCalls: audio.playCalls,
+  },
+  startupRequestCalls,
+  appliedSeq: state.lastAppliedPlayerControlSeq,
+}));
+""",
+            self.sync_source,
+            """
+function ackRemotePlayerControl() {}
+""",
+            remote_control_source,
+        )
+        self.assertEqual(
+            result["afterHostManualPlay"],
+            {
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 1,
+                "audioPlayCalls": 1,
+            },
+        )
+        self.assertEqual(
+            result["afterPause"],
+            {"shouldPlay": False, "videoPaused": True, "audioPaused": True},
+        )
+        self.assertEqual(
+            result["afterPlay"],
+            {
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 2,
+                "audioPlayCalls": 2,
+            },
+        )
+        self.assertEqual(result["startupRequestCalls"], 0)
+        self.assertEqual(result["appliedSeq"], 2)
+
+    def test_tauri_webkit_remote_toggle_recovers_an_active_auto_started_pair(self):
+        remote_control_source = self._slice(
+            "function applyRemotePlayerControl",
+            "async function ackRemotePlayerControl",
+        )
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+}, configurable: true, writable: true });
+window.__TAURI__ = { core: {}, webviewWindow: {} };
+const video = new FakeMedia(30); const audio = new FakeMedia(29.8);
+video.paused = false; audio.paused = false;
+mountedVideo = video; mountedAudio = audio;
+elements.playerFrame.querySelector = (selector) => {
+  if (selector === "video") return video;
+  if (selector === 'audio[data-player-role="audio"]') return audio;
+  if (selector === ".split-playback-start-overlay") return mountedOverlay;
+  return null;
+};
+state.lastAppliedPlayerControlSeq = 0;
+state.localPlaybackStartState = "starting";
+state.localShouldBePlaying = true;
+
+applyRemotePlayerControl(
+  { seq: 1, action: "toggle-play", item_id: "item" },
+  { id: "item" },
+  "local",
+);
+const afterPause = {
+  startState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused,
+  audioPaused: audio.paused,
+};
+applyRemotePlayerControl(
+  { seq: 2, action: "toggle-play", item_id: "item" },
+  { id: "item" },
+  "local",
+);
+await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  afterPause,
+  afterPlay: {
+    startState: state.localPlaybackStartState,
+    shouldPlay: state.localShouldBePlaying,
+    videoPaused: video.paused,
+    audioPaused: audio.paused,
+    videoPlayCalls: video.playCalls,
+    audioPlayCalls: audio.playCalls,
+  },
+}));
+""",
+            self.sync_source,
+            """
+function ackRemotePlayerControl() {}
+""",
+            remote_control_source,
+        )
+        self.assertEqual(
+            result["afterPause"],
+            {
+                "startState": "established",
+                "shouldPlay": False,
+                "videoPaused": True,
+                "audioPaused": True,
+            },
+        )
+        self.assertEqual(
+            result["afterPlay"],
+            {
+                "startState": "established",
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 1,
+                "audioPlayCalls": 1,
+            },
+        )
+
+    def test_tauri_webkit_remote_seek_uses_authoritative_playback_intent(self):
+        remote_control_source = self._slice(
+            "function applyRemotePlayerControl",
+            "async function ackRemotePlayerControl",
+        )
+        result = self.run_node(
+            """
+function setRuntime(userAgent, tauri) {
+  Object.defineProperty(globalThis, "navigator", {
+    value: { userAgent }, configurable: true, writable: true,
+  });
+  if (tauri) {
+    window.__TAURI__ = { core: {}, webviewWindow: {} };
+  } else {
+    delete window.__TAURI__;
+  }
+}
+function mountPair({ intent, videoPaused, audioPaused, startState }) {
+  const video = new FakeMedia(30); const audio = new FakeMedia(29.8);
+  video.paused = videoPaused; audio.paused = audioPaused;
+  mountedVideo = video; mountedAudio = audio;
+  elements.playerFrame.querySelector = (selector) => {
+    if (selector === "video") return video;
+    if (selector === 'audio[data-player-role="audio"]') return audio;
+    if (selector === ".split-playback-start-overlay") return mountedOverlay;
+    return null;
+  };
+  state.localPlaybackStartState = startState;
+  state.localShouldBePlaying = intent;
+  return { video, audio };
+}
+async function seek(pair, seq) {
+  applyRemotePlayerControl(
+    { seq, action: "seek-relative", item_id: "item", delta_seconds: 15 },
+    { id: "item" },
+    "local",
+  );
+  settleSplitPlayerSeek(pair.video, pair.audio, true);
+  await Promise.resolve(); await Promise.resolve();
+  return {
+    startState: state.localPlaybackStartState,
+    shouldPlay: state.localShouldBePlaying,
+    videoPaused: pair.video.paused,
+    audioPaused: pair.audio.paused,
+    videoPlayCalls: pair.video.playCalls,
+    audioPlayCalls: pair.audio.playCalls,
+  };
+}
+state.lastAppliedPlayerControlSeq = 0;
+setRuntime(
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+  true,
+);
+const playing = await seek(mountPair({
+  intent: true, videoPaused: false, audioPaused: false, startState: "established",
+}), 1);
+const pausedWithNativeVideoEcho = await seek(mountPair({
+  intent: false, videoPaused: false, audioPaused: true, startState: "established",
+}), 2);
+const autoStarted = await seek(mountPair({
+  intent: true, videoPaused: false, audioPaused: false, startState: "starting",
+}), 3);
+const manuallyStartedPair = mountPair({
+  intent: false, videoPaused: true, audioPaused: true, startState: "established",
+});
+setSplitPlaybackIntent(manuallyStartedPair.video, manuallyStartedPair.audio, true, {
+  source: "host-manual-play",
+  userGesture: true,
+});
+await Promise.resolve(); await Promise.resolve();
+const manuallyStarted = await seek(manuallyStartedPair, 4);
+setRuntime(
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+  false,
+);
+const chromiumNativeVideoEcho = await seek(mountPair({
+  intent: false, videoPaused: false, audioPaused: true, startState: "established",
+}), 5);
+console.log(JSON.stringify({
+  playing,
+  pausedWithNativeVideoEcho,
+  autoStarted,
+  manuallyStarted,
+  chromiumNativeVideoEcho,
+}));
+""",
+            self.clear_seek_source,
+            self.seek_lifecycle_source,
+            self.sync_source,
+            """
+function ackRemotePlayerControl() {}
+""",
+            remote_control_source,
+        )
+        self.assertEqual(
+            result["playing"],
+            {
+                "startState": "established",
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 1,
+                "audioPlayCalls": 1,
+            },
+        )
+        self.assertEqual(
+            result["pausedWithNativeVideoEcho"],
+            {
+                "startState": "established",
+                "shouldPlay": False,
+                "videoPaused": True,
+                "audioPaused": True,
+                "videoPlayCalls": 0,
+                "audioPlayCalls": 0,
+            },
+        )
+        self.assertEqual(
+            result["autoStarted"],
+            {
+                "startState": "established",
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 1,
+                "audioPlayCalls": 1,
+            },
+        )
+        self.assertEqual(
+            result["manuallyStarted"],
+            {
+                "startState": "established",
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 2,
+                "audioPlayCalls": 2,
+            },
+        )
+        self.assertEqual(
+            result["chromiumNativeVideoEcho"],
+            {
+                "startState": "established",
+                "shouldPlay": True,
+                "videoPaused": False,
+                "audioPaused": False,
+                "videoPlayCalls": 1,
+                "audioPlayCalls": 1,
+            },
+        )
+
+    def test_tauri_webkit_internal_pause_events_preserve_play_intent(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+}, configurable: true, writable: true });
+window.__TAURI__ = { core: {}, webviewWindow: {} };
+global.document = { hidden: false };
+video.paused = false; audio.paused = false;
+mountedVideo = video; mountedAudio = audio;
+state.localPlaybackStartState = "established";
+state.localShouldBePlaying = true;
+
+holdVideoForAudio(video);
+videoPauseListener();
+const afterSyncPause = {
+  shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused,
+  audioPaused: audio.paused,
+};
+
+video.paused = false; audio.paused = false;
+state.localShouldBePlaying = true;
+beginSplitPlayerSeek(video, audio, { resumeAfterSeek: true, targetTime: 45 });
+videoPauseListener();
+console.log(JSON.stringify({
+  afterSyncPause,
+  afterSeekPause: {
+    shouldPlay: state.localShouldBePlaying,
+    seekResumePending: state.localSeekResumePending,
+    videoPaused: video.paused,
+    audioPaused: audio.paused,
+  },
+}));
+""",
+            self.clear_seek_source,
+            self.seek_lifecycle_source,
+            self.sync_source,
+            """
+const currentItem = { id: "item" };
+const video = new FakeMedia(30); const audio = new FakeMedia(29.8);
+let videoPauseListener = null;
+function addMountedPlayerListener(media, eventName, listener) {
+  media.addEventListener(eventName, listener);
+  if (media === video && eventName === "pause") videoPauseListener = listener;
+}
+function isLocalAdvanceHoldingItem() { return false; }
+function stopMountedPlayerForAdvanceDelay() {}
+function reportCurrentVideoStatus() {}
+function synchronizeStartupPlayer() { return false; }
+""",
+            self.video_play_pause_event_source,
+        )
+        self.assertEqual(
+            result["afterSyncPause"],
+            {"shouldPlay": True, "videoPaused": True, "audioPaused": False},
+        )
+        self.assertEqual(
+            result["afterSeekPause"],
+            {
+                "shouldPlay": True,
+                "seekResumePending": True,
+                "videoPaused": True,
+                "audioPaused": True,
+            },
+        )
+
+    def test_tauri_webkit_remote_policy_rejection_still_requires_host_gesture(self):
+        remote_control_source = self._slice(
+            "function applyRemotePlayerControl",
+            "async function ackRemotePlayerControl",
+        )
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+}, configurable: true, writable: true });
+window.__TAURI__ = { core: {}, webviewWindow: {} };
+const video = new FakeMedia(30); const audio = new FakeMedia(29.8);
+video.play = function() {
+  this.playCalls += 1;
+  const error = new Error("Host WebView user activation required");
+  error.name = "NotAllowedError";
+  return Promise.reject(error);
+};
+audio.play = function() {
+  this.playCalls += 1;
+  const error = new Error("Host WebView user activation required");
+  error.name = "NotAllowedError";
+  return Promise.reject(error);
+};
+mountedVideo = video; mountedAudio = audio;
+elements.playerFrame.querySelector = (selector) => {
+  if (selector === "video") return video;
+  if (selector === 'audio[data-player-role="audio"]') return audio;
+  if (selector === ".split-playback-start-overlay") return mountedOverlay;
+  return null;
+};
+state.lastAppliedPlayerControlSeq = 0;
+state.localPlaybackStartState = "established";
+state.localShouldBePlaying = false;
+applyRemotePlayerControl(
+  { seq: 1, action: "toggle-play", item_id: "item" },
+  { id: "item" },
+  "local",
+);
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  startState: state.localPlaybackStartState,
+  shouldPlay: state.localShouldBePlaying,
+  videoPaused: video.paused,
+  audioPaused: audio.paused,
+  videoPlayCalls: video.playCalls,
+  audioPlayCalls: audio.playCalls,
+  startupEvents: startupDiagnostics.map((entry) => entry.eventName),
+}));
+""",
+            self.sync_source,
+            """
+function ackRemotePlayerControl() {}
+""",
+            remote_control_source,
+        )
+        self.assertEqual(result["startState"], "needs-user-gesture")
+        self.assertFalse(result["shouldPlay"])
+        self.assertTrue(result["videoPaused"])
+        self.assertTrue(result["audioPaused"])
+        self.assertEqual(result["videoPlayCalls"], 1)
+        self.assertEqual(result["audioPlayCalls"], 1)
+        self.assertIn("video-playback-blocked", result["startupEvents"])
+
     def test_packaged_tauri_media_session_pause_and_play_follow_logical_intent(self):
         result = self.run_node(
             """

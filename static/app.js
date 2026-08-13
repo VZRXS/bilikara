@@ -9222,9 +9222,35 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
       const video = elements.playerFrame.querySelector("video");
       const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
       if (video) {
+        // WebKit can keep a successful active pair in "starting" until its
+        // initial play promises settle. Remote controls must treat that pair
+        // as an established session instead of re-entering startup policy.
+        const hasEstablishedTauriWebKitSession = Boolean(
+          audio
+          && isTauriWebKitRuntime()
+          && (
+            state.localPlaybackStartState === "established"
+            || (
+              state.localPlaybackStartState === "starting"
+              && state.localShouldBePlaying
+              && !video.paused
+              && !audio.paused
+            )
+          )
+        );
+        if (
+          hasEstablishedTauriWebKitSession
+          && state.localPlaybackStartState === "starting"
+        ) {
+          setSplitPlaybackStartState("established", video, audio);
+        }
         if (action === "toggle-play") {
           if (audio) {
-            if (!requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })) {
+            if (hasEstablishedTauriWebKitSession) {
+              setSplitPlaybackIntent(video, audio, !state.localShouldBePlaying, {
+                source: "remote-toggle-intent",
+              });
+            } else if (!requestSplitPlaybackStart(video, audio, { source: "remote-play-intent" })) {
               setSplitPlaybackIntent(video, audio, !state.localShouldBePlaying, {
                 source: "remote-toggle-intent",
               });
@@ -9243,7 +9269,9 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
             (action === "seek-relative" && Number.isFinite(deltaSeconds) && deltaSeconds !== 0)
             || (action === "seek-absolute" && Number.isFinite(targetSeconds))
           ) {
-            const resumeAfterSeek = !video.paused || state.localShouldBePlaying;
+            const resumeAfterSeek = audio && isTauriWebKitRuntime()
+              ? state.localShouldBePlaying
+              : !video.paused || state.localShouldBePlaying;
             const duration = Number.isFinite(video.duration) ? video.duration : Number.POSITIVE_INFINITY;
             const nextTime = action === "seek-absolute"
               ? Math.max(0, targetSeconds)
