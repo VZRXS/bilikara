@@ -17,8 +17,9 @@ const MAX_HEADER_VALUE_BYTES: usize = 16 * 1024;
 const MAX_ATTEMPTS_PER_CANDIDATE: u32 = 5;
 const MAX_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
 const COPY_BUFFER_BYTES: usize = 256 * 1024;
-const MULTIPART_SEGMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MULTIPART_SEGMENT_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_MULTIPART_WORKERS: usize = 16;
+const PROGRESS_NOTIFY_INTERVAL: Duration = Duration::from_millis(250);
 const BILIBILI_UPOS_MIRROR_HOST: &str = "upos-sz-mirrorcoso1.bilivideo.com";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -124,7 +125,12 @@ pub struct DownloadResult {
     pub candidate_index: usize,
     pub attempt: u32,
     pub segments_used: usize,
+    pub workers_used: usize,
     pub host_rewritten: bool,
+    pub transport: String,
+    pub final_host: String,
+    pub elapsed_ms: u64,
+    pub average_bytes_per_second: u64,
 }
 
 pub fn download_to_path<F>(
@@ -300,6 +306,16 @@ fn download_candidate<F>(
 where
     F: FnMut(DownloadProgress) -> bool,
 {
+    let started = std::time::Instant::now();
+    let parsed_url = reqwest::Url::parse(url).map_err(|_| {
+        DownloadError::new(
+            DownloadErrorKind::InvalidRequest,
+            "candidate URL is invalid",
+        )
+        .for_candidate(candidate_index)
+    })?;
+    let transport = parsed_url.scheme().to_string();
+    let final_host = parsed_url.host_str().unwrap_or_default().to_string();
     let response = client
         .get(url)
         .headers(headers.clone())
@@ -379,7 +395,20 @@ where
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
-    result
+    result.map(|mut completed| {
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        completed.transport = transport;
+        completed.final_host = final_host;
+        completed.elapsed_ms = elapsed_ms;
+        completed.average_bytes_per_second = completed
+            .bytes_written
+            .saturating_mul(1_000)
+            .checked_div(elapsed_ms)
+            .unwrap_or(0);
+        completed
+    })
 }
 
 fn stream_response<F>(
@@ -398,6 +427,8 @@ where
     let mut output = create_temp_file(temp_path, candidate_index)?;
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     let mut downloaded_bytes = 0_u64;
+    let mut last_reported_bytes = 0_u64;
+    let mut last_progress_notification = std::time::Instant::now();
 
     loop {
         let count = response.read(&mut buffer).map_err(|_| {
@@ -412,14 +443,18 @@ where
                 .for_candidate(candidate_index)
         })?;
         downloaded_bytes = downloaded_bytes.saturating_add(count as u64);
-        if !continue_download(DownloadProgress {
-            downloaded_bytes,
-            total_bytes: content_length,
-        }) {
-            return Err(
-                DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
-                    .for_candidate(candidate_index),
-            );
+        if last_progress_notification.elapsed() >= PROGRESS_NOTIFY_INTERVAL {
+            if !continue_download(DownloadProgress {
+                downloaded_bytes,
+                total_bytes: content_length,
+            }) {
+                return Err(
+                    DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
+                        .for_candidate(candidate_index),
+                );
+            }
+            last_reported_bytes = downloaded_bytes;
+            last_progress_notification = std::time::Instant::now();
         }
     }
 
@@ -439,6 +474,17 @@ where
         )
         .for_candidate(candidate_index));
     }
+    if last_reported_bytes != downloaded_bytes
+        && !continue_download(DownloadProgress {
+            downloaded_bytes,
+            total_bytes: content_length,
+        })
+    {
+        return Err(
+            DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
+                .for_candidate(candidate_index),
+        );
+    }
     publish_download(
         output,
         temp_path,
@@ -447,6 +493,7 @@ where
         content_length,
         candidate_index,
         attempt,
+        1,
         1,
         host_rewritten,
     )
@@ -459,7 +506,6 @@ enum MultipartError {
 }
 
 enum SegmentMessage {
-    Progress(u64),
     Failed(MultipartError),
     Finished,
 }
@@ -500,18 +546,12 @@ where
             (start, end)
         })
         .collect();
-    let available_workers = thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(4);
-    let worker_count = segments
-        .len()
-        .min(available_workers)
-        .clamp(1, MAX_MULTIPART_WORKERS);
+    let worker_count = segments.len().clamp(1, MAX_MULTIPART_WORKERS);
     let segments = Arc::new(segments);
     let next_segment = Arc::new(AtomicUsize::new(0));
     let stopped = Arc::new(AtomicBool::new(false));
+    let downloaded_bytes = Arc::new(AtomicU64::new(0));
     let (sender, receiver) = mpsc::channel();
-    let mut downloaded_bytes = 0_u64;
     let mut first_error = None;
     let mut range_unsupported = false;
 
@@ -524,6 +564,7 @@ where
             let segments = Arc::clone(&segments);
             let next_segment = Arc::clone(&next_segment);
             let stopped = Arc::clone(&stopped);
+            let downloaded_bytes = Arc::clone(&downloaded_bytes);
             let sender = sender.clone();
             scope.spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
@@ -540,7 +581,7 @@ where
                         end,
                         content_length,
                         candidate_index,
-                        &sender,
+                        &downloaded_bytes,
                     ) {
                         stopped.store(true, Ordering::Release);
                         let _ = sender.send(SegmentMessage::Failed(error));
@@ -554,22 +595,7 @@ where
 
         let mut finished = 0_usize;
         while finished < worker_count {
-            match receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(SegmentMessage::Progress(count)) => {
-                    downloaded_bytes = downloaded_bytes.saturating_add(count);
-                    if first_error.is_none()
-                        && !continue_download(DownloadProgress {
-                            downloaded_bytes,
-                            total_bytes: Some(content_length),
-                        })
-                    {
-                        stopped.store(true, Ordering::Release);
-                        first_error = Some(MultipartError::Download(
-                            DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
-                                .for_candidate(candidate_index),
-                        ));
-                    }
-                }
+            match receiver.recv_timeout(PROGRESS_NOTIFY_INTERVAL) {
                 Ok(SegmentMessage::Failed(error)) => {
                     if matches!(error, MultipartError::RangeUnsupported) {
                         range_unsupported = true;
@@ -582,7 +608,7 @@ where
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if first_error.is_none()
                         && !continue_download(DownloadProgress {
-                            downloaded_bytes,
+                            downloaded_bytes: downloaded_bytes.load(Ordering::Relaxed),
                             total_bytes: Some(content_length),
                         })
                     {
@@ -604,6 +630,7 @@ where
     if let Some(error) = first_error {
         return Err(error);
     }
+    let downloaded_bytes = downloaded_bytes.load(Ordering::Relaxed);
     if downloaded_bytes != content_length {
         return Err(MultipartError::Download(
             DownloadError::new(
@@ -611,6 +638,15 @@ where
                 "multipart response length did not match Content-Length",
             )
             .for_candidate(candidate_index),
+        ));
+    }
+    if !continue_download(DownloadProgress {
+        downloaded_bytes,
+        total_bytes: Some(content_length),
+    }) {
+        return Err(MultipartError::Download(
+            DownloadError::new(DownloadErrorKind::Cancelled, "download cancelled")
+                .for_candidate(candidate_index),
         ));
     }
 
@@ -623,6 +659,7 @@ where
         candidate_index,
         attempt,
         segments.len(),
+        worker_count,
         host_rewritten,
     )
     .map_err(MultipartError::Download)
@@ -638,7 +675,7 @@ fn download_segment(
     end: u64,
     total: u64,
     candidate_index: usize,
-    sender: &mpsc::Sender<SegmentMessage>,
+    downloaded_bytes: &AtomicU64,
 ) -> Result<(), MultipartError> {
     let mut response = client
         .get(url)
@@ -748,7 +785,7 @@ fn download_segment(
             )
         })?;
         written += count as u64;
-        let _ = sender.send(SegmentMessage::Progress(count as u64));
+        downloaded_bytes.fetch_add(count as u64, Ordering::Relaxed);
     }
     Ok(())
 }
@@ -763,6 +800,7 @@ fn publish_download(
     candidate_index: usize,
     attempt: u32,
     segments_used: usize,
+    workers_used: usize,
     host_rewritten: bool,
 ) -> Result<DownloadResult, DownloadError> {
     output.sync_all().map_err(|_| {
@@ -793,7 +831,12 @@ fn publish_download(
         candidate_index,
         attempt,
         segments_used,
+        workers_used,
         host_rewritten,
+        transport: String::new(),
+        final_host: String::new(),
+        elapsed_ms: 0,
+        average_bytes_per_second: 0,
     })
 }
 
@@ -804,10 +847,13 @@ fn bilibili_mirror_url(raw_url: &str) -> Option<String> {
         || host.ends_with(".bilivideo.cn")
         || host.ends_with(".bilibilivideo.com")
         || host.ends_with(".akamaized.net");
-    if !is_bilibili_media || host == BILIBILI_UPOS_MIRROR_HOST {
+    if !is_bilibili_media
+        || (host == BILIBILI_UPOS_MIRROR_HOST && url.scheme().eq_ignore_ascii_case("http"))
+    {
         return None;
     }
     url.set_host(Some(BILIBILI_UPOS_MIRROR_HOST)).ok()?;
+    url.set_scheme("http").ok()?;
     url.set_port(None).ok()?;
     Some(url.into())
 }
@@ -903,11 +949,12 @@ mod tests {
         let mirrored = bilibili_mirror_url(source).expect("Bilibili media URL is rewritten");
         let parsed = reqwest::Url::parse(&mirrored).expect("parse mirrored URL");
 
-        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.scheme(), "http");
         assert_eq!(parsed.host_str(), Some(BILIBILI_UPOS_MIRROR_HOST));
         assert_eq!(parsed.port(), None);
         assert_eq!(parsed.path(), "/upgcxcode/track.m4s");
         assert_eq!(parsed.query(), Some("deadline=1&upsig=secret"));
+        assert!(bilibili_mirror_url(&mirrored).is_none());
         assert!(bilibili_mirror_url("https://example.test/file").is_none());
     }
 
@@ -1059,12 +1106,16 @@ mod tests {
         let (base, ranges, maximum_active, server) = serve_range_file();
         let root = test_dir("multipart");
         let destination = root.join("track.m4s");
+        let mut progress_updates = 0_usize;
         let result = download_to_path(
             &request(
                 destination.clone(),
                 vec![candidate(format!("{base}/media"))],
             ),
-            |_| true,
+            |_| {
+                progress_updates += 1;
+                true
+            },
         );
         server.join().expect("range server joins");
         let result = result.expect("multipart download succeeds");
@@ -1087,7 +1138,23 @@ mod tests {
         for pair in captured.windows(2) {
             assert_eq!(pair[0].1 + 1, pair[1].0);
         }
+        assert_eq!(captured.len(), 9);
+        assert!(
+            captured[..8]
+                .iter()
+                .all(|(start, end)| { end - start + 1 == 5 * 1024 * 1024 })
+        );
         assert_eq!(result.bytes_written, TEST_MULTIPART_BYTES as u64);
+        assert_eq!(result.segments_used, 9);
+        assert_eq!(result.workers_used, 9);
+        assert_eq!(result.transport, "http");
+        assert_eq!(result.final_host, "127.0.0.1");
+        assert!(result.elapsed_ms > 0);
+        assert!(result.average_bytes_per_second > 0);
+        assert!(
+            progress_updates <= 8,
+            "multipart progress must be coalesced, got {progress_updates} callbacks"
+        );
         assert_eq!(
             fs::metadata(&destination)
                 .expect("read output metadata")

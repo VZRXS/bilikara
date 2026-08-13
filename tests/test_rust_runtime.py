@@ -419,6 +419,52 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
         manager._append_log_line = Mock()
         return manager
 
+    def test_native_download_log_includes_transport_and_throughput(self):
+        manager = self.make_manager()
+        manager._update_download_track_progress = Mock()
+
+        def complete_download(**kwargs):
+            destination = kwargs["destination"]
+            destination.write_bytes(b"download")
+            return {
+                "bytes_written": 8,
+                "candidate_index": 0,
+                "segments_used": 10,
+                "workers_used": 10,
+                "host_rewritten": True,
+                "transport": "http",
+                "final_host": "upos-sz-mirrorcoso1.bilivideo.com",
+                "elapsed_ms": 2500,
+                "average_bytes_per_second": 19_902_445,
+            }
+
+        with TemporaryDirectory() as temp_dir, patch(
+            "bilikara.cache.rust_runtime.download_to_path",
+            side_effect=complete_download,
+        ):
+            manager._download_stream_with_rust(
+                "song-a",
+                Path(temp_dir) / "video-p1",
+                Path(temp_dir) / "download.log",
+                urls=["https://media.invalid"],
+                out_name="video-p1.mp4",
+                cookie="",
+                stage_label="download",
+                track_key="video-p1",
+                stream_kind="video",
+            )
+
+        log_line = manager._append_log_line.call_args_list[-1].args[1]
+        diagnostic = json.loads(log_line.split("media_diagnostic: ", 1)[1])
+        self.assertEqual(diagnostic["transport"], "http")
+        self.assertEqual(diagnostic["workers_used"], 10)
+        self.assertEqual(diagnostic["elapsed_ms"], 2500)
+        self.assertEqual(diagnostic["average_bytes_per_second"], 19_902_445)
+        self.assertEqual(
+            diagnostic["final_host"],
+            "upos-sz-mirrorcoso1.bilivideo.com",
+        )
+
     def test_native_selected_stream_path_never_calls_legacy_downloader(self):
         with TemporaryDirectory() as temp_dir, patch(
             "bilikara.cache.CACHE_DIR", Path(temp_dir)
