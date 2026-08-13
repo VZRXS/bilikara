@@ -471,13 +471,14 @@ fn build_markdown(inputs: MarkdownInputs<'_>) -> String {
         String::new(),
         "## Tools".to_owned(),
         String::new(),
-        "| Tool | Installed | Version | State |".to_owned(),
-        "| --- | --- | --- | --- |".to_owned(),
+        "| Tool | Installed | Version | State | Message |".to_owned(),
+        "| --- | --- | --- | --- | --- |".to_owned(),
     ];
     if let Some(tools) = tools {
         for (name, item) in tools {
             lines.push(format!(
-                "| {name} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} |",
+                markdown_table_cell(name),
                 if item
                     .get("installed")
                     .and_then(Value::as_bool)
@@ -487,8 +488,9 @@ fn build_markdown(inputs: MarkdownInputs<'_>) -> String {
                 } else {
                     "no"
                 },
-                value_label(item.get("version")),
-                value_label(item.get("state")),
+                markdown_table_cell(&value_label(item.get("version"))),
+                markdown_table_cell(&value_label(item.get("state"))),
+                markdown_table_cell(&value_label(item.get("message"))),
             ));
         }
     }
@@ -637,6 +639,10 @@ fn value_label(value: Option<&Value>) -> String {
     }
 }
 
+fn markdown_table_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace(['\r', '\n'], " ")
+}
+
 fn json_code_block(value: &Value) -> String {
     format!(
         "```json\n{}\n```",
@@ -711,5 +717,39 @@ mod tests {
         assert_eq!(entries.len(), 64);
         assert_eq!(entries[0]["stageTimings"].as_array().unwrap().len(), 16);
         assert!(entries[0].get("requester").is_none());
+    }
+
+    #[test]
+    fn markdown_tool_table_includes_failure_messages() {
+        let system = json!({
+            "generated_at": "2026-08-14T00:00:00Z",
+            "app_version": "test",
+        });
+        let tools_and_tasks = json!({
+            "tools": {
+                "Rust Native / Bilibili": {
+                    "installed": true,
+                    "version": "ABI 1",
+                    "state": "failed",
+                    "message": "legacy BBDown prewarm failed",
+                }
+            },
+            "tasks": {},
+        });
+        let empty = json!({});
+        let logs = BTreeMap::new();
+        let markdown = build_markdown(MarkdownInputs {
+            system: &system,
+            tools_and_tasks: &tools_and_tasks,
+            policy: &empty,
+            runtime: &empty,
+            disk: &empty,
+            connectivity: &empty,
+            exports: &json!([]),
+            logs: &logs,
+        });
+
+        assert!(markdown.contains("| Tool | Installed | Version | State | Message |"));
+        assert!(markdown.contains("legacy BBDown prewarm failed"));
     }
 }

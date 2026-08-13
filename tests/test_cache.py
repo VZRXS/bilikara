@@ -35,6 +35,80 @@ from bilikara.store import PlaylistStore
 
 
 class CacheManagerOutputTest(unittest.TestCase):
+    def test_native_prewarm_does_not_probe_legacy_tools_or_override_runtime_status(self):
+        manager = CacheManager.__new__(CacheManager)
+        manager.lock = threading.RLock()
+        manager.binary_state = "failed"
+        manager.binary_version = ""
+        manager.binary_message = "stale BBDown failure"
+        manager.ffmpeg_state = "failed"
+        manager.ffmpeg_version = ""
+        manager.ffmpeg_message = "stale FFmpeg failure"
+        runtime = {
+            "loaded": True,
+            "abi_version": 1,
+            "error": "",
+        }
+
+        with patch("bilikara.cache.rust_runtime.runtime_status", return_value=runtime), patch.object(
+            manager,
+            "_ensure_bbdown",
+            side_effect=AssertionError("legacy BBDown prewarm must not run"),
+        ) as ensure_bbdown, patch.object(
+            manager,
+            "_ensure_ffmpeg",
+            side_effect=AssertionError("legacy FFmpeg prewarm must not run"),
+        ) as ensure_ffmpeg:
+            manager._prewarm_binary_worker()
+
+        ensure_bbdown.assert_not_called()
+        ensure_ffmpeg.assert_not_called()
+        self.assertEqual(manager.binary_state, "ready")
+        self.assertEqual(manager.binary_version, "Rust ABI 1")
+        self.assertEqual(manager.binary_message, "Rust Native ready")
+        self.assertEqual(manager.ffmpeg_state, "ready")
+        self.assertEqual(manager.ffmpeg_version, "Rust MediaBackend ABI 1")
+        self.assertEqual(manager.ffmpeg_message, "Rust MediaBackend ready")
+
+    def test_diagnostic_snapshot_preserves_frontend_service_failure_reason(self):
+        manager = CacheManager.__new__(CacheManager)
+        manager.lock = threading.RLock()
+        manager.active_item_id = "item-1"
+        manager.urgent_cache_ids = set()
+        manager.pending_ids = {"item-1"}
+        manager.ordered_desired_ids = ["item-1"]
+        manager.tasks = queue.Queue()
+        manager.binary_state = "failed"
+        manager.binary_version = ""
+        manager.binary_message = "legacy BBDown prewarm failed"
+        manager.max_cache_items = 3
+        manager.download_source = DOWNLOAD_SOURCE_NATIVE
+        manager.media_capabilities = {}
+        manager.client_media_capabilities = {}
+        runtime = {
+            "loaded": True,
+            "path": "C:/bundle/rust/bilikara_runtime.dll",
+            "error": "",
+            "abi_version": 1,
+            "capabilities": {"http_download": True, "media_backend": True},
+            "load_diagnostics": {"stage": "ready"},
+        }
+
+        with patch("bilikara.cache.rust_runtime.runtime_status", return_value=runtime), patch.object(
+            manager,
+            "bbdown_login_status",
+            return_value={"state": "idle", "logged_in": False},
+        ):
+            snapshot = manager.diagnostic_snapshot()
+
+        native = snapshot["tools"]["Rust Native"]
+        media = snapshot["tools"]["Rust MediaBackend"]
+        self.assertEqual(native["state"], "failed")
+        self.assertEqual(native["message"], "legacy BBDown prewarm failed")
+        self.assertEqual(native["runtime_state"], "ready")
+        self.assertEqual(media["state"], "ready")
+        self.assertEqual(media["message"], "Rust MediaBackend ready")
+
     def test_iter_output_messages_handles_carriage_return_updates(self):
         stream = io.StringIO("0%\r14.5%\r89.1%\n下载完成\n")
         self.assertEqual(

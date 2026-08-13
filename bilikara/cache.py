@@ -381,17 +381,31 @@ class CacheManager:
             desired_ids = list(self.ordered_desired_ids)
 
         runtime = rust_runtime.runtime_status()
+        native_service = self.status()
+        media_service = self.ffmpeg_status()
+        runtime_state = "ready" if runtime["loaded"] else "failed"
         return {
             "tools": {
                 "Rust Native": {
                     "installed": bool(runtime["loaded"]),
-                    "version": f"ABI {runtime.get('abi_version')}" if runtime["loaded"] else "",
-                    "state": "ready" if runtime["loaded"] else "failed",
+                    "version": str(native_service.get("version") or ""),
+                    "state": str(native_service.get("state") or "idle"),
                     "path": str(runtime.get("path") or ""),
                     "capabilities": dict(runtime.get("capabilities") or {}),
-                    "message": str(runtime.get("error") or ""),
+                    "message": str(native_service.get("message") or ""),
+                    "runtime_state": runtime_state,
+                    "runtime_error": str(runtime.get("error") or ""),
                     "load_diagnostics": dict(runtime.get("load_diagnostics") or {}),
-                }
+                },
+                "Rust MediaBackend": {
+                    "installed": bool(runtime["loaded"]),
+                    "version": str(media_service.get("version") or ""),
+                    "state": str(media_service.get("state") or "idle"),
+                    "path": str(media_service.get("path") or runtime.get("path") or ""),
+                    "message": str(media_service.get("message") or ""),
+                    "runtime_state": runtime_state,
+                    "runtime_error": str(runtime.get("error") or ""),
+                },
             },
             "tasks": {
                 "active_item_id": active_item_id,
@@ -7822,24 +7836,14 @@ class CacheManager:
         return "等待缓存"
 
     def _prewarm_binary_worker(self) -> None:
-        try:
-            with self.lock:
-                if self.ffmpeg_state == "idle":
-                    self.ffmpeg_state = "checking"
-                    self.ffmpeg_message = "后台准备 FFmpeg 中"
-            self._ensure_ffmpeg(force_refresh=True)
-        except Exception as exc:  # noqa: BLE001
-            with self.lock:
-                self.ffmpeg_state = "failed"
-                self.ffmpeg_message = f"FFmpeg 准备失败: {exc}"
-
-        try:
-            with self.lock:
-                if self.binary_state == "idle":
-                    self.binary_state = "checking"
-                    self.binary_message = "后台准备 BBDown 中"
-            self._ensure_bbdown()
-        except Exception as exc:  # noqa: BLE001
-            with self.lock:
-                self.binary_state = "failed"
-                self.binary_message = f"BBDown 准备失败: {exc}"
+        status = rust_runtime.runtime_status()
+        loaded = bool(status["loaded"])
+        abi_version = status.get("abi_version")
+        error = str(status.get("error") or "")
+        with self.lock:
+            self.binary_state = "ready" if loaded else "failed"
+            self.binary_version = f"Rust ABI {abi_version}" if loaded else ""
+            self.binary_message = error or "Rust Native ready"
+            self.ffmpeg_state = "ready" if loaded else "failed"
+            self.ffmpeg_version = f"Rust MediaBackend ABI {abi_version}" if loaded else ""
+            self.ffmpeg_message = error or "Rust MediaBackend ready"

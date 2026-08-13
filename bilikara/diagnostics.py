@@ -552,13 +552,14 @@ def _build_markdown(
         "",
         "## Tools",
         "",
-        "| Tool | Installed | Version | State |",
-        "| --- | --- | --- | --- |",
+        "| Tool | Installed | Version | State | Message |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for name, item in tools.items():
         lines.append(
             f"| {name} | {'yes' if item.get('installed') else 'no'} | "
-            f"{item.get('version') or '-'} | {item.get('state') or '-'} |"
+            f"{item.get('version') or '-'} | {item.get('state') or '-'} | "
+            f"{item.get('message') or '-'} |"
         )
     lines.extend(
         [
