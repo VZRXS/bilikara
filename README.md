@@ -4,6 +4,13 @@
 
 `bilikara` 是一个基于 B 站卡拉 OK 视频的点歌平台。主要由 OpenAI Codex 协助设计与实现，并经过人工整理、验证与迭代。
 
+> [!IMPORTANT]
+> **Rust 后端迁移说明**
+>
+> bilikara 正在从现有 Python Host 逐步迁移到 Rust 后端。自 v0.7 起，新增后端功能与业务规则只在 Rust 侧实现；Python 层进入维护模式，不再承接新增后端功能，仅保留当前运行所需的 I/O、兼容与迁移职责，并处理影响正常使用的必要缺陷。
+>
+> v0.7 仍是 Rust 规则核心、Python 运行编排与 Tauri 桌面壳并存的过渡架构，并非纯 Rust 后端。详细边界与后续计划请参阅 [Rust 业务规则迁移计划](docs/rust-business-rule-migration-plan.md)。
+
 <p align="center">
   <img src="images/host.png" alt="Host 界面" width="700"><br>
   <sub>Host 界面</sub>
@@ -38,7 +45,7 @@
 - 多分 p 视频自动判断有效分 p，自动缓存多音轨，可随时切换；切换时会同步当前播放进度与播放状态
 - 加入点歌列表后自动后台缓存，缓存失败 / 长时间无变化显示重试按钮，并支持一键重试
 - 缓存限制：最多只自动缓存前 1 ~ 5 首，默认 3 首，防止磁盘占用过大；服务关闭后自动清空缓存目录
-- 扫描二维码登录 B 站账号（**注意：** 这里直接使用 BBDown 登录方案，Cookie 会明文保存在 `BBDown.data`）
+- bilikara 自行生成 B 站登录二维码并轮询登录结果；确认后会将登录凭据以 UTF-8 明文、分号分隔的 Cookie 文本保存到 `<应用数据目录>/tools/bbdown/BBDown.data`，供 BBDown 下载时使用（**安全提示：** 该文件未加密，请妥善保护本机账户访问权限）
 
 ### 列表、历史与导出
 
@@ -47,7 +54,7 @@
 - 本地保留歌单和播放器设置备份，重新打开后自动恢复，支持手动清空备份
 - 保留点歌历史记录（次数、时间、点歌人），支持从历史记录中快速重新点歌，也可删除单曲在历史记录和本场记录中的条目
 - 维护本次点歌记录：同一首歌在本次已点过时，加入前会弹窗确认
-- 在历史记录页面可以导出本场记录或全部历史为 CSV 或 PNG 歌单图片；图片每页歌曲数可选 50 ~ 200 首
+- 在历史记录页面可以导出本场记录或全部历史为 CSV 或 PNG 歌单图片；图片每页歌曲数可选 50 ~ 200 首；PNG 优先使用应用内置的 Source Han Sans，使中文、日文、拉丁字符和数字排版更一致，不支持的符号和 emoji 仍会使用后备字体
 - 自动保存对应视频的 UP 主信息，悬停列表或历史记录时可显示完整歌名与 UP 主信息
 - 按场次单独保存“本次已唱”记录（JSON 格式），便于扩展读取接口
 - 设置本场用户，可通过拖拽或列表排序管理点歌人顺序
@@ -99,7 +106,9 @@
   - 查看缓存占用，调整自动缓存数量
   - 调整默认清晰度、Hi-Res 优先、切歌延迟
   - 管理 BBDown 登录
-  - 数据清理、重新缓存 / 重置播放器和应用更新检查
+  - Host 本机可在高级服务设置中选择下一次媒体处理使用的 Rust 或 Python 引擎
+  - 数据清理、重新缓存 / 重置播放器和应用更新检查；更新检查默认选择正式版，可按需开启预览版
+  - 可复制经过脱敏的诊断 Markdown，并生成可下载的诊断包；诊断采集会限制日志与导出记录范围，并遮蔽凭据和本地用户名
   - 源码脚本运行时，更新检查会跳转 GitHub Releases 页面；打包版运行时会自动下载更新并重启服务
 - 界面设置：
   - 布局：基础 / 完整
@@ -141,6 +150,19 @@
 
 - Windows：`bilikara-desktop.exe`
 - macOS：`Bilikara-Desktop.app`
+
+> [!IMPORTANT]
+> **macOS 首次启动**
+>
+> 如果首次打开 `Bilikara-Desktop.app` 时 macOS 提示无法验证开发者或无法检查 App 是否包含恶意软件，请先关闭该提示，然后：
+>
+> 1. 打开「系统设置」→「隐私与安全性」。
+> 2. 向下滚动到「安全性」，找到有关 Bilikara 被阻止打开的提示。
+> 3. 点击「仍要打开」。
+> 4. 如系统要求，输入当前账户的登录密码进行确认。
+> 5. 警告再次出现后，点击「打开」即可启动 Bilikara。
+>
+> 「仍要打开」选项只会在尝试启动 App 后出现。完成一次授权后，之后可以正常双击启动。
 
 桌面入口由 Tauri 提供窗口壳，启动时会自动拉起 Python 后端服务并打开 Host 界面；关闭桌面窗口后会请求后端退出并清理本次运行的缓存。
 
@@ -206,8 +228,8 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - 打包后的应用会把静态页面资源封装进应用内部
 - 发布包元数据中的发布者 / CompanyName 设置为 `VZRXS`；Windows 安全提示中的“已验证发布者”仍需要代码签名证书
 - Tauri 桌面壳 `bilikara-desktop.exe` 会通过 `scripts/sign_windows.ps1` 签名；CI 可配置 `WINDOWS_SIGN_CERTIFICATE_BASE64` + `WINDOWS_SIGN_CERTIFICATE_PASSWORD`，也可改用 `WINDOWS_SIGN_CERTIFICATE_PATH` 或 `WINDOWS_SIGN_CERTIFICATE_THUMBPRINT`，未配置证书时会跳过签名并继续显示未知发布者
-- 打包后的 `data/`、日志、缓存和工具文件默认都会写到应用目录内的 `runtime/`；如需改到其他位置，可通过 `BILIKARA_HOME` 指定应用数据目录
-- 打包脚本会优先把构建机上的 `ffmpeg` / `ffprobe` 一起打进应用；启动时会把它们同步到 `runtime/tools/bbdown/`，与 `BBDown` 放在一起，缓存时优先使用这份应用内工具
+- 打包后的 `data/`、日志、缓存和工具文件默认都会写到可写运行目录；macOS 使用 `~/Library/Application Support/bilikara/`，Windows 使用包内 `runtime/`；可通过 `BILIKARA_HOME` 指定其他目录
+- 打包脚本会把经过验证的 `ffmpeg` / `ffprobe` 和按目标架构固定为 1.6.3 的 `BBDown` 放进不可变 vendor；运行时以复制方式安装到 `tools/bbdown/`
 - Tauri 桌面壳启动后会拉起同目录或相邻目录里的 Python 后端包；开发模式下会回退到 `python start_bilikara.py`
 - 当前 Tauri 桌面版采用类似 sidecar 的 Python 后端进程方案；长期规划中，会考虑逐步将更适合桌面集成、进程管理和跨平台适配的能力迁移到 Rust / Tauri 侧
 - Windows 和 macOS 的最终包通常需要在各自系统上分别构建；也就是说，Windows 包最好在 Windows 上打，macOS 包最好在 macOS 上打
@@ -230,6 +252,7 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - `BILIKARA_BILIBILI_COOKIE`：用于 BBDown 下载会员清晰度或受限内容的 cookie
 - `BB_DOWN_PATH`：自定义本地 `BBDown` 可执行文件路径
 - `FFMPEG_PATH`：自定义本地 `ffmpeg` 可执行文件路径
+- `ARIA2C_PATH`：自定义实验性 DownKyi 下载源使用的 `aria2c` 可执行文件路径
 - `BILIKARA_STARTUP_LOG`：设为 `1` 时，启动日志会写入 `runtime/data/logs/startup.log`，用于排查打包版启动问题
 - `BILIKARA_RUST_STRICT_EQUIVALENCE`：设为 `1` 时，对已迁移能力同时运行 Rust 与 Python 参考实现并比较规范结果；仅建议用于测试、CI 和开发诊断
 - `BILIKARA_RUST_TIMING_DIAGNOSTICS`：设为 `1` 时，在后端状态中聚合 Rust FFI、JSON、Python 回退和严格等价检查耗时；默认关闭且不会逐调用打印日志
@@ -237,18 +260,20 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 ## 技术说明
 
 - 前端使用原生 HTML/CSS/JS，无需前端构建步骤；Node.js 仅用于构建 Tauri 桌面壳
-- 后端使用 Python 标准库 HTTP 服务
+- Python Host 使用 Python 标准库 HTTP 服务，并继续负责 HTTP、I/O、持久化、下载和运行编排
+- Rust 提供有类型的业务规则核心；新增后端功能与业务规则按 v0.7 的迁移边界在 Rust 侧实现
 - 桌面版使用 Tauri v2 / Rust 作为窗口壳，负责启动后端、承载本地 WebView，并在窗口关闭时请求后端退出
 - 当前桌面壳不是纯 Rust 后端：它会启动一个类似 sidecar 的 Python 后端进程，后端仍负责 HTTP API、缓存、下载和状态管理
 - Tauri 开发配置指向 `http://127.0.0.1:8080`，实际启动时会以 `--no-browser --headless --port 0` 拉起后端，并在收到 `bilikara.ready` 事件后跳转到真实本地地址
 - 播放流程以本地缓存和本地媒体播放为主，缓存媒体由 `BBDown` 下载并由 `FFmpeg` 处理
-- 本地缓存会优先使用本地已有的 `BBDown`；启动后会在后台静默检查是否需要更新
+- 打包版会优先使用已验证的运行时 `BBDown`；缺失、损坏或显式修复时，从应用内固定 vendor 原子恢复，不检查 GitHub 最新版本
 - 启动后也会在后台准备 `FFmpeg`，并把可用版本同步到应用目录内的 `runtime/tools/bbdown/`
 - Windows 打包版会以隐藏进程方式调用 `BBDown`，避免点歌时弹出命令行窗口
 - 手机访问 URL 的首选地址来自系统路由决定的源 IPv4；其他活动物理网卡地址可作为备用，虚拟和隧道地址会被降级
 - `BBDown` 下载日志会写到应用数据目录下的 `data/logs/bbdown/`
 - 本次已唱记录会单独写入 `data/played_sessions/played-YYYY-MM-DD_HH-MM-SS-ffffff.json`
-- 如果 `BBDown` 返回“请尝试升级到最新版本后重试”这类提示，程序会自动强制刷新一次本地 BBDown 并重试当前下载
+- 如果 `BBDown` 返回“请尝试升级到最新版本后重试”这类提示，打包版会从内置固定版本重新修复一次本地 BBDown 并重试当前下载
+- DownKyi / aria2c 仍是实验性、非默认下载源；只在用户明确选择并确认后准备。macOS 打包版读取仓库内按架构锁定的 URL/SHA-256 元数据，并从项目工具镜像下载由手动 Tool Assets 工作流从固定官方源码构建的便携版本；普通应用 CI 不会重建或重新发布 aria2c，无 Homebrew 时也不会因此退回手动安装
 - 如果当前歌曲已经缓存完成，前端会使用浏览器里的分离视频 / 音频播放器播放本地文件
 - 本地播放时，视频与音频流会分开同步，用来支持独立的音画延迟补偿、音量控制、静音和升降 key
 - Host 页面和手机端控制台会共享同一套播放器设置，包括音画延迟、音量、静音状态和音调调整
@@ -257,14 +282,13 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 
 ## 注意
 
-- 本地缓存依赖运行环境能访问 B 站；首次自动下载或更新 `BBDown` 时还需要能访问 GitHub Releases
+- 本地缓存依赖运行环境能访问 B 站；打包版首次准备 BBDown 不需要网络。用户选择实验性 DownKyi 时，自动准备 aria2c 需要访问项目工具镜像，Homebrew 仅作为 macOS 可用时的后备路线
 - 音画延迟补偿、音量控制、静音、远程暂停 / 跳转 / 切换音轨、升降 key 等能力依赖本地缓存媒体和浏览器媒体能力
 - 图片导出需要 Pillow；打包依赖中已包含 Pillow，脚本运行环境如果缺失则只能导出 CSV
 - `FFmpeg` 状态会显示在右上角 `BBDown` 展开面板中，方便定位“BBDown 已就绪但混流失败”这类问题
 - 如果 Windows 后端打包版出现启动异常或页面打不开，可先尝试 `python build_bundle.py --console`，或设置 `BILIKARA_STARTUP_LOG=1` 收集启动日志
 - Tauri 桌面入口会设置 `BILIKARA_LAUNCH_MODE=tauri` 和 `BILIKARA_STARTUP_LOG=1`，桌面启动问题通常可先查看 `runtime/data/logs/startup.log`
 - 为了让本地播放支持拖动和快进，后端对缓存媒体实现了 `Range` 请求支持
-- **macOS 打包版暂未在实体 macOS 设备上完整验证；目前只能确认脚本版流程可运行。**
 
 ## 致谢
 

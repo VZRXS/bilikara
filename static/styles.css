@@ -1715,6 +1715,21 @@ h2 {
   padding: 0;
 }
 
+.cache-panel-selector-row {
+  align-items: center;
+}
+
+.cache-panel-selector-row .cache-quality-select {
+  flex: 0 0 auto;
+  width: fit-content;
+  min-width: 0;
+  padding: 0 8px 0 8px;
+}
+
+.playback-selector-hint.is-warning {
+  color: var(--danger-color, #b54732);
+}
+
 .app-shell.layout-mode-basic .bottom-grid,
 .app-shell.layout-mode-basic .search-sub-card {
   display: none;
@@ -1786,7 +1801,8 @@ h2 {
 }
 
 .player-panel:fullscreen,
-.player-panel:-webkit-full-screen {
+.player-panel:-webkit-full-screen,
+.player-panel.is-tauri-fullscreen {
   width: 100vw;
   height: 100vh;
   padding: 0;
@@ -1796,6 +1812,19 @@ h2 {
   background: #000;
   display: flex;
   flex-direction: column;
+}
+
+.player-panel.is-tauri-fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  z-index: 9999;
+}
+
+body.is-tauri-fullscreen-active {
+  overflow: hidden !important;
 }
 
 .player-panel::before {
@@ -1810,7 +1839,8 @@ h2 {
 }
 
 .player-panel:fullscreen::before,
-.player-panel:-webkit-full-screen::before {
+.player-panel:-webkit-full-screen::before,
+.player-panel.is-tauri-fullscreen::before {
   display: none;
 }
 
@@ -1846,7 +1876,8 @@ h2 {
 }
 
 .player-panel:fullscreen .player-frame,
-.player-panel:-webkit-full-screen .player-frame {
+.player-panel:-webkit-full-screen .player-frame,
+.player-panel.is-tauri-fullscreen .player-frame {
   flex: 1;
   min-height: 0;
   width: 100%;
@@ -1858,7 +1889,8 @@ h2 {
 }
 
 .player-panel:fullscreen .panel-head,
-.player-panel:-webkit-full-screen .panel-head {
+.player-panel:-webkit-full-screen .panel-head,
+.player-panel.is-tauri-fullscreen .panel-head {
   position: absolute;
   top: 16px;
   right: 16px;
@@ -1872,12 +1904,14 @@ h2 {
 }
 
 .player-panel:fullscreen .panel-head>div,
-.player-panel:-webkit-full-screen .panel-head>div {
+.player-panel:-webkit-full-screen .panel-head>div,
+.player-panel.is-tauri-fullscreen .panel-head>div {
   display: none;
 }
 
 .player-panel:fullscreen #player-fullscreen-button,
-.player-panel:-webkit-full-screen #player-fullscreen-button {
+.player-panel:-webkit-full-screen #player-fullscreen-button,
+.player-panel.is-tauri-fullscreen #player-fullscreen-button {
   position: fixed;
   top: 16px;
   right: 16px;
@@ -1921,7 +1955,8 @@ h2 {
 }
 
 .player-panel:fullscreen .fullscreen-request-toast:not(.hidden),
-.player-panel:-webkit-full-screen .fullscreen-request-toast:not(.hidden) {
+.player-panel:-webkit-full-screen .fullscreen-request-toast:not(.hidden),
+.player-panel.is-tauri-fullscreen .fullscreen-request-toast:not(.hidden) {
   display: grid;
 }
 
@@ -1956,7 +1991,9 @@ h2 {
 
 .player-panel:fullscreen .player-frame video,
 .player-panel:fullscreen .player-frame iframe,
-.player-panel:-webkit-full-screen .player-frame video {
+.player-panel:-webkit-full-screen .player-frame video,
+.player-panel.is-tauri-fullscreen .player-frame video,
+.player-panel.is-tauri-fullscreen .player-frame iframe {
   object-fit: contain;
   background: #000;
 }
@@ -1967,6 +2004,47 @@ h2 {
 
 .player-frame audio {
   display: none;
+}
+
+.split-playback-start-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(3px);
+}
+
+.split-playback-start-overlay.hidden {
+  display: none;
+}
+
+.split-playback-start-button {
+  min-width: min(280px, 80%);
+  padding: 14px 24px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(28, 24, 22, 0.88);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.3);
+  font: inherit;
+  font-size: clamp(16px, 2vw, 24px);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.split-playback-start-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.split-playback-start-button:not(:disabled):hover,
+.split-playback-start-button:not(:disabled):focus-visible {
+  transform: translateY(-1px);
+  background: rgba(45, 38, 34, 0.94);
 }
 
 .player-delay-overlay {
@@ -2418,7 +2496,10 @@ h2 {
 .player-panel:fullscreen .audio-variant-bar,
 .player-panel:-webkit-full-screen .av-sync-panel,
 .player-panel:-webkit-full-screen .volume-panel,
-.player-panel:-webkit-full-screen .audio-variant-bar {
+.player-panel:-webkit-full-screen .audio-variant-bar,
+.player-panel.is-tauri-fullscreen .av-sync-panel,
+.player-panel.is-tauri-fullscreen .volume-panel,
+.player-panel.is-tauri-fullscreen .audio-variant-bar {
   display: none;
 }
 
@@ -3071,12 +3152,17 @@ select:disabled {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
+  visibility: hidden;
+  content-visibility: hidden;
   pointer-events: none;
 }
 
 .list-face-front {
   gap: 10px;
+  visibility: visible;
+  content-visibility: visible;
   pointer-events: auto;
 }
 
@@ -3084,21 +3170,24 @@ select:disabled {
   transform: rotateY(180deg);
 }
 
-.list-stage.is-history-view .list-face-front {
-  pointer-events: none;
-}
-
-.list-stage.is-history-view .list-face-back {
+.list-stage.flip-show-front .list-face-front {
+  visibility: visible;
+  content-visibility: visible;
   pointer-events: auto;
 }
 
-.list-stage:not(.is-history-view):not(.is-flipping) .list-face-back,
-.list-stage.is-history-view:not(.is-flipping) .list-face-front {
+.list-stage.flip-show-front .list-face-back,
+.list-stage.flip-show-back .list-face-front {
   visibility: hidden;
   content-visibility: hidden;
+  pointer-events: none;
 }
 
-
+.list-stage.flip-show-back .list-face-back {
+  visibility: visible;
+  content-visibility: visible;
+  pointer-events: auto;
+}
 
 .queue-card-head h2 {
   display: inline-flex;
@@ -3157,8 +3246,6 @@ select:disabled {
   box-shadow: 0 4px 20px rgba(88, 56, 30, 0.04);
   align-items: center;
   min-height: 96px;
-  transform: translateZ(0);
-  will-change: transform;
 }
 
 .queue-current.hidden,
@@ -4683,6 +4770,13 @@ select:disabled {
   min-height: 32px;
   padding: 0;
   flex-shrink: 0;
+}
+
+.history-actions .icon-button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
 }
 
 .menu-content .icon-button svg {

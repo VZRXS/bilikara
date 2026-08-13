@@ -28,7 +28,7 @@ class TauriExportSourceTest(unittest.TestCase):
         self.assertIn('request_url.path() == "/api/diagnostics/package"', self.main_source)
         self.assertIn('Err("不允许保存该后端端点"', self.main_source)
 
-    def test_native_download_prompts_before_backend_request_and_writes_off_thread(self):
+    def test_native_download_requests_backend_before_dialog_and_writes_off_thread(self):
         self.assertIn(".blocking_save_file()", self.main_source)
         self.assertIn("final_download_target_path(", self.main_source)
         self.assertIn(
@@ -39,10 +39,12 @@ class TauriExportSourceTest(unittest.TestCase):
         command_end = self.main_source.index("fn set_window_fullscreen", command_start)
         command = self.main_source[command_start:command_end]
         self.assertLess(command.index('"validate_request"'), command.index('"authorize_window"'))
-        self.assertLess(command.index('"authorize_window"'), command.index('"choose_destination"'))
-        self.assertLess(command.index(".blocking_save_file()"), command.index('"request_backend"'))
+        self.assertLess(command.index('"authorize_window"'), command.index('"request_backend"'))
         self.assertLess(command.index('"request_backend"'), command.index('"validate_response"'))
-        self.assertLess(command.index('"validate_response"'), command.index('"write_file"'))
+        self.assertLess(command.index('"validate_response"'), command.index('"choose_destination"'))
+        self.assertLess(command.index('"choose_destination"'), command.index('"write_file"'))
+        self.assertLess(command.index('"validate_response"'), command.index(".blocking_save_file()"))
+        self.assertIn("export_dialog_spec", self.main_source)
         self.assertIn("tauri::async_runtime::spawn_blocking", command)
 
     def test_physical_adapter_page_can_use_tauri_ipc_with_runtime_origin_check(self):

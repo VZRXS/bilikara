@@ -2637,6 +2637,20 @@ body.remote-search-modal-open {
   padding: 2px 4px 2px 0;
   max-height: none;
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.remote-search-modal .follow-up-grid,
+.remote-search-modal .tag-browser-tags,
+.remote-search-modal .category-browser-grid {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 
@@ -2682,8 +2696,8 @@ body.remote-search-modal-open {
 }
 
 
-.remote-search-modal .search-result-cover.is-empty span,
-.remote-search-browser-view .search-result-cover.is-empty span {
+.remote-search-modal .search-result-cover-fallback,
+.remote-search-browser-view .search-result-cover-fallback {
   max-width: calc(100% - 16px);
   overflow: hidden;
   text-overflow: ellipsis;

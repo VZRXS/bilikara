@@ -2,3 +2,4 @@ pyinstaller>=6,<7
 Pillow>=10,<12
 qrcode[pil]>=7,<9
 certifi>=2024.8.30
+truststore==0.10.4

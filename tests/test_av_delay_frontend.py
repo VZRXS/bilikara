@@ -121,7 +121,7 @@ console.log(JSON.stringify({{ disabled: elements.{lock_key}.disabled,
   hasLocal: elements.{lock_key}.dataset.hasLocal }}));
 """
                 completed = subprocess.run(
-                    ["node", "-e", script], capture_output=True, text=True, timeout=5, check=False
+                    ["node", "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=5, check=False
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 result = json.loads(completed.stdout)
@@ -173,6 +173,7 @@ apiPost("/api/player/av-delay-action", {{}}, {{ timeoutMs: 10 }})
                 ["node", "-e", script],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=5,
                 check=False,
             )

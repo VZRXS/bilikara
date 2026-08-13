@@ -1,23 +1,65 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 APP_NAME = "bilikara"
 APP_PUBLISHER = "VZRXS"
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
-REQUIRED_TOOL_BINARIES = ("ffmpeg",)
+REQUIRED_TOOL_BINARIES = ("ffmpeg", "BBDown")
 OPTIONAL_TOOL_BINARIES = ("ffprobe",)
 LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
-PYTHON_HTTPS_HIDDEN_IMPORTS = ("ssl", "_ssl", "urllib.request", "http.client", "certifi")
+PYTHON_HTTPS_HIDDEN_IMPORTS = (
+    "ssl",
+    "_ssl",
+    "urllib.request",
+    "http.client",
+    "certifi",
+    "truststore",
+)
+PYTHON_HTTPS_PLATFORM_HIDDEN_IMPORTS = {
+    "Darwin": ("truststore._macos",),
+    "Windows": ("truststore._windows",),
+    "Linux": ("truststore._openssl",),
+}
 RUST_BUNDLE_DIR = "rust"
 RUST_STRICT_ENV = "BILIKARA_REQUIRE_RUST_LIB"
+FFMPEG_SOURCE_ENV = {
+    "version": "BILIKARA_FFMPEG_SOURCE_VERSION",
+    "url": "BILIKARA_FFMPEG_SOURCE_URL",
+    "sha256": "BILIKARA_FFMPEG_SOURCE_SHA256",
+    "archive": "BILIKARA_FFMPEG_SOURCE_ARCHIVE",
+    "license": "BILIKARA_FFMPEG_LICENSE_FILE",
+}
+BBDOWN_SOURCE_ENV = {
+    "version": "BILIKARA_BBDOWN_VERSION",
+    "commit": "BILIKARA_BBDOWN_RELEASE_COMMIT",
+    "url": "BILIKARA_BBDOWN_SOURCE_URL",
+    "archive": "BILIKARA_BBDOWN_ARCHIVE_NAME",
+    "sha256": "BILIKARA_BBDOWN_SHA256",
+    "license": "BILIKARA_BBDOWN_LICENSE_FILE",
+}
+ARIA2_MACOS_METADATA_ENV = "BILIKARA_ARIA2_MACOS_METADATA_FILE"
+ARIA2_MACOS_LOCK_DIR = ROOT_DIR / "tools" / "aria2"
+ARIA2_MACOS_VERSION = "1.37.0"
+ARIA2_MACOS_SOURCE_URL = (
+    "https://github.com/aria2/aria2/releases/download/"
+    "release-1.37.0/aria2-1.37.0.tar.xz"
+)
+ARIA2_MACOS_SOURCE_SHA256 = (
+    "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
+)
+ARIA2_MACOS_PUBLIC_BASE = "https://download.kevinx96.icu/bilikara/tools"
+MACOS_SYSTEM_DEPENDENCY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
 
 def main() -> None:
@@ -49,6 +91,7 @@ def main() -> None:
     command.extend(_python_https_args(data_separator, verbose=True))
     command.extend(_python_certifi_args(data_separator, verbose=True))
     command.extend(_bundled_binary_args(data_separator, verbose=True, validate=True))
+    command.extend(_macos_aria2_metadata_args(data_separator, verbose=True))
     command.extend(_rust_library_args(data_separator, verbose=True))
 
     if platform.system() == "Windows":
@@ -242,18 +285,22 @@ def _bundle_version() -> str:
 def _bundled_binary_args(data_separator: str, *, verbose: bool = False, validate: bool = False) -> list[str]:
     args: list[str] = []
     bundled_paths, missing_tools = _resolved_bundle_binary_paths()
-    missing_required = [name for name in missing_tools if name in REQUIRED_TOOL_BINARIES]
-    optional_missing = [name for name in missing_tools if name in OPTIONAL_TOOL_BINARIES]
+    required_tools = set(REQUIRED_TOOL_BINARIES)
+    if platform.system() == "Darwin":
+        required_tools.update(OPTIONAL_TOOL_BINARIES)
+    missing_required = [name for name in missing_tools if name in required_tools]
+    optional_missing = [name for name in missing_tools if name not in required_tools]
 
     if missing_required:
         missing_text = ", ".join(missing_required)
         raise RuntimeError(
             f"Missing required external tools for bundle build: {missing_text}. "
-            "Install ffmpeg and ensure it is available on PATH."
+            "Prepare the pinned release tools and ensure they are available on PATH."
         )
 
     if validate:
         _validate_ffmpeg_redistribution_metadata(bundled_paths)
+        _validate_bbdown_redistribution_metadata(bundled_paths)
 
     bundled = [str(path.resolve()) for path in bundled_paths.values()]
     for source in bundled:
@@ -278,6 +325,93 @@ def _rust_library_name() -> str:
     return "libbilikara_rust.so"
 
 
+def _macos_aria2_metadata_args(
+    data_separator: str,
+    *,
+    verbose: bool = False,
+) -> list[str]:
+    if platform.system() != "Darwin":
+        return []
+    raw_path = os.getenv(ARIA2_MACOS_METADATA_ENV, "").strip()
+    metadata_path = (
+        Path(raw_path).expanduser()
+        if raw_path
+        else _locked_macos_aria2_metadata_path(platform.machine())
+    )
+    if not metadata_path.is_file():
+        raise RuntimeError(f"Configured macOS aria2c metadata not found: {metadata_path}")
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Invalid macOS aria2c metadata: {metadata_path}") from exc
+    expected_arch = _normalized_macos_arch(platform.machine())
+    required = {
+        "schema_version": 2,
+        "tool": "aria2c",
+        "provider": "bilikara-r2",
+        "platform": "darwin",
+        "version": ARIA2_MACOS_VERSION,
+        "source_url": ARIA2_MACOS_SOURCE_URL,
+        "source_sha256": ARIA2_MACOS_SOURCE_SHA256,
+    }
+    if any(payload.get(key) != value for key, value in required.items()):
+        raise RuntimeError(f"Unexpected macOS aria2c metadata identity: {metadata_path}")
+    metadata_arch = str(payload.get("arch") or "")
+    if metadata_arch != expected_arch:
+        raise RuntimeError(
+            f"macOS aria2c metadata targets {metadata_arch}, but the bundle target is {expected_arch}"
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("sha256") or "")):
+        raise RuntimeError(f"Invalid macOS aria2c asset SHA-256: {metadata_path}")
+    name = str(payload.get("name") or "")
+    url = str(payload.get("url") or "")
+    recipe_revision = str(payload.get("recipe_revision") or "")
+    if not name or Path(name).name != name or not name.endswith(".tar.gz"):
+        raise RuntimeError(f"Invalid macOS aria2c asset name: {metadata_path}")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", recipe_revision):
+        raise RuntimeError(f"Invalid macOS aria2c recipe revision: {metadata_path}")
+    parsed_url = urllib.parse.urlsplit(url)
+    configured_base = urllib.parse.urlsplit(ARIA2_MACOS_PUBLIC_BASE)
+    expected_path_prefix = (
+        f"{configured_base.path.rstrip('/')}/aria2/{ARIA2_MACOS_VERSION}/"
+    )
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.netloc != configured_base.netloc
+        or not parsed_url.path.startswith(expected_path_prefix)
+        or f"/{urllib.parse.quote(recipe_revision)}/" not in parsed_url.path
+        or not parsed_url.path.endswith(f"/{urllib.parse.quote(name)}")
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        raise RuntimeError(f"macOS aria2c asset URL must use HTTPS: {metadata_path}")
+    if verbose:
+        print(f"Bundling pinned macOS aria2c download metadata: {metadata_path}")
+    # PyInstaller --add-data treats the destination as a directory name, not a
+    # file path.  Stage a copy with the canonical basename so it lands in the
+    # bundle as ``vendor/aria2-macos.json`` (a file, not a directory).
+    staged_metadata = ROOT_DIR / "build" / "aria2-macos.json"
+    staged_metadata.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(metadata_path.resolve(), staged_metadata)
+    return [
+        "--add-data",
+        f"{staged_metadata.resolve()}{data_separator}vendor",
+    ]
+
+
+def _normalized_macos_arch(machine: str) -> str:
+    normalized = str(machine or "").strip().lower()
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    if normalized in {"x64", "x86_64", "amd64"}:
+        return "x64"
+    raise RuntimeError(f"Unsupported macOS bundle architecture: {machine}")
+
+
+def _locked_macos_aria2_metadata_path(machine: str) -> Path:
+    return ARIA2_MACOS_LOCK_DIR / f"macos-{_normalized_macos_arch(machine)}.json"
+
+
 def _rust_library_args(data_separator: str, *, verbose: bool = False) -> list[str]:
     library_path = ROOT_DIR / "rust" / "target" / "release" / _rust_library_name()
     if library_path.is_file():
@@ -299,7 +433,12 @@ def _validate_ffmpeg_redistribution_metadata(bundled_paths: dict[str, Path]) -> 
         binary_path = bundled_paths.get(binary_name)
         if not binary_path:
             continue
-        version_output = _tool_version_output(binary_path)
+        return_code, version_output = _run_tool_version(binary_path)
+        if return_code != 0:
+            raise RuntimeError(
+                f"{binary_name} failed its release build execution check: "
+                f"{version_output.strip()}"
+            )
         if "--enable-nonfree" in version_output:
             raise RuntimeError(
                 f"{binary_name} appears to be built with --enable-nonfree and should not "
@@ -311,6 +450,68 @@ def _validate_ffmpeg_redistribution_metadata(bundled_paths: dict[str, Path]) -> 
                 f"Notice: {binary_name} appears to be built with --enable-gpl. "
                 "Verify GPL redistribution obligations for this release."
             )
+        if platform.system() == "Darwin":
+            _validate_macos_tool_portability(binary_path)
+
+
+def _validate_bbdown_redistribution_metadata(bundled_paths: dict[str, Path]) -> None:
+    binary_path = bundled_paths.get("BBDown")
+    if not binary_path:
+        return
+    return_code, output = _run_tool_command(binary_path, "--help")
+    expected_version = _bbdown_source_metadata().get("version")
+    if return_code != 0 or not output.strip():
+        raise RuntimeError(
+            f"BBDown failed its release build execution check: {output.strip()}"
+        )
+    if expected_version and expected_version not in output:
+        raise RuntimeError(
+            f"BBDown release build version does not match pinned {expected_version}: "
+            f"{output.strip()}"
+        )
+    if platform.system() == "Darwin":
+        _validate_macos_tool_portability(binary_path)
+
+
+def _macos_dynamic_dependencies(binary_path: Path) -> list[str]:
+    otool = Path("/usr/bin/otool")
+    otool_command = str(otool) if otool.is_file() else shutil.which("otool")
+    if not otool_command:
+        raise RuntimeError("otool is required to validate portable macOS release tools")
+    process = subprocess.run(
+        [otool_command, "-L", str(binary_path)],
+        shell=False,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+    )
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"otool -L failed for {binary_path}: "
+            f"{(process.stderr or process.stdout).strip()}"
+        )
+    dependencies: list[str] = []
+    for line in process.stdout.splitlines()[1:]:
+        dependency = line.strip().split(" (compatibility version", 1)[0].strip()
+        if dependency:
+            dependencies.append(dependency)
+    return dependencies
+
+
+def _validate_macos_tool_portability(binary_path: Path) -> None:
+    non_system_dependencies = [
+        dependency
+        for dependency in _macos_dynamic_dependencies(binary_path)
+        if not dependency.startswith(MACOS_SYSTEM_DEPENDENCY_PREFIXES)
+    ]
+    if non_system_dependencies:
+        formatted = ", ".join(non_system_dependencies)
+        raise RuntimeError(
+            f"macOS release tool {binary_path} has non-portable dynamic dependencies: "
+            f"{formatted}. Use a pinned portable build instead of a Homebrew or other "
+            "externally linked executable."
+        )
 
 
 def _resolved_bundle_binary_paths() -> tuple[dict[str, Path], list[str]]:
@@ -351,6 +552,12 @@ def _write_release_compliance_files() -> None:
         licenses_dir / "ffmpeg-source.txt",
         _ffmpeg_source_notice(bundled_paths, missing_tools),
     )
+    _write_text(
+        licenses_dir / "bbdown-source.txt",
+        _bbdown_source_notice(bundled_paths),
+    )
+    _copy_ffmpeg_source_material(target_dir, licenses_dir)
+    _copy_bbdown_license(licenses_dir)
     for binary_name in ("ffmpeg", "ffprobe"):
         binary_path = bundled_paths.get(binary_name)
         if binary_path:
@@ -358,6 +565,12 @@ def _write_release_compliance_files() -> None:
                 licenses_dir / f"{binary_name}-version.txt",
                 _tool_version_output(binary_path),
             )
+    bbdown_path = bundled_paths.get("BBDown")
+    if bbdown_path:
+        _write_text(
+            licenses_dir / "bbdown-version.txt",
+            _tool_output(bbdown_path, "--help"),
+        )
 
 
 def _release_compliance_dir() -> Path | None:
@@ -370,6 +583,7 @@ def _release_compliance_dir() -> Path | None:
 
 
 def _ffmpeg_source_notice(bundled_paths: dict[str, Path], missing_tools: list[str]) -> str:
+    source_metadata = _ffmpeg_source_metadata()
     lines = [
         "FFmpeg / FFprobe redistribution notes",
         "",
@@ -385,6 +599,19 @@ def _ffmpeg_source_notice(bundled_paths: dict[str, Path], missing_tools: list[st
     for binary_name in ("ffmpeg", "ffprobe"):
         binary_path = bundled_paths.get(binary_name)
         lines.append(f"- {binary_name}: {binary_path.resolve() if binary_path else 'not bundled'}")
+    if source_metadata.get("version"):
+        lines.extend(
+            [
+                "",
+                "Pinned portable macOS build provenance:",
+                f"- FFmpeg version: {source_metadata['version']}",
+                f"- Official source URL: {source_metadata.get('url') or 'not recorded'}",
+                f"- Source SHA-256: {source_metadata.get('sha256') or 'not recorded'}",
+                "- Exact source archive: THIRD_PARTY_SOURCES/"
+                f"{Path(source_metadata['archive']).name if source_metadata.get('archive') else 'not packaged'}",
+                "- Build configuration: see ffmpeg-version.txt and ffprobe-version.txt",
+            ]
+        )
     if missing_tools:
         lines.extend(["", f"Missing optional tools during build: {', '.join(missing_tools)}"])
     lines.extend(
@@ -398,7 +625,83 @@ def _ffmpeg_source_notice(bundled_paths: dict[str, Path], missing_tools: list[st
     return "\n".join(lines) + "\n"
 
 
-def _tool_version_output(binary_path: Path) -> str:
+def _ffmpeg_source_metadata() -> dict[str, str]:
+    return {
+        key: os.getenv(environment_name, "").strip()
+        for key, environment_name in FFMPEG_SOURCE_ENV.items()
+    }
+
+
+def _bbdown_source_metadata() -> dict[str, str]:
+    return {
+        key: os.getenv(environment_name, "").strip()
+        for key, environment_name in BBDOWN_SOURCE_ENV.items()
+    }
+
+
+def _bbdown_source_notice(bundled_paths: dict[str, Path]) -> str:
+    metadata = _bbdown_source_metadata()
+    bundled_path = bundled_paths.get("BBDown")
+    return "\n".join(
+        [
+            "BBDown redistribution notes",
+            "",
+            "The packaged runtime includes a pinned BBDown vendor executable and restores",
+            "the writable runtime copy from that immutable vendor instead of polling releases.",
+            "",
+            f"- Bundled build path: {bundled_path.resolve() if bundled_path else 'not bundled'}",
+            f"- Version: {metadata.get('version') or 'not recorded'}",
+            f"- Upstream release commit: {metadata.get('commit') or 'not recorded'}",
+            f"- Asset: {metadata.get('archive') or 'not recorded'}",
+            f"- Source URL: {metadata.get('url') or 'not recorded'}",
+            f"- Asset SHA-256: {metadata.get('sha256') or 'not recorded'}",
+            "- Upstream repository: https://github.com/nilaoda/BBDown",
+            "- License: MIT; see BBDown-LICENSE.txt",
+            "",
+        ]
+    )
+
+
+def _copy_bbdown_license(licenses_dir: Path) -> None:
+    license_value = _bbdown_source_metadata().get("license")
+    license_path = (
+        Path(license_value).expanduser()
+        if license_value
+        else ROOT_DIR / "third_party" / "BBDown-LICENSE.txt"
+    )
+    if not license_path.is_file():
+        raise RuntimeError(f"Configured BBDown license file not found: {license_path}")
+    shutil.copy2(license_path, licenses_dir / "BBDown-LICENSE.txt")
+
+
+def _copy_ffmpeg_source_material(target_dir: Path, licenses_dir: Path) -> None:
+    metadata = _ffmpeg_source_metadata()
+    archive_value = metadata.get("archive")
+    if archive_value:
+        archive_path = Path(archive_value).expanduser()
+        if not archive_path.is_file():
+            raise RuntimeError(f"Configured FFmpeg source archive not found: {archive_path}")
+        expected_sha256 = metadata.get("sha256", "").lower()
+        if expected_sha256:
+            actual_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            if actual_sha256 != expected_sha256:
+                raise RuntimeError(
+                    f"FFmpeg source archive SHA-256 mismatch: expected {expected_sha256}, "
+                    f"got {actual_sha256}"
+                )
+        sources_dir = target_dir / "THIRD_PARTY_SOURCES"
+        sources_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(archive_path, sources_dir / archive_path.name)
+
+    license_value = metadata.get("license")
+    if license_value:
+        license_path = Path(license_value).expanduser()
+        if not license_path.is_file():
+            raise RuntimeError(f"Configured FFmpeg license file not found: {license_path}")
+        shutil.copy2(license_path, licenses_dir / "FFmpeg-COPYING.LGPLv2.1.txt")
+
+
+def _run_tool_version(binary_path: Path) -> tuple[int | None, str]:
     try:
         process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
             [str(binary_path), "-version"],
@@ -410,12 +713,39 @@ def _tool_version_output(binary_path: Path) -> str:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"Unable to run {binary_path}: {exc}\n"
+        return None, f"Unable to run {binary_path}: {exc}\n"
 
     output = (process.stdout or "") + (process.stderr or "")
     if not output.strip():
         output = f"{binary_path} exited with code {process.returncode} and produced no output\n"
-    return output
+    return process.returncode, output
+
+
+def _tool_version_output(binary_path: Path) -> str:
+    return _run_tool_version(binary_path)[1]
+
+
+def _tool_output(binary_path: Path, argument: str) -> str:
+    return _run_tool_command(binary_path, argument)[1]
+
+
+def _run_tool_command(binary_path: Path, argument: str) -> tuple[int | None, str]:
+    try:
+        process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            [str(binary_path), argument],
+            shell=False,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, f"Unable to run {binary_path}: {exc}\n"
+    output = (process.stdout or "") + (process.stderr or "")
+    if not output:
+        output = f"{binary_path} exited with code {process.returncode} and produced no output\n"
+    return process.returncode, output
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -425,7 +755,10 @@ def _write_text(path: Path, content: str) -> None:
 
 def _python_https_args(data_separator: str, *, verbose: bool = False) -> list[str]:
     args: list[str] = []
-    for module_name in PYTHON_HTTPS_HIDDEN_IMPORTS:
+    hidden_imports = PYTHON_HTTPS_HIDDEN_IMPORTS + PYTHON_HTTPS_PLATFORM_HIDDEN_IMPORTS.get(
+        platform.system(), ()
+    )
+    for module_name in hidden_imports:
         args.extend(["--hidden-import", module_name])
 
     ssl_binaries = _python_https_binary_paths()
@@ -434,7 +767,7 @@ def _python_https_args(data_separator: str, *, verbose: bool = False) -> list[st
 
     if verbose:
         print("Bundling Python HTTPS support:")
-        print(f"  - hidden imports: {', '.join(PYTHON_HTTPS_HIDDEN_IMPORTS)}")
+        print(f"  - hidden imports: {', '.join(hidden_imports)}")
         if ssl_binaries:
             for source in ssl_binaries:
                 print(f"  - {source}")

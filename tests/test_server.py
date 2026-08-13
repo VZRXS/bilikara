@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 from collections import deque
 import threading
 import unittest
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
+import bilikara.diagnostics as diagnostics
 from bilikara.diagnostics import DiagnosticArtifact
 from bilikara.remote_identity import RemoteIdentityStore
 from bilikara.server import AppContext, BilikaraHandler, run
@@ -274,7 +276,7 @@ class AppContextRemoteIdentityTest(unittest.TestCase):
 
 
 class AppContextStateRevisionTest(unittest.TestCase):
-    def test_background_tasks_include_cloudflare_pool_prewarm(self):
+    def test_background_tasks_include_one_time_prewarm_targets(self):
         context = AppContext.__new__(AppContext)
         context._startup_lock = threading.RLock()
         context._startup_started = False
@@ -296,7 +298,9 @@ class AppContextStateRevisionTest(unittest.TestCase):
         with (
             patch.object(server_module.threading, "Thread", FakeThread),
             patch.object(server_module, "prewarm_cloudflare_pool") as prewarm,
+            patch.object(server_module, "prewarm_playlist_export_fonts") as export_prewarm,
         ):
+            context._start_background_tasks_once()
             context._start_background_tasks_once()
 
         prewarm_thread = next((thread for thread in created_threads if thread.name == "bilikara-cloudflare-prewarm"), None)
@@ -304,6 +308,25 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertIs(prewarm_thread.target, prewarm)
         self.assertTrue(prewarm_thread.daemon)
         self.assertTrue(prewarm_thread.started)
+        export_thread = next(
+            (
+                thread
+                for thread in created_threads
+                if thread.name == "bilikara-playlist-export-font-prewarm"
+            ),
+            None,
+        )
+        self.assertIsNotNone(export_thread)
+        self.assertIs(export_thread.target, export_prewarm)
+        self.assertTrue(export_thread.daemon)
+        self.assertTrue(export_thread.started)
+        self.assertEqual(
+            sum(
+                thread.name == "bilikara-playlist-export-font-prewarm"
+                for thread in created_threads
+            ),
+            1,
+        )
 
     def test_startup_gatcha_refresh_bypasses_global_lock_only_once(self):
         context = AppContext.__new__(AppContext)
@@ -366,6 +389,172 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertEqual(context._player_control_ack_seq, 7)
         self.assertIsNone(context._player_control_command)
         self.assertIsNone(context._player_status)
+
+
+class AppContextSsePayloadCacheTest(unittest.TestCase):
+    @staticmethod
+    def make_context(revision: int = 1) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._state_change_condition = threading.Condition()
+        context._state_revision = revision
+        context._sse_payload_condition = threading.Condition()
+        context._sse_payload_revision = -1
+        context._sse_payload = b""
+        context._sse_payload_building = False
+        return context
+
+    @staticmethod
+    def decode_state_event(payload: bytes) -> dict[str, object]:
+        lines = payload.decode("utf-8").splitlines()
+        data = "\n".join(line.removeprefix("data: ") for line in lines if line.startswith("data: "))
+        return json.loads(data)
+
+    def test_same_revision_reuses_one_snapshot_and_serialization(self):
+        context = self.make_context(revision=7)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            return {"state_revision": context._state_revision, "value": "same"}
+
+        context.snapshot = snapshot
+
+        first_revision, first_payload = context.serialized_sse_state_event()
+        second_revision, second_payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 1)
+        self.assertEqual(first_revision, 7)
+        self.assertEqual(second_revision, 7)
+        self.assertIs(first_payload, second_payload)
+        self.assertEqual(
+            self.decode_state_event(first_payload),
+            {"state_revision": 7, "value": "same"},
+        )
+
+    def test_revision_change_builds_and_publishes_new_payload(self):
+        context = self.make_context(revision=4)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            return {
+                "state_revision": context._state_revision,
+                "value": f"revision-{context._state_revision}",
+            }
+
+        context.snapshot = snapshot
+        old_revision, old_payload = context.serialized_sse_state_event()
+
+        context._notify_state_changed()
+        new_revision, new_payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 2)
+        self.assertEqual(old_revision, 4)
+        self.assertEqual(new_revision, 5)
+        self.assertNotEqual(old_payload, new_payload)
+        self.assertEqual(
+            self.decode_state_event(new_payload),
+            {"state_revision": 5, "value": "revision-5"},
+        )
+
+    def test_revision_change_during_build_discards_stale_payload(self):
+        context = self.make_context(revision=8)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            revision = context._state_revision
+            if snapshot_calls == 1:
+                context._notify_state_changed()
+                return {"state_revision": revision, "value": "stale"}
+            return {"state_revision": revision, "value": "current"}
+
+        context.snapshot = snapshot
+
+        revision, payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 2)
+        self.assertEqual(revision, 9)
+        self.assertEqual(
+            self.decode_state_event(payload),
+            {"state_revision": 9, "value": "current"},
+        )
+
+    def test_concurrent_cache_miss_has_one_builder_and_shared_result(self):
+        context = self.make_context(revision=11)
+        worker_count = 12
+        start_barrier = threading.Barrier(worker_count + 1)
+        builder_started = threading.Event()
+        release_builder = threading.Event()
+        count_lock = threading.Lock()
+        snapshot_calls = 0
+        results: list[tuple[int, bytes]] = []
+        errors: list[BaseException] = []
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            with count_lock:
+                snapshot_calls += 1
+            builder_started.set()
+            if not release_builder.wait(timeout=1.0):
+                raise TimeoutError("test did not release SSE payload builder")
+            return {"state_revision": context._state_revision, "value": "concurrent"}
+
+        def request_payload() -> None:
+            try:
+                start_barrier.wait(timeout=1.0)
+                results.append(context.serialized_sse_state_event())
+            except BaseException as exc:
+                errors.append(exc)
+
+        context.snapshot = snapshot
+        workers = [threading.Thread(target=request_payload) for _ in range(worker_count)]
+        for worker in workers:
+            worker.start()
+        start_barrier.wait(timeout=1.0)
+        self.assertTrue(builder_started.wait(timeout=1.0))
+        release_builder.set()
+        for worker in workers:
+            worker.join(timeout=1.0)
+
+        self.assertFalse(errors)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(snapshot_calls, 1)
+        self.assertEqual(len(results), worker_count)
+        self.assertEqual({revision for revision, _payload in results}, {11})
+        self.assertEqual(len({id(payload) for _revision, payload in results}), 1)
+        self.assertEqual(
+            self.decode_state_event(results[0][1]),
+            {"state_revision": 11, "value": "concurrent"},
+        )
+
+    def test_failed_build_does_not_poison_cache_or_waiters(self):
+        context = self.make_context(revision=3)
+        snapshot_calls = 0
+
+        def snapshot() -> dict[str, object]:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            if snapshot_calls == 1:
+                raise RuntimeError("snapshot failed")
+            return {"state_revision": context._state_revision, "value": "recovered"}
+
+        context.snapshot = snapshot
+
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            context.serialized_sse_state_event()
+        revision, payload = context.serialized_sse_state_event()
+
+        self.assertEqual(snapshot_calls, 2)
+        self.assertFalse(context._sse_payload_building)
+        self.assertEqual(revision, 3)
+        self.assertEqual(
+            self.decode_state_event(payload),
+            {"state_revision": 3, "value": "recovered"},
+        )
 
 
 class AppContextRatingSubmissionTest(unittest.TestCase):
@@ -537,6 +726,122 @@ class AppContextPlayerStatusTest(unittest.TestCase):
         self.assertEqual(snapshot["current_time"], 13.0)
 
 
+class AppContextPlayerDiagnosticTest(unittest.TestCase):
+    @staticmethod
+    def make_context() -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context._player_diagnostic_lock = threading.RLock()
+        context._player_diagnostic_sequence = 0
+        context._player_diagnostics = deque(maxlen=server_module.PLAYER_DIAGNOSTIC_LIMIT)
+        return context
+
+    def test_player_diagnostic_ring_is_bounded_and_ordered(self):
+        context = self.make_context()
+
+        for index in range(server_module.PLAYER_DIAGNOSTIC_LIMIT + 3):
+            context.record_player_diagnostic({"event": f"event-{index}"})
+
+        snapshot = context.player_diagnostic_snapshot()
+        self.assertEqual(len(snapshot), server_module.PLAYER_DIAGNOSTIC_LIMIT)
+        self.assertEqual(snapshot[0]["sequence"], 4)
+        self.assertEqual(snapshot[-1]["sequence"], server_module.PLAYER_DIAGNOSTIC_LIMIT + 3)
+        self.assertGreater(snapshot[-1]["received_at_unix_ms"], 0)
+
+    def test_exported_markdown_contains_sanitized_player_startup_event(self):
+        context = self.make_context()
+        media_url = "https://media.example/audio/track.m4a?token=secret"
+        event = server_module._normalize_player_diagnostic(
+            {
+                "event": "autoplay-audio-play-rejected",
+                "media_kind": "audio",
+                "error_message": f"NotAllowedError: autoplay denied at {media_url}",
+                "url_basename": "track.m4a",
+            }
+        )
+        context.record_player_diagnostic(event)
+        context.store = SimpleNamespace(
+            snapshot=lambda: {"current_item": None, "playlist": [], "session_users": []}
+        )
+        context.cache_manager = SimpleNamespace(
+            cache_metrics=lambda: {},
+            policy_snapshot=lambda metrics: {},
+            diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}},
+        )
+        context.update_manager = SimpleNamespace(snapshot=lambda: {})
+        context._state_revision = 1
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            with (
+                patch.object(diagnostics, "APP_HOME", root),
+                patch.object(diagnostics, "LOG_DIR", log_dir),
+                patch.object(diagnostics, "DIAGNOSTIC_CONFIG_FILES", ()),
+                patch.object(diagnostics, "_local_usernames", return_value=set()),
+                patch.object(diagnostics, "probe_connectivity", return_value={}),
+                patch.object(
+                    diagnostics.shutil,
+                    "disk_usage",
+                    return_value=SimpleNamespace(total=1000, used=400, free=600),
+                ),
+                patch("bilikara.server.gatcha_task_snapshot", return_value={}),
+            ):
+                artifact = context.build_diagnostics()
+
+        self.assertIn("autoplay-audio-play-rejected", artifact.markdown)
+        self.assertIn(
+            "NotAllowedError: autoplay denied at [REDACTED_MEDIA_URL]",
+            artifact.markdown,
+        )
+        self.assertNotIn(media_url, artifact.markdown)
+        self.assertIn('"player_diagnostics"', artifact.markdown)
+
+    def test_build_diagnostics_with_real_remote_identity_store(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            context = AppContext.__new__(AppContext)
+            context._closed = False
+            context.remote_identities = RemoteIdentityStore(root / "remote_identities.json")
+            self.assertFalse(hasattr(context.remote_identities, "registered_user_names"))
+
+            context.store = SimpleNamespace(
+                snapshot=lambda: {
+                    "current_item": None,
+                    "playlist": [],
+                    "playback_selector": "auto",
+                    "session_users": ["AliceSecretUser"],
+                }
+            )
+            context.update_manager = SimpleNamespace(snapshot=lambda: {})
+            context._diagnostic_item_snapshot = lambda item: item
+            context._diagnostic_rust_backend_status = lambda: {}
+            context.player_diagnostic_snapshot = lambda: []
+            context.cache_manager = SimpleNamespace(
+                diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}},
+                cache_metrics=lambda: {},
+                policy_snapshot=lambda metrics: {"user": "AliceSecretUser"},
+            )
+            context._state_revision = 1
+
+            with (
+                patch("bilikara.diagnostics.APP_HOME", root),
+                patch("bilikara.diagnostics.LOG_DIR", log_dir),
+                patch("bilikara.diagnostics.DIAGNOSTIC_CONFIG_FILES", ()),
+                patch("bilikara.diagnostics.probe_connectivity", return_value={}),
+            ):
+                artifact = context.build_diagnostics()
+
+            self.assertIsInstance(artifact, DiagnosticArtifact)
+            self.assertNotIn("AliceSecretUser", artifact.markdown)
+            with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
+                content = archive.read("download-policy.json").decode("utf-8")
+                self.assertNotIn("AliceSecretUser", content)
+                self.assertIn("[REDACTED]", content)
+
+
 class AppContextClientTrackingTest(unittest.TestCase):
     def make_context(self) -> AppContext:
         context = AppContext.__new__(AppContext)
@@ -606,6 +911,142 @@ class PlaylistAddRequestTest(unittest.TestCase):
                 )
 
         fetch_video.assert_not_called()
+
+    def test_successful_add_queues_video_for_cloudflare_indexing(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+        item = SimpleNamespace(
+            owner_mid=123,
+            bvid="BV1xx411c7mD",
+            title="Song title",
+            display_title="Display title",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            original_url="https://b23.tv/example",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/123",
+            cover_url="https://example.com/cover.jpg",
+        )
+        added = []
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            store=SimpleNamespace(
+                session_request_for_item=lambda _item: None,
+                active_duplicate_for_item=lambda _item: None,
+            ),
+            add_item=lambda added_item, **kwargs: added.append((added_item, kwargs)),
+            snapshot=lambda: {"playlist": []},
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.fetch_video_item",
+            return_value=item,
+        ), patch("bilikara.server.append_lark_pool_entries_in_background") as append_entries:
+            handler._handle_add(
+                {
+                    "url": item.original_url,
+                    "position": "tail",
+                    "requester_name": "VZRXS",
+                }
+            )
+
+        self.assertEqual(len(added), 1)
+        append_entries.assert_called_once_with(
+            [
+                {
+                    "mid": "123",
+                    "bvid": item.bvid,
+                    "title": item.title,
+                    "url": item.resolved_url,
+                    "owner_name": item.owner_name,
+                    "owner_url": item.owner_url,
+                    "cover_url": item.cover_url,
+                }
+            ]
+        )
+        self.assertEqual(writes, [({"ok": True, "data": {"playlist": []}}, None)])
+
+    def test_add_indexing_payload_falls_back_to_display_title_and_original_url(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler._write_json = lambda payload, status=None: None
+        item = SimpleNamespace(
+            owner_mid=123,
+            bvid="BV1xx411c7mD",
+            title="",
+            display_title="Display title",
+            resolved_url="",
+            original_url="https://b23.tv/example",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/123",
+            cover_url="https://example.com/cover.jpg",
+        )
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            store=SimpleNamespace(
+                session_request_for_item=lambda _item: None,
+                active_duplicate_for_item=lambda _item: None,
+            ),
+            add_item=lambda *_args, **_kwargs: None,
+            snapshot=lambda: {"playlist": []},
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.fetch_video_item",
+            return_value=item,
+        ), patch("bilikara.server.append_lark_pool_entries_in_background") as append_entries:
+            handler._handle_add({"url": item.original_url})
+
+        entry = append_entries.call_args.args[0][0]
+        self.assertEqual(entry["title"], item.display_title)
+        self.assertEqual(entry["url"], item.original_url)
+
+    def test_successful_add_is_not_failed_by_indexing_scheduler_error(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes = []
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+        item = SimpleNamespace(
+            owner_mid=123,
+            bvid="BV1xx411c7mD",
+            title="Song title",
+            display_title="Display title",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            original_url="https://b23.tv/example",
+            owner_name="Singer",
+            owner_url="https://space.bilibili.com/123",
+            cover_url="https://example.com/cover.jpg",
+        )
+        added = []
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            store=SimpleNamespace(
+                session_request_for_item=lambda _item: None,
+                active_duplicate_for_item=lambda _item: None,
+            ),
+            add_item=lambda added_item, **kwargs: added.append((added_item, kwargs)),
+            snapshot=lambda: {"playlist": [item.bvid]},
+        )
+
+        with (
+            patch("bilikara.server.CONTEXT", context),
+            patch("bilikara.server.fetch_video_item", return_value=item),
+            patch(
+                "bilikara.server.append_lark_pool_entries_in_background",
+                side_effect=RuntimeError("scheduler failed"),
+            ),
+            patch("builtins.print") as mock_print,
+        ):
+            handler._handle_add({"url": item.original_url})
+
+        self.assertEqual(len(added), 1)
+        self.assertEqual(writes, [({"ok": True, "data": {"playlist": [item.bvid]}}, None)])
+        mock_print.assert_called_once_with(
+            "[bilikara:lark] background append scheduling failed: scheduler failed",
+            file=server_module.sys.stderr,
+            flush=True,
+        )
 
     def test_missing_bilibili_video_error_deletes_pool_bvid(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -1333,6 +1774,45 @@ class DiagnosticRouteTest(unittest.TestCase):
         self.assertEqual(writes, [{"ok": True, "data": {"markdown": "# report"}}])
         self.assertEqual(browser_infos[0]["user_agent"], "Browser/1.0")
         self.assertEqual(browser_infos[0]["brands"], [{"brand": "Browser", "version": "1"}])
+
+    def test_player_diagnostic_route_retains_only_sanitized_bounded_fields(self):
+        media_url = "https://media.example/video/track.m4a?token=secret"
+        handler = self.make_handler(
+            "/api/player/diagnostic",
+            {
+                "event": "autoplay-audio-play-rejected",
+                "media_kind": "audio",
+                "current_time": media_url,
+                "error_message": f"NotAllowedError: failed to play {media_url}",
+                "url_basename": media_url,
+                "play_rejection_name": "NotAllowedError",
+                "playback_start_state": "starting",
+                "local_should_be_playing": True,
+                "authorization": "Bearer must-not-be-retained",
+            },
+        )
+        writes = []
+        retained = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            record_player_diagnostic=lambda event: retained.append(event)
+            or {**event, "sequence": 1, "received_at_unix_ms": 1},
+        )
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context), patch("builtins.print"):
+            handler.do_POST()
+
+        self.assertEqual(writes, [{"ok": True}])
+        self.assertEqual(retained[0]["event"], "autoplay-audio-play-rejected")
+        self.assertEqual(retained[0]["play_rejection_name"], "NotAllowedError")
+        self.assertEqual(retained[0]["playback_start_state"], "starting")
+        self.assertTrue(retained[0]["local_should_be_playing"])
+        self.assertIsNone(retained[0]["current_time"])
+        self.assertEqual(retained[0]["url_basename"], "track.m4a")
+        self.assertIn("[REDACTED_MEDIA_URL]", retained[0]["error_message"])
+        self.assertNotIn(media_url, json.dumps(retained[0]))
+        self.assertNotIn("authorization", retained[0])
 
     def test_package_route_downloads_zip(self):
         handler = self.make_handler("/api/diagnostics/package", {"browser": {}})

@@ -51,6 +51,11 @@ PHASE2_CAPABILITIES = (
     "apply_av_delay_action",
 )
 
+RUST_AUTHORITATIVE_POLICY_CAPABILITIES = (
+    "decide_playback_selector_policy",
+    "decide_tool_prepare_policy",
+)
+
 MAX_UPDATE_DOWNLOAD_CANDIDATE_INPUTS = 4096
 MAX_MEDIA_DOWNLOAD_STREAM_INPUTS = 4096
 MAX_MEDIA_DOWNLOAD_CANDIDATES = 16384
@@ -306,6 +311,16 @@ _SYMBOLS = {
     ),
     "decide_audio_binding": (
         "rust_decide_audio_binding",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "decide_playback_selector_policy": (
+        "rust_decide_playback_selector_policy",
+        [ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
+    "decide_tool_prepare_policy": (
+        "rust_decide_tool_prepare_policy",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -733,6 +748,156 @@ def is_downloadable_archive(name: str, url: str) -> bool | None:
         return None
 
 
+def _playback_selector_policy_request(request: object) -> bool:
+    if not isinstance(request, dict):
+        return False
+    operation = request.get("operation")
+    common_fields = {"schema_version", "operation", "rust_available", "mode"}
+    expected_fields = (
+        common_fields
+        if operation == "validate_requested"
+        else common_fields | {"is_set"}
+        if operation == "resolve_persisted"
+        else set()
+    )
+    return bool(expected_fields) and set(request) == expected_fields and (
+        not isinstance(request.get("schema_version"), bool)
+        and request.get("schema_version") == 1
+        and isinstance(request.get("rust_available"), bool)
+        and (
+            operation != "resolve_persisted"
+            or isinstance(request.get("is_set"), bool)
+        )
+    )
+
+
+def _valid_playback_selector_policy_response(response: object) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "status",
+        "effective_mode",
+        "reason",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    status = response.get("status")
+    effective_mode = response.get("effective_mode")
+    reason = response.get("reason")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or status not in {"accepted", "normalized", "rejected"}
+        or reason
+        not in {
+            "default",
+            "explicit_python",
+            "explicit_rust",
+            "invalid_persisted",
+            "invalid_requested",
+            "rust_unavailable",
+        }
+    ):
+        return False
+    if status == "rejected":
+        return effective_mode is None and reason in {
+            "invalid_requested",
+            "rust_unavailable",
+        }
+    return effective_mode in {"python", "rust"}
+
+
+def try_decide_playback_selector_policy(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Invoke the Rust-authoritative selector policy without semantic fallback."""
+
+    if not _playback_selector_policy_request(request):
+        return False, None
+    response = _call_json_capability(
+        "decide_playback_selector_policy",
+        "rust_decide_playback_selector_policy",
+        request,
+    )
+    if not _valid_playback_selector_policy_response(response):
+        return False, None
+    assert isinstance(response, dict)
+    return True, response
+
+
+def _tool_prepare_policy_request(request: object) -> bool:
+    if not isinstance(request, dict) or set(request) != {
+        "schema_version",
+        "override_exists",
+        "installed_exists",
+        "force_refresh",
+        "version_metadata_present",
+    }:
+        return False
+    schema_version = request.get("schema_version")
+    return (
+        not isinstance(schema_version, bool)
+        and schema_version == 1
+        and all(
+            isinstance(request.get(field), bool)
+            for field in (
+                "override_exists",
+                "installed_exists",
+                "force_refresh",
+                "version_metadata_present",
+            )
+        )
+    )
+
+
+def _valid_tool_prepare_policy_response(
+    response: object,
+    request: dict[str, object],
+) -> bool:
+    if not isinstance(response, dict) or set(response) != {
+        "schema_version",
+        "action",
+        "probe_installed_version",
+    }:
+        return False
+    schema_version = response.get("schema_version")
+    action = response.get("action")
+    probe = response.get("probe_installed_version")
+    if (
+        isinstance(schema_version, bool)
+        or schema_version != 1
+        or action not in {"use_override", "use_installed", "fetch_install_update"}
+        or not isinstance(probe, bool)
+        or (probe and action != "use_installed")
+        or (probe and request["version_metadata_present"] is not False)
+    ):
+        return False
+    if action == "use_override" and request["override_exists"] is not True:
+        return False
+    if action == "use_installed" and request["installed_exists"] is not True:
+        return False
+    return True
+
+
+def try_decide_tool_prepare_policy(
+    request: dict[str, object],
+) -> tuple[bool, dict[str, Any] | None]:
+    """Invoke Rust tool-prepare routing; unavailable/invalid calls fail closed."""
+
+    if not _tool_prepare_policy_request(request):
+        return False, None
+    response = _call_json_capability(
+        "decide_tool_prepare_policy",
+        "rust_decide_tool_prepare_policy",
+        request,
+    )
+    if not _valid_tool_prepare_policy_response(response, request):
+        return False, None
+    assert isinstance(response, dict)
+    return True, response
+
+
+
+
 def _asset_selection_request_indices(request: object) -> list[int] | None:
     if not isinstance(request, dict) or set(request) != {
         "schema_version",
@@ -930,11 +1095,29 @@ def try_select_release(
 
     response = _call_json_capability("select_release", "rust_select_release", request)
     try:
-        if not isinstance(response, dict) or set(response) != {
-            "schema_version",
-            "status",
-            "selected_index",
-        }:
+        valid_actions = {
+            "normal_upgrade",
+            "preview_to_stable",
+            "development_to_stable",
+            "development_to_preview",
+            "no_action",
+        }
+        valid_reasons = {
+            "newer_version",
+            "preview_channel_disabled",
+            "development_build",
+            "already_current",
+            "stable_not_newer",
+            "preview_not_newer",
+            "development_target_not_stable",
+            "no_stable_release",
+            "no_eligible_release",
+        }
+
+        response_fields = set(response) if isinstance(response, dict) else set()
+        legacy_fields = {"schema_version", "status", "selected_index"}
+        decision_fields = legacy_fields | {"action", "reason"}
+        if response_fields not in (legacy_fields, decision_fields):
             return False, None
 
         schema_version = response.get("schema_version")
@@ -959,16 +1142,23 @@ def try_select_release(
             if selected_index is not None:
                 return False, None
 
-        from .updater import _py_latest_release_for_current
+        if response_fields == decision_fields:
+            if response.get("action") not in valid_actions:
+                return False, None
+            if response.get("reason") not in valid_reasons:
+                return False, None
+
+        from .updater import _py_release_decision_for_current
 
         def reference() -> dict[str, Any]:
             releases = request.get("releases")
             assert isinstance(releases, list)
-            selected = _py_latest_release_for_current(
+            decision = _py_release_decision_for_current(
                 str(request.get("current_version") or ""),
                 releases,
                 include_preview=bool(request.get("include_preview")),
             )
+            selected = decision["release"]
             selected_index = None
             if selected:
                 selected_index = next(
@@ -979,11 +1169,17 @@ def try_select_release(
                     ),
                     None,
                 )
-            return {
+            result = {
                 "schema_version": 1,
                 "status": "selected" if selected_index is not None else "no_match",
                 "selected_index": selected_index,
             }
+            if response_fields == decision_fields:
+                result.update(
+                    action=decision["action"],
+                    reason=decision["reason"],
+                )
+            return result
 
         return True, _strict_equivalence_result(
             "select_release", response, reference
@@ -1249,6 +1445,8 @@ def _valid_audio_binding_response(
 
 def try_decide_audio_binding(
     request: dict[str, object],
+    *,
+    allow_python_reference: bool = True,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call the coarse native audio-binding decision and validate its response."""
 
@@ -1300,9 +1498,11 @@ def try_decide_audio_binding(
             "automatic_video_index": automatic_video_index,
         }
 
-    return True, _strict_equivalence_result(
-        "decide_audio_binding", response, reference
-    )
+    if allow_python_reference:
+        response = _strict_equivalence_result(
+            "decide_audio_binding", response, reference
+        )
+    return True, response
 
 
 def _update_download_plan_request(
@@ -1754,6 +1954,8 @@ def _valid_media_download_plan_response(
 
 def try_plan_media_download_candidates(
     request: dict[str, object],
+    *,
+    allow_python_reference: bool = True,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly validate media primary/backup URL planning."""
 
@@ -1778,11 +1980,12 @@ def try_plan_media_download_candidates(
             "candidates": expected_candidates,
         }
 
-    response = _strict_equivalence_result(
-        "plan_media_download_candidates",
-        response,
-        reference,
-    )
+    if allow_python_reference:
+        response = _strict_equivalence_result(
+            "plan_media_download_candidates",
+            response,
+            reference,
+        )
     return True, response
 
 
@@ -2332,6 +2535,8 @@ def _valid_quality_policy_response(
 
 def try_decide_quality_policy(
     request: dict[str, object],
+    *,
+    allow_python_reference: bool = True,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct the canonical quality-policy decision."""
 
@@ -2344,11 +2549,13 @@ def try_decide_quality_policy(
     if not _valid_quality_policy_response(response, validated):
         return False, None
     assert isinstance(response, dict)
-    return True, _strict_equivalence_result(
-        "decide_quality_policy",
-        response,
-        lambda: _expected_quality_policy(validated),
-    )
+    if allow_python_reference:
+        response = _strict_equivalence_result(
+            "decide_quality_policy",
+            response,
+            lambda: _expected_quality_policy(validated),
+        )
+    return True, response
 
 
 def _video_stream_request(
@@ -2541,6 +2748,8 @@ def _valid_video_stream_response(
 
 def try_select_video_stream(
     request: dict[str, object],
+    *,
+    allow_python_reference: bool = True,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct DASH video ranking."""
 
@@ -2553,11 +2762,13 @@ def try_select_video_stream(
     if not _valid_video_stream_response(response, validated):
         return False, None
     assert isinstance(response, dict)
-    return True, _strict_equivalence_result(
-        "select_video_stream",
-        response,
-        lambda: _expected_video_stream_selection(validated),
-    )
+    if allow_python_reference:
+        response = _strict_equivalence_result(
+            "select_video_stream",
+            response,
+            lambda: _expected_video_stream_selection(validated),
+        )
+    return True, response
 
 
 def _audio_stream_request(request: object) -> dict[str, object] | None:
@@ -2660,6 +2871,8 @@ def _valid_audio_stream_response(
 
 def try_select_audio_stream(
     request: dict[str, object],
+    *,
+    allow_python_reference: bool = True,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct regular DASH audio ranking."""
 
@@ -2672,11 +2885,13 @@ def try_select_audio_stream(
     if not _valid_audio_stream_response(response, validated):
         return False, None
     assert isinstance(response, dict)
-    return True, _strict_equivalence_result(
-        "select_audio_stream",
-        response,
-        lambda: _expected_audio_stream_selection(validated),
-    )
+    if allow_python_reference:
+        response = _strict_equivalence_result(
+            "select_audio_stream",
+            response,
+            lambda: _expected_audio_stream_selection(validated),
+        )
+    return True, response
 
 
 def _preferred_audio_source_request(request: object) -> dict[str, object] | None:
@@ -2789,6 +3004,8 @@ def _valid_preferred_audio_source_response(
 
 def try_select_preferred_audio_source(
     request: dict[str, object],
+    *,
+    allow_python_reference: bool = True,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct preferred DASH audio source binding."""
 
@@ -2803,11 +3020,13 @@ def try_select_preferred_audio_source(
     if not _valid_preferred_audio_source_response(response, validated):
         return False, None
     assert isinstance(response, dict)
-    return True, _strict_equivalence_result(
-        "select_preferred_audio_source",
-        response,
-        lambda: _expected_preferred_audio_source_selection(validated),
-    )
+    if allow_python_reference:
+        response = _strict_equivalence_result(
+            "select_preferred_audio_source",
+            response,
+            lambda: _expected_preferred_audio_source_selection(validated),
+        )
+    return True, response
 
 
 def _cache_plan_request(request: object) -> dict[str, object] | None:
@@ -3082,6 +3301,8 @@ def _av_delay_request(request: object) -> dict[str, object] | None:
 
 def try_apply_av_delay_action(
     request: dict[str, object],
+    *,
+    allow_python_reference: bool = True,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call Rust and accept only the canonical AV-delay transition result."""
 
@@ -3157,11 +3378,13 @@ def try_apply_av_delay_action(
         return False, None
     from .store import _py_apply_av_delay_action
 
-    return True, _strict_equivalence_result(
-        "apply_av_delay_action",
-        response,
-        lambda: _py_apply_av_delay_action(validated["state"], validated["action"]),
-    )
+    if allow_python_reference:
+        response = _strict_equivalence_result(
+            "apply_av_delay_action",
+            response,
+            lambda: _py_apply_av_delay_action(validated["state"], validated["action"]),
+        )
+    return True, response
 
 
 def _playlist_order_request(request: object) -> dict[str, object] | None:

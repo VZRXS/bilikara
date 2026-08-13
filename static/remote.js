@@ -5,11 +5,11 @@ const avDelayRequestTimeoutMs = 8000;
 const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
+const eventStreamRetryJitterRatio = 0.2;
 const larkSearchTableCount = 5;
+const expandedSearchEagerCoverCount = 6;
 const d1BrowseItemLimit = 450;
 const d1BrowseTagLimit = 450;
-const d1BrowseMergeMinLength = 5;
-const d1BrowseCountConcurrency = 4;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
 const categoryBrowsePageSize = 100;
 const searchResultItemByElement = new WeakMap();
@@ -265,13 +265,10 @@ const state = {
   d1BrowseLetter: "",
   d1BrowseTag: "",
   d1BrowseLocale: "",
-  d1BrowseAliases: [],
   d1BrowseQuery: "",
   d1BrowseData: null,
   d1BrowseLoading: false,
   d1BrowseSeq: 0,
-  d1BrowseResolvedCounts: new Map(),
-  d1BrowseItemCache: new Map(),
   categoryBrowseSelectedId: "",
   categoryBrowseQuery: "",
   categoryBrowseItems: [],
@@ -2453,14 +2450,31 @@ function closeEventStream() {
   state.eventSource = null;
 }
 
+function eventStreamReconnectDelayMs(baseDelayMs, randomValue = Math.random()) {
+  const baseDelay = Math.max(
+    eventStreamInitialRetryMs,
+    Math.min(eventStreamMaxRetryMs, Number(baseDelayMs) || eventStreamInitialRetryMs),
+  );
+  const jitterSpan = Math.max(250, Math.round(baseDelay * eventStreamRetryJitterRatio));
+  const lowerBound = baseDelay >= eventStreamMaxRetryMs
+    ? Math.max(eventStreamInitialRetryMs, baseDelay - jitterSpan)
+    : baseDelay;
+  const upperBound = baseDelay >= eventStreamMaxRetryMs
+    ? baseDelay
+    : Math.min(eventStreamMaxRetryMs, baseDelay + jitterSpan);
+  const boundedRandom = Math.max(0, Math.min(1, Number(randomValue) || 0));
+  return Math.round(lowerBound + ((upperBound - lowerBound) * boundedRandom));
+}
+
 function scheduleEventStreamReconnect() {
   clearEventStreamReconnectTimer();
-  const delayMs = state.eventStreamRetryMs;
+  const baseDelayMs = state.eventStreamRetryMs;
+  const delayMs = eventStreamReconnectDelayMs(baseDelayMs);
   state.eventStreamReconnectTimer = window.setTimeout(() => {
     state.eventStreamReconnectTimer = null;
     connectStateStream();
   }, delayMs);
-  state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, delayMs * 2);
+  state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, baseDelayMs * 2);
 }
 
 function connectStateStream() {
@@ -2575,11 +2589,21 @@ async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "",
   return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
 }
 
+function uniqueD1BrowseTags(tags) {
+  const seen = new Set();
+  return (Array.isArray(tags) ? tags : []).reduce((results, value) => {
+    const tag = String(value || "").trim();
+    if (tag && !seen.has(tag)) {
+      seen.add(tag);
+      results.push(tag);
+    }
+    return results;
+  }, []);
+}
+
 async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
   const params = new URLSearchParams();
-  const normalizedTags = uniqueD1BrowseAliases(
-    (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
-  ).map((entry) => entry.tag);
+  const normalizedTags = uniqueD1BrowseTags(tags);
   normalizedTags.forEach((tag) => {
     params.append(categoryBrowseUsesFullFieldSearch(tag) ? "tag" : "tag45", tag);
   });
@@ -2809,11 +2833,8 @@ function firstSearchResultValue(item, keys) {
 }
 
 function searchResultCoverUrl(item) {
-  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
-  if (coverUrl.startsWith("//")) {
-    coverUrl = `https:${coverUrl}`;
-  }
-  return coverUrl;
+  const coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  return window.BilikaraSongDetail?.normalizeBilibiliImageUrl?.(coverUrl) || coverUrl;
 }
 
 function formatCompactCount(value) {
@@ -2945,6 +2966,7 @@ function renderSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "search-result-item";
+    searchResultItemByElement.set(row, item);
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -2985,6 +3007,7 @@ function renderLarkSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "search-result-item";
+    searchResultItemByElement.set(row, item);
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -3018,6 +3041,7 @@ function appendLarkSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement("div");
     row.className = "search-result-item";
+    searchResultItemByElement.set(row, item);
 
     const meta = document.createElement("div");
     meta.className = "search-result-meta";
@@ -3086,31 +3110,41 @@ function setGatchaUidFlowMessage(target, message, isError = false) {
   setGatchaUidMessage(message, isError);
 }
 
-function createSearchResultRow(item) {
-  const row = document.createElement("article");
-  row.className = "search-result-item";
-  searchResultItemByElement.set(row, item);
-  const itemUrl = String(item?.url || "").trim();
-  if (itemUrl) {
-    row.dataset.url = itemUrl;
-  }
+function appendSearchResultCoverFallback(cover, item, stateName) {
+  const fallback = document.createElement("span");
+  fallback.className = "search-result-cover-fallback";
+  fallback.textContent = String(item?.bvid || "Bili");
+  cover.appendChild(fallback);
+  cover.classList.add("is-empty");
+  cover.classList.toggle("is-error", stateName === "error");
+  cover.dataset.coverState = stateName;
+}
 
+function createSearchResultCover(item, { eagerCover = false } = {}) {
   const coverUrl = searchResultCoverUrl(item);
   const cover = document.createElement("div");
   cover.className = "search-result-cover";
   if (coverUrl) {
     const image = document.createElement("img");
-    image.src = coverUrl;
     image.alt = "";
-    image.loading = "lazy";
+    image.loading = eagerCover ? "eager" : "lazy";
     image.decoding = "async";
     image.referrerPolicy = "no-referrer";
+    cover.dataset.coverState = "loading";
+    image.onload = () => {
+      cover.dataset.coverState = "loaded";
+    };
+    image.onerror = () => {
+      if (cover.dataset.coverState === "error") {
+        return;
+      }
+      image.remove();
+      appendSearchResultCoverFallback(cover, item, "error");
+    };
     cover.appendChild(image);
+    image.src = coverUrl;
   } else {
-    const fallback = document.createElement("span");
-    fallback.textContent = String(item?.bvid || "Bili");
-    cover.appendChild(fallback);
-    cover.classList.add("is-empty");
+    appendSearchResultCoverFallback(cover, item, "missing");
   }
 
   const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
@@ -3124,6 +3158,19 @@ function createSearchResultRow(item) {
   if (ratingStars) {
     cover.appendChild(ratingStars);
   }
+  return cover;
+}
+
+function createSearchResultRow(item, { eagerCover = false } = {}) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  searchResultItemByElement.set(row, item);
+  const itemUrl = String(item?.url || "").trim();
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+
+  const cover = createSearchResultCover(item, { eagerCover });
 
   const meta = document.createElement("div");
   meta.className = "search-result-meta search-result-body";
@@ -3184,8 +3231,10 @@ function renderSearchResultItems(container, items, emptyText = "") {
     container.appendChild(empty);
     return;
   }
-  normalizedItems.forEach((item) => {
-    container.appendChild(createSearchResultRow(item));
+  normalizedItems.forEach((item, index) => {
+    container.appendChild(createSearchResultRow(item, {
+      eagerCover: index < expandedSearchEagerCoverCount,
+    }));
   });
 }
 
@@ -3203,17 +3252,117 @@ function appendSearchResultItems(container, items) {
   });
 }
 
-function normalizeD1BrowseTagForMerge(value) {
-  return String(value || "")
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/[\u200b-\u200d\ufeff]/g, "")
-    .replace(/[\s"'`._!?,:;~\-\/\\|()[\]{}<>]+/g, "")
-    .replace(/[\u2018-\u201f\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/g, "");
+const canonicalBilikaraSearch = {
+  query: "",
+  items: [],
+  message: "",
+  isError: false,
+  hasSearched: false,
+  seq: 0,
+  loading: false,
+};
+
+function syncBilikaraSearchViews() {
+  const query = canonicalBilikaraSearch.query;
+  const items = canonicalBilikaraSearch.items;
+  const message = canonicalBilikaraSearch.message;
+  const isError = canonicalBilikaraSearch.isError;
+  const hasSearched = canonicalBilikaraSearch.hasSearched;
+  const loading = canonicalBilikaraSearch.loading;
+
+  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== query) {
+    elements.larkSearchQuery.value = query;
+  }
+  if (elements.searchModalLarkQuery && elements.searchModalLarkQuery.value !== query) {
+    elements.searchModalLarkQuery.value = query;
+  }
+
+  setLarkSearchMessage(message, isError);
+  setSearchModalLarkMessage(message, isError);
+
+  const emptyText = hasSearched && !loading && !items.length ? (isError ? "" : t("search.larkNoResults")) : "";
+
+  if (elements.larkSearchResults) {
+    if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
+      elements.larkSearchResults.innerHTML = "";
+      elements.larkSearchResults.classList.add("hidden");
+    } else {
+      renderLarkSearchResults(items);
+    }
+  }
+
+  if (elements.searchModalLarkResults) {
+    if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
+      elements.searchModalLarkResults.innerHTML = "";
+      elements.searchModalLarkResults.classList.toggle(
+        "hidden",
+        !loading && !hasSearched && !message,
+      );
+    } else {
+      renderSearchResultItems(elements.searchModalLarkResults, items, emptyText);
+    }
+  }
 }
 
-function d1BrowseMergeLength(value) {
-  return Array.from(value || "").length;
+async function executeCanonicalBilikaraSearch(queryStr) {
+  const query = String(queryStr || "").trim();
+  if (!query) {
+    canonicalBilikaraSearch.query = "";
+    canonicalBilikaraSearch.items = [];
+    canonicalBilikaraSearch.message = t("search.keywordRequired");
+    canonicalBilikaraSearch.isError = true;
+    canonicalBilikaraSearch.hasSearched = false;
+    syncBilikaraSearchViews();
+    return;
+  }
+
+  const searchSeq = canonicalBilikaraSearch.seq + 1;
+  canonicalBilikaraSearch.seq = searchSeq;
+  canonicalBilikaraSearch.query = query;
+  canonicalBilikaraSearch.loading = true;
+  canonicalBilikaraSearch.message = t("search.larkSearching");
+  canonicalBilikaraSearch.isError = false;
+  canonicalBilikaraSearch.hasSearched = true;
+  syncBilikaraSearchViews();
+
+  if (elements.larkSearchButton) elements.larkSearchButton.disabled = true;
+  if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = true;
+
+  try {
+    const poolItems = await searchLarkPool(query);
+    if (canonicalBilikaraSearch.seq !== searchSeq) {
+      return;
+    }
+    const seenBvids = new Set();
+    const freshItems = poolItems.filter((item) => {
+      const bvid = String(item?.bvid || "").trim();
+      if (!bvid || seenBvids.has(bvid)) {
+        return false;
+      }
+      seenBvids.add(bvid);
+      return true;
+    });
+
+    canonicalBilikaraSearch.items = freshItems;
+    canonicalBilikaraSearch.message = freshItems.length
+      ? t("search.larkFound", { count: freshItems.length })
+      : t("search.larkNoResults");
+    canonicalBilikaraSearch.isError = false;
+  } catch (error) {
+    if (canonicalBilikaraSearch.seq !== searchSeq) {
+      return;
+    }
+    canonicalBilikaraSearch.items = [];
+    canonicalBilikaraSearch.message = error.message || t("error.larkSearchFailed");
+    canonicalBilikaraSearch.isError = true;
+  } finally {
+    if (canonicalBilikaraSearch.seq === searchSeq) {
+      canonicalBilikaraSearch.loading = false;
+      if (elements.larkSearchButton) elements.larkSearchButton.disabled = false;
+      if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = false;
+      syncBilikaraSearchViews();
+    }
+  }
 }
 
 function d1BrowseTitle(kind = state.d1BrowseKind) {
@@ -3226,107 +3375,6 @@ function d1BrowsePickLetterText(kind = state.d1BrowseKind) {
 
 function d1BrowseSearchPlaceholder(kind = state.d1BrowseKind) {
   return state.d1BrowseTag ? t("search.browseItemPlaceholder") : t("search.tagBrowsePlaceholder", { title: d1BrowseTitle(kind) });
-}
-
-function d1BrowseMergeCandidate(entry) {
-  const tag = String(entry?.tag || "").trim();
-  const locale = String(entry?.locale || "").trim();
-  const normalized = normalizeD1BrowseTagForMerge(tag);
-  return {
-    tag,
-    locale,
-    normalized,
-    count: Number(entry?.count || 0),
-    yomi: String(entry?.yomi || ""),
-    letter: String(entry?.letter || ""),
-  };
-}
-
-function isBetterD1BrowseMergeLabel(candidate, current) {
-  const candidateLength = d1BrowseMergeLength(candidate.normalized);
-  const currentLength = d1BrowseMergeLength(current.normalized);
-  if (candidateLength !== currentLength) {
-    return candidateLength < currentLength;
-  }
-  if (candidate.count !== current.count) {
-    return candidate.count > current.count;
-  }
-  return false;
-}
-
-function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
-  const seen = new Set();
-  const results = [];
-  const source = Array.isArray(aliases) && aliases.length ? aliases : [{ tag: fallbackTag, locale: fallbackLocale }];
-  source.forEach((entry) => {
-    const tag = String(entry?.tag || "").trim();
-    const locale = String(entry?.locale || "").trim();
-    if (!tag) {
-      return;
-    }
-    const key = `${locale}\n${tag}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    results.push({ tag, locale });
-  });
-  return results;
-}
-
-function d1BrowseAliasKey(aliases, { kind = state.d1BrowseKind, query = state.d1BrowseQuery } = {}) {
-  const normalizedAliases = uniqueD1BrowseAliases(aliases)
-    .map((entry) => ({ tag: entry.tag, locale: entry.locale }))
-    .sort((left, right) => `${left.locale}\n${left.tag}`.localeCompare(`${right.locale}\n${right.tag}`));
-  return JSON.stringify({
-    kind: kind === "artist" ? "artist" : "name",
-    query: String(query || "").trim(),
-    aliases: normalizedAliases,
-  });
-}
-
-function mergeD1BrowseTags(tags) {
-  const groups = [];
-  (Array.isArray(tags) ? tags : []).forEach((entry) => {
-    const candidate = d1BrowseMergeCandidate(entry);
-    if (!candidate.tag) {
-      return;
-    }
-    const canMerge = d1BrowseMergeLength(candidate.normalized) >= d1BrowseMergeMinLength;
-    let group = null;
-    if (canMerge) {
-      group = groups.find((item) => (
-        item.canMerge
-        && item.normalized
-        && (candidate.normalized.startsWith(item.normalized) || item.normalized.startsWith(candidate.normalized))
-      ));
-    }
-    if (!group) {
-      groups.push({
-        ...candidate,
-        canMerge,
-        aliases: [{ tag: candidate.tag, locale: candidate.locale }],
-      });
-      return;
-    }
-    group.count += candidate.count;
-    group.aliases.push({ tag: candidate.tag, locale: candidate.locale });
-    if (isBetterD1BrowseMergeLabel(candidate, group)) {
-      group.tag = candidate.tag;
-      group.locale = candidate.locale;
-      group.normalized = candidate.normalized;
-      group.yomi = candidate.yomi;
-      group.letter = candidate.letter;
-    }
-  });
-  groups.forEach((group) => {
-    group.aliases = uniqueD1BrowseAliases(group.aliases, group.tag, group.locale);
-    group.aliasKey = d1BrowseAliasKey(group.aliases, { kind: state.d1BrowseKind, query: "" });
-    if (state.d1BrowseResolvedCounts.has(group.aliasKey)) {
-      group.count = state.d1BrowseResolvedCounts.get(group.aliasKey);
-    }
-  });
-  return groups;
 }
 
 function d1BrowseItemKey(item) {
@@ -3385,57 +3433,6 @@ function mergeCategoryBrowseItems(existingItems, nextItems) {
     items.push(item);
   });
   return items;
-}
-
-function mergeD1BrowseItemPayloads(payloads) {
-  const seen = new Set();
-  const items = [];
-  (Array.isArray(payloads) ? payloads : []).forEach((payload) => {
-    (Array.isArray(payload?.items) ? payload.items : []).forEach((item) => {
-      const key = d1BrowseItemKey(item);
-      if (!key || seen.has(key)) {
-        return;
-      }
-      seen.add(key);
-      items.push(item);
-    });
-  });
-  return items;
-}
-
-async function resolveD1BrowseMergedTagCounts(groups, { kind, letter, query } = {}) {
-  const targets = (Array.isArray(groups) ? groups : []).filter((group) => (
-    Array.isArray(group.aliases)
-    && group.aliases.length > 1
-    && group.aliasKey
-    && !state.d1BrowseResolvedCounts.has(group.aliasKey)
-  ));
-  if (!targets.length) {
-    return;
-  }
-  let targetIndex = 0;
-  const workerCount = Math.min(d1BrowseCountConcurrency, targets.length);
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (targetIndex < targets.length) {
-      const group = targets[targetIndex];
-      targetIndex += 1;
-      try {
-        const payloads = await Promise.all(group.aliases.map((alias) => fetchD1Browse({
-          kind,
-          letter,
-          query,
-          tag: alias.tag,
-          locale: alias.locale,
-          limit: d1BrowseItemLimit,
-        })));
-        const items = mergeD1BrowseItemPayloads(payloads);
-        state.d1BrowseResolvedCounts.set(group.aliasKey, items.length);
-        state.d1BrowseItemCache.set(group.aliasKey, items);
-      } catch {
-        // Keep the aggregate count if exact merged counts fail.
-      }
-    }
-  }));
 }
 
 function ensureD1BrowseView() {
@@ -3517,7 +3514,7 @@ function renderD1BrowseView() {
     backButton.disabled = state.d1BrowseLoading;
   }
 
-  const tags = mergeD1BrowseTags(state.d1BrowseData?.tags);
+  const tags = Array.isArray(state.d1BrowseData?.tags) ? state.d1BrowseData.tags : [];
   const items = Array.isArray(state.d1BrowseData?.items) ? state.d1BrowseData.items : [];
   if (current) {
     const parts = [title];
@@ -3555,7 +3552,6 @@ function renderD1BrowseView() {
           button.className = "tag-browser-tag";
           button.dataset.tag = String(entry.tag || "");
           button.dataset.locale = String(entry.locale || "");
-          button.dataset.aliases = JSON.stringify(entry.aliases || []);
           const name = document.createElement("span");
           name.className = "tag-browser-tag-name";
           name.textContent = String(entry.tag || "");
@@ -3588,7 +3584,7 @@ function renderD1BrowseView() {
   }
 }
 
-async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "", aliases = [] } = {}) {
+async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = state.d1BrowseLetter, query = state.d1BrowseQuery, tag = "", locale = "" } = {}) {
   const searchSeq = state.d1BrowseSeq + 1;
   state.d1BrowseSeq = searchSeq;
   state.d1BrowseKind = kind === "artist" ? "artist" : "name";
@@ -3596,59 +3592,21 @@ async function loadD1Browse({ kind = state.d1BrowseKind || "name", letter = stat
   state.d1BrowseQuery = String(query || "").trim();
   state.d1BrowseTag = String(tag || "").trim();
   state.d1BrowseLocale = String(locale || "").trim();
-  state.d1BrowseAliases = state.d1BrowseTag ? uniqueD1BrowseAliases(aliases, state.d1BrowseTag, state.d1BrowseLocale) : [];
   state.d1BrowseLoading = true;
   renderD1BrowseView();
   try {
-    const requestAliases = state.d1BrowseTag ? state.d1BrowseAliases : [];
-    const requestAliasKey = requestAliases.length ? d1BrowseAliasKey(requestAliases, {
+    const data = await fetchD1Browse({
       kind: state.d1BrowseKind,
+      letter: state.d1BrowseLetter,
       query: state.d1BrowseQuery,
-    }) : "";
-    if (requestAliasKey && state.d1BrowseItemCache.has(requestAliasKey)) {
-      const items = state.d1BrowseItemCache.get(requestAliasKey) || [];
-      state.d1BrowseData = { kind: state.d1BrowseKind, letter: state.d1BrowseLetter, query: state.d1BrowseQuery, tag: state.d1BrowseTag, locale: state.d1BrowseLocale, tags: [], items };
-      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
-      return;
-    }
-    const payloads = requestAliases.length > 1
-      ? await Promise.all(requestAliases.map((alias) => fetchD1Browse({
-        kind: state.d1BrowseKind,
-        letter: state.d1BrowseLetter,
-        query: state.d1BrowseQuery,
-        tag: alias.tag,
-        locale: alias.locale,
-        limit: d1BrowseItemLimit,
-      })))
-      : [await fetchD1Browse({
-        kind: state.d1BrowseKind,
-        letter: state.d1BrowseLetter,
-        query: state.d1BrowseQuery,
-        tag: state.d1BrowseTag,
-        locale: state.d1BrowseLocale,
-        limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
-      })];
+      tag: state.d1BrowseTag,
+      locale: state.d1BrowseLocale,
+      limit: state.d1BrowseTag ? d1BrowseItemLimit : d1BrowseTagLimit,
+    });
     if (state.d1BrowseSeq !== searchSeq) {
       return;
     }
-    const data = payloads[0] || {};
-    if (!state.d1BrowseTag) {
-      const mergedTags = mergeD1BrowseTags(data.tags);
-      await resolveD1BrowseMergedTagCounts(mergedTags, {
-        kind: state.d1BrowseKind,
-        letter: state.d1BrowseLetter,
-        query: "",
-      });
-      if (state.d1BrowseSeq !== searchSeq) {
-        return;
-      }
-    }
-    state.d1BrowseData = requestAliases.length > 1 ? { ...data, items: mergeD1BrowseItemPayloads(payloads) } : data;
-    if (requestAliasKey) {
-      const items = Array.isArray(state.d1BrowseData.items) ? state.d1BrowseData.items : [];
-      state.d1BrowseResolvedCounts.set(requestAliasKey, items.length);
-      state.d1BrowseItemCache.set(requestAliasKey, items);
-    }
+    state.d1BrowseData = data || {};
   } catch (error) {
     const view = ensureD1BrowseView();
     const message = view?.querySelector("[data-d1-browse-message]");
@@ -4069,6 +4027,10 @@ function renderSearchModalView(target = state.searchModalView || "search") {
   elements.favlistBrowserView?.classList.toggle("hidden", nextTarget !== "favlist");
   elements.searchModalOtherView?.classList.toggle("hidden", !["category", "name", "artist"].includes(nextTarget));
 
+  if (nextTarget === "search") {
+    syncBilikaraSearchViews();
+  }
+
   if (nextTarget === "follow") {
     if (!state.followBrowseData && !state.followBrowseLoading) {
       state.followBrowseSelectedUid = "";
@@ -4103,7 +4065,6 @@ function renderSearchModalView(target = state.searchModalView || "search") {
       state.d1BrowseLetter = "";
       state.d1BrowseTag = "";
       state.d1BrowseLocale = "";
-      state.d1BrowseAliases = [];
       state.d1BrowseQuery = "";
     }
     state.d1BrowseKind = nextTarget;
@@ -5708,18 +5669,11 @@ async function confirmBindingSheet() {
     }
     applyStateSnapshot(result.data, { forceRender: true });
     closeBindingSheet();
+    if (["modalSearch", "modalFollow", "modalFavlist", "modalBrowse"].includes(source)) {
+      searchDetailController?.close({ immediate: true });
+    }
     if (intent.clearInput) {
       elements.urlInput.value = "";
-    }
-    if (intent.source === "search") {
-      hideSearchResults();
-      elements.searchQuery.value = "";
-    }
-    if (intent.source === "lark") {
-      hideLarkSearchResults();
-      if (elements.larkSearchQuery) {
-        elements.larkSearchQuery.value = "";
-      }
     }
     if (intent.source === "follow") {
       setFollowBrowseMessage("");
@@ -6662,16 +6616,6 @@ async function addByUrl(url, position = "tail", source = "search") {
       return false;
     }
     applyStateSnapshot(result.data, { forceRender: true });
-    if (source === "search") {
-      hideSearchResults();
-      elements.searchQuery.value = "";
-    }
-    if (source === "lark") {
-      hideLarkSearchResults();
-      if (elements.larkSearchQuery) {
-        elements.larkSearchQuery.value = "";
-      }
-    }
     if (source === "gatcha") {
       state.gatchaCandidate = null;
       renderGatchaUidView();
@@ -6860,60 +6804,7 @@ elements.searchModalTabs?.forEach((button) => {
 
 elements.searchModalLarkForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const query = String(elements.searchModalLarkQuery?.value || "").trim();
-  if (!query) {
-    renderSearchResultItems(elements.searchModalLarkResults, [], t("search.keywordRequired"));
-    setSearchModalLarkMessage(t("search.keywordRequired"), true);
-    return;
-  }
-
-  state.searchModalLarkLoading = true;
-  if (elements.searchModalLarkButton) {
-    elements.searchModalLarkButton.disabled = true;
-  }
-  const searchSeq = state.searchModalLarkSeq + 1;
-  state.searchModalLarkSeq = searchSeq;
-  const seenBvids = new Set();
-  const collectedItems = [];
-  if (elements.searchModalLarkResults) {
-    elements.searchModalLarkResults.innerHTML = "";
-    elements.searchModalLarkResults.classList.remove("hidden");
-  }
-  setSearchModalLarkMessage(t("search.larkSearching"));
-  try {
-    const poolItems = await searchLarkPool(query);
-    if (state.searchModalLarkSeq !== searchSeq) {
-      return;
-    }
-    const freshItems = poolItems.filter((item) => {
-      const bvid = String(item?.bvid || "").trim();
-      if (!bvid || seenBvids.has(bvid)) {
-        return false;
-      }
-      seenBvids.add(bvid);
-      return true;
-    });
-    if (freshItems.length) {
-      collectedItems.push(...freshItems);
-      appendSearchResultItems(elements.searchModalLarkResults, freshItems);
-    }
-    if (!collectedItems.length) {
-      renderSearchResultItems(elements.searchModalLarkResults, [], t("search.larkNoResults"));
-    }
-    setSearchModalLarkMessage(
-      collectedItems.length ? t("search.larkFound", { count: collectedItems.length }) : t("search.larkNoResults"),
-    );
-  } catch (error) {
-    renderSearchResultItems(elements.searchModalLarkResults, [], "");
-    setSearchModalLarkMessage(error.message, true);
-  } finally {
-    if (state.searchModalLarkSeq === searchSeq) {
-      state.searchModalLarkLoading = false;
-      if (elements.searchModalLarkButton) {
-        elements.searchModalLarkButton.disabled = false;
-      }
-    }
-  }
+  await executeCanonicalBilikaraSearch(elements.searchModalLarkQuery?.value);
 });
 
 elements.searchModalLarkResults?.addEventListener("click", async (event) => {
@@ -7039,7 +6930,6 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
     state.d1BrowseQuery = "";
     state.d1BrowseTag = "";
     state.d1BrowseLocale = "";
-    state.d1BrowseAliases = [];
     state.d1BrowseData = null;
     renderD1BrowseView();
     return;
@@ -7051,7 +6941,6 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
       query: input?.value || "",
       tag: state.d1BrowseTag,
       locale: state.d1BrowseLocale,
-      aliases: state.d1BrowseAliases,
     });
     return;
   }
@@ -7094,13 +6983,11 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
         query: "",
         tag: "",
         locale: "",
-        aliases: [],
       });
     } else if (state.d1BrowseLetter) {
       state.d1BrowseLetter = "";
       state.d1BrowseTag = "";
       state.d1BrowseLocale = "";
-      state.d1BrowseAliases = [];
       state.d1BrowseQuery = "";
       state.d1BrowseData = null;
       renderD1BrowseView();
@@ -7115,25 +7002,17 @@ elements.searchModalOtherView?.addEventListener("click", (event) => {
       query: "",
       tag: "",
       locale: "",
-      aliases: [],
     });
     return;
   }
   const tagButton = event.target.closest("[data-tag]");
   if (tagButton && elements.searchModalOtherView.contains(tagButton)) {
-    let aliases = [];
-    try {
-      aliases = JSON.parse(tagButton.dataset.aliases || "[]");
-    } catch {
-      aliases = [];
-    }
     loadD1Browse({
       kind: state.d1BrowseKind || "name",
       letter: state.d1BrowseLetter,
       query: "",
       tag: tagButton.dataset.tag || "",
       locale: tagButton.dataset.locale || "",
-      aliases,
     });
   }
 });
@@ -7183,73 +7062,23 @@ elements.larkSearchToggle?.addEventListener("click", () => {
   renderFollowBrowse();
 });
 
+elements.larkSearchQuery?.addEventListener("input", () => {
+  canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");
+  if (elements.searchModalLarkQuery && elements.searchModalLarkQuery.value !== canonicalBilikaraSearch.query) {
+    elements.searchModalLarkQuery.value = canonicalBilikaraSearch.query;
+  }
+});
+
+elements.searchModalLarkQuery?.addEventListener("input", () => {
+  canonicalBilikaraSearch.query = String(elements.searchModalLarkQuery?.value || "");
+  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== canonicalBilikaraSearch.query) {
+    elements.larkSearchQuery.value = canonicalBilikaraSearch.query;
+  }
+});
+
 elements.larkSearchForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const query = String(elements.larkSearchQuery?.value || "").trim();
-  if (!query) {
-    hideLarkSearchResults();
-    setLarkSearchMessage(t("search.keywordRequired"), true);
-    return;
-  }
-
-  state.larkSearchLoading = true;
-  if (elements.larkSearchButton) {
-    elements.larkSearchButton.disabled = true;
-  }
-  const searchSeq = state.larkSearchSeq + 1;
-  state.larkSearchSeq = searchSeq;
-  const seenBvids = new Set();
-  const collectedItems = [];
-  let partialFailure = false;
-  if (elements.larkSearchResults) {
-    elements.larkSearchResults.innerHTML = "";
-    elements.larkSearchResults.classList.remove("hidden");
-  }
-  setLarkSearchMessage(t("search.larkSearching"));
-  try {
-    const poolItems = await searchLarkPool(query);
-    if (state.larkSearchSeq !== searchSeq) {
-      return;
-    }
-    const freshItems = poolItems.filter((item) => {
-      const bvid = String(item?.bvid || "").trim();
-      if (!bvid || seenBvids.has(bvid)) {
-        return false;
-      }
-      seenBvids.add(bvid);
-      return true;
-    });
-    if (freshItems.length) {
-      collectedItems.push(...freshItems);
-      appendLarkSearchResults(freshItems);
-    }
-    if (state.larkSearchSeq !== searchSeq) {
-      return;
-    }
-    if (!collectedItems.length) {
-      renderLarkSearchResults([]);
-    }
-    setLarkSearchMessage(
-      collectedItems.length
-        ? partialFailure
-          ? t("search.larkFoundPartial", { count: collectedItems.length })
-          : t("search.larkFound", { count: collectedItems.length })
-        : partialFailure
-          ? t("search.larkPartialNoResults")
-          : t("search.larkNoResults"),
-      partialFailure && !collectedItems.length,
-    );
-  } catch (error) {
-    hideLarkSearchResults();
-    setLarkSearchMessage(error.message, true);
-  } finally {
-    if (state.larkSearchSeq === searchSeq) {
-      state.larkSearchLoading = false;
-      if (elements.larkSearchButton) {
-        elements.larkSearchButton.disabled = false;
-      }
-    }
-  }
+  await executeCanonicalBilikaraSearch(elements.larkSearchQuery?.value);
 });
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
@@ -8052,6 +7881,7 @@ function makeElementDraggable(element, onClick) {
   let suppressClickUntil = 0;
   let pctX = null;
   let pctY = null;
+  let activeTouchId = null;
 
   const invokeClick = () => {
     if (typeof onClick === "function") {
@@ -8068,14 +7898,18 @@ function makeElementDraggable(element, onClick) {
       return;
     }
 
+    clearDragListeners();
     const rect = element.getBoundingClientRect();
     initialLeft = rect.left;
     initialTop = rect.top;
 
     if (e.type === "touchstart") {
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
+      const touch = e.changedTouches?.[0] || e.touches[0];
+      activeTouchId = Number.isFinite(touch?.identifier) ? touch.identifier : null;
+      startX = touch.clientX;
+      startY = touch.clientY;
     } else {
+      activeTouchId = null;
       startX = e.clientX;
       startY = e.clientY;
     }
@@ -8100,11 +7934,18 @@ function makeElementDraggable(element, onClick) {
     let currentY = 0;
 
     if (e.type === "touchmove") {
+      const touch = activeTouchId === null
+        ? e.touches[0]
+        : [...e.touches].find((candidate) => candidate.identifier === activeTouchId);
+      if (!touch) {
+        dragCancel();
+        return;
+      }
       if (e.cancelable) {
         e.preventDefault();
       }
-      currentX = e.touches[0].clientX;
-      currentY = e.touches[0].clientY;
+      currentX = touch.clientX;
+      currentY = touch.clientY;
     } else {
       currentX = e.clientX;
       currentY = e.clientY;
@@ -8150,7 +7991,15 @@ function makeElementDraggable(element, onClick) {
   };
 
   const dragEnd = (e) => {
+    if (
+      e.type === "touchend"
+      && activeTouchId !== null
+      && ![...(e.changedTouches || [])].some((touch) => touch.identifier === activeTouchId)
+    ) {
+      return;
+    }
     isDragging = false;
+    activeTouchId = null;
     element.classList.remove("dragging");
     clearDragListeners();
 
@@ -8168,11 +8017,15 @@ function makeElementDraggable(element, onClick) {
   };
 
   function dragCancel() {
+    const wasDragging = isDragging;
     isDragging = false;
+    activeTouchId = null;
     moved = false;
     element.classList.remove("dragging");
     clearDragListeners();
-    suppressNextClick();
+    if (wasDragging) {
+      suppressNextClick();
+    }
   }
 
   element.addEventListener("click", (event) => {
@@ -8185,6 +8038,13 @@ function makeElementDraggable(element, onClick) {
   });
   element.addEventListener("mousedown", dragStart);
   element.addEventListener("touchstart", dragStart);
+  window.addEventListener("blur", dragCancel);
+  window.addEventListener("pagehide", dragCancel);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      dragCancel();
+    }
+  });
 
   window.addEventListener("resize", () => {
     if (pctX === null || pctY === null) {

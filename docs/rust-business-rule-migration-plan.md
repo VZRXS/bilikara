@@ -1,5 +1,12 @@
 # Rust business-rule migration plan
 
+> Historical scope note: this document records the completed Phase 2
+> migration, including the Python references that were deliberately created at
+> that time. Phase 2 is complete. For new backend functionality, Rust is now
+> authoritative and no new equivalent Python semantic fallback may be added.
+> This forward rule is not called "Phase 3"; the next architectural milestone
+> is v0.8 Rust Core Convergence / Preview.
+
 ## Phase boundary
 
 Phase 2 may migrate cohesive, deterministic business-rule domains after the
@@ -22,9 +29,10 @@ decide_audio_binding(request_json) -> response_json
 plan_download_candidates(request_json) -> response_json
 ```
 
-Every migration must retain the complete Python implementation as a fallback.
-Rust success, domain-level “no result”, invalid request syntax, and backend/FFI
-failure must remain distinguishable. Additive exports remain ABI version 1.
+Every Phase-2 migration retained the complete Python implementation as a
+fallback. Rust success, domain-level “no result”, invalid request syntax, and
+backend/FFI failure remained distinguishable. Those historical references may
+remain frozen. Additive exports remain ABI version 1.
 
 ## Explicit exclusions
 
@@ -690,6 +698,19 @@ complete compatibility fallback.
 Phase 2 concerns deterministic immutable decisions. The future migration of
 stateful runtime ownership is a different architectural project; see the
 [version roadmap](version-roadmap.md) for the post-v0.7 convergence direction.
+
+## Post-Phase-2 ownership rule
+
+New backend and business functionality is Rust-authoritative. Python may
+temporarily retain v0.7 HTTP, persistence, filesystem, subprocess, and runtime
+orchestration and may strictly validate Rust responses, but it must not gain a
+new equivalent semantic implementation. New Rust-only capabilities fail
+explicitly when unavailable. Existing Phase-2 `_py_*` references remain frozen
+unless a task specifically changes them.
+
+New stateful backend work must move the relevant ownership to Rust or wait for
+that Rust Core ownership migration. This is not a new "Phase 3." The planned
+architecture is v0.8 Rust Core Convergence / Preview.
 
 ## Historical rationale for the first Phase-2 domain
 

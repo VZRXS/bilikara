@@ -16,8 +16,14 @@ are assigned.
 - Node.js 24 is a build and CI baseline. It is not an end-user runtime
   requirement.
 - Python continues to own v0.7 operational I/O and mutable runtime state.
+- That Python ownership is retained release orchestration, not a destination
+  for new backend features. New backend/business policy is Rust-authoritative,
+  without new equivalent Python semantic fallbacks.
 - The AV-delay state machine is an additional typed Rust policy introduced
   during stabilization. It is not a ninth Phase-2 domain.
+- Preview stabilization also includes Rust-authoritative playback-selector mode
+  policy and BBDown prepare routing. These focused policies are not a new
+  "Phase 3" and do not begin the full stateful-core migration.
 - v0.7 is not the final Rust runtime architecture.
 
 ### v0.8.0 — Rust Core Convergence / Preview
