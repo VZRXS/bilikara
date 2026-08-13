@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from bilikara import rust_runtime
-from bilikara.cache import CacheCancelledError, CacheManager, DownloadCommandError
+from bilikara.cache import CacheManager
 
 
 class FakeRuntimeLibrary:
@@ -419,29 +419,6 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
         manager._append_log_line = Mock()
         return manager
 
-    def test_native_success_does_not_start_aria2c(self):
-        manager = self.make_manager()
-        native_path = Path("native-output.m4s")
-        manager._download_stream_with_rust = Mock(return_value=native_path)
-        manager._download_stream_with_aria2c = Mock()
-        with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True):
-            result = manager._download_stream_with_native_or_aria2c(
-                "song-a",
-                Path("aria2c"),
-                Path("ffmpeg"),
-                Path("target"),
-                Path("download.log"),
-                urls=["https://media.invalid"],
-                out_name="track.m4s",
-                cookie="",
-                stage_label="download",
-                track_key="video-p1",
-                stream_kind="video",
-            )
-
-        self.assertEqual(result, native_path)
-        manager._download_stream_with_aria2c.assert_not_called()
-
     def test_native_selected_stream_path_never_calls_legacy_downloader(self):
         with TemporaryDirectory() as temp_dir, patch(
             "bilikara.cache.CACHE_DIR", Path(temp_dir)
@@ -501,43 +478,49 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
         self.assertTrue(result["native_tracks_prevalidated"])
         self.assertEqual(len(result["validation_metadata"]), 2)
 
-    def test_native_failure_falls_back_but_cancellation_does_not(self):
-        manager = self.make_manager()
-        fallback_path = Path("aria-output.m4s")
-        manager._download_stream_with_rust = Mock(
-            side_effect=DownloadCommandError("native failed")
-        )
-        manager._download_stream_with_aria2c = Mock(return_value=fallback_path)
-        kwargs = {
-            "urls": ["https://media.invalid"],
-            "out_name": "track.m4s",
-            "cookie": "",
-            "stage_label": "download",
-            "track_key": "video-p1",
-            "stream_kind": "video",
-        }
-        with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True):
-            result = manager._download_stream_with_native_or_aria2c(
-                "song-a",
+    def test_downkyi_selected_stream_path_never_calls_native_downloader(self):
+        with TemporaryDirectory() as temp_dir, patch(
+            "bilikara.cache.CACHE_DIR", Path(temp_dir)
+        ):
+            cache_dir = Path(temp_dir)
+            manager = self.make_manager()
+            manager.store = Mock()
+            manager._raise_if_priority_shift = Mock()
+            manager._raise_if_retry_requested = Mock()
+            manager._selected_pages_for_item = Mock(return_value=[1])
+            manager._begin_download_progress = Mock()
+            manager._record_item_activity = Mock()
+            manager._part_label_for_page = Mock(return_value="P1")
+            manager._cid_for_validation = Mock(return_value=123)
+            manager._duration_for_page = Mock(return_value=12)
+            manager._resolve_dash_streams = Mock(
+                return_value={"video": [{"codec_name": "avc"}], "audio": [{}]}
+            )
+            manager._download_dash_streams_native = Mock()
+
+            def aria2c_download(*_args, video_track, audio_tracks, **_kwargs):
+                video_track["validation_metadata"] = {"kind": "video"}
+                audio_tracks[0]["validation_metadata"] = {"kind": "audio"}
+                return {
+                    str(video_track["key"]): cache_dir / "video.m4s",
+                    str(audio_tracks[0]["key"]): cache_dir / "audio.m4s",
+                }
+
+            manager._download_dash_streams_with_aria2c = Mock(
+                side_effect=aria2c_download
+            )
+            item = Mock(id="song-a", video_page=1, selected_audio_variant_id="")
+
+            result = manager._download_selected_streams(
+                item,
                 Path("aria2c"),
                 Path("ffmpeg"),
-                Path("target"),
-                Path("download.log"),
-                **kwargs,
+                cache_dir / "target",
+                cache_dir / "download.log",
+                download_source="downkyi",
             )
-        self.assertEqual(result, fallback_path)
-        manager._download_stream_with_aria2c.assert_called_once()
 
-        manager._download_stream_with_rust.side_effect = CacheCancelledError("cancelled")
-        manager._download_stream_with_aria2c.reset_mock()
-        with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True):
-            with self.assertRaises(CacheCancelledError):
-                manager._download_stream_with_native_or_aria2c(
-                    "song-a",
-                    Path("aria2c"),
-                    Path("ffmpeg"),
-                    Path("target"),
-                    Path("download.log"),
-                    **kwargs,
-                )
-        manager._download_stream_with_aria2c.assert_not_called()
+        manager._download_dash_streams_with_aria2c.assert_called_once()
+        manager._download_dash_streams_native.assert_not_called()
+        self.assertTrue(result["downkyi_tracks_prevalidated"])
+        self.assertEqual(len(result["validation_metadata"]), 2)

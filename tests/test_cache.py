@@ -35,7 +35,7 @@ from bilikara.store import PlaylistStore
 
 
 class CacheManagerOutputTest(unittest.TestCase):
-    def test_native_prewarm_does_not_probe_legacy_tools_or_override_runtime_status(self):
+    def test_prewarm_prepares_legacy_tools_without_overriding_runtime_status(self):
         manager = CacheManager.__new__(CacheManager)
         manager.lock = threading.RLock()
         manager.binary_state = "failed"
@@ -44,31 +44,23 @@ class CacheManagerOutputTest(unittest.TestCase):
         manager.ffmpeg_state = "failed"
         manager.ffmpeg_version = ""
         manager.ffmpeg_message = "stale FFmpeg failure"
-        runtime = {
-            "loaded": True,
-            "abi_version": 1,
-            "error": "",
-        }
-
-        with patch("bilikara.cache.rust_runtime.runtime_status", return_value=runtime), patch.object(
+        with patch.object(
             manager,
             "_ensure_bbdown",
-            side_effect=AssertionError("legacy BBDown prewarm must not run"),
+            return_value=Path("BBDown"),
         ) as ensure_bbdown, patch.object(
             manager,
             "_ensure_ffmpeg",
-            side_effect=AssertionError("legacy FFmpeg prewarm must not run"),
+            return_value=Path("ffmpeg"),
         ) as ensure_ffmpeg:
             manager._prewarm_binary_worker()
 
-        ensure_bbdown.assert_not_called()
-        ensure_ffmpeg.assert_not_called()
-        self.assertEqual(manager.binary_state, "ready")
-        self.assertEqual(manager.binary_version, "Rust ABI 1")
-        self.assertEqual(manager.binary_message, "Rust Native ready")
-        self.assertEqual(manager.ffmpeg_state, "ready")
-        self.assertEqual(manager.ffmpeg_version, "Rust MediaBackend ABI 1")
-        self.assertEqual(manager.ffmpeg_message, "Rust MediaBackend ready")
+        ensure_bbdown.assert_called_once_with()
+        ensure_ffmpeg.assert_called_once_with(force_refresh=True)
+        self.assertEqual(manager.binary_state, "failed")
+        self.assertEqual(manager.binary_message, "stale BBDown failure")
+        self.assertEqual(manager.ffmpeg_state, "failed")
+        self.assertEqual(manager.ffmpeg_message, "stale FFmpeg failure")
 
     def test_diagnostic_snapshot_preserves_frontend_service_failure_reason(self):
         manager = CacheManager.__new__(CacheManager)
@@ -81,6 +73,9 @@ class CacheManagerOutputTest(unittest.TestCase):
         manager.binary_state = "failed"
         manager.binary_version = ""
         manager.binary_message = "legacy BBDown prewarm failed"
+        manager.ffmpeg_state = "ready"
+        manager.ffmpeg_version = "ffmpeg 7"
+        manager.ffmpeg_message = "FFmpeg ready"
         manager.max_cache_items = 3
         manager.download_source = DOWNLOAD_SOURCE_NATIVE
         manager.media_capabilities = {}
@@ -103,8 +98,10 @@ class CacheManagerOutputTest(unittest.TestCase):
 
         native = snapshot["tools"]["Rust Native"]
         media = snapshot["tools"]["Rust MediaBackend"]
-        self.assertEqual(native["state"], "failed")
-        self.assertEqual(native["message"], "legacy BBDown prewarm failed")
+        bbdown = snapshot["tools"]["BBDown"]
+        self.assertEqual(bbdown["state"], "failed")
+        self.assertEqual(native["state"], "ready")
+        self.assertEqual(native["message"], "Rust Native ready")
         self.assertEqual(native["runtime_state"], "ready")
         self.assertEqual(media["state"], "ready")
         self.assertEqual(media["message"], "Rust MediaBackend ready")
@@ -368,12 +365,22 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 restored.shutdown()
 
-    def test_cache_policy_migrates_legacy_download_source_to_native(self):
+    def test_cache_policy_preserves_each_download_source(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
-                snapshot = manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_YTDLP)
-                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_NATIVE)
+                self.assertEqual(
+                    [choice["value"] for choice in manager.policy_snapshot()["download_source_choices"]],
+                    [DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE],
+                )
+                for source in (
+                    DOWNLOAD_SOURCE_BBDOWN,
+                    DOWNLOAD_SOURCE_YTDLP,
+                    DOWNLOAD_SOURCE_DOWNKYI,
+                    DOWNLOAD_SOURCE_NATIVE,
+                ):
+                    snapshot = manager.set_cache_policy(download_source=source)
+                    self.assertEqual(snapshot["download_source"], source)
             finally:
                 manager.shutdown()
 
@@ -689,7 +696,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertEqual(target.read_bytes(), b"existing-runtime")
-        self.assertEqual(manager.download_source, DOWNLOAD_SOURCE_NATIVE)
+        self.assertEqual(manager.download_source, DOWNLOAD_SOURCE_BBDOWN)
 
     def test_existing_runtime_aria2c_skips_all_preparation_network(self):
         aria2_dir = Path(self.temp_dir.name) / "existing-aria2" / "tools" / "aria2c"

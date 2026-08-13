@@ -5135,8 +5135,8 @@ function renderCacheSettings(bbdown, ffmpeg, cachePolicy) {
   const playbackModeText = formatQualityLabel(currentQuality);
   const cacheChipMeta = formatCacheChipMeta(cachePolicy);
   const cacheUsageDetail = formatCacheUsage(cachePolicy);
-  const bbdownTitle = `Rust Native ${formatBBDownHint(bbdown)}`;
-  const ffmpegTitle = `Rust MediaBackend ${formatFFmpegHint(ffmpeg)}`;
+  const bbdownTitle = `BBDown ${formatBBDownHint(bbdown)}`;
+  const ffmpegTitle = `FFmpeg ${formatFFmpegHint(ffmpeg)}`;
   const signature = JSON.stringify({
     serviceState,
     playbackModeText,
@@ -5490,9 +5490,11 @@ function renderCachePolicyControls(cachePolicy) {
       };
     }).filter((choice) => choice.value)
     : [
+      { value: "bbdown", label: "BBDown" },
+      { value: "downkyi", label: "Downkyi (aria2c)" },
       { value: "native", label: "Rust Native" },
     ];
-  const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "native");
+  const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
   const signature = JSON.stringify({
     choices,
     currentQuality,
@@ -11616,7 +11618,7 @@ function isDownkyiDownloadSource(downloadSource) {
 }
 
 function currentCacheDownloadSource() {
-  return String(state.data?.cache_policy?.download_source || "native");
+  return String(state.data?.cache_policy?.download_source || "bbdown");
 }
 
 function restoreCacheDownloadSourceSelect() {

@@ -149,13 +149,13 @@ DOWNLOAD_SOURCE_BBDOWN = "bbdown"
 DOWNLOAD_SOURCE_YTDLP = "ytdlp"
 DOWNLOAD_SOURCE_DOWNKYI = "downkyi"
 DOWNLOAD_SOURCE_NATIVE = "native"
-DOWNLOAD_SOURCE_CHOICES = (DOWNLOAD_SOURCE_NATIVE,)
-LEGACY_DOWNLOAD_SOURCES = {
+DOWNLOAD_SOURCE_CHOICES = (
     DOWNLOAD_SOURCE_BBDOWN,
     DOWNLOAD_SOURCE_YTDLP,
     DOWNLOAD_SOURCE_DOWNKYI,
-}
-DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_NATIVE
+    DOWNLOAD_SOURCE_NATIVE,
+)
+DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_BBDOWN
 
 
 class CacheCancelledError(RuntimeError):
@@ -338,12 +338,6 @@ class CacheManager:
         self.bbdown_login_generation: int | None = None
         rust_runtime.reset_bilibili_login_status()
         self._load_cache_policy()
-        runtime_status = rust_runtime.runtime_status()
-        self.binary_state = "ready" if runtime_status["loaded"] else "failed"
-        self.binary_version = "Rust ABI 1" if runtime_status["loaded"] else ""
-        self.binary_message = str(
-            runtime_status.get("error") or "Rust Native ready"
-        )
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
 
@@ -365,13 +359,13 @@ class CacheManager:
             }
 
     def ffmpeg_status(self) -> dict[str, Any]:
-        runtime = rust_runtime.runtime_status()
-        return {
-            "state": "ready" if runtime["loaded"] else "failed",
-            "version": "Rust MediaBackend ABI 1" if runtime["loaded"] else "",
-            "message": str(runtime.get("error") or "Rust MediaBackend ready"),
-            "path": str(runtime.get("path") or ""),
-        }
+        with self.lock:
+            return {
+                "state": self.ffmpeg_state,
+                "version": self.ffmpeg_version,
+                "message": self.ffmpeg_message,
+                "path": str(FFMPEG_RUNTIME_PATH),
+            }
 
     def diagnostic_snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -379,30 +373,89 @@ class CacheManager:
             urgent_item_ids = list(self.urgent_cache_ids)
             pending_ids = list(self.pending_ids)
             desired_ids = list(self.ordered_desired_ids)
+            binary_state = self.binary_state
+            binary_version = self.binary_version
+            ffmpeg_state = self.ffmpeg_state
+            ffmpeg_version = self.ffmpeg_version
+            download_source = self.download_source
 
         runtime = rust_runtime.runtime_status()
-        native_service = self.status()
-        media_service = self.ffmpeg_status()
         runtime_state = "ready" if runtime["loaded"] else "failed"
+        runtime_version = (
+            f"Rust ABI {runtime.get('abi_version')}"
+            if runtime["loaded"]
+            else ""
+        )
+        bbdown_path = (
+            Path(BB_DOWN_PATH_OVERRIDE).expanduser()
+            if BB_DOWN_PATH_OVERRIDE
+            else self._local_binary_path()
+        )
+        ytdlp_path = (
+            Path(YTDLP_PATH_OVERRIDE).expanduser()
+            if YTDLP_PATH_OVERRIDE
+            else self._local_ytdlp_binary_path()
+        )
+        aria2c_path = (
+            Path(ARIA2C_PATH_OVERRIDE).expanduser()
+            if ARIA2C_PATH_OVERRIDE
+            else self._local_aria2c_binary_path()
+        )
+        ffmpeg_path = (
+            Path(FFMPEG_PATH_OVERRIDE).expanduser()
+            if FFMPEG_PATH_OVERRIDE
+            else FFMPEG_RUNTIME_PATH
+        )
+        bbdown_version = ""
+        if BB_DOWN_VERSION_FILE.exists():
+            try:
+                bbdown_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
+            except OSError:
+                bbdown_version = ""
+        if not bbdown_version and download_source == DOWNLOAD_SOURCE_BBDOWN:
+            bbdown_version = binary_version
+        if not bbdown_version:
+            bbdown_version = self._read_bbdown_version(bbdown_path)
+
         return {
             "tools": {
+                "BBDown": self._diagnostic_tool_entry(
+                    bbdown_path, bbdown_version, binary_state
+                ),
+                "yt-dlp": self._diagnostic_tool_entry(
+                    ytdlp_path,
+                    self._read_ytdlp_version(ytdlp_path),
+                    binary_state if download_source == DOWNLOAD_SOURCE_YTDLP else "",
+                ),
+                "aria2c": self._diagnostic_tool_entry(
+                    aria2c_path,
+                    self._read_aria2c_version(aria2c_path)
+                    if aria2c_path.exists()
+                    else "",
+                    binary_state if download_source == DOWNLOAD_SOURCE_DOWNKYI else "",
+                ),
+                "FFmpeg": self._diagnostic_tool_entry(
+                    ffmpeg_path,
+                    ffmpeg_version or self._read_ffmpeg_version(ffmpeg_path),
+                    ffmpeg_state,
+                ),
                 "Rust Native": {
                     "installed": bool(runtime["loaded"]),
-                    "version": str(native_service.get("version") or ""),
-                    "state": str(native_service.get("state") or "idle"),
+                    "version": runtime_version,
+                    "state": runtime_state,
                     "path": str(runtime.get("path") or ""),
                     "capabilities": dict(runtime.get("capabilities") or {}),
-                    "message": str(native_service.get("message") or ""),
+                    "message": str(runtime.get("error") or "Rust Native ready"),
                     "runtime_state": runtime_state,
                     "runtime_error": str(runtime.get("error") or ""),
                     "load_diagnostics": dict(runtime.get("load_diagnostics") or {}),
                 },
                 "Rust MediaBackend": {
                     "installed": bool(runtime["loaded"]),
-                    "version": str(media_service.get("version") or ""),
-                    "state": str(media_service.get("state") or "idle"),
-                    "path": str(media_service.get("path") or runtime.get("path") or ""),
-                    "message": str(media_service.get("message") or ""),
+                    "version": runtime_version,
+                    "state": runtime_state,
+                    "path": str(runtime.get("path") or ""),
+                    "message": str(runtime.get("error") or "Rust MediaBackend ready"),
                     "runtime_state": runtime_state,
                     "runtime_error": str(runtime.get("error") or ""),
                 },
@@ -495,6 +548,14 @@ class CacheManager:
                 "download_source": self.download_source,
                 "reset_offset_on_next": self.reset_offset_on_next,
                 "download_source_choices": [
+                    {
+                        "value": DOWNLOAD_SOURCE_BBDOWN,
+                        "label": "BBDown",
+                    },
+                    {
+                        "value": DOWNLOAD_SOURCE_DOWNKYI,
+                        "label": "Downkyi (aria2c)",
+                    },
                     {
                         "value": DOWNLOAD_SOURCE_NATIVE,
                         "label": "Rust Native",
@@ -914,15 +975,19 @@ class CacheManager:
         value = str(download_source or "").strip().lower()
         if value in DOWNLOAD_SOURCE_CHOICES:
             return value
-        if value in LEGACY_DOWNLOAD_SOURCES:
-            return DOWNLOAD_SOURCE_NATIVE
         return DEFAULT_DOWNLOAD_SOURCE
 
     def downloader_status(self, download_source: object) -> dict[str, Any]:
-        requested_source = str(download_source or "").strip().lower()
-        if requested_source == DOWNLOAD_SOURCE_DOWNKYI:
-            return self._aria2c_status()
         normalized_source = self._normalize_download_source(download_source)
+        if normalized_source == DOWNLOAD_SOURCE_DOWNKYI:
+            return self._aria2c_status()
+        if normalized_source != DOWNLOAD_SOURCE_NATIVE:
+            return {
+                "download_source": normalized_source,
+                "tool": self._download_source_label(normalized_source),
+                "ready": True,
+                "requires_prepare": False,
+            }
         status = rust_runtime.runtime_status()
         return {
             "download_source": normalized_source,
@@ -933,8 +998,8 @@ class CacheManager:
         }
 
     def prepare_downloader(self, download_source: object) -> dict[str, Any]:
-        requested_source = str(download_source or "").strip().lower()
-        if requested_source == DOWNLOAD_SOURCE_DOWNKYI:
+        normalized_source = self._normalize_download_source(download_source)
+        if normalized_source == DOWNLOAD_SOURCE_DOWNKYI:
             status = self._aria2c_status()
             if status.get("ready"):
                 return status
@@ -963,7 +1028,6 @@ class CacheManager:
             status = self._aria2c_status()
             status["prepared"] = True
             return status
-        normalized_source = self._normalize_download_source(download_source)
         return self.downloader_status(normalized_source)
 
     def _restore_binary_status(self, status: tuple[str, str, str]) -> None:
@@ -1624,25 +1688,55 @@ class CacheManager:
         item_dir = CACHE_DIR / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
         download_source = self._current_download_source()
-        if download_source == DOWNLOAD_SOURCE_NATIVE:
+        if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
             self._cleanup_attempt_dirs(item_dir)
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, "")
         self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
 
-        if not rust_runtime.http_download_available() or not rust_runtime.media_backend_available():
-            status = rust_runtime.runtime_status()
-            message = str(status.get("error") or "Rust runtime is unavailable")
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] Rust runtime unavailable: {message}")
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"Rust Native 不可用: {message}",
-                persist_backup=False,
-            )
-            return False
-        binary_path = Path()
-        ffmpeg_path = Path()
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
+            if not rust_runtime.http_download_available() or not rust_runtime.media_backend_available():
+                status = rust_runtime.runtime_status()
+                message = str(status.get("error") or "Rust runtime is unavailable")
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] Rust runtime unavailable: {message}",
+                )
+                self.store.update_item(
+                    item_id,
+                    cache_status="failed",
+                    cache_message=f"Rust Native 不可用: {message}",
+                    persist_backup=False,
+                )
+                return False
+            binary_path = Path()
+            ffmpeg_path = Path()
+        else:
+            try:
+                binary_path = self._ensure_downloader(download_source)
+            except Exception as exc:  # noqa: BLE001
+                label = self._download_source_label(download_source)
+                self.store.update_item(
+                    item_id,
+                    cache_status="failed",
+                    cache_message=f"{label} 不可用: {exc}",
+                    persist_backup=False,
+                )
+                return False
+            try:
+                ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
+            except Exception as exc:  # noqa: BLE001
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}",
+                )
+                self.store.update_item(
+                    item_id,
+                    cache_status="failed",
+                    cache_message=f"FFmpeg 不可用: {exc}",
+                    persist_backup=False,
+                )
+                return False
 
         if not self._should_cache(item_id):
             return False
@@ -1667,12 +1761,19 @@ class CacheManager:
             )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-            native_tracks_prevalidated = bool(cache_result.get("native_tracks_prevalidated"))
-            if not native_tracks_prevalidated:
+            native_tracks_prevalidated = bool(
+                cache_result.get("native_tracks_prevalidated")
+            )
+            downkyi_tracks_prevalidated = bool(
+                cache_result.get("downkyi_tracks_prevalidated")
+            )
+            if download_source == DOWNLOAD_SOURCE_DOWNKYI and not downkyi_tracks_prevalidated:
+                self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
+            if not native_tracks_prevalidated and not downkyi_tracks_prevalidated:
                 self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-            if download_source == DOWNLOAD_SOURCE_NATIVE:
+            if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
                 self._publish_validated_cache_result(cache_result, log_path)
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
@@ -2025,6 +2126,23 @@ class CacheManager:
                 audio_tracks=audio_tracks,
                 playback_selector=playback_selector,
             )
+        elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
+            dash_streams = self._resolve_dash_streams(
+                item,
+                playback_selector=playback_selector,
+            )
+            result_paths = self._download_dash_streams_with_aria2c(
+                item,
+                binary_path,
+                ffmpeg_path,
+                item_dir,
+                log_path,
+                dash_streams=dash_streams,
+                video_track=video_track,
+                audio_tracks=audio_tracks,
+                validate_tracks=True,
+                playback_selector=playback_selector,
+            )
         else:
             result_paths = {}
             max_workers = max(1, min(len(download_tracks), MAX_PARALLEL_TRACK_DOWNLOADS))
@@ -2178,17 +2296,23 @@ class CacheManager:
             "selected_audio_variant_id": selected_audio_variant_id,
             "validation_files": validation_files,
         }
-        if download_source == DOWNLOAD_SOURCE_NATIVE:
+        if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
             validation_metadata = [
                 dict(track.get("validation_metadata") or {})
                 for track in download_tracks
                 if isinstance(track.get("validation_metadata"), dict)
             ]
             if len(validation_metadata) != len(download_tracks):
-                raise DownloadCommandError("缓存校验失败: Rust Native 轨道缺少独立校验结果")
+                source_label = self._download_source_label(download_source)
+                raise DownloadCommandError(
+                    f"缓存校验失败: {source_label} 轨道缺少独立校验结果"
+                )
             result["validation_metadata"] = validation_metadata
             result["validation_failure_count"] = 0
-            result["native_tracks_prevalidated"] = True
+            if download_source == DOWNLOAD_SOURCE_NATIVE:
+                result["native_tracks_prevalidated"] = True
+            else:
+                result["downkyi_tracks_prevalidated"] = True
         return result
 
     @staticmethod
@@ -3269,7 +3393,7 @@ class CacheManager:
                 )
                 media_path: Path | None = None
                 try:
-                    media_path = self._download_stream_with_native_or_aria2c(
+                    media_path = self._download_stream_with_aria2c(
                         item_id, binary_path, ffmpeg_path, target_dir, log_path,
                         urls=urls,
                         out_name=out_name,
@@ -3793,47 +3917,6 @@ class CacheManager:
             measure_path=False,
         )
         return expected_path
-
-    def _download_stream_with_native_or_aria2c(
-        self,
-        item_id: str,
-        binary_path: Path,
-        ffmpeg_path: Path,
-        target_dir: Path,
-        log_path: Path,
-        **kwargs,
-    ) -> Path:
-        if rust_runtime.http_download_available():
-            try:
-                return self._download_stream_with_rust(
-                    item_id,
-                    target_dir,
-                    log_path,
-                    **kwargs,
-                )
-            except CacheCancelledError:
-                raise
-            except DownloadCommandError as exc:
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] legacy Downkyi Rust download failed; "
-                    f"using aria2c compatibility adapter: {self._compact_probe_error(str(exc))}",
-                )
-        else:
-            status = rust_runtime.runtime_status()
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] legacy Downkyi Rust downloader unavailable; "
-                f"using aria2c compatibility adapter: {status.get('error') or 'unknown error'}",
-            )
-        return self._download_stream_with_aria2c(
-            item_id,
-            binary_path,
-            ffmpeg_path,
-            target_dir,
-            log_path,
-            **kwargs,
-        )
 
     def _download_stream_with_rust(
         self,
@@ -7836,14 +7919,24 @@ class CacheManager:
         return "等待缓存"
 
     def _prewarm_binary_worker(self) -> None:
-        status = rust_runtime.runtime_status()
-        loaded = bool(status["loaded"])
-        abi_version = status.get("abi_version")
-        error = str(status.get("error") or "")
-        with self.lock:
-            self.binary_state = "ready" if loaded else "failed"
-            self.binary_version = f"Rust ABI {abi_version}" if loaded else ""
-            self.binary_message = error or "Rust Native ready"
-            self.ffmpeg_state = "ready" if loaded else "failed"
-            self.ffmpeg_version = f"Rust MediaBackend ABI {abi_version}" if loaded else ""
-            self.ffmpeg_message = error or "Rust MediaBackend ready"
+        try:
+            with self.lock:
+                if self.ffmpeg_state == "idle":
+                    self.ffmpeg_state = "checking"
+                    self.ffmpeg_message = "后台准备 FFmpeg 中"
+            self._ensure_ffmpeg(force_refresh=True)
+        except Exception as exc:  # noqa: BLE001
+            with self.lock:
+                self.ffmpeg_state = "failed"
+                self.ffmpeg_message = f"FFmpeg 准备失败: {exc}"
+
+        try:
+            with self.lock:
+                if self.binary_state == "idle":
+                    self.binary_state = "checking"
+                    self.binary_message = "后台准备 BBDown 中"
+            self._ensure_bbdown()
+        except Exception as exc:  # noqa: BLE001
+            with self.lock:
+                self.binary_state = "failed"
+                self.binary_message = f"BBDown 准备失败: {exc}"
