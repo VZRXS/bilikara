@@ -2599,40 +2599,24 @@ class CacheManager:
         self._update_recache_status(item_id, state="publishing", message="发布新版本缓存")
 
         new_media_revision = uuid.uuid4().hex[:12]
-        video_file = Path(cache_result["video_file"])
-        video_file_name = video_file.name
-
-        def published_relative_path(source: Path, fallback_name: str) -> str:
-            try:
-                nested_path = source.relative_to(staging_dir)
-            except ValueError:
-                nested_path = Path(fallback_name)
-            if nested_path.is_absolute() or ".." in nested_path.parts:
-                nested_path = Path(fallback_name)
-            return (Path(item_id) / nested_path).as_posix()
-
-        video_relative_path = published_relative_path(video_file, video_file_name)
+        video_file_name = Path(cache_result["video_file"]).name
+        video_relative_path = f"{item_id}/{video_file_name}"
         video_media_url = f"/media/{video_relative_path}?rev={new_media_revision}"
 
         audio_variants = []
         for variant in cache_result.get("audio_variants", []):
             if isinstance(variant, dict):
                 audio_rel = str(variant.get("audio_relative_path") or "").strip()
-                audio_source = self._cache_path_from_relative_path(audio_rel) if audio_rel else None
                 if audio_rel:
                     rel_name = Path(audio_rel).name
                 else:
                     audio_url = str(variant.get("audio_url") or "").strip()
-                    audio_source = self._cache_path_from_media_url(audio_url)
                     parsed = urllib.parse.urlparse(audio_url)
                     unquoted_path = urllib.parse.unquote(parsed.path or audio_url)
                     rel_name = Path(unquoted_path).name
                 if not rel_name or rel_name in (".", "/"):
                     rel_name = "audio.m4a"
-                variant_relative = published_relative_path(
-                    audio_source or Path(rel_name),
-                    rel_name,
-                )
+                variant_relative = f"{item_id}/{rel_name}"
                 audio_variants.append({
                     **variant,
                     "audio_relative_path": variant_relative,

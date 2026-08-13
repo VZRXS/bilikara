@@ -2579,24 +2579,6 @@ async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "",
   return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
 }
 
-function uniqueD1BrowseAliases(aliases, fallbackTag = "", fallbackLocale = "") {
-  const seen = new Set();
-  const results = [];
-  const source = Array.isArray(aliases) && aliases.length
-    ? aliases
-    : [{ tag: fallbackTag, locale: fallbackLocale }];
-  source.forEach((entry) => {
-    const tag = String(entry?.tag || "").trim();
-    const locale = String(entry?.locale || "").trim();
-    if (!tag) return;
-    const key = `${locale}\n${tag}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    results.push({ tag, locale });
-  });
-  return results;
-}
-
 async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
   const params = new URLSearchParams();
   const normalizedTags = uniqueD1BrowseAliases(
