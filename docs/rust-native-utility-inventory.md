@@ -10,6 +10,11 @@ thread, and mutable-global interactions. Purity alone does not make a helper a
 good FFI candidate: Python-object adapters, very small coercions, and business
 policy remain in Python.
 
+This is a historical inventory. Phase 2 is also complete. Its existing Python
+references may remain frozen, but new backend/business functionality is now
+Rust-authoritative and must not receive a new equivalent Python semantic
+fallback.
+
 ## Existing native utility domains
 
 | Python module and helper | Category | Inputs → output | Dependencies | Pure | Phase 1 decision |
@@ -99,7 +104,7 @@ No other helper is approved for Phase 1. The tables below document why.
 | --- | --- | --- | --- |
 | `_video_id` | BV/av extraction from entry fields | core yes | Defer: dictionary adapter with three-field precedence; consolidate with future Bilibili identifier parser rather than add a narrow FFI call. |
 | `_text`, `_request_count`, `_timestamp`, `_format_time` | scalar coercion/formatting | mostly | Defer: one or two Python operations, locale/time dependency, or dictionary context. |
-| `_calculate_time_range`, `_fit_text`, `_wrap_text`, text measurement/font helpers | presentation formatting | mixed | Outside Phase 1: UI/export layout behavior and font/filesystem interaction. |
+| `_calculate_time_range`, `_fit_text`, `_wrap_text`, text measurement/font helpers | presentation formatting | mixed | Frozen legacy Python export infrastructure for v0.7. `prewarm_playlist_export_fonts()` intentionally warms the same Pillow/font caches used by the renderer; do not add a meaningless Rust prewarm. Migrate the complete renderer/export pipeline together in future. |
 | `_items_in_export_order`, `_playlist_export_sort_key` | ordering | yes | Excluded: ranking/selection. |
 | `_parse_font_codepoints`, `_sfnt_offset`, `_font_table`, `_parse_cmap_*`, `_u16`, `_u32` | binary font parsing | yes | Defer: cohesive but belongs to rendering/font infrastructure, not the application native utility layer. |
 | `_qr_matrix`, `_append_bits`, `_draw_format_bits`, Reed-Solomon/GF helpers | QR encoding | yes | Defer: cohesive rendering subsystem; no current safety/performance need and outside string/path utility scope. |
@@ -290,12 +295,14 @@ Missing optional symbols disable only their matching capabilities.
 | `cache_planning` | `rust_plan_cache_window` / `plan_cache_window` | Phase-2 Item 7. Plans desired, pending, retained, and preempted cache IDs from an immutable snapshot. Python retains files, workers, locks, retries, cancellation, and plan application. |
 | `playlist_planning` | `rust_plan_playlist_order`, `rust_decide_playlist_duplicate` / matching capabilities | Phase-2 Item 8. Plans queue ordering and duplicate identity from immutable descriptors. Python retains Store mutation, object identity, history/session updates, persistence, locking, and complete fallback. |
 
-The following typed policy was added during v0.7.0 stabilization and is not a
-ninth Phase-2 item:
+The following typed policies were added during v0.7.0 stabilization and are
+not additional Phase-2 items or a new "Phase 3":
 
 | Typed Rust policy | Optional JSON export / Python capability | Status and retained Python ownership |
 | --- | --- | --- |
 | `av_delay` | `rust_apply_av_delay_action` / `apply_av_delay_action` | Canonical pure lock, unlock, adjust, reset, clamping, and button-state transitions. Python retains mutable Store integration, global/locked persistence, legacy migration, strict native-response validation, and complete fallback. |
+| `playback_selector_policy` | `rust_decide_playback_selector_policy` / `decide_playback_selector_policy` | Rust-authoritative valid/default selector modes, explicit validation, and persisted-mode normalization. Python supplies capability availability, persists the result, and formats warnings. Only narrow Python-mode bootstrap compatibility remains when Rust is wholly unavailable. |
+| `tool_prepare_policy` | `rust_decide_tool_prepare_policy` / `decide_tool_prepare_policy` | Rust-authoritative prepare routing from immutable override/install/refresh/version facts. Python retains chmod, metadata and subprocess I/O, release HTTP, download, validation, extraction, and publication. No Python semantic fallback is introduced. |
 
 Audio binding transports only original index, page number, duration, and part
 label. It does not transport CID or arbitrary Bilibili metadata. The Rust
@@ -310,14 +317,15 @@ normalization, fallback, and ordering policies are intentionally different.
 Downloader execution, mobile plugin work, and FFmpeg migration were not
 started.
 
-### Criteria for future migration
+### Criteria for future Rust ownership
 
-Future native work should start in a later phase only when a cohesive domain
-has enough parsing, validation, safety, or reuse value to justify an FFI call.
-It must preserve Python APIs and fallbacks, expose independently detectable
-capabilities, distinguish invalid values from backend failures, and keep all
-I/O and mutable policy in Python unless that later phase explicitly changes
-the boundary.
+New backend/business work must start under Rust ownership when its required
+domain is ready. Preserve public compatibility APIs where needed, expose
+independently detectable capabilities, and distinguish invalid values from
+backend failures, but do not create new Python semantic counterparts. Existing
+v0.7 Python I/O and orchestration may adapt and apply Rust decisions. New
+stateful features must move the relevant ownership into Rust or wait for v0.8
+Rust Core Convergence / Preview.
 
 The intentionally deferred helpers in the audit remain deferred. In
 particular, Bilibili short-link resolution, download-source defaults,

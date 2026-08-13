@@ -5,7 +5,9 @@ const avDelayRequestTimeoutMs = 8000;
 const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
+const eventStreamRetryJitterRatio = 0.2;
 const larkSearchTableCount = 5;
+const expandedSearchEagerCoverCount = 6;
 const d1BrowseItemLimit = 450;
 const d1BrowseTagLimit = 450;
 const d1BrowseLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#".split("");
@@ -2182,17 +2184,13 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
   if (!["csv", "image"].includes(normalizedFormat)) {
     return;
   }
-  const exportDownload = window.BilikaraExportDownload;
-  const requestId = exportDownload?.generateRequestId
-    ? exportDownload.generateRequestId()
-    : ("req_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4));
   const params = new URLSearchParams({
     format: normalizedFormat,
     source: normalizedSource,
     page_size: String(normalizedPageSize),
-    request_id: requestId,
   });
   const exportUrl = `/api/playlist/export?${params.toString()}`;
+  const exportDownload = window.BilikaraExportDownload;
   if (!exportDownload
     || typeof exportDownload.downloadBrowserFile !== "function") {
     throw new Error(t("history.exportFailed"));
@@ -2204,11 +2202,6 @@ async function downloadHistoryExport(format, source = selectedHistoryExportSourc
     fallbackFilename,
     fallbackMessage: t("history.exportFailed"),
     headers: clientHeaders(),
-    surface: "remote",
-    format: normalizedFormat,
-    source: normalizedSource,
-    pageSize: normalizedPageSize,
-    requestId,
   });
 }
 
@@ -2457,14 +2450,31 @@ function closeEventStream() {
   state.eventSource = null;
 }
 
+function eventStreamReconnectDelayMs(baseDelayMs, randomValue = Math.random()) {
+  const baseDelay = Math.max(
+    eventStreamInitialRetryMs,
+    Math.min(eventStreamMaxRetryMs, Number(baseDelayMs) || eventStreamInitialRetryMs),
+  );
+  const jitterSpan = Math.max(250, Math.round(baseDelay * eventStreamRetryJitterRatio));
+  const lowerBound = baseDelay >= eventStreamMaxRetryMs
+    ? Math.max(eventStreamInitialRetryMs, baseDelay - jitterSpan)
+    : baseDelay;
+  const upperBound = baseDelay >= eventStreamMaxRetryMs
+    ? baseDelay
+    : Math.min(eventStreamMaxRetryMs, baseDelay + jitterSpan);
+  const boundedRandom = Math.max(0, Math.min(1, Number(randomValue) || 0));
+  return Math.round(lowerBound + ((upperBound - lowerBound) * boundedRandom));
+}
+
 function scheduleEventStreamReconnect() {
   clearEventStreamReconnectTimer();
-  const delayMs = state.eventStreamRetryMs;
+  const baseDelayMs = state.eventStreamRetryMs;
+  const delayMs = eventStreamReconnectDelayMs(baseDelayMs);
   state.eventStreamReconnectTimer = window.setTimeout(() => {
     state.eventStreamReconnectTimer = null;
     connectStateStream();
   }, delayMs);
-  state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, delayMs * 2);
+  state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, baseDelayMs * 2);
 }
 
 function connectStateStream() {
@@ -2579,11 +2589,21 @@ async function fetchD1Browse({ kind = "name", letter = "", query = "", tag = "",
   return payload.data || { kind, letter: normalizedLetter, query: normalizedQuery, tag: normalizedTag, tags: [], items: [] };
 }
 
+function uniqueD1BrowseTags(tags) {
+  const seen = new Set();
+  return (Array.isArray(tags) ? tags : []).reduce((results, value) => {
+    const tag = String(value || "").trim();
+    if (tag && !seen.has(tag)) {
+      seen.add(tag);
+      results.push(tag);
+    }
+    return results;
+  }, []);
+}
+
 async function fetchD1CategoryBrowse({ tags = [], query = "", offset = 0, limit = 100 } = {}) {
   const params = new URLSearchParams();
-  const normalizedTags = uniqueD1BrowseAliases(
-    (Array.isArray(tags) ? tags : []).map((tag) => ({ tag, locale: "" })),
-  ).map((entry) => entry.tag);
+  const normalizedTags = uniqueD1BrowseTags(tags);
   normalizedTags.forEach((tag) => {
     params.append(categoryBrowseUsesFullFieldSearch(tag) ? "tag" : "tag45", tag);
   });
@@ -2813,11 +2833,8 @@ function firstSearchResultValue(item, keys) {
 }
 
 function searchResultCoverUrl(item) {
-  let coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
-  if (coverUrl.startsWith("//")) {
-    coverUrl = `https:${coverUrl}`;
-  }
-  return coverUrl;
+  const coverUrl = firstSearchResultValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
+  return window.BilikaraSongDetail?.normalizeBilibiliImageUrl?.(coverUrl) || coverUrl;
 }
 
 function formatCompactCount(value) {
@@ -3093,31 +3110,41 @@ function setGatchaUidFlowMessage(target, message, isError = false) {
   setGatchaUidMessage(message, isError);
 }
 
-function createSearchResultRow(item) {
-  const row = document.createElement("article");
-  row.className = "search-result-item";
-  searchResultItemByElement.set(row, item);
-  const itemUrl = String(item?.url || "").trim();
-  if (itemUrl) {
-    row.dataset.url = itemUrl;
-  }
+function appendSearchResultCoverFallback(cover, item, stateName) {
+  const fallback = document.createElement("span");
+  fallback.className = "search-result-cover-fallback";
+  fallback.textContent = String(item?.bvid || "Bili");
+  cover.appendChild(fallback);
+  cover.classList.add("is-empty");
+  cover.classList.toggle("is-error", stateName === "error");
+  cover.dataset.coverState = stateName;
+}
 
+function createSearchResultCover(item, { eagerCover = false } = {}) {
   const coverUrl = searchResultCoverUrl(item);
   const cover = document.createElement("div");
   cover.className = "search-result-cover";
   if (coverUrl) {
     const image = document.createElement("img");
-    image.src = coverUrl;
     image.alt = "";
-    image.loading = "lazy";
+    image.loading = eagerCover ? "eager" : "lazy";
     image.decoding = "async";
     image.referrerPolicy = "no-referrer";
+    cover.dataset.coverState = "loading";
+    image.onload = () => {
+      cover.dataset.coverState = "loaded";
+    };
+    image.onerror = () => {
+      if (cover.dataset.coverState === "error") {
+        return;
+      }
+      image.remove();
+      appendSearchResultCoverFallback(cover, item, "error");
+    };
     cover.appendChild(image);
+    image.src = coverUrl;
   } else {
-    const fallback = document.createElement("span");
-    fallback.textContent = String(item?.bvid || "Bili");
-    cover.appendChild(fallback);
-    cover.classList.add("is-empty");
+    appendSearchResultCoverFallback(cover, item, "missing");
   }
 
   const duration = formatSearchDuration(firstSearchResultValue(item, ["preserved_1", "duration", "length"]));
@@ -3131,6 +3158,19 @@ function createSearchResultRow(item) {
   if (ratingStars) {
     cover.appendChild(ratingStars);
   }
+  return cover;
+}
+
+function createSearchResultRow(item, { eagerCover = false } = {}) {
+  const row = document.createElement("article");
+  row.className = "search-result-item";
+  searchResultItemByElement.set(row, item);
+  const itemUrl = String(item?.url || "").trim();
+  if (itemUrl) {
+    row.dataset.url = itemUrl;
+  }
+
+  const cover = createSearchResultCover(item, { eagerCover });
 
   const meta = document.createElement("div");
   meta.className = "search-result-meta search-result-body";
@@ -3191,8 +3231,10 @@ function renderSearchResultItems(container, items, emptyText = "") {
     container.appendChild(empty);
     return;
   }
-  normalizedItems.forEach((item) => {
-    container.appendChild(createSearchResultRow(item));
+  normalizedItems.forEach((item, index) => {
+    container.appendChild(createSearchResultRow(item, {
+      eagerCover: index < expandedSearchEagerCoverCount,
+    }));
   });
 }
 
@@ -3211,8 +3253,7 @@ function appendSearchResultItems(container, items) {
 }
 
 const canonicalBilikaraSearch = {
-  draftQuery: "",
-  resultQuery: "",
+  query: "",
   items: [],
   message: "",
   isError: false,
@@ -3222,7 +3263,7 @@ const canonicalBilikaraSearch = {
 };
 
 function syncBilikaraSearchViews() {
-  const query = canonicalBilikaraSearch.draftQuery;
+  const query = canonicalBilikaraSearch.query;
   const items = canonicalBilikaraSearch.items;
   const message = canonicalBilikaraSearch.message;
   const isError = canonicalBilikaraSearch.isError;
@@ -3239,72 +3280,53 @@ function syncBilikaraSearchViews() {
   setLarkSearchMessage(message, isError);
   setSearchModalLarkMessage(message, isError);
 
-  const emptyText = hasSearched && !items.length ? (isError ? "" : t("search.larkNoResults")) : "";
+  const emptyText = hasSearched && !loading && !items.length ? (isError ? "" : t("search.larkNoResults")) : "";
 
   if (elements.larkSearchResults) {
-    if ((!hasSearched && !items.length) || (loading && !items.length)) {
-      hideLarkSearchResults();
+    if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
+      elements.larkSearchResults.innerHTML = "";
+      elements.larkSearchResults.classList.add("hidden");
     } else {
       renderLarkSearchResults(items);
     }
   }
 
   if (elements.searchModalLarkResults) {
-    if ((!hasSearched && !items.length) || (loading && !items.length)) {
+    if ((loading && !items.length) || (!hasSearched && !items.length && !message)) {
       elements.searchModalLarkResults.innerHTML = "";
-      elements.searchModalLarkResults.classList.add("hidden");
+      elements.searchModalLarkResults.classList.toggle(
+        "hidden",
+        !loading && !hasSearched && !message,
+      );
     } else {
       renderSearchResultItems(elements.searchModalLarkResults, items, emptyText);
     }
   }
 }
 
-function setCanonicalBilikaraSearchBusy(busy) {
-  canonicalBilikaraSearch.loading = Boolean(busy);
-  if (elements.larkSearchButton) elements.larkSearchButton.disabled = Boolean(busy);
-  if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = Boolean(busy);
-}
-
-function updateCanonicalBilikaraSearchDraft(value) {
-  const draftQuery = String(value || "");
-  canonicalBilikaraSearch.seq += 1;
-  canonicalBilikaraSearch.draftQuery = draftQuery;
-  setCanonicalBilikaraSearchBusy(false);
-  if (draftQuery.trim() !== canonicalBilikaraSearch.resultQuery) {
-    canonicalBilikaraSearch.resultQuery = "";
-    canonicalBilikaraSearch.items = [];
-    canonicalBilikaraSearch.message = "";
-    canonicalBilikaraSearch.isError = false;
-    canonicalBilikaraSearch.hasSearched = false;
-  }
-  syncBilikaraSearchViews();
-}
-
 async function executeCanonicalBilikaraSearch(queryStr) {
   const query = String(queryStr || "").trim();
   if (!query) {
-    canonicalBilikaraSearch.seq += 1;
-    canonicalBilikaraSearch.draftQuery = "";
-    canonicalBilikaraSearch.resultQuery = "";
+    canonicalBilikaraSearch.query = "";
     canonicalBilikaraSearch.items = [];
     canonicalBilikaraSearch.message = t("search.keywordRequired");
     canonicalBilikaraSearch.isError = true;
     canonicalBilikaraSearch.hasSearched = false;
-    setCanonicalBilikaraSearchBusy(false);
     syncBilikaraSearchViews();
     return;
   }
 
   const searchSeq = canonicalBilikaraSearch.seq + 1;
   canonicalBilikaraSearch.seq = searchSeq;
-  canonicalBilikaraSearch.draftQuery = query;
-  canonicalBilikaraSearch.resultQuery = query;
-  canonicalBilikaraSearch.items = [];
-  setCanonicalBilikaraSearchBusy(true);
+  canonicalBilikaraSearch.query = query;
+  canonicalBilikaraSearch.loading = true;
   canonicalBilikaraSearch.message = t("search.larkSearching");
   canonicalBilikaraSearch.isError = false;
   canonicalBilikaraSearch.hasSearched = true;
   syncBilikaraSearchViews();
+
+  if (elements.larkSearchButton) elements.larkSearchButton.disabled = true;
+  if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = true;
 
   try {
     const poolItems = await searchLarkPool(query);
@@ -3335,7 +3357,9 @@ async function executeCanonicalBilikaraSearch(queryStr) {
     canonicalBilikaraSearch.isError = true;
   } finally {
     if (canonicalBilikaraSearch.seq === searchSeq) {
-      setCanonicalBilikaraSearchBusy(false);
+      canonicalBilikaraSearch.loading = false;
+      if (elements.larkSearchButton) elements.larkSearchButton.disabled = false;
+      if (elements.searchModalLarkButton) elements.searchModalLarkButton.disabled = false;
       syncBilikaraSearchViews();
     }
   }
@@ -5645,18 +5669,11 @@ async function confirmBindingSheet() {
     }
     applyStateSnapshot(result.data, { forceRender: true });
     closeBindingSheet();
+    if (["modalSearch", "modalFollow", "modalFavlist", "modalBrowse"].includes(source)) {
+      searchDetailController?.close({ immediate: true });
+    }
     if (intent.clearInput) {
       elements.urlInput.value = "";
-    }
-    if (intent.source === "search") {
-      hideSearchResults();
-      elements.searchQuery.value = "";
-    }
-    if (intent.source === "lark") {
-      hideLarkSearchResults();
-      if (elements.larkSearchQuery) {
-        elements.larkSearchQuery.value = "";
-      }
     }
     if (intent.source === "follow") {
       setFollowBrowseMessage("");
@@ -6599,16 +6616,6 @@ async function addByUrl(url, position = "tail", source = "search") {
       return false;
     }
     applyStateSnapshot(result.data, { forceRender: true });
-    if (source === "search") {
-      hideSearchResults();
-      elements.searchQuery.value = "";
-    }
-    if (source === "lark") {
-      hideLarkSearchResults();
-      if (elements.larkSearchQuery) {
-        elements.larkSearchQuery.value = "";
-      }
-    }
     if (source === "gatcha") {
       state.gatchaCandidate = null;
       renderGatchaUidView();
@@ -7056,11 +7063,17 @@ elements.larkSearchToggle?.addEventListener("click", () => {
 });
 
 elements.larkSearchQuery?.addEventListener("input", () => {
-  updateCanonicalBilikaraSearchDraft(elements.larkSearchQuery?.value);
+  canonicalBilikaraSearch.query = String(elements.larkSearchQuery?.value || "");
+  if (elements.searchModalLarkQuery && elements.searchModalLarkQuery.value !== canonicalBilikaraSearch.query) {
+    elements.searchModalLarkQuery.value = canonicalBilikaraSearch.query;
+  }
 });
 
 elements.searchModalLarkQuery?.addEventListener("input", () => {
-  updateCanonicalBilikaraSearchDraft(elements.searchModalLarkQuery?.value);
+  canonicalBilikaraSearch.query = String(elements.searchModalLarkQuery?.value || "");
+  if (elements.larkSearchQuery && elements.larkSearchQuery.value !== canonicalBilikaraSearch.query) {
+    elements.larkSearchQuery.value = canonicalBilikaraSearch.query;
+  }
 });
 
 elements.larkSearchForm?.addEventListener("submit", async (event) => {
@@ -7069,9 +7082,6 @@ elements.larkSearchForm?.addEventListener("submit", async (event) => {
 });
 
 elements.larkSearchResults?.addEventListener("click", async (event) => {
-  if (openSearchResultDetail(event, elements.larkSearchResults, "lark")) {
-    return;
-  }
   const button = event.target.closest("button[data-url]");
   if (!button || button.disabled) {
     return;
@@ -7871,6 +7881,7 @@ function makeElementDraggable(element, onClick) {
   let suppressClickUntil = 0;
   let pctX = null;
   let pctY = null;
+  let activeTouchId = null;
 
   const invokeClick = () => {
     if (typeof onClick === "function") {
@@ -7887,14 +7898,18 @@ function makeElementDraggable(element, onClick) {
       return;
     }
 
+    clearDragListeners();
     const rect = element.getBoundingClientRect();
     initialLeft = rect.left;
     initialTop = rect.top;
 
     if (e.type === "touchstart") {
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
+      const touch = e.changedTouches?.[0] || e.touches[0];
+      activeTouchId = Number.isFinite(touch?.identifier) ? touch.identifier : null;
+      startX = touch.clientX;
+      startY = touch.clientY;
     } else {
+      activeTouchId = null;
       startX = e.clientX;
       startY = e.clientY;
     }
@@ -7919,11 +7934,18 @@ function makeElementDraggable(element, onClick) {
     let currentY = 0;
 
     if (e.type === "touchmove") {
+      const touch = activeTouchId === null
+        ? e.touches[0]
+        : [...e.touches].find((candidate) => candidate.identifier === activeTouchId);
+      if (!touch) {
+        dragCancel();
+        return;
+      }
       if (e.cancelable) {
         e.preventDefault();
       }
-      currentX = e.touches[0].clientX;
-      currentY = e.touches[0].clientY;
+      currentX = touch.clientX;
+      currentY = touch.clientY;
     } else {
       currentX = e.clientX;
       currentY = e.clientY;
@@ -7969,7 +7991,15 @@ function makeElementDraggable(element, onClick) {
   };
 
   const dragEnd = (e) => {
+    if (
+      e.type === "touchend"
+      && activeTouchId !== null
+      && ![...(e.changedTouches || [])].some((touch) => touch.identifier === activeTouchId)
+    ) {
+      return;
+    }
     isDragging = false;
+    activeTouchId = null;
     element.classList.remove("dragging");
     clearDragListeners();
 
@@ -7987,11 +8017,15 @@ function makeElementDraggable(element, onClick) {
   };
 
   function dragCancel() {
+    const wasDragging = isDragging;
     isDragging = false;
+    activeTouchId = null;
     moved = false;
     element.classList.remove("dragging");
     clearDragListeners();
-    suppressNextClick();
+    if (wasDragging) {
+      suppressNextClick();
+    }
   }
 
   element.addEventListener("click", (event) => {
@@ -8004,6 +8038,13 @@ function makeElementDraggable(element, onClick) {
   });
   element.addEventListener("mousedown", dragStart);
   element.addEventListener("touchstart", dragStart);
+  window.addEventListener("blur", dragCancel);
+  window.addEventListener("pagehide", dragCancel);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      dragCancel();
+    }
+  });
 
   window.addEventListener("resize", () => {
     if (pctX === null || pctY === null) {

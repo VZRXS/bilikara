@@ -1,11 +1,14 @@
+import hashlib
 import io
 import json
 import os
 import queue
 import shutil
 import ssl
+import stat
 import subprocess
 import sys
+import tarfile
 import threading
 import unittest
 import urllib.error
@@ -19,7 +22,7 @@ from bilikara import rust_backend
 from bilikara.cache import (
     CachePlan,
     CacheManager,
-    MEDIA_LEASE_COORDINATOR,
+    DOWNLOAD_SOURCE_BBDOWN,
     DOWNLOAD_SOURCE_DOWNKYI,
     DOWNLOAD_SOURCE_YTDLP,
     DownloadCommandError,
@@ -448,6 +451,194 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertFalse(status["requires_prepare"])
         self.assertEqual(status["path"], str(target_path))
         self.assertEqual(status["version"], "1.37.0")
+
+    def test_macos_direct_metadata_enables_prepare_without_homebrew_or_path(self):
+        root = Path(self.temp_dir.name) / "macos-direct-status"
+        executable = root / "bilikara.app" / "Contents" / "MacOS" / "bilikara"
+        metadata_path = (
+            executable.parent.parent / "Resources" / "vendor" / "aria2-macos.json"
+        )
+        metadata_path.parent.mkdir(parents=True)
+        revision = "a" * 40
+        asset_name = f"aria2-1.37.0-macos-arm64-{revision}.tar.gz"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "tool": "aria2c",
+                    "provider": "bilikara-r2",
+                    "platform": "darwin",
+                    "arch": "arm64",
+                    "name": asset_name,
+                    "url": f"https://download.example/bilikara/tools/aria2/1.37.0/{revision}/{asset_name}",
+                    "sha256": "b" * 64,
+                    "version": "1.37.0",
+                    "source_url": (
+                        "https://github.com/aria2/aria2/releases/download/"
+                        "release-1.37.0/aria2-1.37.0.tar.xz"
+                    ),
+                    "source_sha256": (
+                        "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
+                    ),
+                    "recipe_revision": revision,
+                }
+            ),
+            encoding="utf-8",
+        )
+        aria2_dir = root / "tools" / "aria2c"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch(
+            "bilikara.cache.ARIA2_MACOS_METADATA_PATH",
+            root / "missing-vendor" / "aria2-macos.json",
+        ), patch("bilikara.cache.INTERNAL_VENDOR_DIR", root / "missing-internal"), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL",
+            "https://download.example/bilikara/tools",
+        ), patch("bilikara.cache.PACKAGED_RUNTIME", True), patch(
+            "bilikara.cache.sys.executable", str(executable)
+        ), patch.object(CacheManager, "_system_aria2c_path", return_value=None), patch.object(
+            CacheManager, "_brew_executable", return_value=None
+        ), patch.object(
+            CacheManager, "_current_platform_tokens", return_value=("darwin", "arm64")
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                status = manager.downloader_status(DOWNLOAD_SOURCE_DOWNKYI)
+            finally:
+                manager.shutdown()
+
+        self.assertFalse(status["ready"])
+        self.assertTrue(status["auto_prepare_supported"])
+        self.assertTrue(status["requires_prepare"])
+
+    def test_macos_direct_prepare_downloads_validates_and_publishes_atomically(self):
+        root = Path(self.temp_dir.name) / "macos-direct-install"
+        aria2_dir = root / "tools" / "aria2c"
+        metadata_path = root / "vendor" / "aria2-macos.json"
+        metadata_path.parent.mkdir(parents=True)
+        source_archive = root / "source.tar.gz"
+        binary_bytes = b"portable-aria2c"
+        with tarfile.open(source_archive, "w:gz") as bundle:
+            entry = tarfile.TarInfo("aria2c")
+            entry.size = len(binary_bytes)
+            bundle.addfile(entry, io.BytesIO(binary_bytes))
+        archive_sha = hashlib.sha256(source_archive.read_bytes()).hexdigest()
+        revision = "c" * 40
+        asset_name = f"aria2-1.37.0-macos-arm64-{revision}.tar.gz"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "tool": "aria2c",
+                    "provider": "bilikara-r2",
+                    "platform": "darwin",
+                    "arch": "arm64",
+                    "name": asset_name,
+                    "url": f"https://download.example/bilikara/tools/aria2/1.37.0/{revision}/{asset_name}",
+                    "sha256": archive_sha,
+                    "version": "1.37.0",
+                    "source_url": (
+                        "https://github.com/aria2/aria2/releases/download/"
+                        "release-1.37.0/aria2-1.37.0.tar.xz"
+                    ),
+                    "source_sha256": (
+                        "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
+                    ),
+                    "recipe_revision": revision,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def fake_download(_asset: dict, target: Path, **_kwargs) -> None:
+            shutil.copy2(source_archive, target)
+
+        target = aria2_dir / "aria2c"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2_MACOS_METADATA_PATH", metadata_path), patch(
+            "bilikara.cache.INTERNAL_VENDOR_DIR", root / "missing-internal"
+        ), patch(
+            "bilikara.cache.TOOL_ASSET_BASE_URL",
+            "https://download.example/bilikara/tools",
+        ), patch.object(CacheManager, "_current_platform_tokens", return_value=("darwin", "arm64")):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_fetch_aria2_release") as fetch_release, patch.object(
+                    manager, "_download_tool_asset", side_effect=fake_download
+                ) as download, patch.object(
+                    manager, "_read_aria2c_version", return_value="1.37.0"
+                ), patch.object(CacheManager, "_brew_executable", return_value=None):
+                    manager._install_aria2c(target, allow_brew_fallback=False)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(target.read_bytes(), binary_bytes)
+        if os.name != "nt":
+            self.assertTrue(target.stat().st_mode & stat.S_IEXEC)
+        fetch_release.assert_not_called()
+        download.assert_called_once()
+        self.assertEqual(list(aria2_dir.glob(".prepare-*")), [])
+
+    def test_macos_failed_direct_prepare_preserves_existing_runtime_and_source(self):
+        root = Path(self.temp_dir.name) / "macos-direct-failure"
+        aria2_dir = root / "tools" / "aria2c"
+        target = aria2_dir / "aria2c"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"existing-runtime")
+        bad_archive = root / "bad.tar.gz"
+        bad_archive.write_bytes(b"not-an-archive")
+        mirror_asset = {
+            "name": "aria2-1.37.0-macos-arm64-test.tar.gz",
+            "browser_download_url": "https://download.example/aria2.tar.gz",
+            "sha256": "d" * 64,
+            "version": "1.37.0",
+        }
+
+        def fake_download(_asset: dict, destination: Path, **_kwargs) -> None:
+            shutil.copy2(bad_archive, destination)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch.object(CacheManager, "_current_platform_tokens", return_value=("darwin", "arm64")):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_fetch_aria2_release", return_value={"assets": []}), patch.object(
+                    manager, "_macos_aria2_asset", return_value=mirror_asset
+                ), patch.object(manager, "_download_tool_asset", side_effect=fake_download), patch.object(
+                    manager, "_brew_executable", return_value=None
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "automatic preparation failed"):
+                        manager._install_aria2c(target, allow_brew_fallback=False)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(target.read_bytes(), b"existing-runtime")
+        self.assertEqual(manager.download_source, "bbdown")
+
+    def test_existing_runtime_aria2c_skips_all_preparation_network(self):
+        aria2_dir = Path(self.temp_dir.name) / "existing-aria2" / "tools" / "aria2c"
+        target = aria2_dir / ("aria2c.exe" if os.name == "nt" else "aria2c")
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"existing-aria2")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.ARIA2C_DIR", aria2_dir
+        ), patch("bilikara.cache.ARIA2C_PATH_OVERRIDE", ""), patch.object(
+            CacheManager, "_system_aria2c_path", return_value=None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_aria2c_binary_path", return_value=target), patch.object(
+                    manager, "_read_aria2c_version", return_value="1.37.0"
+                ), patch.object(manager, "_install_aria2c") as install, patch.object(
+                    manager, "_fetch_aria2_release"
+                ) as fetch:
+                    self.assertEqual(manager._ensure_aria2c(), target)
+            finally:
+                manager.shutdown()
+        install.assert_not_called()
+        fetch.assert_not_called()
+
     def test_bbdown_stream_preference_args_use_cache_policy(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
@@ -626,9 +817,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
                 refreshed = self.store.get_item("song-a")
                 self.assertIsNotNone(refreshed)
-                self.assertEqual(refreshed.cache_status, "ready")
-                self.assertEqual(refreshed.video_media_url, "/media/song-a/video-p1/video.mp4")
-                self.assertTrue(item_dir.exists())
+                self.assertEqual(refreshed.cache_status, "pending")
+                self.assertEqual(refreshed.video_media_url, "")
+                self.assertEqual(refreshed.audio_variants, [])
+                self.assertFalse(item_dir.exists())
                 enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()
@@ -649,6 +841,33 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertIn("缓存中", log_path.read_text(encoding="utf-8"))
             finally:
                 manager.shutdown()
+
+    def test_clear_log_root_preserves_startup_diagnostics(self):
+        log_dir = Path(self.temp_dir.name) / "logs"
+        log_dir.mkdir(parents=True)
+        desktop_log = log_dir / "desktop-startup.log"
+        login_log = log_dir / "bilibili-login.log"
+        transient_log = log_dir / "transient.log"
+        transient_dir = log_dir / "bbdown"
+        desktop_log.write_text("desktop diagnostic\n", encoding="utf-8")
+        login_log.write_text("login diagnostic\n", encoding="utf-8")
+        transient_log.write_text("temporary\n", encoding="utf-8")
+        transient_dir.mkdir()
+        (transient_dir / "item.log").write_text("temporary\n", encoding="utf-8")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.LOG_DIR", log_dir
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager._clear_log_root()
+            finally:
+                manager.shutdown()
+
+        self.assertTrue(desktop_log.is_file())
+        self.assertTrue(login_log.is_file())
+        self.assertFalse(transient_log.exists())
+        self.assertFalse(transient_dir.exists())
 
     def test_drop_item_cache_removes_related_log_file(self):
         log_dir = Path(self.temp_dir.name) / "logs"
@@ -1084,11 +1303,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 ), patch.object(manager, "_validate_cache_result"), patch.object(
                     manager,
                     "sync_with_playlist",
-                ) as sync_mock, patch.object(
-                    MEDIA_LEASE_COORDINATOR,
-                    "wait_for_release",
-                    return_value=True,
-                ):
+                ) as sync_mock:
                     should_resync = manager._cache_item_multi("song-a", item, allow_refresh_retry=True)
 
                 cached = self.store.get_item("song-a")
@@ -1118,12 +1333,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.desired_ids = {item.id}
                     manager.ordered_desired_ids = [item.id]
 
-                def prevalidated_result(*args, **_kwargs):
-                    item_dir = args[3] if len(args) > 3 else (self.cache_dir / item.id)
+                def prevalidated_result(*_args, **_kwargs):
+                    item_dir = self.cache_dir / item.id
                     video = item_dir / "video-p1" / ".attempt-video" / "video-p1.mp4"
                     audio = item_dir / "audio-p1" / ".attempt-audio" / "audio-p1.m4a"
-                    video.parent.mkdir(parents=True, exist_ok=True)
-                    audio.parent.mkdir(parents=True, exist_ok=True)
+                    video.parent.mkdir(parents=True)
+                    audio.parent.mkdir(parents=True)
                     video.write_bytes(b"video")
                     audio.write_bytes(b"audio")
                     return {
@@ -1153,11 +1368,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager, "_normalize_downkyi_cache_result"
                 ) as normalize_mock, patch.object(
                     manager, "_validate_cache_result"
-                ) as validate_mock, patch.object(
-                    MEDIA_LEASE_COORDINATOR,
-                    "wait_for_release",
-                    return_value=True,
-                ):
+                ) as validate_mock:
                     self.assertTrue(
                         manager._cache_item_multi(item.id, item, allow_refresh_retry=False)
                     )
@@ -1326,229 +1537,6 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     self.assertEqual(retried.cache_message, "准备重新下载")
                     self.assertEqual(retried.video_media_url, "")
                     enqueue_mock.assert_called_once_with("song-a")
-            finally:
-                manager.shutdown()
-
-    def test_replacement_recache_status_observability(self):
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
-            manager = CacheManager(self.store, max_cache_items=3)
-            try:
-                item_a = self.make_item("song-a")
-                item_b = self.make_item("song-b")
-                self.store.add_item(item_a, requester_name="cache-test-user")
-                self.store.add_item(item_b, requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="ready",
-                    cache_message="缓存完成",
-                    video_media_url="/media/a.mp4",
-                    media_revision="rev-old-a",
-                    persist_backup=False,
-                )
-                self.store.update_item(
-                    "song-b",
-                    cache_status="downloading",
-                    cache_message="下载中",
-                    persist_backup=False,
-                )
-                with manager.lock:
-                    manager.desired_ids = {"song-a", "song-b"}
-
-                with patch.object(manager, "enqueue") as enqueue_mock:
-                    manager.retry_item("song-a", force=True)
-                enqueue_mock.assert_called_once_with("song-a")
-
-                st_initial = manager.get_recache_status("song-a")
-                self.assertIsNotNone(st_initial)
-                self.assertEqual(st_initial["item_id"], "song-a")
-                self.assertEqual(st_initial["old_media_revision"], "rev-old-a")
-                self.assertTrue(st_initial["request_id"])
-
-                # Verify snapshot enrichment includes recache_statuses
-                snapshot = {}
-                manager.enrich_snapshot(snapshot)
-                self.assertIn("recache_statuses", snapshot)
-                self.assertIn("song-a", snapshot["recache_statuses"])
-
-                def fake_download_selected_streams(
-                    item,
-                    binary_path,
-                    ffmpeg_path,
-                    staging_dir,
-                    log_path,
-                    **kwargs,
-                ):
-                    video_file = staging_dir / "video.mp4"
-                    audio_file = staging_dir / "audio.m4a"
-                    video_file.parent.mkdir(parents=True, exist_ok=True)
-                    video_file.write_bytes(b"dummy-video")
-                    audio_file.write_bytes(b"dummy-audio")
-
-                    audio_relative_path = audio_file.relative_to(self.cache_dir).as_posix()
-
-                    return {
-                        "video_file": str(video_file),
-                        "audio_variants": [
-                            {
-                                "id": "default",
-                                "audio_relative_path": audio_relative_path,
-                            }
-                        ],
-                        "selected_audio_variant_id": "default",
-                        "validation_files": [],
-                    }
-
-                with patch.object(
-                    manager,
-                    "_ensure_downloader",
-                    return_value=Path("fake-downloader"),
-                ), patch.object(
-                    manager,
-                    "_ensure_ffmpeg",
-                    return_value=Path("fake-ffmpeg"),
-                ), patch.object(
-                    manager,
-                    "_should_cache",
-                    return_value=True,
-                ), patch.object(
-                    manager,
-                    "_download_selected_streams",
-                    side_effect=fake_download_selected_streams,
-                ), patch.object(
-                    manager,
-                    "_validate_cache_result",
-                    return_value=None,
-                ), patch(
-                    "bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_release",
-                    return_value=True,
-                ), patch(
-                    "bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_drain",
-                    return_value=True,
-                ):
-                    result = manager._cache_item("song-a")
-
-                self.assertTrue(result)
-                st_succ = manager.get_recache_status("song-a")
-                self.assertIsNotNone(st_succ)
-                self.assertEqual(st_succ["state"], "succeeded")
-                self.assertEqual(st_succ["progress"], 100.0)
-                published_revision = self.store.get_item("song-a").media_revision
-                self.assertNotEqual(published_revision, "rev-old-a")
-
-                # Test worker failure path propagates to recache status
-                with patch.object(manager, "enqueue") as enqueue_mock:
-                    manager.retry_item("song-a", force=True)
-                enqueue_mock.assert_called_once_with("song-a")
-
-                with patch.object(
-                    manager,
-                    "_ensure_downloader",
-                    return_value=Path("fake-downloader"),
-                ), patch.object(
-                    manager,
-                    "_ensure_ffmpeg",
-                    return_value=Path("fake-ffmpeg"),
-                ), patch.object(
-                    manager,
-                    "_should_cache",
-                    return_value=True,
-                ), patch.object(
-                    MEDIA_LEASE_COORDINATOR,
-                    "wait_for_release",
-                    return_value=True,
-                ), patch.object(
-                    manager,
-                    "_download_selected_streams",
-                    side_effect=DownloadCommandError("network timeout"),
-                ):
-                    fail_result = manager._cache_item("song-a")
-
-                self.assertFalse(fail_result)
-                st_fail = manager.get_recache_status("song-a")
-                self.assertIsNotNone(st_fail)
-                self.assertEqual(st_fail["state"], "failed")
-                self.assertIn("network timeout", st_fail["error"])
-                self.assertEqual(self.store.get_item("song-a").cache_status, "failed")
-            finally:
-                manager.shutdown()
-
-    def test_replacement_recache_status_downloader_failure(self):
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
-            manager = CacheManager(self.store, max_cache_items=3)
-            try:
-                item = self.make_item("song-a")
-                self.store.add_item(item, requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="ready",
-                    cache_message="缓存完成",
-                    video_media_url="/media/a.mp4",
-                    media_revision="rev-old-a",
-                    persist_backup=False,
-                )
-                with manager.lock:
-                    manager.desired_ids = {"song-a"}
-
-                with patch.object(manager, "enqueue") as enqueue_mock:
-                    manager.retry_item("song-a", force=True)
-                enqueue_mock.assert_called_once_with("song-a")
-                with patch.object(
-                    manager,
-                    "_ensure_downloader",
-                    side_effect=RuntimeError("downloader missing"),
-                ), patch("bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_release", return_value=True):
-                    result = manager._cache_item("song-a")
-
-                self.assertFalse(result)
-                st_fail = manager.get_recache_status("song-a")
-                self.assertIsNotNone(st_fail)
-                self.assertEqual(st_fail["state"], "failed")
-                self.assertIn("downloader missing", st_fail["error"])
-                updated_item = self.store.get_item("song-a")
-                self.assertEqual(updated_item.cache_status, "failed")
-                self.assertEqual(updated_item.media_revision, "")
-            finally:
-                manager.shutdown()
-
-    def test_replacement_recache_status_ffmpeg_failure(self):
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
-            manager = CacheManager(self.store, max_cache_items=3)
-            try:
-                item = self.make_item("song-a")
-                self.store.add_item(item, requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="ready",
-                    cache_message="缓存完成",
-                    video_media_url="/media/a.mp4",
-                    media_revision="rev-old-a",
-                    persist_backup=False,
-                )
-                with manager.lock:
-                    manager.desired_ids = {"song-a"}
-
-                with patch.object(manager, "enqueue") as enqueue_mock:
-                    manager.retry_item("song-a", force=True)
-                enqueue_mock.assert_called_once_with("song-a")
-                with patch.object(
-                    manager,
-                    "_ensure_downloader",
-                    return_value=Path("fake-downloader"),
-                ), patch.object(
-                    manager,
-                    "_ensure_ffmpeg",
-                    side_effect=RuntimeError("ffmpeg missing"),
-                ), patch("bilikara.cache.MEDIA_LEASE_COORDINATOR.wait_for_release", return_value=True):
-                    result = manager._cache_item("song-a")
-
-                self.assertFalse(result)
-                st_fail = manager.get_recache_status("song-a")
-                self.assertIsNotNone(st_fail)
-                self.assertEqual(st_fail["state"], "failed")
-                self.assertIn("ffmpeg missing", st_fail["error"])
-                updated_item = self.store.get_item("song-a")
-                self.assertEqual(updated_item.cache_status, "failed")
-                self.assertEqual(updated_item.media_revision, "")
             finally:
                 manager.shutdown()
 
@@ -2117,7 +2105,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(resolved, sibling_probe)
         self.assertEqual(run_mock.call_count, 2)
 
-    def test_ensure_bbdown_uses_local_binary_when_release_check_fails(self):
+    def test_ensure_bbdown_existing_binary_skips_release_request(self):
         suffix = ".exe" if os.name == "nt" else ""
         local_binary = Path(self.temp_dir.name) / "tools" / "bbdown" / f"BBDown{suffix}"
         local_binary.parent.mkdir(parents=True, exist_ok=True)
@@ -2131,15 +2119,216 @@ class CacheManagerPolicyTest(unittest.TestCase):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
-                    manager, "_fetch_latest_release", side_effect=RuntimeError("offline")
-                ):
+                    manager, "_fetch_latest_release"
+                ) as fetch_release, patch.object(
+                    manager, "_download_tool_asset"
+                ) as download_asset:
                     path = manager._ensure_bbdown()
             finally:
                 manager.shutdown()
 
         self.assertEqual(path, local_binary)
+        fetch_release.assert_not_called()
+        download_asset.assert_not_called()
+        self.assertTrue(local_binary.stat().st_mode & stat.S_IEXEC)
+        self.assertEqual(manager.binary_state, "ready")
         self.assertEqual(manager.binary_version, "1.6.3")
         self.assertIn("未检查更新", manager.binary_message)
+
+    def test_ensure_bbdown_existing_binary_reads_binary_version_without_metadata(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        local_binary = Path(self.temp_dir.name) / "tools" / "bbdown" / f"BBDown{suffix}"
+        local_binary.parent.mkdir(parents=True, exist_ok=True)
+        local_binary.write_bytes(b"bbdown-bin")
+        version_file = Path(self.temp_dir.name) / "tools" / "bbdown" / "VERSION"
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=local_binary), patch.object(
+                    manager, "_read_bbdown_version", return_value="1.6.3"
+                ) as read_version, patch.object(
+                    manager, "_fetch_latest_release"
+                ) as fetch_release:
+                    path = manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, local_binary)
+        read_version.assert_called_once_with(local_binary)
+        fetch_release.assert_not_called()
+        self.assertEqual(manager.binary_state, "ready")
+        self.assertEqual(manager.binary_version, "1.6.3")
+
+    def test_bbdown_version_probe_uses_supported_help_command_and_requires_success(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        binary = Path(self.temp_dir.name) / f"BBDown{suffix}"
+        binary.write_bytes(b"bbdown-bin")
+        with patch(
+            "bilikara.cache.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout="BBDown version 1.6.3, Bilibili Downloader.\n",
+                stderr="",
+            ),
+        ) as run_mock:
+            self.assertEqual(CacheManager._read_bbdown_version(binary), "1.6.3")
+        self.assertEqual(run_mock.call_args.args[0], [str(binary), "--help"])
+
+        with patch(
+            "bilikara.cache.subprocess.run",
+            return_value=SimpleNamespace(
+                returncode=1,
+                stdout="BBDown version 1.6.3, Bilibili Downloader.\n",
+                stderr="probe failed",
+            ),
+        ):
+            self.assertEqual(CacheManager._read_bbdown_version(binary), "")
+
+    def test_ensure_bbdown_existing_override_keeps_override_precedence(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        override = Path(self.temp_dir.name) / "external" / f"BBDown{suffix}"
+        override.parent.mkdir(parents=True, exist_ok=True)
+        override.write_bytes(b"external-bbdown")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_PATH_OVERRIDE", str(override)
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(
+                    manager,
+                    "_fetch_latest_release",
+                ) as fetch_release, patch.object(
+                    manager,
+                    "_download_tool_asset",
+                ) as download_asset:
+                    path = manager._ensure_bbdown(force_refresh=True)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(path, override)
+        fetch_release.assert_not_called()
+        download_asset.assert_not_called()
+        self.assertEqual(manager.binary_state, "ready")
+        self.assertIn("外部 BBDown", manager.binary_message)
+
+    def test_packaged_bbdown_valid_runtime_never_uses_network(self):
+        bbdown_dir = Path(self.temp_dir.name) / "packaged" / "tools" / "bbdown"
+        runtime = bbdown_dir / ("BBDown.exe" if os.name == "nt" else "BBDown")
+        runtime.parent.mkdir(parents=True)
+        runtime.write_bytes(b"valid-runtime")
+        version_file = bbdown_dir / "VERSION"
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.PACKAGED_RUNTIME", True
+        ), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ), patch("bilikara.cache.BB_DOWN_PATH_OVERRIDE", ""):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=runtime), patch.object(
+                    manager, "_read_bbdown_version", return_value="1.6.3"
+                ), patch.object(manager, "_fetch_latest_release") as fetch_release, patch.object(
+                    manager, "_download_tool_asset"
+                ) as download_asset:
+                    resolved = manager._ensure_bbdown()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(resolved, runtime)
+        self.assertEqual(runtime.read_bytes(), b"valid-runtime")
+        self.assertEqual(version_file.read_text(encoding="utf-8"), "1.6.3")
+        fetch_release.assert_not_called()
+        download_asset.assert_not_called()
+
+    def test_packaged_bbdown_missing_or_corrupt_runtime_restores_vendor_atomically(self):
+        for initial_runtime in (None, b"corrupt-runtime"):
+            with self.subTest(initial_runtime=initial_runtime):
+                root = Path(self.temp_dir.name) / f"restore-{initial_runtime is not None}"
+                bbdown_dir = root / "tools" / "bbdown"
+                runtime = bbdown_dir / ("BBDown.exe" if os.name == "nt" else "BBDown")
+                vendor = root / "vendor" / runtime.name
+                vendor.parent.mkdir(parents=True)
+                vendor.write_bytes(b"pinned-vendor")
+                if initial_runtime is not None:
+                    runtime.parent.mkdir(parents=True)
+                    runtime.write_bytes(initial_runtime)
+                version_file = bbdown_dir / "VERSION"
+
+                def fake_version(path: Path) -> str:
+                    return "1.6.3" if path.read_bytes() == b"pinned-vendor" else ""
+
+                with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+                    "bilikara.cache.PACKAGED_RUNTIME", True
+                ), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir), patch(
+                    "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+                ), patch("bilikara.cache.BB_DOWN_BUNDLED_PATH", vendor), patch(
+                    "bilikara.cache.BB_DOWN_PATH_OVERRIDE", ""
+                ):
+                    manager = CacheManager(self.store, max_cache_items=3)
+                    try:
+                        with patch.object(manager, "_local_binary_path", return_value=runtime), patch.object(
+                            manager, "_read_bbdown_version", side_effect=fake_version
+                        ), patch.object(manager, "_fetch_latest_release") as fetch_release, patch.object(
+                            manager, "_download_tool_asset"
+                        ) as download_asset:
+                            resolved = manager._ensure_bbdown()
+                    finally:
+                        manager.shutdown()
+
+                self.assertEqual(resolved, runtime)
+                self.assertEqual(runtime.read_bytes(), b"pinned-vendor")
+                self.assertEqual(version_file.read_text(encoding="utf-8"), "1.6.3")
+                self.assertEqual(list(bbdown_dir.glob(".BBDown.install-*")), [])
+                fetch_release.assert_not_called()
+                download_asset.assert_not_called()
+
+    def test_packaged_bbdown_force_refresh_restores_vendor_and_override_still_wins(self):
+        root = Path(self.temp_dir.name) / "force-restore"
+        bbdown_dir = root / "tools" / "bbdown"
+        runtime = bbdown_dir / ("BBDown.exe" if os.name == "nt" else "BBDown")
+        vendor = root / "vendor" / runtime.name
+        override = root / "override" / runtime.name
+        runtime.parent.mkdir(parents=True)
+        vendor.parent.mkdir(parents=True)
+        override.parent.mkdir(parents=True)
+        runtime.write_bytes(b"old-valid-runtime")
+        vendor.write_bytes(b"pinned-vendor")
+        override.write_bytes(b"override")
+        version_file = bbdown_dir / "VERSION"
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.PACKAGED_RUNTIME", True
+        ), patch("bilikara.cache.BB_DOWN_DIR", bbdown_dir), patch(
+            "bilikara.cache.BB_DOWN_VERSION_FILE", version_file
+        ), patch("bilikara.cache.BB_DOWN_BUNDLED_PATH", vendor), patch(
+            "bilikara.cache.BB_DOWN_PATH_OVERRIDE", ""
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_local_binary_path", return_value=runtime), patch.object(
+                    manager, "_read_bbdown_version", return_value="1.6.3"
+                ):
+                    self.assertEqual(manager._ensure_bbdown(force_refresh=True), runtime)
+            finally:
+                manager.shutdown()
+        self.assertEqual(runtime.read_bytes(), b"pinned-vendor")
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.PACKAGED_RUNTIME", True
+        ), patch("bilikara.cache.BB_DOWN_PATH_OVERRIDE", str(override)):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with patch.object(manager, "_bundled_bbdown_path") as bundled, patch.object(
+                    manager, "_fetch_latest_release"
+                ) as fetch_release:
+                    self.assertEqual(manager._ensure_bbdown(force_refresh=True), override)
+            finally:
+                manager.shutdown()
+        bundled.assert_not_called()
+        fetch_release.assert_not_called()
 
     def test_ensure_bbdown_raises_when_release_check_fails_and_no_local_binary(self):
         suffix = ".exe" if os.name == "nt" else ""
@@ -2231,12 +2420,13 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager,
                     "_fetch_latest_release",
                     side_effect=RuntimeError("offline"),
-                ), patch.object(manager, "_download_url", side_effect=fake_download):
+                ) as fetch_release, patch.object(manager, "_download_url", side_effect=fake_download):
                     path = manager._ensure_bbdown()
             finally:
                 manager.shutdown()
 
         self.assertEqual(path, local_binary)
+        fetch_release.assert_called_once_with()
         self.assertEqual(calls, ["https://download.example/bilikara/tools/BBDown_1.6.3_20240814_win-x64.zip"])
         self.assertEqual(local_binary.read_bytes(), b"bbdown-bin")
         self.assertEqual(version_file.read_text(encoding="utf-8"), "r2-fallback")
@@ -2521,6 +2711,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 ), patch.object(
                     manager, "_local_aria2c_binary_path", return_value=target_path
                 ), patch.object(
+                    manager, "_fetch_aria2_release", return_value={"assets": []}
+                ), patch.object(
+                    manager, "_macos_aria2_asset", return_value=None
+                ), patch.object(
                     manager, "_extract_tool_binary_from_archive",
                     side_effect=lambda archive, out_dir, bin_name: target_path.write_bytes(b"fake-brew-aria2c-bin")
                 ), patch.object(
@@ -2749,17 +2943,6 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual([variant["page"] for variant in result["audio_variants"]], [1, 2])
         self.assertEqual(result["selected_audio_variant_id"], "p2_off_vocal")
 
-    def test_bbdown_login_status_immediate_after_init(self):
-        with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
-            manager = CacheManager(self.store, max_cache_items=3)
-            try:
-                status = manager.bbdown_login_status()
-                self.assertIn("logged_in", status)
-                self.assertIn("qr_image", status)
-                self.assertEqual(status["qr_image"], "")
-            finally:
-                manager.shutdown()
-
     def test_start_bbdown_login_removes_stale_qr_image(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
         bbdown_dir.mkdir(parents=True, exist_ok=True)
@@ -2834,6 +3017,89 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertEqual(manager.bbdown_login_status()["state"], "logged_in")
             finally:
                 manager.shutdown()
+
+    def test_bbdown_login_generate_failure_logs_sanitized_exception(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        log_dir = Path(self.temp_dir.name) / "logs"
+        cancel_event = Mock()
+        cancel_event.is_set.return_value = False
+        secret_values = (
+            "synthetic-qr-secret",
+            "synthetic-session-secret",
+            "synthetic-access-secret",
+        )
+        request_error = urllib.error.URLError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain "
+            "at https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+            f"?qrcode_key={secret_values[0]} Cookie: SESSDATA={secret_values[1]} "
+            f"access_token={secret_values[2]}"
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR", bbdown_dir
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            manager.log_dir = log_dir
+            try:
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=request_error,
+                ):
+                    manager._bbdown_login_worker(cancel_event)
+                status = manager.bbdown_login_status()
+            finally:
+                manager.shutdown()
+
+        log_text = (log_dir / "bilibili-login.log").read_text(encoding="utf-8")
+        self.assertIn("stage=generate", log_text)
+        self.assertIn("type=URLError", log_text)
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", log_text)
+        for secret_value in secret_values:
+            self.assertNotIn(secret_value, log_text)
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["message"], "Bilibili 登录请求失败，请重试")
+
+    def test_bbdown_login_poll_failure_logs_poll_stage_without_qr_secret(self):
+        bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
+        log_dir = Path(self.temp_dir.name) / "logs"
+        cancel_event = Mock()
+        cancel_event.wait.return_value = False
+        cancel_event.is_set.return_value = False
+        qr_secret = "synthetic-poll-qr-secret"
+        poll_error = urllib.error.URLError(
+            "timed out requesting "
+            f"https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={qr_secret}"
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.BB_DOWN_DIR", bbdown_dir
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            manager.log_dir = log_dir
+            try:
+                manager.bbdown_login_cancel_event = cancel_event
+                with patch.object(
+                    manager,
+                    "_bilibili_login_request_json",
+                    side_effect=[
+                        {"data": {"url": "synthetic-qr-url", "qrcode_key": qr_secret}},
+                        poll_error,
+                    ],
+                ), patch.object(
+                    manager,
+                    "_write_bbdown_login_qr",
+                    return_value="data:image/png;base64,synthetic",
+                ):
+                    manager._bbdown_login_worker(cancel_event)
+            finally:
+                manager.shutdown()
+
+        log_text = (log_dir / "bilibili-login.log").read_text(encoding="utf-8")
+        self.assertIn("stage=poll", log_text)
+        self.assertIn("type=URLError", log_text)
+        self.assertNotIn(qr_secret, log_text)
 
     def test_bbdown_login_rejects_ticket_only_data_after_zero_exit(self):
         bbdown_dir = Path(self.temp_dir.name) / "tools" / "bbdown"
@@ -3293,6 +3559,60 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                                 "download_source": DOWNLOAD_SOURCE_DOWNKYI,
                                 "stream_kind": "audio",
                             },
+                        )
+            finally:
+                manager.shutdown()
+
+    def test_bbdown_full_demux_failure_is_rejected(self):
+        media = self.cache_dir / "song" / "video.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"partial")
+        probe = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(self._probe_payload("video", "120")),
+            stderr="",
+        )
+        demux = SimpleNamespace(returncode=1, stdout="", stderr="partial file: unexpected EOF")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch("bilikara.cache.subprocess.run", side_effect=[probe, demux]):
+                    with self.assertRaisesRegex(DownloadCommandError, "完整包扫描失败"):
+                        manager._validate_media_file(
+                            Path("/tools/ffprobe"),
+                            Path("/tools/ffmpeg"),
+                            media,
+                            label="视频 P2",
+                            required_streams={"video"},
+                            log_path=self.log_path,
+                            diagnostic_context={
+                                "download_source": DOWNLOAD_SOURCE_BBDOWN,
+                                "stream_kind": "video",
+                            },
+                        )
+            finally:
+                manager.shutdown()
+
+    def test_bbdown_cache_result_requires_ffprobe_for_strict_validation(self):
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=None):
+                    with self.assertRaisesRegex(DownloadCommandError, "BBDown/DownKyi"):
+                        manager._validate_cache_result(
+                            "test-id",
+                            {
+                                "validation_files": [
+                                    {
+                                        "download_source": DOWNLOAD_SOURCE_BBDOWN,
+                                        "path": Path("/fake/video.mp4"),
+                                        "required_streams": {"video"},
+                                        "label": "视频",
+                                    }
+                                ]
+                            },
+                            Path("/tools/ffmpeg"),
+                            self.log_path,
                         )
             finally:
                 manager.shutdown()
@@ -3783,11 +4103,13 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     "tag_name": "v1.6.3",
                     "assets": [{"name": "BBDown_1.6.3_win-x64.zip", "browser_download_url": "https://github.com/win-x64.zip"}]
                 }
-                with patch.object(manager, "_fetch_latest_release", return_value=release_data), patch.object(
+                with patch.object(manager, "_fetch_latest_release", return_value=release_data) as fetch_release, patch.object(
                     manager, "_download_url", side_effect=fake_download_url
                 ):
                     with self.assertRaises(Exception):
                         manager._ensure_bbdown(force_refresh=True)
+
+                fetch_release.assert_called_once_with()
 
                 self.assertTrue(existing_binary.exists())
                 self.assertEqual(existing_binary.read_bytes(), b"existing-binary-content")

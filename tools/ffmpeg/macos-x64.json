@@ -1,0 +1,16 @@
+{
+  "arch": "x64",
+  "metadata_object_key": "bilikara/tools/ffmpeg/8.1.2/portable-macos-ffmpeg-v1/macos-x64/75785e4344c2bb6fdac3e6c5f535b7a2f2ebd64d702e4b9444149def13a1a734.json",
+  "name": "ffmpeg-8.1.2-macos-x64-75785e4344c2bb6fdac3e6c5f535b7a2f2ebd64d702e4b9444149def13a1a734.tar.gz",
+  "object_key": "bilikara/tools/ffmpeg/8.1.2/portable-macos-ffmpeg-v1/macos-x64/ffmpeg-8.1.2-macos-x64-75785e4344c2bb6fdac3e6c5f535b7a2f2ebd64d702e4b9444149def13a1a734.tar.gz",
+  "platform": "darwin",
+  "provider": "bilikara-r2",
+  "recipe_revision": "portable-macos-ffmpeg-v1",
+  "schema_version": 2,
+  "sha256": "75785e4344c2bb6fdac3e6c5f535b7a2f2ebd64d702e4b9444149def13a1a734",
+  "source_sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c",
+  "source_url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+  "tool": "ffmpeg",
+  "url": "https://download.kevinx96.icu/bilikara/tools/ffmpeg/8.1.2/portable-macos-ffmpeg-v1/macos-x64/ffmpeg-8.1.2-macos-x64-75785e4344c2bb6fdac3e6c5f535b7a2f2ebd64d702e4b9444149def13a1a734.tar.gz",
+  "version": "8.1.2"
+}

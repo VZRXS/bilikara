@@ -373,13 +373,6 @@ def _sanitize_export_diagnostics(
             error_code = str(item.get("errorCode"))[:256] if item.get("errorCode") is not None else None
             error_msg = str(item.get("errorMessage"))[:256] if item.get("errorMessage") is not None else None
 
-            raw_req_id = item.get("requestId") or item.get("request_id")
-            request_id = str(raw_req_id).strip()[:64] if raw_req_id else None
-
-            image_export_timings = _sanitize_image_export_timings(
-                item.get("imageExportTimings") or item.get("image_export_timings")
-            )
-
             sanitized_entry = {
                 "timestamp": timestamp,
                 "surface": surface,
@@ -395,8 +388,6 @@ def _sanitize_export_diagnostics(
                 "filenameExtension": filename_ext,
                 "elapsedMs": elapsed_ms,
                 "stageTimings": stage_timings,
-                "requestId": request_id,
-                "imageExportTimings": image_export_timings,
                 "errorCode": error_code,
                 "errorMessage": error_msg,
             }
@@ -407,32 +398,6 @@ def _sanitize_export_diagnostics(
             continue
 
     return sanitized_items
-
-
-def _sanitize_image_export_timings(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    timing_keys = (
-        "pillow_import",
-        "prepare_items_and_pages",
-        "font_discovery",
-        "font_load",
-        "font_cmap_cold_parse_ms",
-        "font_cmap_cold_miss_count",
-        "font_cmap_cold_bytes_read",
-        "page_count",
-        "page_render_total_ms",
-        "page_render_max_ms",
-        "png_encode_total_ms",
-        "zip_write_finalize_ms",
-        "total_image_export",
-    )
-    result: dict[str, Any] = {}
-    for key in timing_keys:
-        val = raw.get(key)
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            result[key] = round(float(val), 1) if isinstance(val, float) else val
-    return result if result else None
 
 
 def _build_markdown(

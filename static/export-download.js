@@ -53,13 +53,6 @@
     }
   }
 
-  function generateRequestId() {
-    if (typeof root !== "undefined" && root.crypto && typeof root.crypto.randomUUID === "function") {
-      return root.crypto.randomUUID().replace(/-/g, "").slice(0, 16);
-    }
-    return "req_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36).slice(-4);
-  }
-
   function sanitizeExportDiagnosticEntry(rawEntry) {
     if (!rawEntry || typeof rawEntry !== "object") {
       return null;
@@ -107,8 +100,6 @@
         }));
     }
 
-    const rawReqId = rawEntry.requestId || rawEntry.request_id || null;
-    const requestId = rawReqId ? String(rawReqId).trim().slice(0, 64) : null;
     const errorCode = rawEntry.errorCode ? String(rawEntry.errorCode).trim().slice(0, 256) : null;
     const errorMessage = rawEntry.errorMessage ? String(rawEntry.errorMessage).trim().slice(0, 256) : null;
 
@@ -127,7 +118,6 @@
       filenameExtension,
       elapsedMs,
       stageTimings,
-      requestId,
       errorCode,
       errorMessage,
     };
@@ -189,46 +179,6 @@
     const source = options.source || null;
     const pageSize = options.pageSize || null;
 
-    let requestId = options.requestId || null;
-    let requestUrl = url;
-    if (requestUrl && typeof requestUrl === "string") {
-      try {
-        const dummyUrl = new URL(requestUrl, "http://bilikara.invalid");
-        if (!requestId) {
-          if (dummyUrl.searchParams.has("request_id")) {
-            requestId = dummyUrl.searchParams.get("request_id");
-          } else if (dummyUrl.searchParams.has("requestId")) {
-            requestId = dummyUrl.searchParams.get("requestId");
-          }
-        }
-        const isPlaylistExport = dummyUrl.pathname === "/api/playlist/export";
-        if (isPlaylistExport) {
-          if (!requestId) {
-            requestId = generateRequestId();
-          }
-          if (!dummyUrl.searchParams.has("request_id") && !dummyUrl.searchParams.has("requestId")) {
-            dummyUrl.searchParams.set("request_id", requestId);
-            requestUrl = dummyUrl.pathname + dummyUrl.search;
-          }
-        } else {
-          requestUrl = dummyUrl.pathname + dummyUrl.search;
-        }
-      } catch {
-        if (requestUrl.startsWith("/api/playlist/export")) {
-          if (!requestId) {
-            requestId = generateRequestId();
-          }
-          if (!requestUrl.includes("request_id=") && !requestUrl.includes("requestId=")) {
-            requestUrl += (requestUrl.includes("?") ? "&" : "?") + "request_id=" + encodeURIComponent(requestId);
-          }
-        }
-      }
-    } else {
-      if (!requestId) {
-        requestId = generateRequestId();
-      }
-    }
-
     if (typeof fetchRef !== "function"
       || !documentRef?.body
       || typeof documentRef.createElement !== "function"
@@ -245,7 +195,6 @@
         pageSize,
         stage: "validate_environment",
         status: "failed",
-        requestId,
         errorCode: "INVALID_ENVIRONMENT",
         errorMessage: errMessage,
         elapsedMs: Date.now() - startTime,
@@ -257,7 +206,7 @@
     let fetchStatus = null;
     let contentType = null;
     try {
-      response = await fetchRef(requestUrl, {
+      response = await fetchRef(url, {
         cache: "no-store",
         credentials: "same-origin",
         headers: options.headers || {},
@@ -275,7 +224,6 @@
         pageSize,
         stage: "request_backend",
         status: "failed",
-        requestId,
         errorCode: "FETCH_FAILED",
         errorMessage: errMessage,
         elapsedMs: Date.now() - startTime,
@@ -296,7 +244,6 @@
         status: "failed",
         httpStatus: fetchStatus,
         contentType,
-        requestId,
         errorCode: "HTTP_ERROR",
         errorMessage: errMessage,
         elapsedMs: Date.now() - startTime,
@@ -320,7 +267,6 @@
         status: "failed",
         httpStatus: fetchStatus,
         contentType,
-        requestId,
         errorCode: "BLOB_FAILED",
         errorMessage: errMessage,
         elapsedMs: Date.now() - startTime,
@@ -361,7 +307,6 @@
       contentType,
       bytes: blob?.size || null,
       filenameExtension,
-      requestId,
       elapsedMs: Date.now() - startTime,
     });
 
@@ -532,7 +477,6 @@
     createExportDiagnosticRing,
     downloadBrowserFile,
     filenameFromContentDisposition,
-    generateRequestId,
     getExportDiagnosticsSnapshot,
     isTauriCommandNotFoundError,
     isValidNativeDownloadResult,

@@ -17,7 +17,6 @@ from .config import BILIBILI_HEADERS, GATCHA_KEYWORDS
 from dataclasses import dataclass
 from .models import PlaylistItem
 from . import rust_backend
-from .playback_selector import PlaybackSelector
 import bilikara.config as cfg  
 from .lark_pool_client import append_lark_pool_entries_in_background
 
@@ -2863,9 +2862,7 @@ def decide_audio_binding(
             if playback_selector is not None:
                 return playback_selector.dispatch(
                     "decide_audio_binding",
-                    python=lambda: _py_decide_audio_binding(
-                        pages, tolerance_seconds
-                    ),
+                    python=lambda: _py_decide_audio_binding(pages, tolerance_seconds),
                     rust=lambda: (False, None),
                 )
             return rust_backend.python_fallback(
@@ -2886,15 +2883,16 @@ def decide_audio_binding(
         "tolerance_seconds": int(tolerance_seconds),
         "pages": descriptors,
     }
+
     def decode_native(response: object) -> AudioBindingDecision | None:
         if not isinstance(response, dict):
-            raise ValueError("invalid native audio-binding response")
+            return None
         if response.get("status") == "no_match":
             return None
         return AudioBindingDecision(
             mode=str(response["mode"]),
             selected_indices=tuple(response["selected_indices"]),
-            automatic_video_index=response["automatic_video_index"],
+            automatic_video_index=response.get("automatic_video_index"),
         )
 
     if playback_selector is not None:

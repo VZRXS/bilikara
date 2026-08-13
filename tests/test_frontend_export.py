@@ -63,7 +63,7 @@ class FrontendExportBehaviorTest(unittest.TestCase):
         response_source = self.function_source(
             source,
             "async function diagnosticResponse",
-            "async function copyTextWithFallback",
+            "async function generateDiagnosticsMarkdown",
         )
         download_source = self.function_source(
             source,
@@ -108,17 +108,17 @@ class FrontendExportBehaviorTest(unittest.TestCase):
                 self.assertIn("async function downloadHistoryExport", download_source)
                 self.assertIn("downloadBrowserFile", download_source)
 
-    def test_clipboard_rejection_falls_back_to_exec_command(self):
+    def test_diagnostics_copy_uses_shared_clipboard_and_retry_abstraction(self):
         source = self.sources["host"]
-        fallback = self.function_source(
+        copy_source = self.function_source(
             source,
-            "async function copyTextWithFallback",
+            "function diagnosticsCopyController",
             "async function copyDiagnosticsMarkdown",
         )
-        self.assertIn("await navigator.clipboard.writeText(text)", fallback)
-        self.assertIn("catch", fallback)
-        self.assertIn('document.execCommand("copy")', fallback)
-        self.assertIn("if (!copied)", fallback)
+        self.assertIn("window.BilikaraDiagnosticsCopy", copy_source)
+        self.assertIn("helper.createRetryController", copy_source)
+        self.assertIn("helper.copyText(markdown", copy_source)
+        self.assertNotIn("navigator.clipboard", copy_source)
 
 
 if __name__ == "__main__":

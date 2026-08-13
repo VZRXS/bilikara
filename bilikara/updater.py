@@ -42,32 +42,24 @@ APP_UPDATE_NO_ASSET_ERROR = "没有找到适用于当前平台的自动更新包
 APP_UPDATE_BUSY_STATES = {"checking", "downloading", "installing", "restarting"}
 APP_UPDATE_SUPPORTED_PLATFORMS = {"windows", "macos"}
 APP_UPDATE_CHUNK_SIZE = 1024 * 256
+
+
+class AppUpdateError(RuntimeError):
+    pass
+
+
 UPDATE_ACTION_NORMAL_UPGRADE = "normal_upgrade"
 UPDATE_ACTION_PREVIEW_TO_STABLE = "preview_to_stable"
 UPDATE_ACTION_DEVELOPMENT_TO_STABLE = "development_to_stable"
 UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW = "development_to_preview"
 UPDATE_ACTION_NONE = "no_action"
+
 UPDATE_INSTALLABLE_ACTIONS = {
     UPDATE_ACTION_NORMAL_UPGRADE,
     UPDATE_ACTION_PREVIEW_TO_STABLE,
     UPDATE_ACTION_DEVELOPMENT_TO_STABLE,
     UPDATE_ACTION_DEVELOPMENT_TO_PREVIEW,
 }
-UPDATE_REASONS = {
-    "newer_version",
-    "preview_channel_disabled",
-    "development_build",
-    "already_current",
-    "stable_not_newer",
-    "preview_not_newer",
-    "development_target_not_stable",
-    "no_stable_release",
-    "no_eligible_release",
-}
-
-
-class AppUpdateError(RuntimeError):
-    pass
 
 
 def _py_dedupe_urls(urls: list[str]) -> list[str]:
@@ -456,11 +448,35 @@ def _py_latest_release_for_current(
     *,
     include_preview: bool = False,
 ) -> dict[str, Any]:
-    return _py_release_decision_for_current(
-        current_version,
-        releases,
-        include_preview=include_preview,
-    )["release"]
+    valid_releases = [
+        release
+        for release in releases
+        if not release.get("draft") and _py_version_sort_key(release.get("tag_name")) is not None
+    ]
+    if not valid_releases:
+        return {}
+
+    latest_any = max(
+        valid_releases,
+        key=lambda release: _py_version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0),
+    )
+    stable_releases = [
+        release
+        for release in valid_releases
+        if _py_is_stable_version(release.get("tag_name"))
+    ]
+    latest_stable = (
+        max(
+            stable_releases,
+            key=lambda release: _py_version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0),
+        )
+        if stable_releases
+        else {}
+    )
+
+    if include_preview:
+        return latest_any
+    return latest_stable
 
 
 def _py_release_decision_for_current(
@@ -469,42 +485,27 @@ def _py_release_decision_for_current(
     *,
     include_preview: bool = False,
 ) -> dict[str, Any]:
-    valid_releases = [
-        release
-        for release in releases
-        if not release.get("draft") and _py_version_sort_key(release.get("tag_name")) is not None
-    ]
-    if not valid_releases:
-        return {
-            "release": {},
-            "action": UPDATE_ACTION_NONE,
-            "reason": "no_eligible_release" if include_preview else "no_stable_release",
-        }
-
-    latest_any = max(valid_releases, key=lambda release: _py_version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0))
-    stable_releases = [
-        release
-        for release in valid_releases
-        if _py_is_stable_version(release.get("tag_name"))
-    ]
-    latest_stable = (
-        max(stable_releases, key=lambda release: _py_version_sort_key(release.get("tag_name")) or (0, 0, 0, 0, 0))
-        if stable_releases
-        else {}
+    selected = _py_latest_release_for_current(
+        current_version, releases, include_preview=include_preview
     )
-
-    selected = latest_any if include_preview else latest_stable
     if not selected:
+        valid_releases = [
+            release
+            for release in releases
+            if not release.get("draft") and _py_version_sort_key(release.get("tag_name")) is not None
+        ]
+        reason = "no_eligible_release" if (include_preview or not valid_releases) else "no_stable_release"
         return {
             "release": {},
             "action": UPDATE_ACTION_NONE,
-            "reason": "no_eligible_release" if include_preview else "no_stable_release",
+            "reason": reason,
         }
 
     current_key = _py_version_sort_key(current_version)
     selected_key = _py_version_sort_key(selected.get("tag_name"))
     assert selected_key is not None
     selected_is_stable = _py_is_stable_version(selected.get("tag_name"))
+
     if current_key is None:
         if selected_is_stable:
             action = UPDATE_ACTION_DEVELOPMENT_TO_STABLE
@@ -518,11 +519,7 @@ def _py_release_decision_for_current(
     elif selected_key > current_key:
         action = UPDATE_ACTION_NORMAL_UPGRADE
         reason = "newer_version"
-    elif (
-        _py_is_preview_version(current_version)
-        and selected_is_stable
-        and not include_preview
-    ):
+    elif not include_preview and _py_is_preview_version(current_version) and selected_is_stable:
         action = UPDATE_ACTION_PREVIEW_TO_STABLE
         reason = "preview_channel_disabled"
     elif selected_key == current_key:
@@ -535,10 +532,14 @@ def _py_release_decision_for_current(
         action = UPDATE_ACTION_NONE
         reason = "preview_not_newer"
 
-    return {"release": selected, "action": action, "reason": reason}
+    return {
+        "release": selected,
+        "action": action,
+        "reason": reason,
+    }
 
 
-def _latest_release_for_current(
+def _release_decision_for_current(
     current_version: str,
     releases: list[dict[str, Any]],
     *,
@@ -556,76 +557,52 @@ def _latest_release_for_current(
             }
             for r in releases
             if isinstance(r, dict)
-        ]
+        ],
     }
     completed, response = rust_backend.try_select_release(request)
     if completed and response is not None:
         status = response.get("status")
+        action = str(response.get("action") or UPDATE_ACTION_NONE)
+        reason = str(response.get("reason") or "")
         if status == "selected":
             selected_index = response.get("selected_index")
-            if isinstance(selected_index, int) and not isinstance(selected_index, bool) and 0 <= selected_index < len(releases):
+            if (
+                isinstance(selected_index, int)
+                and not isinstance(selected_index, bool)
+                and 0 <= selected_index < len(releases)
+            ):
                 selected = releases[selected_index]
                 if not selected.get("draft") and is_release_version(selected.get("tag_name")):
-                    # Validate basic stable eligibility if not including preview
                     if include_preview or is_stable_version(selected.get("tag_name")):
-                        return selected
+                        return {
+                            "release": selected,
+                            "action": action,
+                            "reason": reason,
+                        }
         elif status == "no_match":
-            return {}
+            return {
+                "release": {},
+                "action": action,
+                "reason": reason,
+            }
 
     return rust_backend.python_fallback(
         "select_release",
-        lambda: _py_latest_release_for_current(
+        lambda: _py_release_decision_for_current(
             current_version, releases, include_preview=include_preview
         ),
     )
 
 
-def _release_decision_for_current(
+def _latest_release_for_current(
     current_version: str,
     releases: list[dict[str, Any]],
     *,
     include_preview: bool = False,
 ) -> dict[str, Any]:
-    request: dict[str, object] = {
-        "schema_version": 1,
-        "current_version": str(current_version),
-        "include_preview": bool(include_preview),
-        "releases": [
-            {
-                "tag_name": str(release.get("tag_name") or ""),
-                "draft": bool(release.get("draft")),
-                "prerelease": bool(release.get("prerelease")),
-            }
-            for release in releases
-            if isinstance(release, dict)
-        ],
-    }
-    completed, response = rust_backend.try_select_release(request)
-    if completed and response is not None and "action" in response:
-        action = response.get("action")
-        reason = response.get("reason")
-        if action in UPDATE_INSTALLABLE_ACTIONS | {UPDATE_ACTION_NONE} and reason in UPDATE_REASONS:
-            if response.get("status") == "no_match":
-                return {"release": {}, "action": action, "reason": reason}
-            selected_index = response.get("selected_index")
-            if isinstance(selected_index, int) and not isinstance(selected_index, bool):
-                if 0 <= selected_index < len(releases):
-                    selected = releases[selected_index]
-                    if (
-                        not selected.get("draft")
-                        and is_release_version(selected.get("tag_name"))
-                        and (include_preview or is_stable_version(selected.get("tag_name")))
-                    ):
-                        return {"release": selected, "action": action, "reason": reason}
-
-    return rust_backend.python_fallback(
-        "select_release",
-        lambda: _py_release_decision_for_current(
-            current_version,
-            releases,
-            include_preview=include_preview,
-        ),
-    )
+    return _release_decision_for_current(
+        current_version, releases, include_preview=include_preview
+    )["release"]
 
 
 def _py_normalize_machine_arch(machine: object) -> str:
@@ -1000,7 +977,6 @@ def check_for_update(
     if release_fetcher is None:
         release_fetcher = fetch_releases if include_preview else fetch_latest_release
     releases = _coerce_releases(release_fetcher())
-    current_version = normalize_version_tag(current_version) or "dev"
     decision = _release_decision_for_current(
         current_version,
         releases,
@@ -1011,6 +987,7 @@ def check_for_update(
     update_reason = str(decision["reason"])
     latest_version = normalize_version_tag(release.get("tag_name"))
     release_url = str(release.get("html_url") or APP_RELEASES_URL)
+    current_version = normalize_version_tag(current_version) or current_version
     current_is_release = is_release_version(current_version)
     latest_is_release = is_release_version(latest_version)
     update_available = update_action == UPDATE_ACTION_NORMAL_UPGRADE
@@ -1074,7 +1051,7 @@ def _is_update_decision_installable(
     current_version: str,
     include_preview: bool,
 ) -> bool:
-    current = _py_normalize_version_tag(current_version) or "dev"
+    current = _py_normalize_version_tag(current_version) or current_version
     latest = _py_normalize_version_tag(update.get("latest_version"))
     current_key = _py_version_sort_key(current)
     latest_key = _py_version_sort_key(latest)
@@ -1114,9 +1091,6 @@ def _is_update_decision_installable(
             )
         return False
 
-    # Compatibility for checkers that predate explicit actions. Validate the
-    # version relationship instead of trusting booleans that could authorize
-    # an arbitrary downgrade.
     if update.get("update_available"):
         return bool(
             current_key is not None

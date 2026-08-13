@@ -49,37 +49,95 @@ def rust_playback_availability() -> tuple[bool, str]:
 
 
 def validate_playback_selector_mode(mode: object) -> str:
-    if not isinstance(mode, str) or mode not in PLAYBACK_SELECTOR_MODES:
-        raise ValueError("playback selector mode must be python or rust")
+    rust_available, availability_warning = rust_playback_availability()
+    completed, decision = rust_backend.try_decide_playback_selector_policy(
+        {
+            "schema_version": 1,
+            "operation": "validate_requested",
+            "rust_available": rust_available,
+            "mode": mode,
+        }
+    )
+    if completed and decision is not None:
+        reason = decision["reason"]
+        if decision["status"] == "rejected":
+            if reason == "invalid_requested":
+                raise ValueError("playback selector mode must be python or rust")
+            raise PlaybackCapabilityError("availability", availability_warning)
+        return str(decision["effective_mode"])
+
+    # Bootstrap-only compatibility for a completely unavailable or stale Rust
+    # library. It preserves the existing Python escape hatch, but never accepts
+    # Rust mode or invents a second selector normalization policy.
+    if mode == "python":
+        return "python"
     if mode == "rust":
-        available, warning = rust_playback_availability()
-        if not available:
-            raise PlaybackCapabilityError("availability", warning)
-    return mode
+        detail = availability_warning or "Rust selector policy is unavailable"
+        raise PlaybackCapabilityError("availability", detail)
+    raise ValueError("playback selector mode must be python or rust")
 
 
-def normalize_persisted_playback_selector_mode(mode: object) -> tuple[str, str]:
-    if mode not in PLAYBACK_SELECTOR_MODES:
-        fallback_mode = DEFAULT_PLAYBACK_SELECTOR_MODE
-        if fallback_mode == "rust":
-            available, warning = rust_playback_availability()
-            if not available:
+def normalize_persisted_playback_selector_mode(
+    mode: object,
+    *,
+    is_set: bool = True,
+) -> tuple[str, str]:
+    rust_available, availability_warning = rust_playback_availability()
+    completed, decision = rust_backend.try_decide_playback_selector_policy(
+        {
+            "schema_version": 1,
+            "operation": "resolve_persisted",
+            "rust_available": rust_available,
+            "is_set": is_set,
+            "mode": mode,
+        }
+    )
+    if completed and decision is not None:
+        effective_mode = str(decision["effective_mode"])
+        reason = decision["reason"]
+        if reason == "invalid_persisted":
+            return (
+                effective_mode,
+                f"invalid persisted playback selector mode {mode!r}; "
+                f"using {effective_mode}"
+                + (
+                    f" ({availability_warning})"
+                    if effective_mode == "python" and availability_warning
+                    else ""
+                ),
+            )
+        if reason == "rust_unavailable":
+            if is_set and mode == "rust":
                 return (
                     "python",
-                    f"invalid persisted playback selector mode {mode!r}; using python ({warning})",
+                    "persisted Rust playback mode is unavailable; "
+                    f"using python ({availability_warning})",
                 )
-        return (
-            fallback_mode,
-            f"invalid persisted playback selector mode {mode!r}; using {fallback_mode}",
-        )
-    if mode == "rust":
-        available, warning = rust_playback_availability()
-        if not available:
             return (
                 "python",
-                f"persisted Rust playback mode is unavailable; using python ({warning})",
+                "Rust playback mode is unavailable; "
+                f"using python ({availability_warning})",
             )
-    return str(mode), ""
+        return effective_mode, ""
+
+    # Narrow startup compatibility when the new Rust policy export itself is
+    # absent. Python mode is the sole safe effective mode; no Rust decision is
+    # approximated here.
+    detail = availability_warning or "Rust selector policy is unavailable"
+    if is_set and mode == "python":
+        return "python", ""
+    if is_set and mode not in PLAYBACK_SELECTOR_MODES:
+        return (
+            "python",
+            f"invalid persisted playback selector mode {mode!r}; "
+            f"using python ({detail})",
+        )
+    if is_set and mode == "rust":
+        return (
+            "python",
+            f"persisted Rust playback mode is unavailable; using python ({detail})",
+        )
+    return "python", f"Rust playback mode is unavailable; using python ({detail})"
 
 
 @dataclass(frozen=True)

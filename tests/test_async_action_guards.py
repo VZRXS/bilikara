@@ -105,8 +105,7 @@ class AsyncActionGuardsTest(unittest.TestCase):
 
         """ + test_script
         process = subprocess.run(
-            [self.node, "-"],
-            input=harness,
+            [self.node, "-e", harness],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -295,8 +294,7 @@ Promise.all([first, second]).then((results) => {{
 }});
 """
         completed = subprocess.run(
-            [self.node, "-"],
-            input=script,
+            [self.node, "-e", script],
             capture_output=True,
             text=True,
             encoding="utf-8",

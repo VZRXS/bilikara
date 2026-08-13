@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import base64
-from collections import defaultdict
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import http.cookiejar
 import json
 import math
@@ -17,22 +17,24 @@ import shutil
 import ssl
 import stat
 import subprocess
+import sys
 import tarfile
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Iterator, TextIO
 
 from .config import (
     ARIA2C_DIR,
     ARIA2C_PATH_OVERRIDE,
+    ARIA2_MACOS_METADATA_PATH,
     ARIA2_RELEASE_API,
     BB_DOWN_DIR,
+    BB_DOWN_BUNDLED_PATH,
     BB_DOWN_PATH_OVERRIDE,
     BB_DOWN_RELEASE_API,
     BB_DOWN_VERSION_FILE,
@@ -46,6 +48,7 @@ from .config import (
     INTERNAL_VENDOR_DIR,
     LOG_DIR,
     MAX_CACHE_ITEMS,
+    PACKAGED_RUNTIME,
     TOOL_ASSET_BASE_URL,
     VENDOR_DIR,
     YTDLP_DIR,
@@ -59,7 +62,6 @@ from .bilibili import (
     fetch_dash_playurl,
 )
 from . import rust_backend
-from .models import PlaylistItem
 from .playback_selector import PlaybackCapabilityError, PlaybackSelector
 from .store import PlaylistStore
 
@@ -86,6 +88,17 @@ BILIBILI_QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcod
 BILIBILI_QR_WAITING_SCAN = 86101
 BILIBILI_QR_WAITING_CONFIRMATION = 86090
 BILIBILI_QR_EXPIRED = 86038
+BILIBILI_LOGIN_LOG_NAME = "bilibili-login.log"
+DESKTOP_STARTUP_LOG_NAME = "desktop-startup.log"
+PERSISTENT_DIAGNOSTIC_LOG_NAMES = frozenset(
+    {BILIBILI_LOGIN_LOG_NAME, DESKTOP_STARTUP_LOG_NAME}
+)
+BILIBILI_LOGIN_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+BILIBILI_LOGIN_SENSITIVE_FIELD_RE = re.compile(
+    r"(?i)([\"']?(?:sessdata|bili_jct|csrf|access_token|refresh_token|qrcode_key|"
+    r"authorization|cookie|shutdown_token|secret|token)[\"']?\s*[:=]\s*[\"']?)"
+    r"([^\"'&;,\s<>]+)"
+)
 BILIBILI_LOGIN_COOKIE_ORDER = (
     "SESSDATA",
     "bili_jct",
@@ -95,6 +108,14 @@ BILIBILI_LOGIN_COOKIE_ORDER = (
     "buvid3",
     "buvid4",
     "b_nut",
+)
+ARIA2_MACOS_VERSION = "1.37.0"
+ARIA2_MACOS_SOURCE_URL = (
+    "https://github.com/aria2/aria2/releases/download/release-1.37.0/"
+    "aria2-1.37.0.tar.xz"
+)
+ARIA2_MACOS_SOURCE_SHA256 = (
+    "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
 )
 SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS = 2.0
 try:
@@ -137,142 +158,6 @@ class CacheCancelledError(RuntimeError):
 
 class DownloadCommandError(RuntimeError):
     pass
-
-
-class MediaLeaseCoordinator:
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.condition = threading.Condition(self.lock)
-        self.active_readers: dict[str, set[str]] = defaultdict(set)
-        self.draining_revisions: set[str] = set()
-        self.cancelled_requests: set[str] = set()
-        self.active_release_requests: dict[str, dict[str, Any]] = {}
-        self.acknowledged_requests: set[str] = set()
-
-    def is_draining(self, revision: str) -> bool:
-        if not revision:
-            return False
-        with self.lock:
-            return revision in self.draining_revisions
-
-    def is_request_cancelled(self, request_id: str) -> bool:
-        if not request_id:
-            return False
-        with self.lock:
-            return request_id in self.cancelled_requests
-
-    def register_reader(self, revision: str, request_id: str) -> bool:
-        if not revision or not request_id:
-            return True
-        with self.lock:
-            if revision in self.draining_revisions:
-                return False
-            self.active_readers[revision].add(request_id)
-            return True
-
-    def unregister_reader(self, revision: str, request_id: str) -> None:
-        if not revision or not request_id:
-            return
-        with self.lock:
-            if revision in self.active_readers:
-                self.active_readers[revision].discard(request_id)
-                if not self.active_readers[revision]:
-                    del self.active_readers[revision]
-            self.cancelled_requests.discard(request_id)
-            self.condition.notify_all()
-
-    def mark_draining(self, revision: str) -> None:
-        if not revision:
-            return
-        with self.lock:
-            self.draining_revisions.add(revision)
-            for req_id in self.active_readers.get(revision, set()):
-                self.cancelled_requests.add(req_id)
-            self.condition.notify_all()
-
-    def unmark_draining(self, revision: str) -> None:
-        if not revision:
-            return
-        with self.lock:
-            self.draining_revisions.discard(revision)
-            self.condition.notify_all()
-
-    def reader_count(self, revision: str) -> int:
-        if not revision:
-            return 0
-        with self.lock:
-            return len(self.active_readers.get(revision, set()))
-
-    def start_release_request(self, request_id: str, item_id: str, revision: str) -> None:
-        with self.lock:
-            self.active_release_requests[request_id] = {
-                "request_id": request_id,
-                "item_id": item_id,
-                "revision": revision,
-            }
-            if revision:
-                self.draining_revisions.add(revision)
-                for req_id in self.active_readers.get(revision, set()):
-                    self.cancelled_requests.add(req_id)
-            self.condition.notify_all()
-
-    def ack_release_request(self, request_id: str, item_id: str, revision: str) -> bool:
-        with self.lock:
-            req = self.active_release_requests.get(request_id)
-            if not req:
-                return False
-            if req["item_id"] != item_id or req["revision"] != revision:
-                return False
-            self.acknowledged_requests.add(request_id)
-            self.condition.notify_all()
-            return True
-
-    def wait_for_release(self, request_id: str, revision: str, timeout: float = 5.0) -> bool:
-        end_time = time.time() + timeout
-        with self.lock:
-            while True:
-                is_acked = (request_id in self.acknowledged_requests) if request_id else True
-                readers = len(self.active_readers.get(revision, set())) if revision else 0
-                if readers == 0 and is_acked:
-                    return True
-                remaining = end_time - time.time()
-                if remaining <= 0:
-                    return False
-                self.condition.wait(timeout=remaining)
-
-    def wait_for_drain(self, revision: str, timeout: float = 5.0) -> bool:
-        if not revision:
-            return True
-        end_time = time.time() + timeout
-        with self.lock:
-            while True:
-                readers = len(self.active_readers.get(revision, set()))
-                if readers == 0:
-                    return True
-                remaining = end_time - time.time()
-                if remaining <= 0:
-                    return False
-                self.condition.wait(timeout=remaining)
-
-    def finish_release_request(self, request_id: str, revision: str) -> None:
-        with self.lock:
-            if request_id:
-                self.active_release_requests.pop(request_id, None)
-                self.acknowledged_requests.discard(request_id)
-            if revision:
-                self.draining_revisions.discard(revision)
-            to_remove = [
-                k for k, v in self.active_release_requests.items()
-                if (request_id and k == request_id)
-                or (revision and isinstance(v, dict) and v.get("revision") == revision)
-            ]
-            for k in to_remove:
-                self.active_release_requests.pop(k, None)
-                self.acknowledged_requests.discard(k)
-            self.condition.notify_all()
-
-
-MEDIA_LEASE_COORDINATOR = MediaLeaseCoordinator()
 
 
 @dataclass(frozen=True)
@@ -446,15 +331,9 @@ class CacheManager:
         self.bbdown_login_cancel_event: threading.Event | None = None
         self.bbdown_login_state = "idle"
         self.bbdown_login_message = "未登录"
-        self.bbdown_login_qr_image = ""
         # self.bbdown_login_qr_text = ""
-        self.active_builds: dict[str, str] = {}
-        self.pending_obsolete_cleanups: dict[str, dict] = {}
-        self.recache_statuses: dict[str, dict[str, Any]] = {}
-        self._recache_status_lock = threading.RLock()
-        self.active_recache_contexts: dict[str, dict[str, Any]] = {}
+        self.bbdown_login_qr_image = ""
         self._load_cache_policy()
-        self._cleanup_stale_staging_and_obsolete()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
 
@@ -816,49 +695,6 @@ class CacheManager:
             lambda: CacheManager._py_optional_video_quality(video_quality),
         )
 
-    def _current_selector_mode(self) -> str:
-        try:
-            return self.store.capture_playback_selector().mode
-        except Exception:
-            return "rust"
-
-    def get_recache_status(self, item_id: str) -> dict[str, Any] | None:
-        with self._recache_status_lock:
-            status = self.recache_statuses.get(item_id)
-            return dict(status) if status else None
-
-    def _update_recache_status(self, item_id: str, **kwargs: Any) -> dict[str, Any] | None:
-        with self._recache_status_lock:
-            entry = self.recache_statuses.get(item_id)
-            if not entry:
-                return None
-            for k, v in kwargs.items():
-                entry[k] = v
-            entry["updated_timestamp"] = time.time()
-            self._trim_recache_statuses_unlocked()
-            return dict(entry)
-
-    def _trim_recache_statuses_unlocked(self) -> None:
-        if len(self.recache_statuses) <= 50:
-            return
-        terminal_states = {"succeeded", "failed", "cancelled", "superseded"}
-        oldest_terminals = sorted(
-            [
-                (item_id, entry.get("updated_timestamp", 0))
-                for item_id, entry in self.recache_statuses.items()
-                if entry.get("state") in terminal_states
-            ],
-            key=lambda x: x[1],
-        )
-        for item_id, _ in oldest_terminals:
-            if len(self.recache_statuses) <= 40:
-                break
-            self.recache_statuses.pop(item_id, None)
-
-    def recache_statuses_snapshot(self) -> dict[str, dict[str, Any]]:
-        with self._recache_status_lock:
-            return {item_id: dict(status) for item_id, status in self.recache_statuses.items()}
-
     def enrich_snapshot(
         self,
         payload: dict[str, Any],
@@ -866,8 +702,6 @@ class CacheManager:
     ) -> dict[str, Any]:
         cache_metrics = metrics or self.cache_metrics()
         item_bytes = cache_metrics["item_bytes"]
-
-        payload["recache_statuses"] = self.recache_statuses_snapshot()
 
         current_item = payload.get("current_item")
         if isinstance(current_item, dict):
@@ -877,9 +711,6 @@ class CacheManager:
                 self.item_activity_at.get(current_item_id, 0.0)
             )
             current_item.update(self._download_progress_payload_for_item(current_item_id))
-            recache_st = self.get_recache_status(current_item_id)
-            if recache_st:
-                current_item["recache_status"] = recache_st
 
         playlist = payload.get("playlist")
         if isinstance(playlist, list):
@@ -891,9 +722,6 @@ class CacheManager:
                         self.item_activity_at.get(item_id, 0.0)
                     )
                     item.update(self._download_progress_payload_for_item(item_id))
-                    recache_st = self.get_recache_status(item_id)
-                    if recache_st:
-                        item["recache_status"] = recache_st
         return payload
 
     def _download_progress_payload_for_item(self, item_id: object) -> dict[str, Any]:
@@ -1055,12 +883,7 @@ class CacheManager:
             if "max_cache_items" in payload:
                 self.max_cache_items = self._bounded_cache_items(payload["max_cache_items"])
             if "video_quality" in payload:
-                # Persisted configuration normalization is startup hygiene,
-                # not a media operation. Keep it on the stable reference path
-                # so a selected Rust backend can still be changed after boot.
-                self.video_quality = self._py_normalize_video_quality(
-                    payload["video_quality"]
-                )
+                self.video_quality = self._normalize_video_quality(payload["video_quality"])
             if "audio_hires" in payload:
                 self.audio_hires = bool(payload["audio_hires"])
             if "download_source" in payload:
@@ -1184,8 +1007,8 @@ class CacheManager:
         exists = binary_path.exists()
         version = self._read_aria2c_version(binary_path) if exists else ""
         system, arch = self._current_platform_tokens()
-        auto_prepare_supported = not exists and self._aria2_auto_prepare_supported(system, arch)
         ready = bool(version)
+        auto_prepare_supported = not ready and self._aria2_auto_prepare_supported(system, arch)
         if ready:
             if override and binary_path == override:
                 message = f"使用外部 aria2c: {override}"
@@ -1193,6 +1016,8 @@ class CacheManager:
                 message = f"使用系统 aria2c: {system_path}"
             else:
                 message = f"aria2c {version} 已就绪"
+        elif exists and auto_prepare_supported:
+            message = f"aria2c 不可执行，将在确认后自动修复: {binary_path}"
         elif exists:
             message = f"aria2c 不可执行: {binary_path}"
         elif auto_prepare_supported:
@@ -1225,7 +1050,7 @@ class CacheManager:
             }
 
         for child in CACHE_DIR.iterdir():
-            if not child.is_dir() or child.name.startswith("."):
+            if not child.is_dir():
                 continue
             size = self._path_size(child)
             item_bytes[child.name] = size
@@ -1239,267 +1064,6 @@ class CacheManager:
             "item_count": item_count,
         }
 
-    def _is_build_superseded(self, item_id: str, build_id: str) -> bool:
-        with self.lock:
-            active = self.active_builds.get(item_id)
-            return bool(active and active != build_id)
-
-    def _is_valid_obsolete_path(self, path: Path) -> bool:
-        try:
-            resolved = path.resolve()
-            obsolete_root = (CACHE_DIR / ".obsolete").resolve()
-            return resolved != obsolete_root and obsolete_root in resolved.parents
-        except Exception:
-            return False
-
-    def _remove_obsolete_dir(self, obsolete_dir: Path) -> bool:
-        path = Path(obsolete_dir)
-        if not self._is_valid_obsolete_path(path):
-            _debug_print(f"[bilikara-cache] warning: rejected non-obsolete path deletion attempt: {path}")
-            return False
-        if not path.exists():
-            with self.lock:
-                self.pending_obsolete_cleanups.pop(str(path), None)
-            return True
-        try:
-            shutil.rmtree(path)
-            with self.lock:
-                self.pending_obsolete_cleanups.pop(str(path), None)
-            return True
-        except FileNotFoundError:
-            with self.lock:
-                self.pending_obsolete_cleanups.pop(str(path), None)
-            return True
-        except (OSError, PermissionError) as exc:
-            path_str = str(path)
-            with self.lock:
-                entry = self.pending_obsolete_cleanups.setdefault(
-                    path_str, {"path": path, "attempts": 0, "last_attempt": time.time()}
-                )
-                entry["attempts"] += 1
-                entry["last_attempt"] = time.time()
-                attempts = entry["attempts"]
-            _debug_print(
-                f"[bilikara-cache] warning: obsolete cleanup failed for {path} (attempt {attempts}): {exc}"
-            )
-            return False
-
-    def _process_pending_obsolete_cleanups(self) -> None:
-        now = time.time()
-        pending = getattr(self, "pending_obsolete_cleanups", {})
-        with self.lock:
-            entries = list(pending.values())
-        for entry in entries:
-            path = entry["path"]
-            attempts = entry["attempts"]
-            last_attempt = entry["last_attempt"]
-            if attempts >= 10:
-                continue
-            if now - last_attempt < 1.0:
-                continue
-            self._remove_obsolete_dir(path)
-
-    @staticmethod
-    def _publication_store_state(item: Any) -> dict[str, object]:
-        return {
-            "cache_status": getattr(item, "cache_status", "pending"),
-            "cache_progress": getattr(item, "cache_progress", 0.0),
-            "cache_message": getattr(item, "cache_message", ""),
-            "video_relative_path": getattr(item, "video_relative_path", ""),
-            "video_media_url": getattr(item, "video_media_url", ""),
-            "audio_variants": list(getattr(item, "audio_variants", []) or []),
-            "selected_audio_variant_id": getattr(item, "selected_audio_variant_id", ""),
-            "media_revision": getattr(item, "media_revision", ""),
-        }
-
-    def _write_publication_transaction(self, tx_file: Path, payload: dict[str, object]) -> None:
-        temp_file = tx_file.with_suffix(".tmp")
-        try:
-            with open(temp_file, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_file, tx_file)
-        except Exception:
-            self._safe_unlink(temp_file)
-            raise
-
-    def _update_publication_transaction(
-        self,
-        tx_file: Path,
-        payload: dict[str, object],
-        phase: str,
-    ) -> None:
-        payload["phase"] = phase
-        self._write_publication_transaction(tx_file, payload)
-
-    def _publication_paths_from_state(self, state: dict[str, object]) -> set[Path]:
-        paths: set[Path] = set()
-        video_relative_path = str(state.get("video_relative_path") or "").strip()
-        if video_relative_path:
-            video_path = self._cache_path_from_relative_path(video_relative_path)
-            if video_path:
-                paths.add(video_path)
-        for variant in list(state.get("audio_variants") or []):
-            if not isinstance(variant, dict):
-                continue
-            relative_path = str(variant.get("audio_relative_path") or "").strip()
-            audio_path = (
-                self._cache_path_from_relative_path(relative_path)
-                if relative_path
-                else self._cache_path_from_media_url(variant.get("audio_url"))
-            )
-            if audio_path:
-                paths.add(audio_path)
-        return paths
-
-    def _cleanup_replaced_publication_files(
-        self,
-        item_id: str,
-        old_state: dict[str, object],
-        new_state: dict[str, object],
-    ) -> None:
-        keep_paths = {path.resolve() for path in self._publication_paths_from_state(new_state)}
-        item_root = (CACHE_DIR / item_id).resolve()
-        for path in self._publication_paths_from_state(old_state):
-            try:
-                resolved = path.resolve()
-                if resolved in keep_paths or item_root not in resolved.parents:
-                    continue
-                resolved.unlink(missing_ok=True)
-                parent = resolved.parent
-                while parent != item_root and item_root in parent.parents:
-                    try:
-                        parent.rmdir()
-                    except OSError:
-                        break
-                    parent = parent.parent
-            except OSError:
-                # Old files are unreferenced after publication. Keeping a locked
-                # copy is safe and lets normal item cleanup retry later.
-                continue
-
-    def _force_restore_publication_store_state(
-        self,
-        item_id: str,
-        old_state: dict[str, object],
-    ) -> bool:
-        """Restore the serviceable in-memory item even if persistence is failing.
-
-        The transaction marker remains in that case, so startup recovery can
-        repair the persisted store before stale staging cleanup runs.
-        """
-
-        try:
-            with self.store.lock:
-                item = self.store._find_item_unlocked(item_id)  # noqa: SLF001
-                if not item:
-                    return False
-                for key, value in old_state.items():
-                    if key in PlaylistItem.__dataclass_fields__:
-                        setattr(item, key, value)
-                return all(getattr(item, key, None) == value for key, value in old_state.items())
-        except Exception as exc:  # noqa: BLE001
-            _debug_print(f"[bilikara-cache] emergency in-memory rollback failed: {exc}")
-            return False
-
-    def _recover_publication_transaction(self, tx_file: Path) -> bool:
-        try:
-            with open(tx_file, encoding="utf-8") as handle:
-                tx = json.load(handle)
-            if not isinstance(tx, dict):
-                return False
-            item_id = str(tx.get("item_id") or "").strip()
-            if not item_id:
-                return False
-
-            # Compatibility with the first transaction-marker implementation.
-            if "new_store_state" not in tx:
-                obsolete_name = str(tx.get("obsolete_dir") or "").strip()
-                if not obsolete_name:
-                    return False
-                active_dir = CACHE_DIR / item_id
-                obsolete_dir = CACHE_DIR / ".obsolete" / obsolete_name
-                if not active_dir.exists() and obsolete_dir.exists():
-                    obsolete_dir.rename(active_dir)
-                if active_dir.exists():
-                    tx_file.unlink(missing_ok=True)
-                    return True
-                return False
-
-            old_state = tx.get("old_store_state")
-            new_state = tx.get("new_store_state")
-            if not isinstance(old_state, dict) or not isinstance(new_state, dict):
-                return False
-            final_relative = str(tx.get("final_dir") or "").strip()
-            staging_relative = str(tx.get("staging_dir") or "").strip()
-            final_dir = self._cache_path_from_relative_path(final_relative) if final_relative else None
-            staging_dir = self._cache_path_from_relative_path(staging_relative) if staging_relative else None
-            current_item = self.store.get_item(item_id)
-            current_revision = str(getattr(current_item, "media_revision", "") or "")
-            new_revision = str(new_state.get("media_revision") or "")
-
-            if current_item and current_revision == new_revision and final_dir and final_dir.exists():
-                self._cleanup_replaced_publication_files(item_id, old_state, new_state)
-            else:
-                if current_item and not self.store.update_item(
-                    item_id,
-                    **old_state,
-                    persist_backup=False,
-                ):
-                    return False
-                if final_dir and final_dir.exists():
-                    self._safe_rmtree(final_dir)
-                    if final_dir.exists():
-                        return False
-            if staging_dir and staging_dir.exists():
-                self._safe_rmtree(staging_dir)
-            tx_file.unlink(missing_ok=True)
-            return True
-        except Exception as exc:  # noqa: BLE001
-            _debug_print(f"[bilikara-cache] warning: publication recovery failed for {tx_file}: {exc}")
-            return False
-
-    def _cleanup_stale_staging_and_obsolete(self) -> None:
-        if not CACHE_DIR.exists():
-            return
-        for tx_file in CACHE_DIR.glob(".tx_*.json"):
-            self._recover_publication_transaction(tx_file)
-        staging_root = CACHE_DIR / ".staging"
-        if staging_root.exists():
-            try:
-                for item_dir in staging_root.iterdir():
-                    if item_dir.is_dir():
-                        for build_dir in item_dir.iterdir():
-                            item_id = item_dir.name
-                            build_id = build_dir.name
-                            with self.lock:
-                                is_active = self.active_builds.get(item_id) == build_id
-                            if not is_active:
-                                self._safe_rmtree(build_dir)
-            except OSError:
-                pass
-        obsolete_root = CACHE_DIR / ".obsolete"
-        if obsolete_root.exists():
-            protected_obsolete_names: set[str] = set()
-            for tx_file in CACHE_DIR.glob(".tx_*.json"):
-                try:
-                    with open(tx_file, encoding="utf-8") as handle:
-                        tx = json.load(handle)
-                    obsolete_name = str(tx.get("obsolete_dir") or "").strip()
-                    if obsolete_name:
-                        protected_obsolete_names.add(obsolete_name)
-                except Exception:
-                    continue
-            try:
-                for obs_dir in obsolete_root.iterdir():
-                    if obs_dir.name in protected_obsolete_names:
-                        continue
-                    self._remove_obsolete_dir(obs_dir)
-            except OSError:
-                pass
-        self._process_pending_obsolete_cleanups()
-
     def prepare_session(self) -> None:
         self._clear_cache_root()
         with self.lock:
@@ -1508,7 +1072,6 @@ class CacheManager:
             self.item_download_progress.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
-            self.active_recache_contexts.clear()
             self.pending_ids.clear()
             self.requeued_active_ids.clear()
             self.urgent_cache_ids.clear()
@@ -1558,7 +1121,6 @@ class CacheManager:
             self.urgent_cache_ids.clear()
             self.urgent_workers.clear()
             self.active_process_item_ids.clear()
-            self.active_recache_contexts.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -1620,9 +1182,6 @@ class CacheManager:
         self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
 
         is_current_item = self.store.is_current_item(item_id)
-        is_already_ready = item.cache_status == "ready"
-        old_media_revision = str(getattr(item, "media_revision", "") or "")
-
         with self.lock:
             active_processes = self._active_processes_locked(item_id)
             target_is_primary_active = self.active_item_id == item_id
@@ -1653,64 +1212,29 @@ class CacheManager:
             if preempted_item_id:
                 self.cache_interrupted_messages[preempted_item_id] = "等待当前歌曲重新下载"
 
-        has_old_revision = bool(old_media_revision)
-        request_id = uuid.uuid4().hex[:12]
-        if (is_already_ready or force) and has_old_revision:
-            self.active_recache_contexts[item_id] = {
-                "request_id": request_id if is_current_item else "",
-                "release_req_id": request_id if is_current_item else "",
-                "item_id": item_id,
-                "old_media_revision": old_media_revision,
-                "is_current": is_current_item,
-                "is_forced": force,
-            }
-            if is_current_item:
-                self.store.set_media_release_request(request_id, item_id, old_media_revision)
-                MEDIA_LEASE_COORDINATOR.start_release_request(request_id, item_id, old_media_revision)
-
-        recache_initial_state = "waiting_release" if (has_old_revision and is_current_item) else ("queued" if in_flight else "downloading")
-        recache_initial_msg = "等待播放器释放旧版本" if (has_old_revision and is_current_item) else ("已接收重新缓存请求" if is_already_ready else "准备重新下载")
-
-        with self._recache_status_lock:
-            self.recache_statuses[item_id] = {
-                "request_id": request_id if has_old_revision else "",
-                "item_id": item_id,
-                "build_id": "",
-                "old_media_revision": old_media_revision,
-                "selector_mode": self._current_selector_mode(),
-                "state": recache_initial_state,
-                "progress": 0.0,
-                "message": recache_initial_msg,
-                "error": None,
-                "requested_timestamp": time.time(),
-                "updated_timestamp": time.time(),
-            }
-
-        if not is_already_ready and not in_flight and not has_old_revision:
-            self._remove_cache_dir(item_id)
-
-        update_kwargs = {
-            "cache_status": "pending",
-            "cache_progress": 0.0,
-            "cache_message": "准备重新下载",
-            "persist_backup": False,
-        }
-        if not has_old_revision:
-            update_kwargs.update({
-                "video_relative_path": "",
-                "video_media_url": "",
-                "audio_variants": [],
-                "media_revision": "",
-            })
-
-        self.store.update_item(item_id, **update_kwargs)
+        self.store.update_item(
+            item_id,
+            cache_status="pending",
+            cache_progress=0.0,
+            cache_message="准备重新下载",
+            video_relative_path="",
+            video_media_url="",
+            audio_variants=[],
+            persist_backup=False,
+        )
         self._record_item_activity(item_id)
 
         if in_flight:
             self._terminate_processes(active_processes)
             return
 
+        self._remove_cache_dir(item_id)
         if start_concurrent_current_retry:
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] starting concurrent current-item retry while "
+                f"item={primary_active_item_id} continues caching",
+            )
             self._start_urgent_cache(item_id)
             return
         if preempted_item_id:
@@ -1722,7 +1246,6 @@ class CacheManager:
             self._enqueue_retry_front(item_id, requeue_after=preempted_item_id)
             self._terminate_processes(preempted_processes)
             return
-
         self.enqueue(item_id)
 
     @staticmethod
@@ -1887,26 +1410,12 @@ class CacheManager:
                 self.tasks.put(queued_id)
 
     def _start_urgent_cache(self, item_id: str) -> None:
+        self._remove_queued_item(item_id)
         with self.lock:
-            if self.stop_event.is_set() or item_id in self.urgent_cache_ids or self.active_item_id == item_id:
+            if self.stop_event.is_set() or item_id in self.urgent_cache_ids:
                 return
             self.urgent_cache_ids.add(item_id)
             self.pending_ids.add(item_id)
-            retained: list[str] = []
-            while True:
-                try:
-                    queued_id = self.tasks.get_nowait()
-                except queue.Empty:
-                    break
-                if queued_id != item_id:
-                    retained.append(queued_id)
-                self.tasks.task_done()
-            for queued_id in retained:
-                self.tasks.put(queued_id)
-
-            if self.active_item_id == item_id:
-                return
-
             worker = threading.Thread(
                 target=self._urgent_cache_worker,
                 args=(item_id,),
@@ -2049,20 +1558,13 @@ class CacheManager:
             try:
                 item_id = self.tasks.get(timeout=0.5)
             except queue.Empty:
-                self._process_pending_obsolete_cleanups()
                 continue
             should_resync = False
-            should_skip = False
             try:
                 try:
                     with self.lock:
-                        urgent_ids = getattr(self, "urgent_cache_ids", set())
-                        if self.stop_event.is_set() or item_id in urgent_ids:
-                            should_skip = True
-                        else:
-                            self.active_item_id = item_id
-                    if not should_skip:
-                        should_resync = self._cache_item(item_id)
+                        self.active_item_id = item_id
+                    should_resync = self._cache_item(item_id)
                 except Exception as exc:  # noqa: BLE001
                     _debug_print(f"[bilikara-cache] Unexpected error caching item {item_id}: {exc}")
                     try:
@@ -2084,23 +1586,22 @@ class CacheManager:
                     except Exception:
                         pass
             finally:
-                if not should_skip:
-                    with self.lock:
-                        if self.active_item_id == item_id:
-                            self.active_item_id = None
-                        item_processes = [
-                            process
-                            for process, process_item_id in self.active_process_item_ids.items()
-                            if process_item_id == item_id
-                        ]
-                        for process in item_processes:
-                            self.active_processes.discard(process)
-                            self.active_process_item_ids.pop(process, None)
-                        self.active_process = next(iter(self.active_processes), None)
-                        if item_id in self.requeued_active_ids:
-                            self.requeued_active_ids.discard(item_id)
-                        else:
-                            self.pending_ids.discard(item_id)
+                with self.lock:
+                    if self.active_item_id == item_id:
+                        self.active_item_id = None
+                    item_processes = [
+                        process
+                        for process, process_item_id in self.active_process_item_ids.items()
+                        if process_item_id == item_id
+                    ]
+                    for process in item_processes:
+                        self.active_processes.discard(process)
+                        self.active_process_item_ids.pop(process, None)
+                    self.active_process = next(iter(self.active_processes), None)
+                    if item_id in self.requeued_active_ids:
+                        self.requeued_active_ids.discard(item_id)
+                    else:
+                        self.pending_ids.discard(item_id)
                 self.tasks.task_done()
             if should_resync and not self.stop_event.is_set():
                 self.sync_with_playlist()
@@ -2109,30 +1610,20 @@ class CacheManager:
         playback_selector = self.store.capture_playback_selector()
         if self.stop_event.is_set() or not self._should_cache(item_id):
             return False
-
-        res = False
-        while True:
-            item = self.store.get_item(item_id)
-            if not item:
-                self._take_retry_request(item_id)
-                self._remove_cache_dir(item_id)
-                return False
-
-            if self._take_retry_request(item_id):
-                if item.cache_status != "ready":
-                    self._remove_cache_dir(item_id)
-
-            res = self._cache_item_multi(
-                item_id,
-                item,
-                allow_refresh_retry=allow_refresh_retry,
-                playback_selector=playback_selector,
-            )
-            if not self._has_retry_request(item_id):
-                break
-            self._take_retry_request(item_id)
-
-        return res
+        if self._take_retry_request(item_id):
+            self._remove_cache_dir(item_id)
+        item = self.store.get_item(item_id)
+        if not item:
+            self._remove_cache_dir(item_id)
+            return False
+        # Current cache flow keeps video and audio tracks separate so the host
+        # can switch audio variants without remuxing a single output file.
+        return self._cache_item_multi(
+            item_id,
+            item,
+            allow_refresh_retry=allow_refresh_retry,
+            playback_selector=playback_selector,
+        )
 
     def _cache_item_multi(
         self,
@@ -2142,254 +1633,52 @@ class CacheManager:
         allow_refresh_retry: bool,
         playback_selector: PlaybackSelector | None = None,
     ) -> bool:
-        build_id = uuid.uuid4().hex
-        with self.lock:
-            self.active_builds[item_id] = build_id
-
-        sel_mode = playback_selector.mode if playback_selector else self._current_selector_mode()
-        self._update_recache_status(
-            item_id,
-            build_id=build_id,
-            selector_mode=sel_mode,
-            state="downloading",
-            message="正在下载多媒体数据",
-        )
-
-        is_already_ready = bool(item and item.cache_status == "ready")
         self._clear_item_download_progress(item_id)
-        if not is_already_ready:
-            self.store.update_item(
-                item_id,
-                cache_status="queued",
-                cache_progress=0.0,
-                cache_message="等待缓存队列",
-                persist_backup=False,
-            )
+        self.store.update_item(
+            item_id,
+            cache_status="queued",
+            cache_progress=0.0,
+            cache_message="等待缓存队列",
+            persist_backup=False,
+        )
         self._record_item_activity(item_id)
 
-        staging_dir = CACHE_DIR / ".staging" / item_id / build_id
-        staging_dir.mkdir(parents=True, exist_ok=True)
-
+        item_dir = CACHE_DIR / item_id
+        item_dir.mkdir(parents=True, exist_ok=True)
         download_source = self._current_download_source()
         if download_source == DOWNLOAD_SOURCE_DOWNKYI:
-            self._cleanup_attempt_dirs(staging_dir)
+            self._cleanup_attempt_dirs(item_dir)
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, "")
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache (build {build_id[:8]}): {item.display_title}")
-
-
-        recache_ctx = self.active_recache_contexts.get(item_id)
-        is_forced_recache = bool(recache_ctx and recache_ctx.get("is_forced"))
-        is_already_ready = bool(recache_ctx or item.cache_status == "ready")
-        is_current = self.store.is_current_item(item_id)
-        old_media_revision = str(getattr(item, "media_revision", "") or (recache_ctx.get("old_media_revision") if recache_ctx else ""))
-        release_req_id = str(recache_ctx.get("release_req_id") if recache_ctx and recache_ctx.get("release_req_id") else (self.store.media_release_request.get("request_id") if self.store.media_release_request and self.store.media_release_request.get("item_id") == item_id else ""))
-        if not release_req_id and is_current and (old_media_revision or is_forced_recache):
-            release_req_id = uuid.uuid4().hex[:12]
-            if recache_ctx:
-                recache_ctx["release_req_id"] = release_req_id
-
-        def notify_change() -> None:
-            callback = getattr(self.store, "on_change", None)
-            if callable(callback):
-                callback()
-
-        def cleanup_recache_on_failure() -> None:
-            ctx = self.active_recache_contexts.pop(item_id, None)
-            rel_id = (ctx.get("release_req_id") if ctx else None) or release_req_id
-            old_rev = (ctx.get("old_media_revision") if ctx else None) or old_media_revision
-            if rel_id:
-                self.store.clear_media_release_request(rel_id)
-            if old_rev or rel_id:
-                MEDIA_LEASE_COORDINATOR.finish_release_request(rel_id, old_rev)
-            try:
-                notify_change()
-            except Exception:
-                pass
-
-        if not self._should_cache(item_id):
-            cleanup_recache_on_failure()
-            self._safe_rmtree(staging_dir)
-            return False
-
-        if old_media_revision:
-            if is_current:
-                if not release_req_id:
-                    release_req_id = uuid.uuid4().hex[:12]
-                self._update_recache_status(item_id, state="waiting_release", message="等待播放器释放旧版本")
-                self.store.set_media_release_request(release_req_id, item_id, old_media_revision)
-                if release_req_id not in MEDIA_LEASE_COORDINATOR.active_release_requests:
-                    MEDIA_LEASE_COORDINATOR.start_release_request(release_req_id, item_id, old_media_revision)
-                if not MEDIA_LEASE_COORDINATOR.wait_for_release(
-                    release_req_id,
-                    old_media_revision,
-                    timeout=5.0,
-                ):
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] recache release timed out")
-                    self._update_recache_status(item_id, state="failed", error="release_timeout", message="释放旧版本超时")
-                    self.store.update_item(
-                        item_id,
-                        cache_status="failed",
-                        cache_message="释放旧版本超时",
-                        video_relative_path="",
-                        video_media_url="",
-                        audio_variants=[],
-                        media_revision="",
-                        persist_backup=False,
-                    )
-                    cleanup_recache_on_failure()
-                    self._safe_rmtree(staging_dir)
-                    return False
-            else:
-                self._update_recache_status(item_id, state="waiting_release", message="等待旧版本排空")
-                MEDIA_LEASE_COORDINATOR.mark_draining(old_media_revision)
-                if not MEDIA_LEASE_COORDINATOR.wait_for_drain(old_media_revision, timeout=2.0):
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] recache reader drain timed out")
-                    self._update_recache_status(item_id, state="failed", error="drain_timeout", message="排空旧版本超时")
-                    self.store.update_item(
-                        item_id,
-                        cache_status="failed",
-                        cache_message="排空旧版本超时",
-                        video_relative_path="",
-                        video_media_url="",
-                        audio_variants=[],
-                        media_revision="",
-                        persist_backup=False,
-                    )
-                    cleanup_recache_on_failure()
-                    self._safe_rmtree(staging_dir)
-                    return False
-                if self.store.is_current_item(item_id):
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] non-current item became current during drain wait")
-                    self._update_recache_status(item_id, state="failed", error="role_transition_abort", message="非当前歌曲变为当前歌曲，中止未释放替换")
-                    self.store.update_item(
-                        item_id,
-                        cache_status="failed",
-                        cache_message="非当前歌曲变为当前歌曲，中止未释放替换",
-                        video_relative_path="",
-                        video_media_url="",
-                        audio_variants=[],
-                        media_revision="",
-                        persist_backup=False,
-                    )
-                    cleanup_recache_on_failure()
-                    self._safe_rmtree(staging_dir)
-                    return False
-
-            self.store.update_item(
-                item_id,
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                selected_audio_variant_id="",
-                media_revision="",
-                persist_backup=False,
-            )
-
-            self._update_recache_status(item_id, state="deleting_old_cache", message="正在删除旧缓存")
-            try:
-                self._remove_cache_dir_for_forced_retry(item_id)
-            except Exception as exc:
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] old cache deletion failed: {exc}")
-                self._update_recache_status(
-                    item_id,
-                    state="failed",
-                    error="deletion_failed",
-                    message=f"旧缓存删除失败 / 媒体文件仍在被占用: {exc}",
-                )
-                self.store.update_item(
-                    item_id,
-                    cache_status="failed",
-                    cache_message=f"旧缓存删除失败 / 媒体文件仍在被占用: {exc}",
-                    video_relative_path="",
-                    video_media_url="",
-                    audio_variants=[],
-                    media_revision="",
-                    persist_backup=False,
-                )
-                cleanup_recache_on_failure()
-                self._safe_rmtree(staging_dir)
-                return False
-
-            if release_req_id:
-                self.store.clear_media_release_request(release_req_id)
-            if old_media_revision or release_req_id:
-                MEDIA_LEASE_COORDINATOR.finish_release_request(release_req_id, old_media_revision)
-            self.active_recache_contexts.pop(item_id, None)
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
 
         try:
             binary_path = self._ensure_downloader(download_source)
         except Exception as exc:  # noqa: BLE001
             label = self._download_source_label(download_source)
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] {label} unavailable: {exc}")
-            self._update_recache_status(
-                item_id,
-                state="failed",
-                error=str(exc),
-                message=f"{label} 不可用: {exc}",
-            )
-            cleanup_recache_on_failure()
             self.store.update_item(
                 item_id,
                 cache_status="failed",
                 cache_message=f"{label} 不可用: {exc}",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
                 persist_backup=False,
             )
-            self._safe_rmtree(staging_dir)
             return False
 
         try:
             ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
         except Exception as exc:  # noqa: BLE001
             self._append_log_line(log_path, f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}")
-            self._update_recache_status(
-                item_id,
-                state="failed",
-                error=str(exc),
-                message=f"FFmpeg 不可用: {exc}",
-            )
-            cleanup_recache_on_failure()
             self.store.update_item(
                 item_id,
                 cache_status="failed",
                 cache_message=f"FFmpeg 不可用: {exc}",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
                 persist_backup=False,
             )
-            self._safe_rmtree(staging_dir)
-            return False
-        with self.lock:
-            superseded_before_download = bool(
-                self.active_builds.get(item_id) != build_id
-                or item_id in self.retry_requested_ids
-            )
-        if superseded_before_download or self.stop_event.is_set() or not self._should_cache(item_id):
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] download aborted because build is no longer current",
-            )
-            self._update_recache_status(item_id, state="superseded", message="下载取消", error="download_aborted")
-            self.store.update_item(
-                item_id,
-                cache_status="pending",
-                cache_message="准备重新下载",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
-                persist_backup=False,
-            )
-            self._safe_rmtree(staging_dir)
             return False
 
-        self._update_recache_status(item_id, state="downloading", message="准备重新下载")
+        if not self._should_cache(item_id):
+            return False
+
         self.store.update_item(
             item_id,
             cache_status="downloading",
@@ -2403,22 +1692,13 @@ class CacheManager:
                 item,
                 binary_path,
                 ffmpeg_path,
-                staging_dir,
+                item_dir,
                 log_path,
                 download_source=download_source,
                 playback_selector=playback_selector,
             )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-
-            if self._is_build_superseded(item_id, build_id):
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] build {build_id[:8]} superseded by newer recache request")
-                self._update_recache_status(item_id, state="superseded", message="被新请求取代", error="superseded")
-                cleanup_recache_on_failure()
-                self._safe_rmtree(staging_dir)
-                return False
-
-            self._update_recache_status(item_id, state="validating", message="验证缓存数据")
             downkyi_tracks_prevalidated = bool(cache_result.get("downkyi_tracks_prevalidated"))
             if download_source == DOWNLOAD_SOURCE_DOWNKYI and not downkyi_tracks_prevalidated:
                 self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
@@ -2426,50 +1706,29 @@ class CacheManager:
                 self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-
-            if self._is_build_superseded(item_id, build_id):
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] build {build_id[:8]} superseded after validation")
-                self._update_recache_status(item_id, state="superseded", message="被新请求取代", error="superseded")
-                cleanup_recache_on_failure()
-                self._safe_rmtree(staging_dir)
-                return False
-
             if download_source == DOWNLOAD_SOURCE_DOWNKYI:
                 self._publish_validated_cache_result(cache_result, log_path)
         except CacheCancelledError as exc:
-            self._safe_rmtree(staging_dir)
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._take_retry_request(item_id)
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    return self._cache_item_multi(
-                        item_id,
-                        fresh_item,
-                        allow_refresh_retry=allow_refresh_retry,
-                        playback_selector=playback_selector,
-                    )
-                cleanup_recache_on_failure()
+                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
                 return False
             self._take_cache_interrupt_message(item_id)
             self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
-            cleanup_recache_on_failure()
-            if not is_already_ready:
-                self._drop_item_cache(item_id, str(exc))
+            self._drop_item_cache(item_id, str(exc))
             return False
         except DownloadCommandError as exc:
-            self._safe_rmtree(staging_dir)
+            self._cleanup_attempt_dirs(item_dir)
             if self._take_retry_request(item_id):
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    return self._cache_item_multi(
-                        item_id,
-                        fresh_item,
-                        allow_refresh_retry=allow_refresh_retry,
-                        playback_selector=playback_selector,
-                    )
-                cleanup_recache_on_failure()
+                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
                 return False
             last_message = str(exc)
             if (
@@ -2481,15 +1740,16 @@ class CacheManager:
                     log_path,
                     f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
                 )
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
+                )
                 try:
                     self._ensure_bbdown(force_refresh=True)
                     self._clear_item_download_progress(item_id)
-                    return self._cache_item_multi(
-                        item_id,
-                        item,
-                        allow_refresh_retry=False,
-                        playback_selector=playback_selector,
-                    )
+                    self._safe_rmtree(item_dir)
+                    item_dir.mkdir(parents=True, exist_ok=True)
+                    return self._cache_item_multi(item_id, item, allow_refresh_retry=False)
                 except Exception as refresh_exc:  # noqa: BLE001
                     self._append_log_line(
                         log_path,
@@ -2498,218 +1758,51 @@ class CacheManager:
             self._clear_item_download_progress(item_id)
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
-            self._update_recache_status(item_id, state="failed", error=last_message, message=f"重新缓存失败: {last_message}")
-            cleanup_recache_on_failure()
             self.store.update_item(
                 item_id,
                 cache_status="failed",
                 cache_message=f"缓存失败: {last_message}",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
                 persist_backup=False,
             )
             self._record_item_activity(item_id)
             return False
         except Exception as exc:  # noqa: BLE001
-            self._safe_rmtree(staging_dir)
+            self._cleanup_attempt_dirs(item_dir)
             if self._take_retry_request(item_id):
                 self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    return self._cache_item_multi(
-                        item_id,
-                        fresh_item,
-                        allow_refresh_retry=allow_refresh_retry,
-                        playback_selector=playback_selector,
-                    )
-                cleanup_recache_on_failure()
+                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
                 return False
             last_message = str(exc)
             self._clear_item_download_progress(item_id)
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
-            self._update_recache_status(item_id, state="failed", error=last_message, message=f"重新缓存失败: {last_message}")
-            cleanup_recache_on_failure()
             self.store.update_item(
                 item_id,
                 cache_status="failed",
                 cache_message=f"缓存失败: {last_message}",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
                 persist_backup=False,
             )
             self._record_item_activity(item_id)
             return False
 
-        is_current, current_item_generation = self.store.capture_current_item_role(item_id)
-
-        with self.lock:
-            superseded_before_publication = bool(
-                self.active_builds.get(item_id) != build_id
-                or item_id in self.retry_requested_ids
-            )
-        if (
-            superseded_before_publication
-            or self.stop_event.is_set()
-            or not self._should_cache(item_id)
-        ):
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] publication aborted because build is no longer current",
-            )
-            self._update_recache_status(item_id, state="superseded", message="发布取消", error="publication_aborted")
-            self.store.update_item(
-                item_id,
-                cache_status="pending",
-                cache_message="准备重新下载",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
-                persist_backup=False,
-            )
-            self._safe_rmtree(staging_dir)
-            return False
-
-        publication_token = self.store.begin_current_item_publication(
-            item_id,
-            expected_is_current=is_current,
-            expected_generation=current_item_generation,
-        )
-        if publication_token is None:
-            self._append_log_line(log_path, f"[{self._log_timestamp()}] publication aborted due to role race")
-            self._update_recache_status(item_id, state="failed", message="角色竞争导致发布失败", error="role_race")
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message="角色竞争导致发布失败",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
-                persist_backup=False,
-            )
-            self._safe_rmtree(staging_dir)
-            return False
-
-        self._update_recache_status(item_id, state="publishing", message="发布新版本缓存")
-
-        new_media_revision = uuid.uuid4().hex[:12]
-        video_file_name = Path(cache_result["video_file"]).name
-        video_relative_path = f"{item_id}/{video_file_name}"
-        video_media_url = f"/media/{video_relative_path}?rev={new_media_revision}"
-
-        audio_variants = []
-        for variant in cache_result.get("audio_variants", []):
-            if isinstance(variant, dict):
-                audio_rel = str(variant.get("audio_relative_path") or "").strip()
-                if audio_rel:
-                    rel_name = Path(audio_rel).name
-                else:
-                    audio_url = str(variant.get("audio_url") or "").strip()
-                    parsed = urllib.parse.urlparse(audio_url)
-                    unquoted_path = urllib.parse.unquote(parsed.path or audio_url)
-                    rel_name = Path(unquoted_path).name
-                if not rel_name or rel_name in (".", "/"):
-                    rel_name = "audio.m4a"
-                variant_relative = f"{item_id}/{rel_name}"
-                audio_variants.append({
-                    **variant,
-                    "audio_relative_path": variant_relative,
-                    "audio_url": f"/media/{variant_relative}?rev={new_media_revision}",
-                })
-            else:
-                audio_variants.append(variant)
-
-        new_store_state = {
-            "cache_status": "ready",
-            "cache_progress": 100.0,
-            "cache_message": "缓存完成",
-            "video_relative_path": video_relative_path,
-            "video_media_url": video_media_url,
-            "audio_variants": audio_variants,
-            "selected_audio_variant_id": cache_result.get("selected_audio_variant_id", "default"),
-            "media_revision": new_media_revision,
-        }
-
-        final_revision_dir = CACHE_DIR / item_id
-        tx_marker = CACHE_DIR / f".tx_{item_id}_{build_id}.json"
-        tx_payload: dict[str, object] = {
-            "item_id": item_id,
-            "build_id": build_id,
-            "phase": "prepared",
-            "staging_dir": str(staging_dir.relative_to(CACHE_DIR).as_posix()),
-            "final_dir": item_id,
-            "old_store_state": {},
-            "new_store_state": new_store_state,
-        }
-
-        store_published = False
-        publication_succeeded = False
-        try:
-            final_revision_dir.parent.mkdir(parents=True, exist_ok=True)
-            self._write_publication_transaction(tx_marker, tx_payload)
-            if final_revision_dir.exists():
-                shutil.rmtree(final_revision_dir, ignore_errors=True)
-            staging_dir.rename(final_revision_dir)
-            self._update_publication_transaction(tx_marker, tx_payload, "files_published")
-
-            if not self.store.update_item(item_id, **new_store_state, persist_backup=False):
-                raise RuntimeError("item disappeared before store publication")
-            store_published = True
-            self._update_publication_transaction(tx_marker, tx_payload, "store_published")
-
-            notify_change()
-            self._update_publication_transaction(tx_marker, tx_payload, "notified")
-            publication_succeeded = True
-            self._update_recache_status(item_id, state="succeeded", progress=100.0, message="重新缓存成功")
-            try:
-                tx_marker.unlink(missing_ok=True)
-            except OSError as cleanup_exc:
-                self._append_log_line(
-                    log_path,
-                    f"[{self._log_timestamp()}] transaction marker cleanup deferred: {cleanup_exc}",
-                )
-        except Exception as publication_exc:  # noqa: BLE001
-            self._update_recache_status(item_id, state="failed", error=str(publication_exc), message=f"发布失败: {publication_exc}")
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] publication failed: {publication_exc}",
-            )
-            self.store.update_item(
-                item_id,
-                cache_status="failed",
-                cache_message=f"发布失败: {publication_exc}",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                media_revision="",
-                persist_backup=False,
-            )
-            try:
-                tx_marker.unlink(missing_ok=True)
-            except OSError:
-                pass
-            try:
-                notify_change()
-            except Exception:
-                pass
-            return False
-        finally:
-            self.store.finish_current_item_publication(publication_token)
-            if staging_dir.exists():
-                self._safe_rmtree(staging_dir)
-
+        video_file = cache_result["video_file"]
         self._clear_item_download_progress(item_id)
-        self._record_item_activity(item_id)
-        self._append_log_line(
-            log_path,
-            f"[{self._log_timestamp()}] ready (rev {new_media_revision}): {video_file_name}",
+        self.store.update_item(
+            item_id,
+            cache_status="ready",
+            cache_progress=100.0,
+            cache_message=self._ready_message(item),
+            video_relative_path=cache_result["video_relative_path"],
+            video_media_url=cache_result["video_media_url"],
+            audio_variants=cache_result["audio_variants"],
+            selected_audio_variant_id=cache_result["selected_audio_variant_id"],
+            persist_backup=False,
         )
+        self._record_item_activity(item_id)
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {video_file.name}")
         return True
 
     # LEGACY: old single-pass BBDown cache path. It produced one muxed media
@@ -2952,9 +2045,7 @@ class CacheManager:
                     playback_selector=playback_selector,
                 )
         elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
-            dash_streams = self._resolve_dash_streams(
-                item, playback_selector=playback_selector
-            )
+            dash_streams = self._resolve_dash_streams(item, playback_selector=playback_selector)
             result_paths = self._download_dash_streams_with_aria2c(
                 item,
                 binary_path,
@@ -3054,14 +2145,12 @@ class CacheManager:
 
         audio_variants = []
         for index, (page, audio_file, label) in enumerate(audio_files):
-            rel_path = str(audio_file.relative_to(CACHE_DIR))
             audio_variants.append(
                 {
                     "id": self._variant_id(page, label, index),
                     "label": label,
                     "page": page,
-                    "audio_relative_path": rel_path,
-                    "audio_url": self._build_media_url(rel_path),
+                    "audio_url": self._build_media_url(str(audio_file.relative_to(CACHE_DIR))),
                 }
             )
         existing_variant_id = str(item.selected_audio_variant_id or "").strip()
@@ -3273,9 +2362,7 @@ class CacheManager:
             page_url,
             "-p",
             str(page),
-            *self._bbdown_stream_preference_args(
-                stream_kind, playback_selector=playback_selector
-            ),
+            *self._bbdown_stream_preference_args(stream_kind, playback_selector=playback_selector),
             "--work-dir",
             self._tool_arg_path(target_dir),
             "--ffmpeg-path",
@@ -3323,9 +2410,7 @@ class CacheManager:
             "--ffmpeg-location",
             self._tool_arg_path(ffmpeg_path),
             "-f",
-            self._ytdlp_format_selector(
-                stream_kind, playback_selector=playback_selector
-            ),
+            self._ytdlp_format_selector(stream_kind, playback_selector=playback_selector),
             "-o",
             self._tool_arg_path(target_dir / f"{stream_kind}-p{page}.%(ext)s"),
             page_url,
@@ -3354,9 +2439,7 @@ class CacheManager:
             force_avc = self._should_force_avc_locked()
             avc_quality_cap = self.avc_quality_cap if force_avc else ""
         max_height = self._ytdlp_max_height(
-            video_quality,
-            avc_quality_cap,
-            playback_selector=playback_selector,
+            video_quality, avc_quality_cap, playback_selector=playback_selector
         )
         codec_filter = "[vcodec^=avc1]" if force_avc else ""
         height_filter = f"[height<={max_height}]" if max_height else ""
@@ -3393,9 +2476,7 @@ class CacheManager:
         playback_selector: PlaybackSelector | None = None,
     ) -> int:
         response = CacheManager._native_quality_policy(
-            video_quality,
-            quality_cap,
-            playback_selector=playback_selector,
+            video_quality, quality_cap, playback_selector=playback_selector
         )
         if response is not None:
             return int(response["effective_max_height"])
@@ -3485,9 +2566,7 @@ class CacheManager:
         )
         audio_streams = dash.get("audio") or []
         selected_audio = self._select_dash_audio_stream(
-            audio_streams,
-            audio_hires=audio_hires,
-            playback_selector=playback_selector,
+            audio_streams, audio_hires=audio_hires, playback_selector=playback_selector
         )
         flac_info = dash.get("flac")
         dolby_info = dash.get("dolby")
@@ -3656,8 +2735,7 @@ class CacheManager:
             ]
             max_avc_quality_id = (
                 CacheManager._dash_max_quality_id(
-                    avc_quality_cap,
-                    playback_selector=playback_selector,
+                    avc_quality_cap, playback_selector=playback_selector
                 )
                 if avc_quality_cap
                 else None
@@ -3670,7 +2748,7 @@ class CacheManager:
                 "streams": streams,
             }
             if playback_selector is not None:
-                def decode_native(response: object) -> dict | None:
+                def decode_native_video(response: object) -> dict | None:
                     if not isinstance(response, dict):
                         raise ValueError("invalid video stream response")
                     if response.get("status") == "no_match":
@@ -3688,7 +2766,7 @@ class CacheManager:
                     rust=lambda: rust_backend.try_select_video_stream(
                         request, allow_python_reference=False
                     ),
-                    decode_rust=decode_native,
+                    decode_rust=decode_native_video,
                 )
             completed, response = rust_backend.try_select_video_stream(request)
             if completed and response is not None:
@@ -3731,7 +2809,8 @@ class CacheManager:
 
     @staticmethod
     def _select_dash_audio_stream(
-        audio_streams: list[dict], *,
+        audio_streams: list[dict],
+        *,
         audio_hires: bool = True,
         playback_selector: PlaybackSelector | None = None,
     ) -> dict | None:
@@ -3749,7 +2828,7 @@ class CacheManager:
                 ],
             }
             if playback_selector is not None:
-                def decode_native(response: object) -> dict | None:
+                def decode_native_audio(response: object) -> dict | None:
                     if not isinstance(response, dict):
                         raise ValueError("invalid audio stream response")
                     selected_index = response["selected_index"]
@@ -3763,7 +2842,7 @@ class CacheManager:
                     rust=lambda: rust_backend.try_select_audio_stream(
                         request, allow_python_reference=False
                     ),
-                    decode_rust=decode_native,
+                    decode_rust=decode_native_audio,
                 )
             completed, response = rust_backend.try_select_audio_stream(request)
             if completed and response is not None:
@@ -3813,7 +2892,7 @@ class CacheManager:
                 "dolby_available": bool(dolby_audio),
             }
             if playback_selector is not None:
-                def decode_native(response: object) -> dict | None:
+                def decode_native_preferred(response: object) -> dict | None:
                     if not isinstance(response, dict):
                         raise ValueError("invalid preferred audio response")
                     source = response["preferred_source"]
@@ -3836,7 +2915,7 @@ class CacheManager:
                     rust=lambda: rust_backend.try_select_preferred_audio_source(
                         request, allow_python_reference=False
                     ),
-                    decode_rust=decode_native,
+                    decode_rust=decode_native_preferred,
                 )
             completed, response = rust_backend.try_select_preferred_audio_source(request)
             if completed and response is not None:
@@ -3885,9 +2964,7 @@ class CacheManager:
             audio_hires = self.audio_hires
 
         video_urls = self._dash_stream_urls(
-            dash_streams,
-            "video",
-            playback_selector=playback_selector,
+            dash_streams, "video", playback_selector=playback_selector
         )
         if not video_urls:
             raise DownloadCommandError("未找到视频流下载地址")
@@ -3921,9 +2998,7 @@ class CacheManager:
 
             try:
                 page_dash_streams = self._resolve_dash_streams(
-                    item,
-                    cid=cid,
-                    playback_selector=playback_selector,
+                    item, cid=cid, playback_selector=playback_selector
                 )
             except Exception as exc:
                 raise RuntimeError(f"P{page} 音频解析失败: {exc}") from exc
@@ -3941,14 +3016,11 @@ class CacheManager:
 
             if preferred_audio:
                 audio_urls = self._preferred_audio_urls(
-                    preferred_audio,
-                    playback_selector=playback_selector,
+                    preferred_audio, playback_selector=playback_selector
                 )
             else:
                 audio_urls = self._dash_stream_urls(
-                    page_dash_streams,
-                    "audio",
-                    playback_selector=playback_selector,
+                    page_dash_streams, "audio", playback_selector=playback_selector
                 )
             if not audio_urls:
                 raise DownloadCommandError(f"未找到音频轨 P{page} 的下载地址")
@@ -4608,25 +3680,21 @@ class CacheManager:
                     self.retry_requested_ids.add(item_id)
 
         for item_id in item_ids:
-            item = self.store.get_item(item_id)
-            is_ready = item and item.cache_status == "ready"
-            if not is_ready:
-                self.store.update_item(
-                    item_id,
-                    cache_status="pending",
-                    cache_progress=0.0,
-                    cache_message=message,
-                    video_relative_path="",
-                    video_media_url="",
-                    audio_variants=[],
-                    selected_audio_variant_id="",
-                    persist_backup=False,
-                )
+            self.store.update_item(
+                item_id,
+                cache_status="pending",
+                cache_progress=0.0,
+                cache_message=message,
+                video_relative_path="",
+                video_media_url="",
+                audio_variants=[],
+                selected_audio_variant_id="",
+                persist_backup=False,
+            )
             self._record_item_activity(item_id)
             if item_id == active_item_id or item_id in pending_ids:
                 continue
-            if not is_ready:
-                self._remove_cache_dir(item_id)
+            self._remove_cache_dir(item_id)
             self.enqueue(item_id)
 
         self._terminate_processes(active_processes)
@@ -5217,20 +4285,12 @@ class CacheManager:
                 self._build_media_url(str(final.relative_to(CACHE_DIR)))
                 for source, final in published.items()
             }
-            rel_map = {
-                str(Path(source).relative_to(CACHE_DIR)):
-                str(final.relative_to(CACHE_DIR))
-                for source, final in published.items()
-            }
             for variant in variants:
                 if not isinstance(variant, dict):
                     continue
                 current_url = str(variant.get("audio_url") or "")
                 if current_url in url_map:
                     variant["audio_url"] = url_map[current_url]
-                current_rel = str(variant.get("audio_relative_path") or "")
-                if current_rel in rel_map:
-                    variant["audio_relative_path"] = rel_map[current_rel]
 
         for source, _final_path in publish_pairs:
             self._safe_rmtree(source.parent)
@@ -5246,23 +4306,23 @@ class CacheManager:
         if not isinstance(validation_files, list):
             return
 
-        requires_downkyi_validation = any(
+        requires_strict_validation = any(
             isinstance(entry, dict)
-            and str(entry.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI
+            and str(entry.get("download_source") or "") in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_BBDOWN)
             for entry in validation_files
         )
         ffprobe_path = self._ffprobe_path_for_ffmpeg(ffmpeg_path)
         if not ffprobe_path:
-            message = "缓存校验失败: DownKyi 下载需要可用的 ffprobe"
+            message = "缓存校验失败: BBDown/DownKyi 下载需要可用的 ffprobe"
             self._append_log_line(
                 log_path,
                 f"[{self._log_timestamp()}] ffprobe validate: failed, ffprobe unavailable",
             )
-            if requires_downkyi_validation:
+            if requires_strict_validation:
                 raise DownloadCommandError(message)
             self._append_log_line(
                 log_path,
-                f"[{self._log_timestamp()}] ffprobe validate: skipped for non-DownKyi source",
+                f"[{self._log_timestamp()}] ffprobe validate: skipped for non-strict source",
             )
             return
 
@@ -5484,7 +4544,7 @@ class CacheManager:
                     f"原始 {source_audio_duration:.3f} 秒，实际 {stream_duration:.3f} 秒，"
                     f"相差 {difference:.3f} 秒"
                 )
-        if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
+        if str(context.get("download_source") or "") in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_BBDOWN):
             self._validate_demux_file(
                 ffmpeg_path,
                 media_path,
@@ -6026,8 +5086,6 @@ class CacheManager:
             if self.item_stage_progress_signatures.get(item_id) == signature:
                 return
             self.item_stage_progress_signatures[item_id] = signature
-        if "cache_progress" in changes and isinstance(changes["cache_progress"], (int, float)):
-            self._update_recache_status(item_id, progress=float(changes["cache_progress"]), message=str(message))
         self.store.update_item(item_id, persist_backup=False, **changes)
         self._record_item_activity(item_id)
 
@@ -6162,8 +5220,6 @@ class CacheManager:
             if self.item_stage_progress_signatures.get(item_id) == signature:
                 return
             self.item_stage_progress_signatures[item_id] = signature
-        if "cache_progress" in changes and isinstance(changes["cache_progress"], (int, float)):
-            self._update_recache_status(item_id, progress=float(changes["cache_progress"]), message=str(message))
         self.store.update_item(item_id, persist_backup=False, **changes)
         self._record_item_activity(item_id)
 
@@ -6212,17 +5268,64 @@ class CacheManager:
 
     def _ensure_bbdown(self, force_refresh: bool = False) -> Path:
         with self.binary_prepare_lock:
-            override = Path(BB_DOWN_PATH_OVERRIDE) if BB_DOWN_PATH_OVERRIDE else None
-            if override and override.exists():
+            override = Path(BB_DOWN_PATH_OVERRIDE).expanduser() if BB_DOWN_PATH_OVERRIDE else None
+            override_exists = bool(override and override.exists())
+            current_binary = self._local_binary_path()
+            if PACKAGED_RUNTIME:
+                if override_exists:
+                    with self.lock:
+                        self.binary_state = "ready"
+                        self.binary_version = self._read_bbdown_version(override)
+                        self.binary_message = f"使用外部 BBDown: {override}"
+                    return override
+                return self._ensure_packaged_bbdown(
+                    current_binary,
+                    force_refresh=force_refresh,
+                )
+
+            local_version = ""
+            if not override_exists and BB_DOWN_VERSION_FILE.exists():
+                local_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
+            completed, prepare_decision = rust_backend.try_decide_tool_prepare_policy(
+                {
+                    "schema_version": 1,
+                    "override_exists": override_exists,
+                    "installed_exists": current_binary.exists(),
+                    "force_refresh": force_refresh,
+                    "version_metadata_present": bool(local_version),
+                }
+            )
+            if not completed or prepare_decision is None:
+                raise RuntimeError("Rust BBDown prepare policy is unavailable or invalid")
+
+            prepare_action = prepare_decision["action"]
+            if prepare_action == "use_override":
+                if override is None or not override.exists():
+                    raise RuntimeError("Rust BBDown prepare policy selected an invalid override")
                 with self.lock:
                     self.binary_state = "ready"
                     self.binary_message = f"使用外部 BBDown: {override}"
                 return override
 
-            current_binary = self._local_binary_path()
-            local_version = ""
-            if BB_DOWN_VERSION_FILE.exists():
-                local_version = BB_DOWN_VERSION_FILE.read_text(encoding="utf-8").strip()
+            if prepare_action == "use_installed":
+                if not current_binary.exists():
+                    raise RuntimeError(
+                        "Rust BBDown prepare policy selected a missing installed binary"
+                    )
+                current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
+                if prepare_decision["probe_installed_version"]:
+                    local_version = self._read_bbdown_version(current_binary)
+                with self.lock:
+                    self.binary_state = "ready"
+                    self.binary_version = local_version
+                    if local_version:
+                        self.binary_message = f"BBDown {local_version} 已就绪（未检查更新）"
+                    else:
+                        self.binary_message = "BBDown 已就绪（未检查更新）"
+                return current_binary
+
+            if prepare_action != "fetch_install_update":
+                raise RuntimeError("Rust BBDown prepare policy returned an unknown action")
 
             release: dict[str, Any] | None = None
             latest_version = ""
@@ -6234,16 +5337,6 @@ class CacheManager:
                 release_error = exc
 
             if release is None:
-                if current_binary.exists() and not force_refresh:
-                    current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
-                    with self.lock:
-                        self.binary_state = "ready"
-                        self.binary_version = local_version
-                        if local_version:
-                            self.binary_message = f"BBDown {local_version} 已就绪（未检查更新）"
-                        else:
-                            self.binary_message = "BBDown 已就绪（未检查更新）"
-                    return current_binary
                 if not TOOL_ASSET_BASE_URL:
                     raise RuntimeError(f"无法检查 BBDown 最新版本: {release_error}")
                 release = {"tag_name": "r2-fallback", "assets": [self._bbdown_fallback_asset()]}
@@ -6337,6 +5430,81 @@ class CacheManager:
 
             return current_binary
 
+    def _ensure_packaged_bbdown(
+        self,
+        current_binary: Path,
+        *,
+        force_refresh: bool,
+    ) -> Path:
+        current_version = ""
+        if current_binary.is_file() and not force_refresh:
+            current_binary.chmod(current_binary.stat().st_mode | stat.S_IEXEC)
+            current_version = self._read_bbdown_version(current_binary)
+            if current_version:
+                self._write_bbdown_version_metadata(current_version)
+                with self.lock:
+                    self.binary_state = "ready"
+                    self.binary_version = current_version
+                    self.binary_message = f"BBDown {current_version} 已就绪（内置版本）"
+                return current_binary
+
+        vendor_binary = self._bundled_bbdown_path()
+        if vendor_binary is None:
+            raise RuntimeError(
+                "打包版缺少内置 BBDown，无法离线修复；请重新安装应用或设置 BB_DOWN_PATH"
+            )
+
+        with self.lock:
+            self.binary_state = "installing"
+            self.binary_message = "正在从应用内置副本修复 BBDown"
+
+        BB_DOWN_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = ".exe" if current_binary.suffix.lower() == ".exe" else ""
+        temporary_binary = BB_DOWN_DIR / f".BBDown.install-{uuid.uuid4().hex}{suffix}"
+        try:
+            shutil.copy2(vendor_binary, temporary_binary)
+            temporary_binary.chmod(temporary_binary.stat().st_mode | stat.S_IEXEC)
+            installed_version = self._read_bbdown_version(temporary_binary)
+            if not installed_version:
+                raise RuntimeError(f"内置 BBDown 无法执行: {vendor_binary}")
+            os.replace(temporary_binary, current_binary)
+            self._write_bbdown_version_metadata(installed_version)
+        except Exception as exc:
+            temporary_binary.unlink(missing_ok=True)
+            with self.lock:
+                self.binary_state = "error"
+                self.binary_message = f"修复 BBDown 失败: {exc}"
+            raise
+
+        with self.lock:
+            self.binary_state = "ready"
+            self.binary_version = installed_version
+            self.binary_message = f"BBDown {installed_version} 已从应用内置副本恢复"
+        return current_binary
+
+    @staticmethod
+    def _bundled_bbdown_path() -> Path | None:
+        binary_name = "BBDown.exe" if os.name == "nt" else "BBDown"
+        for candidate in (
+            BB_DOWN_BUNDLED_PATH,
+            INTERNAL_VENDOR_DIR / binary_name,
+        ):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _write_bbdown_version_metadata(version: str) -> None:
+        BB_DOWN_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = BB_DOWN_VERSION_FILE.with_name(
+            f".{BB_DOWN_VERSION_FILE.name}.write-{uuid.uuid4().hex}"
+        )
+        try:
+            temporary_path.write_text(version, encoding="utf-8")
+            os.replace(temporary_path, BB_DOWN_VERSION_FILE)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
     def _ensure_ytdlp(self) -> Path:
         with self.binary_prepare_lock:
             override = Path(YTDLP_PATH_OVERRIDE).expanduser() if YTDLP_PATH_OVERRIDE else None
@@ -6396,7 +5564,8 @@ class CacheManager:
                     return system_path
 
             binary_path = self._local_aria2c_binary_path()
-            if not binary_path.exists():
+            local_version = self._read_aria2c_version(binary_path) if binary_path.exists() else ""
+            if not local_version:
                 system, arch = self._current_platform_tokens()
                 if not self._aria2_auto_prepare_supported(system, arch):
                     raise RuntimeError(
@@ -6472,30 +5641,106 @@ class CacheManager:
         else:
             self._download_tool_asset(asset, target_path, tool="ytdlp")
 
-    def _install_aria2c(self, target_path: Path) -> None:
+    def _install_aria2c(
+        self,
+        target_path: Path,
+        *,
+        allow_brew_fallback: bool = True,
+    ) -> None:
         system, arch = self._current_platform_tokens()
         if system == "linux" and shutil.which("apt-get") and shutil.which("dpkg-deb"):
             self._install_aria2_apt(target_path)
             return
-        if system == "darwin" and shutil.which("brew"):
-            self._install_aria2_brew(target_path)
+        if system == "darwin":
+            self._install_macos_aria2c(
+                target_path,
+                arch,
+                allow_brew_fallback=allow_brew_fallback,
+            )
             return
         try:
             release = self._fetch_aria2_release()
             asset = self._select_aria2_asset(release)
         except Exception:
             asset = self._aria2_fallback_asset()
-        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
-        name = str(asset.get("name") or "aria2c.zip")
+        self._install_aria2_asset(target_path, asset)
+
+    def _install_macos_aria2c(
+        self,
+        target_path: Path,
+        arch: str,
+        *,
+        allow_brew_fallback: bool,
+    ) -> None:
+        # aria2 1.37.0 publishes Windows binaries but no macOS release asset.
+        # The bundled, build-pinned project metadata is therefore the first
+        # viable direct-download source and avoids a needless GitHub API poll.
+        failures = ["official release: aria2 1.37.0 has no macOS binary asset"]
+
+        mirror_asset = self._macos_aria2_asset("darwin", arch)
+        if mirror_asset is not None:
+            try:
+                self._install_aria2_asset(target_path, mirror_asset)
+                return
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"project mirror: {type(exc).__name__}: {exc}")
+        else:
+            failures.append("project mirror: no trusted asset metadata for this architecture")
+
+        brew_path = self._brew_executable() if allow_brew_fallback else None
+        if brew_path is not None:
+            try:
+                self._install_aria2_brew(target_path, brew_path=brew_path)
+                version = self._read_aria2c_version(target_path)
+                if not version:
+                    raise RuntimeError("Homebrew aria2c did not pass version validation")
+                return
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"Homebrew fallback: {type(exc).__name__}: {exc}")
+
+        raise RuntimeError("macOS aria2c automatic preparation failed: " + "; ".join(failures))
+
+    def _install_aria2_asset(self, target_path: Path, asset: dict[str, Any]) -> None:
+        name = str(asset.get("name") or "")
+        if not name or Path(name).name != name or not name.lower().endswith(
+            (".zip", ".tar.gz", ".tgz")
+        ):
+            raise RuntimeError("aria2 release asset has an unsafe or unsupported name")
         download_url = str(asset.get("browser_download_url") or "")
         if not download_url and not self._tool_fallback_url(name, tool="aria2c"):
             raise RuntimeError("aria2 release asset missing download URL")
-        archive_path = ARIA2C_DIR / name
-        self._download_tool_asset(asset, archive_path, tool="aria2c")
+
+        ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
+        attempt_dir = ARIA2C_DIR / f".prepare-{uuid.uuid4().hex}"
+        attempt_dir.mkdir(parents=True, exist_ok=False)
+        archive_path = attempt_dir / name
         try:
-            self._extract_tool_binary_from_archive(archive_path, ARIA2C_DIR, target_path.name)
+            self._download_tool_asset(asset, archive_path, tool="aria2c")
+            expected_sha256 = str(asset.get("sha256") or "").lower()
+            if expected_sha256:
+                actual_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                if actual_sha256 != expected_sha256:
+                    raise RuntimeError(
+                        f"aria2c archive SHA-256 mismatch: expected {expected_sha256}, "
+                        f"got {actual_sha256}"
+                    )
+            extracted = self._extract_tool_binary_from_archive(
+                archive_path,
+                attempt_dir,
+                target_path.name,
+            )
+            extracted.chmod(extracted.stat().st_mode | stat.S_IEXEC)
+            version = self._read_aria2c_version(extracted)
+            expected_version = str(asset.get("version") or "")
+            if not version or expected_version and version != expected_version:
+                raise RuntimeError(
+                    f"aria2c version validation failed: expected "
+                    f"{expected_version or 'an executable version'}, got {version or 'no version'}"
+                )
+            os.replace(extracted, target_path)
+            target_path.chmod(target_path.stat().st_mode | stat.S_IEXEC)
         finally:
-            archive_path.unlink(missing_ok=True)
+            shutil.rmtree(attempt_dir, ignore_errors=True)
 
     def _install_aria2_apt(self, target_path: Path) -> None:
         import tempfile
@@ -6581,13 +5826,19 @@ class CacheManager:
                         else:
                             shutil.copy2(candidate, dest)
 
-    def _install_aria2_brew(self, target_path: Path) -> None:
+    def _install_aria2_brew(
+        self,
+        target_path: Path,
+        *,
+        brew_path: Path | None = None,
+    ) -> None:
         import subprocess
 
+        brew = str(brew_path or self._brew_executable() or "brew")
         ARIA2C_DIR.mkdir(parents=True, exist_ok=True)
         try:
             subprocess.run(
-                ["brew", "fetch", "--bottle", "aria2"],
+                [brew, "fetch", "--bottle", "aria2"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -6596,7 +5847,7 @@ class CacheManager:
         except (subprocess.CalledProcessError, subprocess.SubprocessError):
             try:
                 subprocess.run(
-                    ["brew", "fetch", "aria2"],
+                    [brew, "fetch", "aria2"],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -6610,7 +5861,7 @@ class CacheManager:
 
         try:
             res = subprocess.run(
-                ["brew", "--cache", "--bottle", "aria2"],
+                [brew, "--cache", "--bottle", "aria2"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -6620,7 +5871,7 @@ class CacheManager:
         except (subprocess.CalledProcessError, subprocess.SubprocessError):
             try:
                 res = subprocess.run(
-                    ["brew", "--cache", "aria2"],
+                    [brew, "--cache", "aria2"],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -6641,7 +5892,7 @@ class CacheManager:
         if not cache_file_path.exists():
             try:
                 res = subprocess.run(
-                    ["brew", "--cache"],
+                    [brew, "--cache"],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -6917,15 +6168,91 @@ class CacheManager:
             return "aria2-1.37.0-win-32bit-build1.zip"
         return "aria2-1.37.0-win-64bit-build1.zip"
 
-    @staticmethod
-    def _aria2_auto_prepare_supported(system: str, arch: str) -> bool:
+    @classmethod
+    def _aria2_auto_prepare_supported(cls, system: str, arch: str) -> bool:
         if system == "windows":
             return True
         if system == "linux":
             return bool(shutil.which("apt-get") and shutil.which("dpkg-deb"))
         if system == "darwin":
-            return bool(shutil.which("brew"))
+            return bool(cls._macos_aria2_asset(system, arch) or cls._brew_executable())
         return False
+
+    @staticmethod
+    def _brew_executable() -> Path | None:
+        resolved = shutil.which("brew")
+        if resolved:
+            return Path(resolved)
+        for raw_path in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
+            candidate = Path(raw_path)
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @staticmethod
+    def _macos_aria2_asset(system: str, arch: str) -> dict[str, str] | None:
+        if system != "darwin" or arch not in {"arm64", "x64"}:
+            return None
+        metadata_paths = [
+            ARIA2_MACOS_METADATA_PATH,
+            INTERNAL_VENDOR_DIR / "aria2-macos.json",
+        ]
+        if PACKAGED_RUNTIME:
+            metadata_paths.append(
+                Path(sys.executable).resolve().parent.parent
+                / "Resources"
+                / "vendor"
+                / "aria2-macos.json"
+            )
+        for metadata_path in metadata_paths:
+            if not metadata_path.is_file():
+                continue
+            try:
+                payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            required = {
+                "schema_version": 2,
+                "tool": "aria2c",
+                "provider": "bilikara-r2",
+                "platform": "darwin",
+                "arch": arch,
+                "version": ARIA2_MACOS_VERSION,
+                "source_url": ARIA2_MACOS_SOURCE_URL,
+                "source_sha256": ARIA2_MACOS_SOURCE_SHA256,
+            }
+            if any(payload.get(key) != value for key, value in required.items()):
+                continue
+            name = str(payload.get("name") or "")
+            url = str(payload.get("url") or "")
+            sha256 = str(payload.get("sha256") or "").lower()
+            recipe_revision = str(payload.get("recipe_revision") or "")
+            parsed_url = urllib.parse.urlsplit(url)
+            configured_base = urllib.parse.urlsplit(TOOL_ASSET_BASE_URL)
+            expected_path_prefix = f"{configured_base.path.rstrip('/')}/aria2/{ARIA2_MACOS_VERSION}/"
+            if (
+                not name
+                or Path(name).name != name
+                or not name.endswith(".tar.gz")
+                or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", recipe_revision)
+                or parsed_url.scheme != "https"
+                or not configured_base.netloc
+                or parsed_url.netloc != configured_base.netloc
+                or not parsed_url.path.startswith(expected_path_prefix)
+                or f"/{urllib.parse.quote(recipe_revision)}/" not in parsed_url.path
+                or not parsed_url.path.endswith(f"/{urllib.parse.quote(name)}")
+                or parsed_url.query
+                or parsed_url.fragment
+            ):
+                continue
+            return {
+                "name": name,
+                "browser_download_url": url,
+                "sha256": sha256,
+                "version": ARIA2_MACOS_VERSION,
+            }
+        return None
 
     def _aria2_fallback_asset(self) -> dict[str, str]:
         system, arch = self._current_platform_tokens()
@@ -6992,30 +6319,71 @@ class CacheManager:
 
     @staticmethod
     def _extract_tool_binary_from_archive(archive_path: Path, output_dir: Path, binary_name: str) -> Path:
-        extract_dir = output_dir / f".extract-{archive_path.stem}"
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
-        extract_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        target_path = output_dir / binary_name
+        temporary_path = output_dir / f".{binary_name}.extract-{uuid.uuid4().hex}"
+        expected_name = binary_name.lower()
         try:
             lower_name = archive_path.name.lower()
             if lower_name.endswith(".zip"):
                 with zipfile.ZipFile(archive_path) as zf:
-                    zf.extractall(extract_dir)
+                    for info in zf.infolist():
+                        if not CacheManager._safe_tool_archive_member(info.filename):
+                            raise RuntimeError(
+                                f"unsafe archive member in {archive_path.name}: {info.filename}"
+                            )
+                    matches = [
+                        info
+                        for info in zf.infolist()
+                        if not info.is_dir()
+                        and PurePosixPath(info.filename.replace("\\", "/")).name.lower()
+                        == expected_name
+                        and not stat.S_ISLNK(info.external_attr >> 16)
+                    ]
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            f"{binary_name} not uniquely present in {archive_path.name}"
+                        )
+                    with zf.open(matches[0]) as source, temporary_path.open("wb") as output:
+                        shutil.copyfileobj(source, output)
             elif lower_name.endswith((".tar.gz", ".tgz")):
                 with tarfile.open(archive_path, "r:gz") as tf:
-                    tf.extractall(extract_dir)
+                    members = tf.getmembers()
+                    for member in members:
+                        if not CacheManager._safe_tool_archive_member(member.name):
+                            raise RuntimeError(
+                                f"unsafe archive member in {archive_path.name}: {member.name}"
+                            )
+                    matches = [
+                        member
+                        for member in members
+                        if member.isfile()
+                        and PurePosixPath(member.name.replace("\\", "/")).name.lower()
+                        == expected_name
+                    ]
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            f"{binary_name} not uniquely present in {archive_path.name}"
+                        )
+                    source = tf.extractfile(matches[0])
+                    if source is None:
+                        raise RuntimeError(f"unable to read {binary_name} from {archive_path.name}")
+                    with source, temporary_path.open("wb") as output:
+                        shutil.copyfileobj(source, output)
             else:
                 raise RuntimeError(f"unsupported archive format: {archive_path.name}")
-
-            expected_name = binary_name.lower()
-            for candidate in extract_dir.rglob("*"):
-                if candidate.is_file() and candidate.name.lower() == expected_name:
-                    target_path = output_dir / binary_name
-                    shutil.copy2(candidate, target_path)
-                    return target_path
-            raise RuntimeError(f"{binary_name} not found in {archive_path.name}")
+            if not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+                raise RuntimeError(f"empty {binary_name} in {archive_path.name}")
+            os.replace(temporary_path, target_path)
+            return target_path
         finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
+            temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _safe_tool_archive_member(name: str) -> bool:
+        normalized = str(name or "").replace("\\", "/")
+        path = PurePosixPath(normalized)
+        return bool(normalized) and not path.is_absolute() and ".." not in path.parts
 
     @staticmethod
     def _aria2c_env(binary_path: Path) -> dict[str, str]:
@@ -7039,7 +6407,9 @@ class CacheManager:
                 env=CacheManager._aria2c_env(binary_path),
                 **CacheManager._hidden_process_kwargs(),
             )
-            first_line = (process.stdout or "").split("\n")[0].strip()
+            if process.returncode != 0:
+                return ""
+            first_line = (process.stdout or process.stderr or "").split("\n")[0].strip()
             for part in first_line.split():
                 if part[0:1].isdigit() and "." in part:
                     return part
@@ -7384,7 +6754,7 @@ class CacheManager:
             return ""
         try:
             process = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-                [str(binary_path), "--version"],
+                [str(binary_path), "--help"],
                 shell=False,
                 capture_output=True,
                 text=True,
@@ -7394,6 +6764,8 @@ class CacheManager:
                 **CacheManager._hidden_process_kwargs(),
             )
         except (OSError, subprocess.SubprocessError):
+            return ""
+        if process.returncode != 0:
             return ""
         output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
         match = re.search(r"(?i)\b(?:v|version\s*)?(\d+(?:\.\d+){1,3}(?:[-+._0-9A-Za-z]*)?)", output)
@@ -7555,8 +6927,6 @@ class CacheManager:
 
     def _cleanup_orphan_cache_dirs(self, valid_ids: set[str]) -> None:
         for child in CACHE_DIR.iterdir():
-            if child.name.startswith("."):
-                continue
             if child.name not in valid_ids:
                 if child.is_dir():
                     self._safe_rmtree(child)
@@ -7619,26 +6989,19 @@ class CacheManager:
         return None
 
     def _item_cache_ready(self, item) -> bool:
-        video_rel = getattr(item, "video_relative_path", "")
-        video_url = getattr(item, "video_media_url", "")
-        video_path = self._cache_path_from_relative_path(video_rel) or self._cache_path_from_media_url(video_url)
+        video_path = self._cache_path_from_relative_path(item.video_relative_path)
         if not video_path or not video_path.exists():
             return False
 
         audio_variants = [
             variant
-            for variant in (getattr(item, "audio_variants", []) or [])
+            for variant in item.audio_variants
             if isinstance(variant, dict)
         ]
         if not audio_variants:
             return False
         for variant in audio_variants:
-            rel_path = variant.get("audio_relative_path")
-            audio_path = (
-                self._cache_path_from_relative_path(rel_path)
-                if rel_path
-                else self._cache_path_from_media_url(variant.get("audio_url"))
-            )
+            audio_path = self._cache_path_from_media_url(variant.get("audio_url"))
             if not audio_path or not audio_path.exists():
                 return False
         return True
@@ -7692,26 +7055,6 @@ class CacheManager:
         )
         self._record_item_activity(item_id)
 
-    def _remove_cache_dir_for_forced_retry(self, item_id: str) -> None:
-        self._clear_item_download_progress(item_id)
-        cache_dir = CACHE_DIR / item_id
-        if cache_dir.exists():
-            def _handle_remove_readonly(func, path, _exc_info):
-                try:
-                    os.chmod(path, stat.S_IWRITE)
-                    func(path)
-                except Exception:
-                    pass
-
-            try:
-                shutil.rmtree(cache_dir, onerror=_handle_remove_readonly)
-            except Exception as exc:
-                if cache_dir.exists():
-                    raise RuntimeError(f"旧缓存删除失败 / 媒体文件仍在被占用: {exc}") from exc
-            if cache_dir.exists():
-                raise RuntimeError("旧缓存删除失败 / 媒体文件仍在被占用")
-        self._remove_item_log(item_id)
-
     def _remove_cache_dir(self, item_id: str) -> None:
         self._clear_item_download_progress(item_id)
         self._safe_rmtree(CACHE_DIR / item_id)
@@ -7725,6 +7068,8 @@ class CacheManager:
         if not self.log_dir.exists():
             return
         for child in self.log_dir.iterdir():
+            if child.is_file() and child.name in PERSISTENT_DIAGNOSTIC_LOG_NAMES:
+                continue
             if child.is_dir():
                 self._safe_rmtree(child)
             else:
@@ -7749,12 +7094,8 @@ class CacheManager:
             self.item_activity_at[item_id] = datetime.now().timestamp()
 
     def _has_retry_request(self, item_id: str) -> bool:
-        lock = getattr(self, "lock", None)
-        retry_ids = getattr(self, "retry_requested_ids", set())
-        if lock:
-            with lock:
-                return item_id in retry_ids
-        return item_id in retry_ids
+        with self.lock:
+            return item_id in self.retry_requested_ids
 
     def _take_retry_request(self, item_id: str) -> bool:
         with self.lock:
@@ -7896,6 +7237,38 @@ class CacheManager:
         return payload
 
     @staticmethod
+    def _sanitized_bilibili_login_error(exc: BaseException) -> str:
+        message = " ".join(str(exc).split())
+
+        def sanitize_url(match: re.Match[str]) -> str:
+            raw_url = match.group(0)
+            trailing = ""
+            while raw_url and raw_url[-1] in ".,)]}":
+                trailing = raw_url[-1] + trailing
+                raw_url = raw_url[:-1]
+            parsed = urllib.parse.urlsplit(raw_url)
+            sanitized = urllib.parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, "<redacted>" if parsed.query else "", "")
+            )
+            return sanitized + trailing
+
+        message = BILIBILI_LOGIN_URL_RE.sub(sanitize_url, message)
+        message = BILIBILI_LOGIN_SENSITIVE_FIELD_RE.sub(
+            lambda match: f"{match.group(1)}<redacted>",
+            message,
+        )
+        return message[:500] if message else "(no exception message)"
+
+    def _log_bilibili_login_failure(self, stage: str, exc: BaseException) -> None:
+        safe_stage = re.sub(r"[^a-z0-9_-]+", "-", stage.lower()).strip("-") or "unknown"
+        safe_message = self._sanitized_bilibili_login_error(exc)
+        self._append_log_line(
+            self.log_dir / BILIBILI_LOGIN_LOG_NAME,
+            f"[{self._log_timestamp()}] QR login failure: stage={safe_stage} "
+            f"type={type(exc).__name__} message={safe_message}",
+        )
+
+    @staticmethod
     def _write_bbdown_login_qr(qr_url: str, target_path: Path) -> str:
         try:
             import qrcode  # type: ignore[import-not-found]
@@ -7958,6 +7331,7 @@ class CacheManager:
         opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(cookie_jar)
         )
+        login_stage = "generate"
 
         try:
             generated = self._bilibili_login_request_json(
@@ -7972,6 +7346,7 @@ class CacheManager:
             if not qr_url or not qr_key:
                 raise ValueError("Bilibili QR response is incomplete")
 
+            login_stage = "render-qr"
             qr_image = self._write_bbdown_login_qr(
                 qr_url,
                 self._bbdown_qr_image_path(),
@@ -7984,6 +7359,7 @@ class CacheManager:
                 self.bbdown_login_qr_image = qr_image
 
             while not cancel_event.wait(1.0):
+                login_stage = "poll"
                 query = urllib.parse.urlencode(
                     {"qrcode_key": qr_key, "source": "main-fe-header"}
                 )
@@ -8022,16 +7398,20 @@ class CacheManager:
                         "SESSDATA 和 bili_jct"
                     )
                     break
+                login_stage = "save-cookie"
                 if not self._save_bbdown_login_cookie(cookie_text):
                     failure_message = "Bilibili 登录完成，但 Cookie 保存或验证失败"
                     break
                 login_succeeded = True
                 break
-        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+        except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
+            self._log_bilibili_login_failure(login_stage, exc)
             failure_message = "Bilibili 登录请求失败，请重试"
         except RuntimeError as exc:
+            self._log_bilibili_login_failure(login_stage, exc)
             failure_message = str(exc)
-        except Exception:  # noqa: BLE001 - never expose login response details
+        except Exception as exc:  # noqa: BLE001 - never expose login response details
+            self._log_bilibili_login_failure(login_stage, exc)
             failure_message = "Bilibili 登录请求失败，请重试"
         finally:
             with self.lock:
@@ -8081,9 +7461,9 @@ class CacheManager:
             with self.lock:
                 if self.binary_state == "idle":
                     self.binary_state = "checking"
-                    self.binary_message = "后台检查 BBDown 更新中"
+                    self.binary_message = "后台准备 BBDown 中"
             self._ensure_bbdown()
         except Exception as exc:  # noqa: BLE001
             with self.lock:
                 self.binary_state = "failed"
-                self.binary_message = f"BBDown 检查失败: {exc}"
+                self.binary_message = f"BBDown 准备失败: {exc}"

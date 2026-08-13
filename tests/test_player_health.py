@@ -70,18 +70,43 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "total_video_frames",
             "error_code",
             "error_message",
+            "play_rejection_name",
             "url_basename",
+            "playback_start_state",
+            "local_should_be_playing",
+            "local_audio_playback_blocked",
+            "local_video_playback_blocked",
+            "is_webkit_runtime",
+            "is_tauri_runtime",
+            "is_tauri_webkit_runtime",
         ):
             self.assertIn(field, diagnostics)
         self.assertIn('apiPost("/api/player/diagnostic", payload).catch(() => {})', diagnostics)
 
-    def test_media_diagnostics_do_not_write_to_browser_console(self):
-        diagnostics = self.function_source(
-            "function reportMediaDiagnostic",
+    def test_startup_decision_diagnostics_bypass_sync_throttle(self):
+        direct_reporter = self.function_source(
+            "function reportSplitStartupDiagnostic",
             "function reportSplitSyncDiagnostic",
         )
-        for method in ("log", "debug", "info", "warn", "error"):
-            self.assertNotIn(f"console.{method}", diagnostics)
+        startup = self.function_source(
+            "function requireSplitPlaybackUserGesture",
+            "function createSplitPlaybackStartOverlay",
+        )
+        synchronizer = self.function_source(
+            "function createSplitPlayerStartupSynchronizer",
+            "function renderPlayer",
+        )
+
+        self.assertIn('reportMediaDiagnostic(itemId, "split"', direct_reporter)
+        for event_name in (
+            "autoplay-attempt",
+            "user-start-attempt",
+            "autoplay-success",
+            "user-start-success",
+        ):
+            self.assertIn(event_name, startup)
+        self.assertIn("startup-ready-no-play-intent", synchronizer)
+        self.assertNotIn("localPlayerSyncDiagnosticThrottleMs", direct_reporter)
 
     def test_health_events_have_no_control_side_effects(self):
         diagnostics = self.function_source(
@@ -114,7 +139,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
     def test_video_ended_defers_to_audio_and_audio_completion_advances_once(self):
         handler = self.function_source(
             "async function handleSplitVideoEnded",
-            "function syncSplitPlayer",
+            "function holdVideoForAudio",
         )
         self.assertIn("if (!audio.ended)", handler)
         self.assertIn('"defer-video-recovery"', handler)
@@ -141,7 +166,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             self.app_source,
         )
 
-    def test_offset_changes_resynchronize_only_the_slave_video(self):
+    def test_offset_changes_resync_audio_only_when_effective_value_changes(self):
         offset_handler = self.function_source(
             "async function setAvOffset",
             "function updateCacheSliderFill",
@@ -150,14 +175,23 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "async function fetchState",
             "function renderSignatureForData",
         )
-        self.assertIn("resyncMountedLocalPlayerForOffsetChange()", offset_handler)
-        self.assertIn("resyncMountedLocalPlayerForOffsetChange()", snapshot_handler)
+        self.assertIn("resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs)", offset_handler)
+        self.assertIn("resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs)", snapshot_handler)
         resync_handler = self.function_source(
             "function resyncMountedLocalPlayerForOffsetChange",
             "function applyStoredVolumeToSinglePlayer",
         )
-        self.assertIn("syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true)", resync_handler)
+        self.assertIn(
+            "Number(video.currentTime || 0) - currentAvOffsetSeconds()",
+            resync_handler,
+        )
+        self.assertIn("setMediaCurrentTime(audio, targetAudioTime)", resync_handler)
+        self.assertIn('"av-delay-audio-resync"', resync_handler)
+        self.assertIn("if (Number(previousOffsetMs) === currentAvOffsetMs())", resync_handler)
+        self.assertEqual(resync_handler.count("resyncMountedLocalPlayerForOffsetChange();"), 1)
         self.assertNotIn("beginSplitPlayerSeek", resync_handler)
+        self.assertNotIn("seekVideoForNavigation", resync_handler)
+        self.assertNotIn("setMediaCurrentTime(video", resync_handler)
 
 
 if __name__ == "__main__":

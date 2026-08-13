@@ -1,0 +1,408 @@
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class RemoteSearchHardeningTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.node = shutil.which("node")
+        if not cls.node:
+            raise unittest.SkipTest("node is unavailable")
+        cls.source = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
+        cls.css = (ROOT / "static" / "remote.css").read_text(encoding="utf-8")
+        cls.cover_source = cls._slice(
+            "function appendSearchResultCoverFallback", "function createSearchResultRow"
+        )
+        cls.render_source = cls._slice(
+            "function renderSearchResultItems", "function appendSearchResultItems"
+        )
+        cls.sync_source = cls._slice(
+            "function syncBilikaraSearchViews", "async function executeCanonicalBilikaraSearch"
+        )
+        cls.modal_view_source = cls._slice(
+            "function renderSearchModalView", "function selectedFollowOwner"
+        )
+        cls.modal_open_source = cls._slice(
+            "function setSearchModalOpen", "function openSearchResultDetail"
+        )
+        cls.drag_source = cls._slice(
+            "function makeElementDraggable", "function showFloatingControlOverlay"
+        )
+
+    @classmethod
+    def _slice(cls, start: str, end: str) -> str:
+        start_index = cls.source.index(start)
+        return cls.source[start_index : cls.source.index(end, start_index)]
+
+    def run_node(self, script: str) -> dict:
+        completed = subprocess.run(
+            [
+                self.node,
+                "-e",
+                f"(async () => {{\n{script}\n}})().catch((error) => {{ console.error(error); process.exit(1); }});",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout.strip().splitlines()[-1])
+
+    def test_expanded_modal_scroll_containers_have_mobile_scroll_contract(self):
+        selector = """.remote-search-modal-view .search-results,
+.remote-search-browser-view .search-results"""
+        result_rule = self.css.split(selector, 1)[1].split("}", 1)[0]
+        browser_selector = """.remote-search-modal .follow-up-grid,
+.remote-search-modal .tag-browser-tags,
+.remote-search-modal .category-browser-grid"""
+        browser_rule = self.css.split(browser_selector, 1)[1].split("}", 1)[0]
+        for rule in (result_rule, browser_rule):
+            for declaration in (
+                "min-height: 0;",
+                "overflow-y: auto;",
+                "overscroll-behavior: contain;",
+                "-webkit-overflow-scrolling: touch;",
+                "touch-action: pan-y;",
+            ):
+                self.assertIn(declaration, rule)
+        self.assertIn("body.remote-search-modal-open {\n  overflow: hidden;", self.css)
+
+    def test_initial_cover_batch_is_eager_and_image_failure_has_fallback(self):
+        result = self.run_node(
+            f"""
+class MockClassList {{
+  constructor() {{ this.values = new Set(); }}
+  add(...names) {{ names.forEach((name) => this.values.add(name)); }}
+  toggle(name, force) {{
+    if (force === undefined ? !this.values.has(name) : force) this.values.add(name);
+    else this.values.delete(name);
+  }}
+  contains(name) {{ return this.values.has(name); }}
+}}
+class MockElement {{
+  constructor(tagName) {{
+    this.tagName = tagName;
+    this.className = "";
+    this.classList = new MockClassList();
+    this.dataset = {{}};
+    this.children = [];
+    this.parentElement = null;
+    this.textContent = "";
+  }}
+  appendChild(child) {{ child.parentElement = this; this.children.push(child); return child; }}
+  remove() {{
+    if (!this.parentElement) return;
+    this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+    this.parentElement = null;
+  }}
+  set src(value) {{ this.source = value; }}
+  get src() {{ return this.source; }}
+}}
+const document = {{ createElement(tagName) {{ return new MockElement(tagName); }} }};
+function searchResultCoverUrl(item) {{ return String(item?.cover_url || ""); }}
+function formatSearchDuration() {{ return ""; }}
+function firstSearchResultValue() {{ return ""; }}
+function createSearchResultRatingStars() {{ return null; }}
+{self.cover_source}
+
+const eager = createSearchResultCover({{ bvid: "BV-EAGER", cover_url: "https://example.test/eager.jpg" }}, {{ eagerCover: true }});
+const eagerImage = eager.children[0];
+const lazy = createSearchResultCover({{ bvid: "BV-LAZY", cover_url: "https://example.test/lazy.jpg" }});
+const lazyImage = lazy.children[0];
+lazyImage.onload();
+eagerImage.onerror();
+const missing = createSearchResultCover({{ bvid: "BV-MISSING" }});
+
+console.log(JSON.stringify({{
+  eagerLoading: eagerImage.loading,
+  eagerReferrerPolicy: eagerImage.referrerPolicy,
+  eagerState: eager.dataset.coverState,
+  eagerFallback: eager.children[0]?.className,
+  eagerFallbackText: eager.children[0]?.textContent,
+  eagerErrorClass: eager.classList.contains("is-error"),
+  lazyLoading: lazyImage.loading,
+  lazyState: lazy.dataset.coverState,
+  missingState: missing.dataset.coverState,
+  missingFallback: missing.children[0]?.className,
+}}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "eagerLoading": "eager",
+                "eagerReferrerPolicy": "no-referrer",
+                "eagerState": "error",
+                "eagerFallback": "search-result-cover-fallback",
+                "eagerFallbackText": "BV-EAGER",
+                "eagerErrorClass": True,
+                "lazyLoading": "lazy",
+                "lazyState": "loaded",
+                "missingState": "missing",
+                "missingFallback": "search-result-cover-fallback",
+            },
+        )
+
+        batch = self.run_node(
+            f"""
+const expandedSearchEagerCoverCount = 6;
+const rows = [];
+const container = {{
+  _innerHTML: "",
+  classList: {{ remove() {{}} }},
+  children: [],
+  set innerHTML(value) {{ this._innerHTML = value; this.children = []; }},
+  appendChild(child) {{ this.children.push(child); }},
+}};
+function createSearchResultRow(item, options) {{
+  const row = {{ id: item.id, eagerCover: options.eagerCover }};
+  rows.push(row);
+  return row;
+}}
+function t(key) {{ return key; }}
+const document = {{ createElement() {{ return {{}}; }} }};
+{self.render_source}
+renderSearchResultItems(container, Array.from({{ length: 8 }}, (_, index) => ({{ id: index }})));
+console.log(JSON.stringify({{ eager: rows.map((row) => row.eagerCover) }}));
+"""
+        )
+        self.assertEqual(batch["eager"], [True, True, True, True, True, True, False, False])
+
+    def test_pending_expanded_search_keeps_same_scroll_container_mounted(self):
+        result = self.run_node(
+            f"""
+class MockClassList {{
+  constructor(...names) {{ this.values = new Set(names); }}
+  add(...names) {{ names.forEach((name) => this.values.add(name)); }}
+  remove(...names) {{ names.forEach((name) => this.values.delete(name)); }}
+  contains(name) {{ return this.values.has(name); }}
+  toggle(name, force) {{
+    const enabled = force === undefined ? !this.values.has(name) : Boolean(force);
+    if (enabled) this.values.add(name); else this.values.delete(name);
+    return enabled;
+  }}
+}}
+class MockResults {{
+  constructor() {{
+    this.classList = new MockClassList("hidden");
+    this.children = [];
+    this._innerHTML = "";
+  }}
+  set innerHTML(value) {{ this._innerHTML = value; this.children = []; }}
+  get innerHTML() {{ return this._innerHTML; }}
+  appendChild(child) {{ this.children.push(child); return child; }}
+}}
+const expandedResults = new MockResults();
+const modalClassList = new MockClassList("hidden");
+let modalOpenLayouts = 0;
+const originalRemove = modalClassList.remove.bind(modalClassList);
+modalClassList.remove = (...names) => {{
+  if (names.includes("hidden")) modalOpenLayouts += 1;
+  originalRemove(...names);
+}};
+const elements = {{
+  larkSearchQuery: {{ value: "pending query" }},
+  searchModalLarkQuery: {{ value: "", focus() {{}} }},
+  larkSearchResults: null,
+  searchModalLarkResults: expandedResults,
+  searchModal: {{ classList: modalClassList }},
+  searchModalTabs: [],
+  searchModalSearchView: {{ classList: new MockClassList() }},
+  modalFollowBrowserView: {{ classList: new MockClassList() }},
+  favlistBrowserView: {{ classList: new MockClassList() }},
+  searchModalOtherView: {{ classList: new MockClassList() }},
+}};
+const state = {{ searchModalOpen: false, searchModalView: "search" }};
+const canonicalBilikaraSearch = {{
+  query: "pending query",
+  items: [],
+  message: "searching",
+  isError: false,
+  hasSearched: true,
+  seq: 1,
+  loading: true,
+}};
+let requestCalls = 0;
+async function executeCanonicalBilikaraSearch() {{ requestCalls += 1; }}
+function setLarkSearchMessage() {{}}
+function setSearchModalLarkMessage() {{}}
+function t(key) {{ return key; }}
+const rows = [];
+function createSearchResultRow(item, options) {{
+  const row = {{ id: item.id, eagerCover: options.eagerCover }};
+  rows.push(row);
+  return row;
+}}
+const expandedSearchEagerCoverCount = 6;
+const document = {{ body: {{ classList: new MockClassList() }}, createElement() {{ return {{}}; }} }};
+const window = {{
+  clearTimeout() {{}},
+  setTimeout(callback) {{ callback(); return 1; }},
+}};
+let searchModalCloseTimer = 0;
+
+{self.render_source}
+{self.sync_source}
+{self.modal_view_source}
+{self.modal_open_source}
+
+setSearchModalOpen(true);
+const pending = {{
+  sameContainer: elements.searchModalLarkResults === expandedResults,
+  hidden: expandedResults.classList.contains("hidden"),
+  childCount: expandedResults.children.length,
+  requestCalls,
+  modalOpen: state.searchModalOpen,
+  bodyLocked: document.body.classList.contains("remote-search-modal-open"),
+}};
+
+canonicalBilikaraSearch.items = Array.from({{ length: 8 }}, (_, index) => ({{ id: index }}));
+canonicalBilikaraSearch.message = "found";
+canonicalBilikaraSearch.loading = false;
+syncBilikaraSearchViews();
+console.log(JSON.stringify({{
+  pending,
+  completed: {{
+    sameContainer: elements.searchModalLarkResults === expandedResults,
+    hidden: expandedResults.classList.contains("hidden"),
+    rowCount: expandedResults.children.length,
+    rowIds: expandedResults.children.map((row) => row.id),
+    requestCalls,
+    modalOpen: state.searchModalOpen,
+    modalOpenLayouts,
+  }},
+}}));
+"""
+        )
+
+        self.assertEqual(
+            result["pending"],
+            {
+                "sameContainer": True,
+                "hidden": False,
+                "childCount": 0,
+                "requestCalls": 0,
+                "modalOpen": True,
+                "bodyLocked": True,
+            },
+        )
+        self.assertEqual(
+            result["completed"],
+            {
+                "sameContainer": True,
+                "hidden": False,
+                "rowCount": 8,
+                "rowIds": list(range(8)),
+                "requestCalls": 0,
+                "modalOpen": True,
+                "modalOpenLayouts": 1,
+            },
+        )
+
+    def test_lost_floating_control_drag_removes_document_touch_blocker(self):
+        result = self.run_node(
+            f"""
+function eventTarget() {{
+  const listeners = new Map();
+  return {{
+    listeners,
+    addEventListener(name, callback) {{
+      const callbacks = listeners.get(name) || new Set();
+      callbacks.add(callback);
+      listeners.set(name, callbacks);
+    }},
+    removeEventListener(name, callback) {{ listeners.get(name)?.delete(callback); }},
+    dispatch(name, event) {{ [...(listeners.get(name) || [])].forEach((callback) => callback(event)); }},
+  }};
+}}
+const document = eventTarget();
+document.hidden = false;
+const window = eventTarget();
+window.innerWidth = 390;
+window.innerHeight = 844;
+const elementEvents = eventTarget();
+const element = {{
+  ...elementEvents,
+  offsetWidth: 56,
+  offsetHeight: 56,
+  style: {{}},
+  classList: {{ add() {{}}, remove() {{}} }},
+  getBoundingClientRect() {{ return {{ left: 300, top: 700 }}; }},
+}};
+{self.drag_source}
+makeElementDraggable(element, () => {{}});
+
+element.dispatch("touchstart", {{
+  type: "touchstart",
+  touches: [{{ identifier: 1, clientX: 320, clientY: 730 }}],
+  changedTouches: [{{ identifier: 1, clientX: 320, clientY: 730 }}],
+}});
+const listenersDuringDrag = document.listeners.get("touchmove")?.size || 0;
+let preventedReplacementMove = 0;
+document.dispatch("touchmove", {{
+  type: "touchmove",
+  touches: [{{ identifier: 2, clientX: 100, clientY: 100 }}],
+  cancelable: true,
+  preventDefault() {{ preventedReplacementMove += 1; }},
+}});
+const listenersAfterReplacementMove = document.listeners.get("touchmove")?.size || 0;
+
+element.dispatch("touchstart", {{
+  type: "touchstart",
+  touches: [{{ identifier: 3, clientX: 320, clientY: 730 }}],
+  changedTouches: [{{ identifier: 3, clientX: 320, clientY: 730 }}],
+}});
+window.dispatch("blur", {{ type: "blur" }});
+const listenersAfterBlur = document.listeners.get("touchmove")?.size || 0;
+let preventedAfterBlur = 0;
+document.dispatch("touchmove", {{
+  type: "touchmove",
+  touches: [{{ clientX: 100, clientY: 100 }}],
+  cancelable: true,
+  preventDefault() {{ preventedAfterBlur += 1; }},
+}});
+
+element.dispatch("touchstart", {{
+  type: "touchstart",
+  touches: [{{ identifier: 4, clientX: 320, clientY: 730 }}],
+  changedTouches: [{{ identifier: 4, clientX: 320, clientY: 730 }}],
+}});
+document.hidden = true;
+document.dispatch("visibilitychange", {{ type: "visibilitychange" }});
+const listenersAfterHidden = document.listeners.get("touchmove")?.size || 0;
+
+console.log(JSON.stringify({{
+  listenersDuringDrag,
+  preventedReplacementMove,
+  listenersAfterReplacementMove,
+  listenersAfterBlur,
+  preventedAfterBlur,
+  listenersAfterHidden,
+}}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "listenersDuringDrag": 1,
+                "preventedReplacementMove": 0,
+                "listenersAfterReplacementMove": 0,
+                "listenersAfterBlur": 0,
+                "preventedAfterBlur": 0,
+                "listenersAfterHidden": 0,
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -19,6 +19,7 @@ class ExportGuardTest(unittest.TestCase):
             [self.node, "-e", script, str(self.helper)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
         return json.loads(process.stdout)

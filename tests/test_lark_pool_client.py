@@ -145,15 +145,86 @@ class LarkPoolClientTest(unittest.TestCase):
     def test_background_append_reports_returned_error(self):
         with (
             patch.object(lark_pool, "append_lark_pool_entries", return_value={"error": "timeout"}),
-            patch.object(lark_pool.threading, "Thread") as thread_class,
             patch("builtins.print") as mock_print,
         ):
-            lark_pool.append_lark_pool_entries_in_background([{"bvid": "BV1xx411c7mD"}])
-            thread_class.call_args.kwargs["target"]()
+            lark_pool._BackgroundAppendScheduler._process([{"bvid": "BV1xx411c7mD"}])
 
-        thread_class.return_value.start.assert_called_once_with()
         mock_print.assert_called_once_with(
             "[bilikara:lark] background append failed for 1 item(s): timeout",
+            file=lark_pool.sys.stderr,
+            flush=True,
+        )
+
+    def test_background_append_scheduler_has_one_worker_and_bounded_queue(self):
+        started = []
+
+        class FakeThread:
+            def __init__(self, *, target, daemon, name):
+                self.target = target
+                self.daemon = daemon
+                self.name = name
+                self.alive = False
+
+            def start(self):
+                self.alive = True
+                started.append(self)
+
+            def is_alive(self):
+                return self.alive
+
+        scheduler = lark_pool._BackgroundAppendScheduler(max_pending=1)
+        with (
+            patch.object(lark_pool.threading, "Thread", FakeThread),
+            patch.object(lark_pool.time, "monotonic", return_value=31.0),
+            patch("builtins.print") as mock_print,
+        ):
+            self.assertTrue(scheduler.submit([{"bvid": "BV1xx411c7mD"}]))
+            self.assertFalse(scheduler.submit([{"bvid": "BV1yy411c7mD"}]))
+
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0].name, "lark-pool-append")
+        mock_print.assert_called_once_with(
+            "[bilikara:lark] background append queue is full; dropping best-effort indexing",
+            file=lark_pool.sys.stderr,
+            flush=True,
+        )
+
+    def test_background_append_scheduling_failure_is_contained(self):
+        scheduler = lark_pool._BackgroundAppendScheduler(max_pending=1)
+        with (
+            patch.object(scheduler, "submit", side_effect=RuntimeError("scheduler failed")),
+            patch.object(lark_pool, "_BACKGROUND_APPEND_SCHEDULER", scheduler),
+            patch("builtins.print") as mock_print,
+        ):
+            self.assertFalse(
+                lark_pool.append_lark_pool_entries_in_background(
+                    [{"bvid": "BV1xx411c7mD"}],
+                )
+            )
+
+        mock_print.assert_called_once_with(
+            "[bilikara:lark] background append scheduling failed: scheduler failed",
+            file=lark_pool.sys.stderr,
+            flush=True,
+        )
+
+    def test_background_append_thread_start_failure_is_contained(self):
+        class FailingThread:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("thread unavailable")
+
+        scheduler = lark_pool._BackgroundAppendScheduler(max_pending=1)
+        with (
+            patch.object(lark_pool.threading, "Thread", FailingThread),
+            patch("builtins.print") as mock_print,
+        ):
+            self.assertFalse(scheduler.submit([{"bvid": "BV1xx411c7mD"}]))
+
+        mock_print.assert_called_once_with(
+            "[bilikara:lark] background append scheduling failed: thread unavailable",
             file=lark_pool.sys.stderr,
             flush=True,
         )
@@ -522,4 +593,3 @@ class LarkPoolClientTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

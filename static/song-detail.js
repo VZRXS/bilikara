@@ -76,14 +76,26 @@
     return bilibiliUrl;
   }
 
+  function normalizeBilibiliImageUrl(value) {
+    const url = stringValue(value);
+    if (url.startsWith("//")) {
+      return `https:${url}`;
+    }
+    return /^http:\/\/(?:[^./]+\.)*hdslb\.com(?=[:/]|$)/i.test(url)
+      ? `https://${url.slice("http://".length)}`
+      : url;
+  }
+
   function normalizedCoverUrl(item) {
-    const cover = firstValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]);
-    return cover.startsWith("//") ? `https:${cover}` : cover;
+    return normalizeBilibiliImageUrl(
+      firstValue(item, ["cover_url", "cover", "pic", "pic_url", "thumbnail"]),
+    );
   }
 
   function normalizedAvatarUrl(item) {
-    const avatar = firstValue(item, ["owner_avatar_url", "owner_avatar", "avatar_url", "face"]);
-    return avatar.startsWith("//") ? `https:${avatar}` : avatar;
+    return normalizeBilibiliImageUrl(
+      firstValue(item, ["owner_avatar_url", "owner_avatar", "avatar_url", "face"]),
+    );
   }
 
   function ownerAvatarFromCachedOwners(item, owners) {
@@ -380,6 +392,7 @@
   global.BilikaraSongDetail = {
     canonicalBilibiliUrl,
     createSongDetailController,
+    normalizeBilibiliImageUrl,
     normalizedBvid,
     ownerAvatarFromCachedOwners,
   };

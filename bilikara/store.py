@@ -14,7 +14,6 @@ from typing import Any, Callable
 from .models import HistoryEntry, PlaylistItem, SessionPlayedEntry
 from . import rust_backend
 from .playback_selector import (
-    DEFAULT_PLAYBACK_SELECTOR_MODE,
     PlaybackSelector,
     capture_playback_selector,
     normalize_persisted_playback_selector_mode,
@@ -390,9 +389,8 @@ class PlaylistStore:
         self.session_archive_dir = session_archive_dir or state_file.parent / "played_sessions"
         self.on_change = on_change
         self.lock = threading.RLock()
-        self.current_item_condition = threading.Condition(self.lock)
         self.playback_mode = "local"
-        self.playback_selector_mode = DEFAULT_PLAYBACK_SELECTOR_MODE
+        self.playback_selector_mode = "python"
         self.playback_selector_warning = ""
         self.av_global_delay_ms = 0
         self.av_local_delay_ms = 0
@@ -403,9 +401,6 @@ class PlaylistStore:
         self.key_shift = 0
         self.current_item: PlaylistItem | None = None
         self.current_item_started = False
-        self.current_item_generation = 0
-        self.current_item_publication_token = 0
-        self.current_item_publication_serial = 0
         self.playlist: list[PlaylistItem] = []
         self.history: list[HistoryEntry] = []
         self.session_history: list[HistoryEntry] = []
@@ -420,41 +415,8 @@ class PlaylistStore:
             self._previous_session_count,
         ) = self._latest_previous_session_file_unlocked()
         self.updated_at = time.time()
-        self.media_release_request: dict[str, str] | None = None
         self._restore_persistent_state()
-        self._ensure_media_revisions_unlocked()
         self._save_session()
-
-    def _ensure_media_revisions_unlocked(self) -> None:
-        items = []
-        if self.current_item:
-            items.append(self.current_item)
-        items.extend(self.playlist)
-        for item in items:
-            if item.cache_status == "ready" and not item.media_revision:
-                item.media_revision = f"legacy-{item.id[:8]}"
-
-    def set_media_release_request(
-        self, request_id: str, item_id: str, media_revision: str
-    ) -> None:
-        with self.lock:
-            self.media_release_request = {
-                "request_id": str(request_id or ""),
-                "item_id": str(item_id or ""),
-                "media_revision": str(media_revision or ""),
-            }
-            self.updated_at = time.time()
-
-    def clear_media_release_request(
-        self, request_id: str | None = None
-    ) -> None:
-        with self.lock:
-            if request_id is None or (
-                self.media_release_request
-                and self.media_release_request.get("request_id") == request_id
-            ):
-                self.media_release_request = None
-                self.updated_at = time.time()
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -463,11 +425,6 @@ class PlaylistStore:
                 "playback_selector": playback_selector_snapshot(
                     self.playback_selector_mode,
                     self.playback_selector_warning,
-                ),
-                "media_release_request": (
-                    dict(self.media_release_request)
-                    if self.media_release_request
-                    else None
                 ),
                 "player_settings": {
                     "av_offset_ms": self.av_offset_ms,
@@ -505,48 +462,24 @@ class PlaylistStore:
         with self.lock:
             return bool(self.current_item and self.current_item.id == item_id)
 
-    def capture_current_item_role(self, item_id: str) -> tuple[bool, int]:
+    def capture_playback_selector(self) -> PlaybackSelector:
         with self.lock:
-            return (
-                bool(self.current_item and self.current_item.id == item_id),
-                self.current_item_generation,
-            )
+            mode = self.playback_selector_mode
+        return capture_playback_selector(mode)
 
-    def begin_current_item_publication(
-        self,
-        item_id: str,
-        *,
-        expected_is_current: bool,
-        expected_generation: int,
-    ) -> int | None:
-        """Reserve the current-item role while cache publication performs I/O.
-
-        Current-item transitions wait on the condition below, which releases the
-        store lock while publication performs filesystem work.
-        """
-
-        with self.current_item_condition:
-            while self.current_item_publication_token:
-                self.current_item_condition.wait()
-            is_current = bool(self.current_item and self.current_item.id == item_id)
+    def set_playback_selector_mode(self, mode: object) -> str:
+        validated = validate_playback_selector_mode(mode)
+        normalized, warning = normalize_persisted_playback_selector_mode(validated)
+        with self.lock:
             if (
-                is_current != expected_is_current
-                or self.current_item_generation != expected_generation
+                self.playback_selector_mode == normalized
+                and not self.playback_selector_warning
             ):
-                return None
-            self.current_item_publication_serial += 1
-            self.current_item_publication_token = self.current_item_publication_serial
-            return self.current_item_publication_token
-
-    def finish_current_item_publication(self, token: int) -> None:
-        with self.current_item_condition:
-            if token and self.current_item_publication_token == token:
-                self.current_item_publication_token = 0
-                self.current_item_condition.notify_all()
-
-    def _wait_for_current_item_publication_unlocked(self) -> None:
-        while self.current_item_publication_token:
-            self.current_item_condition.wait()
+                return normalized
+            self.playback_selector_mode = normalized
+            self.playback_selector_warning = ""
+            self._touch(persist_backup=False)
+        return normalized
 
     def add_item(
         self,
@@ -564,11 +497,9 @@ class PlaylistStore:
             item.requester_name = normalized_requester
             item.queue_slot_type = "priority" if position == "next" else "cycle"
             if self.current_item is None:
-                self._wait_for_current_item_publication_unlocked()
                 self._clear_previous_session_unlocked()
                 self.current_item = item
                 self.current_item_started = False
-                self.current_item_generation += 1
                 if reset_av_delay:
                     assert playback_selector is not None
                     self._apply_av_delay_action_unlocked(
@@ -601,11 +532,9 @@ class PlaylistStore:
     def remove_item(self, item_id: str) -> bool:
         with self.lock:
             if self.current_item and self.current_item.id == item_id:
-                self._wait_for_current_item_publication_unlocked()
                 self._archive_current_item_unlocked()
                 self.current_item = None
                 self.current_item_started = False
-                self.current_item_generation += 1
                 self._rebuild_cycle_items_unlocked()
                 self._touch(persist_backup=True)
                 return True
@@ -655,24 +584,16 @@ class PlaylistStore:
             return changed
 
     def advance_to_next(self, *, reset_av_delay: bool = False) -> bool:
-        playback_selector = (
-            self.capture_playback_selector() if reset_av_delay else None
-        )
         with self.lock:
             if not self.current_item and not self.playlist:
                 return False
-            self._wait_for_current_item_publication_unlocked()
             self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(0) if self.playlist else None
             self.current_item_started = False
-            self.current_item_generation += 1
             self.key_shift = 0
             if self.current_item and reset_av_delay:
-                assert playback_selector is not None
                 self._apply_av_delay_action_unlocked(
-                    {"type": "reset_local"},
-                    playback_selector=playback_selector,
-                    persist=False,
+                    {"type": "reset_local"}, persist=False
                 )
             if self.current_item:
                 self._record_session_played_unlocked(self.current_item)
@@ -743,27 +664,16 @@ class PlaylistStore:
             return True
 
     def move_to_front(self, item_id: str, *, reset_av_delay: bool = False) -> bool:
-        playback_selector = (
-            self.capture_playback_selector() if reset_av_delay else None
-        )
         with self.lock:
-            index = self._find_index(item_id)
-            if index is None:
-                return False
-            self._wait_for_current_item_publication_unlocked()
             index = self._find_index(item_id)
             if index is None:
                 return False
             self._archive_current_item_unlocked()
             self.current_item = self.playlist.pop(index)
             self.current_item_started = False
-            self.current_item_generation += 1
             if reset_av_delay:
-                assert playback_selector is not None
                 self._apply_av_delay_action_unlocked(
-                    {"type": "reset_local"},
-                    playback_selector=playback_selector,
-                    persist=False,
+                    {"type": "reset_local"}, persist=False
                 )
             self._record_session_played_unlocked(self.current_item)
             self._rebuild_cycle_items_unlocked()
@@ -774,24 +684,6 @@ class PlaylistStore:
         with self.lock:
             self.playback_mode = mode
             self._touch(persist_backup=True)
-
-    def capture_playback_selector(self) -> PlaybackSelector:
-        with self.lock:
-            mode = self.playback_selector_mode
-        return capture_playback_selector(mode)
-
-    def set_playback_selector_mode(self, mode: object) -> str:
-        normalized = validate_playback_selector_mode(mode)
-        with self.lock:
-            if (
-                self.playback_selector_mode == normalized
-                and not self.playback_selector_warning
-            ):
-                return normalized
-            self.playback_selector_mode = normalized
-            self.playback_selector_warning = ""
-            self._touch(persist_backup=False)
-        return normalized
 
     def set_av_offset_ms(self, offset_ms: int) -> int:
         playback_selector = self.capture_playback_selector()
@@ -830,9 +722,11 @@ class PlaylistStore:
         self,
         action: dict[str, object],
         *,
-        playback_selector: PlaybackSelector,
+        playback_selector: PlaybackSelector | None = None,
         persist: bool = True,
     ) -> dict[str, object]:
+        if playback_selector is None:
+            playback_selector = self.capture_playback_selector()
         request = {
             "schema_version": 1,
             "state": {
@@ -1023,9 +917,6 @@ class PlaylistStore:
             return True
 
     def restore_backup(self, *, reset_av_delay: bool = False) -> bool:
-        playback_selector = (
-            self.capture_playback_selector() if reset_av_delay else None
-        )
         with self.lock:
             payload = self._read_backup_payload_unlocked()
             if not payload:
@@ -1034,24 +925,19 @@ class PlaylistStore:
             playlist_payload = payload.get("playlist") or []
             if not current_item_payload and not playlist_payload:
                 return False
-            self._wait_for_current_item_publication_unlocked()
             self.current_item = (
                 PlaylistItem.from_dict(self._sanitize_backup_payload(current_item_payload))
                 if current_item_payload
                 else None
             )
-            self.current_item_generation += 1
             self.playlist = [
                 PlaylistItem.from_dict(self._sanitize_backup_payload(item))
                 for item in playlist_payload
             ]
             self.current_item_started = False
             if self.current_item and reset_av_delay:
-                assert playback_selector is not None
                 self._apply_av_delay_action_unlocked(
-                    {"type": "reset_local"},
-                    playback_selector=playback_selector,
-                    persist=False,
+                    {"type": "reset_local"}, persist=False
                 )
             self._restore_session_played_from_backup_unlocked(payload)
             self._clear_previous_session_unlocked()
@@ -1061,10 +947,8 @@ class PlaylistStore:
 
     def discard_backup(self) -> bool:
         with self.lock:
-            self._wait_for_current_item_publication_unlocked()
             existed = self.backup_file.exists() or self.current_item is not None or bool(self.playlist)
             self.current_item = None
-            self.current_item_generation += 1
             self.playlist = []
             if existed:
                 self._start_new_session_played_unlocked()
@@ -1075,10 +959,7 @@ class PlaylistStore:
 
     def reset_runtime_data(self) -> None:
         with self.lock:
-            self._wait_for_current_item_publication_unlocked()
             self.playback_mode = "local"
-            self.playback_selector_mode = DEFAULT_PLAYBACK_SELECTOR_MODE
-            self.playback_selector_warning = ""
             self.av_global_delay_ms = 0
             self.av_local_delay_ms = 0
             self.av_delay_locked = False
@@ -1088,7 +969,6 @@ class PlaylistStore:
             self.key_shift = 0
             self.current_item = None
             self.current_item_started = False
-            self.current_item_generation += 1
             self.playlist = []
             self.history = []
             self.session_history = []
@@ -1388,12 +1268,11 @@ class PlaylistStore:
         request = self._playlist_order_request_unlocked("rebuild")
         return list(_py_rotated_playlist_users(request))
 
-    def _save_player_state_unlocked(self) -> None:
+    def _save_session(self) -> None:
         self._write_json_payload_unlocked(
             self.player_state_file,
             {
                 "playback_mode": self.playback_mode,
-                "playback_selector_mode": self.playback_selector_mode,
                 "player_settings": {
                     "global_av_delay_ms": self.av_global_delay_ms,
                     "av_delay_locked": self.av_delay_locked,
@@ -1405,9 +1284,6 @@ class PlaylistStore:
                 "updated_at": self.updated_at,
             },
         )
-
-    def _save_session(self) -> None:
-        self._save_player_state_unlocked()
         self._write_json_payload_unlocked(
             self.history_state_file,
             {
@@ -1617,6 +1493,44 @@ class PlaylistStore:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
+    def _save_player_state_unlocked(self) -> None:
+        self._write_json_payload_unlocked(
+            self.player_state_file,
+            {
+                "playback_mode": self.playback_mode,
+                "playback_selector_mode": self.playback_selector_mode,
+                "player_settings": {
+                    "global_av_delay_ms": self.av_global_delay_ms,
+                    "av_delay_locked": self.av_delay_locked,
+                    "volume_percent": self.volume_percent,
+                    "is_muted": self.is_muted,
+                    "song_advance_delay_seconds": self.song_advance_delay_seconds,
+                    "key_shift": self.key_shift,
+                },
+                "updated_at": self.updated_at,
+            },
+        )
+
+    def _save_session(self) -> None:
+        self._save_player_state_unlocked()
+        self._write_json_payload_unlocked(
+            self.history_state_file,
+            {
+                "history": [entry.serialize() for entry in self.history],
+                "updated_at": self.updated_at,
+            },
+        )
+        self._write_json_payload_unlocked(
+            self.session_users_state_file,
+            {
+                "session_users": list(self.session_users),
+                "updated_at": self.updated_at,
+            },
+        )
+        # Legacy monolithic state.json is no longer used. Remove it if present
+        # so a fresh run cannot accidentally revive old queue/cache churn.
+        self.state_file.unlink(missing_ok=True)
+
     def _restore_persistent_state(self) -> None:
         with self.lock:
             history_payload = (
@@ -1629,23 +1543,30 @@ class PlaylistStore:
             ]
 
             player_payload = self._read_json_payload_unlocked(self.player_state_file)
+            selector_is_set = (
+                player_payload is not None
+                and "playback_selector_mode" in player_payload
+            )
+            persisted_selector_mode = (
+                player_payload.get("playback_selector_mode")
+                if selector_is_set and player_payload is not None
+                else None
+            )
+            (
+                self.playback_selector_mode,
+                self.playback_selector_warning,
+            ) = normalize_persisted_playback_selector_mode(
+                persisted_selector_mode,
+                is_set=selector_is_set,
+            )
+            if self.playback_selector_warning:
+                print(
+                    f"[bilikara] {self.playback_selector_warning}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if player_payload:
                 self.playback_mode = self._load_playback_mode(player_payload)
-                persisted_selector_mode = player_payload.get(
-                    "playback_selector_mode", DEFAULT_PLAYBACK_SELECTOR_MODE
-                )
-                (
-                    self.playback_selector_mode,
-                    self.playback_selector_warning,
-                ) = normalize_persisted_playback_selector_mode(
-                    persisted_selector_mode
-                )
-                if self.playback_selector_warning:
-                    print(
-                        f"[bilikara] {self.playback_selector_warning}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
                 (
                     self.av_global_delay_ms,
                     self.av_delay_locked,
@@ -1656,9 +1577,6 @@ class PlaylistStore:
                 self.song_advance_delay_seconds = self._load_song_advance_delay_seconds(player_payload)
                 self.key_shift = self._load_key_shift(player_payload)
                 if self.playback_selector_warning:
-                    # Startup normalization is authoritative persisted state,
-                    # but it is not a runtime mutation and must not advance the
-                    # state revision or notify connected clients.
                     self._save_player_state_unlocked()
 
             users_payload = self._read_json_payload_unlocked(self.session_users_state_file)

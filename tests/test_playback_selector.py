@@ -47,7 +47,7 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
             on_change=on_change,
         )
 
-    def test_rust_is_default_and_persists_round_trip(self):
+    def test_rust_is_fresh_default_and_explicit_python_persists_round_trip(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             with patch(
@@ -64,7 +64,28 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
             payload = json.loads((root / "player_state.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["playback_selector_mode"], "python")
 
-    def test_invalid_persisted_value_normalizes_to_rust_with_warning(self):
+    def test_explicit_persisted_rust_when_available_retains_rust(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "player_state.json").write_text(
+                json.dumps({"playback_selector_mode": "rust"}),
+                encoding="utf-8",
+            )
+            with patch(
+                "bilikara.playback_selector.rust_backend.backend_status",
+                return_value=rust_status(available=True),
+            ):
+                store = self.make_store(root)
+                selector = store.snapshot()["playback_selector"]
+
+            self.assertEqual(selector["mode"], "rust")
+            self.assertEqual(selector["warning"], "")
+            persisted = json.loads(
+                (root / "player_state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(persisted["playback_selector_mode"], "rust")
+
+    def test_invalid_persisted_value_uses_rust_default_when_available(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             (root / "player_state.json").write_text(
@@ -72,20 +93,44 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
                 encoding="utf-8",
             )
             stderr = io.StringIO()
-            with patch("sys.stderr", stderr), patch(
+            with patch(
                 "bilikara.playback_selector.rust_backend.backend_status",
                 return_value=rust_status(available=True),
-            ):
+            ), patch("sys.stderr", stderr):
                 store = self.make_store(root)
 
             selector = store.snapshot()["playback_selector"]
             self.assertEqual(selector["mode"], "rust")
             self.assertIn("invalid persisted", selector["warning"])
             self.assertIn("using rust", stderr.getvalue())
+            self.assertNotIn("using python", selector["warning"])
             persisted = json.loads(
                 (root / "player_state.json").read_text(encoding="utf-8")
             )
             self.assertEqual(persisted["playback_selector_mode"], "rust")
+
+    def test_invalid_persisted_value_uses_python_when_rust_unavailable(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "player_state.json").write_text(
+                json.dumps({"playback_selector_mode": "unknown"}),
+                encoding="utf-8",
+            )
+            with patch(
+                "bilikara.playback_selector.rust_backend.backend_status",
+                return_value=rust_status(available=False),
+            ):
+                store = self.make_store(root)
+
+            selector = store.snapshot()["playback_selector"]
+            self.assertEqual(selector["mode"], "python")
+            self.assertIn("invalid persisted", selector["warning"])
+            self.assertIn("using python", selector["warning"])
+            self.assertNotIn("using rust", selector["warning"])
+            persisted = json.loads(
+                (root / "player_state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(persisted["playback_selector_mode"], "python")
 
     def test_unavailable_persisted_rust_normalizes_to_python_with_warning(self):
         with TemporaryDirectory() as tmpdir:
@@ -283,7 +328,6 @@ class PlaybackSelectorDispatchTest(unittest.TestCase):
             store = PlaylistStore(
                 root / "state.json", root / "backup.json", root / "played"
             )
-            store.playback_selector_mode = "python"
             entered = threading.Event()
             release = threading.Event()
             finished = threading.Event()
@@ -300,14 +344,14 @@ class PlaybackSelectorDispatchTest(unittest.TestCase):
             thread = threading.Thread(target=operation)
             thread.start()
             self.assertTrue(entered.wait(2))
-            store.set_playback_selector_mode("rust")
+            store.set_playback_selector_mode("python")
             next_selector = store.capture_playback_selector()
             release.set()
             self.assertTrue(finished.wait(2))
             thread.join()
 
-            self.assertEqual(observed, ["python", "python"])
-            self.assertEqual(next_selector.mode, "rust")
+            self.assertEqual(observed, ["rust", "rust"])
+            self.assertEqual(next_selector.mode, "python")
 
     def test_non_playback_rust_dispatch_remains_unchanged(self):
         with TemporaryDirectory() as tmpdir:
@@ -722,13 +766,11 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
             store = PlaylistStore(
                 root / "state.json", root / "backup.json", root / "played"
             )
-            store.playback_selector_mode = "python"
             item = SimpleNamespace(id="song")
             manager = CacheManager.__new__(CacheManager)
             manager.store = store
             manager.stop_event = threading.Event()
             manager._should_cache = lambda item_id: True
-            manager._has_retry_request = lambda item_id: False
             manager._take_retry_request = lambda item_id: False
             manager._remove_cache_dir = lambda item_id: None
             store.get_item = lambda item_id: item
@@ -748,13 +790,13 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
             first = threading.Thread(target=lambda: manager._cache_item("song"))
             first.start()
             self.assertTrue(entered.wait(2))
-            store.set_playback_selector_mode("rust")
+            store.set_playback_selector_mode("python")
             release.set()
             first.join(2)
             self.assertFalse(first.is_alive())
             manager._cache_item("song")
 
-            self.assertEqual(observed, ["python", "python", "rust"])
+            self.assertEqual(observed, ["rust", "rust", "python"])
 
     def test_worker_survives_playback_capability_failure(self):
         manager = CacheManager.__new__(CacheManager)
@@ -807,6 +849,98 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(captured, ["bad", "good"])
         self.assertEqual(processed, ["good"])
+
+    def test_playback_selector_propagates_through_stream_download(self):
+        for mode in ("python", "rust"):
+            with self.subTest(mode=mode):
+                selector = PlaybackSelector(mode)
+                manager = CacheManager.__new__(CacheManager)
+                manager.store = SimpleNamespace(capture_playback_selector=lambda: selector)
+                manager._should_cache = lambda item_id: True
+                manager.lock = threading.RLock()
+                manager.video_quality = "1080P 高清"
+                manager.hevc_supported = True
+                manager.avc_quality_cap = ""
+                manager.audio_hires = True
+                manager.download_source = "bbdown"
+                manager._item_log_path = lambda item_id, source: Path("/tmp/song.log")
+                manager._ensure_downloader = lambda source: Path("/bin/bbdown")
+                manager._ensure_ffmpeg = lambda force_refresh=False: Path("/bin/ffmpeg")
+
+                item = SimpleNamespace(
+                    id="song",
+                    display_title="Song",
+                    video_page=1,
+                    selected_pages=[1],
+                    resolved_url="https://example.test/video",
+                )
+
+                # Test 1: _cache_item_multi passes playback_selector to _download_selected_streams without TypeError
+                download_streams_calls = []
+
+                def fake_download_selected_streams(item_arg, bin_arg, ffmpeg_arg, dir_arg, log_arg, **kwargs):
+                    download_streams_calls.append(kwargs.get("playback_selector"))
+                    return {
+                        "video_file": Path("video.mp4"),
+                        "video_relative_path": "song/video.mp4",
+                        "video_media_url": "/media/song/video.mp4",
+                        "audio_variants": [{"id": "v1", "audio_url": "/media/song/audio.m4a"}],
+                        "selected_audio_variant_id": "v1",
+                    }
+
+                manager._download_selected_streams = fake_download_selected_streams
+                manager.store.update_item = lambda *args, **kwargs: None
+                manager._record_item_activity = lambda *args, **kwargs: None
+                manager._append_log_line = lambda *args, **kwargs: None
+                manager._clear_item_download_progress = lambda *args, **kwargs: None
+                manager._raise_if_retry_requested = lambda *args, **kwargs: None
+                manager._raise_if_priority_shift = lambda *args, **kwargs: None
+                manager._cache_start_message = lambda item_arg: ""
+                manager._ready_message = lambda item_arg: ""
+
+                res = manager._cache_item_multi("song", item, allow_refresh_retry=True, playback_selector=selector)
+                self.assertTrue(res)
+                self.assertEqual(len(download_streams_calls), 1)
+                self.assertIs(download_streams_calls[0], selector)
+
+                # Test 2: _download_selected_streams passes playback_selector to downstream helpers
+                pref_args_calls = []
+                format_selector_calls = []
+
+                def fake_bbdown_args(stream_kind, **kwargs):
+                    pref_args_calls.append(kwargs.get("playback_selector"))
+                    return ["-q", "80"]
+
+                def fake_ytdlp_selector(stream_kind, **kwargs):
+                    format_selector_calls.append(kwargs.get("playback_selector"))
+                    return "best"
+
+                manager._bbdown_stream_preference_args = fake_bbdown_args
+                manager._ytdlp_format_selector = fake_ytdlp_selector
+
+                bbdown_cmd = manager._bbdown_download_command(
+                    Path("/bin/bbdown"),
+                    Path("/bin/ffmpeg"),
+                    "https://example.test",
+                    page=1,
+                    stream_kind="video",
+                    target_dir=Path("/tmp"),
+                    playback_selector=selector,
+                )
+                self.assertEqual(len(pref_args_calls), 1)
+                self.assertIs(pref_args_calls[0], selector)
+
+                ytdlp_cmd = manager._ytdlp_download_command(
+                    Path("/bin/ytdlp"),
+                    Path("/bin/ffmpeg"),
+                    "https://example.test",
+                    page=1,
+                    stream_kind="video",
+                    target_dir=Path("/tmp"),
+                    playback_selector=selector,
+                )
+                self.assertEqual(len(format_selector_calls), 1)
+                self.assertIs(format_selector_calls[0], selector)
 
 
 class PlaybackSelectorRouteTest(unittest.TestCase):

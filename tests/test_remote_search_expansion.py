@@ -19,6 +19,10 @@ class RemoteSearchExpansionTest(unittest.TestCase):
             source.index("const canonicalBilikaraSearch =") :
             source.index("function d1BrowseTitle(")
         ]
+        cls.modal_submit_handler = source[
+            source.index('elements.searchModalLarkForm?.addEventListener("submit"') :
+            source.index('elements.searchModalLarkResults?.addEventListener("click"')
+        ]
         cls.input_handlers = source[
             source.index('elements.larkSearchQuery?.addEventListener("input"') :
             source.index('elements.larkSearchResults?.addEventListener("click"')
@@ -87,19 +91,19 @@ function hideLarkSearchResults() {{
   elements.larkSearchResults.classList.add("hidden");
 }}
 function renderLarkSearchResults(items) {{
-  elements.larkSearchResults.children = items.map((item) => {{
+  elements.larkSearchResults.children = items.length ? items.map((item) => {{
     const row = {{ view: "compact" }};
     searchResultItemByElement.set(row, item);
     return row;
-  }});
+  }}) : [{{ className: "search-empty", textContent: t("search.larkNoResults") }}];
   elements.larkSearchResults.classList.remove("hidden");
 }}
-function renderSearchResultItems(container, items) {{
-  container.children = items.map((item) => {{
+function renderSearchResultItems(container, items, emptyText = "") {{
+  container.children = items.length ? items.map((item) => {{
     const row = {{ view: "detailed" }};
     searchResultItemByElement.set(row, item);
     return row;
-  }});
+  }}) : [{{ className: "search-empty", textContent: emptyText || t("search.empty") }}];
   container.classList.remove("hidden");
 }}
 
@@ -118,6 +122,7 @@ function setSearchModalOpen(open) {{
 }}
 
 {self.search_source}
+{self.modal_submit_handler}
 {self.input_handlers}
 {self.expand_handler}
 
@@ -126,109 +131,148 @@ function setSearchModalOpen(open) {{
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
         completed = subprocess.run(
-            [self.node, "-"],
-            input=script,
+            [self.node, "-e", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=10,
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
-    def test_actual_expand_click_is_request_free_and_switches_only_modal_style(self):
+    def test_inline_search_and_modal_sync(self):
         result = self.run_node(
             """
-const item = { bvid: "BV1", title: "song", url: "https://example/BV1" };
-const search = executeCanonicalBilikaraSearch("VZRXS");
-resolvers.get("VZRXS").resolve([item]);
-await search;
-const callsBeforeExpand = requests.length;
-const inlineRow = elements.larkSearchResults.children[0];
+const item1 = { bvid: "BV1", title: "anime 1" };
+const item2 = { bvid: "BV2", title: "anime 2" };
+
+// Step 1: inline search "anime"
+elements.larkSearchQuery.value = "anime";
+const searchPromise = elements.larkSearchForm.dispatch("submit");
+const callsAfterSubmit = requests.length;
+resolvers.get("anime").resolve([item1, item2]);
+await searchPromise;
+
+const inlineResultsCount = elements.larkSearchResults.children.length;
+const inlineRow0 = elements.larkSearchResults.children[0];
+
+// 2. Open modal / sync modal
+const callsBeforeModal = requests.length;
 await elements.searchLibraryOpen.dispatch("click");
-const modalRow = elements.searchModalLarkResults.children[0];
+const callsAfterModal = requests.length;
+const modalQuery = elements.searchModalLarkQuery.value;
+const modalResultsCount = elements.searchModalLarkResults.children.length;
+const modalRow0 = elements.searchModalLarkResults.children[0];
+
 console.log(JSON.stringify({
-  calls: requests.length - callsBeforeExpand,
-  modalOpenCount,
-  inlineStyle: inlineRow.view,
-  modalStyle: modalRow.view,
-  inlineIdentity: searchResultItemByElement.get(inlineRow) === item,
-  modalIdentity: searchResultItemByElement.get(modalRow) === item,
+  networkCallsOnSearch: callsAfterSubmit,
+  additionalNetworkCallsOnModal: callsAfterModal - callsBeforeModal,
+  modalQuery,
+  inlineResultsCount,
+  modalResultsCount,
+  inlineRow0MatchesItem1: searchResultItemByElement.get(inlineRow0) === item1,
+  modalRow0MatchesItem1: searchResultItemByElement.get(modalRow0) === item1,
 }));
 """
         )
-        self.assertEqual(result["calls"], 0)
-        self.assertEqual(result["modalOpenCount"], 1)
-        self.assertEqual(result["inlineStyle"], "compact")
-        self.assertEqual(result["modalStyle"], "detailed")
-        self.assertTrue(result["inlineIdentity"])
-        self.assertTrue(result["modalIdentity"])
+        self.assertEqual(result["networkCallsOnSearch"], 1)
+        self.assertEqual(result["additionalNetworkCallsOnModal"], 0)
+        self.assertEqual(result["modalQuery"], "anime")
+        self.assertEqual(result["inlineResultsCount"], 2)
+        self.assertEqual(result["modalResultsCount"], 2)
+        self.assertTrue(result["inlineRow0MatchesItem1"])
+        self.assertTrue(result["modalRow0MatchesItem1"])
 
-    def test_request_a_cannot_overwrite_later_request_b(self):
+    def test_modal_search_syncs_to_inline(self):
+        result = self.run_node(
+            """
+const item = { bvid: "BV_VOC", title: "vocaloid 1" };
+elements.searchModalLarkQuery.value = "vocaloid";
+await elements.searchModalLarkQuery.dispatch("input");
+
+const searchPromise = elements.searchModalLarkForm.dispatch("submit");
+resolvers.get("vocaloid").resolve([item]);
+await searchPromise;
+
+console.log(JSON.stringify({
+  inlineQuery: elements.larkSearchQuery.value,
+  inlineResultsCount: elements.larkSearchResults.children.length,
+  modalResultsCount: elements.searchModalLarkResults.children.length,
+  inlineRowMatchesItem: searchResultItemByElement.get(elements.larkSearchResults.children[0]) === item,
+}));
+"""
+        )
+        self.assertEqual(result["inlineQuery"], "vocaloid")
+        self.assertEqual(result["inlineResultsCount"], 1)
+        self.assertEqual(result["modalResultsCount"], 1)
+        self.assertTrue(result["inlineRowMatchesItem"])
+
+    def test_no_results_appear_only_after_pending_request_resolves_empty(self):
+        result = self.run_node(
+            """
+elements.larkSearchQuery.value = "anime";
+const searchPromise = elements.larkSearchForm.dispatch("submit");
+
+const pending = {
+  message: elements.larkSearchMessage.textContent,
+  modalMessage: elements.searchModalLarkMessage.textContent,
+  inlineEmptyRows: elements.larkSearchResults.children.filter((row) => row.className === "search-empty").length,
+  modalEmptyRows: elements.searchModalLarkResults.children.filter((row) => row.className === "search-empty").length,
+};
+
+resolvers.get("anime").resolve([]);
+await searchPromise;
+
+console.log(JSON.stringify({
+  pending,
+  settled: {
+    inlineText: elements.larkSearchResults.children[0]?.textContent,
+    modalText: elements.searchModalLarkResults.children[0]?.textContent,
+    inlineEmptyRows: elements.larkSearchResults.children.filter((row) => row.className === "search-empty").length,
+    modalEmptyRows: elements.searchModalLarkResults.children.filter((row) => row.className === "search-empty").length,
+  },
+}));
+"""
+        )
+        self.assertEqual(result["pending"]["message"], "search.larkSearching")
+        self.assertEqual(result["pending"]["modalMessage"], "search.larkSearching")
+        self.assertEqual(result["pending"]["inlineEmptyRows"], 0)
+        self.assertEqual(result["pending"]["modalEmptyRows"], 0)
+        self.assertEqual(result["settled"]["inlineEmptyRows"], 1)
+        self.assertEqual(result["settled"]["modalEmptyRows"], 1)
+        self.assertEqual(result["settled"]["inlineText"], "search.larkNoResults")
+        self.assertEqual(result["settled"]["modalText"], "search.larkNoResults")
+
+    def test_stale_request_completion_does_not_overwrite_newer_state(self):
         result = self.run_node(
             """
 const itemA = { bvid: "A" };
 const itemB = { bvid: "B" };
-const requestA = executeCanonicalBilikaraSearch("query A");
-const requestB = executeCanonicalBilikaraSearch("query B");
+elements.larkSearchQuery.value = "query A";
+const requestA = elements.larkSearchForm.dispatch("submit");
+
+elements.larkSearchQuery.value = "query B";
+const requestB = elements.larkSearchForm.dispatch("submit");
+
 resolvers.get("query B").resolve([itemB]);
 await requestB;
+
 resolvers.get("query A").resolve([itemA]);
 await requestA;
-console.log(JSON.stringify({
-  draft: canonicalBilikaraSearch.draftQuery,
-  committed: canonicalBilikaraSearch.resultQuery,
-  bvid: canonicalBilikaraSearch.items[0]?.bvid,
-}));
-"""
-        )
-        self.assertEqual(result, {"draft": "query B", "committed": "query B", "bvid": "B"})
 
-    def test_actual_empty_submit_invalidates_inflight_request(self):
-        result = self.run_node(
-            """
-const requestA = executeCanonicalBilikaraSearch("query A");
-elements.larkSearchQuery.value = "";
-await elements.larkSearchForm.dispatch("submit");
-resolvers.get("query A").resolve([{ bvid: "A" }]);
-await requestA;
 console.log(JSON.stringify({
-  draft: canonicalBilikaraSearch.draftQuery,
-  committed: canonicalBilikaraSearch.resultQuery,
-  itemCount: canonicalBilikaraSearch.items.length,
-  buttonDisabled: elements.larkSearchButton.disabled,
+  canonicalQuery: canonicalBilikaraSearch.query,
+  itemBvid: canonicalBilikaraSearch.items[0]?.bvid,
+  inlineQuery: elements.larkSearchQuery.value,
+  modalQuery: elements.searchModalLarkQuery.value,
 }));
 """
         )
-        self.assertEqual(result["draft"], "")
-        self.assertEqual(result["committed"], "")
-        self.assertEqual(result["itemCount"], 0)
-        self.assertFalse(result["buttonDisabled"])
-
-    def test_actual_input_edit_invalidates_inflight_results_and_busy_state(self):
-        result = self.run_node(
-            """
-const requestA = executeCanonicalBilikaraSearch("query A");
-elements.searchModalLarkQuery.value = "draft B";
-await elements.searchModalLarkQuery.dispatch("input");
-resolvers.get("query A").resolve([{ bvid: "A" }]);
-await requestA;
-console.log(JSON.stringify({
-  draft: canonicalBilikaraSearch.draftQuery,
-  committed: canonicalBilikaraSearch.resultQuery,
-  inlineInput: elements.larkSearchQuery.value,
-  itemCount: canonicalBilikaraSearch.items.length,
-  inlineDisabled: elements.larkSearchButton.disabled,
-  modalDisabled: elements.searchModalLarkButton.disabled,
-}));
-"""
-        )
-        self.assertEqual(result["draft"], "draft B")
-        self.assertEqual(result["committed"], "")
-        self.assertEqual(result["inlineInput"], "draft B")
-        self.assertEqual(result["itemCount"], 0)
-        self.assertFalse(result["inlineDisabled"])
-        self.assertFalse(result["modalDisabled"])
+        self.assertEqual(result["canonicalQuery"], "query B")
+        self.assertEqual(result["itemBvid"], "B")
+        self.assertEqual(result["inlineQuery"], "query B")
+        self.assertEqual(result["modalQuery"], "query B")
 
 
 if __name__ == "__main__":

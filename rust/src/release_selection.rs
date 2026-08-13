@@ -332,6 +332,8 @@ mod tests {
         assert!(resp.contains(r#""status":"selected""#));
         assert!(resp.contains(r#""selected_index":0"#));
         assert!(resp.contains(r#""schema_version":1"#));
+        assert!(resp.contains(r#""action":"normal_upgrade""#));
+        assert!(resp.contains(r#""reason":"newer_version""#));
     }
 
     #[test]
@@ -345,6 +347,8 @@ mod tests {
         let resp = select_release_json(json_str).unwrap();
         assert!(resp.contains(r#""status":"no_match""#));
         assert!(resp.contains(r#""selected_index":null"#));
+        assert!(resp.contains(r#""action":"no_action""#));
+        assert!(resp.contains(r#""reason":"no_stable_release""#));
     }
 
     #[test]
@@ -394,48 +398,6 @@ mod tests {
             "unknown_extra": 123
         }"#;
         assert!(select_release_json(json_str).is_none());
-    }
-
-    #[test]
-    fn test_duplicate_version_first_input_tie() {
-        let req = request(
-            "v0.7.0",
-            false,
-            vec![("v0.8.0", false, false), ("v0.8.0", false, false)],
-        );
-        assert_eq!(
-            select_release(&req).unwrap(),
-            ReleaseSelection::Selected { selected_index: 0 }
-        );
-    }
-
-    #[test]
-    fn test_arbitrarily_large_version_field_wins_without_overflow() {
-        let req = request(
-            "v0.7.0",
-            false,
-            vec![
-                ("v18446744073709551616.0.0", false, false),
-                ("v1.0.0", false, false),
-            ],
-        );
-        assert_eq!(
-            select_release(&req).unwrap(),
-            ReleaseSelection::Selected { selected_index: 0 }
-        );
-    }
-
-    #[test]
-    fn test_leading_zero_equivalent_versions_keep_first_input_tie() {
-        let req = request(
-            "v0.7.0",
-            false,
-            vec![("v0008.0.0", false, false), ("v8.0.0", false, false)],
-        );
-        assert_eq!(
-            select_release(&req).unwrap(),
-            ReleaseSelection::Selected { selected_index: 0 }
-        );
     }
 
     #[test]
@@ -576,5 +538,47 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn test_duplicate_version_first_input_tie() {
+        let req = request(
+            "v0.7.0",
+            false,
+            vec![("v0.8.0", false, false), ("v0.8.0", false, false)],
+        );
+        assert_eq!(
+            select_release(&req).unwrap(),
+            ReleaseSelection::Selected { selected_index: 0 }
+        );
+    }
+
+    #[test]
+    fn test_arbitrarily_large_version_field_wins_without_overflow() {
+        let req = request(
+            "v0.7.0",
+            false,
+            vec![
+                ("v18446744073709551616.0.0", false, false),
+                ("v1.0.0", false, false),
+            ],
+        );
+        assert_eq!(
+            select_release(&req).unwrap(),
+            ReleaseSelection::Selected { selected_index: 0 }
+        );
+    }
+
+    #[test]
+    fn test_leading_zero_equivalent_versions_keep_first_input_tie() {
+        let req = request(
+            "v0.7.0",
+            false,
+            vec![("v0008.0.0", false, false), ("v8.0.0", false, false)],
+        );
+        assert_eq!(
+            select_release(&req).unwrap(),
+            ReleaseSelection::Selected { selected_index: 0 }
+        );
     }
 }

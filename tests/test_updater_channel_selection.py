@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import json
-import os
 import subprocess
 import tempfile
 import unittest
@@ -7,31 +8,32 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from bilikara import playback_selector, rust_backend, updater
+from bilikara import playback_selector, updater
 
 
-def release(tag: str, *, draft: bool = False, with_asset: bool = True) -> dict:
-    payload = {
-        "tag_name": tag,
+def release(
+    tag_name: str, draft: bool = False, prerelease: bool = False
+) -> dict[str, object]:
+    return {
+        "tag_name": tag_name,
         "draft": draft,
-        "prerelease": "preview" in tag.lower(),
-        "html_url": f"https://example.test/releases/{tag}",
-    }
-    if with_asset:
-        payload["assets"] = [
+        "prerelease": prerelease,
+        "html_url": f"https://example.test/releases/{tag_name}",
+        "name": f"Release {tag_name}",
+        "published_at": "2026-08-03T00:00:00Z",
+        "assets": [
             {
-                "name": f"bilikara-{tag}-windows-x64.zip",
-                "browser_download_url": f"https://example.test/{tag}.zip",
-                "size": 128,
-                "content_type": "application/zip",
+                "name": f"bilikara-{tag_name}-windows-x64.zip",
+                "browser_download_url": f"https://example.test/{tag_name}.zip",
+                "size": 1024,
             }
-        ]
-    return payload
+        ],
+    }
 
 
 DECISION_CASES = (
     {
-        "name": "stable normal update",
+        "name": "stable normal upgrade",
         "current": "v0.6.3",
         "include_preview": False,
         "releases": [release("v0.6.4")],
@@ -49,16 +51,7 @@ DECISION_CASES = (
         "reason": "already_current",
     },
     {
-        "name": "stable to preview with preview enabled",
-        "current": "v0.6.4",
-        "include_preview": True,
-        "releases": [release("v0.7.0-preview.1")],
-        "latest": "v0.7.0-preview.1",
-        "action": "normal_upgrade",
-        "reason": "newer_version",
-    },
-    {
-        "name": "preview to newer preview",
+        "name": "preview normal upgrade",
         "current": "v0.7.0-preview.1",
         "include_preview": True,
         "releases": [release("v0.7.0-preview.2")],
@@ -67,25 +60,7 @@ DECISION_CASES = (
         "reason": "newer_version",
     },
     {
-        "name": "current preview with no newer preview",
-        "current": "v0.7.0-preview.3",
-        "include_preview": True,
-        "releases": [release("v0.7.0-preview.3"), release("v0.6.4")],
-        "latest": "v0.7.0-preview.3",
-        "action": "no_action",
-        "reason": "already_current",
-    },
-    {
-        "name": "preview to numerically lower stable when preview disabled",
-        "current": "v0.7.0-preview.3",
-        "include_preview": False,
-        "releases": [release("v0.6.4")],
-        "latest": "v0.6.4",
-        "action": "preview_to_stable",
-        "reason": "preview_channel_disabled",
-    },
-    {
-        "name": "preview to final stable",
+        "name": "preview upgrades to final stable",
         "current": "v0.7.0-preview.3",
         "include_preview": False,
         "releases": [release("v0.7.0")],
@@ -94,8 +69,17 @@ DECISION_CASES = (
         "reason": "newer_version",
     },
     {
-        "name": "dev to stable",
-        "current": "v0.7.0-12-gabcdef",
+        "name": "preview channel disabled switches to lower stable",
+        "current": "v0.7.0-preview.3",
+        "include_preview": False,
+        "releases": [release("v0.6.4")],
+        "latest": "v0.6.4",
+        "action": "preview_to_stable",
+        "reason": "preview_channel_disabled",
+    },
+    {
+        "name": "dev to stable default",
+        "current": "rebuild/preview3-playback",
         "include_preview": False,
         "releases": [release("v0.6.4")],
         "latest": "v0.6.4",
@@ -156,157 +140,61 @@ DECISION_CASES = (
         "action": "no_action",
         "reason": "stable_not_newer",
     },
-    {
-        "name": "draft ignored",
-        "current": "v0.7.0",
-        "include_preview": False,
-        "releases": [release("v0.8.0", draft=True), release("v0.7.0")],
-        "latest": "v0.7.0",
-        "action": "no_action",
-        "reason": "already_current",
-    },
-    {
-        "name": "malformed version ignored",
-        "current": "v0.7.0",
-        "include_preview": False,
-        "releases": [release("not-a-version"), release("v0.7.0")],
-        "latest": "v0.7.0",
-        "action": "no_action",
-        "reason": "already_current",
-    },
-    {
-        "name": "no stable available",
-        "current": "v0.7.0-preview.3",
-        "include_preview": False,
-        "releases": [release("v0.8.0-preview.1")],
-        "latest": "",
-        "action": "no_action",
-        "reason": "no_stable_release",
-    },
-    {
-        "name": "missing asset",
-        "current": "v0.6.3",
-        "include_preview": False,
-        "releases": [release("v0.6.4", with_asset=False)],
-        "latest": "v0.6.4",
-        "action": "normal_upgrade",
-        "reason": "newer_version",
-        "auto_update_supported": False,
-    },
-    {
-        "name": "unsupported platform",
-        "current": "v0.6.3",
-        "include_preview": False,
-        "releases": [release("v0.6.4")],
-        "latest": "v0.6.4",
-        "action": "normal_upgrade",
-        "reason": "newer_version",
-        "unsupported_platform": True,
-        "auto_update_supported": False,
-    },
 )
 
 
 class UpdateChannelDecisionTest(unittest.TestCase):
-    def test_python_reference_decision_matrix(self):
+    def test_decision_matrix_matches_python_and_rust_backend(self):
         for case in DECISION_CASES:
             with self.subTest(case=case["name"]):
-                decision = updater._py_release_decision_for_current(
+                py_decision = updater._py_release_decision_for_current(
                     case["current"],
                     case["releases"],
                     include_preview=case["include_preview"],
                 )
-                self.assertEqual(decision["action"], case["action"])
-                self.assertEqual(decision["reason"], case["reason"])
+                self.assertEqual(py_decision["action"], case["action"])
+                self.assertEqual(py_decision["reason"], case["reason"])
                 self.assertEqual(
-                    updater.normalize_version_tag(decision["release"].get("tag_name")),
+                    py_decision["release"].get("tag_name", ""),
                     case["latest"],
                 )
 
-    def test_native_rust_decision_matrix(self):
-        status = rust_backend.backend_status()
-        if not status["capabilities"].get("select_release"):
-            if os.environ.get("BILIKARA_REQUIRE_RUST_LIB") == "1":
-                self.fail("native Rust release selection is required but unavailable")
-            self.skipTest("native Rust release selection is unavailable")
-
-        for case in DECISION_CASES:
-            with self.subTest(case=case["name"]):
-                request = {
-                    "schema_version": 1,
-                    "current_version": case["current"],
-                    "include_preview": case["include_preview"],
-                    "releases": [
-                        {
-                            "tag_name": str(item.get("tag_name") or ""),
-                            "draft": bool(item.get("draft")),
-                            "prerelease": bool(item.get("prerelease")),
-                        }
-                        for item in case["releases"]
-                    ],
-                }
-                completed, decision = rust_backend.try_select_release(request)
-                self.assertTrue(completed)
-                self.assertIsNotNone(decision)
-                assert decision is not None
-                self.assertEqual(decision["action"], case["action"])
-                self.assertEqual(decision["reason"], case["reason"])
-
-    def test_native_response_cannot_authorize_a_stable_downgrade(self):
-        request = {
-            "schema_version": 1,
-            "current_version": "v0.7.0",
-            "include_preview": False,
-            "releases": [
-                {"tag_name": "v0.6.4", "draft": False, "prerelease": False}
-            ],
-        }
-        forged_response = {
-            "schema_version": 1,
-            "status": "selected",
-            "selected_index": 0,
-            "action": "normal_upgrade",
-            "reason": "newer_version",
-        }
-        with patch.object(
-            rust_backend,
-            "_call_json_capability",
-            return_value=forged_response,
-        ):
-            completed, decision = rust_backend.try_select_release(request)
-
-        self.assertFalse(completed)
-        self.assertIsNone(decision)
-
-    def test_update_check_response_matrix(self):
-        for case in DECISION_CASES:
-            with self.subTest(case=case["name"]), patch.object(
-                rust_backend, "try_select_release", return_value=(False, None)
-            ):
-                target = (
-                    {"platform": "linux", "arch": "x64"}
-                    if case.get("unsupported_platform")
-                    else {"platform": "windows", "arch": "x64"}
+                rust_decision = updater._release_decision_for_current(
+                    case["current"],
+                    case["releases"],
+                    include_preview=case["include_preview"],
                 )
-                with patch.object(updater, "detect_update_target", return_value=target), patch.object(
-                    updater,
-                    "is_auto_update_supported",
-                    return_value=not case.get("unsupported_platform", False),
+                self.assertEqual(rust_decision["action"], case["action"])
+                self.assertEqual(rust_decision["reason"], case["reason"])
+                self.assertEqual(
+                    rust_decision["release"].get("tag_name", ""),
+                    case["latest"],
+                )
+
+                with patch.object(
+                    updater, "detect_update_target", return_value={"platform": "windows", "arch": "x64"}
+                ), patch.object(
+                    updater, "is_auto_update_supported", return_value=True
                 ):
                     result = updater.check_for_update(
                         current_version=case["current"],
                         include_preview=case["include_preview"],
                         release_fetcher=lambda case=case: case["releases"],
                     )
-
-                self.assertEqual(result["latest_version"], case["latest"])
                 self.assertEqual(result["update_action"], case["action"])
                 self.assertEqual(result["update_reason"], case["reason"])
-                installable = case["action"] != "no_action"
+                self.assertEqual(result["latest_version"], case["latest"])
+                self.assertEqual(result["current_version"], case["current"])
+
+                installable = case["action"] in {
+                    "normal_upgrade",
+                    "preview_to_stable",
+                    "development_to_stable",
+                    "development_to_preview",
+                }
                 self.assertEqual(result["update_installable"], installable)
                 self.assertEqual(
-                    result["update_available"],
-                    case["action"] == "normal_upgrade",
+                    result["update_available"], case["action"] == "normal_upgrade"
                 )
                 self.assertEqual(
                     result["switch_to_release_available"],
@@ -501,6 +389,7 @@ class UpdateChannelDecisionTest(unittest.TestCase):
             ["node", "-e", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)

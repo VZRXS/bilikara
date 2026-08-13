@@ -2842,9 +2842,10 @@ class BilibiliParserTest(unittest.TestCase):
             patch("builtins.print") as mock_print,
         ):
             mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
-            mock_monotonic.side_effect = [100.0, 100.0, 103.5, 103.5]
+            mock_monotonic.side_effect = [100.0, 100.0, 103.5, 103.5, 107.0, 107.0]
             mock_request_json.side_effect = [
                 {"code": 412, "message": "412 Precondition Failed"},
+                {"code": 412, "message": "another transient failure"},
                 {
                     "code": 0,
                     "data": {

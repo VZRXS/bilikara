@@ -1,6 +1,6 @@
 [package]
 name = "bilikara"
-version = "0.7.0"
+version = "0.7.1"
 description = "Bilikara Tauri MVP"
 authors = ["VZRXS"]
 edition = "2024"
@@ -14,7 +14,11 @@ tauri = { version = "2", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri-plugin-dialog = "2"
-arboard = "3.4"
+tauri-plugin-clipboard-manager = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "WKWebViewConfiguration"] }
 
 [features]
 default = ["custom-protocol"]

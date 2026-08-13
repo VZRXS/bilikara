@@ -248,11 +248,6 @@ class RustRuntimePolicyTest(unittest.TestCase):
             metrics = rust_backend.timing_diagnostics_snapshot()
         self.assertEqual(metrics["demo"]["python_fallback_count"], 1)
         self.assertGreaterEqual(metrics["demo"]["python_fallback_elapsed_seconds"], 0)
-        self.assertGreaterEqual(metrics["demo"]["python_fallback_max_seconds"], 0)
-        self.assertLessEqual(
-            metrics["demo"]["python_fallback_max_seconds"],
-            metrics["demo"]["python_fallback_elapsed_seconds"],
-        )
 
 
 if __name__ == "__main__":
