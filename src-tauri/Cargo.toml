@@ -1,6 +1,6 @@
 [package]
 name = "bilikara"
-version = "0.7.0"
+version = "0.7.1"
 description = "Bilikara Tauri MVP"
 authors = ["VZRXS"]
 edition = "2024"

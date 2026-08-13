@@ -1,6 +1,6 @@
 {
   "name": "bilikara-tauri",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "author": "VZRXS",
   "engines": {
     "node": ">=24"
