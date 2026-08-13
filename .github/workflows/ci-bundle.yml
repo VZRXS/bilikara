@@ -303,6 +303,9 @@ jobs:
           mkdir -p dist_release
           ditto dist/bilikara.app dist_release/bilikara.app
           ditto dist/Bilikara-Desktop.app dist_release/Bilikara-Desktop.app
+          cp README-macOS.txt dist_release/README-macOS.txt
+          test -s dist_release/README-macOS.txt
+          python -c 'import pathlib; text = pathlib.Path("dist_release/README-macOS.txt").read_text(encoding="utf-8"); assert all(value in text for value in ("Bilikara-Desktop.app", "bilikara.app", "隐私与安全性", "仍要打开"))'
 
           echo "=== Verifying staged bilikara.app ==="
           test -x dist_release/bilikara.app/Contents/MacOS/bilikara
@@ -364,6 +367,8 @@ jobs:
 
           mkdir -p test_extract
           ditto -x -k "$BUNDLE_ARCHIVE" test_extract/
+          test -s test_extract/dist_release/README-macOS.txt
+          cmp README-macOS.txt test_extract/dist_release/README-macOS.txt
 
           echo "=== Verifying extracted bilikara.app ==="
           test -x test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara
