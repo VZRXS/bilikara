@@ -408,6 +408,39 @@ class RecachePublicationTest(unittest.TestCase):
         self.assertEqual(item.video_relative_path, "item-success/video.mp4")
         self.assertEqual((self.cache_dir / item.video_relative_path).read_bytes(), b"new-video")
 
+    def test_successful_publication_preserves_nested_bbdown_paths(self):
+        item_id = "item-nested"
+        self._create_ready_item(item_id)
+
+        def nested_download(_item, _binary, _ffmpeg, staging_dir, *_args, **_kwargs):
+            video = staging_dir / "video-p1" / "123" / "video.mp4"
+            audio = staging_dir / "audio-p1" / "123" / "audio.m4a"
+            video.parent.mkdir(parents=True)
+            audio.parent.mkdir(parents=True)
+            video.write_bytes(b"new-video")
+            audio.write_bytes(b"new-audio")
+            audio_relative = str(audio.relative_to(self.cache_dir))
+            return {
+                "video_file": video,
+                "audio_variants": [{
+                    "id": "default",
+                    "audio_relative_path": audio_relative,
+                    "audio_url": f"/media/{audio_relative}",
+                }],
+                "selected_audio_variant_id": "default",
+            }
+
+        with self._manager() as manager:
+            result = self._run_recache(manager, item_id, download=nested_download)
+            item = self.store.get_item(item_id)
+            self.assertTrue(result)
+            self.assertEqual(item.video_relative_path, f"{item_id}/video-p1/123/video.mp4")
+            self.assertEqual(
+                item.audio_variants[0]["audio_relative_path"],
+                f"{item_id}/audio-p1/123/audio.m4a",
+            )
+            self.assertTrue(manager._item_cache_ready(item))
+
     def test_successful_current_item_forced_recache_cleans_release_coordinator_and_context(self):
         self._create_ready_item("item-clean")
         with self._manager() as manager, \

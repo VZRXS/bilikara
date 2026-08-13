@@ -8,6 +8,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+class D1BrowseSourceContractTest(unittest.TestCase):
+    def test_category_browse_alias_helper_is_defined_before_use(self):
+        for relative_path in ("static/app.js", "static/remote.js"):
+            with self.subTest(relative_path=relative_path):
+                source = (ROOT / relative_path).read_text(encoding="utf-8")
+                definition = source.find("function uniqueD1BrowseAliases(")
+                category_browse = source.find("async function fetchD1CategoryBrowse(")
+
+                self.assertGreaterEqual(definition, 0)
+                self.assertGreaterEqual(category_browse, 0)
+                self.assertLess(definition, category_browse)
+
+
 class D1BrowseFrontendTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
