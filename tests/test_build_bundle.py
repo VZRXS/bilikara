@@ -34,10 +34,10 @@ def aria2_metadata(arch: str) -> dict[str, object]:
 
 
 class BuildBundleTest(unittest.TestCase):
-    def test_main_bundles_rust_runtime_without_external_media_tools(self):
+    def test_main_bundles_rust_runtime_and_required_media_tools(self):
         source = inspect.getsource(build_bundle.main)
         self.assertIn("_rust_library_args", source)
-        self.assertNotIn("_bundled_binary_args", source)
+        self.assertIn("_bundled_binary_args", source)
         self.assertNotIn("_macos_aria2_metadata_args", source)
 
     def test_rust_library_args_includes_release_library(self):
@@ -156,7 +156,7 @@ class BuildBundleTest(unittest.TestCase):
 
         self.assertEqual(resolved, ffprobe)
 
-    def test_bundled_binary_args_allows_missing_optional_ffprobe(self):
+    def test_bundled_binary_args_rejects_missing_ffprobe(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
         bbdown = Path("/usr/bin/BBDown")
         data_separator = ";" if build_bundle.platform.system() == "Windows" else ":"
@@ -167,19 +167,10 @@ class BuildBundleTest(unittest.TestCase):
         with patch("build_bundle.platform.system", return_value="Linux"), patch(
             "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
         ):
-            args = build_bundle._bundled_binary_args(data_separator)
+            with self.assertRaisesRegex(RuntimeError, "ffprobe"):
+                build_bundle._bundled_binary_args(data_separator)
 
-        self.assertEqual(
-            args,
-            [
-                "--add-binary",
-                f"{ffmpeg.resolve()}{data_separator}vendor",
-                "--add-binary",
-                f"{bbdown.resolve()}{data_separator}vendor",
-            ],
-        )
-
-    def test_bundled_binary_args_includes_resolved_optional_ffprobe(self):
+    def test_bundled_binary_args_includes_all_required_tools(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
         ffprobe = Path("/usr/bin/ffprobe")
         bbdown = Path("/usr/bin/BBDown")
@@ -197,9 +188,9 @@ class BuildBundleTest(unittest.TestCase):
                 "--add-binary",
                 f"{ffmpeg.resolve()}{data_separator}vendor",
                 "--add-binary",
-                f"{bbdown.resolve()}{data_separator}vendor",
-                "--add-binary",
                 f"{ffprobe.resolve()}{data_separator}vendor",
+                "--add-binary",
+                f"{bbdown.resolve()}{data_separator}vendor",
             ],
         )
 
@@ -213,16 +204,17 @@ class BuildBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "enable-nonfree"):
                 build_bundle._bundled_binary_args(":", validate=True)
 
-    def test_bundled_binary_args_requires_ffprobe_for_macos(self):
+    def test_bundled_binary_args_requires_bbdown(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
+        ffprobe = Path("/usr/bin/ffprobe")
 
         def fake_resolve(binary_name: str):
-            return ffmpeg if binary_name == "ffmpeg" else None
+            return {"ffmpeg": ffmpeg, "ffprobe": ffprobe}.get(binary_name)
 
-        with patch("build_bundle.platform.system", return_value="Darwin"), patch(
+        with patch("build_bundle.platform.system", return_value="Linux"), patch(
             "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
         ):
-            with self.assertRaisesRegex(RuntimeError, "ffprobe"):
+            with self.assertRaisesRegex(RuntimeError, "BBDown"):
                 build_bundle._bundled_binary_args(":")
 
     def test_release_validation_rejects_tool_that_does_not_execute(self):

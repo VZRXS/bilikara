@@ -15,10 +15,8 @@ APP_NAME = "bilikara"
 APP_PUBLISHER = "VZRXS"
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
-# Legacy helper coverage remains for old bundles, but main() no longer invokes
-# external-tool bundling after the Rust Native migration.
-REQUIRED_TOOL_BINARIES = ("ffmpeg", "BBDown")
-OPTIONAL_TOOL_BINARIES = ("ffprobe",)
+REQUIRED_TOOL_BINARIES = ("ffmpeg", "ffprobe", "BBDown")
+OPTIONAL_TOOL_BINARIES: tuple[str, ...] = ()
 LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
 PYTHON_HTTPS_HIDDEN_IMPORTS = (
     "ssl",
@@ -92,6 +90,9 @@ def main() -> None:
     ]
     command.extend(_python_https_args(data_separator, verbose=True))
     command.extend(_python_certifi_args(data_separator, verbose=True))
+    command.extend(
+        _bundled_binary_args(data_separator, verbose=True, validate=True)
+    )
     command.extend(_rust_library_args(data_separator, verbose=True))
 
     if platform.system() == "Windows":

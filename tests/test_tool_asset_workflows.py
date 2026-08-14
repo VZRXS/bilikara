@@ -93,18 +93,23 @@ class ToolAssetWorkflowTest(unittest.TestCase):
                 self.assertIn(payload["name"], payload["url"])
                 self.assertTrue(payload["recipe_revision"])
 
-    def test_normal_bundle_does_not_embed_external_media_tools_or_metadata(self):
-        for marker in (
-            "Locked aria2c metadata-only checks",
-            "Contents/Resources/vendor/aria2-macos.json",
-            "Unexpected bundled aria2c executable",
-            "Install FFmpeg",
-            "Prepare portable macOS FFmpeg",
-            "Prepare pinned BBDown vendor asset",
-        ):
-            self.assertNotIn(marker, self.bundle_workflow)
-        self.assertIn("Verify native backend bundle on Windows", self.bundle_workflow)
-        self.assertIn("Verify native backend bundle on macOS", self.bundle_workflow)
+    def test_normal_bundle_embeds_required_media_tools(self):
+        self.assertIn("Install FFmpeg on Windows", self.bundle_workflow)
+        self.assertIn("choco install ffmpeg -y --no-progress", self.bundle_workflow)
+        self.assertIn("Prepare pinned portable FFmpeg asset", self.bundle_workflow)
+        self.assertIn("Prepare pinned BBDown vendor", self.bundle_workflow)
+        self.assertIn("scripts/prepare_bbdown_vendor.py", self.bundle_workflow)
+        self.assertIn(
+            "Verify native backend and bundled tools on Windows",
+            self.bundle_workflow,
+        )
+        self.assertIn(
+            "Verify native backend and bundled tools on macOS",
+            self.bundle_workflow,
+        )
+        self.assertIn("Verify clean BBDown runtime restore on Windows", self.bundle_workflow)
+        for tool in ("BBDown", "ffmpeg", "ffprobe"):
+            self.assertIn(tool, self.bundle_workflow)
         self.assertIn("bilikara_runtime.dll", self.bundle_workflow)
         self.assertIn("libbilikara_runtime.dylib", self.bundle_workflow)
 
