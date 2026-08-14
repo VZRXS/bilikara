@@ -1359,6 +1359,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
                 with manager.lock:
