@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from bilikara import rust_runtime
-from bilikara.cache import CacheManager
+from bilikara.cache import CacheManager, DEFAULT_VIDEO_QUALITY
 
 
 class FakeRuntimeLibrary:
@@ -418,6 +418,141 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
         manager = CacheManager.__new__(CacheManager)
         manager._append_log_line = Mock()
         return manager
+
+    def test_native_dash_resolution_selects_hires_flac(self):
+        manager = self.make_manager()
+        manager.lock = threading.RLock()
+        manager.hevc_supported = None
+        manager.avc_quality_cap = ""
+        manager.video_quality = DEFAULT_VIDEO_QUALITY
+        manager.audio_hires = True
+        item = Mock(bvid="BV1jDVUzSEom", aid=123, cid=456)
+        flac = {
+            "url": "https://media.invalid/hires.m4s",
+            "backup_urls": [],
+            "quality_id": 30251,
+            "bandwidth": 1_882_182,
+            "codec_name": "flac",
+            "mime_type": "audio/mp4",
+        }
+        dash = {
+            "video": [{
+                "url": "https://media.invalid/video.m4s",
+                "backup_urls": [],
+                "quality_id": 80,
+                "bandwidth": 1_000_000,
+                "codec_name": "avc",
+            }],
+            "audio": [{
+                "url": "https://media.invalid/audio.m4s",
+                "backup_urls": [],
+                "quality_id": 30280,
+                "bandwidth": 198_226,
+                "mime_type": "audio/mp4",
+            }],
+            "flac": flac,
+            "dolby": None,
+        }
+
+        with patch(
+            "bilikara.cache.effective_bilibili_cookie",
+            return_value="SESSDATA=test",
+        ), patch(
+            "bilikara.cache.fetch_dash_playurl",
+            return_value=dash,
+        ), patch.object(
+            manager,
+            "_select_dash_video_stream",
+            return_value=dash["video"][0],
+        ), patch.object(
+            manager,
+            "_select_dash_audio_stream",
+            return_value=dash["audio"][0],
+        ):
+            resolved = manager._resolve_dash_streams(item, native_media=True)
+
+        self.assertEqual(resolved["audio"][0]["quality_id"], 30251)
+        self.assertEqual(resolved["audio"][0]["codec_name"], "flac")
+
+    def test_native_download_publishes_selected_hires_as_flac(self):
+        manager = self.make_manager()
+        manager.stop_event = threading.Event()
+        manager._selected_pages_for_item = Mock(return_value=[1])
+        manager._cid_for_page = Mock(return_value=456)
+        manager._dash_stream_urls = Mock(return_value=["https://media.invalid/video.m4s"])
+        manager._preferred_audio_urls = Mock(return_value=["https://media.invalid/hires.m4s"])
+        manager._raise_if_retry_requested = Mock()
+        manager._raise_if_priority_shift = Mock()
+        manager._reset_download_track_progress = Mock()
+        manager._set_download_track_phase = Mock()
+        manager._update_download_track_progress = Mock()
+        manager._duration_for_page = Mock(return_value=120)
+        flac = {
+            "url": "https://media.invalid/hires.m4s",
+            "backup_urls": [],
+            "quality_id": 30251,
+            "bandwidth": 1_882_182,
+            "codec_name": "flac",
+            "mime_type": "audio/mp4",
+        }
+        manager._resolve_dash_streams = Mock(
+            return_value={"video": [], "audio": [flac], "flac": None, "dolby": None}
+        )
+
+        def download_track(_item_id, target_dir, _log_path, **kwargs):
+            target_dir.mkdir(parents=True, exist_ok=True)
+            output = target_dir / kwargs["out_name"]
+            output.write_bytes(b"raw")
+            return output
+
+        def normalize_track(*, source, destination, expected_kind):
+            destination.write_bytes(source.read_bytes())
+            return {
+                "source": {},
+                "output": {
+                    "path": str(destination),
+                    "kind": expected_kind,
+                    "codec": "flac" if destination.suffix == ".flac" else "h264",
+                    "duration_seconds": 120.0,
+                    "sample_count": 1,
+                    "sample_bytes": 3,
+                    "file_bytes": 3,
+                    "fragmented": False,
+                    "fast_start": True,
+                },
+            }
+
+        manager._download_stream_with_rust = Mock(side_effect=download_track)
+        item = Mock(id="song-hires", video_page=1)
+        video_track = {"key": "video-p1", "page": 1, "label": "video"}
+        audio_track = {"key": "audio-p1", "page": 1, "label": "audio"}
+        dash = {
+            "video": [{
+                "url": "https://media.invalid/video.m4s",
+                "backup_urls": [],
+                "codec_name": "avc",
+            }],
+            "audio": [],
+        }
+
+        with TemporaryDirectory() as temp_dir, patch(
+            "bilikara.cache.effective_bilibili_cookie",
+            return_value="SESSDATA=test",
+        ), patch(
+            "bilikara.cache.rust_runtime.normalize_media",
+            side_effect=normalize_track,
+        ):
+            paths = manager._download_dash_streams_native(
+                item,
+                Path(temp_dir),
+                Path(temp_dir) / "native.log",
+                dash_streams=dash,
+                video_track=video_track,
+                audio_tracks=[audio_track],
+            )
+
+        self.assertEqual(paths["audio-p1"].suffix, ".flac")
+        self.assertEqual(audio_track["stream_metadata"]["quality_id"], 30251)
 
     def test_native_download_log_includes_transport_and_throughput(self):
         manager = self.make_manager()

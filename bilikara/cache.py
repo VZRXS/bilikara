@@ -2665,6 +2665,16 @@ class CacheManager:
         flac_info = dash.get("flac")
         dolby_info = dash.get("dolby")
 
+        if native_media:
+            # The native media backend supports FLAC-in-MP4, but not Dolby E-AC-3.
+            selected_audio = self._select_preferred_dash_audio(
+                [selected_audio] if selected_audio else [],
+                flac_info,
+                None,
+                audio_hires=audio_hires,
+                playback_selector=playback_selector,
+            )
+
         result = {
             "video": [filtered_video] if filtered_video else [],
             "audio": [selected_audio] if selected_audio else [],
@@ -3089,11 +3099,16 @@ class CacheManager:
             )
             if not audio_urls:
                 raise DownloadCommandError(f"Rust Native 未找到音频轨 P{page} 的下载地址")
+            audio_extension = (
+                ".flac"
+                if str(audio_stream.get("codec_name") or "") == "flac"
+                else ".m4a"
+            )
             track_args.append(
                 (
                     track,
                     audio_urls,
-                    f"audio-p{page}.m4a",
+                    f"audio-p{page}{audio_extension}",
                     item_dir / f"audio-p{page}",
                     f"下载音轨 P{page}",
                     "audio",

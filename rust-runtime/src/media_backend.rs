@@ -118,6 +118,9 @@ pub fn normalize_media(
     validate_destination(&request.destination)?;
 
     let source_probe = probe_path(&request.source, request.expected_kind)?;
+    if source_probe.codec == "flac" {
+        return normalize_flac_mp4(&request.source, &request.destination, source_probe);
+    }
     let raw_path = temporary_path(&request.destination, "remux");
     let fast_path = temporary_path(&request.destination, "faststart");
     let result = (|| {
@@ -243,9 +246,20 @@ fn probe_path(path: &Path, expected_kind: ExpectedMediaKind) -> Result<MediaProb
         .tracks()
         .get(&track_id)
         .ok_or_else(|| MediaError::invalid_media("expected media track is missing"))?;
-    let codec = codec_name(track.media_type().map_err(|_| {
-        MediaError::new(MediaErrorKind::UnsupportedCodec, "unsupported MP4 codec")
-    })?)?;
+    let codec = match track.media_type() {
+        Ok(media_type) => codec_name(media_type)?,
+        Err(_)
+            if expected_kind == ExpectedMediaKind::Audio && flac_stream_info(path)?.is_some() =>
+        {
+            "flac".to_string()
+        }
+        Err(_) => {
+            return Err(MediaError::new(
+                MediaErrorKind::UnsupportedCodec,
+                "unsupported MP4 codec",
+            ));
+        }
+    };
     let timescale = track.timescale();
     if timescale == 0 {
         return Err(MediaError::invalid_media(
@@ -853,6 +867,178 @@ fn top_level_boxes(path: &Path) -> Result<Vec<TopLevelBox>, MediaError> {
     Ok(boxes)
 }
 
+fn flac_stream_info(path: &Path) -> Result<Option<[u8; 34]>, MediaError> {
+    let moov = top_level_boxes(path)?
+        .into_iter()
+        .find(|entry| entry.kind == *b"moov")
+        .ok_or_else(|| MediaError::invalid_media("MP4 moov box is missing"))?;
+    let mut file = File::open(path).map_err(|_| MediaError::io("failed to open MP4"))?;
+    let mut bytes = vec![
+        0_u8;
+        usize::try_from(moov.size)
+            .map_err(|_| MediaError::invalid_media("MP4 moov box is too large"))?
+    ];
+    file.seek(SeekFrom::Start(moov.start))
+        .and_then(|_| file.read_exact(&mut bytes))
+        .map_err(|_| MediaError::io("failed to read MP4 moov box"))?;
+
+    let children = child_boxes(&bytes, moov.header_size as usize, bytes.len())?;
+    for trak in children.into_iter().filter(|entry| entry.kind == *b"trak") {
+        let trak_children = child_boxes(
+            &bytes,
+            (trak.start + trak.header_size) as usize,
+            (trak.start + trak.size) as usize,
+        )?;
+        let Some(mdia) = trak_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"mdia")
+        else {
+            continue;
+        };
+        let mdia_children = child_boxes(
+            &bytes,
+            (mdia.start + mdia.header_size) as usize,
+            (mdia.start + mdia.size) as usize,
+        )?;
+        let Some(minf) = mdia_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"minf")
+        else {
+            continue;
+        };
+        let minf_children = child_boxes(
+            &bytes,
+            (minf.start + minf.header_size) as usize,
+            (minf.start + minf.size) as usize,
+        )?;
+        let Some(stbl) = minf_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"stbl")
+        else {
+            continue;
+        };
+        let stbl_children = child_boxes(
+            &bytes,
+            (stbl.start + stbl.header_size) as usize,
+            (stbl.start + stbl.size) as usize,
+        )?;
+        let Some(stsd) = stbl_children
+            .into_iter()
+            .find(|entry| entry.kind == *b"stsd")
+        else {
+            continue;
+        };
+        let entries_start = stsd.start + stsd.header_size + 8;
+        if entries_start > stsd.start + stsd.size {
+            return Err(MediaError::invalid_media("truncated MP4 stsd box"));
+        }
+        let entries = child_boxes(
+            &bytes,
+            entries_start as usize,
+            (stsd.start + stsd.size) as usize,
+        )?;
+        for entry in entries.into_iter().filter(|entry| entry.kind == *b"fLaC") {
+            let config_start = entry.start + entry.header_size + 28;
+            if config_start > entry.start + entry.size {
+                return Err(MediaError::invalid_media("truncated MP4 FLAC sample entry"));
+            }
+            let configs = child_boxes(
+                &bytes,
+                config_start as usize,
+                (entry.start + entry.size) as usize,
+            )?;
+            if let Some(config) = configs.into_iter().find(|config| config.kind == *b"dfLa") {
+                let payload = usize::try_from(config.start + config.header_size + 4)
+                    .map_err(|_| MediaError::invalid_media("MP4 FLAC config is too large"))?;
+                let config_end = usize::try_from(config.start + config.size)
+                    .map_err(|_| MediaError::invalid_media("MP4 FLAC config is too large"))?;
+                if payload + 4 > config_end || config_end > bytes.len() {
+                    return Err(MediaError::invalid_media("truncated MP4 FLAC config"));
+                }
+                let metadata_type = bytes[payload] & 0x7f;
+                let metadata_size = ((bytes[payload + 1] as usize) << 16)
+                    | ((bytes[payload + 2] as usize) << 8)
+                    | bytes[payload + 3] as usize;
+                if metadata_type != 0 || metadata_size != 34 || payload + 4 + 34 > config_end {
+                    return Err(MediaError::invalid_media("MP4 FLAC STREAMINFO is invalid"));
+                }
+                let mut stream_info = [0_u8; 34];
+                stream_info.copy_from_slice(&bytes[payload + 4..payload + 4 + 34]);
+                return Ok(Some(stream_info));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn normalize_flac_mp4(
+    source: &Path,
+    destination: &Path,
+    source_probe: MediaProbe,
+) -> Result<MediaNormalizeResult, MediaError> {
+    let stream_info = flac_stream_info(source)?
+        .ok_or_else(|| MediaError::invalid_media("MP4 FLAC STREAMINFO is missing"))?;
+    let mut reader = open_reader(source)?;
+    let track_id = selected_track_id(&reader, ExpectedMediaKind::Audio)?;
+    let samples = source_samples(source, &mut reader, track_id)?;
+    let raw_path = temporary_path(destination, "flac");
+    let result = (|| {
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&raw_path)
+            .map_err(|_| MediaError::io("failed to create normalized FLAC"))?;
+        output
+            .write_all(b"fLaC")
+            .and_then(|_| output.write_all(&[0x80, 0x00, 0x00, 0x22]))
+            .and_then(|_| output.write_all(&stream_info))
+            .map_err(|_| MediaError::io("failed to write FLAC STREAMINFO"))?;
+        let mut written_sample_bytes = 0_u64;
+        for sample in &samples {
+            output
+                .write_all(&sample.bytes)
+                .map_err(|_| MediaError::io("failed to write FLAC frame"))?;
+            written_sample_bytes = written_sample_bytes.saturating_add(sample.bytes.len() as u64);
+        }
+        output
+            .sync_all()
+            .map_err(|_| MediaError::io("failed to flush normalized FLAC"))?;
+        if written_sample_bytes != source_probe.sample_bytes {
+            return Err(MediaError::invalid_media(
+                "normalized FLAC sample inventory does not match its source",
+            ));
+        }
+        let file_bytes = output
+            .metadata()
+            .map_err(|_| MediaError::io("failed to stat normalized FLAC"))?
+            .len();
+        if file_bytes != 42_u64.saturating_add(written_sample_bytes) {
+            return Err(MediaError::invalid_media("normalized FLAC size is invalid"));
+        }
+        drop(output);
+        publish_no_replace(&raw_path, destination)?;
+        Ok(MediaNormalizeResult {
+            source: source_probe.clone(),
+            output: MediaProbe {
+                path: destination.to_path_buf(),
+                kind: ExpectedMediaKind::Audio,
+                codec: "flac".to_string(),
+                duration_seconds: source_probe.duration_seconds,
+                sample_count: source_probe.sample_count,
+                sample_bytes: written_sample_bytes,
+                file_bytes,
+                fragmented: false,
+                fast_start: true,
+            },
+        })
+    })();
+    let _ = fs::remove_file(&raw_path);
+    if result.is_err() {
+        let _ = fs::remove_file(destination);
+    }
+    result
+}
+
 fn has_leading_moov(path: &Path) -> Result<bool, MediaError> {
     let boxes = top_level_boxes(path)?;
     let moov = boxes.iter().position(|entry| entry.kind == *b"moov");
@@ -1112,6 +1298,67 @@ mod tests {
         writer.into_writer().sync_all().expect("flush fixture");
     }
 
+    fn write_flac_mp4_fixture(path: &Path) {
+        let raw_path = path.with_file_name("source-before-faststart.m4a");
+        write_aac_fixture(&raw_path);
+        normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source: raw_path.clone(),
+            destination: path.to_path_buf(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect("normalize fixture before FLAC conversion");
+        fs::remove_file(raw_path).expect("remove raw fixture");
+        let mut bytes = fs::read(path).expect("read fixture");
+        let sample_entry = bytes
+            .windows(4)
+            .position(|value| value == b"mp4a")
+            .expect("mp4a sample entry");
+        bytes[sample_entry..sample_entry + 4].copy_from_slice(b"fLaC");
+        let codec_config = bytes[sample_entry + 4..]
+            .windows(4)
+            .position(|value| value == b"esds")
+            .map(|position| sample_entry + 4 + position)
+            .expect("esds codec configuration");
+        bytes[codec_config..codec_config + 4].copy_from_slice(b"dfLa");
+        let config_start = codec_config - 4;
+        let config_size =
+            u32::from_be_bytes(bytes[config_start..config_start + 4].try_into().unwrap()) as usize;
+        let stream_info = [
+            0x12, 0x00, 0x12, 0x00, 0x00, 0x00, 0x12, 0x00, 0x5f, 0x48, 0x0b, 0xb8, 0x03, 0x70,
+            0x00, 0xb3, 0x3f, 0x80, 0x43, 0x56, 0x86, 0x59, 0xbc, 0x22, 0xb1, 0x90, 0x1e, 0x4f,
+            0xd9, 0x4c, 0xe4, 0x28, 0x13, 0xc7,
+        ];
+        let mut config_payload = vec![0_u8; 4];
+        config_payload.extend_from_slice(&[0x80, 0x00, 0x00, 0x22]);
+        config_payload.extend_from_slice(&stream_info);
+        bytes.splice(config_start + 8..config_start + config_size, config_payload);
+        let delta = 50_u32 - config_size as u32;
+        bytes[config_start..config_start + 4].copy_from_slice(&50_u32.to_be_bytes());
+        for kind in [
+            b"fLaC", b"stsd", b"stbl", b"minf", b"mdia", b"trak", b"moov",
+        ] {
+            let position = bytes
+                .windows(4)
+                .position(|value| value == kind)
+                .expect("fixture parent box");
+            let size = u32::from_be_bytes(bytes[position - 4..position].try_into().unwrap());
+            bytes[position - 4..position].copy_from_slice(&(size + delta).to_be_bytes());
+        }
+        let stco = bytes
+            .windows(4)
+            .position(|value| value == b"stco")
+            .expect("stco box");
+        let entry_count =
+            u32::from_be_bytes(bytes[stco + 8..stco + 12].try_into().unwrap()) as usize;
+        for index in 0..entry_count {
+            let offset = stco + 12 + index * 4;
+            let value = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            bytes[offset..offset + 4].copy_from_slice(&(value + delta).to_be_bytes());
+        }
+        fs::write(path, bytes).expect("write FLAC fixture");
+    }
+
     #[test]
     fn normalizes_and_validates_a_single_track_mp4() {
         let root = test_dir("normalize");
@@ -1132,6 +1379,32 @@ mod tests {
         assert_eq!(result.output.sample_bytes, 64);
         assert!(result.output.fast_start);
         assert!(destination.is_file());
+    }
+
+    #[test]
+    fn normalizes_fast_start_flac_mp4_without_transcoding() {
+        let root = test_dir("normalize-flac");
+        let source = root.join("source.m4a");
+        let destination = root.join("output.flac");
+        write_flac_mp4_fixture(&source);
+
+        let result = normalize_media(&MediaNormalizeRequest {
+            schema_version: 1,
+            source,
+            destination: destination.clone(),
+            expected_kind: ExpectedMediaKind::Audio,
+        })
+        .expect("normalize FLAC media");
+
+        assert_eq!(result.source.codec, "flac");
+        assert_eq!(result.output.codec, "flac");
+        assert_eq!(result.source.sample_count, result.output.sample_count);
+        assert_eq!(result.source.sample_bytes, result.output.sample_bytes);
+        assert!(result.output.fast_start);
+        assert!(!result.output.fragmented);
+        let output = fs::read(destination).expect("read output");
+        assert_eq!(&output[..4], b"fLaC");
+        assert_eq!(output.len() as u64, result.output.sample_bytes + 42);
     }
 
     #[test]
