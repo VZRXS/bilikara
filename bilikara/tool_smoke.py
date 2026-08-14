@@ -5,11 +5,34 @@ from pathlib import Path
 
 
 def packaged_tool_smoke_json(tool: str) -> str:
-    from . import rust_runtime
-
     normalized = str(tool or "").strip().lower()
-    if normalized != "native":
+    if normalized not in {"native", "bbdown"}:
         raise ValueError(f"unsupported packaged tool smoke target: {tool}")
+
+    if normalized == "bbdown":
+        from .cache import CacheManager
+        from .config import BACKUP_FILE, CACHE_DIR, PLAYED_SESSION_DIR, STATE_FILE
+        from .store import PlaylistStore
+
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        store = PlaylistStore(STATE_FILE, BACKUP_FILE, PLAYED_SESSION_DIR)
+        manager = CacheManager(store, max_cache_items=0)
+        try:
+            path = manager._ensure_bbdown()  # noqa: SLF001
+            version = manager._read_bbdown_version(path)  # noqa: SLF001
+            if not version:
+                raise RuntimeError(f"bbdown runtime version validation failed: {path}")
+            payload = {
+                "event": "bilikara.tool_smoke",
+                "tool": normalized,
+                "path": str(Path(path).resolve()),
+                "version": version,
+            }
+            return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        finally:
+            manager.shutdown()
+
+    from . import rust_runtime
 
     status = rust_runtime.runtime_status()
     capabilities = status.get("capabilities") or {}
