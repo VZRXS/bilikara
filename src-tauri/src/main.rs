@@ -10,7 +10,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
@@ -35,6 +35,7 @@ const MAX_BACKEND_OUTPUT_CHARS: usize = 2_048;
 const MAX_BACKEND_TAIL_LINES: usize = 40;
 const MAX_DESKTOP_STARTUP_LOG_BYTES: u64 = 512 * 1024;
 const BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(90);
+const ACTIVE_BACKEND_DOWNLOAD_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 const DESKTOP_STARTUP_LOG_NAME: &str = "desktop-startup.log";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -137,6 +138,24 @@ struct BackendProcess {
     child: Arc<Mutex<Option<Child>>>,
     base_url: Arc<Mutex<Option<String>>>,
     shutdown_token: String,
+    active_downloads: Arc<AtomicUsize>,
+}
+
+struct ActiveBackendDownloadGuard {
+    active_downloads: Arc<AtomicUsize>,
+}
+
+impl ActiveBackendDownloadGuard {
+    fn acquire(active_downloads: Arc<AtomicUsize>) -> Self {
+        active_downloads.fetch_add(1, Ordering::AcqRel);
+        Self { active_downloads }
+    }
+}
+
+impl Drop for ActiveBackendDownloadGuard {
+    fn drop(&mut self) {
+        self.active_downloads.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -1110,9 +1129,14 @@ async fn save_backend_download(
 
     let endpoint = validated.path.clone();
     let worker_endpoint = endpoint.clone();
+    // Acquire before scheduling the worker, then move the lease into it. This
+    // keeps WindowEvent::Destroyed from shutting down Python before the export
+    // request has reached its handler, even if the invoke future is cancelled.
+    let active_download_guard = ActiveBackendDownloadGuard::acquire(state.active_downloads.clone());
 
     // Stage 3 & 4: request_backend and validate_response
     let fetch_res = tauri::async_runtime::spawn_blocking(move || {
+        let _active_download_guard = active_download_guard;
         let mut worker_timings = Vec::new();
         // Stage 3: request_backend
         let t_req = Instant::now();
@@ -1478,6 +1502,16 @@ fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
     }
 }
 
+fn wait_for_active_backend_downloads(active_downloads: &AtomicUsize, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while active_downloads.load(Ordering::Acquire) > 0 {
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn sanitized_diagnostic_line(line: &str) -> String {
     let mut sanitized = line
         .chars()
@@ -1812,6 +1846,7 @@ fn main() {
                 child: child_arc.clone(),
                 base_url: base_url.clone(),
                 shutdown_token: shutdown_token.clone(),
+                active_downloads: Arc::new(AtomicUsize::new(0)),
             });
 
             if let Some(stderr) = stderr {
@@ -2043,6 +2078,10 @@ fn main() {
             if let tauri::WindowEvent::Destroyed = event
                 && let Some(state) = window.try_state::<BackendProcess>()
             {
+                wait_for_active_backend_downloads(
+                    &state.active_downloads,
+                    ACTIVE_BACKEND_DOWNLOAD_SHUTDOWN_GRACE,
+                );
                 let shutdown_url = state
                     .base_url
                     .lock()
@@ -2660,6 +2699,46 @@ mod tests {
         let error = request_backend_download(&format!("http://127.0.0.1:{port}"), &request)
             .expect_err("closed port must fail");
         assert!(error.starts_with("无法连接本机后端："));
+    }
+
+    #[test]
+    fn window_shutdown_waits_for_the_in_flight_download_transport() {
+        let active_downloads = Arc::new(AtomicUsize::new(0));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let downloads_for_worker = active_downloads.clone();
+        let worker = thread::spawn(move || {
+            let _guard = ActiveBackendDownloadGuard::acquire(downloads_for_worker);
+            started_tx.send(()).expect("notify worker start");
+            release_rx.recv().expect("wait for worker release");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker must hold the download lease");
+
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let downloads_for_waiter = active_downloads.clone();
+        let waiter = thread::spawn(move || {
+            wait_for_active_backend_downloads(&downloads_for_waiter, Duration::from_secs(1));
+            finished_tx.send(()).expect("notify waiter completion");
+        });
+        assert!(finished_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        release_tx.send(()).expect("release worker");
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter must proceed after the transport completes");
+        worker.join().expect("join worker");
+        waiter.join().expect("join waiter");
+    }
+
+    #[test]
+    fn window_shutdown_download_wait_is_bounded() {
+        let active_downloads = AtomicUsize::new(1);
+        let started = Instant::now();
+
+        wait_for_active_backend_downloads(&active_downloads, Duration::from_millis(40));
+
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
