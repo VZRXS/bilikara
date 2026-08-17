@@ -1648,6 +1648,10 @@ fn write_and_flush_ready_marker<W: io::Write>(mut writer: W, base_url: &str) -> 
     writer.flush()
 }
 
+fn forward_backend_stdout_line<W: Write>(mut writer: W, line: &str) {
+    let _ = writeln!(writer, "Backend stdout: {line}");
+}
+
 fn drain_backend_stdout<R, FReady, FOutput>(
     reader: R,
     mut on_ready: FReady,
@@ -1964,7 +1968,7 @@ fn main() {
                     },
                     |line| {
                         push_backend_tail(&stdout_tail_for_reader, line.clone());
-                        println!("Backend stdout: {line}");
+                        forward_backend_stdout_line(io::stdout(), &line);
                     },
                 );
                 if let Err(error) = result {
@@ -2811,6 +2815,40 @@ mod tests {
             output[3].contains("9090"),
             "duplicate readiness is still drained"
         );
+    }
+
+    #[test]
+    fn stdout_reader_keeps_draining_after_desktop_stdout_breaks() {
+        struct BrokenPipeWriter {
+            writes: usize,
+        }
+
+        impl Write for BrokenPipeWriter {
+            fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = BrokenPipeWriter { writes: 0 };
+        let mut drained = Vec::new();
+
+        drain_backend_stdout(
+            Cursor::new(b"first\nsecond\n"),
+            |_| panic!("unexpected ready marker"),
+            |line| {
+                forward_backend_stdout_line(&mut writer, &line);
+                drained.push(line);
+            },
+        )
+        .expect("backend stdout reaches EOF");
+
+        assert_eq!(writer.writes, 2);
+        assert_eq!(drained, ["first", "second"]);
     }
 
     #[test]
