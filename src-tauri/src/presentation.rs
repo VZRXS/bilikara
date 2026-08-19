@@ -1062,7 +1062,7 @@ fn native_metadata_for_monitors(
     {
         let _ = main_window;
         let metadata = windows_display_metadata()?;
-        return Ok(monitors
+        Ok(monitors
             .iter()
             .map(|monitor| {
                 let key = monitor
@@ -1072,15 +1072,15 @@ fn native_metadata_for_monitors(
                 let entries = metadata.get(&key)?;
                 entries.first().cloned()
             })
-            .collect());
+            .collect())
     }
     #[cfg(target_os = "macos")]
     {
         let screen_details = macos_screen_details(main_window.app_handle())?;
-        return Ok(monitors
+        Ok(monitors
             .iter()
             .map(|monitor| macos_metadata_for_monitor(monitor, &screen_details).ok())
-            .collect());
+            .collect())
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -1125,11 +1125,11 @@ fn candidate_identity(
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let geometry = MonitorGeometry::from_monitor(monitor);
-        return (
+        (
             format!("unavailable:{}", geometry.identity_suffix()),
             platform_name,
             false,
-        );
+        )
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
