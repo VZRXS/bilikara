@@ -26,6 +26,9 @@ const fullscreenRequestToastMs = 4200;
 const fullscreenRequestToastFadeMs = 500;
 const localAdvanceOverlayFadeMs = 500;
 const localAdvanceOverlayMaxRows = 5;
+const stageBroadcastIntervalMs = 250;
+const stageOfflineTimeoutMs = 2500;
+const stageTopologyPollIntervalMs = 2000;
 const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
@@ -146,6 +149,7 @@ const state = {
   cacheSettingsOpen: false,
   cacheAdvancedOpen: false,
   displaySettingsOpen: false,
+  stageSettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
   diagnosticsBusy: false,
@@ -289,6 +293,29 @@ const state = {
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
   fullscreenRequestToastHideTimer: null,
+  stageSenderId: `master-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+  stageSequence: 0,
+  stageChannel: null,
+  stageFallbackWindow: null,
+  stageEnabled: false,
+  stageConnected: false,
+  stageLastSeenAt: 0,
+  stageLastDriftSeconds: 0,
+  stageSceneKey: "",
+  stageSceneRevision: 0,
+  stageBroadcastTimer: null,
+  stageStatusTimer: null,
+  stageTopologyTimer: null,
+  stageStorageListenerAttached: false,
+  stageTopologyBusy: false,
+  stageTopologySignature: "",
+  stageDisplayInfo: null,
+  stageSelectedDisplayId: "",
+  stageActiveDisplayId: "",
+  stageSelectionInitialized: false,
+  stageSelectionTouched: false,
+  stageControlBusy: false,
+  stageOutputRenderSignature: "",
   layoutMode: "full",
   language: "zh",
   translations: {},
@@ -391,6 +418,16 @@ const elements = {
   displaySettingsToggle: document.getElementById("display-settings-toggle"),
   displaySettingsPanel: document.getElementById("display-settings-panel"),
   displayLayoutSummary: document.getElementById("display-layout-summary"),
+  stageSettings: document.getElementById("stage-settings"),
+  stageSettingsToggle: document.getElementById("stage-settings-toggle"),
+  stageSettingsPanel: document.getElementById("stage-settings-panel"),
+  stageOutputButton: document.getElementById("stage-output-button"),
+  stageOutputStatus: document.getElementById("stage-output-status"),
+  stageOutputSummary: document.getElementById("stage-output-summary"),
+  stageOutputMeta: document.getElementById("stage-output-meta"),
+  stageStateDot: document.getElementById("stage-state-dot"),
+  stageDisplayList: document.getElementById("stage-display-list"),
+  stageRefreshButton: document.getElementById("stage-refresh-button"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
   themeSwitch: document.getElementById("theme-switch"),
@@ -1170,6 +1207,549 @@ async function setTauriWindowFullscreen(enabled) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function stageSyncApi() {
+  return window.BilikaraStageSync || null;
+}
+
+function stageRendererApi() {
+  return window.BilikaraStageRenderer || null;
+}
+
+function sendStageEnvelope(type, payload = {}) {
+  const sync = stageSyncApi();
+  if (!sync) {
+    return;
+  }
+  const envelope = sync.makeEnvelope(type, payload, {
+    senderId: state.stageSenderId,
+    sequence: ++state.stageSequence,
+    sentAt: Date.now(),
+  });
+  state.stageChannel?.postMessage(envelope);
+  try {
+    localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
+    localStorage.removeItem(sync.storageKey);
+  } catch {
+    // BroadcastChannel is primary; storage events only support older webviews.
+  }
+}
+
+function stageOverlayModel() {
+  const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
+  const primaryItem = state.localAdvanceOverlayPrimaryItem || playlist[0] || null;
+  const followItems = Array.isArray(state.localAdvanceOverlayFollowItems)
+    ? state.localAdvanceOverlayFollowItems
+    : playlist.slice(1);
+  const visible = state.localAdvanceDelayDeadline > 0;
+  const totalCount = Number.isFinite(state.localAdvanceOverlayTotalCount)
+    ? Number(state.localAdvanceOverlayTotalCount)
+    : (state.data?.current_item ? 1 : 0) + playlist.length;
+  const visibleRows = followItems.slice(0, localAdvanceOverlayMaxRows);
+  const remainingCount = Math.max(0, followItems.length - visibleRows.length);
+  return {
+    visible,
+    heading: t("player.upNext"),
+    countdownLabel: t("player.advanceCountdown"),
+    deadline: Number(state.localAdvanceDelayDeadline || 0),
+    durationMs: Number(state.localAdvanceOverlayDurationMs || 0),
+    title: delayOverlayTitleForItem(primaryItem, t("player.prepareNext")),
+    requester: primaryItem?.requester_name || "—",
+    duration: formatDurationSeconds(durationSecondsForItem(primaryItem)),
+    queueHeading: t("player.followingQueue"),
+    rows: visibleRows.map((item) => ({
+      title: delayOverlayTitleForItem(item),
+      requester: item?.requester_name || "—",
+      duration: formatDurationSeconds(durationSecondsForItem(item)),
+    })),
+    emptyText: visibleRows.length ? "" : t("player.followingQueueEmpty"),
+    remainingText: remainingCount > 0 ? t("player.remainingQueue", { count: remainingCount }) : "",
+    totalText: t("player.totalSongs", { count: totalCount }),
+  };
+}
+
+function stageSceneModel() {
+  const currentItem = state.data?.current_item || null;
+  const itemId = String(currentItem?.id || "");
+  const videoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
+  const sceneKey = `${itemId}|${videoUrl}`;
+  if (sceneKey !== state.stageSceneKey) {
+    state.stageSceneKey = sceneKey;
+    state.stageSceneRevision += 1;
+  }
+  return {
+    revision: state.stageSceneRevision,
+    itemId,
+    title: String(currentItem?.display_title || currentItem?.title || ""),
+    videoUrl,
+    theme: state.theme,
+    overlay: stageOverlayModel(),
+  };
+}
+
+function broadcastStageState() {
+  if (!state.stageEnabled) {
+    return;
+  }
+  const video = activePrimaryVideoElement();
+  const scene = stageSceneModel();
+  sendStageEnvelope("master-state", {
+    scene,
+    clock: {
+      itemId: scene.itemId,
+      mediaTime: Number(video?.currentTime || 0),
+      sampledAt: Date.now(),
+      paused: !video || Boolean(video.paused),
+      playbackRate: Number(video?.playbackRate || 1),
+      seeking: Boolean(video?.seeking || state.localSeekSettling),
+    },
+  });
+}
+
+function normalizeStageDisplayInfo(candidate) {
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+  const displays = Array.isArray(candidate.displays)
+    ? candidate.displays
+      .filter((display) => display && typeof display === "object")
+      .map((display, index) => ({
+        id: String(display.id || `display-${index + 1}`),
+        name: String(display.name || t("display.unnamedDisplay", { number: index + 1 })),
+        width: Math.max(0, Number(display.width || 0)),
+        height: Math.max(0, Number(display.height || 0)),
+        controller: Boolean(display.controller),
+        selectable: Boolean(display.selectable),
+      }))
+    : [];
+  return {
+    monitorCount: Math.max(displays.length, Number(candidate.monitorCount || 0)),
+    displays,
+    recommendedDisplayId: String(candidate.recommendedDisplayId || ""),
+    stageActive: Boolean(candidate.stageActive),
+    activeDisplayId: String(candidate.activeDisplayId || ""),
+  };
+}
+
+function applyStageDisplayInfo(candidate) {
+  const info = normalizeStageDisplayInfo(candidate);
+  if (!info) {
+    return null;
+  }
+  state.stageDisplayInfo = info;
+  state.stageTopologySignature = JSON.stringify(info.displays);
+  const selectedStillAvailable = info.displays.some(
+    (display) => display.selectable && display.id === state.stageSelectedDisplayId,
+  );
+  if (!state.stageSelectionInitialized) {
+    state.stageSelectedDisplayId = info.recommendedDisplayId || "";
+    state.stageSelectionInitialized = true;
+  } else if (!state.stageEnabled && state.stageSelectedDisplayId && !selectedStillAvailable) {
+    state.stageSelectedDisplayId = info.recommendedDisplayId || "";
+    state.stageSelectionTouched = false;
+  } else if (
+    !state.stageEnabled
+    && !state.stageSelectionTouched
+    && !state.stageSelectedDisplayId
+    && info.recommendedDisplayId
+  ) {
+    state.stageSelectedDisplayId = info.recommendedDisplayId;
+  }
+  if (info.stageActive) {
+    state.stageEnabled = true;
+    state.stageActiveDisplayId = info.activeDisplayId;
+  } else if (!state.stageControlBusy) {
+    state.stageEnabled = false;
+    state.stageConnected = false;
+    state.stageActiveDisplayId = "";
+  }
+  renderStageOutputControl();
+  return info;
+}
+
+async function refreshStageDisplayInfo() {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function" || state.stageTopologyBusy) {
+    return;
+  }
+  state.stageTopologyBusy = true;
+  renderStageOutputControl();
+  try {
+    const info = applyStageDisplayInfo(await invoke("get_stage_display_info"));
+    const activeTargetMissing = Boolean(
+      info
+      && state.stageEnabled
+      && state.stageActiveDisplayId
+      && !info.displays.some(
+        (display) => display.selectable && display.id === state.stageActiveDisplayId,
+      ),
+    );
+    if (activeTargetMissing && !state.stageControlBusy) {
+      state.stageControlBusy = true;
+      try {
+        state.stageSelectedDisplayId = "";
+        state.stageSelectionTouched = true;
+        state.stageActiveDisplayId = "";
+        applyStageDisplayInfo(await invoke("open_stage_window", { displayId: null }));
+        broadcastStageState();
+        setAppMessage(t("display.stageFellBackWindow"));
+      } finally {
+        state.stageControlBusy = false;
+      }
+    }
+  } catch {
+    // Display polling is advisory; opening the stage still performs a fresh check.
+  } finally {
+    state.stageTopologyBusy = false;
+    renderStageOutputControl();
+  }
+}
+
+function stageDisplayById(displayId) {
+  return state.stageDisplayInfo?.displays?.find((display) => display.id === displayId) || null;
+}
+
+const stageDeviceIconShapes = Object.freeze({
+  window: [
+    ["rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }],
+    ["path", { d: "M3 8h18" }],
+    ["path", { d: "M6.5 6h.01M9.5 6h.01" }],
+  ],
+  monitor: [
+    ["rect", { x: "2.5", y: "3.5", width: "19", height: "14", rx: "2" }],
+    ["path", { d: "M8 21h8M12 17.5V21" }],
+  ],
+});
+
+function createStageDeviceIcon(iconType) {
+  const iconElement = document.createElement("span");
+  iconElement.className = "stage-device-icon";
+  iconElement.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const shapes = stageDeviceIconShapes[iconType] || stageDeviceIconShapes.monitor;
+  for (const [tagName, attributes] of shapes) {
+    const shape = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+    for (const [name, value] of Object.entries(attributes)) {
+      shape.setAttribute(name, value);
+    }
+    svg.append(shape);
+  }
+  iconElement.append(svg);
+  return iconElement;
+}
+
+function createStageDisplayOption({ id, name, detail, iconType, selectable, controller = false }) {
+  const selected = id === state.stageSelectedDisplayId;
+  const active = state.stageEnabled && id === state.stageActiveDisplayId;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `stage-display-option${selected ? " is-selected" : ""}`;
+  button.dataset.stageDisplayId = id;
+  button.disabled = state.stageControlBusy || !selectable || (state.stageEnabled && active);
+  button.setAttribute("aria-pressed", String(selected));
+
+  const iconElement = createStageDeviceIcon(iconType);
+  const copy = document.createElement("span");
+  copy.className = "stage-display-copy";
+  const nameElement = document.createElement("span");
+  nameElement.className = "stage-display-name";
+  nameElement.textContent = name;
+  const detailElement = document.createElement("span");
+  detailElement.className = "stage-display-detail";
+  detailElement.textContent = detail;
+  copy.append(nameElement, detailElement);
+  const status = document.createElement("span");
+  status.className = "stage-display-state";
+  status.textContent = active
+    ? t("display.displaying")
+    : selected
+      ? t("display.selected")
+      : controller
+        ? t("display.controllerDisplay")
+        : "";
+  button.append(iconElement, copy, status);
+  return button;
+}
+
+function renderStageDisplayList() {
+  const list = elements.stageDisplayList;
+  if (!list) {
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  fragment.append(createStageDisplayOption({
+    id: "",
+    name: t("display.windowMode"),
+    detail: t("display.windowModeDetail"),
+    iconType: "window",
+    selectable: true,
+  }));
+  for (const display of state.stageDisplayInfo?.displays || []) {
+    fragment.append(createStageDisplayOption({
+      id: display.id,
+      name: display.name,
+      detail: display.width && display.height
+        ? `${display.width} × ${display.height}`
+        : t("display.resolutionUnknown"),
+      iconType: "monitor",
+      selectable: display.selectable,
+      controller: display.controller,
+    }));
+  }
+  list.replaceChildren(fragment);
+}
+
+function renderStageOutputControl() {
+  const button = elements.stageOutputButton;
+  const status = elements.stageOutputStatus;
+  if (!button || !status) {
+    return;
+  }
+  const driftMs = Math.round(Math.abs(Number(state.stageLastDriftSeconds || 0)) * 1000);
+  const displayInfo = state.stageDisplayInfo;
+  const selectedDisplay = stageDisplayById(state.stageSelectedDisplayId);
+  const activeDisplay = stageDisplayById(state.stageActiveDisplayId);
+  const monitorName = activeDisplay?.name || selectedDisplay?.name || t("display.secondaryDisplay");
+  const statusText = !state.stageEnabled
+    ? state.stageSelectedDisplayId
+      ? t("display.stageTargetSelected", { monitor: monitorName })
+      : t("display.stageWindowSelected")
+    : state.stageConnected
+      ? state.stageActiveDisplayId
+        ? t("display.stageOutputConnectedSecondary", { monitor: monitorName, drift: driftMs })
+        : t("display.stageOutputConnectedWindowed", { drift: driftMs })
+      : t("display.stageOutputConnecting");
+  const summaryText = state.stageEnabled
+    ? state.stageActiveDisplayId
+      ? t("display.dualOutputOn")
+      : t("display.windowOutputOn")
+    : t("display.outputOff");
+  const metaText = displayInfo
+    ? t("display.displayCount", { count: displayInfo.monitorCount })
+    : t("display.detectingDisplays");
+  const signature = JSON.stringify({
+    enabled: state.stageEnabled,
+    connected: state.stageConnected,
+    busy: state.stageControlBusy,
+    topologyBusy: state.stageTopologyBusy,
+    driftMs,
+    displayInfo,
+    selectedDisplayId: state.stageSelectedDisplayId,
+    activeDisplayId: state.stageActiveDisplayId,
+    statusText,
+    summaryText,
+    metaText,
+    language: state.language,
+  });
+  if (signature === state.stageOutputRenderSignature) {
+    return;
+  }
+  state.stageOutputRenderSignature = signature;
+  setTextContent(status, statusText);
+  setTextContent(elements.stageOutputSummary, summaryText);
+  setTextContent(elements.stageOutputMeta, metaText);
+  button.disabled = state.stageControlBusy;
+  setElementAttribute(button, "aria-checked", String(state.stageEnabled));
+  setElementAttribute(button, "aria-label", state.stageEnabled ? t("display.closeStage") : t("display.openStage"));
+  if (state.stageControlBusy) {
+    setElementAttribute(button, "aria-busy", "true");
+  } else {
+    button.removeAttribute("aria-busy");
+  }
+  setClassToggle(elements.stageSettings, "is-active", state.stageEnabled);
+  setClassToggle(elements.stageStateDot, "is-active", state.stageEnabled && state.stageConnected);
+  setClassToggle(elements.stageStateDot, "is-connecting", state.stageEnabled && !state.stageConnected);
+  setClassToggle(elements.stageRefreshButton, "is-loading", state.stageTopologyBusy);
+  if (elements.stageRefreshButton) {
+    elements.stageRefreshButton.disabled = state.stageTopologyBusy || state.stageControlBusy;
+  }
+  renderStageDisplayList();
+}
+
+function handleStageEnvelope(candidate) {
+  const sync = stageSyncApi();
+  if (!sync || Number(candidate?.protocol) !== sync.protocolVersion) {
+    return;
+  }
+  if (candidate.type !== "stage-ready" && candidate.type !== "stage-status") {
+    return;
+  }
+  if (candidate.payload?.closed) {
+    state.stageEnabled = false;
+    state.stageConnected = false;
+    state.stageActiveDisplayId = "";
+    state.stageLastSeenAt = Date.now();
+    renderStageOutputControl();
+    return;
+  }
+  state.stageEnabled = true;
+  state.stageConnected = candidate.payload?.ready !== false;
+  state.stageLastSeenAt = Date.now();
+  if (Number.isFinite(Number(candidate.payload?.driftSeconds))) {
+    state.stageLastDriftSeconds = Number(candidate.payload.driftSeconds);
+  }
+  renderStageOutputControl();
+  if (candidate.type === "stage-ready") {
+    broadcastStageState();
+  }
+}
+
+function handleStageStorageEvent(event) {
+  const sync = stageSyncApi();
+  if (!sync || event.key !== sync.storageKey || !event.newValue) {
+    return;
+  }
+  try {
+    handleStageEnvelope(JSON.parse(event.newValue));
+  } catch {
+    // Ignore malformed fallback messages.
+  }
+}
+
+function initializeStageController() {
+  const sync = stageSyncApi();
+  if (!sync || state.stageBroadcastTimer) {
+    return;
+  }
+  if (typeof BroadcastChannel === "function") {
+    state.stageChannel = new BroadcastChannel(sync.channelName);
+    state.stageChannel.addEventListener("message", (event) => handleStageEnvelope(event.data));
+  }
+  if (!state.stageStorageListenerAttached) {
+    window.addEventListener("storage", handleStageStorageEvent);
+    state.stageStorageListenerAttached = true;
+  }
+  state.stageBroadcastTimer = window.setInterval(broadcastStageState, stageBroadcastIntervalMs);
+  state.stageStatusTimer = window.setInterval(() => {
+    if (
+      state.stageConnected
+      && Date.now() - Number(state.stageLastSeenAt || 0) > stageOfflineTimeoutMs
+    ) {
+      state.stageConnected = false;
+      renderStageOutputControl();
+    }
+  }, 500);
+  refreshStageDisplayInfo().catch(() => {});
+  state.stageTopologyTimer = window.setInterval(() => {
+    refreshStageDisplayInfo().catch(() => {});
+  }, stageTopologyPollIntervalMs);
+  renderStageOutputControl();
+}
+
+async function openStageOutput() {
+  state.stageEnabled = true;
+  state.stageConnected = false;
+  state.stageActiveDisplayId = state.stageSelectedDisplayId;
+  renderStageOutputControl();
+  const invoke = tauriInvoke();
+  if (typeof invoke === "function") {
+    applyStageDisplayInfo(await invoke("open_stage_window", {
+      displayId: state.stageSelectedDisplayId || null,
+    }));
+  } else {
+    const popup = window.open(
+      "/stage.html",
+      "bilikara-stage",
+      "popup=yes,width=1280,height=720,menubar=no,toolbar=no,location=no,status=no",
+    );
+    if (!popup) {
+      throw new Error("popup blocked");
+    }
+    state.stageFallbackWindow = popup;
+  }
+  broadcastStageState();
+}
+
+async function closeStageOutput() {
+  sendStageEnvelope("stage-close");
+  const invoke = tauriInvoke();
+  if (typeof invoke === "function") {
+    await invoke("close_stage_window");
+  } else if (state.stageFallbackWindow && !state.stageFallbackWindow.closed) {
+    state.stageFallbackWindow.close();
+  }
+  state.stageFallbackWindow = null;
+  state.stageEnabled = false;
+  state.stageConnected = false;
+  state.stageActiveDisplayId = "";
+  state.stageLastSeenAt = 0;
+  state.stageLastDriftSeconds = 0;
+  renderStageOutputControl();
+}
+
+async function toggleStageOutput() {
+  if (state.stageControlBusy) {
+    return;
+  }
+  state.stageControlBusy = true;
+  renderStageOutputControl();
+  try {
+    if (state.stageEnabled) {
+      await closeStageOutput();
+    } else {
+      await openStageOutput();
+    }
+  } catch (error) {
+    state.stageEnabled = false;
+    state.stageConnected = false;
+    setAppMessage(t("display.stageOpenFailed", { message: error?.message || String(error) }), true);
+  } finally {
+    state.stageControlBusy = false;
+    renderStageOutputControl();
+  }
+}
+
+async function selectStageDisplayTarget(displayId) {
+  if (state.stageControlBusy) {
+    return;
+  }
+  const nextDisplayId = String(displayId || "");
+  const target = nextDisplayId ? stageDisplayById(nextDisplayId) : null;
+  if (nextDisplayId && !target?.selectable) {
+    return;
+  }
+  if (nextDisplayId === state.stageSelectedDisplayId && (
+    !state.stageEnabled || nextDisplayId === state.stageActiveDisplayId
+  )) {
+    return;
+  }
+  const previousDisplayId = state.stageSelectedDisplayId;
+  state.stageSelectedDisplayId = nextDisplayId;
+  state.stageSelectionTouched = true;
+  if (!state.stageEnabled) {
+    renderStageOutputControl();
+    return;
+  }
+
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    state.stageSelectedDisplayId = previousDisplayId;
+    renderStageOutputControl();
+    return;
+  }
+  state.stageControlBusy = true;
+  state.stageActiveDisplayId = nextDisplayId;
+  renderStageOutputControl();
+  try {
+    applyStageDisplayInfo(await invoke("open_stage_window", {
+      displayId: nextDisplayId || null,
+    }));
+    broadcastStageState();
+  } catch (error) {
+    state.stageSelectedDisplayId = previousDisplayId;
+    await refreshStageDisplayInfo().catch(() => {});
+    setAppMessage(t("display.stageOpenFailed", { message: error?.message || String(error) }), true);
+  } finally {
+    state.stageControlBusy = false;
+    renderStageOutputControl();
   }
 }
 
@@ -4740,6 +5320,7 @@ function render() {
   applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, playbackMode);
   renderPlayerFullscreenButton();
+  renderStageOutputControl();
   applyRemotePlayerControl(data.player_control_command, currentItem, playbackMode);
   renderQueueCurrent(currentItem);
   if (!state.dragItemId) {
@@ -5734,6 +6315,14 @@ function syncDisplayPanelVisibility() {
   setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
 }
 
+function syncStagePanelVisibility() {
+  const expanded = String(state.stageSettingsOpen);
+  if (elements.stageSettingsToggle?.getAttribute("aria-expanded") !== expanded) {
+    elements.stageSettingsToggle?.setAttribute("aria-expanded", expanded);
+  }
+  setClassToggle(elements.stageSettingsPanel, "hidden", !state.stageSettingsOpen);
+}
+
 function renderQueueCurrent(currentItem) {
   if (!currentItem) {
     const signature = `empty|${state.language}`;
@@ -6233,36 +6822,13 @@ function ensurePlayerDelayOverlay() {
   if (overlay) {
     return overlay;
   }
-
-  overlay = document.createElement("div");
-  overlay.className = "player-delay-overlay hidden";
-  overlay.setAttribute("aria-live", "polite");
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.innerHTML = `
-    <div class="player-delay-card">
-      <div class="player-delay-head">
-        <p class="player-delay-heading" data-i18n="player.upNext">即将播放</p>
-        <div class="player-delay-countdown" aria-label="切歌倒计时" data-i18n-aria-label="player.advanceCountdown">
-          <svg class="player-delay-count-ring" viewBox="0 0 44 44" aria-hidden="true">
-            <circle class="player-delay-count-track" cx="22" cy="22" r="19"></circle>
-            <circle class="player-delay-count-progress" cx="22" cy="22" r="19"></circle>
-          </svg>
-          <span class="player-delay-count-text"><span data-delay-count>0</span>s</span>
-        </div>
-      </div>
-      <div class="player-delay-now-row">
-        <span class="player-delay-play-icon" aria-hidden="true">\u25b6</span>
-        <p class="player-delay-song-title" data-delay-next-title>${htmlT("player.prepareNext")}</p>
-        <p class="player-delay-requester" data-delay-next-requester>${htmlT("request.requester")}</p>
-        <p class="player-delay-duration" data-delay-next-duration>${htmlT("player.duration")}</p>
-      </div>
-      <p class="player-delay-section-title" data-i18n="player.followingQueue">后续点歌列表</p>
-      <div class="player-delay-list" data-delay-list></div>
-      <p class="player-delay-total" data-delay-total>${htmlT("player.totalSongs", { count: 0 })}</p>
-    </div>
-  `;
-  applyStaticI18n(overlay);
-  elements.playerFrame.appendChild(overlay);
+  const renderer = stageRendererApi();
+  if (!renderer) {
+    return null;
+  }
+  overlay = renderer.ensureOverlay(elements.playerFrame, {
+    countdownLabel: t("player.advanceCountdown"),
+  });
   return overlay;
 }
 
@@ -6622,27 +7188,24 @@ function renderLocalAdvanceDelayQueue(overlay) {
 
 function updateLocalAdvanceDelayOverlay() {
   const overlay = ensurePlayerDelayOverlay();
+  if (!overlay) {
+    return;
+  }
   const now = Date.now();
   const countdownStartAt = Number(state.localAdvanceDelayStartAt || 0);
   const countdownNow = countdownStartAt > 0 ? Math.max(now, countdownStartAt) : now;
-  const totalDurationMs = Math.max(1000, Number(state.localAdvanceOverlayDurationMs || 0));
-  const remainingMs = Math.max(0, state.localAdvanceDelayDeadline - countdownNow);
-  const remainingSeconds = Math.max(
-    0,
-    Math.ceil(remainingMs / 1000),
-  );
-  const countNode = overlay.querySelector("[data-delay-count]");
-  setTextContent(countNode, String(remainingSeconds));
-  const progress = Math.max(0, Math.min(1, remainingMs / totalDurationMs));
-  overlay.style.setProperty("--delay-ring-offset", String(119.38 * (1 - progress)));
-  renderLocalAdvanceDelayQueue(overlay);
   const isFullscreen = isPlayerPanelFullscreen();
-  overlay.classList.toggle("is-compact", !isFullscreen);
+  stageRendererApi()?.renderOverlay(overlay, stageOverlayModel(), {
+    compact: !isFullscreen,
+    manageVisibility: false,
+    now: countdownNow,
+  });
   if (state.localAdvanceDelayDeadline > 0) {
     setPlayerDelayOverlayVisible(overlay);
   } else {
     hidePlayerDelayOverlay();
   }
+  broadcastStageState();
 }
 
 function hasLocalAdvanceDelayOverlay() {
@@ -8952,6 +9515,10 @@ function renderPlayer(currentItem, playbackMode) {
   createSplitPlaybackStartOverlay(video, audio);
   ensureTauriMediaSessionHandlers();
   syncTauriMediaSessionState(video, { forcePosition: true });
+  showMountedPlayerControls();
+  ["loadedmetadata", "play", "pause", "seeking", "seeked", "ratechange", "ended"].forEach((eventName) => {
+    video.addEventListener(eventName, broadcastStageState);
+  });
 
   const reportCurrentVideoStatus = () => {
     reportPlayerStatus(currentItem.id, video);
@@ -12411,7 +12978,9 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
   if (state.cacheSettingsOpen) {
     state.displaySettingsOpen = false;
+    state.stageSettingsOpen = false;
     syncDisplayPanelVisibility();
+    syncStagePanelVisibility();
   }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
 });
@@ -12425,9 +12994,35 @@ elements.displaySettingsToggle?.addEventListener("click", () => {
   state.displaySettingsOpen = !state.displaySettingsOpen;
   if (state.displaySettingsOpen) {
     state.cacheSettingsOpen = false;
+    state.stageSettingsOpen = false;
     syncCachePanelVisibility();
+    syncStagePanelVisibility();
   }
   syncDisplayPanelVisibility();
+});
+
+elements.stageSettingsToggle?.addEventListener("click", () => {
+  state.stageSettingsOpen = !state.stageSettingsOpen;
+  if (state.stageSettingsOpen) {
+    state.cacheSettingsOpen = false;
+    state.displaySettingsOpen = false;
+    syncCachePanelVisibility();
+    syncDisplayPanelVisibility();
+    refreshStageDisplayInfo().catch(() => {});
+  }
+  syncStagePanelVisibility();
+});
+
+elements.stageDisplayList?.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-stage-display-id]");
+  if (!option || option.disabled) {
+    return;
+  }
+  selectStageDisplayTarget(option.dataset.stageDisplayId || "").catch(() => {});
+});
+
+elements.stageRefreshButton?.addEventListener("click", () => {
+  refreshStageDisplayInfo().catch(() => {});
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {
@@ -12660,6 +13255,8 @@ elements.playerFullscreenButton?.addEventListener("click", async () => {
   await togglePlayerFullscreen();
   renderPlayerFullscreenButton();
 });
+
+elements.stageOutputButton?.addEventListener("click", toggleStageOutput);
 
 elements.playerFrame?.addEventListener("click", (event) => {
   if (event.target.closest("button, input, select, textarea, a")) {
@@ -13258,6 +13855,14 @@ document.addEventListener("click", (event) => {
     state.displaySettingsOpen = false;
     syncDisplayPanelVisibility();
   }
+
+  const stageClickPath = typeof event.composedPath === "function" ? event.composedPath() : [];
+  const clickedInsideStageSettings = stageClickPath.includes(elements.stageSettings)
+    || Boolean(event.target.closest("#stage-settings"));
+  if (state.stageSettingsOpen && !clickedInsideStageSettings) {
+    state.stageSettingsOpen = false;
+    syncStagePanelVisibility();
+  }
 });
 
 document.addEventListener("click", (event) => {
@@ -13306,6 +13911,10 @@ document.addEventListener("keydown", (event) => {
   if (state.displaySettingsOpen) {
     state.displaySettingsOpen = false;
     syncDisplayPanelVisibility();
+  }
+  if (state.stageSettingsOpen) {
+    state.stageSettingsOpen = false;
+    syncStagePanelVisibility();
   }
 });
 
@@ -14108,6 +14717,7 @@ async function startPolling() {
   hydrateLocalPreferences();
   await loadTranslations();
   initSearchDetailController();
+  initializeStageController();
   renderLayoutMode();
   try {
     await reportMediaCapabilities();
@@ -14135,10 +14745,26 @@ window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 window.addEventListener("pagehide", () => {
   teardownMountedPlayer();
   disposeSharedAudioContext();
+  if (state.stageBroadcastTimer) {
+    window.clearInterval(state.stageBroadcastTimer);
+    state.stageBroadcastTimer = null;
+  }
+  if (state.stageStatusTimer) {
+    window.clearInterval(state.stageStatusTimer);
+    state.stageStatusTimer = null;
+  }
+  if (state.stageTopologyTimer) {
+    window.clearInterval(state.stageTopologyTimer);
+    state.stageTopologyTimer = null;
+  }
+  state.stageChannel?.close();
+  state.stageChannel = null;
   disconnectClient();
 });
 window.addEventListener("beforeunload", disconnectClient);
 window.addEventListener("pageshow", () => {
+  initializeStageController();
+  showMountedPlayerControls();
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
 });
 
