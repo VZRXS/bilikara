@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable
 
-from . import rust_backend
+from . import rust_backend, rust_runtime
 from .config import (
     APP_HOME,
     APP_RELEASE_API,
@@ -1331,24 +1331,7 @@ exit "$STATUS"
 
 
 def _launch_restart_helper(command: list[str]) -> None:
-    popen_kwargs = {
-        "shell": False,
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-    }
-    if os.name == "nt":
-        creationflags = 0
-        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-            command, creationflags=creationflags, **popen_kwargs
-        )
-    else:
-        subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-            command, start_new_session=True, **popen_kwargs
-        )
+    rust_runtime.launch_update_helper(command)
 
 
 class AppUpdateManager:
@@ -1494,8 +1477,6 @@ class AppUpdateManager:
             update_dir.mkdir(parents=True, exist_ok=True)
             archive_path = update_dir / asset_name
             extract_dir = update_dir / "extracted"
-            if extract_dir.exists():
-                shutil.rmtree(extract_dir)
 
             self._set_status(
                 "downloading",
@@ -1525,8 +1506,11 @@ class AppUpdateManager:
                 total_bytes=total or expected_size,
                 progress=1.0 if (total or expected_size or downloaded) else 0.0,
             )
-            _safe_extract_zip(archive_path, extract_dir)
-            command = self._prepare_restart_helper(update_dir=update_dir, extract_dir=extract_dir)
+            command = self._prepare_restart_helper(
+                update_dir=update_dir,
+                extract_dir=extract_dir,
+                archive_path=archive_path,
+            )
             self._set_status(
                 "restarting" if restart else "idle",
                 busy=bool(restart),
@@ -1590,36 +1574,34 @@ class AppUpdateManager:
             progress=(max(0, int(downloaded or 0)) / max(1, int(total or 0))) if total else 0.0,
         )
 
-    def _prepare_restart_helper(self, *, update_dir: Path, extract_dir: Path) -> list[str]:
+    def _prepare_restart_helper(
+        self,
+        *,
+        update_dir: Path,
+        extract_dir: Path,
+        archive_path: Path,
+    ) -> list[str]:
         pid = os.getpid()
         target_platform = str(self.target.get("platform") or "")
         install_root = _current_install_root(target=self.target, executable_path=self.executable_path)
         script_suffix = ".cmd" if target_platform == "windows" else ".sh"
         script_path = update_dir / f"apply-bilikara-update{script_suffix}"
-        if target_platform == "windows":
-            executable_name = self.executable_path.name or "bilikara.exe"
-            launch_executable_name = _restart_launch_executable_name(self.executable_path)
-            source_root = _find_windows_payload_root(extract_dir, executable_name)
-            return _write_windows_restart_script(
-                script_path,
-                source_root=source_root,
-                destination_root=install_root,
-                executable_name=executable_name,
-                launch_executable_name=launch_executable_name,
-                wait_pids=_restart_wait_pids(pid),
-            )
-        if target_platform == "macos":
-            current_app = install_root if install_root.suffix == ".app" else _current_macos_app_path(self.executable_path)
-            if current_app is None:
-                raise AppUpdateError("无法定位当前 macOS App")
-            source_app = _find_macos_payload_app(extract_dir, current_app.name)
-            return _write_macos_restart_script(
-                script_path,
-                source_app=source_app,
-                destination_app=current_app,
-                pid=pid,
-            )
-        raise AppUpdateError(APP_UPDATE_UNSUPPORTED_ERROR)
+        if target_platform not in APP_UPDATE_SUPPORTED_PLATFORMS:
+            raise AppUpdateError(APP_UPDATE_UNSUPPORTED_ERROR)
+        return rust_runtime.prepare_update_install(
+            {
+                "platform": target_platform,
+                "archive_path": str(archive_path),
+                "extract_dir": str(extract_dir),
+                "script_path": str(script_path),
+                "install_root": str(install_root),
+                "executable_name": self.executable_path.name or "bilikara.exe",
+                "launch_executable_name": _restart_launch_executable_name(
+                    self.executable_path
+                ),
+                "wait_pids": _restart_wait_pids(pid),
+            }
+        )
 
     def _set_status(self, state: str, **fields: Any) -> None:
         with self._lock:

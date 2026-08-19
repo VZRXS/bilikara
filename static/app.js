@@ -5492,6 +5492,7 @@ function renderCachePolicyControls(cachePolicy) {
     : [
       { value: "bbdown", label: "BBDown" },
       { value: "downkyi", label: "Downkyi (aria2c)" },
+      { value: "native", label: "Rust Native" },
     ];
   const currentDownloadSource = String(cachePolicy?.download_source || sourceChoices[0]?.value || "bbdown");
   const signature = JSON.stringify({

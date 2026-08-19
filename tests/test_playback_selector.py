@@ -824,7 +824,7 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
             update_item=lambda *args, **kwargs: None,
         )
         manager.sync_with_playlist = lambda: None
-        manager._current_download_source = lambda: "bbdown"
+        manager._current_download_source = lambda: "native"
         manager._item_log_path = lambda *args: Path("worker.log")
         manager._append_log_line = lambda *args: None
         manager._should_cache = lambda item_id: True
@@ -862,10 +862,8 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
                 manager.hevc_supported = True
                 manager.avc_quality_cap = ""
                 manager.audio_hires = True
-                manager.download_source = "bbdown"
+                manager.download_source = "native"
                 manager._item_log_path = lambda item_id, source: Path("/tmp/song.log")
-                manager._ensure_downloader = lambda source: Path("/bin/bbdown")
-                manager._ensure_ffmpeg = lambda force_refresh=False: Path("/bin/ffmpeg")
 
                 item = SimpleNamespace(
                     id="song",
@@ -886,6 +884,7 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
                         "video_media_url": "/media/song/video.mp4",
                         "audio_variants": [{"id": "v1", "audio_url": "/media/song/audio.m4a"}],
                         "selected_audio_variant_id": "v1",
+                        "native_tracks_prevalidated": True,
                     }
 
                 manager._download_selected_streams = fake_download_selected_streams
@@ -897,8 +896,12 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
                 manager._raise_if_priority_shift = lambda *args, **kwargs: None
                 manager._cache_start_message = lambda item_arg: ""
                 manager._ready_message = lambda item_arg: ""
+                manager._publish_validated_cache_result = lambda *_args, **_kwargs: None
 
-                res = manager._cache_item_multi("song", item, allow_refresh_retry=True, playback_selector=selector)
+                with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True), patch(
+                    "bilikara.cache.rust_runtime.media_backend_available", return_value=True
+                ):
+                    res = manager._cache_item_multi("song", item, allow_refresh_retry=True, playback_selector=selector)
                 self.assertTrue(res)
                 self.assertEqual(len(download_streams_calls), 1)
                 self.assertIs(download_streams_calls[0], selector)
@@ -930,15 +933,18 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
                 self.assertEqual(len(pref_args_calls), 1)
                 self.assertIs(pref_args_calls[0], selector)
 
-                ytdlp_cmd = manager._ytdlp_download_command(
-                    Path("/bin/ytdlp"),
-                    Path("/bin/ffmpeg"),
-                    "https://example.test",
-                    page=1,
-                    stream_kind="video",
-                    target_dir=Path("/tmp"),
-                    playback_selector=selector,
-                )
+                with patch(
+                    "bilikara.cache.effective_bilibili_cookie", return_value=""
+                ):
+                    ytdlp_cmd = manager._ytdlp_download_command(
+                        Path("/bin/ytdlp"),
+                        Path("/bin/ffmpeg"),
+                        "https://example.test",
+                        page=1,
+                        stream_kind="video",
+                        target_dir=Path("/tmp"),
+                        playback_selector=selector,
+                    )
                 self.assertEqual(len(format_selector_calls), 1)
                 self.assertIs(format_selector_calls[0], selector)
 

@@ -11,6 +11,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable
 
+from . import rust_runtime
+
 ROUTE_PROBE_TARGETS = (("1.1.1.1", 80), ("8.8.8.8", 80), ("9.9.9.9", 80))
 IFF_UP = 0x1
 
@@ -412,26 +414,6 @@ def enumerate_windows_ipv4_interfaces(payload: object | None = None) -> list[Int
 
 
 def detect_lan_ipv4_addresses(*, platform_name: str | None = None) -> list[str]:
-    platform_key = (platform_name or sys.platform).casefold()
-    route_sources = route_selected_ipv4s()
-    if platform_key.startswith("win") or os.name == "nt":
-        candidates = enumerate_windows_ipv4_interfaces()
-    else:
-        candidates = enumerate_posix_ipv4_interfaces(platform_name=platform_key)
-    known = {candidate.address for candidate in candidates}
-    candidates.extend(
-        InterfaceAddress(
-            name="route-selected",
-            address=address,
-            is_up=True,
-            has_default_route=True,
-            interface_type="unknown",
-        )
-        for address in route_sources
-        if address not in known
-    )
-    return rank_lan_ipv4_candidates(
-        candidates,
-        route_sources=route_sources,
-        platform_name=platform_key,
+    return rust_runtime.detect_lan_ipv4_addresses(
+        platform_name=(platform_name or sys.platform).casefold()
     )

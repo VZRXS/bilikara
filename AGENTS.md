@@ -18,6 +18,7 @@ The architecture consists of the following primary layers:
 - `static/`: Frontend Host and Remote user interfaces built with vanilla JavaScript, HTML5, and CSS3. UI components use state-driven re-rendering and subscribe to real-time state updates via Server-Sent Events (SSE) at `/api/events`. Bundled and served by the Host server or packaged into the Tauri desktop shell.
 - `bilikara/`: Python Host application engine. Handles the current v0.7 HTTP routing (`http.server.ThreadingHTTPServer`), state management (`AppContext`), persistence (`PlaylistStore`), download management (`BBDown`, `FFmpeg`), version checks/updates, and frozen Python compatibility references created during earlier migration work.
 - `rust/`: Shared typed Rust domain core crate (`bilikara_rust`), compiled as both `cdylib` (for CFFI loading in Python) and `rlib` (for native Rust crate callers). Implements pure, deterministic business logic domains.
+- `rust-runtime/`: Typed Rust runtime infrastructure crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns operational I/O such as the independent HTTP media downloader and exposes a temporary C ABI for the Python compatibility host.
 - `src-tauri/`: Tauri 2 desktop shell providing native windowing, system tray integration, and cross-platform desktop application packaging.
 - `tests/`: Project test suite using standard Python `unittest`. Includes direct unit tests, integration tests enforcing native library loading (`BILIKARA_REQUIRE_RUST_LIB=1`), and tests that launch Node.js scripts to evaluate frontend JavaScript behavior.
 
@@ -120,6 +121,14 @@ cargo test --locked
 cargo build --release --locked
 cd ..
 
+# 1b. Rust Runtime Infrastructure Checks
+cd rust-runtime
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
+cd ..
+
 # 2. Python Test Suite (forcing native library verification)
 BILIKARA_REQUIRE_RUST_LIB=1 \
 python -m unittest discover -s tests -v
@@ -192,6 +201,12 @@ When completing a task, agents must report:
 | `src/release_selection.rs` | Semantic version sorting and release filtering rules. |
 | `src/asset_selection.rs` | Update package scoring by platform and architecture. |
 | `src/ffi.rs` | FFI wrapper utilities, memory safety helpers, panic containment. |
+
+### Rust Runtime Infrastructure (`rust-runtime/`)
+| File / Module | Purpose |
+| :--- | :--- |
+| `src/http_downloader.rs` | Typed HTTP transfer, URL fallback, progress, cancellation, response validation, and atomic publication. |
+| `src/ffi.rs` | Temporary C ABI used by the Python compatibility host. |
 
 ### Tauri Shell Layer (`src-tauri/`)
 | File / Module | Purpose |

@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import json
 import unittest
 from pathlib import Path
@@ -33,19 +34,42 @@ def aria2_metadata(arch: str) -> dict[str, object]:
 
 
 class BuildBundleTest(unittest.TestCase):
+    def test_main_bundles_rust_runtime_and_required_media_tools(self):
+        source = inspect.getsource(build_bundle.main)
+        self.assertIn("_rust_library_args", source)
+        self.assertIn("_bundled_binary_args", source)
+        self.assertNotIn("_macos_aria2_metadata_args", source)
+
     def test_rust_library_args_includes_release_library(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             library = root / "rust" / "target" / "release" / "libbilikara_rust.so"
+            runtime_library = (
+                root
+                / "rust-runtime"
+                / "target"
+                / "release"
+                / "libbilikara_runtime.so"
+            )
             library.parent.mkdir(parents=True)
             library.touch()
+            runtime_library.parent.mkdir(parents=True)
+            runtime_library.touch()
 
             with patch("build_bundle.ROOT_DIR", root), patch(
                 "build_bundle.platform.system", return_value="Linux"
             ):
                 args = build_bundle._rust_library_args(":")
 
-        self.assertEqual(args, ["--add-binary", f"{library.resolve()}:rust"])
+        self.assertEqual(
+            args,
+            [
+                "--add-binary",
+                f"{library.resolve()}:rust",
+                "--add-binary",
+                f"{runtime_library.resolve()}:rust",
+            ],
+        )
 
     def test_rust_library_args_allows_missing_library(self):
         with TemporaryDirectory() as temp_dir, patch("build_bundle.ROOT_DIR", Path(temp_dir)), patch(
@@ -132,7 +156,7 @@ class BuildBundleTest(unittest.TestCase):
 
         self.assertEqual(resolved, ffprobe)
 
-    def test_bundled_binary_args_allows_missing_optional_ffprobe(self):
+    def test_bundled_binary_args_rejects_missing_ffprobe(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
         bbdown = Path("/usr/bin/BBDown")
         data_separator = ";" if build_bundle.platform.system() == "Windows" else ":"
@@ -143,19 +167,10 @@ class BuildBundleTest(unittest.TestCase):
         with patch("build_bundle.platform.system", return_value="Linux"), patch(
             "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
         ):
-            args = build_bundle._bundled_binary_args(data_separator)
+            with self.assertRaisesRegex(RuntimeError, "ffprobe"):
+                build_bundle._bundled_binary_args(data_separator)
 
-        self.assertEqual(
-            args,
-            [
-                "--add-binary",
-                f"{ffmpeg.resolve()}{data_separator}vendor",
-                "--add-binary",
-                f"{bbdown.resolve()}{data_separator}vendor",
-            ],
-        )
-
-    def test_bundled_binary_args_includes_resolved_optional_ffprobe(self):
+    def test_bundled_binary_args_includes_all_required_tools(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
         ffprobe = Path("/usr/bin/ffprobe")
         bbdown = Path("/usr/bin/BBDown")
@@ -173,9 +188,9 @@ class BuildBundleTest(unittest.TestCase):
                 "--add-binary",
                 f"{ffmpeg.resolve()}{data_separator}vendor",
                 "--add-binary",
-                f"{bbdown.resolve()}{data_separator}vendor",
-                "--add-binary",
                 f"{ffprobe.resolve()}{data_separator}vendor",
+                "--add-binary",
+                f"{bbdown.resolve()}{data_separator}vendor",
             ],
         )
 
@@ -189,16 +204,17 @@ class BuildBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "enable-nonfree"):
                 build_bundle._bundled_binary_args(":", validate=True)
 
-    def test_bundled_binary_args_requires_ffprobe_for_macos(self):
+    def test_bundled_binary_args_requires_bbdown(self):
         ffmpeg = Path("/usr/bin/ffmpeg")
+        ffprobe = Path("/usr/bin/ffprobe")
 
         def fake_resolve(binary_name: str):
-            return ffmpeg if binary_name == "ffmpeg" else None
+            return {"ffmpeg": ffmpeg, "ffprobe": ffprobe}.get(binary_name)
 
-        with patch("build_bundle.platform.system", return_value="Darwin"), patch(
+        with patch("build_bundle.platform.system", return_value="Linux"), patch(
             "build_bundle._resolve_bundle_binary_path", side_effect=fake_resolve
         ):
-            with self.assertRaisesRegex(RuntimeError, "ffprobe"):
+            with self.assertRaisesRegex(RuntimeError, "BBDown"):
                 build_bundle._bundled_binary_args(":")
 
     def test_release_validation_rejects_tool_that_does_not_execute(self):
@@ -266,7 +282,7 @@ class BuildBundleTest(unittest.TestCase):
         ):
             build_bundle._validate_macos_tool_portability(ffmpeg)
 
-    def test_write_release_compliance_files_copies_notices_and_tool_versions(self):
+    def test_write_release_compliance_files_copies_only_application_notices(self):
         with TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
             dist_dir = root_dir / "dist" / build_bundle.APP_NAME
@@ -318,30 +334,8 @@ class BuildBundleTest(unittest.TestCase):
             self.assertTrue((dist_dir / "LICENSE").exists())
             self.assertTrue((dist_dir / "LEGAL.md").exists())
             self.assertTrue((dist_dir / "THIRD_PARTY_NOTICES.md").exists())
-            licenses_dir = dist_dir / "THIRD_PARTY_LICENSES"
-            self.assertIn("FFmpeg / FFprobe redistribution notes", (licenses_dir / "ffmpeg-source.txt").read_text(encoding="utf-8"))
-            self.assertEqual((licenses_dir / "ffmpeg-version.txt").read_text(encoding="utf-8"), "tool version\n")
-            self.assertEqual((licenses_dir / "ffprobe-version.txt").read_text(encoding="utf-8"), "tool version\n")
-            self.assertEqual(
-                (licenses_dir / "FFmpeg-COPYING.LGPLv2.1.txt").read_text(encoding="utf-8"),
-                "LGPL text\n",
-            )
-            self.assertIn(
-                "pinned BBDown vendor executable",
-                (licenses_dir / "bbdown-source.txt").read_text(encoding="utf-8"),
-            )
-            self.assertEqual(
-                (licenses_dir / "BBDown-LICENSE.txt").read_text(encoding="utf-8"),
-                "BBDown MIT text\n",
-            )
-            self.assertEqual(
-                (licenses_dir / "bbdown-version.txt").read_text(encoding="utf-8"),
-                "tool version\n",
-            )
-            self.assertEqual(
-                (dist_dir / "THIRD_PARTY_SOURCES" / source_archive.name).read_bytes(),
-                source_archive.read_bytes(),
-            )
+            self.assertFalse((dist_dir / "THIRD_PARTY_LICENSES").exists())
+            self.assertFalse((dist_dir / "THIRD_PARTY_SOURCES").exists())
 
     def test_macos_aria2_metadata_is_validated_and_bundled_as_data(self):
         with TemporaryDirectory() as temp_dir:

@@ -24,6 +24,7 @@ from bilikara.cache import (
     CacheManager,
     DOWNLOAD_SOURCE_BBDOWN,
     DOWNLOAD_SOURCE_DOWNKYI,
+    DOWNLOAD_SOURCE_NATIVE,
     DOWNLOAD_SOURCE_YTDLP,
     DownloadCommandError,
     SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS,
@@ -34,6 +35,77 @@ from bilikara.store import PlaylistStore
 
 
 class CacheManagerOutputTest(unittest.TestCase):
+    def test_prewarm_prepares_legacy_tools_without_overriding_runtime_status(self):
+        manager = CacheManager.__new__(CacheManager)
+        manager.lock = threading.RLock()
+        manager.binary_state = "failed"
+        manager.binary_version = ""
+        manager.binary_message = "stale BBDown failure"
+        manager.ffmpeg_state = "failed"
+        manager.ffmpeg_version = ""
+        manager.ffmpeg_message = "stale FFmpeg failure"
+        with patch.object(
+            manager,
+            "_ensure_bbdown",
+            return_value=Path("BBDown"),
+        ) as ensure_bbdown, patch.object(
+            manager,
+            "_ensure_ffmpeg",
+            return_value=Path("ffmpeg"),
+        ) as ensure_ffmpeg:
+            manager._prewarm_binary_worker()
+
+        ensure_bbdown.assert_called_once_with()
+        ensure_ffmpeg.assert_called_once_with(force_refresh=True)
+        self.assertEqual(manager.binary_state, "failed")
+        self.assertEqual(manager.binary_message, "stale BBDown failure")
+        self.assertEqual(manager.ffmpeg_state, "failed")
+        self.assertEqual(manager.ffmpeg_message, "stale FFmpeg failure")
+
+    def test_diagnostic_snapshot_preserves_frontend_service_failure_reason(self):
+        manager = CacheManager.__new__(CacheManager)
+        manager.lock = threading.RLock()
+        manager.active_item_id = "item-1"
+        manager.urgent_cache_ids = set()
+        manager.pending_ids = {"item-1"}
+        manager.ordered_desired_ids = ["item-1"]
+        manager.tasks = queue.Queue()
+        manager.binary_state = "failed"
+        manager.binary_version = ""
+        manager.binary_message = "legacy BBDown prewarm failed"
+        manager.ffmpeg_state = "ready"
+        manager.ffmpeg_version = "ffmpeg 7"
+        manager.ffmpeg_message = "FFmpeg ready"
+        manager.max_cache_items = 3
+        manager.download_source = DOWNLOAD_SOURCE_NATIVE
+        manager.media_capabilities = {}
+        manager.client_media_capabilities = {}
+        runtime = {
+            "loaded": True,
+            "path": "C:/bundle/rust/bilikara_runtime.dll",
+            "error": "",
+            "abi_version": 1,
+            "capabilities": {"http_download": True, "media_backend": True},
+            "load_diagnostics": {"stage": "ready"},
+        }
+
+        with patch("bilikara.cache.rust_runtime.runtime_status", return_value=runtime), patch.object(
+            manager,
+            "bbdown_login_status",
+            return_value={"state": "idle", "logged_in": False},
+        ):
+            snapshot = manager.diagnostic_snapshot()
+
+        native = snapshot["tools"]["Rust Native"]
+        media = snapshot["tools"]["Rust MediaBackend"]
+        bbdown = snapshot["tools"]["BBDown"]
+        self.assertEqual(bbdown["state"], "failed")
+        self.assertEqual(native["state"], "ready")
+        self.assertEqual(native["message"], "Rust Native ready")
+        self.assertEqual(native["runtime_state"], "ready")
+        self.assertEqual(media["state"], "ready")
+        self.assertEqual(media["message"], "Rust MediaBackend ready")
+
     def test_iter_output_messages_handles_carriage_return_updates(self):
         stream = io.StringIO("0%\r14.5%\r89.1%\n下载完成\n")
         self.assertEqual(
@@ -293,19 +365,29 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 restored.shutdown()
 
-    def test_cache_policy_persists_download_source(self):
+    def test_cache_policy_preserves_each_download_source(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
-                snapshot = manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_YTDLP)
-                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_YTDLP)
+                self.assertEqual(
+                    [choice["value"] for choice in manager.policy_snapshot()["download_source_choices"]],
+                    [DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE],
+                )
+                for source in (
+                    DOWNLOAD_SOURCE_BBDOWN,
+                    DOWNLOAD_SOURCE_YTDLP,
+                    DOWNLOAD_SOURCE_DOWNKYI,
+                    DOWNLOAD_SOURCE_NATIVE,
+                ):
+                    snapshot = manager.set_cache_policy(download_source=source)
+                    self.assertEqual(snapshot["download_source"], source)
             finally:
                 manager.shutdown()
 
             restored = CacheManager(self.store, max_cache_items=3)
             try:
                 snapshot = restored.policy_snapshot()
-                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_YTDLP)
+                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_NATIVE)
             finally:
                 restored.shutdown()
 
@@ -614,7 +696,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertEqual(target.read_bytes(), b"existing-runtime")
-        self.assertEqual(manager.download_source, "bbdown")
+        self.assertEqual(manager.download_source, DOWNLOAD_SOURCE_BBDOWN)
 
     def test_existing_runtime_aria2c_skips_all_preparation_network(self):
         aria2_dir = Path(self.temp_dir.name) / "existing-aria2" / "tools" / "aria2c"
@@ -1277,6 +1359,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
                 with manager.lock:
@@ -1291,16 +1374,15 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     ],
                     "selected_audio_variant_id": "p1",
                     "validation_files": [],
+                    "native_tracks_prevalidated": True,
                 }
-                with patch.object(manager, "_ensure_bbdown", return_value=Path("/tools/BBDown")), patch.object(
-                    manager,
-                    "_ensure_ffmpeg",
-                    return_value=Path("/tools/ffmpeg"),
+                with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True), patch(
+                    "bilikara.cache.rust_runtime.media_backend_available", return_value=True
                 ), patch.object(
                     manager,
                     "_download_selected_streams",
                     return_value=cache_result,
-                ), patch.object(manager, "_validate_cache_result"), patch.object(
+                ), patch.object(manager, "_publish_validated_cache_result"), patch.object(
                     manager,
                     "sync_with_playlist",
                 ) as sync_mock:
@@ -1314,7 +1396,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_downkyi_prevalidated_tracks_skip_later_batch_remux_and_validation(self):
+    def test_native_prevalidated_tracks_skip_legacy_batch_validation(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,
             "_worker_loop",
@@ -1328,7 +1410,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item.selected_durations = [120]
                 item.video_page = 1
                 self.store.add_item(item, requester_name="cache-test-user")
-                manager.download_source = DOWNLOAD_SOURCE_DOWNKYI
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 with manager.lock:
                     manager.desired_ids = {item.id}
                     manager.ordered_desired_ids = [item.id]
@@ -1355,25 +1437,20 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "validation_files": [{"path": video}, {"path": audio}],
                         "validation_metadata": [{"path": str(video)}, {"path": str(audio)}],
                         "validation_failure_count": 0,
-                        "downkyi_tracks_prevalidated": True,
+                        "native_tracks_prevalidated": True,
                     }
 
-                with patch.object(
-                    manager, "_ensure_downloader", return_value=Path("/tools/aria2c")
-                ), patch.object(
-                    manager, "_ensure_ffmpeg", return_value=Path("/tools/ffmpeg")
+                with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True), patch(
+                    "bilikara.cache.rust_runtime.media_backend_available", return_value=True
                 ), patch.object(
                     manager, "_download_selected_streams", side_effect=prevalidated_result
                 ), patch.object(
-                    manager, "_normalize_downkyi_cache_result"
-                ) as normalize_mock, patch.object(
                     manager, "_validate_cache_result"
                 ) as validate_mock:
                     self.assertTrue(
                         manager._cache_item_multi(item.id, item, allow_refresh_retry=False)
                     )
 
-                normalize_mock.assert_not_called()
                 validate_mock.assert_not_called()
                 cached = self.store.get_item(item.id)
                 self.assertIsNotNone(cached)

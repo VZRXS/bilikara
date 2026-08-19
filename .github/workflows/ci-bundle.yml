@@ -60,12 +60,18 @@ jobs:
         with:
           workspaces: |
             ./rust -> target
+            ./rust-runtime -> target
             ./src-tauri -> target
           shared-key: ci-bundle
 
       - name: Rust Checks and Build
         run: |
           cd rust
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+          cargo build --release --locked
+          cd ../rust-runtime
           cargo fmt --check
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
@@ -123,7 +129,20 @@ jobs:
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install ffmpeg -y
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install ffmpeg -y --no-progress
+            if ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and
+                (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
+              break
+            }
+            if ($attempt -eq 3) {
+              throw "Chocolatey did not install ffmpeg and ffprobe after $attempt attempts"
+            }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
+          ffmpeg -version
+          ffprobe -version
 
       - name: Prepare pinned portable FFmpeg asset
         if: runner.os == 'macOS'
@@ -166,7 +185,7 @@ jobs:
             echo "Unexpected ffprobe version" >&2
             exit 1
           fi
-          if printf '%s\n' "$ffmpeg_ver" | grep -F "--enable-nonfree" >/dev/null; then
+          if printf '%s\n' "$ffmpeg_ver" | grep -F -- "--enable-nonfree" >/dev/null; then
             echo "Disallowed --enable-nonfree in FFmpeg build" >&2
             exit 1
           fi
@@ -212,6 +231,7 @@ jobs:
         with:
           workspaces: |
             ./rust -> target
+            ./rust-runtime -> target
             ./src-tauri -> target
           shared-key: ci-bundle
 
@@ -219,12 +239,54 @@ jobs:
         run: |
           cd rust
           cargo build --release --locked
+          cd ../rust-runtime
+          cargo build --release --locked
           cd ..
 
       - name: Build app bundle
         run: python build_bundle.py
         env:
           BILIKARA_REQUIRE_RUST_LIB: "1"
+
+      - name: Verify native backend and bundled tools on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path dist/bilikara -Recurse -File
+          foreach ($library in @('bilikara_rust.dll', 'bilikara_runtime.dll')) {
+            if (-not ($files | Where-Object Name -eq $library)) {
+              throw "Packaged Rust library was not found: $library"
+            }
+          }
+          foreach ($tool in @('BBDown.exe', 'ffmpeg.exe', 'ffprobe.exe')) {
+            $vendor = $files | Where-Object { $_.Name -eq $tool -and $_.FullName -match '[\\/]vendor[\\/]' } | Select-Object -First 1
+            if (-not $vendor) {
+              throw "Packaged vendor tool was not found: $tool"
+            }
+            if ($tool -eq 'BBDown.exe') {
+              & $vendor.FullName --help
+            } else {
+              & $vendor.FullName -version
+            }
+            if ($LASTEXITCODE -ne 0) {
+              throw "Packaged vendor tool execution failed: $tool"
+            }
+          }
+
+      - name: Verify native backend and bundled tools on macOS
+        if: runner.os == 'macOS'
+        run: |
+          test -f dist/bilikara.app/Contents/Frameworks/rust/libbilikara_rust.dylib
+          test -f dist/bilikara.app/Contents/Frameworks/rust/libbilikara_runtime.dylib
+          bbdown_vendor="$(find dist/bilikara.app -type f -name BBDown -path '*/vendor/*' -print -quit)"
+          ffmpeg_vendor="$(find dist/bilikara.app -type f -name ffmpeg -path '*/vendor/*' -print -quit)"
+          ffprobe_vendor="$(find dist/bilikara.app -type f -name ffprobe -path '*/vendor/*' -print -quit)"
+          test -n "$bbdown_vendor"
+          test -n "$ffmpeg_vendor"
+          test -n "$ffprobe_vendor"
+          "$bbdown_vendor" --help
+          "$ffmpeg_vendor" -version
+          "$ffprobe_vendor" -version
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -260,14 +322,10 @@ jobs:
         if: runner.os == 'macOS'
         run: python scripts/embed_macos_backend.py dist/bilikara.app dist/Bilikara-Desktop.app
 
-      - name: Verify packaged BBDown vendor and clean runtime restore on Windows
+      - name: Verify clean BBDown runtime restore on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $vendor = Get-ChildItem -Path dist/bilikara -Recurse -File -Filter BBDown.exe | Where-Object { $_.FullName -match '[\\/]vendor[\\/]' } | Select-Object -First 1
-          if (-not $vendor) { throw 'Packaged BBDown vendor executable was not found' }
-          & $vendor.FullName --help
-          if ($LASTEXITCODE -ne 0) { throw 'Packaged BBDown vendor version check failed' }
           $runtimeHome = Join-Path $env:RUNNER_TEMP 'bilikara-bbdown-runtime-smoke'
           if (Test-Path $runtimeHome) { Remove-Item -Recurse -Force $runtimeHome }
           New-Item -ItemType Directory -Path $runtimeHome | Out-Null
@@ -329,26 +387,6 @@ jobs:
           file "$embedded_backend/Contents/MacOS/bilikara"
           test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara")"
 
-          echo "=== Locked aria2c metadata-only checks ==="
-          aria2_metadata="$embedded_backend/Contents/Resources/vendor/aria2-macos.json"
-          test -f "$aria2_metadata"
-          expected_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
-          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64; print("locked aria2c metadata: arch={} sha256={}".format(data["arch"], data["sha256"]))' "$aria2_metadata" "$expected_arch"
-          unexpected_aria2="$(find dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
-          if [ -n "$unexpected_aria2" ]; then
-            echo "Unexpected bundled aria2c executable candidate(s):" >&2
-            printf '%s\n' "$unexpected_aria2" >&2
-            exit 1
-          fi
-
-          echo "=== Packaged portable FFmpeg checks ==="
-          for binary_name in ffmpeg ffprobe; do
-            packaged_tool="dist_release/bilikara.app/Contents/Frameworks/vendor/$binary_name"
-            test -x "$packaged_tool"
-            "$packaged_tool" -version
-            /usr/bin/otool -L "$packaged_tool"
-          done
-
           echo "=== Running Python backend smoke test ==="
           BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
 
@@ -386,24 +424,6 @@ jobs:
           codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           test "$(lipo -archs test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara")"
-          extracted_aria2_metadata="$extracted_embedded_backend/Contents/Resources/vendor/aria2-macos.json"
-          test -f "$extracted_aria2_metadata"
-          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64' "$extracted_aria2_metadata" "$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
-          unexpected_aria2="$(find test_extract/dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
-          if [ -n "$unexpected_aria2" ]; then
-            echo "Unexpected archived aria2c executable candidate(s):" >&2
-            printf '%s\n' "$unexpected_aria2" >&2
-            exit 1
-          fi
-
-          echo "=== Running extracted portable FFmpeg checks ==="
-          for binary_name in ffmpeg ffprobe; do
-            packaged_tool="test_extract/dist_release/bilikara.app/Contents/Frameworks/vendor/$binary_name"
-            test -x "$packaged_tool"
-            "$packaged_tool" -version
-            /usr/bin/otool -L "$packaged_tool"
-          done
-
           echo "=== Running round-trip extracted shell and Finder-like smoke tests ==="
           BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
           BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v

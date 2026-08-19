@@ -149,7 +149,7 @@ def run_with_startup_logging() -> None:
     parser.add_argument("--https-smoke", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--tool-smoke",
-        choices=("bbdown", "aria2c"),
+        choices=("native", "bbdown"),
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
