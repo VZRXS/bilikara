@@ -5372,6 +5372,10 @@ select:disabled {
 
 .presentation-output-switch:disabled {
   opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.presentation-output-switch:disabled[aria-busy="true"] {
   cursor: wait;
 }
 

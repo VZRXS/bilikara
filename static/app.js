@@ -1684,6 +1684,16 @@ function renderPresentationOutputControl() {
   const selectedId = session.selectedOutputDisplayId || state.presentationSelectedDisplayId;
   const selected = presentationDisplayById(selectedId);
   const monitorName = selected?.name || t("display.secondaryDisplay");
+  const hasSelectableDisplay = Boolean(
+    state.presentationDisplayInfo?.displays?.some((display) => display.selectable),
+  );
+  const noExternalDisplayAvailable = (
+    session.phase === "inactive"
+      && !state.presentationDisplayBusy
+      && !state.presentationDisplayError
+      && Boolean(state.presentationDisplayInfo)
+      && !hasSelectableDisplay
+  );
   const statusText = state.presentationControlBusy
     ? t("display.presentationTransitioning")
     : session.phase === "active"
@@ -1692,9 +1702,11 @@ function renderPresentationOutputControl() {
         ? t("display.presentationActivating", { monitor: monitorName })
         : session.phase === "recovering"
           ? t("display.presentationRecovering")
-          : state.presentationSelectedDisplayId
-            ? t("display.presentationTargetSelected", { monitor: monitorName })
-            : t("display.presentationSelectDisplay");
+          : noExternalDisplayAvailable
+            ? t("display.presentationNoExternalDisplay")
+            : state.presentationSelectedDisplayId
+              ? t("display.presentationTargetSelected", { monitor: monitorName })
+              : t("display.presentationSelectDisplay");
   const summaryText = state.presentationControlBusy
     ? t("display.presentationTransitioning")
     : session.phase === "active"

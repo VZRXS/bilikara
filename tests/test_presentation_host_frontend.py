@@ -382,6 +382,111 @@ function tauriInvoke() {{
         self.assertIn('id="presentation-output-status" role="status"', index)
         self.assertIn('id="presentation-display-list" aria-live="polite"', index)
 
+    def test_unavailable_output_is_not_presented_as_busy(self):
+        render = self.source_slice(
+            "function renderPresentationOutputControl",
+            "async function handlePresentationSession",
+        )
+        styles = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+        script = f"""
+const state = {{
+  presentationSession: {{
+    phase: "inactive",
+    selectedOutputDisplayId: "",
+  }},
+  presentationSelectedDisplayId: "",
+  presentationDisplayInfo: {{
+    monitorCount: 1,
+    displays: [{{
+      id: "primary",
+      name: "Primary",
+      controller: true,
+      primary: true,
+      selectable: false,
+    }}],
+  }},
+  presentationDisplayError: "",
+  presentationDisplayBusy: false,
+  presentationControlBusy: false,
+  presentationOutputRenderSignature: "",
+  language: "en",
+}};
+function classList() {{ return {{ toggle() {{}} }}; }}
+function buttonLike() {{
+  return {{
+    classList: classList(),
+    disabled: false,
+    attributes: new Map(),
+    setAttribute(name, value) {{ this.attributes.set(name, String(value)); }},
+    removeAttribute(name) {{ this.attributes.delete(name); }},
+  }};
+}}
+const button = {{
+  disabled: false,
+  attributes: new Map(),
+  setAttribute(name, value) {{ this.attributes.set(name, String(value)); }},
+  removeAttribute(name) {{ this.attributes.delete(name); }},
+}};
+const elements = {{
+  presentationSettings: {{ classList: classList() }},
+  presentationOutputButton: button,
+  presentationOutputStatus: {{ textContent: "" }},
+  presentationOutputSummary: {{ textContent: "" }},
+  presentationOutputMeta: {{ textContent: "" }},
+  presentationStateDot: {{ classList: classList() }},
+  presentationRefreshButton: buttonLike(),
+  presentationDisplayList: {{}},
+}};
+function tauriInvoke() {{ return () => {{}}; }}
+function presentationDisplayById(displayId) {{
+  return state.presentationDisplayInfo.displays.find((display) => display.id === displayId) || null;
+}}
+function setTextContent(element, value) {{ element.textContent = value; }}
+function setElementAttribute(element, name, value) {{ element.setAttribute(name, value); }}
+function setClassToggle(element, name, enabled) {{ element.classList.toggle(name, enabled); }}
+function renderPresentationDisplayList() {{}}
+function t(key) {{ return key; }}
+{render}
+renderPresentationOutputControl();
+const unavailable = {{
+  disabled: button.disabled,
+  ariaChecked: button.attributes.get("aria-checked") || null,
+  ariaBusy: button.attributes.get("aria-busy") || null,
+  status: elements.presentationOutputStatus.textContent,
+}};
+state.presentationControlBusy = true;
+renderPresentationOutputControl();
+const busy = {{
+  disabled: button.disabled,
+  ariaBusy: button.attributes.get("aria-busy") || null,
+}};
+process.stdout.write(JSON.stringify({{ unavailable, busy }}));
+"""
+        result = self.run_node(script)
+        self.assertEqual(
+            result["unavailable"],
+            {
+                "disabled": True,
+                "ariaChecked": "false",
+                "ariaBusy": None,
+                "status": "display.presentationNoExternalDisplay",
+            },
+        )
+        self.assertEqual(result["busy"]["disabled"], True)
+        self.assertEqual(result["busy"]["ariaBusy"], "true")
+        self.assertIn(
+            ".presentation-output-switch:disabled {\n"
+            "  opacity: 0.52;\n"
+            "  cursor: not-allowed;",
+            styles,
+        )
+        self.assertIn(
+            '.presentation-output-switch:disabled[aria-busy="true"] {\n'
+            "  cursor: wait;\n"
+            "}",
+            styles,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
