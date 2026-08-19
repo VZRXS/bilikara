@@ -576,6 +576,33 @@ def _write_release_compliance_files() -> None:
         if source.exists():
             shutil.copy2(source, target_dir / document_name)
 
+    licenses_dir = target_dir / "THIRD_PARTY_LICENSES"
+    licenses_dir.mkdir(parents=True, exist_ok=True)
+    bundled_paths, missing_tools = _resolved_bundle_binary_paths()
+    _write_text(
+        licenses_dir / "ffmpeg-source.txt",
+        _ffmpeg_source_notice(bundled_paths, missing_tools),
+    )
+    _write_text(
+        licenses_dir / "bbdown-source.txt",
+        _bbdown_source_notice(bundled_paths),
+    )
+    _copy_ffmpeg_source_material(target_dir, licenses_dir)
+    _copy_bbdown_license(licenses_dir)
+    for binary_name in ("ffmpeg", "ffprobe"):
+        binary_path = bundled_paths.get(binary_name)
+        if binary_path:
+            _write_text(
+                licenses_dir / f"{binary_name}-version.txt",
+                _tool_version_output(binary_path),
+            )
+    bbdown_path = bundled_paths.get("BBDown")
+    if bbdown_path:
+        _write_text(
+            licenses_dir / "bbdown-version.txt",
+            _tool_output(bbdown_path, "--help"),
+        )
+
 
 
 def _release_compliance_dir() -> Path | None:
