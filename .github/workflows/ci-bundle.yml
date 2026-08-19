@@ -130,17 +130,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            choco install ffmpeg -y --no-progress
-            if ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and
-                (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
-              break
-            }
-            if ($attempt -eq 3) {
-              throw "Chocolatey did not install ffmpeg and ffprobe after $attempt attempts"
-            }
-            Start-Sleep -Seconds (5 * $attempt)
-          }
+          choco install ffmpeg -y --no-progress
           ffmpeg -version
           ffprobe -version
 
