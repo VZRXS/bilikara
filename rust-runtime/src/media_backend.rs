@@ -1246,7 +1246,13 @@ fn temporary_path(destination: &Path, stage: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use claxon::FlacReader;
     use mp4::{AudioObjectType, ChannelConfig, Mp4Sample, SampleFreqIndex};
+
+    const REAL_FLAC_FIXTURE_BASE64: &str =
+        "ZkxhQ4AAACISABIAAAANAAANC7gA8AAAA8A9oVgtoi71SQek9M1tXRpg//h6CAADv8wAAAADsg==";
 
     fn test_dir(label: &str) -> PathBuf {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1258,7 +1264,7 @@ mod tests {
         path
     }
 
-    fn write_aac_fixture(path: &Path) {
+    fn write_audio_fixture(path: &Path, samples: &[Vec<u8>]) {
         let file = File::create(path).expect("create fixture");
         let config = Mp4Config {
             major_brand: "isom".parse().unwrap(),
@@ -1280,16 +1286,16 @@ mod tests {
                 }),
             })
             .expect("add track");
-        for index in 0..4 {
+        for (index, sample) in samples.iter().enumerate() {
             writer
                 .write_sample(
                     1,
                     &Mp4Sample {
-                        start_time: index * 1024,
+                        start_time: index as u64 * 1024,
                         duration: 1024,
                         rendering_offset: 0,
                         is_sync: true,
-                        bytes: vec![index as u8 + 1; 16].into(),
+                        bytes: sample.clone().into(),
                     },
                 )
                 .expect("write sample");
@@ -1298,9 +1304,31 @@ mod tests {
         writer.into_writer().sync_all().expect("flush fixture");
     }
 
+    fn write_aac_fixture(path: &Path) {
+        let samples = (0..4)
+            .map(|index| vec![index as u8 + 1; 16])
+            .collect::<Vec<_>>();
+        write_audio_fixture(path, &samples);
+    }
+
+    fn real_flac_parts() -> ([u8; 34], Vec<u8>) {
+        let bytes = BASE64
+            .decode(REAL_FLAC_FIXTURE_BASE64)
+            .expect("decode real FLAC fixture");
+        assert_eq!(&bytes[..4], b"fLaC");
+        assert_eq!(bytes[4] & 0x7f, 0);
+        assert_ne!(bytes[4] & 0x80, 0);
+        let metadata_size =
+            ((bytes[5] as usize) << 16) | ((bytes[6] as usize) << 8) | bytes[7] as usize;
+        assert_eq!(metadata_size, 34);
+        let stream_info = bytes[8..42].try_into().expect("FLAC STREAMINFO");
+        (stream_info, bytes[42..].to_vec())
+    }
+
     fn write_flac_mp4_fixture(path: &Path) {
+        let (stream_info, flac_frame) = real_flac_parts();
         let raw_path = path.with_file_name("source-before-faststart.m4a");
-        write_aac_fixture(&raw_path);
+        write_audio_fixture(&raw_path, &[flac_frame]);
         normalize_media(&MediaNormalizeRequest {
             schema_version: 1,
             source: raw_path.clone(),
@@ -1324,11 +1352,6 @@ mod tests {
         let config_start = codec_config - 4;
         let config_size =
             u32::from_be_bytes(bytes[config_start..config_start + 4].try_into().unwrap()) as usize;
-        let stream_info = [
-            0x12, 0x00, 0x12, 0x00, 0x00, 0x00, 0x12, 0x00, 0x5f, 0x48, 0x0b, 0xb8, 0x03, 0x70,
-            0x00, 0xb3, 0x3f, 0x80, 0x43, 0x56, 0x86, 0x59, 0xbc, 0x22, 0xb1, 0x90, 0x1e, 0x4f,
-            0xd9, 0x4c, 0xe4, 0x28, 0x13, 0xc7,
-        ];
         let mut config_payload = vec![0_u8; 4];
         config_payload.extend_from_slice(&[0x80, 0x00, 0x00, 0x22]);
         config_payload.extend_from_slice(&stream_info);
@@ -1402,9 +1425,19 @@ mod tests {
         assert_eq!(result.source.sample_bytes, result.output.sample_bytes);
         assert!(result.output.fast_start);
         assert!(!result.output.fragmented);
-        let output = fs::read(destination).expect("read output");
+        let output = fs::read(&destination).expect("read output");
         assert_eq!(&output[..4], b"fLaC");
         assert_eq!(output.len() as u64, result.output.sample_bytes + 42);
+
+        let mut decoder = FlacReader::open(destination).expect("open normalized FLAC in decoder");
+        assert_eq!(decoder.streaminfo().sample_rate, 48_000);
+        assert_eq!(decoder.streaminfo().channels, 1);
+        let samples = decoder
+            .samples()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode normalized FLAC samples");
+        assert_eq!(samples.len(), 960);
+        assert!(samples.iter().all(|sample| *sample == 0));
     }
 
     #[test]
