@@ -830,7 +830,7 @@ fn windows_display_metadata() -> Result<HashMap<String, Vec<NativeDisplayMetadat
                 std::ptr::null_mut(),
             )
         };
-        if query_result == ERROR_INSUFFICIENT_BUFFER as i32 {
+        if query_result == ERROR_INSUFFICIENT_BUFFER {
             continue;
         }
         if query_result != 0 {
