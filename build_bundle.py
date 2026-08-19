@@ -93,6 +93,7 @@ def main() -> None:
     command.extend(
         _bundled_binary_args(data_separator, verbose=True, validate=True)
     )
+    command.extend(_macos_aria2_metadata_args(data_separator, verbose=True))
     command.extend(_rust_library_args(data_separator, verbose=True))
 
     if platform.system() == "Windows":

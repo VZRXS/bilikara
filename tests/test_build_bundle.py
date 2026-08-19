@@ -38,7 +38,7 @@ class BuildBundleTest(unittest.TestCase):
         source = inspect.getsource(build_bundle.main)
         self.assertIn("_rust_library_args", source)
         self.assertIn("_bundled_binary_args", source)
-        self.assertNotIn("_macos_aria2_metadata_args", source)
+        self.assertIn("_macos_aria2_metadata_args", source)
 
     def test_rust_library_args_includes_release_library(self):
         with TemporaryDirectory() as temp_dir:
