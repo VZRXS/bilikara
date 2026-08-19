@@ -73,6 +73,15 @@ Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI 
 - Do not port or link aria2 source code. Build an independent Rust downloader;
   retain aria2c only as an explicit desktop transition fallback until that path
   is proven.
+- The first downloader infrastructure slice lives in the typed `rust-runtime`
+  crate. It owns HTTP transfer, URL fallback, progress, cancellation, response
+  validation, temporary output, and atomic publication. Python only adapts the
+  temporary C ABI and keeps aria2c as a transactional desktop fallback.
+- The first stateful service slice also lives in `rust-runtime`. It owns
+  Bilibili QR-login transitions with stale-worker generation rejection and
+  Gacha task/refresh-lease state. Python supplies filesystem and cookie facts
+  and retains network, persistence, and thread orchestration during the v0.7
+  compatibility period.
 - FFmpeg and ffprobe CLI calls are desktop transition adapters. Media handling
   must use a `MediaBackend` abstraction, with direct FFmpeg libraries preferred
   for the required metadata and remux functionality.

@@ -192,20 +192,17 @@ class LanAddressRankingTest(unittest.TestCase):
             [],
         )
 
-    def test_detect_uses_route_source_then_structured_interfaces(self):
-        values = [
-            candidate("en0", "192.168.1.50"),
-            candidate("bridge0", "192.168.2.1"),
-        ]
+    def test_detect_delegates_to_rust_runtime(self):
         with patch.object(
-            networking, "route_selected_ipv4s", return_value=["192.168.1.50"]
-        ), patch.object(
-            networking, "enumerate_posix_ipv4_interfaces", return_value=values
-        ):
+            networking.rust_runtime,
+            "detect_lan_ipv4_addresses",
+            return_value=["192.168.1.50"],
+        ) as detect:
             self.assertEqual(
                 networking.detect_lan_ipv4_addresses(platform_name="darwin"),
                 ["192.168.1.50"],
             )
+        detect.assert_called_once_with(platform_name="darwin")
 
 
 if __name__ == "__main__":

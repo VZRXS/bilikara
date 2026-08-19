@@ -1,6 +1,5 @@
 import io
 import json
-import os
 import unittest
 import zipfile
 from pathlib import Path
@@ -12,6 +11,54 @@ import bilikara.diagnostics as diagnostics
 
 
 class DiagnosticArtifactTest(unittest.TestCase):
+    def test_native_runtime_failure_uses_emergency_diagnostic_builder(self):
+        cache_manager = SimpleNamespace(
+            diagnostic_snapshot=lambda: {
+                "tools": {
+                    "Rust Native": {
+                        "installed": False,
+                        "state": "failed",
+                        "message": "Rust runtime load failed: OSError",
+                        "load_diagnostics": {
+                            "stage": "load_library",
+                            "exception_type": "OSError",
+                            "exception_message": "VCRUNTIME140.dll was not found",
+                        },
+                    }
+                },
+                "tasks": {},
+            }
+        )
+        with TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(diagnostics, "APP_HOME", Path(tmpdir)),
+                patch.object(diagnostics, "LOG_DIR", Path(tmpdir) / "logs"),
+                patch.object(diagnostics, "DIAGNOSTIC_CONFIG_FILES", ()),
+                patch.object(diagnostics, "_local_usernames", return_value=set()),
+                patch.object(
+                    diagnostics.rust_runtime,
+                    "build_diagnostic_artifact",
+                    side_effect=diagnostics.rust_runtime.RustRuntimeUnavailableError(
+                        "Rust runtime library not found"
+                    ),
+                ),
+            ):
+                artifact = diagnostics.build_diagnostic_artifact(
+                    cache_manager=cache_manager,
+                    cache_policy={"download_source": "native"},
+                    runtime_state={},
+                    connectivity_probe=lambda: {},
+                )
+
+        with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
+            tools = json.loads(archive.read("tools-and-tasks.json"))
+
+        self.assertIn("VCRUNTIME140.dll", artifact.markdown)
+        self.assertEqual(
+            tools["tools"]["Rust Native"]["load_diagnostics"]["stage"],
+            "load_library",
+        )
+
     def test_artifact_redacts_credentials_and_local_usernames(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -190,25 +237,13 @@ class DiagnosticArtifactTest(unittest.TestCase):
         self.assertEqual(sanitized[0]["stageTimings"][0]["stage"], "stage_0")
         self.assertEqual(sanitized[0]["stageTimings"][-1]["stage"], "stage_15")
 
-    def test_log_probe_einval_does_not_fail_diagnostics(self):
-        import errno
+    def test_unreadable_log_root_does_not_fail_diagnostics(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             log_dir = root / "logs"
-            log_dir.mkdir()
-            good_log = log_dir / "good.log"
-            bad_log = log_dir / "bad.log"
-            good_log.write_text("good log content", encoding="utf-8")
-            bad_log.write_text("bad log content", encoding="utf-8")
+            log_dir.write_text("not a directory", encoding="utf-8")
 
             cache_manager = SimpleNamespace(diagnostic_snapshot=lambda: {"tools": {}, "tasks": {}})
-
-            original_os_stat = os.stat
-
-            def mock_stat(path_obj, *args, **kwargs):
-                if Path(path_obj) == bad_log:
-                    raise OSError(errno.EINVAL, "Invalid argument")
-                return original_os_stat(path_obj, *args, **kwargs)
 
             with (
                 patch.object(diagnostics, "APP_HOME", root),
@@ -220,7 +255,6 @@ class DiagnosticArtifactTest(unittest.TestCase):
                     "disk_usage",
                     return_value=SimpleNamespace(total=1000, used=400, free=600),
                 ),
-                patch("os.stat", side_effect=mock_stat),
             ):
                 artifact = diagnostics.build_diagnostic_artifact(
                     cache_manager=cache_manager,
@@ -235,7 +269,6 @@ class DiagnosticArtifactTest(unittest.TestCase):
             with zipfile.ZipFile(io.BytesIO(artifact.zip_bytes())) as archive:
                 names = set(archive.namelist())
                 self.assertIn("diagnostics.md", names)
-                self.assertIn("logs/good.log", names)
                 self.assertNotIn("logs/bad.log", names)
 
 

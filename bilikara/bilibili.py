@@ -16,7 +16,7 @@ import time
 from .config import BILIBILI_HEADERS, GATCHA_KEYWORDS
 from dataclasses import dataclass
 from .models import PlaylistItem
-from . import rust_backend
+from . import rust_backend, rust_runtime
 import bilikara.config as cfg  
 from .lark_pool_client import append_lark_pool_entries_in_background
 
@@ -43,8 +43,6 @@ _GATCHA_PROFILE_CACHE: dict[str, tuple[float, dict]] = {}
 _GATCHA_PROFILE_CACHE_LOCK = threading.Lock()
 _GATCHA_CACHE_LOCK = threading.Lock()
 _GATCHA_UIDS_LOCK = threading.Lock()
-_GATCHA_REFRESH_LOCK = threading.Lock()
-_GATCHA_TASK_STATUS_LOCK = threading.Lock()
 _GATCHA_REQUEST_LOCK = threading.Lock()
 _GATCHA_LAST_REQUEST_AT = 0.0
 _GATCHA_CACHE_FILE = cfg.DATA_DIR / "gatcha_cache.json"
@@ -69,13 +67,6 @@ GATCHA_FAVLIST_RETRY_DELAY_SECONDS = 3
 GATCHA_PROFILE_CACHE_TTL_SECONDS = 300
 GATCHA_TASK_BUSY_MESSAGE = "拉取任务执行中，请等待任务结束"
 MISSING_BILIBILI_COOKIE_MESSAGE = "请登录 Bilibili 账号或输入 Cookie"
-_GATCHA_TASK_STATUS = {
-    "status": "idle",
-    "message": "",
-    "error": "",
-    "updated_at": 0.0,
-    "result": None,
-}
 _COOKIE_REQUIRED_KEYS = {"sessdata", "bili_jct"}
 _COOKIE_PREFERRED_ORDER = (
     "SESSDATA",
@@ -252,35 +243,18 @@ def _set_gatcha_task_status(
     result: dict | None = None,
     blocking: bool = True,
 ) -> None:
-    with _GATCHA_TASK_STATUS_LOCK:
-        _GATCHA_TASK_STATUS.update(
-            {
-                "status": status,
-                "message": message,
-                "error": error,
-                "updated_at": time.time(),
-                "result": result,
-                "blocking": blocking,
-            }
-        )
+    rust_runtime.set_gatcha_task_status(
+        status,
+        message=message,
+        error=error,
+        result=result,
+        blocking=blocking,
+        busy_message=GATCHA_TASK_BUSY_MESSAGE,
+    )
 
 
 def gatcha_task_snapshot() -> dict:
-    with _GATCHA_TASK_STATUS_LOCK:
-        last_status = dict(_GATCHA_TASK_STATUS)
-    task_blocking = bool(last_status.get("blocking", True))
-    busy = _GATCHA_REFRESH_LOCK.locked() or (last_status.get("status") == "running" and task_blocking)
-    return {
-        "busy": busy,
-        "background_busy": last_status.get("status") == "running",
-        "blocking": task_blocking,
-        "message": GATCHA_TASK_BUSY_MESSAGE if busy else "",
-        "last_status": last_status.get("status") or "idle",
-        "last_message": last_status.get("message") or "",
-        "last_error": last_status.get("error") or "",
-        "last_updated_at": last_status.get("updated_at") or 0.0,
-        "last_result": last_status.get("result"),
-    }
+    return rust_runtime.gatcha_task_snapshot()
 
 
 def _normalize_gatcha_profile(raw_uid: object, raw_profile: object) -> dict | None:
@@ -1435,7 +1409,9 @@ def refresh_gatcha_favlist(
     on_start: callable | None = None,
     on_done: callable | None = None,
 ) -> dict:
-    if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+    if not rust_runtime.try_begin_gatcha_refresh(
+        busy_message=GATCHA_TASK_BUSY_MESSAGE
+    ):
         raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
     result: dict | None = None
     entries: list[dict] = []
@@ -1446,7 +1422,7 @@ def refresh_gatcha_favlist(
         with _GATCHA_FAVLIST_LOCK:
             entries = list(_load_gatcha_favlist().get("items") or [])
     finally:
-        _GATCHA_REFRESH_LOCK.release()
+        rust_runtime.release_gatcha_refresh()
         if on_done is not None:
             on_done()
     if entries:
@@ -1980,9 +1956,15 @@ def refresh_gatcha_cache_in_background(
     startup_schema_rebuild: bool = False,
 ) -> bool:
     if use_global_lock:
-        if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+        if not rust_runtime.try_begin_gatcha_refresh(
+            busy_message=GATCHA_TASK_BUSY_MESSAGE,
+            task={
+                "status": "running",
+                "message": GATCHA_TASK_BUSY_MESSAGE,
+                "blocking": True,
+            },
+        ):
             return False
-        _set_gatcha_task_status("running", message=GATCHA_TASK_BUSY_MESSAGE)
         if on_start is not None:
             on_start()
     else:
@@ -2023,7 +2005,7 @@ def refresh_gatcha_cache_in_background(
             return
         finally:
             if use_global_lock:
-                _GATCHA_REFRESH_LOCK.release()
+                rust_runtime.release_gatcha_refresh()
                 if on_done is not None:
                     on_done()
         if cache_payload is not None and task_status != "failed":
@@ -2036,7 +2018,9 @@ def refresh_gatcha_cache_in_background(
 
 
 def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done: callable | None = None) -> dict:
-    if not _GATCHA_REFRESH_LOCK.acquire(blocking=False):
+    if not rust_runtime.try_begin_gatcha_refresh(
+        busy_message=GATCHA_TASK_BUSY_MESSAGE
+    ):
         raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
     entries: list[dict] = []
     try:
@@ -2102,7 +2086,7 @@ def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done
             }
         _merge_added_uid_into_rebuild_temp(mid, temp_profile, entries)
     finally:
-        _GATCHA_REFRESH_LOCK.release()
+        rust_runtime.release_gatcha_refresh()
         if on_done is not None:
             on_done()
     if entries:

@@ -15,8 +15,8 @@ APP_NAME = "bilikara"
 APP_PUBLISHER = "VZRXS"
 ROOT_DIR = Path(__file__).resolve().parent
 VERSION_FILE = ROOT_DIR / "APP_VERSION"
-REQUIRED_TOOL_BINARIES = ("ffmpeg", "BBDown")
-OPTIONAL_TOOL_BINARIES = ("ffprobe",)
+REQUIRED_TOOL_BINARIES = ("ffmpeg", "ffprobe", "BBDown")
+OPTIONAL_TOOL_BINARIES: tuple[str, ...] = ()
 LEGAL_DOCUMENTS = ("LICENSE", "LEGAL.md", "THIRD_PARTY_NOTICES.md")
 PYTHON_HTTPS_HIDDEN_IMPORTS = (
     "ssl",
@@ -90,8 +90,9 @@ def main() -> None:
     ]
     command.extend(_python_https_args(data_separator, verbose=True))
     command.extend(_python_certifi_args(data_separator, verbose=True))
-    command.extend(_bundled_binary_args(data_separator, verbose=True, validate=True))
-    command.extend(_macos_aria2_metadata_args(data_separator, verbose=True))
+    command.extend(
+        _bundled_binary_args(data_separator, verbose=True, validate=True)
+    )
     command.extend(_rust_library_args(data_separator, verbose=True))
 
     if platform.system() == "Windows":
@@ -325,6 +326,15 @@ def _rust_library_name() -> str:
     return "libbilikara_rust.so"
 
 
+def _rust_runtime_library_name() -> str:
+    system = platform.system()
+    if system == "Windows":
+        return "bilikara_runtime.dll"
+    if system == "Darwin":
+        return "libbilikara_runtime.dylib"
+    return "libbilikara_runtime.so"
+
+
 def _macos_aria2_metadata_args(
     data_separator: str,
     *,
@@ -413,19 +423,40 @@ def _locked_macos_aria2_metadata_path(machine: str) -> Path:
 
 
 def _rust_library_args(data_separator: str, *, verbose: bool = False) -> list[str]:
-    library_path = ROOT_DIR / "rust" / "target" / "release" / _rust_library_name()
-    if library_path.is_file():
+    libraries = (
+        ROOT_DIR / "rust" / "target" / "release" / _rust_library_name(),
+        ROOT_DIR
+        / "rust-runtime"
+        / "target"
+        / "release"
+        / _rust_runtime_library_name(),
+    )
+    found = [path for path in libraries if path.is_file()]
+    missing = [path for path in libraries if not path.is_file()]
+    if missing:
+        message = "Rust library not found: " + ", ".join(str(path) for path in missing)
+        if os.getenv(RUST_STRICT_ENV, "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            raise RuntimeError(message)
         if verbose:
-            print("Bundling Rust title cleanup library:")
+            print(f"Warning: {message}")
+    if verbose and found:
+        print("Bundling Rust libraries:")
+        for library_path in found:
             print(f"  - {library_path}")
-        return ["--add-binary", f"{library_path.resolve()}{data_separator}{RUST_BUNDLE_DIR}"]
-
-    message = f"Rust library not found; using Python fallback: {library_path}"
-    if os.getenv(RUST_STRICT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
-        raise RuntimeError(message)
-    if verbose:
-        print(f"Warning: {message}")
-    return []
+    args: list[str] = []
+    for library_path in found:
+        args.extend(
+            [
+                "--add-binary",
+                f"{library_path.resolve()}{data_separator}{RUST_BUNDLE_DIR}",
+            ]
+        )
+    return args
 
 
 def _validate_ffmpeg_redistribution_metadata(bundled_paths: dict[str, Path]) -> None:
@@ -545,32 +576,6 @@ def _write_release_compliance_files() -> None:
         if source.exists():
             shutil.copy2(source, target_dir / document_name)
 
-    licenses_dir = target_dir / "THIRD_PARTY_LICENSES"
-    licenses_dir.mkdir(parents=True, exist_ok=True)
-    bundled_paths, missing_tools = _resolved_bundle_binary_paths()
-    _write_text(
-        licenses_dir / "ffmpeg-source.txt",
-        _ffmpeg_source_notice(bundled_paths, missing_tools),
-    )
-    _write_text(
-        licenses_dir / "bbdown-source.txt",
-        _bbdown_source_notice(bundled_paths),
-    )
-    _copy_ffmpeg_source_material(target_dir, licenses_dir)
-    _copy_bbdown_license(licenses_dir)
-    for binary_name in ("ffmpeg", "ffprobe"):
-        binary_path = bundled_paths.get(binary_name)
-        if binary_path:
-            _write_text(
-                licenses_dir / f"{binary_name}-version.txt",
-                _tool_version_output(binary_path),
-            )
-    bbdown_path = bundled_paths.get("BBDown")
-    if bbdown_path:
-        _write_text(
-            licenses_dir / "bbdown-version.txt",
-            _tool_output(bbdown_path, "--help"),
-        )
 
 
 def _release_compliance_dir() -> Path | None:

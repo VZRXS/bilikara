@@ -5,6 +5,31 @@ import bilikara.lark_pool_client as lark_pool
 
 
 class LarkPoolClientTest(unittest.TestCase):
+    def test_lark_http_transport_delegates_to_rust_runtime(self):
+        with patch.object(
+            lark_pool.rust_runtime,
+            "json_http_request",
+            return_value={"code": 0, "data": {}},
+        ) as request:
+            result = lark_pool._post_json(
+                "https://open.feishu.test/api",
+                {"bvid": "BV1xx411c7mD"},
+                token="tenant-token",
+                timeout=4,
+            )
+
+        self.assertEqual(result["code"], 0)
+        request.assert_called_once_with(
+            "POST",
+            "https://open.feishu.test/api",
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": "Bearer tenant-token",
+            },
+            payload={"bvid": "BV1xx411c7mD"},
+            timeout=4,
+        )
+
     def test_tenant_access_token_reads_top_level_feishu_payload(self):
         with (
             patch.object(
