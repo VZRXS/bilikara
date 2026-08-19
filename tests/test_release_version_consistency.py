@@ -11,7 +11,7 @@ import build_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.7.1"
+EXPECTED_VERSION = "0.7.2"
 
 
 class ReleaseVersionConsistencyTest(unittest.TestCase):
@@ -36,9 +36,9 @@ class ReleaseVersionConsistencyTest(unittest.TestCase):
         self.assertEqual(package_lock["packages"][""]["version"], EXPECTED_VERSION)
 
     def test_bundle_and_windows_versions_use_release_representation(self):
-        with patch.dict(os.environ, {"BILIKARA_VERSION": "v0.7.1"}, clear=False):
-            self.assertEqual(build_bundle._bundle_version(), "v0.7.1")
-        self.assertEqual(build_bundle._windows_version_tuple("v0.7.1"), (0, 7, 1, 0))
+        with patch.dict(os.environ, {"BILIKARA_VERSION": "v0.7.2"}, clear=False):
+            self.assertEqual(build_bundle._bundle_version(), "v0.7.2")
+        self.assertEqual(build_bundle._windows_version_tuple("v0.7.2"), (0, 7, 2, 0))
 
 
 if __name__ == "__main__":
