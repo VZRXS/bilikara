@@ -1,15 +1,44 @@
 from __future__ import annotations
 
 import json
+import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from bilikara import launcher
 from bilikara.tool_smoke import packaged_tool_smoke_json
 
 
 class PackagedToolSmokeTest(unittest.TestCase):
+    def test_launcher_accepts_aria2c_smoke_target(self):
+        marker = '{"event":"bilikara.tool_smoke","tool":"aria2c"}'
+        trust_status = SimpleNamespace(
+            backend="python-default",
+            verify_mode="CERT_REQUIRED",
+            check_hostname=True,
+        )
+
+        with patch.object(sys, "argv", ["bilikara", "--tool-smoke", "aria2c"]), patch(
+            "bilikara.launcher._ensure_std_streams"
+        ), patch("bilikara.launcher._install_debug_log_streams"), patch(
+            "bilikara.launcher._install_startup_exception_hooks"
+        ), patch(
+            "bilikara.launcher.startup_logging_enabled", return_value=False
+        ), patch(
+            "bilikara.https_trust.initialize_https_trust", return_value=trust_status
+        ), patch(
+            "bilikara.tool_smoke.packaged_tool_smoke_json", return_value=marker
+        ) as smoke, patch(
+            "builtins.print"
+        ) as print_mock:
+            launcher.run_with_startup_logging()
+
+        smoke.assert_called_once_with("aria2c")
+        print_mock.assert_called_once_with(marker, flush=True)
+
     def test_bbdown_smoke_exercises_runtime_restore(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
