@@ -87,6 +87,51 @@ class PackagedToolSmokeTest(unittest.TestCase):
         self.assertTrue(payload["capabilities"]["status_service"])
         self.assertTrue(payload["capabilities"]["diagnostics"])
 
+    def test_aria2c_smoke_exercises_on_demand_publication(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_dir = root / "data" / "cache"
+            runtime = root / "tools" / "aria2c" / "aria2c"
+            events: list[object] = []
+
+            class FakeCacheManager:
+                def __init__(self, _store, *, max_cache_items: int):
+                    if max_cache_items != 0:
+                        raise AssertionError("tool smoke must disable media caching")
+                    events.append("created")
+
+                @staticmethod
+                def _local_aria2c_binary_path() -> Path:
+                    return runtime
+
+                @staticmethod
+                def _install_aria2c(path: Path, *, allow_brew_fallback: bool) -> None:
+                    events.append((path, allow_brew_fallback))
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"aria2c")
+
+                @staticmethod
+                def _read_aria2c_version(_path: Path) -> str:
+                    return "1.37.0"
+
+                def shutdown(self) -> None:
+                    events.append("shutdown")
+
+            with patch("bilikara.config.CACHE_DIR", cache_dir), patch(
+                "bilikara.config.STATE_FILE", root / "data" / "state.json"
+            ), patch("bilikara.config.BACKUP_FILE", root / "data" / "backup.json"), patch(
+                "bilikara.config.PLAYED_SESSION_DIR", root / "data" / "played"
+            ), patch("bilikara.cache.CacheManager", FakeCacheManager), patch(
+                "bilikara.store.PlaylistStore", return_value=object()
+            ):
+                payload = json.loads(packaged_tool_smoke_json("aria2c"))
+
+        self.assertEqual(payload["event"], "bilikara.tool_smoke")
+        self.assertEqual(payload["tool"], "aria2c")
+        self.assertEqual(payload["version"], "1.37.0")
+        self.assertEqual(Path(payload["path"]), runtime.resolve())
+        self.assertEqual(events, ["created", (runtime, False), "shutdown"])
+
 
 if __name__ == "__main__":
     unittest.main()

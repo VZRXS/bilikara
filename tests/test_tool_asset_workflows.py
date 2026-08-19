@@ -108,6 +108,10 @@ class ToolAssetWorkflowTest(unittest.TestCase):
             self.bundle_workflow,
         )
         self.assertIn("Verify clean BBDown runtime restore on Windows", self.bundle_workflow)
+        self.assertIn("Locked aria2c metadata-only checks", self.bundle_workflow)
+        self.assertIn("BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE=1", self.bundle_workflow)
+        self.assertIn("Packaged portable FFmpeg checks", self.bundle_workflow)
+        self.assertIn("Running extracted portable FFmpeg checks", self.bundle_workflow)
         for tool in ("BBDown", "ffmpeg", "ffprobe"):
             self.assertIn(tool, self.bundle_workflow)
         self.assertIn("bilikara_runtime.dll", self.bundle_workflow)

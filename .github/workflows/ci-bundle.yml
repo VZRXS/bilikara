@@ -387,8 +387,28 @@ jobs:
           file "$embedded_backend/Contents/MacOS/bilikara"
           test "$(lipo -archs dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$embedded_backend/Contents/MacOS/bilikara")"
 
+          echo "=== Locked aria2c metadata-only checks ==="
+          aria2_metadata="$embedded_backend/Contents/Resources/vendor/aria2-macos.json"
+          test -f "$aria2_metadata"
+          expected_arch="$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
+          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64; print("locked aria2c metadata: arch={} sha256={}".format(data["arch"], data["sha256"]))' "$aria2_metadata" "$expected_arch"
+          unexpected_aria2="$(find dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
+          if [ -n "$unexpected_aria2" ]; then
+            echo "Unexpected bundled aria2c executable candidate(s):" >&2
+            printf '%s\n' "$unexpected_aria2" >&2
+            exit 1
+          fi
+
+          echo "=== Packaged portable FFmpeg checks ==="
+          for binary_name in ffmpeg ffprobe; do
+            packaged_tool="dist_release/bilikara.app/Contents/Frameworks/vendor/$binary_name"
+            test -x "$packaged_tool"
+            "$packaged_tool" -version
+            /usr/bin/otool -L "$packaged_tool"
+          done
+
           echo "=== Running Python backend smoke test ==="
-          BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
+          BILIKARA_REQUIRE_ARIA2_TOOL_SMOKE=1 BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
 
           echo "=== Running Tauri/backend shell and Finder-like environment smoke tests ==="
           BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
@@ -424,6 +444,25 @@ jobs:
           codesign --verify --deep --strict --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           codesign -dv --verbose=4 test_extract/dist_release/Bilikara-Desktop.app
           test "$(lipo -archs test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara)" = "$(lipo -archs "$extracted_embedded_backend/Contents/MacOS/bilikara")"
+
+          extracted_aria2_metadata="$extracted_embedded_backend/Contents/Resources/vendor/aria2-macos.json"
+          test -f "$extracted_aria2_metadata"
+          python -c 'import json,sys; data=json.load(open(sys.argv[1], encoding="utf-8")); assert data["schema_version"] == 2; assert data["arch"] == sys.argv[2]; assert data["url"].startswith("https://"); assert len(data["sha256"]) == 64' "$extracted_aria2_metadata" "$(python -c "import platform; m=platform.machine().lower(); print('x64' if m in ('amd64','x86_64','x64') else 'arm64')")"
+          unexpected_aria2="$(find test_extract/dist_release -type f \( -name aria2c -o -name aria2c.exe \) -print)"
+          if [ -n "$unexpected_aria2" ]; then
+            echo "Unexpected archived aria2c executable candidate(s):" >&2
+            printf '%s\n' "$unexpected_aria2" >&2
+            exit 1
+          fi
+
+          echo "=== Running extracted portable FFmpeg checks ==="
+          for binary_name in ffmpeg ffprobe; do
+            packaged_tool="test_extract/dist_release/bilikara.app/Contents/Frameworks/vendor/$binary_name"
+            test -x "$packaged_tool"
+            "$packaged_tool" -version
+            /usr/bin/otool -L "$packaged_tool"
+          done
+
           echo "=== Running round-trip extracted shell and Finder-like smoke tests ==="
           BILIKARA_REQUIRE_BACKEND_SMOKE=1 BILIKARA_TEST_BACKEND_EXE="$(pwd)/test_extract/dist_release/bilikara.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_backend_smoke.MacOSBackendSmokeTest -v
           BILIKARA_TAURI_SMOKE_TIMEOUT_SECONDS=120 BILIKARA_REQUIRE_TAURI_SMOKE=1 BILIKARA_TEST_TAURI_EXE="$(pwd)/test_extract/dist_release/Bilikara-Desktop.app/Contents/MacOS/bilikara" python -m unittest tests.test_macos_tauri_smoke.MacOSTauriSmokeTest -v
