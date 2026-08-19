@@ -27,7 +27,7 @@
       "csp": null,
       "capabilities": [
         "main",
-        "stage"
+        "controller"
       ]
     }
   },

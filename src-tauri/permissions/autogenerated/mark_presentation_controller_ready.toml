@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mark-presentation-controller-ready"
+description = "Enables the mark_presentation_controller_ready command without any pre-configured scope."
+commands.allow = ["mark_presentation_controller_ready"]
+
+[[permission]]
+identifier = "deny-mark-presentation-controller-ready"
+description = "Denies the mark_presentation_controller_ready command without any pre-configured scope."
+commands.deny = ["mark_presentation_controller_ready"]

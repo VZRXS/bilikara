@@ -2969,6 +2969,7 @@ console.log(JSON.stringify({ pending, starting, established }));
             controls_source,
             """
 function mountedLocalVideoElement() { return mountedVideo; }
+function presentationCompositionActive() { return false; }
 const playerControlsAutoHideMs = 5000;
 window.setTimeout = () => ({ timer: "controls" });
 window.clearTimeout = () => {};
@@ -3027,6 +3028,7 @@ console.log(JSON.stringify({ entered, left, moved, touched, focused, pending, st
             controls_source,
             """
 function mountedLocalVideoElement() { return mountedVideo; }
+function presentationCompositionActive() { return false; }
 const playerControlsAutoHideMs = 5000;
 window.setTimeout = () => ({ timer: "controls" });
 window.clearTimeout = () => {};
@@ -3098,6 +3100,7 @@ console.log(JSON.stringify({ afterStale, afterCurrent }));
             controls_source,
             """
 function mountedLocalVideoElement() { return mountedVideo; }
+function presentationCompositionActive() { return false; }
 const playerControlsAutoHideMs = 5000;
 """,
         )
@@ -3935,7 +3938,7 @@ const supportsFS = supportsPlayerFullscreen();
 
 console.log(JSON.stringify({ isTauriWK, supportsFS }));
 """,
-            self._slice("function isWebKitPlaybackRuntime()", "function tauriAppWindow()"),
+            self._slice("function isWebKitPlaybackRuntime()", "function tauriInvoke()"),
         )
         self.assertTrue(result["isTauriWK"])
         self.assertTrue(result["supportsFS"])
@@ -3951,7 +3954,7 @@ const isTauriWK = isTauriWebKitRuntime();
 
 console.log(JSON.stringify({ isWebKit, isTauriWK }));
 """,
-            self._slice("function isWebKitPlaybackRuntime()", "function tauriAppWindow()"),
+            self._slice("function isWebKitPlaybackRuntime()", "function tauriInvoke()"),
         )
         self.assertFalse(result["isWebKit"])
         self.assertFalse(result["isTauriWK"])
