@@ -107,6 +107,7 @@ RATING_PROMPT_THRESHOLD = 0.5
 REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
 REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 CONTAINER_RUNTIME_MARKERS = ("docker", "containerd", "kubepods", "lxc")
+LOCAL_EXPORT_SHUTDOWN_GRACE_SECONDS = 10.0
 
 
 def _player_diagnostic_number(value: object) -> float | None:
@@ -324,6 +325,9 @@ class AppContext:
         self._client_seen_once = False
         self._no_clients_since: float | None = None
         self._shutdown_requested = False
+        self._active_local_exports = 0
+        self._local_export_idle = threading.Event()
+        self._local_export_idle.set()
         self._client_grace_seconds = 4.0
         self._client_stale_seconds = 120.0
         self._client_watchdog: threading.Thread | None = None
@@ -888,6 +892,8 @@ class AppContext:
             self._host_seen_once = False
             self._no_clients_since = None
             self._shutdown_requested = False
+            self._active_local_exports = 0
+            self._local_export_idle.set()
         with self._remote_access_lock:
             self._remote_access = self._build_remote_access_payload(self._host, self._port, [])
         self._start_background_tasks_once()
@@ -915,6 +921,9 @@ class AppContext:
             self._state_change_condition.notify_all()
 
     def _request_update_restart(self) -> None:
+        self._request_server_shutdown(delay_seconds=0.5, thread_name="bilikara-update-restart")
+
+    def _request_server_shutdown(self, *, delay_seconds: float = 0.0, thread_name: str) -> None:
         with self._client_lock:
             server = self._server
             self._shutdown_requested = True
@@ -922,26 +931,35 @@ class AppContext:
             return
 
         def shutdown_server() -> None:
-            time.sleep(0.5)
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            self._local_export_idle.wait(timeout=LOCAL_EXPORT_SHUTDOWN_GRACE_SECONDS)
             server.shutdown()
 
         threading.Thread(
             target=shutdown_server,
             daemon=True,
-            name="bilikara-update-restart",
+            name=thread_name,
         ).start()
 
     def request_shutdown(self) -> None:
+        self._request_server_shutdown(thread_name="bilikara-api-shutdown")
+
+    def begin_local_export(self) -> bool:
         with self._client_lock:
-            server = self._server
-            self._shutdown_requested = True
-        if server is None:
-            return
-        threading.Thread(
-            target=server.shutdown,
-            daemon=True,
-            name="bilikara-api-shutdown",
-        ).start()
+            if self._closed or self._shutdown_requested:
+                return False
+            self._active_local_exports += 1
+            self._local_export_idle.clear()
+            return True
+
+    def finish_local_export(self) -> None:
+        with self._client_lock:
+            if self._active_local_exports <= 0:
+                return
+            self._active_local_exports -= 1
+            if not self._active_local_exports:
+                self._local_export_idle.set()
 
     def touch_client(self, client_id: str, is_host: bool = True) -> None:
         client_key = str(client_id or "").strip()
@@ -955,7 +973,6 @@ class AppContext:
                 self._host_seen_once = True
             self._client_seen_once = True
             self._no_clients_since = None
-            self._shutdown_requested = False
 
     def disconnect_client(self, client_id: str) -> None:
         client_key = str(client_id or "").strip()
@@ -974,6 +991,7 @@ class AppContext:
     def _client_watchdog_loop(self) -> None:
         while not self._closed:
             time.sleep(1.0)
+            should_shutdown = False
             with self._client_lock:
                 # 注意：这里改成了依赖 self._host_seen_once
                 if not self._shutdown_on_last_client or not self._host_seen_once or self._shutdown_requested:
@@ -989,11 +1007,12 @@ class AppContext:
                     continue
                 if now - self._no_clients_since < self._client_grace_seconds:
                     continue
-                server = self._server
-                if server is None:
+                if self._server is None:
                     continue
                 self._shutdown_requested = True
-            threading.Thread(target=server.shutdown, daemon=True).start()
+                should_shutdown = True
+            if should_shutdown:
+                self._request_server_shutdown(thread_name="bilikara-api-shutdown")
 
     def _prune_stale_clients(self, now: float) -> None:
         expired = [
@@ -1082,6 +1101,30 @@ atexit.register(CONTEXT.shutdown)
 
 class BilikaraHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def handle_one_request(self) -> None:
+        self._local_export_lease_active = False
+        self._local_export_lease_rejected = False
+        try:
+            super().handle_one_request()
+        finally:
+            if self._local_export_lease_active:
+                self._local_export_lease_active = False
+                CONTEXT.finish_local_export()
+
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        route = urlparse(self.path).path
+        is_local_export = (
+            self.command == "GET" and route == "/api/playlist/export"
+        ) or (
+            self.command == "POST" and route == "/api/diagnostics/package"
+        )
+        if is_local_export and self._is_local_client():
+            self._local_export_lease_active = CONTEXT.begin_local_export()
+            self._local_export_lease_rejected = not self._local_export_lease_active
+        return True
 
     def do_HEAD(self) -> None:  # noqa: N802
         route = urlparse(self.path).path
@@ -1323,6 +1366,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 "payload_size": 0,
             }
             self._log_export_stage("export_request_started", export_context)
+            if getattr(self, "_local_export_lease_rejected", False):
+                self._write_json(
+                    {"ok": False, "error": "服务正在关闭，无法开始导出"},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
             source_settings = {
                 "history": {
                     "items": lambda: CONTEXT.history_snapshot(),
@@ -1447,6 +1496,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                         error=PermissionError("remote client rejected"),
                     )
                     self._write_json({"ok": False, "error": "forbidden"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                if getattr(self, "_local_export_lease_rejected", False):
+                    self._write_json(
+                        {"ok": False, "error": "服务正在关闭，无法开始导出"},
+                        status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
                     return
                 self._log_diagnostics_stage("diagnostics_authorized", diagnostic_context)
                 try:

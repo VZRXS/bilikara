@@ -852,6 +852,11 @@ class AppContextClientTrackingTest(unittest.TestCase):
         context._client_seen_once = False
         context._no_clients_since = None
         context._shutdown_requested = False
+        context._closed = False
+        context._active_local_exports = 0
+        context._local_export_idle = threading.Event()
+        context._local_export_idle.set()
+        context._server = None
         context._client_stale_seconds = 120.0
         return context
 
@@ -866,6 +871,40 @@ class AppContextClientTrackingTest(unittest.TestCase):
         self.assertIn("remote-client", context._client_last_seen)
         self.assertEqual(context._host_client_last_seen, {})
         self.assertIsNotNone(context._no_clients_since)
+
+    def test_shutdown_waits_for_the_active_local_export(self):
+        context = self.make_context()
+        shutdown_called = threading.Event()
+        context._server = SimpleNamespace(shutdown=shutdown_called.set)
+
+        self.assertTrue(context.begin_local_export())
+        context.request_shutdown()
+        self.assertFalse(shutdown_called.wait(0.05))
+
+        context.touch_client("host-client", is_host=True)
+        self.assertFalse(context.begin_local_export())
+
+        context.finish_local_export()
+        self.assertTrue(shutdown_called.wait(1))
+
+    def test_rejected_local_export_cannot_reopen_shutdown_admission(self):
+        context = self.make_context()
+        context.request_shutdown()
+
+        self.assertFalse(context.begin_local_export())
+        context.touch_client("host-client", is_host=True)
+
+        self.assertFalse(context.begin_local_export())
+
+    def test_shutdown_wait_is_bounded_when_an_export_stalls(self):
+        context = self.make_context()
+        shutdown_called = threading.Event()
+        context._server = SimpleNamespace(shutdown=shutdown_called.set)
+
+        self.assertTrue(context.begin_local_export())
+        with patch.object(server_module, "LOCAL_EXPORT_SHUTDOWN_GRACE_SECONDS", 0.05):
+            context.request_shutdown()
+            self.assertTrue(shutdown_called.wait(1))
 
 
 class RunDefaultsTest(unittest.TestCase):
