@@ -35,11 +35,13 @@ instead of using Rust only as a library of deterministic rules.
   stateful store, session, playlist, and cache behavior.
 - The current application-service slice in `rust-runtime` owns the Bilibili
   QR-login state machine and generation guard, Bilibili WBI/DASH and redirect
-  I/O, Gacha task status plus repository/network refresh, Cloudflare request
+  I/O, Rust Native cache queues/retries/cancellation/validated publication,
+  Gacha task status plus repository/network refresh, Cloudflare request
   execution and bounded background append scheduling, update transfer and
   installation preparation, diagnostics assembly, and network selection.
-  Python still supplies configuration facts, starts compatibility workers, and
-  adapts the temporary C ABI.
+  Python still supplies configuration facts, projects cache events into the
+  compatibility store, starts explicit external-tool workers, and adapts the
+  temporary C ABI.
 - Make the Rust server/runtime the normal path. Retain Python only as a desktop
   compatibility/startup fallback during the transition.
 - Select one stateful core mode at startup: Rust Core mode for the process, or

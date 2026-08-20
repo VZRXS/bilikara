@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 base64 = "0.22"
+bilikara_rust = { path = "../rust" }
 fs2 = "0.4"
 if-addrs = "0.13"
 libc = "0.2"

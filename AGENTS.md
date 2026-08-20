@@ -70,7 +70,8 @@ Keep the following operations in their respective Host (Python / Tauri) or UI (J
 - Subprocess execution and management for `BBDown`, `yt-dlp`, `aria2c`, `FFmpeg`, or `ffprobe`.
 - Host runtime capability detection and environment variable evaluation.
 - Real-time clock acquisition and timestamping.
-- Existing mutable `PlaylistStore` state mutations, disk persistence, locks, queue ordering, cache scheduling, retries, and cancellation logic while the v0.7 Python Host remains in service.
+- Existing mutable `PlaylistStore` state mutations, disk persistence, and locks while the v0.7 Python Host remains in service.
+- Cache scheduling, retries, cancellation, and validated publication for explicit BBDown, yt-dlp, aria2c, and FFmpeg compatibility modes. Rust Native cache jobs are owned by `rust-runtime` and Python only submits jobs and projects events into `PlaylistStore`.
 - Tauri application lifecycle, native menus, and OS shell integrations (`src-tauri/`).
 
 These are temporary retained responsibilities, not targets for new Python
@@ -174,7 +175,7 @@ When completing a task, agents must report:
 | `server.py` | HTTP Server, API endpoints, SSE event hub (`AppContext`). |
 | `store.py` | `PlaylistStore` managing JSON state persistence (`data/state.json`). |
 | `bilibili.py` | Bilibili API querying, metadata parsing, media-page selection wrapper. |
-| `cache.py` | Orchestration of `BBDown` downloads and `FFmpeg` audio extraction. |
+| `cache.py` | Rust CacheRuntime adapter/state projection plus compatibility orchestration for explicit BBDown, yt-dlp, aria2c, and FFmpeg modes. |
 | `rust_backend.py` | Native FFI loader, JSON payload validation, frozen compatibility fallbacks for older domains, and fail-closed adapters for new Rust-authoritative capabilities. |
 | `updater.py` | GitHub release checking, semver comparison, update asset resolution. |
 | `config.py` | Global settings, path resolution, runtime tool discovery. |
@@ -206,6 +207,7 @@ When completing a task, agents must report:
 | File / Module | Purpose |
 | :--- | :--- |
 | `src/http_downloader.rs` | Typed HTTP transfer, URL fallback, progress, cancellation, response validation, and atomic publication. |
+| `src/cache_runtime.rs` | Rust Native cache queues, primary/urgent workers, retries, cancellation, multi-track validation, and atomic cache-group publication. |
 | `src/media_backend.rs` | Native media probing and MP4/FLAC normalization for Rust Native playback artifacts. |
 | `src/bilibili_service.rs` | Bilibili WBI signing, DASH resolution, and redirect handling. |
 | `src/gatcha_repository.rs` | Gacha configuration, persistence, browsing, candidate selection, and Bilibili refresh operations. |

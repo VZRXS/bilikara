@@ -64,6 +64,26 @@ class FakeServiceLibrary:
 
 
 class RustRuntimeAdapterTest(unittest.TestCase):
+    def test_cache_runtime_adapter_sends_flattened_command(self):
+        library = FakeServiceLibrary(
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "result": {"events": [], "snapshot": {}},
+            }
+        )
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            result = rust_runtime.cache_runtime_request(
+                "drain_events", max_events=32
+            )
+
+        self.assertEqual(result, {"events": [], "snapshot": {}})
+        self.assertEqual(library.request["service"], "cache_runtime")
+        self.assertEqual(
+            library.request["request"],
+            {"command": "drain_events", "max_events": 32},
+        )
+
     def test_runtime_service_sends_structured_json_http_request(self):
         library = FakeServiceLibrary(
             {

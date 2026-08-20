@@ -1,6 +1,7 @@
 use crate::bilibili_service::{
     BilibiliDashRequest, BilibiliRedirectRequest, fetch_dash_playurl, resolve_redirect,
 };
+use crate::cache_runtime::{CacheRuntimeCommand, execute_cache_runtime};
 use crate::cloudflare_service::{CloudflareServiceRequest, execute_cloudflare};
 use crate::diagnostics::{DiagnosticRequest, build_diagnostic_artifact, probe_connectivity_only};
 use crate::gatcha_repository::{GatchaRepositoryRequest, execute_gatcha};
@@ -100,6 +101,7 @@ struct StatusServiceWireResponse {
 enum RuntimeServiceCommand {
     BilibiliDash(BilibiliDashRequest),
     BilibiliRedirect(BilibiliRedirectRequest),
+    CacheRuntime(CacheRuntimeCommand),
     Cloudflare(CloudflareServiceRequest),
     GatchaRepository(GatchaRepositoryRequest),
     JsonHttp(JsonHttpRequest),
@@ -302,6 +304,9 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
             }
             RuntimeServiceCommand::BilibiliRedirect(request) => {
                 service_result(resolve_redirect(&request))
+            }
+            RuntimeServiceCommand::CacheRuntime(request) => {
+                service_result(execute_cache_runtime(request))
             }
             RuntimeServiceCommand::Cloudflare(request) => {
                 service_result(execute_cloudflare(&request))

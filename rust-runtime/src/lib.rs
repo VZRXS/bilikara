@@ -1,4 +1,5 @@
 mod bilibili_service;
+mod cache_runtime;
 mod cloudflare_service;
 mod diagnostics;
 mod ffi;
@@ -14,6 +15,7 @@ pub use bilibili_service::{
     BilibiliDashRequest, BilibiliDashResult, BilibiliServiceError, BilibiliStream,
     fetch_dash_playurl,
 };
+pub use cache_runtime::{CacheRuntimeCommand, CacheRuntimeError, execute_cache_runtime};
 pub use diagnostics::{DiagnosticError, DiagnosticRequest, DiagnosticResult};
 pub use ffi::{
     bilikara_runtime_abi_version, bilikara_runtime_download, bilikara_runtime_free_string,

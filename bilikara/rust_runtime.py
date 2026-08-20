@@ -177,6 +177,7 @@ def runtime_status() -> dict[str, Any]:
         },
         "capabilities": {
             "bilibili_service": _runtime_lib is not None,
+            "cache_runtime": _runtime_lib is not None,
             "cloudflare_service": _runtime_lib is not None,
             "gatcha_repository": _runtime_lib is not None,
             "http_download": _runtime_lib is not None,
@@ -200,6 +201,11 @@ def media_backend_available() -> bool:
 
 def status_service_available() -> bool:
     return _runtime_lib is not None
+
+
+def cache_runtime_request(command: str, **fields: Any) -> dict[str, Any]:
+    request = {"command": str(command), **fields}
+    return _call_runtime_service("cache_runtime", request)
 
 
 def json_http_request(

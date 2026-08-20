@@ -72,6 +72,7 @@ name = "bilikara_runtime"
 version = "0.7.0"
 dependencies = [
  "base64",
+ "bilikara_rust",
  "claxon",
  "fs2",
  "if-addrs",
@@ -85,6 +86,15 @@ dependencies = [
  "url",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "bilikara_rust"
+version = "0.7.2"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

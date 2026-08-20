@@ -78,11 +78,13 @@ Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI 
   validation, temporary output, and atomic publication. Python only adapts the
   temporary C ABI and keeps aria2c as a transactional desktop fallback.
 - The stateful service slice in `rust-runtime` owns Bilibili QR-login
-  transitions, WBI/DASH and redirect resolution, Gacha task leases, Gacha
-  repository persistence and refresh, Cloudflare requests and its bounded
-  background append queue, update transfer, diagnostics assembly, and network
-  address selection. Python supplies configuration and cookie facts and adapts
-  the temporary C ABI.
+  transitions, WBI/DASH and redirect resolution, Rust Native cache queues,
+  retries, cancellation, track concurrency, validation and publication,
+  Gacha task leases, Gacha repository persistence and refresh, Cloudflare
+  requests and its bounded background append queue, update transfer,
+  diagnostics assembly, and network address selection. Python supplies
+  configuration and cookie facts, projects cache events into the compatibility
+  store, and adapts the temporary C ABI.
 - Frozen Python implementations remain only for explicit compatibility paths:
   external BBDown/yt-dlp/aria2c/FFmpeg modes, emergency diagnostics, direct
   Feishu fallback, legacy Gacha schema rebuild, and runtime-unavailable update
