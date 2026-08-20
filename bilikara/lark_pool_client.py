@@ -898,6 +898,7 @@ def append_cloudflare_pool_entries(entries: list[dict]) -> dict:
         "added": int(payload.get("added") or 0),
         "updated_existing": int(payload.get("updated_existing") or 0),
         "skipped_existing": int(payload.get("skipped_existing") or 0),
+        "skipped_blacklisted": int(payload.get("skipped_blacklisted") or 0),
         "feishu_queued": int(payload.get("feishu_queued") or 0),
     }
 
@@ -1043,6 +1044,117 @@ def approve_cloudflare_review_items(
         }
     )
     return payload
+
+
+def reject_cloudflare_review_item(
+    bvid: str,
+    secret: str,
+    *,
+    record: dict | None = None,
+    rejected_by: str = "",
+) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "error": "missing secret"}
+    payload_body = {
+        "bvid": normalized_bvid,
+        "BILIKARA_ADMIN_SECRET": normalized_secret,
+        "reason_code": "not_karaoke",
+        "source": "pending_review",
+        "rejected_by": str(rejected_by or "").strip(),
+    }
+    if isinstance(record, dict):
+        payload_body["record"] = dict(record)
+    try:
+        payload = _cloudflare_json("POST", "/admin/review/reject", payload_body, timeout=15)
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "bvid": normalized_bvid, "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("error", "" if result.get("success") else "review rejection failed")
+    return result
+
+
+def list_cloudflare_blacklist(
+    secret: str,
+    *,
+    query: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_inactive: bool = False,
+) -> dict:
+    normalized_secret = str(secret or "").strip()
+    if not normalized_secret:
+        return {"success": False, "items": [], "error": "missing secret"}
+    try:
+        normalized_limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 20
+    try:
+        normalized_offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        normalized_offset = 0
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/blacklist/list",
+            {
+                "BILIKARA_ADMIN_SECRET": normalized_secret,
+                "query": str(query or "").strip(),
+                "limit": normalized_limit,
+                "offset": normalized_offset,
+                "include_inactive": bool(include_inactive),
+            },
+            timeout=20,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "items": [], "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "items": [], "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result.setdefault("items", [])
+    result.setdefault("error", "" if result.get("success") else "blacklist query failed")
+    return result
+
+
+def restore_cloudflare_blacklist_item(
+    bvid: str,
+    secret: str,
+    *,
+    restore_video: bool = False,
+    restored_by: str = "",
+) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/blacklist/restore",
+            {
+                "bvid": normalized_bvid,
+                "BILIKARA_ADMIN_SECRET": normalized_secret,
+                "restore_video": bool(restore_video),
+                "restored_by": str(restored_by or "").strip(),
+            },
+            timeout=15,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "bvid": normalized_bvid, "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("error", "" if result.get("success") else "blacklist restore failed")
+    return result
 
 
 def delete_cloudflare_pool_entry(bvid: str) -> dict:

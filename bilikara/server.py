@@ -54,9 +54,12 @@ from .lark_pool_client import (
     delete_cloudflare_mid_entries,
     delete_cloudflare_pool_entry,
     delete_cloudflare_video_entry,
+    list_cloudflare_blacklist,
     pending_cloudflare_review_items,
     prewarm_cloudflare_pool,
+    reject_cloudflare_review_item,
     reset_cloudflare_video_tags,
+    restore_cloudflare_blacklist_item,
     search_lark_pool,
     search_lark_pool_table,
     submit_cloudflare_song_rating,
@@ -1676,6 +1679,64 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     result = approve_cloudflare_review_items(bvids, bilikara_secret, limit=limit)
                 except LarkPoolError as exc:
                     self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-review/reject":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = reject_cloudflare_review_item(
+                    str(body.get("bvid") or ""),
+                    bilikara_secret,
+                    record=body.get("record") if isinstance(body.get("record"), dict) else None,
+                    rejected_by=str(body.get("rejected_by") or ""),
+                )
+                if not result.get("success"):
+                    self._write_json(
+                        {"ok": False, "error": str(result.get("error") or "review rejection failed")},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-blacklist/list":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = list_cloudflare_blacklist(
+                    bilikara_secret,
+                    query=str(body.get("query") or body.get("q") or ""),
+                    limit=body.get("limit") or 20,
+                    offset=body.get("offset") or 0,
+                    include_inactive=bool(body.get("include_inactive")),
+                )
+                if not result.get("success"):
+                    self._write_json(
+                        {"ok": False, "error": str(result.get("error") or "blacklist query failed")},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
+                    return
+                self._write_json({"ok": True, "data": result})
+                return
+            if route == "/api/admin-blacklist/restore":
+                bilikara_secret = str(body.get("BILIKARA_ADMIN_SECRET") or "").strip()
+                if not self._verified_bilikara_secret(bilikara_secret):
+                    self._write_json({"ok": False, "error": "invalid secret"}, status=HTTPStatus.FORBIDDEN)
+                    return
+                result = restore_cloudflare_blacklist_item(
+                    str(body.get("bvid") or ""),
+                    bilikara_secret,
+                    restore_video=bool(body.get("restore_video")),
+                    restored_by=str(body.get("restored_by") or ""),
+                )
+                if not result.get("success"):
+                    self._write_json(
+                        {"ok": False, "error": str(result.get("error") or "blacklist restore failed")},
+                        status=HTTPStatus.BAD_GATEWAY,
+                    )
                     return
                 self._write_json({"ok": True, "data": result})
                 return

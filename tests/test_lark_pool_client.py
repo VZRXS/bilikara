@@ -451,6 +451,68 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertEqual(posts[2][1], "/batch-add")
         self.assertEqual(posts[2][2]["records"][0]["preserved_3"], "1")
 
+    def test_reject_cloudflare_review_item_posts_snapshot_to_blacklist_endpoint(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"success": True, "bvid": "BV1xx411c7mD", "blacklisted": True, "deleted": True}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.reject_cloudflare_review_item(
+                "BV1xx411c7mD",
+                "secret",
+                record={"bvid": "BV1xx411c7mD", "title": "not karaoke"},
+                rejected_by="VZRXS",
+            )
+
+        self.assertTrue(result["blacklisted"])
+        self.assertEqual(requests[0][0:2], ("POST", "/admin/review/reject"))
+        self.assertEqual(requests[0][2]["reason_code"], "not_karaoke")
+        self.assertEqual(requests[0][2]["record"]["title"], "not karaoke")
+        self.assertEqual(requests[0][2]["rejected_by"], "VZRXS")
+
+    def test_list_cloudflare_blacklist_normalizes_pagination(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"success": True, "items": [], "total": 0, "has_more": False}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.list_cloudflare_blacklist(
+                "secret",
+                query=" macross ",
+                limit=500,
+                offset=-20,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(requests[0][0:2], ("POST", "/admin/blacklist/list"))
+        self.assertEqual(requests[0][2]["query"], "macross")
+        self.assertEqual(requests[0][2]["limit"], 100)
+        self.assertEqual(requests[0][2]["offset"], 0)
+
+    def test_restore_cloudflare_blacklist_item_preserves_restore_choice(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"success": True, "bvid": "BV1xx411c7mD", "restored_video": True}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.restore_cloudflare_blacklist_item(
+                "BV1xx411c7mD",
+                "secret",
+                restore_video=True,
+                restored_by="VZRXS",
+            )
+
+        self.assertTrue(result["restored_video"])
+        self.assertEqual(requests[0][0:2], ("POST", "/admin/blacklist/restore"))
+        self.assertTrue(requests[0][2]["restore_video"])
+        self.assertEqual(requests[0][2]["restored_by"], "VZRXS")
+
     def test_delete_cloudflare_pool_entry_posts_single_bvid(self):
         requests = []
 
