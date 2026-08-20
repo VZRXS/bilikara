@@ -2629,11 +2629,21 @@ class CacheManager:
 
         resolved_cid = cid if cid is not None else item.cid
 
-        dash = fetch_dash_playurl(
-            bvid=item.bvid,
-            cid=resolved_cid,
-            avid=item.aid,
-        )
+        if native_media:
+            dash = rust_runtime.fetch_bilibili_dash_playurl(
+                bvid=item.bvid,
+                cid=resolved_cid,
+                avid=item.aid,
+                cookie=cookie,
+                user_agent=str(BILIBILI_HEADERS.get("User-Agent") or ""),
+                referer=str(BILIBILI_HEADERS.get("Referer") or ""),
+            )
+        else:
+            dash = fetch_dash_playurl(
+                bvid=item.bvid,
+                cid=resolved_cid,
+                avid=item.aid,
+            )
 
         if not dash.get("video") and not dash.get("audio"):
             raise BilibiliError("未获取到任何视频/音频流地址")

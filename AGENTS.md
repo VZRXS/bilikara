@@ -206,6 +206,14 @@ When completing a task, agents must report:
 | File / Module | Purpose |
 | :--- | :--- |
 | `src/http_downloader.rs` | Typed HTTP transfer, URL fallback, progress, cancellation, response validation, and atomic publication. |
+| `src/media_backend.rs` | Native media probing and MP4/FLAC normalization for Rust Native playback artifacts. |
+| `src/bilibili_service.rs` | Bilibili WBI signing, DASH resolution, and redirect handling. |
+| `src/gatcha_repository.rs` | Gacha configuration, persistence, browsing, candidate selection, and Bilibili refresh operations. |
+| `src/cloudflare_service.rs` | Cloudflare API execution, pool-entry normalization, and bounded background append scheduling. |
+| `src/status_service.rs` | Bilibili login state and Gacha refresh lease/status ownership. |
+| `src/update_installer.rs` | Update extraction, helper generation, and helper launch validation. |
+| `src/diagnostics.rs` | Diagnostic sanitization and artifact assembly. |
+| `src/networking.rs` | Native LAN interface discovery and address ranking. |
 | `src/ffi.rs` | Temporary C ABI used by the Python compatibility host. |
 
 ### Tauri Shell Layer (`src-tauri/`)

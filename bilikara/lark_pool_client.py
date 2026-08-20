@@ -89,20 +89,22 @@ def _get_json(url: str, *, token: str, timeout: float = 12.0) -> dict:
 
 def _cloudflare_json(method: str, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 12.0) -> Any:
     url = f"{_CLOUDFLARE_API_URL}{path}"
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
-    }
-    if payload is not None:
-        headers["Content-Type"] = "application/json; charset=utf-8"
+    user_agent = f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)"
     _log_lark_debug(
         "cloudflare request",
         {"method": method.upper(), "url": url, "timeout": timeout, "payload_keys": sorted((payload or {}).keys())},
     )
     try:
-        parsed = rust_runtime.json_http_request(
-            method.upper(), url, headers=headers, payload=payload, timeout=timeout
+        result = rust_runtime.cloudflare_service_request(
+            "request",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=user_agent,
+            timeout=timeout,
+            method=method.upper(),
+            path=path,
+            payload=payload,
         )
+        parsed = result.get("payload")
         _log_lark_debug(
             "cloudflare response",
             {
@@ -134,18 +136,19 @@ def _cloudflare_admin_get_json(path: str, secret: str, *, timeout: float = 60.0)
     if not normalized_secret:
         raise LarkPoolError("missing secret")
     url = f"{_CLOUDFLARE_API_URL}{path}"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {normalized_secret}",
-        "Cache-Control": "no-store",
-        "Pragma": "no-cache",
-        "User-Agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
-    }
+    user_agent = f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)"
     _log_lark_debug("cloudflare admin request", {"url": url, "timeout": timeout})
     try:
-        return rust_runtime.json_http_request(
-            "GET", url, headers=headers, timeout=timeout
+        result = rust_runtime.cloudflare_service_request(
+            "request",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=user_agent,
+            timeout=timeout,
+            method="GET",
+            path=path,
+            authorization=f"Bearer {normalized_secret}",
         )
+        return result.get("payload")
     except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
         response = getattr(exc, "response", {})
         error = response.get("error") if isinstance(response, dict) else {}
@@ -884,17 +887,21 @@ def _normalize_pool_entries(entries: list[dict]) -> list[dict]:
 
 
 def append_cloudflare_pool_entries(entries: list[dict]) -> dict:
-    normalized = _normalize_pool_entries(entries)
-    if not normalized:
-        return {"attempted": 0, "added": 0}
     try:
-        payload = _cloudflare_json("POST", "/batch-add", {"records": normalized}, timeout=20)
-    except LarkPoolError as exc:
-        return {"attempted": len(normalized), "added": 0, "error": str(exc)}
-    if not isinstance(payload, dict):
-        return {"attempted": len(normalized), "added": 0, "error": "Cloudflare returned an invalid payload"}
+        payload = rust_runtime.cloudflare_service_request(
+            "append",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
+            timeout=20,
+            entries=entries,
+        )
+    except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
+        return {"attempted": len(entries), "added": 0, "error": f"Cloudflare request failed: {exc}"}
+    attempted = int(payload.get("attempted") or 0)
+    if attempted == 0:
+        return {"attempted": 0, "added": 0}
     return {
-        "attempted": int(payload.get("attempted") or len(normalized)),
+        "attempted": attempted,
         "added": int(payload.get("added") or 0),
         "updated_existing": int(payload.get("updated_existing") or 0),
         "skipped_existing": int(payload.get("skipped_existing") or 0),
@@ -1430,7 +1437,25 @@ def append_lark_pool_entries_in_background(entries: list[dict]) -> bool:
     if not normalized_entries:
         return False
     try:
-        return _BACKGROUND_APPEND_SCHEDULER.submit(normalized_entries)
+        result = rust_runtime.cloudflare_service_request(
+            "enqueue_append",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
+            timeout=20,
+            entries=normalized_entries,
+        )
+        return bool(result.get("accepted"))
+    except rust_runtime.RustRuntimeUnavailableError:
+        try:
+            return _BACKGROUND_APPEND_SCHEDULER.submit(normalized_entries)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                "[bilikara:lark] background append scheduling failed: "
+                f"{_BackgroundAppendScheduler._error_text(exc)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
     except Exception as exc:  # noqa: BLE001
         print(
             "[bilikara:lark] background append scheduling failed: "

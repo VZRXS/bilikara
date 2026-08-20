@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import platform
 import sys
 from collections.abc import Callable
@@ -62,10 +63,14 @@ def _runtime_library_name() -> str:
 def _runtime_library_candidates() -> list[Path]:
     root_dir = Path(__file__).resolve().parent.parent
     lib_name = _runtime_library_name()
-    candidates = [
+    candidates: list[Path] = []
+    explicit_path = str(os.environ.get("BILIKARA_RUST_RUNTIME_LIBRARY") or "").strip()
+    if explicit_path:
+        candidates.append(Path(explicit_path).expanduser())
+    candidates.extend([
         root_dir / "rust-runtime" / "target" / "release" / lib_name,
         root_dir / "rust-runtime" / "target" / "debug" / lib_name,
-    ]
+    ])
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidates.append(Path(meipass) / "rust" / lib_name)
@@ -171,6 +176,9 @@ def runtime_status() -> dict[str, Any]:
             "frozen_bundle": _runtime_frozen_bundle,
         },
         "capabilities": {
+            "bilibili_service": _runtime_lib is not None,
+            "cloudflare_service": _runtime_lib is not None,
+            "gatcha_repository": _runtime_lib is not None,
             "http_download": _runtime_lib is not None,
             "media_backend": _runtime_lib is not None,
             "status_service": _runtime_lib is not None,
@@ -288,6 +296,136 @@ def build_diagnostic_artifact(request: dict[str, Any]) -> dict[str, Any]:
             "invalid_response",
             "Rust diagnostics service returned invalid files",
             response=result,
+        )
+    return result
+
+
+def fetch_bilibili_dash_playurl(
+    *,
+    bvid: str,
+    cid: int,
+    avid: int = 0,
+    cookie: str = "",
+    user_agent: str = "",
+    referer: str = "https://www.bilibili.com/",
+    qn: int = 127,
+    fnval: int = 4048,
+    timeout_ms: int = 15_000,
+) -> dict[str, Any]:
+    result = _call_runtime_service(
+        "bilibili_dash",
+        {
+            "schema_version": 1,
+            "bvid": str(bvid or "").strip(),
+            "cid": int(cid),
+            "avid": int(avid),
+            "cookie": str(cookie or "").strip(),
+            "user_agent": str(user_agent or "").strip() or "Mozilla/5.0 Bilikara Rust Runtime",
+            "referer": str(referer or "").strip() or "https://www.bilibili.com/",
+            "qn": int(qn),
+            "fnval": int(fnval),
+            "timeout_ms": max(100, int(timeout_ms)),
+        },
+    )
+    if not isinstance(result, dict):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust Bilibili service returned an invalid response",
+            response={},
+        )
+    for key in ("video", "audio"):
+        if not isinstance(result.get(key), list):
+            raise RustRuntimeServiceError(
+                "invalid_response",
+                f"Rust Bilibili service omitted {key} streams",
+                response=result,
+            )
+    return result
+
+
+def resolve_bilibili_redirect(
+    url: str,
+    *,
+    cookie: str = "",
+    user_agent: str = "",
+    referer: str = "https://www.bilibili.com/",
+    timeout_ms: int = 15_000,
+) -> str:
+    result = _call_runtime_service(
+        "bilibili_redirect",
+        {
+            "schema_version": 1,
+            "url": str(url).strip(),
+            "cookie": str(cookie).strip(),
+            "user_agent": str(user_agent).strip() or "Mozilla/5.0 Bilikara Rust Runtime",
+            "referer": str(referer).strip() or "https://www.bilibili.com/",
+            "timeout_ms": max(100, int(timeout_ms)),
+        },
+    )
+    resolved_url = str(result.get("url") or "").strip()
+    if not resolved_url:
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust Bilibili redirect service omitted the final URL",
+            response=result,
+        )
+    return resolved_url
+
+
+def gatcha_repository_request(
+    operation: str,
+    *,
+    uid_file: Path,
+    cache_file: Path,
+    favlist_file: Path,
+    pool_config_file: Path,
+    **fields: Any,
+) -> dict[str, Any]:
+    request = {
+        "schema_version": 1,
+        "paths": {
+            "uid_file": str(Path(uid_file).resolve()),
+            "cache_file": str(Path(cache_file).resolve()),
+            "favlist_file": str(Path(favlist_file).resolve()),
+            "pool_config_file": str(Path(pool_config_file).resolve()),
+        },
+        "operation": str(operation),
+        **fields,
+    }
+    result = _call_runtime_service("gatcha_repository", request)
+    if not isinstance(result, dict):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust Gacha repository returned an invalid response",
+            response={},
+        )
+    return result
+
+
+def cloudflare_service_request(
+    operation: str,
+    *,
+    base_url: str,
+    user_agent: str,
+    timeout: float = 12.0,
+    **fields: Any,
+) -> dict[str, Any]:
+    result = _call_runtime_service(
+        "cloudflare",
+        {
+            "schema_version": 1,
+            "base_url": str(base_url).rstrip("/"),
+            "user_agent": str(user_agent),
+            "timeout_ms": max(100, int(float(timeout) * 1000)),
+            "operation": str(operation),
+            **fields,
+        },
+    )
+    if not isinstance(result, dict):
+        raise RustRuntimeServiceError(
+            "invalid_response",
+            "Rust Cloudflare service returned an invalid response",
+            response={},
         )
     return result
 
