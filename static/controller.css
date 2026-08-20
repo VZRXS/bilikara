@@ -1,0 +1,219 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #2c2118;
+  background: #f6efe7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(238, 128, 73, 0.2), transparent 36%),
+    #f6efe7;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  border: 1px solid rgba(80, 55, 38, 0.16);
+  border-radius: 14px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.76);
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(230, 102, 54, 0.35);
+  outline-offset: 2px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.controller-shell {
+  width: min(100%, 560px);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px;
+  display: grid;
+  align-content: start;
+  gap: 20px;
+}
+
+.controller-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.controller-tag,
+.controller-kicker {
+  margin: 0 0 6px;
+  color: #b14f28;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.controller-header h1,
+.controller-now h2 {
+  margin: 0;
+}
+
+.controller-header h1 {
+  font-size: 24px;
+}
+
+.controller-status {
+  margin: 4px 0 0;
+  padding: 7px 10px;
+  border-radius: 999px;
+  color: #6a5748;
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.controller-now,
+.controller-volume {
+  padding: 20px;
+  border: 1px solid rgba(80, 55, 38, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 16px 45px rgba(92, 57, 34, 0.08);
+}
+
+.controller-now h2 {
+  min-height: 2.7em;
+  font-size: clamp(22px, 6vw, 34px);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.controller-timeline {
+  margin-top: 20px;
+}
+
+.controller-timeline input,
+.controller-volume input {
+  width: 100%;
+  accent-color: #df6737;
+}
+
+.controller-timeline p {
+  margin: 8px 0 0;
+  color: #715f50;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.controller-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.controller-actions button {
+  min-height: 58px;
+  padding: 12px;
+  font-weight: 750;
+}
+
+.controller-actions .controller-play {
+  color: #fff;
+  background: #df6737;
+}
+
+.controller-actions #controller-next {
+  grid-column: 1 / -1;
+}
+
+.controller-volume-heading,
+.controller-volume-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.controller-volume-heading {
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-weight: 750;
+}
+
+.controller-volume-row input {
+  flex: 1;
+}
+
+.controller-volume-row button {
+  min-width: 78px;
+  padding: 10px 12px;
+}
+
+.controller-exit {
+  min-height: 50px;
+  padding: 12px 18px;
+  color: #923819;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.controller-error,
+.controller-unavailable {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  color: #8b281b;
+  background: rgba(207, 64, 45, 0.12);
+  font-size: 13px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f4e9df;
+    background: #17120f;
+  }
+
+  body {
+    background:
+      radial-gradient(circle at 10% 0%, rgba(223, 103, 55, 0.16), transparent 36%),
+      #17120f;
+  }
+
+  button,
+  .controller-status,
+  .controller-now,
+  .controller-volume {
+    color: #f4e9df;
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(46, 37, 31, 0.92);
+  }
+
+  .controller-timeline p,
+  .controller-status {
+    color: #c9b7a8;
+  }
+
+  .controller-actions .controller-play {
+    color: #fff;
+    background: #c8552d;
+  }
+}

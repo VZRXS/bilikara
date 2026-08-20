@@ -5295,6 +5295,324 @@ select:disabled {
   z-index: 5;
 }
 
+.presentation-status-chip.is-active {
+  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+}
+
+.presentation-state-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 999px;
+  background: rgba(109, 98, 88, 0.28);
+  box-shadow: 0 0 0 4px rgba(109, 98, 88, 0.08);
+}
+
+.presentation-state-dot.is-connecting {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.presentation-state-dot.is-active {
+  background: var(--green);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent);
+}
+
+.presentation-output-panel {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(650px, calc(100vh - 150px));
+  overflow-y: auto;
+  gap: 0;
+  padding: 0;
+}
+
+.presentation-panel-heading,
+.presentation-target-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.presentation-panel-heading {
+  min-height: 82px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.presentation-panel-heading-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.presentation-output-icon {
+  flex: 0 0 36px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.presentation-output-switch {
+  position: relative;
+  width: 48px;
+  height: 28px;
+  flex: 0 0 48px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(109, 98, 88, 0.24);
+  cursor: pointer;
+  transition: background 180ms ease, opacity 180ms ease;
+}
+
+.presentation-output-switch[aria-checked="true"] {
+  background: var(--accent);
+}
+
+.presentation-output-switch:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.presentation-output-switch:disabled[aria-busy="true"] {
+  cursor: wait;
+}
+
+.presentation-output-switch-thumb {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 4px 12px rgba(88, 56, 30, 0.22);
+  transition: transform 180ms ease;
+}
+
+.presentation-output-switch[aria-checked="true"] .presentation-output-switch-thumb {
+  transform: translateX(20px);
+}
+
+.presentation-target-section {
+  padding: 16px 20px 18px;
+}
+
+.presentation-target-heading {
+  margin-bottom: 10px;
+}
+
+.presentation-refresh-button {
+  flex: 0 0 30px;
+  font-size: 18px;
+}
+
+.presentation-refresh-button.is-loading {
+  animation: presentation-refresh-spin 900ms linear infinite;
+}
+
+@keyframes presentation-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+.presentation-display-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.presentation-display-option {
+  width: 100%;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.presentation-display-option:last-child {
+  border-bottom: 0;
+}
+
+.presentation-display-option:hover:not(:disabled),
+.presentation-display-option:focus-visible {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.presentation-display-option.is-selected {
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+
+.presentation-display-option:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.presentation-device-icon {
+  width: 36px;
+  height: 36px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(109, 98, 88, 0.11);
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.presentation-device-icon svg {
+  width: 21px;
+  height: 21px;
+  display: block;
+}
+
+.presentation-display-option.is-selected .presentation-device-icon {
+  background: color-mix(in srgb, var(--green) 16%, transparent);
+  color: var(--green);
+}
+
+.presentation-display-copy {
+  min-width: 0;
+}
+
+.presentation-display-name,
+.presentation-display-detail {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.presentation-display-name {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.presentation-display-detail {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.presentation-display-state {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.presentation-display-option:not(.is-selected) .presentation-display-state {
+  color: var(--muted);
+}
+
+.presentation-display-empty {
+  margin: 0;
+  padding: 18px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+body.is-presentation-stage-only {
+  overflow: hidden !important;
+  background: #000;
+  user-select: none;
+}
+
+body.is-presentation-stage-only #app-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 0;
+}
+
+body.is-presentation-stage-only #app-shell > .backup-banner,
+body.is-presentation-stage-only #app-shell > .topbar,
+body.is-presentation-stage-only .layout > .queue-card,
+body.is-presentation-stage-only .left-column > :not(.player-panel),
+body.is-presentation-stage-only > .app-toast,
+body.is-presentation-stage-only > .confirm-popover,
+body.is-presentation-stage-only > .selection-modal {
+  display: none !important;
+}
+
+body.is-presentation-stage-only .layout,
+body.is-presentation-stage-only .left-column {
+  display: block;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+
+body.is-presentation-stage-only .player-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+}
+
+body.is-presentation-stage-only .player-panel::before,
+body.is-presentation-stage-only .player-panel > .panel-head,
+body.is-presentation-stage-only #audio-variant-bar,
+body.is-presentation-stage-only #av-sync-panel,
+body.is-presentation-stage-only #volume-panel,
+body.is-presentation-stage-only #key-shift-panel {
+  display: none !important;
+}
+
+body.is-presentation-stage-only #player-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+}
+
+body.is-presentation-stage-only #player-frame video,
+body.is-presentation-stage-only #player-frame iframe {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+body.is-presentation-stage-only .fullscreen-request-toast:not(.hidden) {
+  display: grid;
+}
+
+body.is-presentation-stage-only .player-delay-overlay {
+  z-index: 10;
+  border-radius: 0;
+}
+
+body.is-presentation-stage-only.is-presentation-cursor-hidden,
+body.is-presentation-stage-only.is-presentation-cursor-hidden * {
+  cursor: none !important;
+}
+
 .audio-variant-button:hover,
 .audio-variant-button.active:hover {
   transform: none;

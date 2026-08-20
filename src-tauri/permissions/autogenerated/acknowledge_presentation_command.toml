@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-acknowledge-presentation-command"
+description = "Enables the acknowledge_presentation_command command without any pre-configured scope."
+commands.allow = ["acknowledge_presentation_command"]
+
+[[permission]]
+identifier = "deny-acknowledge-presentation-command"
+description = "Denies the acknowledge_presentation_command command without any pre-configured scope."
+commands.deny = ["acknowledge_presentation_command"]

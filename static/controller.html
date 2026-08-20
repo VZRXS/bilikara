@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>bilikara controller</title>
+  <link rel="stylesheet" href="/controller.css">
+</head>
+<body>
+  <main class="controller-shell" id="controller-shell">
+    <header class="controller-header">
+      <div>
+        <p class="controller-tag" data-i18n="controller.tag">LOCAL CONTROLLER</p>
+        <h1 data-i18n="controller.title">演出控制台</h1>
+      </div>
+      <p class="controller-status" id="controller-status" role="status" aria-live="polite">正在连接…</p>
+    </header>
+
+    <section class="controller-now" aria-labelledby="controller-title">
+      <p class="controller-kicker" data-i18n="controller.nowPlaying">正在播放</p>
+      <h2 id="controller-title">—</h2>
+      <div class="controller-timeline">
+        <input id="controller-seek" type="range" min="0" max="0" step="0.1" value="0"
+          aria-label="播放进度" data-i18n-aria-label="controller.seek" disabled>
+        <p id="controller-time">0:00 / 0:00</p>
+      </div>
+    </section>
+
+    <section class="controller-actions" aria-label="播放控制" data-i18n-aria-label="controller.controls">
+      <button type="button" id="controller-back-10" aria-label="后退 10 秒"
+        data-i18n-aria-label="controller.backTen" disabled data-command-control>
+        <span aria-hidden="true">−10</span>
+        <span data-i18n="controller.seconds">秒</span>
+      </button>
+      <button type="button" class="controller-play" id="controller-play-toggle" disabled data-command-control>
+        <span data-i18n="controller.play">播放</span>
+      </button>
+      <button type="button" id="controller-forward-10" aria-label="前进 10 秒"
+        data-i18n-aria-label="controller.forwardTen" disabled data-command-control>
+        <span aria-hidden="true">+10</span>
+        <span data-i18n="controller.seconds">秒</span>
+      </button>
+      <button type="button" id="controller-next" disabled data-command-control>
+        <span data-i18n="controller.next">下一首</span>
+      </button>
+    </section>
+
+    <section class="controller-volume">
+      <div class="controller-volume-heading">
+        <label for="controller-volume" data-i18n="controller.volume">音量</label>
+        <output id="controller-volume-value" for="controller-volume">100%</output>
+      </div>
+      <div class="controller-volume-row">
+        <input id="controller-volume" type="range" min="0" max="100" step="1" value="100"
+          disabled data-command-control>
+        <button type="button" id="controller-mute" disabled data-command-control>
+          <span data-i18n="controller.mute">静音</span>
+        </button>
+      </div>
+    </section>
+
+    <p class="controller-error hidden" id="controller-error" role="alert"></p>
+    <p class="controller-unavailable hidden" id="controller-unavailable" role="alert"
+      data-i18n="controller.unavailable">本地控制台不可用。请回到 Host 窗口。</p>
+
+    <button type="button" class="controller-exit" id="controller-exit" disabled>
+      <span data-i18n="controller.exit">退出双屏模式</span>
+    </button>
+  </main>
+  <script src="/controller.js" defer></script>
+</body>
+</html>

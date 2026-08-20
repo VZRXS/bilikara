@@ -130,6 +130,52 @@
             </div>
           </div>
         </div>
+        <div class="status-chip presentation-status-chip hidden" id="presentation-settings">
+          <button type="button" class="status-chip-toggle" id="presentation-settings-toggle" aria-expanded="false"
+            aria-controls="presentation-settings-panel">
+            <span class="status-chip-label-row">
+              <span class="control-label" data-i18n="display.outputTitle">双屏 / 投屏</span>
+              <span class="presentation-state-dot" id="presentation-state-dot" aria-hidden="true"></span>
+            </span>
+            <div class="service-mode-summary" id="presentation-output-summary" data-i18n="display.outputOff">已关闭</div>
+            <p class="cache-chip-meta" id="presentation-output-meta" data-i18n="display.detectingDisplays">正在检测显示器</p>
+          </button>
+          <div class="cache-panel presentation-output-panel hidden" id="presentation-settings-panel" role="region"
+            aria-labelledby="presentation-settings-toggle">
+            <div class="presentation-panel-heading">
+              <div class="presentation-panel-heading-main">
+                <span class="presentation-device-icon presentation-output-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2.5" y="4" width="13" height="10" rx="1.5"></rect>
+                    <path d="M7 18h4M9 14v4"></path>
+                    <rect x="14.5" y="8" width="7" height="9" rx="1.4"></rect>
+                  </svg>
+                </span>
+                <div>
+                  <p class="cache-panel-label" data-i18n="display.outputPanelTitle">显示输出</p>
+                  <p class="cache-panel-hint" id="presentation-output-status" role="status" aria-live="polite"
+                    data-i18n="display.presentationSelectDisplay">请选择外接显示器</p>
+                </div>
+              </div>
+              <button type="button" class="presentation-output-switch" id="presentation-output-button" role="switch"
+                aria-checked="false" data-i18n-aria-label="display.toggleDualOutput">
+                <span class="presentation-output-switch-thumb" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="presentation-target-section">
+              <div class="presentation-target-heading">
+                <div>
+                  <p class="cache-panel-label" data-i18n="display.targetTitle">输出目标</p>
+                </div>
+                <button type="button" class="icon-button presentation-refresh-button" id="presentation-refresh-button"
+                  data-i18n-title="display.refreshDisplays" data-i18n-aria-label="display.refreshDisplays"
+                  title="刷新显示器" aria-label="刷新显示器">↻</button>
+              </div>
+              <div class="presentation-display-list" id="presentation-display-list" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
         <div class="status-chip" id="cache-settings">
           <button type="button" class="status-chip-toggle" id="cache-settings-toggle" aria-expanded="false">
             <span class="status-chip-label-row">
@@ -1076,6 +1122,8 @@
   <script src="/export-download.js" defer></script>
   <script src="/diagnostics-copy.js" defer></script>
   <script src="/song-detail.js" defer></script>
+  <script src="/presentation-scene.js" defer></script>
+  <script src="/presentation-renderer.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 

@@ -16,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+mod presentation;
+
 #[cfg(target_os = "macos")]
 use objc2::{MainThreadMarker, rc::Retained};
 #[cfg(target_os = "macos")]
@@ -1458,7 +1460,16 @@ async fn save_backend_download(
 }
 
 #[tauri::command]
-fn set_window_fullscreen(window: tauri::WebviewWindow, fullscreen: bool) -> Result<(), String> {
+fn set_window_fullscreen(
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, BackendProcess>,
+    presentation: tauri::State<'_, presentation::PresentationState>,
+    fullscreen: bool,
+) -> Result<(), String> {
+    presentation::authorize_window(&window, &backend, &["main"])?;
+    if !presentation.allows_manual_fullscreen() {
+        return Err("presentation mode owns native fullscreen state".to_string());
+    }
     window
         .set_fullscreen(fullscreen)
         .map_err(|error| error.to_string())
@@ -1725,11 +1736,21 @@ fn main() {
 
     let startup_log_for_setup = startup_log.clone();
     let run_result = tauri::Builder::default()
+        .manage(presentation::PresentationState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             set_window_fullscreen,
-            save_backend_download
+            save_backend_download,
+            presentation::get_presentation_displays,
+            presentation::get_presentation_session,
+            presentation::activate_local_presentation,
+            presentation::mark_presentation_host_ready,
+            presentation::mark_presentation_controller_ready,
+            presentation::send_presentation_command,
+            presentation::acknowledge_presentation_command,
+            presentation::publish_presentation_playback_state,
+            presentation::deactivate_local_presentation,
         ])
         .setup(move |app| {
             let startup_log = startup_log_for_setup.clone();
@@ -1745,7 +1766,6 @@ fn main() {
                 );
                 return Ok(());
             };
-
             let mut resolution = match resolve_backend_command() {
                 Ok(resolution) => resolution,
                 Err(missing) => {
@@ -2079,9 +2099,16 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Destroyed = event
+            if window.label() == "controller"
+                && let tauri::WindowEvent::Destroyed = event
+            {
+                presentation::handle_controller_destroyed(window.app_handle());
+            }
+            if window.label() == "main"
+                && let tauri::WindowEvent::Destroyed = event
                 && let Some(state) = window.try_state::<BackendProcess>()
             {
+                presentation::prepare_app_shutdown(window.app_handle());
                 wait_for_active_backend_downloads(
                     &state.active_downloads,
                     ACTIVE_BACKEND_DOWNLOAD_SHUTDOWN_GRACE,
