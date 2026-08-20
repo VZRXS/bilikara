@@ -5295,11 +5295,11 @@ select:disabled {
   z-index: 5;
 }
 
-.stage-status-chip.is-active {
+.presentation-status-chip.is-active {
   border-color: color-mix(in srgb, var(--green) 40%, transparent);
 }
 
-.stage-state-dot {
+.presentation-state-dot {
   width: 9px;
   height: 9px;
   flex: 0 0 9px;
@@ -5308,17 +5308,17 @@ select:disabled {
   box-shadow: 0 0 0 4px rgba(109, 98, 88, 0.08);
 }
 
-.stage-state-dot.is-connecting {
+.presentation-state-dot.is-connecting {
   background: var(--accent);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-.stage-state-dot.is-active {
+.presentation-state-dot.is-active {
   background: var(--green);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 14%, transparent);
 }
 
-.stage-output-panel {
+.presentation-output-panel {
   width: min(420px, calc(100vw - 32px));
   max-height: min(650px, calc(100vh - 150px));
   overflow-y: auto;
@@ -5326,35 +5326,34 @@ select:disabled {
   padding: 0;
 }
 
-.stage-panel-heading,
-.stage-target-heading,
-.stage-cast-placeholder {
+.presentation-panel-heading,
+.presentation-target-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
 
-.stage-panel-heading {
+.presentation-panel-heading {
   min-height: 82px;
   padding: 18px 20px;
   border-bottom: 1px solid var(--line);
 }
 
-.stage-panel-heading-main {
+.presentation-panel-heading-main {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.stage-output-icon {
+.presentation-output-icon {
   flex: 0 0 36px;
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-.stage-output-switch {
+.presentation-output-switch {
   position: relative;
   width: 48px;
   height: 28px;
@@ -5367,16 +5366,20 @@ select:disabled {
   transition: background 180ms ease, opacity 180ms ease;
 }
 
-.stage-output-switch[aria-checked="true"] {
+.presentation-output-switch[aria-checked="true"] {
   background: var(--accent);
 }
 
-.stage-output-switch:disabled {
+.presentation-output-switch:disabled {
   opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.presentation-output-switch:disabled[aria-busy="true"] {
   cursor: wait;
 }
 
-.stage-output-switch-thumb {
+.presentation-output-switch-thumb {
   display: block;
   width: 22px;
   height: 22px;
@@ -5386,38 +5389,38 @@ select:disabled {
   transition: transform 180ms ease;
 }
 
-.stage-output-switch[aria-checked="true"] .stage-output-switch-thumb {
+.presentation-output-switch[aria-checked="true"] .presentation-output-switch-thumb {
   transform: translateX(20px);
 }
 
-.stage-target-section {
+.presentation-target-section {
   padding: 16px 20px 18px;
 }
 
-.stage-target-heading {
+.presentation-target-heading {
   margin-bottom: 10px;
 }
 
-.stage-refresh-button {
+.presentation-refresh-button {
   flex: 0 0 30px;
   font-size: 18px;
 }
 
-.stage-refresh-button.is-loading {
-  animation: stage-refresh-spin 900ms linear infinite;
+.presentation-refresh-button.is-loading {
+  animation: presentation-refresh-spin 900ms linear infinite;
 }
 
-@keyframes stage-refresh-spin {
+@keyframes presentation-refresh-spin {
   to { transform: rotate(360deg); }
 }
 
-.stage-display-list {
+.presentation-display-list {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 14px;
 }
 
-.stage-display-option {
+.presentation-display-option {
   width: 100%;
   min-height: 58px;
   display: grid;
@@ -5433,25 +5436,25 @@ select:disabled {
   cursor: pointer;
 }
 
-.stage-display-option:last-child {
+.presentation-display-option:last-child {
   border-bottom: 0;
 }
 
-.stage-display-option:hover:not(:disabled),
-.stage-display-option:focus-visible {
+.presentation-display-option:hover:not(:disabled),
+.presentation-display-option:focus-visible {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-.stage-display-option.is-selected {
+.presentation-display-option.is-selected {
   background: color-mix(in srgb, var(--green) 10%, transparent);
 }
 
-.stage-display-option:disabled {
+.presentation-display-option:disabled {
   cursor: default;
   opacity: 0.62;
 }
 
-.stage-device-icon {
+.presentation-device-icon {
   width: 36px;
   height: 36px;
   display: inline-grid;
@@ -5462,67 +5465,152 @@ select:disabled {
   font-size: 18px;
 }
 
-.stage-device-icon svg {
+.presentation-device-icon svg {
   width: 21px;
   height: 21px;
   display: block;
 }
 
-.stage-display-option.is-selected .stage-device-icon {
+.presentation-display-option.is-selected .presentation-device-icon {
   background: color-mix(in srgb, var(--green) 16%, transparent);
   color: var(--green);
 }
 
-.stage-display-copy {
+.presentation-display-copy {
   min-width: 0;
 }
 
-.stage-display-name,
-.stage-display-detail {
+.presentation-display-name,
+.presentation-display-detail {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.stage-display-name {
+.presentation-display-name {
   font-size: 14px;
   font-weight: 700;
 }
 
-.stage-display-detail {
+.presentation-display-detail {
   margin-top: 3px;
   color: var(--muted);
   font-size: 11px;
 }
 
-.stage-display-state,
-.stage-coming-soon {
+.presentation-display-state {
   color: var(--green);
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.stage-display-option:not(.is-selected) .stage-display-state {
+.presentation-display-option:not(.is-selected) .presentation-display-state {
   color: var(--muted);
 }
 
-.stage-cast-placeholder {
-  min-height: 74px;
-  justify-content: flex-start;
-  padding: 14px 20px;
-  border-top: 1px solid var(--line);
-  opacity: 0.68;
-}
-
-.stage-cast-placeholder > div {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.stage-coming-soon {
+.presentation-display-empty {
+  margin: 0;
+  padding: 18px;
   color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+body.is-presentation-stage-only {
+  overflow: hidden !important;
+  background: #000;
+  user-select: none;
+}
+
+body.is-presentation-stage-only #app-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 0;
+}
+
+body.is-presentation-stage-only #app-shell > .backup-banner,
+body.is-presentation-stage-only #app-shell > .topbar,
+body.is-presentation-stage-only .layout > .queue-card,
+body.is-presentation-stage-only .left-column > :not(.player-panel),
+body.is-presentation-stage-only > .app-toast,
+body.is-presentation-stage-only > .confirm-popover,
+body.is-presentation-stage-only > .selection-modal {
+  display: none !important;
+}
+
+body.is-presentation-stage-only .layout,
+body.is-presentation-stage-only .left-column {
+  display: block;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+}
+
+body.is-presentation-stage-only .player-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+}
+
+body.is-presentation-stage-only .player-panel::before,
+body.is-presentation-stage-only .player-panel > .panel-head,
+body.is-presentation-stage-only #audio-variant-bar,
+body.is-presentation-stage-only #av-sync-panel,
+body.is-presentation-stage-only #volume-panel,
+body.is-presentation-stage-only #key-shift-panel {
+  display: none !important;
+}
+
+body.is-presentation-stage-only #player-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+  box-shadow: none;
+}
+
+body.is-presentation-stage-only #player-frame video,
+body.is-presentation-stage-only #player-frame iframe {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+body.is-presentation-stage-only .fullscreen-request-toast:not(.hidden) {
+  display: grid;
+}
+
+body.is-presentation-stage-only .player-delay-overlay {
+  z-index: 10;
+  border-radius: 0;
+}
+
+body.is-presentation-stage-only.is-presentation-cursor-hidden,
+body.is-presentation-stage-only.is-presentation-cursor-hidden * {
+  cursor: none !important;
 }
 
 .audio-variant-button:hover,

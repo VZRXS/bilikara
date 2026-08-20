@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "controller",
+  "description": "Allow the trusted backend-origin Controller window to read its presentation session and send bounded controls to the Host.",
+  "windows": [
+    "controller"
+  ],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:*/*",
+      "http://localhost:*/*",
+      "http://*:*/*"
+    ]
+  },
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-get-presentation-session",
+    "allow-mark-presentation-controller-ready",
+    "allow-deactivate-local-presentation",
+    "allow-send-presentation-command"
+  ]
+}

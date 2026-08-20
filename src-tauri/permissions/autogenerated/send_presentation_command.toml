@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-presentation-command"
+description = "Enables the send_presentation_command command without any pre-configured scope."
+commands.allow = ["send_presentation_command"]
+
+[[permission]]
+identifier = "deny-send-presentation-command"
+description = "Denies the send_presentation_command command without any pre-configured scope."
+commands.deny = ["send_presentation_command"]

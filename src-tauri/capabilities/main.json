@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/remote-schema.json",
   "identifier": "main",
-  "description": "Allow the local Bilikara backend page to use native exports and control the host and stage windows.",
+  "description": "Allow the local Bilikara Host to use native exports and coordinate local presentation mode.",
   "windows": [
     "main"
   ],
@@ -14,12 +14,15 @@
   },
   "permissions": [
     "core:default",
-    "core:window:allow-set-fullscreen",
     "clipboard-manager:allow-write-text",
     "allow-save-backend-download",
     "allow-set-window-fullscreen",
-    "allow-get-stage-display-info",
-    "allow-open-stage-window",
-    "allow-close-stage-window"
+    "allow-get-presentation-displays",
+    "allow-get-presentation-session",
+    "allow-activate-local-presentation",
+    "allow-mark-presentation-host-ready",
+    "allow-acknowledge-presentation-command",
+    "allow-publish-presentation-playback-state",
+    "allow-deactivate-local-presentation"
   ]
 }

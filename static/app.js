@@ -26,9 +26,6 @@ const fullscreenRequestToastMs = 4200;
 const fullscreenRequestToastFadeMs = 500;
 const localAdvanceOverlayFadeMs = 500;
 const localAdvanceOverlayMaxRows = 5;
-const stageBroadcastIntervalMs = 250;
-const stageOfflineTimeoutMs = 2500;
-const stageTopologyPollIntervalMs = 2000;
 const larkSearchTableCount = 5;
 const smokeTestBypassPlayerFullscreen = new URLSearchParams(window.location.search)
   .has("bilikara_smoke_bypass_fullscreen");
@@ -149,7 +146,7 @@ const state = {
   cacheSettingsOpen: false,
   cacheAdvancedOpen: false,
   displaySettingsOpen: false,
-  stageSettingsOpen: false,
+  presentationSettingsOpen: false,
   cacheLimitSaving: false,
   cachePolicySaving: false,
   diagnosticsBusy: false,
@@ -181,7 +178,6 @@ const state = {
   localAdvanceDelayStartAt: 0,
   localAdvanceDelayDeadline: 0,
   localAdvanceOverlayDurationMs: 0,
-  localAdvanceOverlayMode: "",
   localAdvanceOverlayPrimaryItem: null,
   localAdvanceOverlayFollowItems: null,
   localAdvanceOverlayTotalCount: null,
@@ -293,29 +289,40 @@ const state = {
   appToastTimer: null,
   fullscreenRequestToastTimer: null,
   fullscreenRequestToastHideTimer: null,
-  stageSenderId: `master-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
-  stageSequence: 0,
-  stageChannel: null,
-  stageFallbackWindow: null,
-  stageEnabled: false,
-  stageConnected: false,
-  stageLastSeenAt: 0,
-  stageLastDriftSeconds: 0,
-  stageSceneKey: "",
-  stageSceneRevision: 0,
-  stageBroadcastTimer: null,
-  stageStatusTimer: null,
-  stageTopologyTimer: null,
-  stageStorageListenerAttached: false,
-  stageTopologyBusy: false,
-  stageTopologySignature: "",
-  stageDisplayInfo: null,
-  stageSelectedDisplayId: "",
-  stageActiveDisplayId: "",
-  stageSelectionInitialized: false,
-  stageSelectionTouched: false,
-  stageControlBusy: false,
-  stageOutputRenderSignature: "",
+  presentationSession: {
+    mode: "singleScreen",
+    phase: "inactive",
+    generation: 0,
+    selectedOutputDisplayId: "",
+    controllerDisplayId: "",
+    hostReady: true,
+    controllerReady: false,
+    lastAcceptedCommandSequence: 0,
+    lastAppliedCommandSequence: 0,
+    playbackAuthority: "host",
+    mediaRendererOwner: "host",
+    recoveryReason: "",
+  },
+  presentationDisplayInfo: null,
+  presentationDisplayError: "",
+  presentationSelectedDisplayId: "",
+  presentationSelectionInitialized: false,
+  presentationControlBusy: false,
+  presentationDisplayBusy: false,
+  presentationOutputRenderSignature: "",
+  presentationSceneKey: "",
+  presentationSceneRevision: 0,
+  presentationPlaybackRevision: 0,
+  presentationPlaybackPublishSignature: "",
+  presentationPlaybackPublishPromise: null,
+  presentationCommandApplyPromise: Promise.resolve(),
+  presentationLastAppliedCommandSequence: 0,
+  presentationAppliedComposition: "combined",
+  presentationCompositionGeneration: 0,
+  presentationHostReadyKey: "",
+  presentationListenersReady: false,
+  presentationUnlisteners: [],
+  presentationCursorHideTimer: null,
   layoutMode: "full",
   language: "zh",
   translations: {},
@@ -418,16 +425,16 @@ const elements = {
   displaySettingsToggle: document.getElementById("display-settings-toggle"),
   displaySettingsPanel: document.getElementById("display-settings-panel"),
   displayLayoutSummary: document.getElementById("display-layout-summary"),
-  stageSettings: document.getElementById("stage-settings"),
-  stageSettingsToggle: document.getElementById("stage-settings-toggle"),
-  stageSettingsPanel: document.getElementById("stage-settings-panel"),
-  stageOutputButton: document.getElementById("stage-output-button"),
-  stageOutputStatus: document.getElementById("stage-output-status"),
-  stageOutputSummary: document.getElementById("stage-output-summary"),
-  stageOutputMeta: document.getElementById("stage-output-meta"),
-  stageStateDot: document.getElementById("stage-state-dot"),
-  stageDisplayList: document.getElementById("stage-display-list"),
-  stageRefreshButton: document.getElementById("stage-refresh-button"),
+  presentationSettings: document.getElementById("presentation-settings"),
+  presentationSettingsToggle: document.getElementById("presentation-settings-toggle"),
+  presentationSettingsPanel: document.getElementById("presentation-settings-panel"),
+  presentationOutputButton: document.getElementById("presentation-output-button"),
+  presentationOutputStatus: document.getElementById("presentation-output-status"),
+  presentationOutputSummary: document.getElementById("presentation-output-summary"),
+  presentationOutputMeta: document.getElementById("presentation-output-meta"),
+  presentationStateDot: document.getElementById("presentation-state-dot"),
+  presentationDisplayList: document.getElementById("presentation-display-list"),
+  presentationRefreshButton: document.getElementById("presentation-refresh-button"),
   layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
   themeSwitch: document.getElementById("theme-switch"),
@@ -687,7 +694,7 @@ function hideFullscreenRequestToast() {
 function showFullscreenRequestToast(title) {
   const toast = elements.fullscreenRequestToast;
   const normalizedTitle = String(title || "").trim();
-  if (!toast || !normalizedTitle || !isPlayerPanelFullscreen()) {
+  if (!toast || !normalizedTitle || !isAudiencePlayerSurface()) {
     return;
   }
   if (state.fullscreenRequestToastTimer) {
@@ -716,7 +723,7 @@ function showFullscreenRequestToast(title) {
 }
 
 function maybeShowIncomingRequestToast(previousData, nextData) {
-  if (!previousData || !nextData || !isPlayerPanelFullscreen()) {
+  if (!previousData || !nextData || !isAudiencePlayerSurface()) {
     return;
   }
   const previousId = currentItemIdFromData(previousData);
@@ -994,6 +1001,10 @@ function isPlayerPanelFullscreen() {
     || Boolean(elements.playerPanel?.classList.contains("is-tauri-fullscreen"));
 }
 
+function isAudiencePlayerSurface() {
+  return isPlayerPanelFullscreen() || presentationCompositionActive();
+}
+
 function isPlayerPanelFullscreenForTransition() {
   return isPlayerPanelFullscreen() || smokeTestBypassPlayerFullscreen;
 }
@@ -1016,28 +1027,9 @@ function supportsPlayerFullscreen() {
 }
 
 function canTogglePlayerFullscreen() {
-  return supportsPlayerFullscreen() && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
-}
-
-function tauriAppWindow() {
-  const tauriWebviewWindow = window.__TAURI__?.webviewWindow;
-  if (typeof tauriWebviewWindow?.getCurrentWebviewWindow === "function") {
-    try {
-      return tauriWebviewWindow.getCurrentWebviewWindow();
-    } catch {
-      // Try the Tauri v2 window API below.
-    }
-  }
-
-  const tauriWindow = window.__TAURI__?.window;
-  if (typeof tauriWindow?.getCurrentWindow === "function") {
-    try {
-      return tauriWindow.getCurrentWindow();
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  return state.presentationSession.phase === "inactive"
+    && supportsPlayerFullscreen()
+    && (Boolean(state.data?.current_item) || isPlayerPanelFullscreen());
 }
 
 function tauriInvoke() {
@@ -1188,16 +1180,6 @@ async function saveTauriBackendDownload(path, body = null, fallback = t("history
 
 async function setTauriWindowFullscreen(enabled) {
   const fullscreen = Boolean(enabled);
-  const appWindow = tauriAppWindow();
-  if (appWindow && typeof appWindow.setFullscreen === "function") {
-    try {
-      await appWindow.setFullscreen(fullscreen);
-      return true;
-    } catch {
-      // Fall through to the command path below; some Tauri builds expose invoke more reliably.
-    }
-  }
-
   const invoke = tauriInvoke();
   if (typeof invoke !== "function") {
     return false;
@@ -1210,34 +1192,15 @@ async function setTauriWindowFullscreen(enabled) {
   }
 }
 
-function stageSyncApi() {
-  return window.BilikaraStageSync || null;
+function presentationSceneApi() {
+  return window.BilikaraPresentationScene || null;
 }
 
-function stageRendererApi() {
-  return window.BilikaraStageRenderer || null;
+function presentationRendererApi() {
+  return window.BilikaraPresentationRenderer || null;
 }
 
-function sendStageEnvelope(type, payload = {}) {
-  const sync = stageSyncApi();
-  if (!sync) {
-    return;
-  }
-  const envelope = sync.makeEnvelope(type, payload, {
-    senderId: state.stageSenderId,
-    sequence: ++state.stageSequence,
-    sentAt: Date.now(),
-  });
-  state.stageChannel?.postMessage(envelope);
-  try {
-    localStorage.setItem(sync.storageKey, JSON.stringify(envelope));
-    localStorage.removeItem(sync.storageKey);
-  } catch {
-    // BroadcastChannel is primary; storage events only support older webviews.
-  }
-}
-
-function stageOverlayModel() {
+function presentationOverlayModel() {
   const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
   const primaryItem = state.localAdvanceOverlayPrimaryItem || playlist[0] || null;
   const followItems = Array.isArray(state.localAdvanceOverlayFollowItems)
@@ -1270,152 +1233,337 @@ function stageOverlayModel() {
   };
 }
 
-function stageSceneModel() {
+function currentPresentationScene() {
   const currentItem = state.data?.current_item || null;
-  const itemId = String(currentItem?.id || "");
-  const videoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
-  const sceneKey = `${itemId}|${videoUrl}`;
-  if (sceneKey !== state.stageSceneKey) {
-    state.stageSceneKey = sceneKey;
-    state.stageSceneRevision += 1;
-  }
-  return {
-    revision: state.stageSceneRevision,
-    itemId,
-    title: String(currentItem?.display_title || currentItem?.title || ""),
-    videoUrl,
+  const sceneKey = JSON.stringify({
+    generation: state.presentationSession.generation,
+    item: currentItem?.id || "",
+    title: currentItem?.display_title || currentItem?.title || "",
     theme: state.theme,
-    overlay: stageOverlayModel(),
+  });
+  if (sceneKey !== state.presentationSceneKey) {
+    state.presentationSceneKey = sceneKey;
+    state.presentationSceneRevision += 1;
+  }
+  const candidate = {
+    generation: state.presentationSession.generation,
+    revision: state.presentationSceneRevision,
+    currentItemIdentity: String(currentItem?.id || ""),
+    title: String(currentItem?.display_title || currentItem?.title || ""),
+    displayMetadata: {
+      requester: String(currentItem?.requester_name || ""),
+      duration: formatDurationSeconds(durationSecondsForItem(currentItem)),
+      detail: String(currentItem?.owner_name || ""),
+    },
+    theme: state.theme,
+    overlay: presentationOverlayModel(),
   };
+  return presentationSceneApi()?.normalizePresentationScene(candidate) || candidate;
 }
 
-function broadcastStageState() {
-  if (!state.stageEnabled) {
+function renderCurrentPresentationScene() {
+  const renderer = presentationRendererApi();
+  if (!renderer || !elements.playerFrame) {
     return;
   }
-  const video = activePrimaryVideoElement();
-  const scene = stageSceneModel();
-  sendStageEnvelope("master-state", {
-    scene,
-    clock: {
-      itemId: scene.itemId,
-      mediaTime: Number(video?.currentTime || 0),
-      sampledAt: Date.now(),
-      paused: !video || Boolean(video.paused),
-      playbackRate: Number(video?.playbackRate || 1),
-      seeking: Boolean(video?.seeking || state.localSeekSettling),
-    },
+  renderer.renderScene(elements.playerFrame, currentPresentationScene(), {
+    compact: !(isPlayerPanelFullscreen() || presentationCompositionActive()),
+    manageVisibility: false,
+    now: Date.now(),
   });
 }
 
-function normalizeStageDisplayInfo(candidate) {
+const presentationModes = new Set(["singleScreen", "localDualScreen"]);
+const presentationPhases = new Set(["inactive", "activating", "active", "recovering"]);
+
+function normalizePresentationSession(candidate) {
   if (!candidate || typeof candidate !== "object") {
     return null;
   }
-  const displays = Array.isArray(candidate.displays)
-    ? candidate.displays
-      .filter((display) => display && typeof display === "object")
-      .map((display, index) => ({
-        id: String(display.id || `display-${index + 1}`),
-        name: String(display.name || t("display.unnamedDisplay", { number: index + 1 })),
-        width: Math.max(0, Number(display.width || 0)),
-        height: Math.max(0, Number(display.height || 0)),
-        controller: Boolean(display.controller),
-        selectable: Boolean(display.selectable),
-      }))
-    : [];
+  const mode = String(candidate.mode || "");
+  const phase = String(candidate.phase || "");
+  const generation = Number(candidate.generation);
+  const lastAcceptedCommandSequence = Number(candidate.lastAcceptedCommandSequence || 0);
+  const lastAppliedCommandSequence = Number(candidate.lastAppliedCommandSequence || 0);
+  if (
+    !presentationModes.has(mode)
+    || !presentationPhases.has(phase)
+    || !Number.isSafeInteger(generation)
+    || generation < 0
+    || !Number.isSafeInteger(lastAcceptedCommandSequence)
+    || lastAcceptedCommandSequence < 0
+    || !Number.isSafeInteger(lastAppliedCommandSequence)
+    || lastAppliedCommandSequence < 0
+    || lastAppliedCommandSequence > lastAcceptedCommandSequence
+    || candidate.playbackAuthority !== "host"
+    || candidate.mediaRendererOwner !== "host"
+  ) {
+    return null;
+  }
   return {
-    monitorCount: Math.max(displays.length, Number(candidate.monitorCount || 0)),
-    displays,
-    recommendedDisplayId: String(candidate.recommendedDisplayId || ""),
-    stageActive: Boolean(candidate.stageActive),
-    activeDisplayId: String(candidate.activeDisplayId || ""),
+    mode,
+    phase,
+    generation,
+    selectedOutputDisplayId: String(candidate.selectedOutputDisplayId || ""),
+    controllerDisplayId: String(candidate.controllerDisplayId || ""),
+    hostReady: Boolean(candidate.hostReady),
+    controllerReady: Boolean(candidate.controllerReady),
+    lastAcceptedCommandSequence,
+    lastAppliedCommandSequence,
+    playbackAuthority: "host",
+    mediaRendererOwner: "host",
+    recoveryReason: String(candidate.recoveryReason || ""),
   };
 }
 
-function applyStageDisplayInfo(candidate) {
-  const info = normalizeStageDisplayInfo(candidate);
+function presentationPhaseRank(session) {
+  if (session.phase === "inactive") return 4;
+  if (session.phase === "recovering") return 3;
+  if (session.phase === "active") return 2;
+  if (session.phase === "activating") return 1;
+  return 0;
+}
+
+function presentationCompositionActive(session = state.presentationSession) {
+  return state.presentationAppliedComposition === "stageOnly"
+    && session.mode === "localDualScreen"
+    && (session.phase === "activating" || session.phase === "active");
+}
+
+function clearPresentationCursorTimer() {
+  if (state.presentationCursorHideTimer) {
+    window.clearTimeout(state.presentationCursorHideTimer);
+    state.presentationCursorHideTimer = null;
+  }
+}
+
+function revealPresentationCursor() {
+  document.body?.classList.remove("is-presentation-cursor-hidden");
+  clearPresentationCursorTimer();
+  if (!presentationCompositionActive()) {
+    return;
+  }
+  state.presentationCursorHideTimer = window.setTimeout(() => {
+    state.presentationCursorHideTimer = null;
+    if (presentationCompositionActive()) {
+      document.body?.classList.add("is-presentation-cursor-hidden");
+    }
+  }, 1800);
+}
+
+function handlePresentationPointerMove() {
+  if (presentationCompositionActive()) {
+    revealPresentationCursor();
+  }
+}
+
+function applyPresentationCompositionDom(generation, composition) {
+  if (
+    !Number.isSafeInteger(generation)
+    || generation !== state.presentationSession.generation
+    || !["combined", "stageOnly"].includes(composition)
+  ) {
+    return false;
+  }
+  const active = composition === "stageOnly"
+    && state.presentationSession.mode === "localDualScreen"
+    && ["activating", "active"].includes(state.presentationSession.phase);
+  state.presentationAppliedComposition = active ? "stageOnly" : "combined";
+  state.presentationCompositionGeneration = generation;
+  document.body?.classList.toggle("is-presentation-stage-only", active);
+  if (elements.playerFrame) {
+    elements.playerFrame.inert = active;
+  }
+  if (active) {
+    hideMountedPlayerControls();
+    revealPresentationCursor();
+  } else {
+    clearPresentationCursorTimer();
+    document.body?.classList.remove("is-presentation-cursor-hidden");
+  }
+  renderCurrentPresentationScene();
+  renderPlayerFullscreenButton();
+  return true;
+}
+
+function presentationAnimationFrame() {
+  if (typeof window.requestAnimationFrame !== "function") {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+async function applyPresentationComposition(candidate) {
+  const generation = Number(candidate?.generation);
+  const composition = String(candidate?.composition || "");
+  if (!applyPresentationCompositionDom(generation, composition)) {
+    return false;
+  }
+  const session = state.presentationSession;
+  const shouldAcknowledge = (
+    composition === "stageOnly"
+    && session.phase === "activating"
+    && !session.hostReady
+  ) || (
+    composition === "combined"
+    && session.phase === "recovering"
+    && !session.hostReady
+  );
+  const readyKey = `${generation}:${composition}`;
+  if (!shouldAcknowledge || state.presentationHostReadyKey === readyKey) {
+    return true;
+  }
+  state.presentationHostReadyKey = readyKey;
+  await presentationAnimationFrame();
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    return false;
+  }
+  try {
+    await handlePresentationSession(await invoke("mark_presentation_host_ready", {
+      generation,
+      composition,
+    }));
+  } catch (error) {
+    state.presentationHostReadyKey = "";
+    setAppMessage(t("display.presentationReadyFailed", {
+      message: error?.message || String(error),
+    }), true);
+    return false;
+  }
+  return true;
+}
+
+function applyPresentationSession(candidate) {
+  const session = normalizePresentationSession(candidate);
+  if (!session) {
+    return null;
+  }
+  const current = state.presentationSession;
+  if (
+    session.generation < current.generation
+    || (
+      session.generation === current.generation
+      && presentationPhaseRank(session) < presentationPhaseRank(current)
+    )
+  ) {
+    return null;
+  }
+  if (session.generation !== current.generation) {
+    state.presentationLastAppliedCommandSequence = 0;
+    state.presentationPlaybackRevision = 0;
+    state.presentationPlaybackPublishSignature = "";
+    state.presentationHostReadyKey = "";
+  }
+  state.presentationSession = session;
+  state.presentationLastAppliedCommandSequence = Math.max(
+    state.presentationLastAppliedCommandSequence,
+    session.lastAppliedCommandSequence,
+  );
+  if (session.selectedOutputDisplayId) {
+    state.presentationSelectedDisplayId = session.selectedOutputDisplayId;
+  }
+  renderPresentationOutputControl();
+  return session;
+}
+
+function normalizePresentationDisplayInfo(candidate) {
+  if (!candidate || typeof candidate !== "object" || !Array.isArray(candidate.displays)) {
+    return null;
+  }
+  const displays = candidate.displays.flatMap((display) => {
+    if (!display || typeof display !== "object") {
+      return [];
+    }
+    const id = String(display.id || "").trim();
+    if (!id || id.length > 1024) {
+      return [];
+    }
+    return [{
+      id,
+      name: String(display.name || ""),
+      positionX: Number(display.positionX || 0),
+      positionY: Number(display.positionY || 0),
+      width: Math.max(0, Number(display.width || 0)),
+      height: Math.max(0, Number(display.height || 0)),
+      scaleFactor: Math.max(0, Number(display.scaleFactor || 0)),
+      controller: Boolean(display.controller),
+      primary: Boolean(display.primary),
+      selectable: Boolean(display.selectable),
+      mirrored: Boolean(display.mirrored),
+      identityStable: Boolean(display.identityStable),
+      identityQuality: display.identityQuality === "stable" ? "stable" : "unstable",
+    }];
+  });
+  return {
+    monitorCount: Math.max(displays.length, Number(candidate.monitorCount || 0)),
+    displays,
+    controllerDisplayId: String(candidate.controllerDisplayId || ""),
+    recommendedDisplayId: String(candidate.recommendedDisplayId || ""),
+  };
+}
+
+function applyPresentationDisplayInfo(candidate) {
+  const info = normalizePresentationDisplayInfo(candidate);
   if (!info) {
     return null;
   }
-  state.stageDisplayInfo = info;
-  state.stageTopologySignature = JSON.stringify(info.displays);
-  const selectedStillAvailable = info.displays.some(
-    (display) => display.selectable && display.id === state.stageSelectedDisplayId,
-  );
-  if (!state.stageSelectionInitialized) {
-    state.stageSelectedDisplayId = info.recommendedDisplayId || "";
-    state.stageSelectionInitialized = true;
-  } else if (!state.stageEnabled && state.stageSelectedDisplayId && !selectedStillAvailable) {
-    state.stageSelectedDisplayId = info.recommendedDisplayId || "";
-    state.stageSelectionTouched = false;
-  } else if (
-    !state.stageEnabled
-    && !state.stageSelectionTouched
-    && !state.stageSelectedDisplayId
-    && info.recommendedDisplayId
+  state.presentationDisplayInfo = info;
+  state.presentationDisplayError = "";
+  if (state.presentationSession.phase === "inactive" && !state.presentationSelectionInitialized) {
+    state.presentationSelectionInitialized = true;
+    if (info.displays.some(
+      (display) => display.id === info.recommendedDisplayId && display.selectable,
+    )) {
+      state.presentationSelectedDisplayId = info.recommendedDisplayId;
+    }
+  }
+  if (
+    state.presentationSession.phase === "inactive"
+    && state.presentationSelectedDisplayId
+    && !info.displays.some(
+      (display) => display.id === state.presentationSelectedDisplayId && display.selectable,
+    )
   ) {
-    state.stageSelectedDisplayId = info.recommendedDisplayId;
+    state.presentationSelectedDisplayId = "";
   }
-  if (info.stageActive) {
-    state.stageEnabled = true;
-    state.stageActiveDisplayId = info.activeDisplayId;
-  } else if (!state.stageControlBusy) {
-    state.stageEnabled = false;
-    state.stageConnected = false;
-    state.stageActiveDisplayId = "";
-  }
-  renderStageOutputControl();
+  renderPresentationOutputControl();
   return info;
 }
 
-async function refreshStageDisplayInfo() {
+async function refreshPresentationDisplays({ announceError = false } = {}) {
   const invoke = tauriInvoke();
-  if (typeof invoke !== "function" || state.stageTopologyBusy) {
-    return;
+  if (typeof invoke !== "function" || state.presentationDisplayBusy) {
+    return null;
   }
-  state.stageTopologyBusy = true;
-  renderStageOutputControl();
+  state.presentationDisplayBusy = true;
+  renderPresentationOutputControl();
   try {
-    const info = applyStageDisplayInfo(await invoke("get_stage_display_info"));
-    const activeTargetMissing = Boolean(
-      info
-      && state.stageEnabled
-      && state.stageActiveDisplayId
-      && !info.displays.some(
-        (display) => display.selectable && display.id === state.stageActiveDisplayId,
-      ),
-    );
-    if (activeTargetMissing && !state.stageControlBusy) {
-      state.stageControlBusy = true;
-      try {
-        state.stageSelectedDisplayId = "";
-        state.stageSelectionTouched = true;
-        state.stageActiveDisplayId = "";
-        applyStageDisplayInfo(await invoke("open_stage_window", { displayId: null }));
-        broadcastStageState();
-        setAppMessage(t("display.stageFellBackWindow"));
-      } finally {
-        state.stageControlBusy = false;
-      }
+    return applyPresentationDisplayInfo(await invoke("get_presentation_displays"));
+  } catch (error) {
+    state.presentationDisplayError = error?.message || String(error);
+    if (announceError) {
+      setAppMessage(t("display.presentationDiscoveryFailed", {
+        message: state.presentationDisplayError,
+      }), true);
     }
-  } catch {
-    // Display polling is advisory; opening the stage still performs a fresh check.
+    return null;
   } finally {
-    state.stageTopologyBusy = false;
-    renderStageOutputControl();
+    state.presentationDisplayBusy = false;
+    renderPresentationOutputControl();
   }
 }
 
-function stageDisplayById(displayId) {
-  return state.stageDisplayInfo?.displays?.find((display) => display.id === displayId) || null;
+function presentationDisplayById(displayId) {
+  return state.presentationDisplayInfo?.displays?.find(
+    (display) => display.id === displayId,
+  ) || null;
 }
 
-const stageDeviceIconShapes = Object.freeze({
-  window: [
-    ["rect", { x: "3", y: "4", width: "18", height: "16", rx: "2" }],
-    ["path", { d: "M3 8h18" }],
-    ["path", { d: "M6.5 6h.01M9.5 6h.01" }],
+const presentationDeviceIconShapes = Object.freeze({
+  controller: [
+    ["rect", { x: "5", y: "2.5", width: "14", height: "19", rx: "2" }],
+    ["path", { d: "M9 18.5h6" }],
   ],
   monitor: [
     ["rect", { x: "2.5", y: "3.5", width: "19", height: "14", rx: "2" }],
@@ -1423,9 +1571,9 @@ const stageDeviceIconShapes = Object.freeze({
   ],
 });
 
-function createStageDeviceIcon(iconType) {
+function createPresentationDeviceIcon(iconType) {
   const iconElement = document.createElement("span");
-  iconElement.className = "stage-device-icon";
+  iconElement.className = "presentation-device-icon";
   iconElement.setAttribute("aria-hidden", "true");
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -1434,7 +1582,7 @@ function createStageDeviceIcon(iconType) {
   svg.setAttribute("stroke-width", "1.8");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
-  const shapes = stageDeviceIconShapes[iconType] || stageDeviceIconShapes.monitor;
+  const shapes = presentationDeviceIconShapes[iconType] || presentationDeviceIconShapes.monitor;
   for (const [tagName, attributes] of shapes) {
     const shape = document.createElementNS("http://www.w3.org/2000/svg", tagName);
     for (const [name, value] of Object.entries(attributes)) {
@@ -1446,310 +1594,549 @@ function createStageDeviceIcon(iconType) {
   return iconElement;
 }
 
-function createStageDisplayOption({ id, name, detail, iconType, selectable, controller = false }) {
-  const selected = id === state.stageSelectedDisplayId;
-  const active = state.stageEnabled && id === state.stageActiveDisplayId;
+function createPresentationDisplayOption(display) {
+  const selected = display.id === state.presentationSelectedDisplayId;
+  const sessionActive = state.presentationSession.phase !== "inactive";
+  const active = display.id === state.presentationSession.selectedOutputDisplayId
+    && state.presentationSession.phase === "active";
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `stage-display-option${selected ? " is-selected" : ""}`;
-  button.dataset.stageDisplayId = id;
-  button.disabled = state.stageControlBusy || !selectable || (state.stageEnabled && active);
+  button.className = `presentation-display-option${selected ? " is-selected" : ""}`;
+  button.dataset.presentationDisplayId = display.id;
+  button.disabled = state.presentationControlBusy
+    || state.presentationDisplayBusy
+    || sessionActive
+    || !display.selectable;
   button.setAttribute("aria-pressed", String(selected));
 
-  const iconElement = createStageDeviceIcon(iconType);
   const copy = document.createElement("span");
-  copy.className = "stage-display-copy";
-  const nameElement = document.createElement("span");
-  nameElement.className = "stage-display-name";
-  nameElement.textContent = name;
-  const detailElement = document.createElement("span");
-  detailElement.className = "stage-display-detail";
-  detailElement.textContent = detail;
-  copy.append(nameElement, detailElement);
+  copy.className = "presentation-display-copy";
+  const name = document.createElement("span");
+  name.className = "presentation-display-name";
+  name.textContent = display.name || t("display.unnamedDisplay", { number: 1 });
+  const detail = document.createElement("span");
+  detail.className = "presentation-display-detail";
+  const resolution = display.width && display.height
+    ? `${display.width} × ${display.height}`
+    : t("display.resolutionUnknown");
+  detail.textContent = display.mirrored
+    ? `${resolution} · ${t("display.presentationMirrored")}`
+    : display.identityStable && display.identityQuality === "stable"
+      ? resolution
+      : `${resolution} · ${t("display.presentationIdentityUnavailable")}`;
+  copy.append(name, detail);
   const status = document.createElement("span");
-  status.className = "stage-display-state";
+  status.className = "presentation-display-state";
   status.textContent = active
     ? t("display.displaying")
     : selected
       ? t("display.selected")
-      : controller
+      : display.controller
         ? t("display.controllerDisplay")
         : "";
-  button.append(iconElement, copy, status);
+  button.append(
+    createPresentationDeviceIcon(display.controller ? "controller" : "monitor"),
+    copy,
+    status,
+  );
   return button;
 }
 
-function renderStageDisplayList() {
-  const list = elements.stageDisplayList;
+function renderPresentationDisplayList() {
+  const list = elements.presentationDisplayList;
   if (!list) {
     return;
   }
+  const displays = state.presentationDisplayInfo?.displays || [];
   const fragment = document.createDocumentFragment();
-  fragment.append(createStageDisplayOption({
-    id: "",
-    name: t("display.windowMode"),
-    detail: t("display.windowModeDetail"),
-    iconType: "window",
-    selectable: true,
-  }));
-  for (const display of state.stageDisplayInfo?.displays || []) {
-    fragment.append(createStageDisplayOption({
-      id: display.id,
-      name: display.name,
-      detail: display.width && display.height
-        ? `${display.width} × ${display.height}`
-        : t("display.resolutionUnknown"),
-      iconType: "monitor",
-      selectable: display.selectable,
-      controller: display.controller,
-    }));
+  for (const display of displays) {
+    fragment.append(createPresentationDisplayOption(display));
+  }
+  if (!displays.some((display) => display.selectable)) {
+    const empty = document.createElement("p");
+    empty.className = "presentation-display-empty";
+    empty.textContent = state.presentationDisplayError
+      ? t("display.presentationUnavailable")
+      : t("display.presentationNoExternalDisplay");
+    fragment.append(empty);
+  }
+  if (state.presentationDisplayBusy) {
+    list.setAttribute("aria-busy", "true");
+  } else {
+    list.removeAttribute("aria-busy");
   }
   list.replaceChildren(fragment);
 }
 
-function renderStageOutputControl() {
-  const button = elements.stageOutputButton;
-  const status = elements.stageOutputStatus;
-  if (!button || !status) {
+function renderPresentationOutputControl() {
+  const settings = elements.presentationSettings;
+  const button = elements.presentationOutputButton;
+  const status = elements.presentationOutputStatus;
+  if (!settings || !button || !status) {
     return;
   }
-  const driftMs = Math.round(Math.abs(Number(state.stageLastDriftSeconds || 0)) * 1000);
-  const displayInfo = state.stageDisplayInfo;
-  const selectedDisplay = stageDisplayById(state.stageSelectedDisplayId);
-  const activeDisplay = stageDisplayById(state.stageActiveDisplayId);
-  const monitorName = activeDisplay?.name || selectedDisplay?.name || t("display.secondaryDisplay");
-  const statusText = !state.stageEnabled
-    ? state.stageSelectedDisplayId
-      ? t("display.stageTargetSelected", { monitor: monitorName })
-      : t("display.stageWindowSelected")
-    : state.stageConnected
-      ? state.stageActiveDisplayId
-        ? t("display.stageOutputConnectedSecondary", { monitor: monitorName, drift: driftMs })
-        : t("display.stageOutputConnectedWindowed", { drift: driftMs })
-      : t("display.stageOutputConnecting");
-  const summaryText = state.stageEnabled
-    ? state.stageActiveDisplayId
+  const nativeAvailable = typeof tauriInvoke() === "function";
+  settings.classList.toggle("hidden", !nativeAvailable);
+  if (!nativeAvailable) {
+    return;
+  }
+  const session = state.presentationSession;
+  const selectedId = session.selectedOutputDisplayId || state.presentationSelectedDisplayId;
+  const selected = presentationDisplayById(selectedId);
+  const monitorName = selected?.name || t("display.secondaryDisplay");
+  const hasSelectableDisplay = Boolean(
+    state.presentationDisplayInfo?.displays?.some((display) => display.selectable),
+  );
+  const noExternalDisplayAvailable = (
+    session.phase === "inactive"
+      && !state.presentationDisplayBusy
+      && !state.presentationDisplayError
+      && Boolean(state.presentationDisplayInfo)
+      && !hasSelectableDisplay
+  );
+  const statusText = state.presentationControlBusy
+    ? t("display.presentationTransitioning")
+    : session.phase === "active"
+      ? t("display.presentationActive", { monitor: monitorName })
+      : session.phase === "activating"
+        ? t("display.presentationActivating", { monitor: monitorName })
+        : session.phase === "recovering"
+          ? t("display.presentationRecovering")
+          : noExternalDisplayAvailable
+            ? t("display.presentationNoExternalDisplay")
+            : state.presentationSelectedDisplayId
+              ? t("display.presentationTargetSelected", { monitor: monitorName })
+              : t("display.presentationSelectDisplay");
+  const summaryText = state.presentationControlBusy
+    ? t("display.presentationTransitioning")
+    : session.phase === "active"
       ? t("display.dualOutputOn")
-      : t("display.windowOutputOn")
-    : t("display.outputOff");
-  const metaText = displayInfo
-    ? t("display.displayCount", { count: displayInfo.monitorCount })
-    : t("display.detectingDisplays");
+      : session.phase === "inactive"
+        ? t("display.outputOff")
+        : t("display.presentationTransitioning");
+  const metaText = state.presentationDisplayBusy
+    ? t("display.detectingDisplays")
+    : state.presentationDisplayError
+      ? t("display.presentationUnavailable")
+      : state.presentationDisplayInfo
+        ? t("display.displayCount", { count: state.presentationDisplayInfo.monitorCount })
+        : t("display.detectingDisplays");
+  const canActivate = session.phase === "inactive"
+    && Boolean(presentationDisplayById(state.presentationSelectedDisplayId)?.selectable);
+  const canDeactivate = session.phase === "active" || session.phase === "activating";
+  const disabled = state.presentationControlBusy
+    || state.presentationDisplayBusy
+    || !(canActivate || canDeactivate);
   const signature = JSON.stringify({
-    enabled: state.stageEnabled,
-    connected: state.stageConnected,
-    busy: state.stageControlBusy,
-    topologyBusy: state.stageTopologyBusy,
-    driftMs,
-    displayInfo,
-    selectedDisplayId: state.stageSelectedDisplayId,
-    activeDisplayId: state.stageActiveDisplayId,
-    statusText,
-    summaryText,
-    metaText,
+    session,
+    selectedId: state.presentationSelectedDisplayId,
+    displayInfo: state.presentationDisplayInfo,
+    displayError: state.presentationDisplayError,
+    displayBusy: state.presentationDisplayBusy,
+    controlBusy: state.presentationControlBusy,
     language: state.language,
   });
-  if (signature === state.stageOutputRenderSignature) {
+  if (signature === state.presentationOutputRenderSignature) {
     return;
   }
-  state.stageOutputRenderSignature = signature;
+  state.presentationOutputRenderSignature = signature;
   setTextContent(status, statusText);
-  setTextContent(elements.stageOutputSummary, summaryText);
-  setTextContent(elements.stageOutputMeta, metaText);
-  button.disabled = state.stageControlBusy;
-  setElementAttribute(button, "aria-checked", String(state.stageEnabled));
-  setElementAttribute(button, "aria-label", state.stageEnabled ? t("display.closeStage") : t("display.openStage"));
-  if (state.stageControlBusy) {
+  setTextContent(elements.presentationOutputSummary, summaryText);
+  setTextContent(elements.presentationOutputMeta, metaText);
+  button.disabled = disabled;
+  setElementAttribute(button, "aria-checked", String(session.phase !== "inactive"));
+  setElementAttribute(
+    button,
+    "aria-label",
+    canDeactivate ? t("display.stopPresentation") : t("display.startPresentation"),
+  );
+  if (state.presentationControlBusy) {
     setElementAttribute(button, "aria-busy", "true");
   } else {
     button.removeAttribute("aria-busy");
   }
-  setClassToggle(elements.stageSettings, "is-active", state.stageEnabled);
-  setClassToggle(elements.stageStateDot, "is-active", state.stageEnabled && state.stageConnected);
-  setClassToggle(elements.stageStateDot, "is-connecting", state.stageEnabled && !state.stageConnected);
-  setClassToggle(elements.stageRefreshButton, "is-loading", state.stageTopologyBusy);
-  if (elements.stageRefreshButton) {
-    elements.stageRefreshButton.disabled = state.stageTopologyBusy || state.stageControlBusy;
-  }
-  renderStageDisplayList();
-}
-
-function handleStageEnvelope(candidate) {
-  const sync = stageSyncApi();
-  if (!sync || Number(candidate?.protocol) !== sync.protocolVersion) {
-    return;
-  }
-  if (candidate.type !== "stage-ready" && candidate.type !== "stage-status") {
-    return;
-  }
-  if (candidate.payload?.closed) {
-    state.stageEnabled = false;
-    state.stageConnected = false;
-    state.stageActiveDisplayId = "";
-    state.stageLastSeenAt = Date.now();
-    renderStageOutputControl();
-    return;
-  }
-  state.stageEnabled = true;
-  state.stageConnected = candidate.payload?.ready !== false;
-  state.stageLastSeenAt = Date.now();
-  if (Number.isFinite(Number(candidate.payload?.driftSeconds))) {
-    state.stageLastDriftSeconds = Number(candidate.payload.driftSeconds);
-  }
-  renderStageOutputControl();
-  if (candidate.type === "stage-ready") {
-    broadcastStageState();
-  }
-}
-
-function handleStageStorageEvent(event) {
-  const sync = stageSyncApi();
-  if (!sync || event.key !== sync.storageKey || !event.newValue) {
-    return;
-  }
-  try {
-    handleStageEnvelope(JSON.parse(event.newValue));
-  } catch {
-    // Ignore malformed fallback messages.
-  }
-}
-
-function initializeStageController() {
-  const sync = stageSyncApi();
-  if (!sync || state.stageBroadcastTimer) {
-    return;
-  }
-  if (typeof BroadcastChannel === "function") {
-    state.stageChannel = new BroadcastChannel(sync.channelName);
-    state.stageChannel.addEventListener("message", (event) => handleStageEnvelope(event.data));
-  }
-  if (!state.stageStorageListenerAttached) {
-    window.addEventListener("storage", handleStageStorageEvent);
-    state.stageStorageListenerAttached = true;
-  }
-  state.stageBroadcastTimer = window.setInterval(broadcastStageState, stageBroadcastIntervalMs);
-  state.stageStatusTimer = window.setInterval(() => {
-    if (
-      state.stageConnected
-      && Date.now() - Number(state.stageLastSeenAt || 0) > stageOfflineTimeoutMs
-    ) {
-      state.stageConnected = false;
-      renderStageOutputControl();
-    }
-  }, 500);
-  refreshStageDisplayInfo().catch(() => {});
-  state.stageTopologyTimer = window.setInterval(() => {
-    refreshStageDisplayInfo().catch(() => {});
-  }, stageTopologyPollIntervalMs);
-  renderStageOutputControl();
-}
-
-async function openStageOutput() {
-  state.stageEnabled = true;
-  state.stageConnected = false;
-  state.stageActiveDisplayId = state.stageSelectedDisplayId;
-  renderStageOutputControl();
-  const invoke = tauriInvoke();
-  if (typeof invoke === "function") {
-    applyStageDisplayInfo(await invoke("open_stage_window", {
-      displayId: state.stageSelectedDisplayId || null,
-    }));
-  } else {
-    const popup = window.open(
-      "/stage.html",
-      "bilikara-stage",
-      "popup=yes,width=1280,height=720,menubar=no,toolbar=no,location=no,status=no",
-    );
-    if (!popup) {
-      throw new Error("popup blocked");
-    }
-    state.stageFallbackWindow = popup;
-  }
-  broadcastStageState();
-}
-
-async function closeStageOutput() {
-  sendStageEnvelope("stage-close");
-  const invoke = tauriInvoke();
-  if (typeof invoke === "function") {
-    await invoke("close_stage_window");
-  } else if (state.stageFallbackWindow && !state.stageFallbackWindow.closed) {
-    state.stageFallbackWindow.close();
-  }
-  state.stageFallbackWindow = null;
-  state.stageEnabled = false;
-  state.stageConnected = false;
-  state.stageActiveDisplayId = "";
-  state.stageLastSeenAt = 0;
-  state.stageLastDriftSeconds = 0;
-  renderStageOutputControl();
-}
-
-async function toggleStageOutput() {
-  if (state.stageControlBusy) {
-    return;
-  }
-  state.stageControlBusy = true;
-  renderStageOutputControl();
-  try {
-    if (state.stageEnabled) {
-      await closeStageOutput();
+  setClassToggle(settings, "is-active", session.phase === "active");
+  setClassToggle(elements.presentationStateDot, "is-active", session.phase === "active");
+  setClassToggle(
+    elements.presentationStateDot,
+    "is-connecting",
+    session.phase === "activating" || session.phase === "recovering",
+  );
+  setClassToggle(elements.presentationRefreshButton, "is-loading", state.presentationDisplayBusy);
+  if (elements.presentationRefreshButton) {
+    elements.presentationRefreshButton.disabled = state.presentationDisplayBusy
+      || state.presentationControlBusy
+      || session.phase !== "inactive";
+    if (state.presentationDisplayBusy) {
+      elements.presentationRefreshButton.setAttribute("aria-busy", "true");
     } else {
-      await openStageOutput();
+      elements.presentationRefreshButton.removeAttribute("aria-busy");
     }
-  } catch (error) {
-    state.stageEnabled = false;
-    state.stageConnected = false;
-    setAppMessage(t("display.stageOpenFailed", { message: error?.message || String(error) }), true);
-  } finally {
-    state.stageControlBusy = false;
-    renderStageOutputControl();
   }
+  renderPresentationDisplayList();
 }
 
-async function selectStageDisplayTarget(displayId) {
-  if (state.stageControlBusy) {
-    return;
+async function handlePresentationSession(candidate) {
+  const session = applyPresentationSession(candidate);
+  if (!session) {
+    return null;
   }
-  const nextDisplayId = String(displayId || "");
-  const target = nextDisplayId ? stageDisplayById(nextDisplayId) : null;
-  if (nextDisplayId && !target?.selectable) {
-    return;
+  await applyPresentationComposition({
+    generation: session.generation,
+    composition: ["activating", "active"].includes(session.phase)
+      ? "stageOnly"
+      : "combined",
+  });
+  if (session.phase === "active") {
+    publishPresentationPlaybackState().catch(() => {});
+  } else if (
+    session.phase === "inactive"
+    && session.recoveryReason === "displayDisconnected"
+  ) {
+    state.presentationSelectedDisplayId = "";
+    setAppMessage(t("display.presentationDisconnected"), true);
+    await refreshPresentationDisplays();
   }
-  if (nextDisplayId === state.stageSelectedDisplayId && (
-    !state.stageEnabled || nextDisplayId === state.stageActiveDisplayId
-  )) {
-    return;
-  }
-  const previousDisplayId = state.stageSelectedDisplayId;
-  state.stageSelectedDisplayId = nextDisplayId;
-  state.stageSelectionTouched = true;
-  if (!state.stageEnabled) {
-    renderStageOutputControl();
-    return;
-  }
+  return session;
+}
 
+async function activateLocalPresentation() {
+  const invoke = tauriInvoke();
+  const displayId = state.presentationSelectedDisplayId;
+  const selected = presentationDisplayById(displayId);
+  if (typeof invoke !== "function" || !selected?.selectable) {
+    throw new Error(t("display.presentationSelectDisplay"));
+  }
+  await handlePresentationSession(await invoke("activate_local_presentation", { displayId }));
+}
+
+async function deactivateLocalPresentation() {
   const invoke = tauriInvoke();
   if (typeof invoke !== "function") {
-    state.stageSelectedDisplayId = previousDisplayId;
-    renderStageOutputControl();
+    throw new Error(t("display.presentationUnavailable"));
+  }
+  await handlePresentationSession(await invoke("deactivate_local_presentation", {
+    generation: state.presentationSession.generation,
+  }));
+}
+
+async function toggleLocalPresentation() {
+  if (state.presentationControlBusy || state.presentationDisplayBusy) {
     return;
   }
-  state.stageControlBusy = true;
-  state.stageActiveDisplayId = nextDisplayId;
-  renderStageOutputControl();
+  state.presentationControlBusy = true;
+  renderPresentationOutputControl();
   try {
-    applyStageDisplayInfo(await invoke("open_stage_window", {
-      displayId: nextDisplayId || null,
-    }));
-    broadcastStageState();
+    if (state.presentationSession.phase === "inactive") {
+      await activateLocalPresentation();
+    } else {
+      await deactivateLocalPresentation();
+    }
   } catch (error) {
-    state.stageSelectedDisplayId = previousDisplayId;
-    await refreshStageDisplayInfo().catch(() => {});
-    setAppMessage(t("display.stageOpenFailed", { message: error?.message || String(error) }), true);
+    setAppMessage(t("display.presentationTransitionFailed", {
+      message: error?.message || String(error),
+    }), true);
   } finally {
-    state.stageControlBusy = false;
-    renderStageOutputControl();
+    state.presentationControlBusy = false;
+    renderPresentationOutputControl();
+  }
+}
+
+function selectPresentationDisplay(displayId) {
+  if (
+    state.presentationControlBusy
+    || state.presentationDisplayBusy
+    || state.presentationSession.phase !== "inactive"
+  ) {
+    return;
+  }
+  const target = presentationDisplayById(String(displayId || ""));
+  if (!target?.selectable) {
+    return;
+  }
+  state.presentationSelectedDisplayId = target.id;
+  renderPresentationOutputControl();
+  const replacement = Array.from(
+    elements.presentationDisplayList?.querySelectorAll("[data-presentation-display-id]") || [],
+  ).find((option) => option.dataset.presentationDisplayId === target.id);
+  replacement?.focus();
+}
+
+function normalizeControllerCommandEnvelope(candidate) {
+  if (!candidate || typeof candidate !== "object" || candidate.target !== "host") {
+    return null;
+  }
+  const generation = Number(candidate.generation);
+  const sequence = Number(candidate.sequence);
+  const command = candidate.command;
+  if (
+    !Number.isSafeInteger(generation)
+    || generation < 0
+    || !Number.isSafeInteger(sequence)
+    || sequence < 1
+    || !command
+    || typeof command !== "object"
+  ) {
+    return null;
+  }
+  return { generation, sequence, command };
+}
+
+function validControllerSeekTarget(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 7 * 24 * 60 * 60;
+}
+
+function seekHostPlayer(video, audio, targetTime) {
+  if (!video || !validControllerSeekTarget(targetTime)) {
+    return Promise.reject(new Error("Invalid Controller seek target"));
+  }
+  if (!audio || !isActiveSplitPlayer(video, audio)) {
+    return Promise.reject(new Error("The Host player is not ready for seeking"));
+  }
+  return new Promise((resolve) => {
+    beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: state.localShouldBePlaying,
+      targetTime,
+      diagnosticAction: "presentation-controller-seek",
+      onSettled: () => {
+        reportPlayerStatus(video.dataset.playerItemId || "", video);
+        resolve();
+      },
+    });
+  });
+}
+
+async function acknowledgeControllerCommand(generation, sequence) {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    throw new Error("Tauri presentation commands are unavailable");
+  }
+  await handlePresentationSession(await invoke("acknowledge_presentation_command", {
+    generation,
+    sequence,
+  }));
+  state.presentationLastAppliedCommandSequence = sequence;
+}
+
+async function applyControllerCommand(candidate) {
+  const envelope = normalizeControllerCommandEnvelope(candidate);
+  const session = state.presentationSession;
+  if (
+    !envelope
+    || session.phase !== "active"
+    || session.playbackAuthority !== "host"
+    || envelope.generation !== session.generation
+    || envelope.sequence !== state.presentationLastAppliedCommandSequence + 1
+    || envelope.sequence > session.lastAcceptedCommandSequence
+  ) {
+    return false;
+  }
+  const { video, audio } = activeLocalPlayerElements();
+  switch (envelope.command.type) {
+    case "play":
+      if (!video || !audio || !setSplitPlaybackIntent(video, audio, true, {
+        source: "presentation-controller-play",
+      })) {
+        throw new Error("The Host player is not ready to play");
+      }
+      break;
+    case "pause":
+      if (!video || !audio || !setSplitPlaybackIntent(video, audio, false, {
+        source: "presentation-controller-pause",
+      })) {
+        throw new Error("The Host player is not ready to pause");
+      }
+      break;
+    case "seekRelative": {
+      const deltaSeconds = Number(envelope.command.deltaSeconds);
+      if (!Number.isFinite(deltaSeconds) || deltaSeconds === 0 || Math.abs(deltaSeconds) > 600) {
+        throw new Error("Invalid Controller relative seek command");
+      }
+      const targetTime = Math.max(0, Number(video?.currentTime || 0) + deltaSeconds);
+      await seekHostPlayer(video, audio, targetTime);
+      break;
+    }
+    case "seekAbsolute": {
+      const targetSeconds = Number(envelope.command.targetSeconds);
+      if (!validControllerSeekTarget(targetSeconds)) {
+        throw new Error("Invalid Controller absolute seek command");
+      }
+      await seekHostPlayer(video, audio, targetSeconds);
+      break;
+    }
+    case "nextTrack":
+      if (!await requestNextTrack()) {
+        throw new Error("The Host could not advance to the next track");
+      }
+      break;
+    case "setVolume": {
+      const volumePercent = Number(envelope.command.volumePercent);
+      if (
+        !Number.isInteger(volumePercent)
+        || volumePercent < 0
+        || volumePercent > 100
+        || typeof envelope.command.muted !== "boolean"
+      ) {
+        throw new Error("Invalid Controller volume command");
+      }
+      await setLocalPlayerVolumeAndMuted(volumePercent / 100, envelope.command.muted, {
+        reportError: false,
+      });
+      break;
+    }
+    default:
+      throw new Error("Unsupported Controller command");
+  }
+  await acknowledgeControllerCommand(envelope.generation, envelope.sequence);
+  publishPresentationPlaybackState().catch((error) => {
+    setAppMessage(error?.message || String(error), true);
+  });
+  return true;
+}
+
+function presentationPlaybackStateModel() {
+  const currentItem = state.data?.current_item || null;
+  const { video, audio } = activeLocalPlayerElements();
+  const media = video || activePrimaryVideoElement();
+  const duration = Number(media?.duration);
+  const currentTime = Number(media?.currentTime);
+  const volumeSource = audio || media;
+  return {
+    itemIdentity: currentItem?.id ? String(currentItem.id) : null,
+    title: String(currentItem?.display_title || currentItem?.title || t("player.noSong")),
+    paused: audio ? !state.localShouldBePlaying : !media || Boolean(media.paused),
+    currentTimeSeconds: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : 0,
+    durationSeconds: Number.isFinite(duration) && duration >= 0 ? duration : null,
+    volumePercent: Math.round(
+      Math.max(0, Math.min(1, Number(volumeSource?.volume ?? state.localPlayerVolume))) * 100,
+    ),
+    muted: Boolean(volumeSource?.muted ?? state.localPlayerMuted),
+    canSkip: Boolean(currentItem) && !state.localAdvanceInFlight,
+  };
+}
+
+function publishPresentationPlaybackState() {
+  const invoke = tauriInvoke();
+  if (
+    typeof invoke !== "function"
+    || !["activating", "active"].includes(state.presentationSession.phase)
+  ) {
+    return Promise.resolve(null);
+  }
+  const playbackState = presentationPlaybackStateModel();
+  const signature = JSON.stringify({
+    generation: state.presentationSession.generation,
+    playbackState,
+  });
+  if (signature === state.presentationPlaybackPublishSignature) {
+    return state.presentationPlaybackPublishPromise || Promise.resolve(null);
+  }
+  state.presentationPlaybackPublishSignature = signature;
+  playbackState.revision = ++state.presentationPlaybackRevision;
+  const generation = state.presentationSession.generation;
+  const previous = state.presentationPlaybackPublishPromise || Promise.resolve();
+  const pending = previous
+    .catch(() => {})
+    .then(() => invoke("publish_presentation_playback_state", {
+      generation,
+      playbackState,
+    }))
+    .catch((error) => {
+      if (
+        state.presentationSession.generation === generation
+        && state.presentationPlaybackPublishSignature === signature
+      ) {
+        state.presentationPlaybackPublishSignature = "";
+      }
+      throw error;
+    });
+  const tracked = pending.finally(() => {
+    if (state.presentationPlaybackPublishPromise === tracked) {
+      state.presentationPlaybackPublishPromise = null;
+    }
+  });
+  state.presentationPlaybackPublishPromise = tracked;
+  return tracked;
+}
+
+function tauriEventListen() {
+  return window.__TAURI__?.event?.listen || null;
+}
+
+function teardownLocalPresentationListeners() {
+  state.presentationUnlisteners.splice(0).forEach((unlisten) => {
+    try {
+      unlisten();
+    } catch {
+      // The native listener may already have been released with the WebView.
+    }
+  });
+  state.presentationListenersReady = false;
+  document.removeEventListener("pointermove", handlePresentationPointerMove);
+  clearPresentationCursorTimer();
+}
+
+async function initializeLocalPresentation() {
+  const invoke = tauriInvoke();
+  const listen = tauriEventListen();
+  if (typeof invoke !== "function" || typeof listen !== "function") {
+    renderPresentationOutputControl();
+    return;
+  }
+  if (state.presentationListenersReady) {
+    return;
+  }
+  state.presentationListenersReady = true;
+  document.addEventListener("pointermove", handlePresentationPointerMove);
+  try {
+    const unlistenSession = await listen("bilikara-presentation-state", (event) => {
+      handlePresentationSession(event?.payload?.session).catch((error) => {
+        setAppMessage(error?.message || String(error), true);
+      });
+    });
+    const unlistenComposition = await listen(
+      "bilikara-presentation-host-composition",
+      (event) => {
+        applyPresentationComposition(event?.payload).catch((error) => {
+          setAppMessage(error?.message || String(error), true);
+        });
+      },
+    );
+    const unlistenCommand = await listen("bilikara-presentation-host-command", (event) => {
+      const commandGeneration = Number(event?.payload?.generation);
+      const pending = state.presentationCommandApplyPromise
+        .catch(() => {})
+        .then(() => applyControllerCommand(event?.payload));
+      state.presentationCommandApplyPromise = pending;
+      pending.catch(async (error) => {
+        setAppMessage(error?.message || String(error), true);
+        if (
+          !Number.isSafeInteger(commandGeneration)
+          || state.presentationSession.phase !== "active"
+          || state.presentationSession.generation !== commandGeneration
+        ) {
+          return;
+        }
+        try {
+          await handlePresentationSession(await invoke("deactivate_local_presentation", {
+            generation: commandGeneration,
+          }));
+        } catch (recoveryError) {
+          setAppMessage(recoveryError?.message || String(recoveryError), true);
+        }
+      });
+    });
+    state.presentationUnlisteners.push(
+      unlistenSession,
+      unlistenComposition,
+      unlistenCommand,
+    );
+    await handlePresentationSession(await invoke("get_presentation_session"));
+    await refreshPresentationDisplays();
+  } catch (error) {
+    teardownLocalPresentationListeners();
+    state.presentationDisplayError = error?.message || String(error);
+    renderPresentationOutputControl();
   }
 }
 
@@ -1807,7 +2194,7 @@ function exitDocumentFullscreen() {
 }
 
 async function togglePlayerFullscreen() {
-  if (!supportsPlayerFullscreen()) {
+  if (!canTogglePlayerFullscreen()) {
     return;
   }
   if (isPlayerPanelFullscreen()) {
@@ -1902,6 +2289,10 @@ function scheduleMountedPlayerControlsHide() {
 }
 
 function revealMountedPlayerControlsForUserInteraction() {
+  if (presentationCompositionActive()) {
+    hideMountedPlayerControls();
+    return;
+  }
   const video = mountedLocalVideoElement();
   if (!video) {
     return;
@@ -1924,6 +2315,9 @@ function revealMountedPlayerControlsForUserInteraction() {
 }
 
 function toggleMountedLocalPlayback() {
+  if (presentationCompositionActive()) {
+    return true;
+  }
   if (frontendPlaybackMode(state.data?.playback_mode) !== "local" || !state.data?.current_item) {
     return false;
   }
@@ -1975,7 +2369,7 @@ function queuePlayerFrameSingleClick() {
 
 async function handlePlayerFrameDoubleClick() {
   clearPlayerFrameClickTimer();
-  if (!supportsPlayerFullscreen()) {
+  if (!canTogglePlayerFullscreen()) {
     return;
   }
   if (!state.data?.current_item && !isPlayerPanelFullscreen()) {
@@ -5319,9 +5713,11 @@ function render() {
   renderKeyShiftControls(playbackMode);
   applyStoredVolumeToMountedPlayer();
   renderPlayer(currentItem, playbackMode);
+  renderCurrentPresentationScene();
   renderPlayerFullscreenButton();
-  renderStageOutputControl();
+  renderPresentationOutputControl();
   applyRemotePlayerControl(data.player_control_command, currentItem, playbackMode);
+  publishPresentationPlaybackState().catch(() => {});
   renderQueueCurrent(currentItem);
   if (!state.dragItemId) {
     renderPlaylist(data.playlist, data.current_item, data.cache_policy);
@@ -6315,12 +6711,16 @@ function syncDisplayPanelVisibility() {
   setClassToggle(elements.displaySettingsPanel, "hidden", !state.displaySettingsOpen);
 }
 
-function syncStagePanelVisibility() {
-  const expanded = String(state.stageSettingsOpen);
-  if (elements.stageSettingsToggle?.getAttribute("aria-expanded") !== expanded) {
-    elements.stageSettingsToggle?.setAttribute("aria-expanded", expanded);
+function syncPresentationPanelVisibility() {
+  const expanded = String(state.presentationSettingsOpen);
+  if (elements.presentationSettingsToggle?.getAttribute("aria-expanded") !== expanded) {
+    elements.presentationSettingsToggle?.setAttribute("aria-expanded", expanded);
   }
-  setClassToggle(elements.stageSettingsPanel, "hidden", !state.stageSettingsOpen);
+  setClassToggle(
+    elements.presentationSettingsPanel,
+    "hidden",
+    !state.presentationSettingsOpen,
+  );
 }
 
 function renderQueueCurrent(currentItem) {
@@ -6723,18 +7123,6 @@ function delayOverlayTitleForItem(item, fallback = t("player.untitledSong")) {
   return title || originalTitle || fallback;
 }
 
-function delayOverlayItemSignature(item) {
-  if (!item) {
-    return "";
-  }
-  return [
-    item.id || "",
-    delayOverlayTitleForItem(item, ""),
-    item.requester_name || "",
-    durationSecondsForItem(item),
-  ].join("|");
-}
-
 function manualTransitionOverlaySeconds(data = state.data) {
   return currentSongAdvanceDelaySeconds(data?.player_settings);
 }
@@ -6822,7 +7210,7 @@ function ensurePlayerDelayOverlay() {
   if (overlay) {
     return overlay;
   }
-  const renderer = stageRendererApi();
+  const renderer = presentationRendererApi();
   if (!renderer) {
     return null;
   }
@@ -7015,7 +7403,6 @@ function showSongTransitionOverlayForData(data, generation = 0) {
   const token = state.localAdvanceDelayToken;
   const activeGeneration = generation || registerManualTransitionHold(itemId);
 
-  state.localAdvanceOverlayMode = "manual";
   state.localAdvanceOverlayPrimaryItem = primaryItem;
   state.localAdvanceOverlayFollowItems = data.current_item ? playlist : playlist.slice(1);
   state.localAdvanceOverlayTotalCount = (data.current_item ? 1 : 0) + playlist.length;
@@ -7114,78 +7501,6 @@ function flushPendingSongTransitionOverlay() {
   showSongTransitionOverlayForData(state.data, generation);
 }
 
-function renderPlayerDelayItemRow(item, index) {
-  const row = document.createElement("div");
-  row.className = "player-delay-list-row";
-
-  const indexNode = document.createElement("span");
-  indexNode.className = "player-delay-list-index";
-  indexNode.textContent = String(index);
-
-  const titleNode = document.createElement("p");
-  titleNode.className = "player-delay-song-title";
-  titleNode.textContent = delayOverlayTitleForItem(item);
-
-  const requesterNode = document.createElement("p");
-  requesterNode.className = "player-delay-requester";
-  requesterNode.textContent = item?.requester_name || "—";
-
-  const durationNode = document.createElement("p");
-  durationNode.className = "player-delay-duration";
-  durationNode.textContent = formatDurationSeconds(durationSecondsForItem(item));
-
-  row.append(indexNode, titleNode, requesterNode, durationNode);
-  return row;
-}
-
-function renderLocalAdvanceDelayQueue(overlay) {
-  const playlist = Array.isArray(state.data?.playlist) ? state.data.playlist : [];
-  const primaryItem = state.localAdvanceOverlayPrimaryItem || playlist[0] || null;
-  const followItemsSource = Array.isArray(state.localAdvanceOverlayFollowItems)
-    ? state.localAdvanceOverlayFollowItems
-    : playlist.slice(1);
-  const totalCount = Number.isFinite(state.localAdvanceOverlayTotalCount)
-    ? Number(state.localAdvanceOverlayTotalCount)
-    : (state.data?.current_item ? 1 : 0) + playlist.length;
-  const signature = [
-    state.localAdvanceOverlayMode || "auto",
-    delayOverlayItemSignature(primaryItem),
-    ...followItemsSource.map(delayOverlayItemSignature),
-    totalCount,
-    state.language,
-  ].join("||");
-  if (overlay.dataset.queueSignature === signature) {
-    return;
-  }
-  overlay.dataset.queueSignature = signature;
-
-  setTextContent(overlay.querySelector("[data-delay-next-title]"), delayOverlayTitleForItem(primaryItem, t("player.prepareNext")));
-  setTextContent(overlay.querySelector("[data-delay-next-requester]"), primaryItem?.requester_name || "—");
-  setTextContent(overlay.querySelector("[data-delay-next-duration]"), formatDurationSeconds(durationSecondsForItem(primaryItem)));
-
-  const listNode = overlay.querySelector("[data-delay-list]");
-  if (listNode) {
-    const followItems = followItemsSource.slice(0, localAdvanceOverlayMaxRows);
-    const rows = followItems.map((item, index) => renderPlayerDelayItemRow(item, index + 1));
-    if (!rows.length) {
-      const emptyRow = document.createElement("div");
-      emptyRow.className = "player-delay-list-more";
-      emptyRow.textContent = t("player.followingQueueEmpty");
-      rows.push(emptyRow);
-    }
-    const remainingCount = Math.max(0, followItemsSource.length - followItems.length);
-    if (remainingCount > 0) {
-      const moreRow = document.createElement("div");
-      moreRow.className = "player-delay-list-more";
-      moreRow.textContent = t("player.remainingQueue", { count: remainingCount });
-      rows.push(moreRow);
-    }
-    listNode.replaceChildren(...rows);
-  }
-
-  setTextContent(overlay.querySelector("[data-delay-total]"), t("player.totalSongs", { count: totalCount }));
-}
-
 function updateLocalAdvanceDelayOverlay() {
   const overlay = ensurePlayerDelayOverlay();
   if (!overlay) {
@@ -7194,9 +7509,9 @@ function updateLocalAdvanceDelayOverlay() {
   const now = Date.now();
   const countdownStartAt = Number(state.localAdvanceDelayStartAt || 0);
   const countdownNow = countdownStartAt > 0 ? Math.max(now, countdownStartAt) : now;
-  const isFullscreen = isPlayerPanelFullscreen();
-  stageRendererApi()?.renderOverlay(overlay, stageOverlayModel(), {
-    compact: !isFullscreen,
+  const isAudienceSurface = isPlayerPanelFullscreen() || presentationCompositionActive();
+  presentationRendererApi()?.renderOverlay(overlay, presentationOverlayModel(), {
+    compact: !isAudienceSurface,
     manageVisibility: false,
     now: countdownNow,
   });
@@ -7205,7 +7520,7 @@ function updateLocalAdvanceDelayOverlay() {
   } else {
     hidePlayerDelayOverlay();
   }
-  broadcastStageState();
+  publishPresentationPlaybackState().catch(() => {});
 }
 
 function hasLocalAdvanceDelayOverlay() {
@@ -7227,7 +7542,6 @@ function startLocalAdvanceDelay(delaySeconds) {
   state.localAdvanceDelayItemId = currentItemId;
   state.localAdvanceDelayToken += 1;
   const token = state.localAdvanceDelayToken;
-  state.localAdvanceOverlayMode = "auto";
   state.localAdvanceOverlayDurationMs = delaySeconds * 1000;
   state.localAdvanceDelayStartAt = Date.now() + localAdvanceOverlayFadeMs;
   state.localAdvanceDelayDeadline = state.localAdvanceDelayStartAt + state.localAdvanceOverlayDurationMs;
@@ -7252,7 +7566,6 @@ function clearLocalAdvanceDelay({ resetInFlight = false, hideOverlay = true, onO
     state.localAdvanceDelayStartAt = 0;
     state.localAdvanceDelayDeadline = 0;
     state.localAdvanceOverlayDurationMs = 0;
-    state.localAdvanceOverlayMode = "";
     state.localAdvanceOverlayPrimaryItem = null;
     state.localAdvanceOverlayFollowItems = null;
     state.localAdvanceOverlayTotalCount = null;
@@ -9093,15 +9406,18 @@ function persistLocalVolumePreferences() {
   writeLocalPreference(storageKeys.playerMuted, state.localPlayerMuted);
 }
 
-async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
+async function setLocalPlayerVolumeAndMuted(
+  nextVolume,
+  nextMuted,
+  { reportError = true } = {},
+) {
   const normalizedVolume = Math.max(0, Math.min(1, Number(nextVolume || 0)));
+  const normalizedMuted = Boolean(nextMuted);
   const previousVolume = state.localPlayerVolume;
   const previousMuted = state.localPlayerMuted;
   const requestSeq = markLocalVolumeWrite();
   state.localPlayerVolume = normalizedVolume;
-  if (unmute && normalizedVolume > 0) {
-    state.localPlayerMuted = false;
-  }
+  state.localPlayerMuted = normalizedMuted;
   persistLocalVolumePreferences();
   applyStoredVolumeToMountedPlayer();
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
@@ -9125,37 +9441,28 @@ async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
     persistLocalVolumePreferences();
     applyStoredVolumeToMountedPlayer();
     renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
-    setAppMessage(error.message, true);
+    if (reportError) {
+      setAppMessage(error.message, true);
+    }
+    throw error;
+  }
+}
+
+async function setLocalPlayerVolume(nextVolume, { unmute = true } = {}) {
+  const normalizedVolume = Math.max(0, Math.min(1, Number(nextVolume || 0)));
+  const nextMuted = unmute && normalizedVolume > 0 ? false : state.localPlayerMuted;
+  try {
+    await setLocalPlayerVolumeAndMuted(normalizedVolume, nextMuted);
+  } catch {
+    // The shared setter already restored the previous state and reported the error.
   }
 }
 
 async function toggleLocalPlayerMute() {
-  const previousMuted = state.localPlayerMuted;
-  const requestSeq = markLocalVolumeWrite();
-  state.localPlayerMuted = !state.localPlayerMuted;
-  persistLocalVolumePreferences();
-  applyStoredVolumeToMountedPlayer();
-  renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
   try {
-    const nextData = await apiPost("/api/player/volume", {
-      volume_percent: Math.round(state.localPlayerVolume * 100),
-      is_muted: state.localPlayerMuted,
-    });
-    if (requestSeq !== state.volumeSaveSeq) {
-      return;
-    }
-    state.data = nextData;
-    render();
-  } catch (error) {
-    if (requestSeq !== state.volumeSaveSeq) {
-      return;
-    }
-    state.playerSettingsEchoSuppressUntil = 0;
-    state.localPlayerMuted = previousMuted;
-    persistLocalVolumePreferences();
-    applyStoredVolumeToMountedPlayer();
-    renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
-    setAppMessage(error.message, true);
+    await setLocalPlayerVolumeAndMuted(state.localPlayerVolume, !state.localPlayerMuted);
+  } catch {
+    // The shared setter already restored the previous state and reported the error.
   }
 }
 
@@ -9515,9 +9822,10 @@ function renderPlayer(currentItem, playbackMode) {
   createSplitPlaybackStartOverlay(video, audio);
   ensureTauriMediaSessionHandlers();
   syncTauriMediaSessionState(video, { forcePosition: true });
-  showMountedPlayerControls();
-  ["loadedmetadata", "play", "pause", "seeking", "seeked", "ratechange", "ended"].forEach((eventName) => {
-    video.addEventListener(eventName, broadcastStageState);
+  ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "seeked", "volumechange"].forEach((eventName) => {
+    addMountedPlayerListener(video, eventName, () => {
+      publishPresentationPlaybackState().catch(() => {});
+    });
   });
 
   const reportCurrentVideoStatus = () => {
@@ -9892,6 +10200,7 @@ function reportPlayerStatus(itemId, video) {
   const currentTime = Number(video.currentTime || 0);
   const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
   syncTauriMediaSessionState(video);
+  publishPresentationPlaybackState().catch(() => {});
   const currentItem = state.data?.current_item;
   if (currentItem && String(currentItem.id || "") === normalizedItemId) {
     maybeShowRatingPromptForProgress(currentItem, currentTime, duration);
@@ -12061,7 +12370,7 @@ async function removeSessionUser(name) {
 
 async function advanceLocalPlayerNow({ showTransition = true } = {}) {
   if (state.localAdvanceInFlight) {
-    return;
+    return false;
   }
   const shouldResumeOnFailure = state.localShouldBePlaying;
   const nextItemId = String(queuedNextItem()?.id || "");
@@ -12085,6 +12394,7 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
       });
     }
     render();
+    return true;
   } catch (error) {
     if (transitionGeneration === state.manualTransitionHoldGeneration) {
       clearLocalAdvanceDelay({ resetInFlight: true });
@@ -12092,6 +12402,7 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
       syncMountedLocalPlayer(true);
     }
     setAppMessage(error.message, true);
+    return false;
   } finally {
     if (!shouldHoldCurrentItemForTransition(state.data?.current_item)) {
       state.localAdvanceInFlight = false;
@@ -12100,19 +12411,18 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
 }
 
 async function requestNextTrack() {
-  await handleLocalPlaybackEnded("manual-next");
+  return handleLocalPlaybackEnded("manual-next");
 }
 
 async function handleLocalPlaybackEnded(reason = "media-ended") {
   if (state.localAdvanceInFlight) {
-    return;
+    return false;
   }
   const delaySeconds = currentSongAdvanceDelaySeconds();
   if (delaySeconds <= 0 || !queuedNextItem()) {
-    await advanceLocalPlayerNow({ showTransition: false });
-    return;
+    return advanceLocalPlayerNow({ showTransition: false });
   }
-  await advanceLocalPlayerNow({ showTransition: true });
+  return advanceLocalPlayerNow({ showTransition: true });
 }
 
 async function reorderPlaylist(itemId, index) {
@@ -12978,9 +13288,9 @@ elements.cacheSettingsToggle.addEventListener("click", () => {
   state.cacheSettingsOpen = !state.cacheSettingsOpen;
   if (state.cacheSettingsOpen) {
     state.displaySettingsOpen = false;
-    state.stageSettingsOpen = false;
+    state.presentationSettingsOpen = false;
     syncDisplayPanelVisibility();
-    syncStagePanelVisibility();
+    syncPresentationPanelVisibility();
   }
   syncCachePanelVisibility({ forceLoginRefresh: state.cacheSettingsOpen });
 });
@@ -12994,35 +13304,35 @@ elements.displaySettingsToggle?.addEventListener("click", () => {
   state.displaySettingsOpen = !state.displaySettingsOpen;
   if (state.displaySettingsOpen) {
     state.cacheSettingsOpen = false;
-    state.stageSettingsOpen = false;
+    state.presentationSettingsOpen = false;
     syncCachePanelVisibility();
-    syncStagePanelVisibility();
+    syncPresentationPanelVisibility();
   }
   syncDisplayPanelVisibility();
 });
 
-elements.stageSettingsToggle?.addEventListener("click", () => {
-  state.stageSettingsOpen = !state.stageSettingsOpen;
-  if (state.stageSettingsOpen) {
+elements.presentationSettingsToggle?.addEventListener("click", () => {
+  state.presentationSettingsOpen = !state.presentationSettingsOpen;
+  if (state.presentationSettingsOpen) {
     state.cacheSettingsOpen = false;
     state.displaySettingsOpen = false;
     syncCachePanelVisibility();
     syncDisplayPanelVisibility();
-    refreshStageDisplayInfo().catch(() => {});
+    refreshPresentationDisplays().catch(() => {});
   }
-  syncStagePanelVisibility();
+  syncPresentationPanelVisibility();
 });
 
-elements.stageDisplayList?.addEventListener("click", (event) => {
-  const option = event.target.closest("[data-stage-display-id]");
+elements.presentationDisplayList?.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-presentation-display-id]");
   if (!option || option.disabled) {
     return;
   }
-  selectStageDisplayTarget(option.dataset.stageDisplayId || "").catch(() => {});
+  selectPresentationDisplay(option.dataset.presentationDisplayId || "");
 });
 
-elements.stageRefreshButton?.addEventListener("click", () => {
-  refreshStageDisplayInfo().catch(() => {});
+elements.presentationRefreshButton?.addEventListener("click", () => {
+  refreshPresentationDisplays({ announceError: true }).catch(() => {});
 });
 
 elements.bbdownLoginButton?.addEventListener("click", async () => {
@@ -13256,7 +13566,7 @@ elements.playerFullscreenButton?.addEventListener("click", async () => {
   renderPlayerFullscreenButton();
 });
 
-elements.stageOutputButton?.addEventListener("click", toggleStageOutput);
+elements.presentationOutputButton?.addEventListener("click", toggleLocalPresentation);
 
 elements.playerFrame?.addEventListener("click", (event) => {
   if (event.target.closest("button, input, select, textarea, a")) {
@@ -13856,12 +14166,13 @@ document.addEventListener("click", (event) => {
     syncDisplayPanelVisibility();
   }
 
-  const stageClickPath = typeof event.composedPath === "function" ? event.composedPath() : [];
-  const clickedInsideStageSettings = stageClickPath.includes(elements.stageSettings)
-    || Boolean(event.target.closest("#stage-settings"));
-  if (state.stageSettingsOpen && !clickedInsideStageSettings) {
-    state.stageSettingsOpen = false;
-    syncStagePanelVisibility();
+  const presentationClickPath = typeof event.composedPath === "function" ? event.composedPath() : [];
+  const clickedInsidePresentationSettings = presentationClickPath.includes(
+    elements.presentationSettings,
+  ) || Boolean(event.target.closest("#presentation-settings"));
+  if (state.presentationSettingsOpen && !clickedInsidePresentationSettings) {
+    state.presentationSettingsOpen = false;
+    syncPresentationPanelVisibility();
   }
 });
 
@@ -13912,9 +14223,9 @@ document.addEventListener("keydown", (event) => {
     state.displaySettingsOpen = false;
     syncDisplayPanelVisibility();
   }
-  if (state.stageSettingsOpen) {
-    state.stageSettingsOpen = false;
-    syncStagePanelVisibility();
+  if (state.presentationSettingsOpen) {
+    state.presentationSettingsOpen = false;
+    syncPresentationPanelVisibility();
   }
 });
 
@@ -13944,7 +14255,9 @@ function handleFullscreenChange() {
       hidePlayerDelayOverlay();
     }
   }
-  setTauriWindowFullscreen(isFullscreen).catch(() => {});
+  if (state.presentationSession.phase === "inactive") {
+    setTauriWindowFullscreen(isFullscreen).catch(() => {});
+  }
   renderPlayerFullscreenButton();
 }
 
@@ -14717,7 +15030,7 @@ async function startPolling() {
   hydrateLocalPreferences();
   await loadTranslations();
   initSearchDetailController();
-  initializeStageController();
+  await initializeLocalPresentation();
   renderLayoutMode();
   try {
     await reportMediaCapabilities();
@@ -14745,26 +15058,12 @@ window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 window.addEventListener("pagehide", () => {
   teardownMountedPlayer();
   disposeSharedAudioContext();
-  if (state.stageBroadcastTimer) {
-    window.clearInterval(state.stageBroadcastTimer);
-    state.stageBroadcastTimer = null;
-  }
-  if (state.stageStatusTimer) {
-    window.clearInterval(state.stageStatusTimer);
-    state.stageStatusTimer = null;
-  }
-  if (state.stageTopologyTimer) {
-    window.clearInterval(state.stageTopologyTimer);
-    state.stageTopologyTimer = null;
-  }
-  state.stageChannel?.close();
-  state.stageChannel = null;
+  teardownLocalPresentationListeners();
   disconnectClient();
 });
 window.addEventListener("beforeunload", disconnectClient);
 window.addEventListener("pageshow", () => {
-  initializeStageController();
-  showMountedPlayerControls();
+  initializeLocalPresentation().catch(() => {});
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
 });
 

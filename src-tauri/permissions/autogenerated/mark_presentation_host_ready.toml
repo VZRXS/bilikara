@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mark-presentation-host-ready"
+description = "Enables the mark_presentation_host_ready command without any pre-configured scope."
+commands.allow = ["mark_presentation_host_ready"]
+
+[[permission]]
+identifier = "deny-mark-presentation-host-ready"
+description = "Denies the mark_presentation_host_ready command without any pre-configured scope."
+commands.deny = ["mark_presentation_host_ready"]

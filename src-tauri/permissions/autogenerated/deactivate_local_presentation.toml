@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deactivate-local-presentation"
+description = "Enables the deactivate_local_presentation command without any pre-configured scope."
+commands.allow = ["deactivate_local_presentation"]
+
+[[permission]]
+identifier = "deny-deactivate-local-presentation"
+description = "Denies the deactivate_local_presentation command without any pre-configured scope."
+commands.deny = ["deactivate_local_presentation"]
