@@ -204,6 +204,7 @@ struct RuntimeState {
     primary_active_item_id: Option<String>,
     cancel_reasons: HashMap<(String, u64), String>,
     completed: HashMap<String, CompletedJob>,
+    terminal_events: HashMap<String, CacheEvent>,
     events: VecDeque<CacheEvent>,
 }
 
@@ -459,6 +460,7 @@ impl CacheRuntime {
             }
             remove_queued_locked(&mut state, &item_id);
         }
+        state.terminal_events.remove(&item_id);
         state.next_generation = state.next_generation.saturating_add(1).max(1);
         let generation = state.next_generation;
         state.jobs.insert(
@@ -513,12 +515,14 @@ impl CacheRuntime {
             .into_iter()
             .filter(|value| current.contains(value))
             .collect();
-        cleanup_orphan_directories(cache_root, &current)?;
-
         let desired: HashSet<String> = jobs.iter().map(|job| job.item_id.clone()).collect();
         let mut evict_now = Vec::new();
+        let active_ids_for_cleanup;
         {
             let mut state = lock_state(&self.shared);
+            state
+                .terminal_events
+                .retain(|item_id, _| current.contains(item_id));
             state.completed.retain(|item_id, completed| {
                 current.contains(item_id)
                     && completed_artifacts_ready(cache_root, &completed.result)
@@ -553,6 +557,7 @@ impl CacheRuntime {
                     .cancel_reasons
                     .insert((item_id, generation), "outside cache window".to_owned());
             }
+            active_ids_for_cleanup = state.active.keys().cloned().collect();
             for item_id in current.difference(&retained) {
                 if state.active.contains_key(item_id) {
                     continue;
@@ -578,6 +583,7 @@ impl CacheRuntime {
                 }
             }
         }
+        cleanup_orphan_directories(cache_root, &current, &active_ids_for_cleanup)?;
         for item_id in evict_now {
             remove_item_directory(cache_root, &item_id)?;
         }
@@ -674,6 +680,7 @@ impl CacheRuntime {
         state.urgent_queue.clear();
         state.queued_priorities.clear();
         state.completed.clear();
+        state.terminal_events.clear();
         for job in queued {
             if !state.active.contains_key(&job.spec.item_id) {
                 push_event_locked(
@@ -1473,6 +1480,10 @@ fn priority_name(priority: CacheJobPriority) -> &'static str {
     }
 }
 
+fn terminal_event(kind: &str) -> bool {
+    matches!(kind, "ready" | "failed" | "cancelled" | "evicted")
+}
+
 fn push_event_locked(
     state: &mut RuntimeState,
     generation: u64,
@@ -1481,16 +1492,22 @@ fn push_event_locked(
     payload: Value,
 ) {
     state.next_event_sequence = state.next_event_sequence.saturating_add(1).max(1);
-    if state.events.len() >= MAX_EVENTS {
-        state.events.pop_front();
-    }
-    state.events.push_back(CacheEvent {
+    let event = CacheEvent {
         sequence: state.next_event_sequence,
         generation,
         item_id: item_id.to_owned(),
         kind: kind.to_owned(),
         payload,
-    });
+    };
+    if terminal_event(kind) {
+        state
+            .terminal_events
+            .insert(item_id.to_owned(), event.clone());
+    }
+    if state.events.len() >= MAX_EVENTS {
+        state.events.pop_front();
+    }
+    state.events.push_back(event);
 }
 
 fn emit_track_progress(
@@ -1535,12 +1552,15 @@ fn snapshot_locked(state: &RuntimeState) -> Value {
         .map(|(item_id, _)| item_id.clone())
         .collect();
     urgent_ids.sort();
+    let mut terminal_events: Vec<CacheEvent> = state.terminal_events.values().cloned().collect();
+    terminal_events.sort_by_key(|event| event.sequence);
     json!({
         "stopping": state.stopping,
         "primary_active_item_id": state.primary_active_item_id,
         "active_item_ids": active_ids,
         "urgent_item_ids": urgent_ids,
         "pending_ids": state.normal_queue.iter().chain(state.urgent_queue.iter()).cloned().collect::<Vec<_>>(),
+        "terminal_events": terminal_events,
         "event_count": state.events.len(),
         "last_event_sequence": state.next_event_sequence,
     })
@@ -1653,13 +1673,14 @@ fn remove_item_directory(cache_root: &Path, item_id: &str) -> Result<(), CacheRu
 fn cleanup_orphan_directories(
     cache_root: &Path,
     current_ids: &HashSet<String>,
+    active_ids: &HashSet<String>,
 ) -> Result<(), CacheRuntimeError> {
     let entries = fs::read_dir(cache_root)
         .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
     for entry in entries {
         let entry = entry.map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if current_ids.contains(&name) {
+        if current_ids.contains(&name) || active_ids.contains(&name) {
             continue;
         }
         let path = entry.path();
@@ -1941,6 +1962,102 @@ mod tests {
         assert_eq!(result["snapshot"]["pending_ids"], json!([]));
         runtime.shutdown();
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_defers_orphan_cleanup_while_the_item_is_active() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara-cache-runtime-active-orphan-{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let item_dir = root.join("song-a");
+        fs::create_dir_all(&item_dir).expect("create active cache fixture");
+        fs::write(item_dir.join("worker-owned.tmp"), b"active").expect("write active fixture");
+        let runtime = CacheRuntime::new().expect("start cache runtime");
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut state = lock_state(&runtime.shared);
+            state.active.insert(
+                "song-a".to_owned(),
+                ActiveJob {
+                    generation: 1,
+                    cancel: Arc::clone(&cancel),
+                    urgent: false,
+                },
+            );
+            state.primary_active_item_id = Some("song-a".to_owned());
+        }
+
+        runtime
+            .sync(&root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), "")
+            .expect("sync active orphan");
+
+        assert!(cancel.load(Ordering::Acquire));
+        assert!(item_dir.exists());
+        {
+            let mut state = lock_state(&runtime.shared);
+            state.active.remove("song-a");
+            state.primary_active_item_id = None;
+        }
+        runtime
+            .sync(&root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), "")
+            .expect("cleanup terminal orphan");
+        assert!(!item_dir.exists());
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_event_remains_recoverable_after_progress_overflow() {
+        let runtime = CacheRuntime::new().expect("start cache runtime");
+        {
+            let mut state = lock_state(&runtime.shared);
+            push_event_locked(
+                &mut state,
+                1,
+                "song-a",
+                "ready",
+                json!({
+                    "video_relative_path": "song-a/video-p1.mp4",
+                    "video_media_url": "/media/song-a/video-p1.mp4",
+                    "audio_variants": [{
+                        "id": "p1_track_1",
+                        "label": "P1",
+                        "page": 1,
+                        "audio_url": "/media/song-a/audio-p1.m4a"
+                    }],
+                    "selected_audio_variant_id": "p1_track_1"
+                }),
+            );
+            for index in 0..MAX_EVENTS {
+                push_event_locked(
+                    &mut state,
+                    2,
+                    "song-b",
+                    "progress",
+                    json!({"track": {"key": "video-p1", "current_bytes": index}}),
+                );
+            }
+        }
+
+        let drained = runtime.drain_events(MAX_DRAIN_EVENTS);
+        assert!(
+            drained["events"]
+                .as_array()
+                .is_some_and(|events| events.iter().all(|event| event["item_id"] != "song-a"))
+        );
+        let recovered = drained["snapshot"]["terminal_events"]
+            .as_array()
+            .expect("terminal recovery snapshot");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0]["item_id"], "song-a");
+        assert_eq!(recovered[0]["kind"], "ready");
+        assert_eq!(
+            recovered[0]["payload"]["selected_audio_variant_id"],
+            "p1_track_1"
+        );
+        runtime.shutdown();
     }
 
     #[test]
