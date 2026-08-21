@@ -1151,9 +1151,7 @@ class CacheManager:
         )
         changed = False
         cache_limit_changed = False
-        download_source_changed = False
         with self.lock:
-            previous_download_source = self.download_source
             if max_cache_items is not None:
                 bounded = self._bounded_cache_items(max_cache_items)
                 if self.max_cache_items != bounded:
@@ -1177,7 +1175,6 @@ class CacheManager:
                 if self.download_source != normalized_source:
                     self.download_source = normalized_source
                     changed = True
-                    download_source_changed = True
             if reset_offset_on_next is not None:
                 val = bool(reset_offset_on_next)
                 if self.reset_offset_on_next != val:
@@ -1187,16 +1184,7 @@ class CacheManager:
             if changed:
                 self._save_cache_policy_locked()
 
-        if (
-            self.native_cache_started
-            and previous_download_source == DOWNLOAD_SOURCE_NATIVE
-            and self._current_download_source() != DOWNLOAD_SOURCE_NATIVE
-        ):
-            self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
-            self._drain_native_cache_events()
-            with self.lock:
-                self.native_cache_generations.clear()
-        if cache_limit_changed or download_source_changed:
+        if cache_limit_changed:
             self.sync_with_playlist()
         return self.policy_snapshot()
 

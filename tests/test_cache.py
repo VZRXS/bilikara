@@ -516,7 +516,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 restored.shutdown()
 
-    def test_native_quality_change_only_applies_to_future_downloads(self):
+    def test_native_media_preferences_only_apply_to_future_downloads(self):
         current = self.make_item("song-a")
         queued = self.make_item("song-b")
         future = self.make_item("song-c")
@@ -532,13 +532,18 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 manager.video_quality = "1080P 高清"
+                manager.audio_hires = False
                 manager.native_cache_started = True
                 with patch.object(manager, "_native_cache_request") as native_request, patch.object(
                     manager, "_drain_native_cache_events"
                 ) as drain_events, patch.object(manager, "sync_with_playlist") as sync:
-                    snapshot = manager.set_cache_policy(video_quality="720P 高清")
+                    snapshot = manager.set_cache_policy(
+                        video_quality="720P 高清",
+                        audio_hires=True,
+                    )
 
                 self.assertEqual(snapshot["video_quality"], "720P 高清")
+                self.assertTrue(snapshot["audio_hires"])
                 self.assertNotIn(
                     "clear",
                     [args[0] for args, _kwargs in native_request.call_args_list],
@@ -547,9 +552,52 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 sync.assert_not_called()
                 self.assertEqual(self.store.get_item(current.id).cache_status, "ready")
                 self.assertEqual(self.store.get_item(queued.id).cache_status, "ready")
-                self.assertEqual(manager._native_cache_job(future)["video_quality"], "720P 高清")
+                future_job = manager._native_cache_job(future)
+                self.assertEqual(future_job["video_quality"], "720P 高清")
+                self.assertTrue(future_job["audio_hires"])
             finally:
                 manager.native_cache_started = False
+                manager.shutdown()
+
+    def test_download_source_change_only_applies_to_future_downloads(self):
+        current = self.make_item("song-a")
+        downloading = self.make_item("song-b")
+        self.store.add_item(current, requester_name="cache-test-user")
+        self.store.add_item(downloading, requester_name="cache-test-user")
+        self.mark_item_ready_with_files(current.id)
+        self.store.update_item(
+            downloading.id,
+            cache_status="downloading",
+            cache_progress=42.0,
+            cache_message="BBDown 下载中",
+            persist_backup=False,
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value=""
+        ), patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                with patch.object(
+                    manager, "_ensure_native_cache_runtime"
+                ), patch.object(
+                    manager,
+                    "_native_cache_request",
+                    side_effect=RuntimeError("native takeover conflict"),
+                ) as native_request:
+                    snapshot = manager.set_cache_policy(
+                        download_source=DOWNLOAD_SOURCE_NATIVE
+                    )
+
+                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_NATIVE)
+                native_request.assert_not_called()
+                self.assertEqual(self.store.get_item(current.id).cache_status, "ready")
+                downloading_after = self.store.get_item(downloading.id)
+                self.assertEqual(downloading_after.cache_status, "downloading")
+                self.assertEqual(downloading_after.cache_progress, 42.0)
+                self.assertEqual(downloading_after.cache_message, "BBDown 下载中")
+            finally:
                 manager.shutdown()
 
     def test_cache_policy_preserves_each_download_source(self):
