@@ -464,6 +464,237 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(sync_request["jobs"][0]["item_id"], item.id)
         self.assertEqual(sync_request["ordered_ids"], [item.id])
 
+    def test_native_sync_excludes_active_python_owner_and_includes_future_item(self):
+        active = self.make_item("song-external-active")
+        future = self.make_item("song-native-future")
+        for item in (active, future):
+            item.selected_pages = [1]
+            item.selected_cids = [456]
+            item.selected_durations = [120]
+            self.store.add_item(item, requester_name="cache-test-user")
+        self.store.update_item(
+            active.id,
+            cache_status="downloading",
+            cache_progress=42.0,
+            cache_message="BBDown 下载中",
+            persist_backup=False,
+        )
+        plan = CachePlan(
+            desired_ids=(active.id, future.id),
+            pending_order=(active.id, future.id),
+            retained_ids=(active.id, future.id),
+            preempt_ids=(),
+        )
+        calls = []
+
+        def runtime_request(command, **fields):
+            calls.append((command, fields))
+            if command == "sync":
+                return {
+                    "generations": {future.id: 1},
+                    "snapshot": {
+                        "primary_active_item_id": None,
+                        "active_item_ids": [],
+                        "urgent_item_ids": [],
+                        "pending_ids": [future.id],
+                    },
+                }
+            return {"events": [], "snapshot": {}}
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value=""
+        ), patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=2)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                manager.active_item_id = active.id
+                manager.pending_ids.add(active.id)
+                manager.python_worker_download_sources[active.id] = DOWNLOAD_SOURCE_BBDOWN
+                manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_NATIVE)
+                with patch.object(
+                    manager,
+                    "_stable_cache_plan_snapshot",
+                    return_value=(plan, manager._cache_priority_state()),
+                ), patch.object(manager, "_ensure_native_cache_runtime"), patch.object(
+                    manager, "_native_cache_request", side_effect=runtime_request
+                ):
+                    manager.sync_with_playlist()
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
+        sync_request = next(fields for command, fields in calls if command == "sync")
+        self.assertEqual(
+            [job["item_id"] for job in sync_request["jobs"]],
+            [future.id],
+        )
+
+    def test_native_sync_service_failure_does_not_fan_out_to_valid_jobs(self):
+        ready = self.make_item("song-ready")
+        pending = self.make_item("song-pending")
+        malformed = self.make_item("song-malformed")
+        for item in (ready, pending, malformed):
+            item.selected_pages = [1]
+            item.selected_cids = [456]
+            item.selected_durations = [120]
+            self.store.add_item(item, requester_name="cache-test-user")
+        self.mark_item_ready_with_files(ready.id)
+        plan = CachePlan(
+            desired_ids=(ready.id, pending.id, malformed.id),
+            pending_order=(pending.id, malformed.id),
+            retained_ids=(ready.id, pending.id, malformed.id),
+            preempt_ids=(),
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value=""
+        ), patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                original_job = manager._native_cache_job
+
+                def build_job(item):
+                    if item.id == malformed.id:
+                        raise ValueError("malformed fixture")
+                    return original_job(item)
+
+                with patch.object(
+                    manager,
+                    "_stable_cache_plan_snapshot",
+                    return_value=(plan, manager._cache_priority_state()),
+                ), patch.object(
+                    manager, "_native_cache_job", side_effect=build_job
+                ), patch.object(manager, "_ensure_native_cache_runtime"), patch.object(
+                    manager,
+                    "_native_cache_request",
+                    side_effect=RuntimeError("simulated service failure"),
+                ):
+                    manager.sync_with_playlist()
+
+                ready_after = self.store.get_item(ready.id)
+                pending_after = self.store.get_item(pending.id)
+                malformed_after = self.store.get_item(malformed.id)
+                self.assertEqual(ready_after.cache_status, "ready")
+                self.assertEqual(ready_after.video_relative_path, f"{ready.id}/video.mp4")
+                self.assertEqual(len(ready_after.audio_variants), 1)
+                self.assertEqual(pending_after.cache_status, "pending")
+                self.assertEqual(malformed_after.cache_status, "failed")
+                self.assertEqual(manager.native_cache_error, "simulated service failure")
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
+    def test_native_snapshot_recovers_lost_terminal_event_once(self):
+        item = self.make_item("song-terminal-recovery")
+        self.store.add_item(item, requester_name="cache-test-user")
+        terminal = {
+            "sequence": 9,
+            "generation": 3,
+            "item_id": item.id,
+            "kind": "ready",
+            "payload": {
+                "video_relative_path": f"{item.id}/video-p1.mp4",
+                "video_media_url": f"/media/{item.id}/video-p1.mp4",
+                "audio_variants": [
+                    {
+                        "id": "p1-vocal",
+                        "label": "Vocal",
+                        "page": 1,
+                        "audio_url": f"/media/{item.id}/audio-p1-vocal.m4a",
+                    },
+                    {
+                        "id": "p1-off-vocal",
+                        "label": "Off Vocal",
+                        "page": 1,
+                        "audio_url": f"/media/{item.id}/audio-p1-off-vocal.m4a",
+                    },
+                ],
+                "selected_audio_variant_id": "p1-vocal",
+            },
+        }
+        snapshot = {
+            "primary_active_item_id": None,
+            "active_item_ids": [],
+            "urgent_item_ids": [],
+            "pending_ids": [],
+            "terminal_events": [terminal],
+        }
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                manager._apply_native_cache_snapshot(snapshot)
+                self.store.update_item(
+                    item.id,
+                    selected_audio_variant_id="p1-off-vocal",
+                    persist_backup=False,
+                )
+                manager._apply_native_cache_snapshot(snapshot)
+                cached = self.store.get_item(item.id)
+                self.assertEqual(cached.cache_status, "ready")
+                self.assertEqual(cached.selected_audio_variant_id, "p1-off-vocal")
+                self.assertEqual(manager.native_cache_terminal_sequences[item.id], 9)
+            finally:
+                manager.shutdown()
+
+    def test_native_drain_applies_events_before_terminal_snapshot_recovery(self):
+        item = self.make_item("song-terminal-order")
+        self.store.add_item(item, requester_name="cache-test-user")
+        ready = {
+            "sequence": 9,
+            "generation": 3,
+            "item_id": item.id,
+            "kind": "ready",
+            "payload": {
+                "video_relative_path": f"{item.id}/video-p1.mp4",
+                "video_media_url": f"/media/{item.id}/video-p1.mp4",
+                "audio_variants": [
+                    {
+                        "id": "p1",
+                        "label": "P1",
+                        "page": 1,
+                        "audio_url": f"/media/{item.id}/audio-p1.m4a",
+                    }
+                ],
+                "selected_audio_variant_id": "p1",
+            },
+        }
+        result = {
+            "events": [
+                {
+                    "sequence": 8,
+                    "generation": 3,
+                    "item_id": item.id,
+                    "kind": "queued",
+                    "payload": {"priority": "normal"},
+                },
+                ready,
+            ],
+            "snapshot": {
+                "primary_active_item_id": None,
+                "active_item_ids": [],
+                "urgent_item_ids": [],
+                "pending_ids": [],
+                "terminal_events": [ready],
+            },
+        }
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                with patch.object(manager, "_native_cache_request", return_value=result):
+                    manager._drain_native_cache_events()
+                self.assertEqual(self.store.get_item(item.id).cache_status, "ready")
+            finally:
+                manager.shutdown()
+
     def test_cache_metrics_reports_usage_by_item(self):
         first = self.cache_dir / "song-a"
         second = self.cache_dir / "song-b"
