@@ -33,10 +33,15 @@ instead of using Rust only as a library of deterministic rules.
 
 - Introduce Rust runtime/application services and Rust `AppState` ownership for
   stateful store, session, playlist, and cache behavior.
-- The first stateful application-service slice is implemented in
-  `rust-runtime`: it owns the Bilibili QR-login state machine and generation
-  guard, plus Gacha task status and the exclusive refresh lease. Python still
-  performs cookie/filesystem checks, HTTP requests, and worker orchestration.
+- The current application-service slice in `rust-runtime` owns the Bilibili
+  QR-login state machine and generation guard, Bilibili WBI/DASH and redirect
+  I/O, Rust Native cache queues/retries/cancellation/validated publication,
+  Gacha task status plus repository/network refresh, Cloudflare request
+  execution and bounded background append scheduling, update transfer and
+  installation preparation, diagnostics assembly, and network selection.
+  Python still supplies configuration facts, projects cache events into the
+  compatibility store, starts explicit external-tool workers, and adapts the
+  temporary C ABI.
 - Make the Rust server/runtime the normal path. Retain Python only as a desktop
   compatibility/startup fallback during the transition.
 - Select one stateful core mode at startup: Rust Core mode for the process, or
@@ -64,9 +69,11 @@ External-tool direction:
   segmentation, resume, validators, proxy support, and crash recovery may
   follow incrementally. Keep aria2c as an explicit transition fallback until
   the Rust path is proven.
-- The initial `rust-runtime` downloader slice implements that baseline and is
-  wired into the v0.7 desktop host through a temporary C ABI. It does not yet
-  replace stream selection, BBDown metadata resolution, or media remuxing.
+- The `rust-runtime` downloader implements concurrent range transfer and is
+  wired into the desktop host through a temporary C ABI. Rust Native stream
+  resolution, selection, probing, and MP4/FLAC normalization are Rust-owned.
+  BBDown, yt-dlp, aria2c, and FFmpeg CLI remain explicit desktop alternatives
+  or compatibility fallbacks rather than hidden per-operation fallbacks.
 - Media backend: introduce a `MediaBackend` abstraction. Prefer direct FFmpeg
   libraries, primarily the required `libavformat`/`libavutil` functionality;
   remove ffprobe CLI use where the library backend covers current metadata

@@ -268,6 +268,17 @@ const state = {
   pendingReviewSeq: 0,
   pendingReviewMessage: "",
   pendingReviewError: "",
+  blacklistItems: [],
+  blacklistTotal: 0,
+  blacklistOffset: 0,
+  blacklistLimit: 20,
+  blacklistHasMore: false,
+  blacklistQuery: "",
+  blacklistLoaded: false,
+  blacklistLoading: false,
+  blacklistSeq: 0,
+  blacklistMessage: "",
+  blacklistError: "",
   gatchaUidVisible: false,
   gatchaUidSaving: false,
   gatchaRefreshSaving: false,
@@ -3224,6 +3235,24 @@ async function approvePendingReviewItems(bvids) {
   });
 }
 
+async function fetchBlacklistItems({ query = "", offset = 0, limit = 20 } = {}) {
+  return apiPost("/api/admin-blacklist/list", {
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+    query: String(query || "").trim(),
+    offset: Math.max(0, Number(offset) || 0),
+    limit: Math.max(1, Number(limit) || 20),
+  });
+}
+
+async function restoreBlacklistItem(bvid, restoreVideo = false) {
+  return apiPost("/api/admin-blacklist/restore", {
+    bvid: String(bvid || "").trim(),
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+    restore_video: Boolean(restoreVideo),
+    restored_by: selectedRequesterName() || developerModeRequesterName,
+  });
+}
+
 function uniqueD1BrowseTags(tags) {
   const seen = new Set();
   return (Array.isArray(tags) ? tags : []).reduce((results, value) => {
@@ -3404,8 +3433,18 @@ function setDeveloperMode(enabled) {
     state.pendingReviewSeq += 1;
     state.pendingReviewMessage = "";
     state.pendingReviewError = "";
+    state.blacklistItems = [];
+    state.blacklistTotal = 0;
+    state.blacklistOffset = 0;
+    state.blacklistHasMore = false;
+    state.blacklistQuery = "";
+    state.blacklistLoaded = false;
+    state.blacklistLoading = false;
+    state.blacklistSeq += 1;
+    state.blacklistMessage = "";
+    state.blacklistError = "";
     const activeReviewButton = Array.from(elements.searchSidebarItems || []).find(
-      (button) => button.dataset.target === "review" && button.classList.contains("active"),
+      (button) => ["review", "blacklist"].includes(button.dataset.target) && button.classList.contains("active"),
     );
     if (activeReviewButton) {
       elements.searchSidebarItems?.forEach((button) => {
@@ -3536,25 +3575,56 @@ function openDeveloperTagResetModal(snapshot, action = "reset-tags") {
   state.developerTagResetItem = snapshot;
   state.developerTagResetAction = action;
   const isDelete = action === "delete-entry";
+  const isReject = action === "reject-entry";
+  const isBlacklistRelease = action === "blacklist-release";
+  const isBlacklistRestore = action === "blacklist-release-restore";
   if (elements.developerTagResetTitle) {
-    elements.developerTagResetTitle.textContent = isDelete ? "删除 D1 条目" : "重置标签字段";
+    elements.developerTagResetTitle.textContent = isReject
+      ? "拒绝并加入黑名单"
+      : isBlacklistRestore
+        ? t("search.blacklistReleaseRestore")
+        : isBlacklistRelease
+          ? t("search.blacklistRelease")
+          : isDelete
+            ? "删除 D1 条目"
+            : "重置标签字段";
   }
   if (elements.developerTagResetText) {
     const title = snapshot.title ? `《${snapshot.title}》` : "当前条目";
-    elements.developerTagResetText.textContent = isDelete
-      ? `确认从 D1 删除 ${title} (${snapshot.bvid})？`
-      : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
+    elements.developerTagResetText.textContent = isReject
+      ? `确认拒绝 ${title} (${snapshot.bvid})，并阻止收藏夹再次写入 D1？`
+      : isBlacklistRestore
+        ? `确认解除 ${title} (${snapshot.bvid}) 的黑名单并恢复删除前记录？`
+        : isBlacklistRelease
+          ? `确认解除 ${title} (${snapshot.bvid}) 的黑名单？此操作不会立即恢复视频。`
+          : isDelete
+            ? `确认从 D1 删除 ${title} (${snapshot.bvid})？`
+            : `确认重置 ${title} (${snapshot.bvid}) 的标签字段？`;
   }
   renderDeveloperActionFields(snapshot.fields);
   if (elements.developerTagResetNote) {
-    elements.developerTagResetNote.textContent = isDelete
-      ? "确认后将按 bvid 删除 D1 中对应条目；此操作不会删除 B 站视频本体。"
-      : "确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。";
+    elements.developerTagResetNote.textContent = isReject
+      ? "视频快照会保存在黑名单中；点歌和本地播放不受影响。"
+      : isBlacklistRestore
+        ? "将从黑名单快照恢复 D1 记录，并重新建立名称/歌手浏览索引。"
+        : isBlacklistRelease
+          ? "只解除写入拦截；后续收藏夹刷新可以再次收录该视频。"
+          : isDelete
+            ? "确认后将按 bvid 删除 D1 中对应条目；此操作不会删除 B 站视频本体。"
+            : "确认后目标变更：清空 tag_1-5、preserved_2-5，并将 tag_status 改为 0。";
   }
   if (elements.developerTagResetConfirm) {
     elements.developerTagResetConfirm.disabled = false;
-    elements.developerTagResetConfirm.textContent = isDelete ? "确认删除" : "确认重置";
-    elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete);
+    elements.developerTagResetConfirm.textContent = isReject
+      ? "确认拒绝"
+      : isBlacklistRestore
+        ? t("search.blacklistReleaseRestore")
+        : isBlacklistRelease
+          ? t("search.blacklistRelease")
+          : isDelete
+            ? "确认删除"
+            : "确认重置";
+    elements.developerTagResetConfirm.classList.toggle("danger-button", isDelete || isReject);
   }
   if (elements.developerTagResetDeleteMid) {
     const mid = String(snapshot.fields?.mid || "").trim();
@@ -3578,7 +3648,7 @@ function parseDeveloperActionButton(button) {
 }
 
 function handleDeveloperTagResetButtonClick(event) {
-  const button = event.target.closest('button[data-dev-action="reset-tags"], button[data-dev-action="delete-entry"]');
+  const button = event.target.closest("button[data-dev-action]");
   if (!button || !elements.searchModal?.contains(button)) {
     return;
   }
@@ -3586,7 +3656,15 @@ function handleDeveloperTagResetButtonClick(event) {
   event.stopPropagation();
   const snapshot = parseDeveloperActionButton(button);
   if (snapshot) {
-    openDeveloperTagResetModal(snapshot, String(button.dataset.devAction || "reset-tags"));
+    let action = String(button.dataset.devAction || "reset-tags");
+    if (
+      action === "delete-entry"
+      && button.closest("[data-pending-review-view]")
+      && state.pendingReviewItems.some((item) => searchResultBvid(item) === snapshot.bvid)
+    ) {
+      action = "reject-entry";
+    }
+    openDeveloperTagResetModal(snapshot, action);
   }
 }
 
@@ -3600,6 +3678,32 @@ async function deleteDeveloperD1Entry(snapshot) {
     await loadPendingReviewItems({ force: true });
   }
   setAppMessage(`已删除 ${snapshot.bvid} 的 D1 条目。`);
+}
+
+async function rejectPendingReviewEntry(snapshot) {
+  await apiPost("/api/admin-review/reject", {
+    bvid: snapshot.bvid,
+    record: snapshot.fields,
+    rejected_by: selectedRequesterName() || developerModeRequesterName,
+    BILIKARA_ADMIN_SECRET: state.bilikaraSecret,
+  });
+  const reviewCacheExhausted = removePendingReviewItem(snapshot.bvid);
+  if (reviewCacheExhausted) {
+    await loadPendingReviewItems({ force: true });
+  }
+  setAppMessage(`已拒绝 ${snapshot.bvid} 并加入黑名单。`);
+}
+
+async function restoreDeveloperBlacklistEntry(snapshot, restoreVideo) {
+  await restoreBlacklistItem(snapshot.bvid, restoreVideo);
+  const nextOffset = state.blacklistItems.length <= 1 && state.blacklistOffset > 0
+    ? Math.max(0, state.blacklistOffset - state.blacklistLimit)
+    : state.blacklistOffset;
+  await loadBlacklistItems({ force: true, offset: nextOffset });
+  state.blacklistMessage = t(restoreVideo ? "search.blacklistRestored" : "search.blacklistReleased", {
+    bvid: snapshot.bvid,
+  });
+  renderBlacklistView();
 }
 
 async function deleteDeveloperD1EntriesByMid(snapshot) {
@@ -3656,13 +3760,24 @@ async function confirmDeveloperAction() {
   try {
     if (action === "delete-entry") {
       await deleteDeveloperD1Entry(snapshot);
+    } else if (action === "reject-entry") {
+      await rejectPendingReviewEntry(snapshot);
+    } else if (action === "blacklist-release" || action === "blacklist-release-restore") {
+      await restoreDeveloperBlacklistEntry(snapshot, action === "blacklist-release-restore");
     } else {
       await resetDeveloperTagFields(snapshot);
     }
     state.developerTagResetSaving = false;
     closeDeveloperTagResetModal();
   } catch (error) {
-    setAppMessage(error?.message || (action === "delete-entry" ? "删除失败。" : "重置失败。"), true);
+    const fallbackMessage = action === "delete-entry"
+      ? "删除失败。"
+      : action === "reject-entry"
+        ? "加入黑名单失败。"
+        : action === "blacklist-release" || action === "blacklist-release-restore"
+          ? "解除黑名单失败。"
+          : "重置失败。";
+    setAppMessage(error?.message || fallbackMessage, true);
   } finally {
     state.developerTagResetSaving = false;
     if (elements.developerTagResetConfirm) {
@@ -3942,7 +4057,7 @@ function createSearchResultUrlLine(item) {
   return line;
 }
 
-function createSearchResultItem(item) {
+function createSearchResultItem(item, options = {}) {
   const row = document.createElement("article");
   row.className = "search-result-item";
   searchResultItemByElement.set(row, item);
@@ -3983,13 +4098,15 @@ function createSearchResultItem(item) {
   if (ratingStars) {
     cover.appendChild(ratingStars);
   }
-  const developerDeleteButton = createDeveloperDeleteButton(item);
-  if (developerDeleteButton) {
-    cover.appendChild(developerDeleteButton);
-  }
-  const developerResetButton = createDeveloperTagResetButton(item);
-  if (developerResetButton) {
-    cover.appendChild(developerResetButton);
+  if (options.showDeveloperActions !== false) {
+    const developerDeleteButton = createDeveloperDeleteButton(item);
+    if (developerDeleteButton) {
+      cover.appendChild(developerDeleteButton);
+    }
+    const developerResetButton = createDeveloperTagResetButton(item);
+    if (developerResetButton) {
+      cover.appendChild(developerResetButton);
+    }
   }
 
   const body = document.createElement("div");
@@ -4034,7 +4151,10 @@ function createSearchResultItem(item) {
     body.appendChild(statusLine);
   }
   body.appendChild(url);
-  row.append(cover, body, button);
+  row.append(cover, body);
+  if (options.showPrimaryAction !== false) {
+    row.appendChild(button);
+  }
   return row;
 }
 
@@ -4680,6 +4800,193 @@ async function approvePendingReviewVisibleItems() {
   } finally {
     state.pendingReviewApproving = false;
     renderPendingReviewView();
+  }
+}
+
+function createBlacklistResultItem(item) {
+  const row = createSearchResultItem(item, {
+    showDeveloperActions: false,
+    showPrimaryAction: false,
+  });
+  row.classList.add("blacklist-result-item");
+  const body = row.querySelector(".search-result-body");
+  if (body) {
+    const audit = document.createElement("div");
+    audit.className = "blacklist-result-audit";
+    const rejectedAt = Number(item?.rejected_at || 0);
+    const rejectedText = rejectedAt > 0 ? new Date(rejectedAt * 1000).toLocaleString() : "";
+    audit.textContent = [
+      rejectedText,
+      String(item?.rejected_by || "").trim(),
+      String(item?.reason_code || "").trim(),
+    ].filter(Boolean).join(" · ");
+    if (audit.textContent) {
+      body.appendChild(audit);
+    }
+  }
+  const snapshot = developerDeleteSnapshot(item);
+  const actions = document.createElement("div");
+  actions.className = "blacklist-result-actions";
+  const releaseButton = document.createElement("button");
+  releaseButton.type = "button";
+  releaseButton.className = "toolbar-button ghost";
+  releaseButton.dataset.devAction = "blacklist-release";
+  releaseButton.dataset.item = JSON.stringify(snapshot);
+  releaseButton.textContent = t("search.blacklistRelease");
+  const restoreButton = document.createElement("button");
+  restoreButton.type = "button";
+  restoreButton.className = "next-button";
+  restoreButton.dataset.devAction = "blacklist-release-restore";
+  restoreButton.dataset.item = JSON.stringify(snapshot);
+  restoreButton.textContent = t("search.blacklistReleaseRestore");
+  actions.append(releaseButton, restoreButton);
+  row.appendChild(actions);
+  return row;
+}
+
+function renderBlacklistItems(container, items) {
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+  container.classList.remove("hidden");
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "search-empty";
+    empty.textContent = state.blacklistLoading ? t("search.blacklistLoading") : t("search.blacklistEmpty");
+    container.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => container.appendChild(createBlacklistResultItem(item)));
+}
+
+function ensureBlacklistView() {
+  if (!elements.searchModalOtherView) {
+    return null;
+  }
+  elements.searchModalOtherView.classList.add("search-modal-browser-view");
+  let view = elements.searchModalOtherView.querySelector("[data-blacklist-view]");
+  if (view) {
+    return view;
+  }
+  elements.searchModalOtherView.textContent = "";
+  view = document.createElement("div");
+  view.className = "pending-review-browser blacklist-browser";
+  view.dataset.blacklistView = "1";
+  view.innerHTML = `
+    <div class="pending-review-head">
+      <div class="pending-review-title-block">
+        <p class="section-tag">D1 BLACKLIST</p>
+        <h2 data-blacklist-title></h2>
+      </div>
+      <button type="button" class="toolbar-button" data-blacklist-refresh></button>
+    </div>
+    <form class="blacklist-search-form" data-blacklist-search>
+      <input type="search" data-blacklist-query autocomplete="off">
+      <button type="submit" class="next-button" data-blacklist-search-submit></button>
+    </form>
+    <div class="search-results pending-review-results hidden" data-blacklist-results></div>
+    <p class="gatcha-message pending-review-message" data-blacklist-message role="status"></p>
+    <div class="pending-review-actions blacklist-pagination">
+      <button type="button" class="toolbar-button ghost" data-blacklist-previous></button>
+      <button type="button" class="toolbar-button ghost" data-blacklist-next></button>
+    </div>
+  `;
+  elements.searchModalOtherView.appendChild(view);
+  return view;
+}
+
+function renderBlacklistView() {
+  const view = ensureBlacklistView();
+  if (!view) {
+    return;
+  }
+  const title = view.querySelector("[data-blacklist-title]");
+  const refreshButton = view.querySelector("[data-blacklist-refresh]");
+  const queryInput = view.querySelector("[data-blacklist-query]");
+  const searchButton = view.querySelector("[data-blacklist-search-submit]");
+  const results = view.querySelector("[data-blacklist-results]");
+  const message = view.querySelector("[data-blacklist-message]");
+  const previousButton = view.querySelector("[data-blacklist-previous]");
+  const nextButton = view.querySelector("[data-blacklist-next]");
+  if (title) title.textContent = t("search.blacklistTitle");
+  if (refreshButton) {
+    refreshButton.textContent = t("search.blacklistRefresh");
+    refreshButton.disabled = state.blacklistLoading;
+    refreshButton.setAttribute("aria-busy", String(state.blacklistLoading));
+  }
+  if (queryInput && document.activeElement !== queryInput) {
+    queryInput.value = state.blacklistQuery;
+  }
+  if (queryInput) queryInput.placeholder = t("search.blacklistSearchPlaceholder");
+  if (searchButton) {
+    searchButton.textContent = t("search.modalSearch");
+    searchButton.disabled = state.blacklistLoading;
+    searchButton.setAttribute("aria-busy", String(state.blacklistLoading));
+  }
+  renderBlacklistItems(results, state.blacklistItems);
+  if (message) {
+    const start = state.blacklistItems.length ? state.blacklistOffset + 1 : 0;
+    const end = state.blacklistOffset + state.blacklistItems.length;
+    message.textContent = state.blacklistError
+      || (state.blacklistLoading ? t("search.blacklistLoading") : "")
+      || state.blacklistMessage
+      || (state.blacklistTotal ? t("search.blacklistFound", { start, end, total: state.blacklistTotal }) : "");
+    message.classList.toggle("is-error", Boolean(state.blacklistError));
+  }
+  if (previousButton) {
+    previousButton.textContent = t("search.blacklistPrevious");
+    previousButton.disabled = state.blacklistLoading || state.blacklistOffset <= 0;
+  }
+  if (nextButton) {
+    nextButton.textContent = t("search.blacklistNext");
+    nextButton.disabled = state.blacklistLoading || !state.blacklistHasMore;
+  }
+}
+
+async function loadBlacklistItems({ force = false, query = state.blacklistQuery, offset = state.blacklistOffset } = {}) {
+  if (!state.developerMode || !state.bilikaraSecret) {
+    state.blacklistItems = [];
+    state.blacklistLoaded = false;
+    state.blacklistError = t("search.reviewNeedDeveloper");
+    renderBlacklistView();
+    return;
+  }
+  if (!force && state.blacklistLoading) {
+    return;
+  }
+  const seq = state.blacklistSeq + 1;
+  state.blacklistSeq = seq;
+  state.blacklistLoading = true;
+  state.blacklistQuery = String(query || "").trim();
+  state.blacklistOffset = Math.max(0, Number(offset) || 0);
+  state.blacklistMessage = "";
+  state.blacklistError = "";
+  renderBlacklistView();
+  try {
+    const payload = await fetchBlacklistItems({
+      query: state.blacklistQuery,
+      offset: state.blacklistOffset,
+      limit: state.blacklistLimit,
+    });
+    if (state.blacklistSeq !== seq) {
+      return;
+    }
+    state.blacklistItems = Array.isArray(payload?.items) ? payload.items : [];
+    state.blacklistTotal = Number(payload?.total || 0);
+    state.blacklistHasMore = Boolean(payload?.has_more);
+    state.blacklistLoaded = true;
+  } catch (error) {
+    if (state.blacklistSeq === seq) {
+      state.blacklistItems = [];
+      state.blacklistLoaded = false;
+      state.blacklistError = error?.message || t("error.requestFailed");
+    }
+  } finally {
+    if (state.blacklistSeq === seq) {
+      state.blacklistLoading = false;
+      renderBlacklistView();
+    }
   }
 }
 
@@ -14583,6 +14890,24 @@ elements.searchSidebarItems?.forEach((btn) => {
       } else {
         loadPendingReviewItems();
       }
+    } else if (target === "blacklist") {
+      if (!state.developerMode) {
+        btn.classList.remove("active");
+        const searchButton = Array.from(elements.searchSidebarItems || []).find((item) => item.dataset.target === "search");
+        searchButton?.classList.add("active");
+        elements.searchModalPlaceholder?.classList.remove("hidden");
+        elements.favlistBrowserView?.classList.add("hidden");
+        elements.searchModalOtherView?.classList.add("hidden");
+        return;
+      }
+      elements.searchModalPlaceholder?.classList.add("hidden");
+      elements.favlistBrowserView?.classList.add("hidden");
+      elements.searchModalOtherView?.classList.remove("hidden");
+      if (state.blacklistLoaded || state.blacklistLoading) {
+        renderBlacklistView();
+      } else {
+        loadBlacklistItems({ force: true, offset: 0 });
+      }
     } else {
       elements.searchModalPlaceholder?.classList.add("hidden");
       elements.favlistBrowserView?.classList.add("hidden");
@@ -14596,6 +14921,13 @@ elements.searchSidebarItems?.forEach((btn) => {
 });
 
 elements.searchModalOtherView?.addEventListener("submit", (event) => {
+  const blacklistForm = event.target.closest("[data-blacklist-search]");
+  if (blacklistForm && elements.searchModalOtherView.contains(blacklistForm)) {
+    event.preventDefault();
+    const input = blacklistForm.querySelector("[data-blacklist-query]");
+    loadBlacklistItems({ force: true, query: input?.value || "", offset: 0 });
+    return;
+  }
   const categoryForm = event.target.closest("[data-category-browse-search]");
   if (categoryForm && elements.searchModalOtherView.contains(categoryForm)) {
     event.preventDefault();
@@ -14643,6 +14975,27 @@ elements.searchModalOtherView?.addEventListener("submit", (event) => {
 });
 
 elements.searchModalOtherView?.addEventListener("click", (event) => {
+  const blacklistRefreshButton = event.target.closest("[data-blacklist-refresh]");
+  if (blacklistRefreshButton && elements.searchModalOtherView.contains(blacklistRefreshButton)) {
+    loadBlacklistItems({ force: true });
+    return;
+  }
+  const blacklistPreviousButton = event.target.closest("[data-blacklist-previous]");
+  if (blacklistPreviousButton && elements.searchModalOtherView.contains(blacklistPreviousButton)) {
+    loadBlacklistItems({
+      force: true,
+      offset: Math.max(0, state.blacklistOffset - state.blacklistLimit),
+    });
+    return;
+  }
+  const blacklistNextButton = event.target.closest("[data-blacklist-next]");
+  if (blacklistNextButton && elements.searchModalOtherView.contains(blacklistNextButton)) {
+    loadBlacklistItems({
+      force: true,
+      offset: state.blacklistOffset + state.blacklistLimit,
+    });
+    return;
+  }
   const reviewRefreshButton = event.target.closest("[data-pending-review-refresh]");
   if (reviewRefreshButton && elements.searchModalOtherView.contains(reviewRefreshButton)) {
     loadPendingReviewItems({ force: true });

@@ -89,20 +89,22 @@ def _get_json(url: str, *, token: str, timeout: float = 12.0) -> dict:
 
 def _cloudflare_json(method: str, path: str, payload: dict[str, Any] | None = None, *, timeout: float = 12.0) -> Any:
     url = f"{_CLOUDFLARE_API_URL}{path}"
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
-    }
-    if payload is not None:
-        headers["Content-Type"] = "application/json; charset=utf-8"
+    user_agent = f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)"
     _log_lark_debug(
         "cloudflare request",
         {"method": method.upper(), "url": url, "timeout": timeout, "payload_keys": sorted((payload or {}).keys())},
     )
     try:
-        parsed = rust_runtime.json_http_request(
-            method.upper(), url, headers=headers, payload=payload, timeout=timeout
+        result = rust_runtime.cloudflare_service_request(
+            "request",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=user_agent,
+            timeout=timeout,
+            method=method.upper(),
+            path=path,
+            payload=payload,
         )
+        parsed = result.get("payload")
         _log_lark_debug(
             "cloudflare response",
             {
@@ -134,18 +136,19 @@ def _cloudflare_admin_get_json(path: str, secret: str, *, timeout: float = 60.0)
     if not normalized_secret:
         raise LarkPoolError("missing secret")
     url = f"{_CLOUDFLARE_API_URL}{path}"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {normalized_secret}",
-        "Cache-Control": "no-store",
-        "Pragma": "no-cache",
-        "User-Agent": f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
-    }
+    user_agent = f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)"
     _log_lark_debug("cloudflare admin request", {"url": url, "timeout": timeout})
     try:
-        return rust_runtime.json_http_request(
-            "GET", url, headers=headers, timeout=timeout
+        result = rust_runtime.cloudflare_service_request(
+            "request",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=user_agent,
+            timeout=timeout,
+            method="GET",
+            path=path,
+            authorization=f"Bearer {normalized_secret}",
         )
+        return result.get("payload")
     except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
         response = getattr(exc, "response", {})
         error = response.get("error") if isinstance(response, dict) else {}
@@ -884,20 +887,25 @@ def _normalize_pool_entries(entries: list[dict]) -> list[dict]:
 
 
 def append_cloudflare_pool_entries(entries: list[dict]) -> dict:
-    normalized = _normalize_pool_entries(entries)
-    if not normalized:
-        return {"attempted": 0, "added": 0}
     try:
-        payload = _cloudflare_json("POST", "/batch-add", {"records": normalized}, timeout=20)
-    except LarkPoolError as exc:
-        return {"attempted": len(normalized), "added": 0, "error": str(exc)}
-    if not isinstance(payload, dict):
-        return {"attempted": len(normalized), "added": 0, "error": "Cloudflare returned an invalid payload"}
+        payload = rust_runtime.cloudflare_service_request(
+            "append",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
+            timeout=20,
+            entries=entries,
+        )
+    except (rust_runtime.RustRuntimeServiceError, rust_runtime.RustRuntimeUnavailableError) as exc:
+        return {"attempted": len(entries), "added": 0, "error": f"Cloudflare request failed: {exc}"}
+    attempted = int(payload.get("attempted") or 0)
+    if attempted == 0:
+        return {"attempted": 0, "added": 0}
     return {
-        "attempted": int(payload.get("attempted") or len(normalized)),
+        "attempted": attempted,
         "added": int(payload.get("added") or 0),
         "updated_existing": int(payload.get("updated_existing") or 0),
         "skipped_existing": int(payload.get("skipped_existing") or 0),
+        "skipped_blacklisted": int(payload.get("skipped_blacklisted") or 0),
         "feishu_queued": int(payload.get("feishu_queued") or 0),
     }
 
@@ -1043,6 +1051,117 @@ def approve_cloudflare_review_items(
         }
     )
     return payload
+
+
+def reject_cloudflare_review_item(
+    bvid: str,
+    secret: str,
+    *,
+    record: dict | None = None,
+    rejected_by: str = "",
+) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "error": "missing secret"}
+    payload_body = {
+        "bvid": normalized_bvid,
+        "BILIKARA_ADMIN_SECRET": normalized_secret,
+        "reason_code": "not_karaoke",
+        "source": "pending_review",
+        "rejected_by": str(rejected_by or "").strip(),
+    }
+    if isinstance(record, dict):
+        payload_body["record"] = dict(record)
+    try:
+        payload = _cloudflare_json("POST", "/admin/review/reject", payload_body, timeout=15)
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "bvid": normalized_bvid, "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("error", "" if result.get("success") else "review rejection failed")
+    return result
+
+
+def list_cloudflare_blacklist(
+    secret: str,
+    *,
+    query: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_inactive: bool = False,
+) -> dict:
+    normalized_secret = str(secret or "").strip()
+    if not normalized_secret:
+        return {"success": False, "items": [], "error": "missing secret"}
+    try:
+        normalized_limit = max(1, min(100, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 20
+    try:
+        normalized_offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        normalized_offset = 0
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/blacklist/list",
+            {
+                "BILIKARA_ADMIN_SECRET": normalized_secret,
+                "query": str(query or "").strip(),
+                "limit": normalized_limit,
+                "offset": normalized_offset,
+                "include_inactive": bool(include_inactive),
+            },
+            timeout=20,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "items": [], "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "items": [], "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result.setdefault("items", [])
+    result.setdefault("error", "" if result.get("success") else "blacklist query failed")
+    return result
+
+
+def restore_cloudflare_blacklist_item(
+    bvid: str,
+    secret: str,
+    *,
+    restore_video: bool = False,
+    restored_by: str = "",
+) -> dict:
+    normalized_bvid = str(bvid or "").strip()
+    normalized_secret = str(secret or "").strip()
+    if not _VALID_BVID_RE.match(normalized_bvid):
+        return {"success": False, "bvid": normalized_bvid, "error": "invalid bvid"}
+    if not normalized_secret:
+        return {"success": False, "bvid": normalized_bvid, "error": "missing secret"}
+    try:
+        payload = _cloudflare_json(
+            "POST",
+            "/admin/blacklist/restore",
+            {
+                "bvid": normalized_bvid,
+                "BILIKARA_ADMIN_SECRET": normalized_secret,
+                "restore_video": bool(restore_video),
+                "restored_by": str(restored_by or "").strip(),
+            },
+            timeout=15,
+        )
+    except LarkPoolError as exc:
+        return {"success": False, "bvid": normalized_bvid, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"success": False, "bvid": normalized_bvid, "error": "Cloudflare returned an invalid payload"}
+    result = dict(payload)
+    result.setdefault("bvid", normalized_bvid)
+    result.setdefault("error", "" if result.get("success") else "blacklist restore failed")
+    return result
 
 
 def delete_cloudflare_pool_entry(bvid: str) -> dict:
@@ -1318,7 +1437,25 @@ def append_lark_pool_entries_in_background(entries: list[dict]) -> bool:
     if not normalized_entries:
         return False
     try:
-        return _BACKGROUND_APPEND_SCHEDULER.submit(normalized_entries)
+        result = rust_runtime.cloudflare_service_request(
+            "enqueue_append",
+            base_url=_CLOUDFLARE_API_URL,
+            user_agent=f"bilikara/{getattr(cfg, 'APP_VERSION', 'dev')} (+https://github.com/VZRXS/bilikara)",
+            timeout=20,
+            entries=normalized_entries,
+        )
+        return bool(result.get("accepted"))
+    except rust_runtime.RustRuntimeUnavailableError:
+        try:
+            return _BACKGROUND_APPEND_SCHEDULER.submit(normalized_entries)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                "[bilikara:lark] background append scheduling failed: "
+                f"{_BackgroundAppendScheduler._error_text(exc)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return False
     except Exception as exc:  # noqa: BLE001
         print(
             "[bilikara:lark] background append scheduling failed: "

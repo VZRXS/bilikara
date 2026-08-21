@@ -77,11 +77,18 @@ Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI 
   crate. It owns HTTP transfer, URL fallback, progress, cancellation, response
   validation, temporary output, and atomic publication. Python only adapts the
   temporary C ABI and keeps aria2c as a transactional desktop fallback.
-- The first stateful service slice also lives in `rust-runtime`. It owns
-  Bilibili QR-login transitions with stale-worker generation rejection and
-  Gacha task/refresh-lease state. Python supplies filesystem and cookie facts
-  and retains network, persistence, and thread orchestration during the v0.7
-  compatibility period.
+- The stateful service slice in `rust-runtime` owns Bilibili QR-login
+  transitions, WBI/DASH and redirect resolution, Rust Native cache queues,
+  retries, cancellation, track concurrency, validation and publication,
+  Gacha task leases, Gacha repository persistence and refresh, Cloudflare
+  requests and its bounded background append queue, update transfer,
+  diagnostics assembly, and network address selection. Python supplies
+  configuration and cookie facts, projects cache events into the compatibility
+  store, and adapts the temporary C ABI.
+- Frozen Python implementations remain only for explicit compatibility paths:
+  external BBDown/yt-dlp/aria2c/FFmpeg modes, emergency diagnostics, direct
+  Feishu fallback, legacy Gacha schema rebuild, and runtime-unavailable update
+  fallback. Normal operations do not recompute Rust-owned state in Python.
 - FFmpeg and ffprobe CLI calls are desktop transition adapters. Media handling
   must use a `MediaBackend` abstraction, with direct FFmpeg libraries preferred
   for the required metadata and remux functionality.

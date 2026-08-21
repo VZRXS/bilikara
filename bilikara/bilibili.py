@@ -84,6 +84,35 @@ _COOKIE_PREFERRED_ORDER = (
 )
 
 
+def _rust_gatcha_repository(operation: str, **fields: object) -> dict:
+    fields.setdefault("default_uids", _default_gatcha_uids())
+    try:
+        return rust_runtime.gatcha_repository_request(
+            operation,
+            uid_file=_GATCHA_UIDS_FILE,
+            cache_file=_GATCHA_CACHE_FILE,
+            favlist_file=_GATCHA_FAVLIST_FILE,
+            pool_config_file=_GATCHA_POOL_CONFIG_FILE,
+            **fields,
+        )
+    except rust_runtime.RustRuntimeUnavailableError:
+        raise
+    except rust_runtime.RustRuntimeServiceError as exc:
+        raise BilibiliError(str(exc)) from exc
+
+
+def _rust_gatcha_network(operation: str, **fields: object) -> dict:
+    headers = dict(BILIBILI_HEADERS or {})
+    return _rust_gatcha_repository(
+        operation,
+        cookie=effective_bilibili_cookie(),
+        user_agent=str(headers.get("User-Agent") or headers.get("user-agent") or "Mozilla/5.0"),
+        referer=str(headers.get("Referer") or headers.get("referer") or "https://www.bilibili.com/"),
+        timeout_ms=20_000,
+        **fields,
+    )
+
+
 def _cookie_pair_name(name: object) -> str:
     normalized = str(name or "").strip()
     if normalized.lower() == "sessdata":
@@ -348,17 +377,10 @@ def _load_gatcha_uid_payload() -> dict:
 
 
 def gatcha_uid_snapshot() -> dict:
-    with _GATCHA_UIDS_LOCK:
-        payload = _load_gatcha_uid_payload()
-    uids = payload.get("uids") if isinstance(payload, dict) else []
-    if not isinstance(uids, list):
-        uids = []
-    return {
-        "uids": list(uids),
-        "count": len(uids),
-        "profiles": dict(payload.get("profiles") or {}),
-        "updated_at": float(payload.get("updated_at") or 0),
-    }
+    return _rust_gatcha_repository(
+        "uid_snapshot",
+        default_uids=_default_gatcha_uids(),
+    )
 
 
 def _configured_gatcha_uids() -> list[str]:
@@ -416,15 +438,7 @@ def _save_gatcha_pool_config(config: dict) -> None:
 
 
 def gatcha_pool_config_snapshot() -> dict:
-    with _GATCHA_POOL_CONFIG_LOCK:
-        config = _load_gatcha_pool_config()
-    return {
-        "uid_weight": config.get("uid_weight", 50),
-        "favlist_weight": config.get("favlist_weight", 50),
-        "excluded_uids": list(config.get("excluded_uids") or []),
-        "excluded_favlist_folders": list(config.get("excluded_favlist_folders") or []),
-        "updated_at": float(config.get("updated_at") or 0),
-    }
+    return _rust_gatcha_repository("pool_config_snapshot")
 
 
 def gatcha_pool_config_detail() -> dict:
@@ -451,23 +465,20 @@ def update_gatcha_pool_config(
     excluded_uids: list[str] | None = None,
     excluded_favlist_folders: list[str] | None = None,
 ) -> dict:
-    with _GATCHA_POOL_CONFIG_LOCK:
-        config = _load_gatcha_pool_config()
-        if uid_weight is not None:
-            config["uid_weight"] = max(0, min(100, int(uid_weight)))
-        if favlist_weight is not None:
-            config["favlist_weight"] = max(0, min(100, int(favlist_weight)))
-        if excluded_uids is not None:
-            if not isinstance(excluded_uids, list):
-                raise ValueError("excluded_uids must be a list")
-            config["excluded_uids"] = [str(uid).strip() for uid in excluded_uids if str(uid).strip()]
-        if excluded_favlist_folders is not None:
-            if not isinstance(excluded_favlist_folders, list):
-                raise ValueError("excluded_favlist_folders must be a list")
-            config["excluded_favlist_folders"] = [str(fid).strip() for fid in excluded_favlist_folders if str(fid).strip()]
-        config["updated_at"] = time.time()
-        _save_gatcha_pool_config(config)
-        return gatcha_pool_config_snapshot()
+    if excluded_uids is not None and not isinstance(excluded_uids, list):
+        raise ValueError("excluded_uids must be a list")
+    if excluded_favlist_folders is not None and not isinstance(excluded_favlist_folders, list):
+        raise ValueError("excluded_favlist_folders must be a list")
+    fields: dict[str, object] = {}
+    if uid_weight is not None:
+        fields["uid_weight"] = int(uid_weight)
+    if favlist_weight is not None:
+        fields["favlist_weight"] = int(favlist_weight)
+    if excluded_uids is not None:
+        fields["excluded_uids"] = list(excluded_uids)
+    if excluded_favlist_folders is not None:
+        fields["excluded_favlist_folders"] = list(excluded_favlist_folders)
+    return _rust_gatcha_repository("pool_config_update", **fields)
 
 
 @dataclass
@@ -1216,7 +1227,7 @@ def _gatcha_favlist_folder_summary(folder: dict) -> dict:
     }
 
 
-def preview_gatcha_favlist(raw_mid: object) -> dict:
+def _py_preview_gatcha_favlist(raw_mid: object) -> dict:
     mid = _normalize_gatcha_uid(raw_mid)
     folders = _request_gatcha_favlist_folders(mid)
     public_folders: list[dict] = []
@@ -1402,7 +1413,7 @@ def _refresh_gatcha_favlist_unlocked(raw_mid: object, raw_folder_ids: object = N
     }
 
 
-def refresh_gatcha_favlist(
+def _py_refresh_gatcha_favlist(
     raw_mid: object,
     raw_folder_ids: object = None,
     *,
@@ -1471,7 +1482,7 @@ def _refresh_existing_gatcha_favlist_cache() -> dict | None:
     }
 
 
-def preview_gatcha_uid(raw_mid: object) -> dict:
+def _py_preview_gatcha_uid(raw_mid: object) -> dict:
     if not effective_bilibili_cookie():
         raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
 
@@ -1621,7 +1632,7 @@ def _gatcha_refresh_task_result(cache_payload: dict | None) -> dict:
     }
 
 
-def refresh_gatcha_cache() -> dict:
+def _py_refresh_gatcha_cache() -> dict:
     if not effective_bilibili_cookie():
         raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
 
@@ -2017,7 +2028,7 @@ def refresh_gatcha_cache_in_background(
     return True
 
 
-def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done: callable | None = None) -> dict:
+def _py_add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done: callable | None = None) -> dict:
     if not rust_runtime.try_begin_gatcha_refresh(
         busy_message=GATCHA_TASK_BUSY_MESSAGE
     ):
@@ -2026,7 +2037,7 @@ def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done
     try:
         if on_start is not None:
             on_start()
-        preview = preview_gatcha_uid(raw_mid)
+        preview = _py_preview_gatcha_uid(raw_mid)
         mid = preview["uid"]
         with _GATCHA_UIDS_LOCK:
             uid_payload = _load_gatcha_uid_payload()
@@ -2103,6 +2114,89 @@ def add_gatcha_uid(raw_mid: object, *, on_start: callable | None = None, on_done
     }
 
 
+def preview_gatcha_uid(raw_mid: object) -> dict:
+    if not effective_bilibili_cookie():
+        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
+    return _rust_gatcha_network("preview_uid", uid=_normalize_gatcha_uid(raw_mid))
+
+
+def add_gatcha_uid(
+    raw_mid: object,
+    *,
+    on_start: callable | None = None,
+    on_done: callable | None = None,
+) -> dict:
+    if not rust_runtime.try_begin_gatcha_refresh(busy_message=GATCHA_TASK_BUSY_MESSAGE):
+        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+    entries: list[dict] = []
+    try:
+        if on_start is not None:
+            on_start()
+        result = _rust_gatcha_network(
+            "add_uid",
+            uid=_normalize_gatcha_uid(raw_mid),
+            keywords=list(GATCHA_KEYWORDS),
+        )
+        raw_entries = result.pop("entries", [])
+        if isinstance(raw_entries, list):
+            entries = [entry for entry in raw_entries if isinstance(entry, dict)]
+    finally:
+        rust_runtime.release_gatcha_refresh()
+        if on_done is not None:
+            on_done()
+    if entries:
+        _append_lark_pool_entries_async(entries)
+    return result
+
+
+def refresh_gatcha_cache() -> dict:
+    if not effective_bilibili_cookie():
+        raise BilibiliError(MISSING_BILIBILI_COOKIE_MESSAGE)
+    return _rust_gatcha_network("refresh_all", keywords=list(GATCHA_KEYWORDS))
+
+
+def preview_gatcha_favlist(raw_mid: object) -> dict:
+    return _rust_gatcha_network(
+        "preview_favlist",
+        uid=_normalize_gatcha_uid(raw_mid),
+        folder_keywords=list(_GATCHA_FAVLIST_TITLE_KEYWORDS),
+    )
+
+
+def refresh_gatcha_favlist(
+    raw_mid: object,
+    raw_folder_ids: object = None,
+    *,
+    on_start: callable | None = None,
+    on_done: callable | None = None,
+) -> dict:
+    if not rust_runtime.try_begin_gatcha_refresh(busy_message=GATCHA_TASK_BUSY_MESSAGE):
+        raise BilibiliError(GATCHA_TASK_BUSY_MESSAGE)
+    entries: list[dict] = []
+    try:
+        if on_start is not None:
+            on_start()
+        folder_ids = None
+        if raw_folder_ids is not None:
+            folder_ids = sorted(_selected_gatcha_favlist_folder_ids(raw_folder_ids) or set())
+        result = _rust_gatcha_network(
+            "refresh_favlist",
+            uid=_normalize_gatcha_uid(raw_mid),
+            folder_ids=folder_ids,
+            folder_keywords=list(_GATCHA_FAVLIST_TITLE_KEYWORDS),
+        )
+        raw_entries = result.pop("entries", [])
+        if isinstance(raw_entries, list):
+            entries = [entry for entry in raw_entries if isinstance(entry, dict)]
+    finally:
+        rust_runtime.release_gatcha_refresh()
+        if on_done is not None:
+            on_done()
+    if entries:
+        _append_lark_pool_entries_async(entries)
+    return result
+
+
 def _local_gatcha_candidates() -> list[dict]:
     with _GATCHA_CACHE_LOCK:
         cache_payload = _load_gatcha_cache()
@@ -2177,7 +2271,7 @@ def _append_lark_pool_entries_async(entries: list[dict]) -> None:
         pass
 
 
-def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
+def _py_search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
     normalized_query = str(query or "").strip().lower()
     if not normalized_query:
         return []
@@ -2197,6 +2291,16 @@ def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
         if len(results) >= max(1, int(limit)):
             break
     return _annotate_gatcha_owner_avatars(results)
+
+
+def search_gatcha_cache(query: str, *, limit: int = 30) -> list[dict]:
+    result = _rust_gatcha_repository(
+        "search",
+        query=str(query or ""),
+        limit=max(1, int(limit)),
+    )
+    items = result.get("items")
+    return _annotate_gatcha_owner_avatars(list(items)) if isinstance(items, list) else []
 
 
 def _gatcha_entry_payload(entry: dict) -> dict:
@@ -2335,7 +2439,7 @@ def _profile_from_cached_entries(mid: str, entries: list[dict]) -> dict:
     }
 
 
-def browse_gatcha_cache(uid: str = "", query: str = "") -> dict:
+def _py_browse_gatcha_cache(uid: str = "", query: str = "") -> dict:
     with _GATCHA_UIDS_LOCK:
         uid_payload = _load_gatcha_uid_payload()
     configured_uids = uid_payload.get("uids") if isinstance(uid_payload, dict) else []
@@ -2398,7 +2502,7 @@ def browse_gatcha_cache(uid: str = "", query: str = "") -> dict:
     }
 
 
-def browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
+def _py_browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
     with _GATCHA_FAVLIST_LOCK:
         favlist_payload = _load_gatcha_favlist()
     folders_payload = favlist_payload.get("folders") if isinstance(favlist_payload, dict) else []
@@ -2486,16 +2590,27 @@ def browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
 
 
 def gatcha_favlist_updated_at() -> float:
-    with _GATCHA_FAVLIST_LOCK:
-        payload = _load_gatcha_favlist()
-    if not isinstance(payload, dict):
-        return 0.0
-    return float(payload.get("updated_at") or 0)
+    result = _rust_gatcha_repository("favlist_updated_at")
+    return float(result.get("updated_at") or 0)
 
 
+def browse_gatcha_cache(uid: str = "", query: str = "") -> dict:
+    return _rust_gatcha_repository(
+        "browse_uid",
+        uid=str(uid or ""),
+        query=str(query or ""),
+    )
 
 
-def request_json(url: str) -> dict:
+def browse_gatcha_favlist(folder_id: str = "", query: str = "") -> dict:
+    return _rust_gatcha_repository(
+        "browse_favlist",
+        folder_id=str(folder_id or ""),
+        query=str(query or ""),
+    )
+
+
+def _py_request_json(url: str) -> dict:
     headers = dict(BILIBILI_HEADERS)
     headers.pop("Cookie", None)
     cookie = effective_bilibili_cookie()
@@ -2506,6 +2621,37 @@ def request_json(url: str) -> dict:
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def request_json(url: str) -> dict:
+    headers = dict(BILIBILI_HEADERS)
+    headers.pop("Cookie", None)
+    cookie = effective_bilibili_cookie()
+    if cookie:
+        headers["Cookie"] = cookie
+    else:
+        print("Warning: [bilikara] COOKIE 变量为空，API 将以游客身份访问。")
+    try:
+        payload = rust_runtime.json_http_request(
+            "GET",
+            url,
+            headers={str(name): str(value) for name, value in headers.items()},
+            timeout=15,
+        )
+    except rust_runtime.RustRuntimeUnavailableError:
+        return _py_request_json(url)
+    except rust_runtime.RustRuntimeServiceError as exc:
+        raise BilibiliError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise BilibiliError("B 站接口响应格式异常")
+    return payload
+
+
+def _py_resolve_short_url(url: str) -> str:
+    request = urllib.request.Request(url, headers=BILIBILI_HEADERS, method="GET")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return response.geturl()
+
 
 def resolve_video_reference(raw_input: str) -> VideoReference:
     cleaned = raw_input.strip()
@@ -2522,9 +2668,17 @@ def resolve_video_reference(raw_input: str) -> VideoReference:
     resolved_url = cleaned
     parsed = urllib.parse.urlparse(cleaned)
     if parsed.netloc.lower() in SHORT_HOSTS:
-        request = urllib.request.Request(cleaned, headers=BILIBILI_HEADERS, method="GET")
-        with urllib.request.urlopen(request, timeout=15) as response:
-            resolved_url = response.geturl()
+        try:
+            resolved_url = rust_runtime.resolve_bilibili_redirect(
+                cleaned,
+                cookie=effective_bilibili_cookie(),
+                user_agent=str(BILIBILI_HEADERS.get("User-Agent") or ""),
+                referer=str(BILIBILI_HEADERS.get("Referer") or ""),
+            )
+        except rust_runtime.RustRuntimeUnavailableError:
+            resolved_url = _py_resolve_short_url(cleaned)
+        except rust_runtime.RustRuntimeServiceError as exc:
+            raise BilibiliError(str(exc)) from exc
 
     parsed = urllib.parse.urlparse(resolved_url)
     match = VIDEO_PATH_RE.search(parsed.path)
@@ -3312,7 +3466,7 @@ def fetch_dash_playurl(
     }
 
 
-def fetch_gatcha_candidate() -> dict | None:
+def _py_fetch_gatcha_candidate() -> dict | None:
     pool_config = gatcha_pool_config_snapshot()
     excluded_uid_set = set(pool_config.get("excluded_uids") or [])
     excluded_folder_set = set(pool_config.get("excluded_favlist_folders") or [])
@@ -3390,3 +3544,10 @@ def fetch_gatcha_candidate() -> dict | None:
         if value:
             payload[key] = value
     return payload
+
+
+def fetch_gatcha_candidate() -> dict | None:
+    return _rust_gatcha_repository(
+        "candidate",
+        cookie_available=bool(effective_bilibili_cookie()),
+    )

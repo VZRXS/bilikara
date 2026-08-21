@@ -6175,6 +6175,52 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.blacklist-browser {
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+}
+
+.blacklist-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.blacklist-search-form input {
+  min-width: 0;
+  height: 44px;
+}
+
+.blacklist-result-actions {
+  width: min(180px, 24vw);
+  display: grid;
+  gap: 8px;
+  align-self: center;
+}
+
+.blacklist-result-actions button {
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+}
+
+.blacklist-result-audit {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.blacklist-pagination {
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .blacklist-result-actions {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-column: 1 / -1;
+  }
+}
+
 .category-browser {
   width: 100%;
   min-height: 0;

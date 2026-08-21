@@ -1,4 +1,10 @@
+use crate::bilibili_service::{
+    BilibiliDashRequest, BilibiliRedirectRequest, fetch_dash_playurl, resolve_redirect,
+};
+use crate::cache_runtime::{CacheRuntimeCommand, execute_cache_runtime};
+use crate::cloudflare_service::{CloudflareServiceRequest, execute_cloudflare};
 use crate::diagnostics::{DiagnosticRequest, build_diagnostic_artifact, probe_connectivity_only};
+use crate::gatcha_repository::{GatchaRepositoryRequest, execute_gatcha};
 use crate::http_downloader::{DownloadError, DownloadProgress, DownloadRequest, download_to_path};
 use crate::json_http::{JsonHttpRequest, execute_json_request};
 use crate::media_backend::{
@@ -93,6 +99,11 @@ struct StatusServiceWireResponse {
     deny_unknown_fields
 )]
 enum RuntimeServiceCommand {
+    BilibiliDash(BilibiliDashRequest),
+    BilibiliRedirect(BilibiliRedirectRequest),
+    CacheRuntime(CacheRuntimeCommand),
+    Cloudflare(CloudflareServiceRequest),
+    GatchaRepository(GatchaRepositoryRequest),
     JsonHttp(JsonHttpRequest),
     NetworkAddresses(NetworkAddressRequest),
     PrepareUpdate(PrepareUpdateRequest),
@@ -288,6 +299,21 @@ pub unsafe extern "C" fn bilikara_runtime_service(request_json: *const c_char) -
         let request_text = unsafe { CStr::from_ptr(request_json) }.to_str().ok()?;
         let command: RuntimeServiceCommand = serde_json::from_str(request_text).ok()?;
         let response = match command {
+            RuntimeServiceCommand::BilibiliDash(request) => {
+                service_result(fetch_dash_playurl(&request))
+            }
+            RuntimeServiceCommand::BilibiliRedirect(request) => {
+                service_result(resolve_redirect(&request))
+            }
+            RuntimeServiceCommand::CacheRuntime(request) => {
+                service_result(execute_cache_runtime(request))
+            }
+            RuntimeServiceCommand::Cloudflare(request) => {
+                service_result(execute_cloudflare(&request))
+            }
+            RuntimeServiceCommand::GatchaRepository(request) => {
+                service_result(execute_gatcha(&request))
+            }
             RuntimeServiceCommand::JsonHttp(request) => {
                 service_result(execute_json_request(&request))
             }

@@ -432,25 +432,27 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertEqual(result["release_url"], "https://github.com/VZRXS/bilikara/releases/tag/v0.4.1")
 
     def test_fetch_latest_release_reports_timeout_error(self):
-        with patch("bilikara.updater.urllib.request.urlopen", side_effect=TimeoutError):
+        error = updater.rust_runtime.RustRuntimeServiceError("timeout", "timed out", response={})
+        with patch("bilikara.updater.rust_runtime.json_http_request", side_effect=error):
             with self.assertRaisesRegex(RuntimeError, "连接 GitHub Releases 超时"):
                 fetch_latest_release()
 
     def test_fetch_latest_release_reports_network_error(self):
-        with patch("bilikara.updater.urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        error = updater.rust_runtime.RustRuntimeServiceError("transport", "offline", response={})
+        with patch("bilikara.updater.rust_runtime.json_http_request", side_effect=error):
             with self.assertRaisesRegex(RuntimeError, "无法连接 GitHub Releases"):
                 fetch_latest_release()
 
     def test_fetch_release_json_tries_fallback_urls(self):
         calls: list[str] = []
 
-        def fake_urlopen(request, timeout):
-            calls.append(request.full_url)
+        def fake_request(method, url, **_kwargs):
+            calls.append(url)
             if len(calls) == 1:
-                raise urllib.error.URLError("offline")
-            return FakeHTTPResponse(b'{"tag_name":"v1.2.3"}')
+                raise updater.rust_runtime.RustRuntimeServiceError("transport", "offline", response={})
+            return {"tag_name": "v1.2.3"}
 
-        with patch("bilikara.updater.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("bilikara.updater.rust_runtime.json_http_request", side_effect=fake_request):
             payload = updater._fetch_release_json([
                 "https://api.github.com/repos/VZRXS/bilikara/releases/latest",
                 "https://mirror.example/releases/latest",

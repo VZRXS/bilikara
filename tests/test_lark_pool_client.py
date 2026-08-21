@@ -127,15 +127,14 @@ class LarkPoolClientTest(unittest.TestCase):
             self.assertFalse(lark_pool.prewarm_cloudflare_pool())
 
     def test_append_lark_pool_entries_posts_to_cloudflare(self):
-        posted_payloads = []
+        posted_entries = []
 
-        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
-            posted_payloads.append(payload)
-            self.assertEqual(method, "POST")
-            self.assertEqual(path, "/batch-add")
+        def fake_cloudflare(operation, **request):
+            self.assertEqual(operation, "append")
+            posted_entries.extend(request["entries"])
             return {"attempted": 1, "added": 1, "skipped_existing": 0, "feishu_queued": 1}
 
-        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+        with patch.object(lark_pool.rust_runtime, "cloudflare_service_request", side_effect=fake_cloudflare):
             result = lark_pool.append_lark_pool_entries(
                 [
                     {
@@ -150,13 +149,15 @@ class LarkPoolClientTest(unittest.TestCase):
             )
 
         self.assertEqual(result["added"], 1)
-        self.assertEqual(posted_payloads[0]["records"][0]["bvid"], "BV1CFADD0001")
-        self.assertEqual(posted_payloads[0]["records"][0]["cover_url"], "https://example.com/cover.jpg")
-        self.assertEqual(posted_payloads[0]["records"][0]["played_count"], "683")
-        self.assertEqual(posted_payloads[0]["records"][0]["preserved_1"], "201")
+        self.assertEqual(posted_entries[0]["bvid"], "BV1CFADD0001")
+        self.assertEqual(posted_entries[0]["cover_url"], "https://example.com/cover.jpg")
 
     def test_append_lark_pool_entries_rejects_short_dummy_bvids(self):
-        with patch.object(lark_pool, "_cloudflare_json") as cloudflare:
+        with patch.object(
+            lark_pool.rust_runtime,
+            "cloudflare_service_request",
+            return_value={"attempted": 0, "added": 0},
+        ) as cloudflare:
             result = lark_pool.append_lark_pool_entries(
                 [
                     {"bvid": "BVFAV1", "title": "dummy", "url": "https://www.bilibili.com/video/BVFAV1"},
@@ -164,7 +165,7 @@ class LarkPoolClientTest(unittest.TestCase):
                 ]
             )
 
-        cloudflare.assert_not_called()
+        cloudflare.assert_called_once()
         self.assertEqual(result, {"attempted": 0, "added": 0})
 
     def test_background_append_reports_returned_error(self):
@@ -219,6 +220,11 @@ class LarkPoolClientTest(unittest.TestCase):
         with (
             patch.object(scheduler, "submit", side_effect=RuntimeError("scheduler failed")),
             patch.object(lark_pool, "_BACKGROUND_APPEND_SCHEDULER", scheduler),
+            patch.object(
+                lark_pool.rust_runtime,
+                "cloudflare_service_request",
+                side_effect=lark_pool.rust_runtime.RustRuntimeUnavailableError("missing"),
+            ),
             patch("builtins.print") as mock_print,
         ):
             self.assertFalse(
@@ -387,11 +393,12 @@ class LarkPoolClientTest(unittest.TestCase):
     def test_append_lark_pool_entries_posts_to_cloudflare_only(self):
         requests = []
 
-        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
-            requests.append((method, path, payload, timeout))
+        def fake_cloudflare(operation, **request):
+            self.assertEqual(operation, "append")
+            requests.append(("POST", "/batch-add", {"records": request["entries"]}, request["timeout"]))
             return {"attempted": 1, "added": 1, "skipped_existing": 0, "feishu_queued": 1}
 
-        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+        with patch.object(lark_pool.rust_runtime, "cloudflare_service_request", side_effect=fake_cloudflare):
             result = lark_pool.append_lark_pool_entries(
                 [
                     {
@@ -429,17 +436,22 @@ class LarkPoolClientTest(unittest.TestCase):
 
         def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
             posts.append((method, path, payload))
-            if path == "/batch-add" and len(posts) == 1:
-                return {"attempted": 1, "added": 0, "updated_existing": 0, "skipped_existing": 1}
             if path == "/admin/delete-video":
                 return {"success": True, "bvid": "BV15kCRBsE4Q", "deleted": True}
-            if path == "/batch-add":
-                return {"attempted": 1, "added": 1, "updated_existing": 0, "skipped_existing": 0}
             return {"success": False, "error": "unexpected call"}
+
+        def fake_append(operation, **request):
+            self.assertEqual(operation, "append")
+            posts.append(("POST", "/batch-add", {"records": request["entries"]}))
+            batch_count = sum(1 for _, path, _ in posts if path == "/batch-add")
+            if batch_count == 1:
+                return {"attempted": 1, "added": 0, "updated_existing": 0, "skipped_existing": 1}
+            return {"attempted": 1, "added": 1, "updated_existing": 0, "skipped_existing": 0}
 
         with (
             patch.object(lark_pool, "export_cloudflare_pool_records", side_effect=fake_export),
             patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare),
+            patch.object(lark_pool.rust_runtime, "cloudflare_service_request", side_effect=fake_append),
         ):
             result = lark_pool.approve_cloudflare_review_items(["BV15kCRBsE4Q"], "secret")
 
@@ -450,6 +462,68 @@ class LarkPoolClientTest(unittest.TestCase):
         self.assertEqual(posts[1][1], "/admin/delete-video")
         self.assertEqual(posts[2][1], "/batch-add")
         self.assertEqual(posts[2][2]["records"][0]["preserved_3"], "1")
+
+    def test_reject_cloudflare_review_item_posts_snapshot_to_blacklist_endpoint(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"success": True, "bvid": "BV1xx411c7mD", "blacklisted": True, "deleted": True}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.reject_cloudflare_review_item(
+                "BV1xx411c7mD",
+                "secret",
+                record={"bvid": "BV1xx411c7mD", "title": "not karaoke"},
+                rejected_by="VZRXS",
+            )
+
+        self.assertTrue(result["blacklisted"])
+        self.assertEqual(requests[0][0:2], ("POST", "/admin/review/reject"))
+        self.assertEqual(requests[0][2]["reason_code"], "not_karaoke")
+        self.assertEqual(requests[0][2]["record"]["title"], "not karaoke")
+        self.assertEqual(requests[0][2]["rejected_by"], "VZRXS")
+
+    def test_list_cloudflare_blacklist_normalizes_pagination(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"success": True, "items": [], "total": 0, "has_more": False}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.list_cloudflare_blacklist(
+                "secret",
+                query=" macross ",
+                limit=500,
+                offset=-20,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(requests[0][0:2], ("POST", "/admin/blacklist/list"))
+        self.assertEqual(requests[0][2]["query"], "macross")
+        self.assertEqual(requests[0][2]["limit"], 100)
+        self.assertEqual(requests[0][2]["offset"], 0)
+
+    def test_restore_cloudflare_blacklist_item_preserves_restore_choice(self):
+        requests = []
+
+        def fake_cloudflare(method, path, payload=None, *, timeout=12.0):
+            requests.append((method, path, payload, timeout))
+            return {"success": True, "bvid": "BV1xx411c7mD", "restored_video": True}
+
+        with patch.object(lark_pool, "_cloudflare_json", side_effect=fake_cloudflare):
+            result = lark_pool.restore_cloudflare_blacklist_item(
+                "BV1xx411c7mD",
+                "secret",
+                restore_video=True,
+                restored_by="VZRXS",
+            )
+
+        self.assertTrue(result["restored_video"])
+        self.assertEqual(requests[0][0:2], ("POST", "/admin/blacklist/restore"))
+        self.assertTrue(requests[0][2]["restore_video"])
+        self.assertEqual(requests[0][2]["restored_by"], "VZRXS")
 
     def test_delete_cloudflare_pool_entry_posts_single_bvid(self):
         requests = []

@@ -1,0 +1,54 @@
+import json
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class BlacklistReviewIntegrationTest(unittest.TestCase):
+    def test_developer_modal_exposes_blacklist_below_pending_review(self):
+        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        review_index = html.index('data-target="review"')
+        blacklist_index = html.index('data-target="blacklist"')
+
+        self.assertLess(review_index, blacklist_index)
+        self.assertIn('data-i18n="search.blacklistBrowse"', html)
+
+    def test_frontend_separates_review_rejection_from_generic_delete(self):
+        source = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('action = "reject-entry"', source)
+        self.assertIn('apiPost("/api/admin-review/reject"', source)
+        self.assertIn('releaseButton.dataset.devAction = "blacklist-release"', source)
+        self.assertIn(
+            'restoreButton.dataset.devAction = "blacklist-release-restore"', source
+        )
+        self.assertIn('apiPost("/api/admin-blacklist/restore"', source)
+        self.assertIn('apiPost("/api/admin-video/delete"', source)
+
+    def test_blacklist_translations_exist_in_all_languages(self):
+        payload = json.loads((ROOT / "static" / "i18n.json").read_text(encoding="utf-8"))
+        required = {
+            "search.blacklistBrowse",
+            "search.blacklistTitle",
+            "search.blacklistRelease",
+            "search.blacklistReleaseRestore",
+        }
+
+        for locale in ("zh", "en", "ja"):
+            with self.subTest(locale=locale):
+                self.assertTrue(required.issubset(payload["languages"][locale]))
+
+    def test_tauri_packages_the_shared_frontend_and_python_backend(self):
+        tauri = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
+        main_source = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        bundle_source = (ROOT / "build_bundle.py").read_text(encoding="utf-8")
+
+        self.assertEqual(tauri["build"]["frontendDist"], "../static")
+        self.assertIn('join("bilikara").join("bilikara.exe")', main_source)
+        self.assertIn("ROOT_DIR / 'static'", bundle_source)
+
+
+if __name__ == "__main__":
+    unittest.main()

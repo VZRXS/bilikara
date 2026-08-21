@@ -374,7 +374,7 @@ def is_newer_version(latest_version: object, current_version: object) -> bool:
     return latest_key > current_key
 
 
-def _fetch_release_json_once(url: str) -> object:
+def _py_fetch_release_json_once(url: str) -> object:
     request = urllib.request.Request(
         url,
         headers={
@@ -390,6 +390,28 @@ def _fetch_release_json_once(url: str) -> object:
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", None)
         if isinstance(reason, (TimeoutError, socket.timeout)):
+            raise RuntimeError(APP_UPDATE_TIMEOUT_ERROR) from exc
+        raise RuntimeError(APP_UPDATE_NETWORK_ERROR) from exc
+
+
+def _fetch_release_json_once(url: str) -> object:
+    try:
+        return rust_runtime.json_http_request(
+            "GET",
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "bilikara-update-check",
+            },
+            timeout=APP_UPDATE_TIMEOUT_SECONDS,
+        )
+    except rust_runtime.RustRuntimeUnavailableError:
+        return rust_backend.python_fallback(
+            "fetch_release_json",
+            lambda: _py_fetch_release_json_once(url),
+        )
+    except rust_runtime.RustRuntimeServiceError as exc:
+        if exc.kind == "timeout":
             raise RuntimeError(APP_UPDATE_TIMEOUT_ERROR) from exc
         raise RuntimeError(APP_UPDATE_NETWORK_ERROR) from exc
 
@@ -1123,7 +1145,7 @@ def _safe_version_dir(version: object) -> str:
     return _safe_filename(version, fallback="latest").removesuffix(".zip")
 
 
-def _download_url_to_path(
+def _py_download_url_to_path(
     url: str,
     destination: Path,
     *,
@@ -1165,6 +1187,44 @@ def _download_url_to_path(
         raise RuntimeError(APP_UPDATE_NETWORK_ERROR) from exc
 
     tmp_destination.replace(destination)
+    return downloaded, total
+
+
+def _download_url_to_path(
+    url: str,
+    destination: Path,
+    *,
+    expected_size: int = 0,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> tuple[int, int]:
+    try:
+        result = rust_runtime.download_to_path(
+            urls=[url],
+            destination=destination,
+            headers=[
+                ("Accept", "application/octet-stream"),
+                ("User-Agent", "bilikara-auto-update"),
+            ],
+            on_progress=on_progress,
+            connect_timeout_ms=APP_UPDATE_DOWNLOAD_TIMEOUT_SECONDS * 1000,
+            request_timeout_ms=APP_UPDATE_DOWNLOAD_TIMEOUT_SECONDS * 1000,
+        )
+    except rust_runtime.RustRuntimeUnavailableError:
+        return rust_backend.python_fallback(
+            "download_update_asset",
+            lambda: _py_download_url_to_path(
+                url,
+                destination,
+                expected_size=expected_size,
+                on_progress=on_progress,
+            ),
+        )
+    except rust_runtime.RustDownloadError as exc:
+        if exc.kind in {"timeout", "connect_timeout"}:
+            raise RuntimeError(APP_UPDATE_TIMEOUT_ERROR) from exc
+        raise RuntimeError(APP_UPDATE_NETWORK_ERROR) from exc
+    downloaded = int(result.get("bytes_written") or 0)
+    total = max(downloaded, int(expected_size or 0))
     return downloaded, total
 
 

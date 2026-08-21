@@ -64,6 +64,26 @@ class FakeServiceLibrary:
 
 
 class RustRuntimeAdapterTest(unittest.TestCase):
+    def test_cache_runtime_adapter_sends_flattened_command(self):
+        library = FakeServiceLibrary(
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "result": {"events": [], "snapshot": {}},
+            }
+        )
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            result = rust_runtime.cache_runtime_request(
+                "drain_events", max_events=32
+            )
+
+        self.assertEqual(result, {"events": [], "snapshot": {}})
+        self.assertEqual(library.request["service"], "cache_runtime")
+        self.assertEqual(
+            library.request["request"],
+            {"command": "drain_events", "max_events": 32},
+        )
+
     def test_runtime_service_sends_structured_json_http_request(self):
         library = FakeServiceLibrary(
             {
@@ -114,10 +134,62 @@ class RustRuntimeAdapterTest(unittest.TestCase):
             release = root / "rust-runtime" / "target" / "release" / "libbilikara_runtime.so"
             release.parent.mkdir(parents=True)
             release.touch()
-            with patch.object(rust_runtime.Path, "resolve", return_value=root / "bilikara" / "rust_runtime.py"), patch(
-                "bilikara.rust_runtime.platform.system", return_value="Linux"
-            ):
+            with patch.dict(os.environ, {"BILIKARA_RUST_RUNTIME_LIBRARY": ""}), patch.object(
+                rust_runtime.Path, "resolve", return_value=root / "bilikara" / "rust_runtime.py"
+            ), patch("bilikara.rust_runtime.platform.system", return_value="Linux"):
                 self.assertEqual(rust_runtime._get_runtime_lib_path(), release)
+
+    def test_library_lookup_supports_explicit_development_override(self):
+        with TemporaryDirectory() as temp_dir:
+            explicit = Path(temp_dir) / "bilikara_runtime.dll"
+            explicit.touch()
+            with patch.dict(
+                os.environ,
+                {"BILIKARA_RUST_RUNTIME_LIBRARY": str(explicit)},
+            ):
+                self.assertEqual(rust_runtime._get_runtime_lib_path(), explicit)
+
+    def test_cloudflare_service_adapter_sends_owned_request(self):
+        library = FakeServiceLibrary(
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "result": {"payload": {"ok": True}},
+            }
+        )
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            result = rust_runtime.cloudflare_service_request(
+                "request",
+                base_url="https://api.example.test",
+                user_agent="bilikara/test",
+                method="GET",
+                path="/search?q=song",
+            )
+
+        self.assertEqual(result, {"payload": {"ok": True}})
+        self.assertEqual(library.request["service"], "cloudflare")
+        self.assertEqual(library.request["request"]["operation"], "request")
+
+    def test_gatcha_repository_adapter_sends_all_owned_paths(self):
+        library = FakeServiceLibrary(
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "result": {"uids": [], "count": 0},
+            }
+        )
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            result = rust_runtime.gatcha_repository_request(
+                "uid_snapshot",
+                uid_file=Path("data/uids.json"),
+                cache_file=Path("data/cache.json"),
+                favlist_file=Path("data/favlist.json"),
+                pool_config_file=Path("data/pool.json"),
+            )
+
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(library.request["service"], "gatcha_repository")
+        self.assertTrue(library.request["request"]["paths"]["uid_file"].endswith("uids.json"))
 
     def test_runtime_load_failure_records_actionable_details(self):
         path = Path("C:/bundle/rust/bilikara_runtime.dll")
@@ -458,7 +530,7 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
             "bilikara.cache.effective_bilibili_cookie",
             return_value="SESSDATA=test",
         ), patch(
-            "bilikara.cache.fetch_dash_playurl",
+            "bilikara.cache.rust_runtime.fetch_bilibili_dash_playurl",
             return_value=dash,
         ), patch.object(
             manager,

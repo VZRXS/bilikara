@@ -313,6 +313,157 @@ class CacheManagerPolicyTest(unittest.TestCase):
             persist_backup=False,
         )
 
+    def test_native_cache_job_contains_selected_pages_policy_and_existing_artifacts(self):
+        item = self.make_item("song-native")
+        item.selected_pages = [1, 2]
+        item.selected_cids = [456, 789]
+        item.selected_durations = [120, 180]
+        item.selected_parts = ["Vocal", "Off Vocal"]
+        item.video_page = 2
+        self.store.add_item(item, requester_name="cache-test-user")
+        self.mark_item_ready_with_files(item.id)
+        item = self.store.get_item(item.id)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ), patch(
+            "bilikara.cache.effective_bilibili_cookie",
+            return_value="SESSDATA=test-cookie",
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                manager.video_quality = "720P 高清"
+                manager.audio_hires = False
+                job = manager._native_cache_job(item)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(job["video_page"], 2)
+        self.assertEqual([page["cid"] for page in job["pages"]], [456, 789])
+        self.assertEqual([page["label"] for page in job["pages"]], ["Vocal", "Off Vocal"])
+        self.assertEqual(job["video_quality"], "720P 高清")
+        self.assertFalse(job["audio_hires"])
+        self.assertEqual(job["cookie"], "SESSDATA=test-cookie")
+        self.assertTrue(job["reported_ready"])
+        self.assertEqual(
+            job["existing_audio_variants"][0]["relative_path"],
+            "song-native/audio.m4a",
+        )
+
+    def test_native_cache_events_project_state_and_ignore_stale_generations(self):
+        item = self.make_item("song-native-events")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                manager._apply_native_cache_event(
+                    {
+                        "generation": 2,
+                        "item_id": item.id,
+                        "kind": "started",
+                        "payload": {
+                            "tracks": [
+                                {
+                                    "key": "video-p1",
+                                    "label": "视频轨P1",
+                                    "order": 0,
+                                    "stream_kind": "video",
+                                    "phase": "queued",
+                                    "attempt": 0,
+                                    "max_attempts": 10,
+                                    "current_bytes": 0,
+                                    "target_bytes": 0,
+                                    "done": False,
+                                }
+                            ]
+                        },
+                    }
+                )
+                manager._apply_native_cache_event(
+                    {
+                        "generation": 2,
+                        "item_id": item.id,
+                        "kind": "ready",
+                        "payload": {
+                            "video_relative_path": f"{item.id}/video-p1.mp4",
+                            "video_media_url": f"/media/{item.id}/video-p1.mp4",
+                            "audio_variants": [
+                                {
+                                    "id": "p1_track_1",
+                                    "label": "P1",
+                                    "page": 1,
+                                    "audio_url": f"/media/{item.id}/audio-p1.m4a",
+                                }
+                            ],
+                            "selected_audio_variant_id": "p1_track_1",
+                        },
+                    }
+                )
+                manager._apply_native_cache_event(
+                    {
+                        "generation": 1,
+                        "item_id": item.id,
+                        "kind": "failed",
+                        "payload": {"message": "stale failure"},
+                    }
+                )
+                cached = self.store.get_item(item.id)
+                cached_status = cached.cache_status
+                selected_variant_id = cached.selected_audio_variant_id
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(cached_status, "ready")
+        self.assertEqual(selected_variant_id, "p1_track_1")
+        self.assertEqual(manager.native_cache_generations, {})
+
+    def test_native_sync_submits_rust_jobs_without_using_python_worker_queue(self):
+        item = self.make_item("song-native-sync")
+        item.selected_pages = [1]
+        item.selected_cids = [456]
+        item.selected_durations = [120]
+        self.store.add_item(item, requester_name="cache-test-user")
+        calls = []
+
+        def runtime_request(command, **fields):
+            calls.append((command, fields))
+            if command == "sync":
+                return {
+                    "generations": {item.id: 7},
+                    "snapshot": {
+                        "primary_active_item_id": None,
+                        "active_item_ids": [],
+                        "urgent_item_ids": [],
+                        "pending_ids": [item.id],
+                    },
+                }
+            return {"events": [], "snapshot": {}}
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                with patch.object(manager, "_ensure_native_cache_runtime"), patch.object(
+                    manager, "_native_cache_request", side_effect=runtime_request
+                ):
+                    manager.sync_with_playlist()
+                queued = manager.tasks.qsize()
+                generation = manager.native_cache_generations[item.id]
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(queued, 0)
+        self.assertEqual(generation, 7)
+        sync_request = next(fields for command, fields in calls if command == "sync")
+        self.assertEqual(sync_request["jobs"][0]["item_id"], item.id)
+        self.assertEqual(sync_request["ordered_ids"], [item.id])
+
     def test_cache_metrics_reports_usage_by_item(self):
         first = self.cache_dir / "song-a"
         second = self.cache_dir / "song-b"
@@ -364,6 +515,90 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertFalse(snapshot["audio_hires"])
             finally:
                 restored.shutdown()
+
+    def test_native_media_preferences_only_apply_to_future_downloads(self):
+        current = self.make_item("song-a")
+        queued = self.make_item("song-b")
+        future = self.make_item("song-c")
+        self.store.add_item(current, requester_name="cache-test-user")
+        self.store.add_item(queued, requester_name="cache-test-user")
+        self.mark_item_ready_with_files(current.id)
+        self.mark_item_ready_with_files(queued.id)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                manager.video_quality = "1080P 高清"
+                manager.audio_hires = False
+                manager.native_cache_started = True
+                with patch.object(manager, "_native_cache_request") as native_request, patch.object(
+                    manager, "_drain_native_cache_events"
+                ) as drain_events, patch.object(manager, "sync_with_playlist") as sync:
+                    snapshot = manager.set_cache_policy(
+                        video_quality="720P 高清",
+                        audio_hires=True,
+                    )
+
+                self.assertEqual(snapshot["video_quality"], "720P 高清")
+                self.assertTrue(snapshot["audio_hires"])
+                self.assertNotIn(
+                    "clear",
+                    [args[0] for args, _kwargs in native_request.call_args_list],
+                )
+                drain_events.assert_not_called()
+                sync.assert_not_called()
+                self.assertEqual(self.store.get_item(current.id).cache_status, "ready")
+                self.assertEqual(self.store.get_item(queued.id).cache_status, "ready")
+                future_job = manager._native_cache_job(future)
+                self.assertEqual(future_job["video_quality"], "720P 高清")
+                self.assertTrue(future_job["audio_hires"])
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
+    def test_download_source_change_only_applies_to_future_downloads(self):
+        current = self.make_item("song-a")
+        downloading = self.make_item("song-b")
+        self.store.add_item(current, requester_name="cache-test-user")
+        self.store.add_item(downloading, requester_name="cache-test-user")
+        self.mark_item_ready_with_files(current.id)
+        self.store.update_item(
+            downloading.id,
+            cache_status="downloading",
+            cache_progress=42.0,
+            cache_message="BBDown 下载中",
+            persist_backup=False,
+        )
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value=""
+        ), patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                with patch.object(
+                    manager, "_ensure_native_cache_runtime"
+                ), patch.object(
+                    manager,
+                    "_native_cache_request",
+                    side_effect=RuntimeError("native takeover conflict"),
+                ) as native_request:
+                    snapshot = manager.set_cache_policy(
+                        download_source=DOWNLOAD_SOURCE_NATIVE
+                    )
+
+                self.assertEqual(snapshot["download_source"], DOWNLOAD_SOURCE_NATIVE)
+                native_request.assert_not_called()
+                self.assertEqual(self.store.get_item(current.id).cache_status, "ready")
+                downloading_after = self.store.get_item(downloading.id)
+                self.assertEqual(downloading_after.cache_status, "downloading")
+                self.assertEqual(downloading_after.cache_progress, 42.0)
+                self.assertEqual(downloading_after.cache_message, "BBDown 下载中")
+            finally:
+                manager.shutdown()
 
     def test_cache_policy_preserves_each_download_source(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):

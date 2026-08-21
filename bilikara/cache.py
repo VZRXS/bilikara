@@ -336,10 +336,266 @@ class CacheManager:
         self.log_dir = LOG_DIR
         self.bbdown_login_cancel_event: threading.Event | None = None
         self.bbdown_login_generation: int | None = None
+        self.native_cache_started = False
+        self.native_cache_event_stop = threading.Event()
+        self.native_cache_event_worker: threading.Thread | None = None
+        self.native_cache_generations: dict[str, int] = {}
+        self.native_cache_snapshot: dict[str, Any] = {}
+        self.native_cache_error = ""
+        self.native_cache_call_lock = threading.Lock()
         rust_runtime.reset_bilibili_login_status()
         self._load_cache_policy()
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
+
+    def _native_cache_request(self, command: str, **fields: Any) -> dict[str, Any]:
+        with self.native_cache_call_lock:
+            return rust_runtime.cache_runtime_request(command, **fields)
+
+    def _ensure_native_cache_runtime(self) -> None:
+        with self.lock:
+            if self.native_cache_started:
+                return
+        snapshot = self._native_cache_request("start")
+        with self.lock:
+            if self.native_cache_started:
+                return
+            self.native_cache_started = True
+            self.native_cache_error = ""
+            self.native_cache_snapshot = dict(snapshot)
+            self.native_cache_event_stop.clear()
+            worker = threading.Thread(
+                target=self._native_cache_event_loop,
+                name="bilikara-rust-cache-events",
+                daemon=True,
+            )
+            self.native_cache_event_worker = worker
+        worker.start()
+
+    def _native_cache_event_loop(self) -> None:
+        while not self.native_cache_event_stop.wait(0.1):
+            try:
+                self._drain_native_cache_events()
+            except Exception as exc:  # noqa: BLE001
+                with self.lock:
+                    self.native_cache_error = str(exc)
+                if self.native_cache_event_stop.wait(1.0):
+                    return
+
+    def _drain_native_cache_events(self) -> None:
+        result = self._native_cache_request("drain_events", max_events=128)
+        snapshot = result.get("snapshot")
+        if isinstance(snapshot, dict):
+            self._apply_native_cache_snapshot(snapshot)
+        events = result.get("events")
+        if not isinstance(events, list):
+            raise RuntimeError("Rust cache runtime returned invalid events")
+        for event in events:
+            if isinstance(event, dict):
+                self._apply_native_cache_event(event)
+        with self.lock:
+            self.native_cache_error = ""
+
+    def _apply_native_cache_snapshot(self, snapshot: dict[str, Any]) -> None:
+        active_ids = {
+            str(item_id)
+            for item_id in snapshot.get("active_item_ids", [])
+            if str(item_id).strip()
+        }
+        pending_ids = {
+            str(item_id)
+            for item_id in snapshot.get("pending_ids", [])
+            if str(item_id).strip()
+        }
+        urgent_ids = {
+            str(item_id)
+            for item_id in snapshot.get("urgent_item_ids", [])
+            if str(item_id).strip()
+        }
+        primary_id = str(snapshot.get("primary_active_item_id") or "").strip()
+        with self.lock:
+            self.native_cache_snapshot = dict(snapshot)
+            if self.download_source == DOWNLOAD_SOURCE_NATIVE:
+                self.active_item_id = primary_id or None
+                self.pending_ids = pending_ids | active_ids
+                self.urgent_cache_ids = urgent_ids
+
+    def _apply_native_cache_event(self, event: dict[str, Any]) -> None:
+        item_id = str(event.get("item_id") or "").strip()
+        kind = str(event.get("kind") or "").strip()
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        try:
+            generation = int(event.get("generation") or 0)
+        except (TypeError, ValueError):
+            return
+        with self.lock:
+            expected_generation = self.native_cache_generations.get(item_id)
+            if generation > 0:
+                if expected_generation and generation < expected_generation:
+                    return
+                if not expected_generation or generation > expected_generation:
+                    self.native_cache_generations[item_id] = generation
+        item = self.store.get_item(item_id)
+        if not item:
+            return
+
+        if kind == "queued":
+            self.store.update_item(
+                item_id,
+                cache_status="queued",
+                cache_progress=0.0,
+                cache_message="等待 Rust 缓存队列",
+                persist_backup=False,
+            )
+        elif kind == "started":
+            tracks = payload.get("tracks")
+            normalized_tracks = {
+                str(track.get("key") or ""): dict(track)
+                for track in (tracks if isinstance(tracks, list) else [])
+                if isinstance(track, dict) and str(track.get("key") or "").strip()
+            }
+            with self.lock:
+                self.item_download_progress[item_id] = normalized_tracks
+            self.store.update_item(
+                item_id,
+                cache_status="downloading",
+                cache_progress=0.0,
+                cache_message=self._cache_start_message(item),
+                video_relative_path="",
+                video_media_url="",
+                audio_variants=[],
+                persist_backup=False,
+            )
+            self._publish_download_progress(item_id)
+        elif kind == "progress":
+            track = payload.get("track")
+            if not isinstance(track, dict):
+                return
+            track_key = str(track.get("key") or "").strip()
+            if not track_key:
+                return
+            with self.lock:
+                tracks = self.item_download_progress.setdefault(item_id, {})
+                tracks[track_key] = dict(track)
+            self.store.update_item(
+                item_id,
+                cache_status="downloading",
+                persist_backup=False,
+            )
+            self._publish_download_progress(item_id)
+        elif kind == "ready":
+            variants = payload.get("audio_variants")
+            if not isinstance(variants, list) or not variants:
+                self._mark_native_cache_failed(item_id, "Rust 缓存结果缺少音轨")
+                return
+            self._clear_item_download_progress(item_id)
+            self.store.update_item(
+                item_id,
+                cache_status="ready",
+                cache_progress=100.0,
+                cache_message=self._ready_message(item),
+                video_relative_path=str(payload.get("video_relative_path") or ""),
+                video_media_url=str(payload.get("video_media_url") or ""),
+                audio_variants=[dict(variant) for variant in variants if isinstance(variant, dict)],
+                selected_audio_variant_id=str(
+                    payload.get("selected_audio_variant_id") or ""
+                ),
+                persist_backup=False,
+            )
+        elif kind == "failed":
+            self._mark_native_cache_failed(
+                item_id,
+                str(payload.get("message") or "Rust 缓存任务失败"),
+            )
+        elif kind in {"cancelled", "evicted"}:
+            self._clear_item_download_progress(item_id)
+            self.store.update_item(
+                item_id,
+                cache_status="pending",
+                cache_progress=0.0,
+                cache_message=str(payload.get("reason") or self._outside_window_message()),
+                video_relative_path="",
+                video_media_url="",
+                audio_variants=[],
+                persist_backup=False,
+            )
+        else:
+            return
+        self._record_item_activity(item_id)
+
+    def _mark_native_cache_failed(self, item_id: str, message: str) -> None:
+        self._clear_item_download_progress(item_id)
+        self.store.update_item(
+            item_id,
+            cache_status="failed",
+            cache_message=f"缓存失败: {message}",
+            persist_backup=False,
+        )
+        self._record_item_activity(item_id)
+
+    def _native_cache_job(self, item) -> dict[str, Any]:
+        selected_pages = self._selected_pages_for_item(item)
+        video_page = (
+            int(item.video_page)
+            if int(item.video_page or 0) in selected_pages
+            else selected_pages[0]
+        )
+        pages = [
+            {
+                "page": page,
+                "cid": self._cid_for_page(item, page),
+                "duration_seconds": self._duration_for_page(item, page),
+                "label": self._part_label_for_page(item, page),
+            }
+            for page in selected_pages
+        ]
+        existing_variants: list[dict[str, Any]] = []
+        for variant in item.audio_variants:
+            if not isinstance(variant, dict):
+                continue
+            path = self._cache_path_from_media_url(variant.get("audio_url"))
+            if path is None:
+                continue
+            try:
+                relative_path = path.relative_to(CACHE_DIR).as_posix()
+            except ValueError:
+                continue
+            existing_variants.append(
+                {
+                    "id": str(variant.get("id") or ""),
+                    "label": str(variant.get("label") or ""),
+                    "page": max(1, int(variant.get("page") or 1)),
+                    "relative_path": relative_path,
+                }
+            )
+        with self.lock:
+            video_quality = self.video_quality
+            audio_hires = self.audio_hires
+            avc_quality_cap = self.avc_quality_cap if self._should_force_avc_locked() else ""
+        return {
+            "schema_version": 1,
+            "item_id": item.id,
+            "bvid": item.bvid,
+            "aid": max(0, int(item.aid or 0)),
+            "video_page": video_page,
+            "pages": pages,
+            "cache_root": str(CACHE_DIR.resolve()),
+            "log_file": str(
+                self._item_log_path(item.id, DOWNLOAD_SOURCE_NATIVE).resolve()
+            ),
+            "cookie": effective_bilibili_cookie(),
+            "user_agent": str(BILIBILI_HEADERS.get("User-Agent") or ""),
+            "referer": str(BILIBILI_HEADERS.get("Referer") or ""),
+            "timeout_ms": 15_000,
+            "video_quality": video_quality,
+            "avc_quality_cap": avc_quality_cap,
+            "audio_hires": audio_hires,
+            "selected_audio_variant_id": str(item.selected_audio_variant_id or ""),
+            "reported_ready": item.cache_status == "ready",
+            "existing_video_relative_path": str(item.video_relative_path or ""),
+            "existing_audio_variants": existing_variants,
+        }
 
     def status(self, metrics: dict[str, Any] | None = None) -> dict:
         cache_metrics = metrics or self.cache_metrics()
@@ -378,9 +634,19 @@ class CacheManager:
             ffmpeg_state = self.ffmpeg_state
             ffmpeg_version = self.ffmpeg_version
             download_source = self.download_source
+            native_cache_error = str(getattr(self, "native_cache_error", "") or "")
+            native_cache_snapshot = dict(
+                getattr(self, "native_cache_snapshot", {}) or {}
+            )
 
         runtime = rust_runtime.runtime_status()
-        runtime_state = "ready" if runtime["loaded"] else "failed"
+        runtime_load_state = "ready" if runtime["loaded"] else "failed"
+        runtime_state = (
+            "ready"
+            if runtime["loaded"]
+            and not (download_source == DOWNLOAD_SOURCE_NATIVE and native_cache_error)
+            else "failed"
+        )
         runtime_version = (
             f"Rust ABI {runtime.get('abi_version')}"
             if runtime["loaded"]
@@ -445,7 +711,11 @@ class CacheManager:
                     "state": runtime_state,
                     "path": str(runtime.get("path") or ""),
                     "capabilities": dict(runtime.get("capabilities") or {}),
-                    "message": str(runtime.get("error") or "Rust Native ready"),
+                    "message": str(
+                        runtime.get("error")
+                        or native_cache_error
+                        or "Rust Native ready"
+                    ),
                     "runtime_state": runtime_state,
                     "runtime_error": str(runtime.get("error") or ""),
                     "load_diagnostics": dict(runtime.get("load_diagnostics") or {}),
@@ -453,11 +723,23 @@ class CacheManager:
                 "Rust MediaBackend": {
                     "installed": bool(runtime["loaded"]),
                     "version": runtime_version,
-                    "state": runtime_state,
+                    "state": runtime_load_state,
                     "path": str(runtime.get("path") or ""),
                     "message": str(runtime.get("error") or "Rust MediaBackend ready"),
-                    "runtime_state": runtime_state,
+                    "runtime_state": runtime_load_state,
                     "runtime_error": str(runtime.get("error") or ""),
+                },
+                "Rust CacheRuntime": {
+                    "installed": bool(runtime["loaded"]),
+                    "version": runtime_version,
+                    "state": runtime_state,
+                    "path": str(runtime.get("path") or ""),
+                    "message": str(
+                        runtime.get("error")
+                        or native_cache_error
+                        or "Rust CacheRuntime ready"
+                    ),
+                    "snapshot": native_cache_snapshot,
                 },
             },
             "tasks": {
@@ -804,6 +1086,9 @@ class CacheManager:
         items = self.store.list_items()
         if not items:
             return
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            self.sync_with_playlist()
+            return
         invalidated_ids: list[str] = []
 
         for item in items:
@@ -1080,6 +1365,23 @@ class CacheManager:
             "message": message,
         }
     def cache_metrics(self) -> dict[str, Any]:
+        if (
+            self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
+            and self.native_cache_started
+        ):
+            try:
+                result = self._native_cache_request(
+                    "metrics", cache_root=str(CACHE_DIR.resolve())
+                )
+                if (
+                    isinstance(result.get("item_bytes"), dict)
+                    and isinstance(result.get("total_bytes"), int)
+                    and isinstance(result.get("item_count"), int)
+                ):
+                    return result
+            except Exception as exc:  # noqa: BLE001
+                with self.lock:
+                    self.native_cache_error = str(exc)
         item_bytes: dict[str, int] = {}
         total_bytes = 0
         item_count = 0
@@ -1106,7 +1408,13 @@ class CacheManager:
         }
 
     def prepare_session(self) -> None:
-        self._clear_cache_root()
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            self._ensure_native_cache_runtime()
+            self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
+            self._drain_native_cache_events()
+            self._clear_log_root()
+        else:
+            self._clear_cache_root()
         with self.lock:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
@@ -1147,13 +1455,29 @@ class CacheManager:
                 self.bbdown_login_cancel_event.set()
                 self.bbdown_login_cancel_event = None
                 self.bbdown_login_generation = None
+            native_cache_started = self.native_cache_started
+            self.native_cache_event_stop.set()
+            native_cache_event_worker = self.native_cache_event_worker
         self._terminate_processes(processes, wait=True)
         current_thread = threading.current_thread()
         for worker in urgent_workers:
             if worker is current_thread:
                 continue
             worker.join(timeout=5.0)
-        self._clear_cache_root()
+        if native_cache_event_worker is not None and native_cache_event_worker is not current_thread:
+            native_cache_event_worker.join(timeout=5.0)
+        if native_cache_started:
+            try:
+                self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
+            except Exception as exc:  # noqa: BLE001
+                _debug_print(f"[bilikara-cache] Rust cache clear during shutdown failed: {exc}")
+            try:
+                self._native_cache_request("shutdown")
+            except Exception as exc:  # noqa: BLE001
+                _debug_print(f"[bilikara-cache] Rust cache shutdown failed: {exc}")
+            self._clear_log_root()
+        else:
+            self._clear_cache_root()
         with self.lock:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
@@ -1163,6 +1487,10 @@ class CacheManager:
             self.urgent_cache_ids.clear()
             self.urgent_workers.clear()
             self.active_process_item_ids.clear()
+            self.native_cache_started = False
+            self.native_cache_event_worker = None
+            self.native_cache_generations.clear()
+            self.native_cache_snapshot.clear()
         for item in self.store.list_items():
             self.store.update_item(
                 item.id,
@@ -1177,6 +1505,15 @@ class CacheManager:
             self._record_item_activity(item.id)
 
     def clear_runtime_cache(self) -> None:
+        native_cache = (
+            self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
+            or self.native_cache_started
+        )
+        if native_cache:
+            self._ensure_native_cache_runtime()
+            self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
+            self._drain_native_cache_events()
+            self._clear_log_root()
         with self.lock:
             processes = self._active_processes_locked()
             urgent_workers = list(self.urgent_workers.values())
@@ -1195,6 +1532,8 @@ class CacheManager:
             self.active_processes.clear()
             self.active_process_item_ids.clear()
             self.active_item_id = None
+            self.native_cache_generations.clear()
+            self.native_cache_snapshot.clear()
             while True:
                 try:
                     self.tasks.get_nowait()
@@ -1206,7 +1545,8 @@ class CacheManager:
             if worker is current_thread:
                 continue
             worker.join(timeout=5.0)
-        self._clear_cache_root()
+        if not native_cache:
+            self._clear_cache_root()
 
     def retry_item(self, item_id: str, *, force: bool = False) -> None:
         item = self.store.get_item(item_id)
@@ -1222,6 +1562,45 @@ class CacheManager:
         download_source = self._current_download_source()
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
+
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
+            snapshot = dict(self.native_cache_snapshot)
+            primary_active_item_id = str(
+                snapshot.get("primary_active_item_id") or ""
+            ).strip()
+            urgent = bool(
+                force
+                and self.store.is_current_item(item_id)
+                and primary_active_item_id
+                and primary_active_item_id != item_id
+            )
+            self.store.update_item(
+                item_id,
+                cache_status="pending",
+                cache_progress=0.0,
+                cache_message="准备重新下载",
+                video_relative_path="",
+                video_media_url="",
+                audio_variants=[],
+                persist_backup=False,
+            )
+            self._record_item_activity(item_id)
+            try:
+                self._ensure_native_cache_runtime()
+                result = self._native_cache_request(
+                    "retry", job=self._native_cache_job(item), urgent=urgent
+                )
+                generation = int(result.get("generation") or 0)
+                if generation > 0:
+                    with self.lock:
+                        self.native_cache_generations[item_id] = max(
+                            generation,
+                            self.native_cache_generations.get(item_id, 0),
+                        )
+                self._drain_native_cache_events()
+            except Exception as exc:  # noqa: BLE001
+                self._mark_native_cache_failed(item_id, str(exc))
+            return
 
         is_current_item = self.store.is_current_item(item_id)
         with self.lock:
@@ -1401,6 +1780,59 @@ class CacheManager:
                     retained_ids.add(item.id)
         return retained_ids
 
+    def _sync_native_with_playlist(self, items: list[Any], plan: CachePlan) -> None:
+        desired_ids = set(plan.desired_ids)
+        retained_ids = set(plan.retained_ids)
+        jobs: list[dict[str, Any]] = []
+        for item in items:
+            if item.id not in desired_ids or item.cache_status == "failed":
+                continue
+            try:
+                jobs.append(self._native_cache_job(item))
+            except Exception as exc:  # noqa: BLE001
+                self._mark_native_cache_failed(item.id, str(exc))
+
+        try:
+            self._ensure_native_cache_runtime()
+            result = self._native_cache_request(
+                "sync",
+                cache_root=str(CACHE_DIR.resolve()),
+                current_ids=[item.id for item in items],
+                retained_ids=[item.id for item in items if item.id in retained_ids],
+                jobs=jobs,
+                ordered_ids=list(plan.pending_order),
+                preempt_item_id=plan.preempt_ids[0] if plan.preempt_ids else "",
+            )
+        except Exception as exc:  # noqa: BLE001
+            with self.lock:
+                self.native_cache_error = str(exc)
+            for job in jobs:
+                self._mark_native_cache_failed(str(job["item_id"]), str(exc))
+            return
+
+        generations = result.get("generations")
+        if isinstance(generations, dict):
+            with self.lock:
+                for item_id, generation in generations.items():
+                    try:
+                        normalized_item_id = str(item_id)
+                        self.native_cache_generations[normalized_item_id] = max(
+                            int(generation),
+                            self.native_cache_generations.get(normalized_item_id, 0),
+                        )
+                    except (TypeError, ValueError):
+                        continue
+        snapshot = result.get("snapshot")
+        if isinstance(snapshot, dict):
+            self._apply_native_cache_snapshot(snapshot)
+        native_log_dir = self.log_dir / DOWNLOAD_SOURCE_NATIVE
+        if native_log_dir.is_dir():
+            current_ids = {item.id for item in items}
+            for log_file in native_log_dir.glob("*.log"):
+                if log_file.stem not in current_ids:
+                    self._safe_unlink(log_file)
+        self._drain_native_cache_events()
+
     def sync_with_playlist(self) -> None:
         items = self.store.list_items()
         plan, priority_state = self._stable_cache_plan_snapshot(items)
@@ -1410,6 +1842,10 @@ class CacheManager:
         with self.lock:
             self.desired_ids = set(desired_ids)
             self.ordered_desired_ids = list(plan.pending_order)
+
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            self._sync_native_with_playlist(items, plan)
+            return
 
         self._cleanup_orphan_cache_dirs(current_ids)
         self._stop_active_if_not_desired(desired_ids)
@@ -1427,6 +1863,26 @@ class CacheManager:
         self._apply_cache_plan_priority(items, priority_plan)
 
     def enqueue(self, item_id: str) -> None:
+        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+            item = self.store.get_item(item_id)
+            if not item:
+                return
+            try:
+                self._ensure_native_cache_runtime()
+                result = self._native_cache_request(
+                    "submit", job=self._native_cache_job(item), priority="normal"
+                )
+                generation = int(result.get("generation") or 0)
+                if generation > 0:
+                    with self.lock:
+                        self.native_cache_generations[item_id] = max(
+                            generation,
+                            self.native_cache_generations.get(item_id, 0),
+                        )
+                self._drain_native_cache_events()
+            except Exception as exc:  # noqa: BLE001
+                self._mark_native_cache_failed(item_id, str(exc))
+            return
         with self.lock:
             if (
                 item_id in self.pending_ids
@@ -2629,11 +3085,21 @@ class CacheManager:
 
         resolved_cid = cid if cid is not None else item.cid
 
-        dash = fetch_dash_playurl(
-            bvid=item.bvid,
-            cid=resolved_cid,
-            avid=item.aid,
-        )
+        if native_media:
+            dash = rust_runtime.fetch_bilibili_dash_playurl(
+                bvid=item.bvid,
+                cid=resolved_cid,
+                avid=item.aid,
+                cookie=cookie,
+                user_agent=str(BILIBILI_HEADERS.get("User-Agent") or ""),
+                referer=str(BILIBILI_HEADERS.get("Referer") or ""),
+            )
+        else:
+            dash = fetch_dash_playurl(
+                bvid=item.bvid,
+                cid=resolved_cid,
+                avid=item.aid,
+            )
 
         if not dash.get("video") and not dash.get("audio"):
             raise BilibiliError("未获取到任何视频/音频流地址")

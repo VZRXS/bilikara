@@ -1226,6 +1226,33 @@ class PlaylistStoreTest(unittest.TestCase):
 
 
 class BilibiliParserTest(unittest.TestCase):
+    def test_bilibili_json_transport_delegates_to_rust_runtime(self):
+        with (
+            patch.object(bilibili_module, "effective_bilibili_cookie", return_value="SESSDATA=test"),
+            patch.object(
+                bilibili_module.rust_runtime,
+                "json_http_request",
+                return_value={"code": 0, "data": {"ok": True}},
+            ) as request,
+        ):
+            payload = bilibili_module.request_json("https://api.bilibili.com/example")
+
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual(request.call_args.args[:2], ("GET", "https://api.bilibili.com/example"))
+        self.assertEqual(request.call_args.kwargs["headers"]["Cookie"], "SESSDATA=test")
+
+    def test_short_video_url_resolution_delegates_to_rust_runtime(self):
+        with patch.object(
+            bilibili_module.rust_runtime,
+            "resolve_bilibili_redirect",
+            return_value="https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+        ) as resolve:
+            reference = bilibili_module.resolve_video_reference("https://b23.tv/example")
+
+        self.assertEqual(reference.bvid, "BV1xx411c7mD")
+        self.assertEqual(reference.page, 2)
+        resolve.assert_called_once()
+
     def test_cached_avatar_annotation_prefers_owner_name_for_collaboration(self):
         profiles_by_uid = {
             "671767": {"uid": "671767", "name": "VZRXS", "avatar_url": "vzrxs.jpg"},
@@ -1267,7 +1294,7 @@ class BilibiliParserTest(unittest.TestCase):
                 return_value=({"671767": profile}, {"vzrxs": profile}),
             ),
         ):
-            results = bilibili_module.search_gatcha_cache("agony")
+            results = bilibili_module._py_search_gatcha_cache("agony")
 
         self.assertEqual(results[0]["owner_avatar_url"], "vzrxs.jpg")
 
@@ -1368,7 +1395,7 @@ class BilibiliParserTest(unittest.TestCase):
                 bilibili_module.BilibiliError,
                 bilibili_module.MISSING_BILIBILI_COOKIE_MESSAGE,
             ):
-                bilibili_module.fetch_gatcha_candidate()
+                bilibili_module._py_fetch_gatcha_candidate()
 
     def test_gatcha_uid_snapshot_creates_default_uid_file(self):
         with TemporaryDirectory() as temp_dir:
@@ -1433,7 +1460,7 @@ class BilibiliParserTest(unittest.TestCase):
                     },
                 ),
             ):
-                preview = bilibili_module.preview_gatcha_uid("https://space.bilibili.com/42")
+                preview = bilibili_module._py_preview_gatcha_uid("https://space.bilibili.com/42")
 
             self.assertEqual(preview["uid"], "42")
             self.assertEqual(preview["name"], "example-up")
@@ -1581,7 +1608,7 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module, "_request_gatcha_uid_profile", side_effect=fake_profile),
                 patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
             ):
-                bilibili_module.refresh_gatcha_cache()
+                bilibili_module._py_refresh_gatcha_cache()
 
             self.assertEqual(calls, [("1", 1, False), ("2", None, True)])
             uid_payload = json.loads(uid_file.read_text(encoding="utf-8"))
@@ -1727,7 +1754,7 @@ class BilibiliParserTest(unittest.TestCase):
                 ),
                 patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
             ):
-                bilibili_module.refresh_gatcha_cache()
+                bilibili_module._py_refresh_gatcha_cache()
 
             self.assertEqual(calls, [("1", None, True)])
             cache_payload = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -1944,7 +1971,7 @@ class BilibiliParserTest(unittest.TestCase):
                 ),
                 patch.object(bilibili_module, "_fetch_gatcha_videos_for_uid", side_effect=fake_fetch),
             ):
-                result = bilibili_module.add_gatcha_uid("https://space.bilibili.com/42")
+                result = bilibili_module._py_add_gatcha_uid("https://space.bilibili.com/42")
 
             self.assertTrue(result["added"])
             self.assertEqual(result["uid"], "42")
@@ -2017,7 +2044,7 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders),
                 patch.object(bilibili_module, "_fetch_gatcha_favlist_entries_for_folder", side_effect=fake_fetch),
             ):
-                result = bilibili_module.refresh_gatcha_favlist("https://space.bilibili.com/42")
+                result = bilibili_module._py_refresh_gatcha_favlist("https://space.bilibili.com/42")
 
             self.assertEqual(result["uid"], "42")
             self.assertEqual(result["folder_count"], 3)
@@ -2057,7 +2084,7 @@ class BilibiliParserTest(unittest.TestCase):
             {"id": 300, "fid": 30, "title": "private k", "attr": 1, "media_count": 1},
         ]
         with patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders):
-            result = bilibili_module.preview_gatcha_favlist("https://space.bilibili.com/42")
+            result = bilibili_module._py_preview_gatcha_favlist("https://space.bilibili.com/42")
 
         self.assertEqual(result["uid"], "42")
         self.assertEqual(result["folder_count"], 3)
@@ -2095,7 +2122,7 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module, "_request_gatcha_favlist_folders", return_value=folders),
                 patch.object(bilibili_module, "_fetch_gatcha_favlist_entries_for_folder", side_effect=fake_fetch),
             ):
-                result = bilibili_module.refresh_gatcha_favlist("42", ["200"])
+                result = bilibili_module._py_refresh_gatcha_favlist("42", ["200"])
 
             self.assertEqual(result["matched_folder_count"], 1)
             self.assertEqual(fetched_folder_ids, [200])
@@ -2230,7 +2257,7 @@ class BilibiliParserTest(unittest.TestCase):
             ),
             patch.object(bilibili_module.random, "random", return_value=0.9),
         ):
-            candidate = bilibili_module.fetch_gatcha_candidate()
+            candidate = bilibili_module._py_fetch_gatcha_candidate()
 
         self.assertEqual(candidate["bvid"], "BVALIVE")
 
@@ -2281,7 +2308,7 @@ class BilibiliParserTest(unittest.TestCase):
                 patch.object(bilibili_module, "effective_bilibili_cookie", return_value="cookie"),
                 patch.object(bilibili_module, "_request_gatcha_favlist_page", side_effect=fake_fav_page),
             ):
-                bilibili_module.refresh_gatcha_cache()
+                bilibili_module._py_refresh_gatcha_cache()
 
             payload = json.loads(favlist_file.read_text(encoding="utf-8"))
             self.assertEqual([entry["bvid"] for entry in payload["items"]], ["BVNEW", "BVOLD"])
@@ -2382,7 +2409,7 @@ class BilibiliParserTest(unittest.TestCase):
             patch.object(bilibili_module, "_refresh_gatcha_uid_cache", side_effect=fake_refresh_uid),
             patch.object(bilibili_module, "_refresh_existing_gatcha_favlist_cache", return_value=None),
         ):
-            result = bilibili_module.refresh_gatcha_cache()
+            result = bilibili_module._py_refresh_gatcha_cache()
 
         summary = result["refresh_summary"]
         self.assertEqual([item["uid"] for item in summary["uids"]], ["2"])

@@ -72,16 +72,29 @@ name = "bilikara_runtime"
 version = "0.7.0"
 dependencies = [
  "base64",
+ "bilikara_rust",
  "claxon",
  "fs2",
  "if-addrs",
  "libc",
+ "md5",
  "mp4",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "url",
+ "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "bilikara_rust"
+version = "0.7.2"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -737,6 +750,12 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
+name = "md5"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 
 [[package]]
 name = "memchr"
