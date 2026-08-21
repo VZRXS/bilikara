@@ -1152,7 +1152,6 @@ class CacheManager:
         changed = False
         cache_limit_changed = False
         download_source_changed = False
-        native_media_policy_changed = False
         with self.lock:
             previous_download_source = self.download_source
             if max_cache_items is not None:
@@ -1168,13 +1167,11 @@ class CacheManager:
                 if self.video_quality != normalized_quality:
                     self.video_quality = normalized_quality
                     changed = True
-                    native_media_policy_changed = True
             if audio_hires is not None:
                 normalized_hires = bool(audio_hires)
                 if self.audio_hires != normalized_hires:
                     self.audio_hires = normalized_hires
                     changed = True
-                    native_media_policy_changed = True
             if download_source is not None:
                 normalized_source = self._normalize_download_source(download_source)
                 if self.download_source != normalized_source:
@@ -1193,26 +1190,13 @@ class CacheManager:
         if (
             self.native_cache_started
             and previous_download_source == DOWNLOAD_SOURCE_NATIVE
-            and (
-                self._current_download_source() != DOWNLOAD_SOURCE_NATIVE
-                or native_media_policy_changed
-            )
+            and self._current_download_source() != DOWNLOAD_SOURCE_NATIVE
         ):
             self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
             self._drain_native_cache_events()
             with self.lock:
                 self.native_cache_generations.clear()
-        if (
-            cache_limit_changed
-            or download_source_changed
-            or (
-                native_media_policy_changed
-                and (
-                    previous_download_source == DOWNLOAD_SOURCE_NATIVE
-                    or self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
-                )
-            )
-        ):
+        if cache_limit_changed or download_source_changed:
             self.sync_with_playlist()
         return self.policy_snapshot()
 

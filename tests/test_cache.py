@@ -516,6 +516,42 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 restored.shutdown()
 
+    def test_native_quality_change_only_applies_to_future_downloads(self):
+        current = self.make_item("song-a")
+        queued = self.make_item("song-b")
+        future = self.make_item("song-c")
+        self.store.add_item(current, requester_name="cache-test-user")
+        self.store.add_item(queued, requester_name="cache-test-user")
+        self.mark_item_ready_with_files(current.id)
+        self.mark_item_ready_with_files(queued.id)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                manager.video_quality = "1080P 高清"
+                manager.native_cache_started = True
+                with patch.object(manager, "_native_cache_request") as native_request, patch.object(
+                    manager, "_drain_native_cache_events"
+                ) as drain_events, patch.object(manager, "sync_with_playlist") as sync:
+                    snapshot = manager.set_cache_policy(video_quality="720P 高清")
+
+                self.assertEqual(snapshot["video_quality"], "720P 高清")
+                self.assertNotIn(
+                    "clear",
+                    [args[0] for args, _kwargs in native_request.call_args_list],
+                )
+                drain_events.assert_not_called()
+                sync.assert_not_called()
+                self.assertEqual(self.store.get_item(current.id).cache_status, "ready")
+                self.assertEqual(self.store.get_item(queued.id).cache_status, "ready")
+                self.assertEqual(manager._native_cache_job(future)["video_quality"], "720P 高清")
+            finally:
+                manager.native_cache_started = False
+                manager.shutdown()
+
     def test_cache_policy_preserves_each_download_source(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
