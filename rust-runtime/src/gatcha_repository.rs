@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::form_urlencoded;
@@ -157,10 +157,7 @@ pub fn execute_gatcha(request: &GatchaRepositoryRequest) -> Result<Value, Gatcha
         uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
         return execute_gatcha_operation(request);
     }
-    let _guard = REPOSITORY_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| error("state", "Gacha repository lock is poisoned"))?;
+    let _guard = repository_guard()?;
     uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
     execute_gatcha_operation(request)
 }
@@ -170,9 +167,15 @@ fn requires_mutation_lock(operation: &GatchaOperation) -> bool {
         operation,
         GatchaOperation::PoolConfigUpdate { .. }
             | GatchaOperation::AddUid { .. }
-            | GatchaOperation::RefreshAll { .. }
             | GatchaOperation::RefreshFavlist { .. }
     )
+}
+
+fn repository_guard() -> Result<MutexGuard<'static, ()>, GatchaRepositoryError> {
+    REPOSITORY_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| error("state", "Gacha repository lock is poisoned"))
 }
 
 fn execute_gatcha_operation(
@@ -546,56 +549,48 @@ fn refresh_all(
     keywords: &[String],
     client: &BilibiliHttpClient,
 ) -> Result<Value, GatchaRepositoryError> {
-    let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
-    let configured = normalized_strings(uid_payload.get("uids"));
-    let mut uid_profiles = uid_payload
-        .get("profiles")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let raw_cache = read_object(&paths.cache_file).unwrap_or_default();
-    let legacy_cache = integer_value(raw_cache.get("schema_version")).unwrap_or(0)
-        < CACHE_SCHEMA_VERSION as i64
-        || !raw_cache.get("profiles").is_some_and(Value::is_object);
-    let mut cache = load_cache(&paths.cache_file);
-    let mut cache_uids = cache
-        .get("uids")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let mut cache_profiles = cache
-        .get("profiles")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let (configured, legacy_cache) = {
+        let _guard = repository_guard()?;
+        let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
+        let raw_cache = read_object(&paths.cache_file).unwrap_or_default();
+        (
+            normalized_strings(uid_payload.get("uids")),
+            integer_value(raw_cache.get("schema_version")).unwrap_or(0)
+                < CACHE_SCHEMA_VERSION as i64
+                || !raw_cache.get("profiles").is_some_and(Value::is_object),
+        )
+    };
     let mut results = Vec::new();
     let mut errors = Vec::new();
+    persist_refresh_summary(paths, &results, &errors, "", false, configured.len())?;
     for uid in &configured {
         let result = (|| {
-            let profile = uid_profiles
-                .get(uid)
+            let (known_profile, existing) = {
+                let _guard = repository_guard()?;
+                let uid_payload = uid_snapshot(&paths.uid_file, &[])?;
+                let cache = load_cache(&paths.cache_file);
+                (
+                    uid_payload
+                        .pointer(&format!("/profiles/{uid}"))
+                        .filter(|value| valid_profile(value))
+                        .cloned(),
+                    cache
+                        .pointer(&format!("/uids/{uid}"))
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            };
+            let profile = known_profile
+                .as_ref()
                 .filter(|value| valid_profile(value))
                 .cloned()
                 .map(Ok)
                 .unwrap_or_else(|| fetch_profile(client, uid))?;
-            uid_profiles.insert(uid.clone(), profile.clone());
-            cache_profiles.insert(uid.clone(), profile);
-            let existing = cache_uids
-                .get(uid)
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
             let incremental = !legacy_cache && !dedupe_entries(&existing).is_empty();
             let fresh = fetch_uid_entries(client, uid, keywords, incremental.then_some(1))?;
-            let (entries, added_count) = if incremental {
-                merge_incremental_entries(&existing, &fresh)
-            } else {
-                let entries = dedupe_entries(&fresh);
-                let count = entries.len();
-                (entries, count)
-            };
-            let total_count = entries.len();
-            cache_uids.insert(uid.clone(), Value::Array(entries));
+            let (added_count, total_count) =
+                persist_refreshed_uid(paths, uid, &profile, &existing, &fresh, incremental)?;
             Ok::<Value, GatchaRepositoryError>(json!({
                 "uid": uid,
                 "mode": if incremental { "incremental" } else { "full" },
@@ -607,35 +602,112 @@ fn refresh_all(
             Ok(value) => results.push(value),
             Err(failure) => errors.push(json!({"uid": uid, "error": failure.message})),
         }
+        persist_refresh_summary(paths, &results, &errors, "", false, configured.len())?;
     }
-    let favlist_result = refresh_existing_favlist(paths, client);
+    let favlist_result = {
+        let _guard = repository_guard()?;
+        refresh_existing_favlist(paths, client)
+    };
     let favlist_error = favlist_result
         .as_ref()
         .err()
         .map(|failure| failure.message.clone())
         .unwrap_or_default();
+    persist_refresh_summary(
+        paths,
+        &results,
+        &errors,
+        &favlist_error,
+        true,
+        configured.len(),
+    )
+}
+
+fn persist_refreshed_uid(
+    paths: &GatchaPaths,
+    uid: &str,
+    profile: &Value,
+    baseline_entries: &[Value],
+    fresh_entries: &[Value],
+    incremental: bool,
+) -> Result<(usize, usize), GatchaRepositoryError> {
+    let _guard = repository_guard()?;
+    let mut uid_payload = uid_snapshot(&paths.uid_file, &[])?;
+    let uid_object = uid_payload
+        .as_object_mut()
+        .ok_or_else(|| error("state", "invalid Gacha UID configuration"))?;
+    uid_object
+        .entry("profiles")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| error("state", "invalid Gacha UID profiles"))?
+        .insert(uid.to_owned(), profile.clone());
     let updated_at = unix_timestamp();
-    cache = json!({
-        "schema_version": CACHE_SCHEMA_VERSION,
-        "uids": cache_uids,
-        "profiles": cache_profiles,
-        "updated_at": updated_at,
-        "refresh_summary": {
+    uid_object.insert("updated_at".to_owned(), json!(updated_at));
+    atomic_write_json(&paths.uid_file, &uid_payload)?;
+
+    let mut cache = load_cache(&paths.cache_file);
+    let cache_object = cache
+        .as_object_mut()
+        .ok_or_else(|| error("state", "invalid Gacha cache"))?;
+    let cache_uids = cache_object
+        .entry("uids")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| error("state", "invalid Gacha UID cache"))?;
+    let latest_entries = cache_uids
+        .get(uid)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let concurrent_change = latest_entries != baseline_entries;
+    let (entries, added_count) = if incremental || concurrent_change {
+        merge_incremental_entries(&latest_entries, fresh_entries)
+    } else {
+        let entries = dedupe_entries(fresh_entries);
+        let count = entries.len();
+        (entries, count)
+    };
+    let total_count = entries.len();
+    cache_uids.insert(uid.to_owned(), Value::Array(entries));
+    cache_object
+        .entry("profiles")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| error("state", "invalid Gacha profile cache"))?
+        .insert(uid.to_owned(), profile.clone());
+    cache_object.insert("updated_at".to_owned(), json!(updated_at));
+    atomic_write_json(&paths.cache_file, &cache)?;
+    Ok((added_count, total_count))
+}
+
+fn persist_refresh_summary(
+    paths: &GatchaPaths,
+    results: &[Value],
+    errors: &[Value],
+    favlist_error: &str,
+    completed: bool,
+    total_count: usize,
+) -> Result<Value, GatchaRepositoryError> {
+    let _guard = repository_guard()?;
+    let mut cache = load_cache(&paths.cache_file);
+    let updated_at = unix_timestamp();
+    let cache_object = cache
+        .as_object_mut()
+        .ok_or_else(|| error("state", "invalid Gacha cache"))?;
+    cache_object.insert("updated_at".to_owned(), json!(updated_at));
+    cache_object.insert(
+        "refresh_summary".to_owned(),
+        json!({
             "uids": results,
             "errors": errors,
             "favlist_error": favlist_error,
-            "updated_at": updated_at,
-        },
-    });
-    atomic_write_json(
-        &paths.uid_file,
-        &json!({
-            "schema_version": UID_SCHEMA_VERSION,
-            "uids": configured,
-            "profiles": uid_profiles,
+            "completed": completed,
+            "completed_count": results.len() + errors.len(),
+            "total_count": total_count,
             "updated_at": updated_at,
         }),
-    )?;
+    );
     atomic_write_json(&paths.cache_file, &cache)?;
     Ok(cache)
 }
@@ -2016,6 +2088,77 @@ mod tests {
             completed_while_mutation_is_active,
             "read-only Gacha snapshots must not wait for a long network refresh"
         );
+    }
+
+    #[test]
+    fn refresh_all_network_work_does_not_hold_repository_mutation_lock() {
+        let operation = GatchaOperation::RefreshAll {
+            cookie: "cookie".to_owned(),
+            keywords: Vec::new(),
+            user_agent: "agent".to_owned(),
+            referer: "referer".to_owned(),
+            timeout_ms: 1_000,
+        };
+        assert!(!requires_mutation_lock(&operation));
+    }
+
+    #[test]
+    fn refreshed_uid_is_persisted_without_overwriting_concurrent_cache_changes() {
+        let root = temp_root("refresh-persistence");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).expect("create root");
+        atomic_write_json(
+            &paths.uid_file,
+            &json!({"schema_version": 2, "uids": ["1", "2"], "profiles": {}, "updated_at": 1}),
+        )
+        .expect("write uids");
+        atomic_write_json(
+            &paths.cache_file,
+            &json!({
+                "schema_version": 3,
+                "uids": {
+                    "1": [{"bvid": "BVCONCURRENT", "title": "concurrent"}],
+                    "2": [{"bvid": "BVOTHER", "title": "other"}]
+                },
+                "profiles": {},
+                "updated_at": 1
+            }),
+        )
+        .expect("write cache");
+
+        let (added, total) = persist_refreshed_uid(
+            &paths,
+            "1",
+            &json!({"uid": "1", "name": "owner", "space_url": "https://space.bilibili.com/1"}),
+            &[],
+            &[json!({"bvid": "BVFRESH", "title": "fresh"})],
+            false,
+        )
+        .expect("persist refreshed uid");
+
+        let cache = read_object(&paths.cache_file).expect("read cache");
+        assert_eq!(added, 1);
+        assert_eq!(total, 2);
+        assert_eq!(cache["uids"]["1"][0]["bvid"], "BVFRESH");
+        assert_eq!(cache["uids"]["1"][1]["bvid"], "BVCONCURRENT");
+        assert_eq!(cache["uids"]["2"][0]["bvid"], "BVOTHER");
+        assert_eq!(cache["profiles"]["1"]["name"], "owner");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_progress_is_visible_before_refresh_finishes() {
+        let root = temp_root("refresh-progress");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).expect("create root");
+
+        persist_refresh_summary(&paths, &[], &[], "", false, 3).expect("persist refresh progress");
+
+        let cache = read_object(&paths.cache_file).expect("read refresh progress");
+        assert_eq!(cache["refresh_summary"]["completed"], false);
+        assert_eq!(cache["refresh_summary"]["completed_count"], 0);
+        assert_eq!(cache["refresh_summary"]["total_count"], 3);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
