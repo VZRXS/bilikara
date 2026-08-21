@@ -185,6 +185,12 @@ struct ActiveJob {
     urgent: bool,
 }
 
+#[derive(Clone)]
+struct CompletedJob {
+    generation: u64,
+    result: CacheReadyResult,
+}
+
 #[derive(Default)]
 struct RuntimeState {
     stopping: bool,
@@ -197,6 +203,7 @@ struct RuntimeState {
     active: HashMap<String, ActiveJob>,
     primary_active_item_id: Option<String>,
     cancel_reasons: HashMap<(String, u64), String>,
+    completed: HashMap<String, CompletedJob>,
     events: VecDeque<CacheEvent>,
 }
 
@@ -232,7 +239,7 @@ struct TrackResult {
     probe: MediaProbe,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct ReadyAudioVariant {
     id: String,
     label: String,
@@ -240,7 +247,7 @@ struct ReadyAudioVariant {
     audio_url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct CacheReadyResult {
     video_relative_path: String,
     video_media_url: String,
@@ -434,8 +441,15 @@ impl CacheRuntime {
             if let Some(existing) = state.jobs.get(&item_id) {
                 return Ok(existing.generation);
             }
+            if let Some(completed) = state.completed.get(&item_id)
+                && completed_artifacts_ready(&job.cache_root, &completed.result)
+            {
+                return Ok(completed.generation);
+            }
+            state.completed.remove(&item_id);
         }
         if replace {
+            state.completed.remove(&item_id);
             if let Some(active) = state.active.get(&item_id) {
                 active.cancel.store(true, Ordering::Release);
                 let generation = active.generation;
@@ -505,6 +519,10 @@ impl CacheRuntime {
         let mut evict_now = Vec::new();
         {
             let mut state = lock_state(&self.shared);
+            state.completed.retain(|item_id, completed| {
+                current.contains(item_id)
+                    && completed_artifacts_ready(cache_root, &completed.result)
+            });
             let queued_ids: Vec<String> = state.jobs.keys().cloned().collect();
             for item_id in queued_ids {
                 if desired.contains(&item_id) || state.active.contains_key(&item_id) {
@@ -570,6 +588,9 @@ impl CacheRuntime {
             if existing_artifacts_ready(&job) {
                 continue;
             }
+            if self.completed_artifacts_ready(&job.item_id, cache_root) {
+                continue;
+            }
             let replace = !preempt_item_id.is_empty() && job.item_id == preempt_item_id;
             let generation = self.submit(job.clone(), CacheJobPriority::Normal, replace)?;
             generations.insert(job.item_id, json!(generation));
@@ -607,6 +628,7 @@ impl CacheRuntime {
             return false;
         }
         let mut state = lock_state(&self.shared);
+        state.completed.remove(item_id);
         let mut cancelled = false;
         if let Some(active) = state.active.get(item_id) {
             active.cancel.store(true, Ordering::Release);
@@ -651,6 +673,7 @@ impl CacheRuntime {
         state.normal_queue.clear();
         state.urgent_queue.clear();
         state.queued_priorities.clear();
+        state.completed.clear();
         for job in queued {
             if !state.active.contains_key(&job.spec.item_id) {
                 push_event_locked(
@@ -685,6 +708,18 @@ impl CacheRuntime {
         snapshot_locked(&state)
     }
 
+    fn completed_artifacts_ready(&self, item_id: &str, cache_root: &Path) -> bool {
+        let mut state = lock_state(&self.shared);
+        let ready = state
+            .completed
+            .get(item_id)
+            .is_some_and(|completed| completed_artifacts_ready(cache_root, &completed.result));
+        if !ready {
+            state.completed.remove(item_id);
+        }
+        ready
+    }
+
     fn drain_events(&self, max_events: usize) -> Value {
         let limit = max_events.clamp(1, MAX_DRAIN_EVENTS);
         let mut state = lock_state(&self.shared);
@@ -713,6 +748,7 @@ impl CacheRuntime {
             state.urgent_queue.clear();
             state.queued_priorities.clear();
             state.jobs.clear();
+            state.completed.clear();
             self.shared.wake.notify_all();
         }
         let handles = std::mem::take(
@@ -812,13 +848,24 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
             .remove(&(job.spec.item_id.clone(), job.generation))
             .unwrap_or_else(|| "cache cancelled".to_owned());
         match outcome {
-            JobOutcome::Ready(result) => push_event_locked(
-                &mut state,
-                job.generation,
-                &job.spec.item_id,
-                "ready",
-                serde_json::to_value(result).unwrap_or_else(|_| json!({})),
-            ),
+            JobOutcome::Ready(result) => {
+                if current_generation.is_none() || current_generation == Some(job.generation) {
+                    state.completed.insert(
+                        job.spec.item_id.clone(),
+                        CompletedJob {
+                            generation: job.generation,
+                            result: result.clone(),
+                        },
+                    );
+                }
+                push_event_locked(
+                    &mut state,
+                    job.generation,
+                    &job.spec.item_id,
+                    "ready",
+                    serde_json::to_value(result).unwrap_or_else(|_| json!({})),
+                )
+            }
             JobOutcome::Cancelled => push_event_locked(
                 &mut state,
                 job.generation,
@@ -1662,6 +1709,22 @@ fn existing_artifacts_ready(job: &CacheJobSpec) -> bool {
     })
 }
 
+fn completed_artifacts_ready(cache_root: &Path, result: &CacheReadyResult) -> bool {
+    let Some(video_path) = safe_relative_cache_path(cache_root, &result.video_relative_path) else {
+        return false;
+    };
+    if !nonempty_file(&video_path) || result.audio_variants.is_empty() {
+        return false;
+    }
+    result.audio_variants.iter().all(|variant| {
+        variant
+            .audio_url
+            .strip_prefix("/media/")
+            .and_then(|relative| safe_relative_cache_path(cache_root, relative))
+            .is_some_and(|path| nonempty_file(&path))
+    })
+}
+
 fn safe_relative_cache_path(root: &Path, relative: &str) -> Option<PathBuf> {
     let normalized = relative.trim().replace('\\', "/");
     let path = Path::new(&normalized);
@@ -1822,6 +1885,57 @@ mod tests {
                 "",
             )
             .expect("sync ready cache");
+
+        assert_eq!(result["generations"], json!({}));
+        assert_eq!(result["snapshot"]["pending_ids"], json!([]));
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_does_not_resubmit_published_cache_before_ready_event_projection() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara-cache-runtime-completed-{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let item_dir = root.join("song-a");
+        fs::create_dir_all(&item_dir).expect("create cache fixture");
+        fs::write(item_dir.join("video-p1.mp4"), b"video").expect("write video fixture");
+        fs::write(item_dir.join("audio-p1.m4a"), b"audio").expect("write audio fixture");
+        let runtime = CacheRuntime::new().expect("start cache runtime");
+        {
+            let mut state = lock_state(&runtime.shared);
+            state.next_generation = 7;
+            state.completed.insert(
+                "song-a".to_owned(),
+                CompletedJob {
+                    generation: 7,
+                    result: CacheReadyResult {
+                        video_relative_path: "song-a/video-p1.mp4".to_owned(),
+                        video_media_url: "/media/song-a/video-p1.mp4".to_owned(),
+                        audio_variants: vec![ReadyAudioVariant {
+                            id: "p1_track_1".to_owned(),
+                            label: "P1".to_owned(),
+                            page: 1,
+                            audio_url: "/media/song-a/audio-p1.m4a".to_owned(),
+                        }],
+                        selected_audio_variant_id: "p1_track_1".to_owned(),
+                    },
+                },
+            );
+        }
+
+        let result = runtime
+            .sync(
+                &root,
+                vec!["song-a".to_owned()],
+                vec!["song-a".to_owned()],
+                vec![job(&root)],
+                vec!["song-a".to_owned()],
+                "",
+            )
+            .expect("sync stale host state");
 
         assert_eq!(result["generations"], json!({}));
         assert_eq!(result["snapshot"]["pending_ids"], json!([]));
