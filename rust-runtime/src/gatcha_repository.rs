@@ -153,11 +153,31 @@ pub fn execute_gatcha(request: &GatchaRepositoryRequest) -> Result<Value, Gatcha
     if request.schema_version != 1 {
         return Err(error("invalid_request", "unsupported schema version"));
     }
+    if !requires_mutation_lock(&request.operation) {
+        uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
+        return execute_gatcha_operation(request);
+    }
     let _guard = REPOSITORY_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| error("state", "Gacha repository lock is poisoned"))?;
     uid_snapshot(&request.paths.uid_file, &request.default_uids)?;
+    execute_gatcha_operation(request)
+}
+
+fn requires_mutation_lock(operation: &GatchaOperation) -> bool {
+    matches!(
+        operation,
+        GatchaOperation::PoolConfigUpdate { .. }
+            | GatchaOperation::AddUid { .. }
+            | GatchaOperation::RefreshAll { .. }
+            | GatchaOperation::RefreshFavlist { .. }
+    )
+}
+
+fn execute_gatcha_operation(
+    request: &GatchaRepositoryRequest,
+) -> Result<Value, GatchaRepositoryError> {
     match &request.operation {
         GatchaOperation::UidSnapshot => {
             uid_snapshot(&request.paths.uid_file, &request.default_uids)
@@ -1873,6 +1893,7 @@ fn default_timeout_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     fn paths(root: &Path) -> GatchaPaths {
         GatchaPaths {
@@ -1952,6 +1973,49 @@ mod tests {
         let loaded = load_pool_config(&paths.pool_config_file);
         assert_eq!(loaded["excluded_uids"], json!(["42"]));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_only_snapshot_is_not_blocked_by_repository_mutation_lock() {
+        let root = temp_root("concurrent-read");
+        let paths = paths(&root);
+        fs::create_dir_all(&root).expect("create root");
+        atomic_write_json(
+            &paths.uid_file,
+            &json!({"schema_version": 2, "uids": [], "profiles": {}, "updated_at": 1}),
+        )
+        .expect("write uids");
+        atomic_write_json(
+            &paths.pool_config_file,
+            &json!({"uid_weight": 40, "favlist_weight": 60}),
+        )
+        .expect("write pool config");
+        let request = GatchaRepositoryRequest {
+            schema_version: 1,
+            paths,
+            default_uids: Vec::new(),
+            operation: GatchaOperation::PoolConfigSnapshot,
+        };
+        let mutation_guard = REPOSITORY_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("lock repository mutation");
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            sender
+                .send(execute_gatcha(&request))
+                .expect("send snapshot result");
+        });
+
+        let completed_while_mutation_is_active =
+            receiver.recv_timeout(Duration::from_millis(250)).is_ok();
+        drop(mutation_guard);
+        worker.join().expect("join snapshot worker");
+        let _ = fs::remove_dir_all(root);
+        assert!(
+            completed_while_mutation_is_active,
+            "read-only Gacha snapshots must not wait for a long network refresh"
+        );
     }
 
     #[test]
