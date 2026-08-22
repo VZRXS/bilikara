@@ -51,6 +51,25 @@ class RustRuntimeServiceError(RuntimeError):
         self.response = response
 
 
+class RustAppStateError(RuntimeError):
+    def __init__(
+        self,
+        status: str,
+        kind: str,
+        message: str,
+        *,
+        response: dict[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.kind = kind
+        self.response = response
+
+
+class RustAppStateRejectedError(RustAppStateError):
+    pass
+
+
 def _runtime_library_name() -> str:
     system = platform.system()
     if system == "Windows":
@@ -129,6 +148,8 @@ def _load_runtime_library(path: Path | None):
         library.bilikara_runtime_status_service.restype = ctypes.c_void_p
         library.bilikara_runtime_service.argtypes = [ctypes.c_char_p]
         library.bilikara_runtime_service.restype = ctypes.c_void_p
+        library.bilikara_runtime_app_state_request.argtypes = [ctypes.c_char_p]
+        library.bilikara_runtime_app_state_request.restype = ctypes.c_void_p
         library.bilikara_runtime_free_string.argtypes = [ctypes.c_void_p]
         library.bilikara_runtime_free_string.restype = None
         details["stage"] = "ready"
@@ -176,6 +197,7 @@ def runtime_status() -> dict[str, Any]:
             "frozen_bundle": _runtime_frozen_bundle,
         },
         "capabilities": {
+            "app_state": _runtime_lib is not None,
             "bilibili_service": _runtime_lib is not None,
             "cache_runtime": _runtime_lib is not None,
             "cloudflare_service": _runtime_lib is not None,
@@ -201,6 +223,112 @@ def media_backend_available() -> bool:
 
 def status_service_available() -> bool:
     return _runtime_lib is not None
+
+
+def app_state_available() -> bool:
+    return _runtime_lib is not None
+
+
+def app_state_request(command: str, **fields: Any) -> dict[str, Any]:
+    if _runtime_lib is None:
+        raise RustRuntimeUnavailableError(
+            _runtime_error or "Rust AppState runtime is unavailable"
+        )
+    request = {
+        "schema_version": 1,
+        "command": str(command),
+        **fields,
+    }
+    payload = json.dumps(
+        request,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    pointer = _runtime_lib.bilikara_runtime_app_state_request(payload)
+    if not pointer:
+        raise RustAppStateError(
+            "internal_error",
+            "no_response",
+            "Rust AppState returned no response",
+            response={},
+        )
+    try:
+        response_bytes = ctypes.string_at(pointer)
+    finally:
+        _runtime_lib.bilikara_runtime_free_string(pointer)
+    try:
+        response = json.loads(response_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RustAppStateError(
+            "internal_error",
+            "invalid_json",
+            "Rust AppState returned malformed JSON",
+            response={},
+        ) from exc
+    if not isinstance(response, dict) or response.get("schema_version") != 1:
+        raise RustAppStateError(
+            "internal_error",
+            "invalid_response",
+            "Rust AppState returned an invalid response",
+            response=response if isinstance(response, dict) else {},
+        )
+    status = response.get("status")
+    if status != "completed":
+        error = response.get("error") if isinstance(response.get("error"), dict) else {}
+        exception_type = (
+            RustAppStateRejectedError if status == "rejected" else RustAppStateError
+        )
+        raise exception_type(
+            str(status or "internal_error"),
+            str(error.get("kind") or "app_state_failed"),
+            str(error.get("message") or "Rust AppState request failed"),
+            response=response,
+        )
+    if (
+        not isinstance(response.get("committed"), bool)
+        or not isinstance(response.get("effects"), dict)
+        or not isinstance(response.get("result"), dict)
+    ):
+        raise RustAppStateError(
+            "internal_error",
+            "invalid_response",
+            "Rust AppState returned an invalid success response",
+            response=response,
+        )
+    effects = response["effects"]
+    required_effects = {
+        "write_core",
+        "write_session_played",
+        "write_backup",
+        "delete_backup",
+        "delete_runtime_files",
+    }
+    if not required_effects.issubset(effects) or any(
+        not isinstance(effects[key], bool) for key in required_effects
+    ):
+        raise RustAppStateError(
+            "internal_error",
+            "invalid_effects",
+            "Rust AppState returned invalid persistence effects",
+            response=response,
+        )
+    snapshot = response.get("snapshot")
+    persistence = response.get("persistence")
+    if snapshot is not None and not isinstance(snapshot, dict):
+        raise RustAppStateError(
+            "internal_error",
+            "invalid_snapshot",
+            "Rust AppState returned an invalid snapshot",
+            response=response,
+        )
+    if persistence is not None and not isinstance(persistence, dict):
+        raise RustAppStateError(
+            "internal_error",
+            "invalid_persistence",
+            "Rust AppState returned invalid persistence state",
+            response=response,
+        )
+    return response
 
 
 def cache_runtime_request(command: str, **fields: Any) -> dict[str, Any]:

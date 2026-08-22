@@ -370,36 +370,21 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.add_item(item, requester_name="")
         self.assertEqual(self.store.current_item.requester_name, "A")
 
-    def test_requester_cycle_state_retains_legacy_defaultdict_shape(self):
+    def test_playlist_projection_is_a_defensive_copy(self):
         _, counts, _ = self.store._requester_cycle_state_unlocked()
         self.assertIsInstance(counts, defaultdict)
         self.assertEqual(dict(counts), {})
+        self.add_item("current", requester_name="A")
+        self.add_item("queued", requester_name="B")
+        projected = self.store.playlist
+        projected[0].display_title = "mutated outside Rust"
+        projected.clear()
 
-        fixed_manual = self.make_item("manual")
-        fixed_manual.requester_name = "A"
-        fixed_manual.queue_slot_type = "manual"
-        fixed_priority = self.make_item("priority")
-        fixed_priority.requester_name = "B"
-        fixed_priority.queue_slot_type = "priority"
-        self.store.playlist = [fixed_manual, fixed_priority]
-        _, counts, _ = self.store._requester_cycle_state_unlocked()
-        self.assertEqual(dict(counts), {})
-
-        cycle_a1 = self.make_item("a1")
-        cycle_a1.requester_name = "A"
-        cycle_a2 = self.make_item("a2")
-        cycle_a2.requester_name = "A"
-        cycle_b1 = self.make_item("b1")
-        cycle_b1.requester_name = "B"
-        self.store.playlist = [cycle_a1]
-        _, counts, _ = self.store._requester_cycle_state_unlocked()
-        self.assertEqual(dict(counts), {"A": 1})
-
-        self.store.playlist = [cycle_a1, cycle_b1, cycle_a2]
-        _, counts, _ = self.store._requester_cycle_state_unlocked()
-        self.assertEqual(dict(counts), {"A": 2, "B": 1})
-        self.assertNotIn("missing", counts)
-        self.assertEqual(counts["missing"], 0)
+        authoritative = self.store.playlist
+        self.assertEqual([item.id for item in authoritative], ["queued"])
+        self.assertNotEqual(authoritative[0].display_title, "mutated outside Rust")
+        with self.assertRaises(AttributeError):
+            self.store.playlist = []
 
     def test_move_to_next(self):
         self.add_item("a", requester_name="A")
@@ -873,7 +858,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(found.id, "a")
         self.assertIsNot(found, self.store.current_item)
 
-    def test_playlist_rebuild_preserves_exact_python_object_identity(self):
+    def test_playlist_rebuild_refreshes_isolated_projection_objects(self):
         self.add_item("a1", requester_name="A")
         self.add_item("a2", requester_name="A")
         self.add_item("b1", requester_name="B")
@@ -884,15 +869,16 @@ class PlaylistStoreTest(unittest.TestCase):
 
         self.assertEqual([item.id for item in self.store.playlist], ["c1", "b1", "a2"])
         for item in self.store.playlist:
-            self.assertIs(item, original_objects[item.id])
+            self.assertIsNot(item, original_objects[item.id])
+            self.assertEqual(item.serialize(), original_objects[item.id].serialize())
 
-    def test_playlist_order_and_duplicate_use_complete_python_fallback(self):
+    def test_playlist_order_and_duplicate_are_internal_app_state_decisions(self):
         with patch(
-            "bilikara.store.rust_backend.try_plan_playlist_order",
-            return_value=(False, None),
+            "bilikara.rust_backend.try_plan_playlist_order",
+            side_effect=AssertionError("legacy playlist adapter must not run"),
         ), patch(
-            "bilikara.store.rust_backend.try_decide_playlist_duplicate",
-            return_value=(False, None),
+            "bilikara.rust_backend.try_decide_playlist_duplicate",
+            side_effect=AssertionError("legacy duplicate adapter must not run"),
         ):
             self.add_item("a1", requester_name="A", song_key="song-a")
             self.add_item("a2", requester_name="A", song_key="song-b")
@@ -1039,7 +1025,9 @@ class PlaylistStoreTest(unittest.TestCase):
         )
         self.assertEqual(restored_store.playlist, [])
         self.assertTrue(restored_store.backup_summary()["available"])
-        restored_store.current_item_started = True
+        self.assertFalse(restored_store.current_item_started)
+        with self.assertRaises(AttributeError):
+            restored_store.current_item_started = True
         self.assertTrue(restored_store.restore_backup())
         self.assertFalse(restored_store.current_item_started)
         self.assertEqual(restored_store.playback_mode, "local")

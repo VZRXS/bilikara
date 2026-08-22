@@ -14,7 +14,6 @@ PLAYBACK_RUST_CAPABILITIES = (
     "select_audio_stream",
     "select_preferred_audio_source",
     "plan_media_download_candidates",
-    "apply_av_delay_action",
 )
 
 T = TypeVar("T")

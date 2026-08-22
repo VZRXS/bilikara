@@ -63,7 +63,73 @@ class FakeServiceLibrary:
         return None
 
 
+class FakeAppStateLibrary:
+    def __init__(self, response: dict) -> None:
+        self.buffer = ctypes.create_string_buffer(json.dumps(response).encode("utf-8"))
+        self.request = None
+
+    def bilikara_runtime_app_state_request(self, payload):
+        self.request = json.loads(payload.decode("utf-8"))
+        return ctypes.addressof(self.buffer)
+
+    def bilikara_runtime_free_string(self, _pointer):
+        return None
+
+
 class RustRuntimeAdapterTest(unittest.TestCase):
+    def test_app_state_adapter_sends_one_strict_request_and_returns_full_result(self):
+        response = {
+            "schema_version": 1,
+            "status": "completed",
+            "committed": False,
+            "snapshot": {"revision": 7},
+            "persistence": {"updated_at": 1},
+            "effects": {
+                "write_core": False,
+                "write_session_played": False,
+                "write_backup": False,
+                "delete_backup": False,
+                "delete_runtime_files": False,
+            },
+            "result": {"snapshot": True},
+        }
+        library = FakeAppStateLibrary(response)
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            actual = rust_runtime.app_state_request("snapshot")
+
+        self.assertEqual(actual, response)
+        self.assertEqual(
+            library.request,
+            {"schema_version": 1, "command": "snapshot"},
+        )
+
+    def test_app_state_adapter_preserves_domain_rejection_without_fallback(self):
+        library = FakeAppStateLibrary(
+            {
+                "schema_version": 1,
+                "status": "rejected",
+                "error": {
+                    "kind": "duplicate_session_request",
+                    "message": "duplicate",
+                    "details": {"identity_key": "BV1:p1"},
+                },
+            }
+        )
+        with patch("bilikara.rust_runtime._runtime_lib", library):
+            with self.assertRaises(rust_runtime.RustAppStateRejectedError) as raised:
+                rust_runtime.app_state_request("add_item", item={})
+
+        self.assertEqual(raised.exception.kind, "duplicate_session_request")
+        self.assertEqual(
+            raised.exception.response["error"]["details"]["identity_key"],
+            "BV1:p1",
+        )
+
+    def test_app_state_adapter_fails_when_runtime_is_unavailable(self):
+        with patch("bilikara.rust_runtime._runtime_lib", None):
+            with self.assertRaises(rust_runtime.RustRuntimeUnavailableError):
+                rust_runtime.app_state_request("snapshot")
+
     def test_cache_runtime_adapter_sends_flattened_command(self):
         library = FakeServiceLibrary(
             {

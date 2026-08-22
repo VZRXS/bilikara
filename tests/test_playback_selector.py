@@ -179,11 +179,14 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
                 audio_variants=[{"id": "a", "audio_url": "/media/song/audio.m4a"}],
                 cache_status="ready",
             )
-            store.current_item = item
+            store.add_session_user("Singer")
+            store.add_item(item, requester_name="Singer")
             cache_file = root / "cache" / "song" / "video.mp4"
             cache_file.parent.mkdir(parents=True)
             cache_file.write_bytes(b"cached")
             before = store.snapshot()["current_item"]
+            before_revision = store.revision
+            context._state_revision = 0
 
             with patch(
                 "bilikara.playback_selector.rust_backend.backend_status",
@@ -195,6 +198,7 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
             self.assertEqual(after, before)
             self.assertEqual(cache_file.read_bytes(), b"cached")
             self.assertEqual(context._state_revision, 1)
+            self.assertEqual(store.revision, before_revision + 1)
 
     def test_read_only_snapshot_is_backend_free_and_exactly_equivalent(self):
         states = (
@@ -209,12 +213,12 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
         )
         with TemporaryDirectory() as tmpdir:
             store = self.make_store(Path(tmpdir))
-            store.playback_selector_mode = "rust"
+            store.set_playback_selector_mode("rust")
             with patch(
                 "bilikara.playback_selector.rust_backend.backend_status",
                 return_value=rust_status(available=True),
             ), patch(
-                "bilikara.store.rust_backend.try_apply_av_delay_action",
+                "bilikara.rust_backend.try_apply_av_delay_action",
                 side_effect=AssertionError(
                     "read-only snapshot must not invoke a playback backend"
                 ),
@@ -225,9 +229,13 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
                         local_delay=local_delay,
                         locked=locked,
                     ):
-                        store.av_global_delay_ms = global_delay
-                        store.av_local_delay_ms = local_delay
-                        store.av_delay_locked = locked
+                        store.set_av_offset_ms(global_delay if locked else 0)
+                        if not locked and global_delay:
+                            self.fail("unlocked test state cannot retain global delay")
+                        if local_delay:
+                            store.apply_av_delay_action(
+                                {"type": "adjust", "delta_ms": local_delay}
+                            )
                         expected = _py_apply_av_delay_action(
                             {
                                 "global_delay_ms": global_delay,
@@ -239,10 +247,10 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
                         actual = store.snapshot()["player_settings"]["av_delay"]
                         self.assertEqual(actual, expected)
 
-    def test_av_delay_availability_check_runs_outside_store_lock(self):
+    def test_av_delay_mutation_is_committed_only_by_app_state(self):
         with TemporaryDirectory() as tmpdir:
             store = self.make_store(Path(tmpdir))
-            store.playback_selector_mode = "rust"
+            store.set_playback_selector_mode("rust")
             native_result = _py_apply_av_delay_action(
                 {
                     "global_delay_ms": 0,
@@ -252,22 +260,17 @@ class PlaybackSelectorStoreTest(unittest.TestCase):
                 {"type": "adjust", "delta_ms": 125},
             )
 
-            def assert_outside_store_lock():
-                self.assertFalse(store.lock._is_owned())
-                return True, ""
-
+            before_revision = store.revision
             with patch(
-                "bilikara.playback_selector.rust_playback_availability",
-                side_effect=assert_outside_store_lock,
-            ), patch(
-                "bilikara.store.rust_backend.try_apply_av_delay_action",
-                return_value=(True, native_result),
+                "bilikara.rust_backend.try_apply_av_delay_action",
+                side_effect=AssertionError("AppState must not call the Python adapter"),
             ):
                 result = store.apply_av_delay_action(
                     {"type": "adjust", "delta_ms": 125}
                 )
 
             self.assertEqual(result, native_result)
+            self.assertEqual(store.revision, before_revision + 1)
 
 
 class PlaybackSelectorDispatchTest(unittest.TestCase):
@@ -353,41 +356,40 @@ class PlaybackSelectorDispatchTest(unittest.TestCase):
             self.assertEqual(observed, ["rust", "rust"])
             self.assertEqual(next_selector.mode, "python")
 
-    def test_non_playback_rust_dispatch_remains_unchanged(self):
+    def test_playlist_ordering_is_internal_to_app_state(self):
         with TemporaryDirectory() as tmpdir:
             store = PlaylistStore(
                 Path(tmpdir) / "state.json",
                 Path(tmpdir) / "backup.json",
                 Path(tmpdir) / "played",
             )
-            response = {
-                "schema_version": 1,
-                "status": "planned",
-                "ordered_ids": [],
-            }
             with patch(
-                "bilikara.store.rust_backend.try_plan_playlist_order",
-                return_value=(True, response),
+                "bilikara.rust_backend.try_plan_playlist_order",
+                side_effect=AssertionError("legacy planner adapter must not run"),
             ) as native_call:
-                store._plan_playlist_order_unlocked("rebuild")
-            native_call.assert_called_once()
+                store.add_session_user("A")
+                store.add_session_user("B")
+                store.add_item(
+                    PlaylistItem(
+                        id="a",
+                        original_url="https://example.test/a",
+                        resolved_url="https://example.test/a",
+                        bvid="BVA000000000",
+                        aid=1,
+                        cid=2,
+                        page=1,
+                        title="A",
+                        part_title="P1",
+                        display_title="A - P1",
+                        cover_url="",
+                        embed_url="",
+                    ),
+                    requester_name="A",
+                )
+            native_call.assert_not_called()
 
 
 class PlaybackSelectorAllCapabilityStrictRoutingTest(unittest.TestCase):
-    @staticmethod
-    def _apply_av_delay(selector: PlaybackSelector) -> dict[str, object]:
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            store = PlaylistStore(
-                root / "state.json", root / "backup.json", root / "played"
-            )
-            with patch.object(
-                store, "capture_playback_selector", return_value=selector
-            ):
-                return store.apply_av_delay_action(
-                    {"type": "adjust", "delta_ms": 125}
-                )
-
     @classmethod
     def _capability_cases(cls):
         pages = [VideoPage(page=1, cid=2, duration=60, part="single")]
@@ -467,10 +469,6 @@ class PlaybackSelectorAllCapabilityStrictRoutingTest(unittest.TestCase):
                 },
             ],
         }
-        av_delay_response = _py_apply_av_delay_action(
-            {"global_delay_ms": 0, "local_delay_ms": 0, "locked": False},
-            {"type": "adjust", "delta_ms": 125},
-        )
         return (
             {
                 "capability": "decide_audio_binding",
@@ -554,15 +552,6 @@ class PlaybackSelectorAllCapabilityStrictRoutingTest(unittest.TestCase):
                     "https://media.test/video.m4s",
                     "https://media.test/video-backup.m4s",
                 ],
-            },
-            {
-                "capability": "apply_av_delay_action",
-                "native_patch": "bilikara.store.rust_backend.try_apply_av_delay_action",
-                "native": rust_backend.try_apply_av_delay_action,
-                "python_patch": "bilikara.store._py_apply_av_delay_action",
-                "invoke": cls._apply_av_delay,
-                "native_response": av_delay_response,
-                "expected": av_delay_response,
             },
         )
 

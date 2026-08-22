@@ -1,9 +1,10 @@
 use bilikara_rust::{
     AvDelayAction, AvDelayState, DuplicateActiveItem, DuplicateHistoryEntry,
-    PersistedPlaybackSelectorMode, PlaybackSelectorMode, PlaylistDuplicateRequest,
-    PlaylistIdentity, PlaylistOrderItem, PlaylistOrderOperation, PlaylistOrderRequest,
-    PlaylistSlotType, decide_av_delay, decide_persisted_playback_selector_mode,
-    decide_playlist_duplicate, plan_playlist_order, validate_requested_playback_selector_mode,
+    PersistedPlaybackSelectorMode, PlaybackSelectorMode, PlaybackSelectorReason,
+    PlaylistDuplicateRequest, PlaylistIdentity, PlaylistOrderItem, PlaylistOrderOperation,
+    PlaylistOrderRequest, PlaylistSlotType, decide_av_delay,
+    decide_persisted_playback_selector_mode, decide_playlist_duplicate, plan_playlist_order,
+    validate_requested_playback_selector_mode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -234,6 +235,10 @@ pub struct AppStateSeed {
     pub playback_selector_mode: Option<String>,
     #[serde(default)]
     pub playback_selector_warning: String,
+    #[serde(default)]
+    pub playback_selector_rust_available: bool,
+    #[serde(default)]
+    pub playback_selector_availability_warning: String,
     #[serde(default)]
     pub player_settings: PlayerSettingsSeed,
     #[serde(default)]
@@ -554,6 +559,8 @@ pub enum AppStateRequest {
     },
     ContinuePreviousSession {
         schema_version: u32,
+        #[serde(default)]
+        archive: Option<SessionArchiveSeed>,
         now: f64,
     },
     BeginSession {
@@ -847,6 +854,7 @@ struct AppStateData {
     playback_mode: String,
     playback_selector_mode: String,
     playback_selector_warning: String,
+    playback_selector_rust_available: bool,
     player_settings: PlayerSettingsSeed,
     current_item: Option<PlaylistItem>,
     current_item_started: bool,
@@ -1191,18 +1199,42 @@ fn playback_selector_mode_string(value: PlaybackSelectorMode) -> String {
     }
 }
 
-fn normalized_persisted_selector(mode: Option<&str>) -> Result<String, ExecuteError> {
+fn normalized_persisted_selector(
+    mode: Option<&str>,
+    rust_available: bool,
+    availability_warning: &str,
+) -> Result<(String, String), ExecuteError> {
     let persisted = match mode {
         None => PersistedPlaybackSelectorMode::Unset,
         Some("python") => PersistedPlaybackSelectorMode::Explicit(PlaybackSelectorMode::Python),
         Some("rust") => PersistedPlaybackSelectorMode::Explicit(PlaybackSelectorMode::Rust),
         Some(_) => PersistedPlaybackSelectorMode::Invalid,
     };
-    let decision = decide_persisted_playback_selector_mode(persisted, true);
-    decision
+    let decision = decide_persisted_playback_selector_mode(persisted, rust_available);
+    let effective = decision
         .effective_mode
         .map(playback_selector_mode_string)
-        .ok_or_else(|| rejected("invalid_playback_selector", "playback selector has no mode"))
+        .ok_or_else(|| rejected("invalid_playback_selector", "playback selector has no mode"))?;
+    let warning = match decision.reason {
+        PlaybackSelectorReason::InvalidPersisted => format!(
+            "invalid persisted playback selector mode {:?}; using {}{}",
+            mode.unwrap_or_default(),
+            effective,
+            if effective == "python" && !availability_warning.is_empty() {
+                format!(" ({availability_warning})")
+            } else {
+                String::new()
+            }
+        ),
+        PlaybackSelectorReason::RustUnavailable if mode == Some("rust") => format!(
+            "persisted Rust playback mode is unavailable; using python ({availability_warning})"
+        ),
+        PlaybackSelectorReason::RustUnavailable => {
+            format!("Rust playback mode is unavailable; using python ({availability_warning})")
+        }
+        _ => String::new(),
+    };
+    Ok((effective, warning))
 }
 
 fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
@@ -1210,6 +1242,11 @@ fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
     validate_time(seed.session_started_at, "session_started_at")?;
     if !valid_string(&seed.playback_mode, MAX_STRING_BYTES, false)
         || !valid_string(&seed.playback_selector_warning, MAX_STRING_BYTES, true)
+        || !valid_string(
+            &seed.playback_selector_availability_warning,
+            MAX_STRING_BYTES,
+            true,
+        )
         || !valid_string(&seed.session_played_file, MAX_STRING_BYTES, false)
     {
         return Err(rejected(
@@ -1283,15 +1320,23 @@ fn validate_seed(seed: &AppStateSeed) -> Result<(), ExecuteError> {
 impl AppStateData {
     fn from_seed(seed: AppStateSeed) -> Result<Self, ExecuteError> {
         validate_seed(&seed)?;
-        let playback_selector_mode =
-            normalized_persisted_selector(seed.playback_selector_mode.as_deref())?;
+        let (playback_selector_mode, normalized_warning) = normalized_persisted_selector(
+            seed.playback_selector_mode.as_deref(),
+            seed.playback_selector_rust_available,
+            &seed.playback_selector_availability_warning,
+        )?;
         Ok(Self {
             revision: 1,
             session_generation: 1,
             playback_generation: 1,
             playback_mode: seed.playback_mode,
             playback_selector_mode,
-            playback_selector_warning: seed.playback_selector_warning,
+            playback_selector_warning: if normalized_warning.is_empty() {
+                seed.playback_selector_warning
+            } else {
+                normalized_warning
+            },
+            playback_selector_rust_available: seed.playback_selector_rust_available,
             player_settings: seed.player_settings,
             current_item: seed.current_item,
             current_item_started: seed.current_item_started,
@@ -1400,7 +1445,7 @@ impl AppStateData {
             playback_selector: PlaybackSelectorSnapshot {
                 mode: self.playback_selector_mode.clone(),
                 modes: ["python", "rust"],
-                rust_available: true,
+                rust_available: self.playback_selector_rust_available,
                 warning: self.playback_selector_warning.clone(),
             },
             player_settings: PlayerSettingsSnapshot {
@@ -2347,7 +2392,10 @@ fn apply_mutation(
         }
         AppStateRequest::SetPlaybackSelectorMode { mode, .. } => {
             let requested = playback_selector_mode_from_string(&mode);
-            let decision = validate_requested_playback_selector_mode(requested, true);
+            let decision = validate_requested_playback_selector_mode(
+                requested,
+                data.playback_selector_rust_available,
+            );
             let Some(effective) = decision.effective_mode else {
                 return Err(rejected(
                     "invalid_playback_selector",
@@ -2612,7 +2660,7 @@ fn apply_mutation(
             result.effects.delete_backup = true;
             Ok(result)
         }
-        AppStateRequest::ContinuePreviousSession { .. } => {
+        AppStateRequest::ContinuePreviousSession { archive, .. } => {
             if data.current_item.is_some()
                 || !data.playlist.is_empty()
                 || !data.session_played.is_empty()
@@ -2622,10 +2670,20 @@ fn apply_mutation(
             let Some(previous) = data.previous_session.take() else {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             };
-            if previous.items.is_empty() {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
+            let Some(archive) = archive else {
+                return Ok(MutationResult::changed(mutation_value(false), false));
+            };
+            validate_archive(&archive)?;
+            if archive.file_name != previous.file_name {
+                return Err(rejected(
+                    "previous_session_changed",
+                    "previous session archive identity changed",
+                ));
             }
-            replace_session_archive(data, &previous);
+            if archive.items.is_empty() {
+                return Ok(MutationResult::changed(mutation_value(false), false));
+            }
+            replace_session_archive(data, &archive);
             increment_session_generation(data)?;
             Ok(MutationResult::changed(mutation_value(true), false))
         }
@@ -3092,6 +3150,8 @@ mod tests {
             playback_mode: "local".to_owned(),
             playback_selector_mode: Some("rust".to_owned()),
             playback_selector_warning: String::new(),
+            playback_selector_rust_available: true,
+            playback_selector_availability_warning: String::new(),
             player_settings: PlayerSettingsSeed::default(),
             current_item: None,
             current_item_started: false,
@@ -3362,6 +3422,36 @@ mod tests {
         assert_eq!(restored.playlist[0].id, "queued");
         assert!(!restored.previous_session.available);
         assert_eq!(restored.session_played[0].item_id, "restored");
+    }
+
+    #[test]
+    fn playback_selector_initialization_uses_explicit_host_capability_facts() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.playback_selector_mode = Some("invalid".to_owned());
+        initial.playback_selector_rust_available = false;
+        initial.playback_selector_availability_warning = "missing playback policy".to_owned();
+        let initialized = initialize(&mut state, initial);
+        assert_eq!(initialized.playback_selector.mode, "python");
+        assert!(!initialized.playback_selector.rust_available);
+        assert!(
+            initialized
+                .playback_selector
+                .warning
+                .contains("missing playback policy")
+        );
+
+        let revision = initialized.revision;
+        let rejected = failure(state.execute(AppStateRequest::SetPlaybackSelectorMode {
+            schema_version: 1,
+            mode: "rust".to_owned(),
+            now: 11.0,
+        }));
+        assert_eq!(rejected.error.kind, "invalid_playback_selector");
+        let snapshot = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+            .snapshot
+            .expect("snapshot");
+        assert_eq!(snapshot.revision, revision);
     }
 
     #[test]
