@@ -1,3 +1,4 @@
+use crate::app_state::execute_app_state_json;
 use crate::bilibili_service::{
     BilibiliDashRequest, BilibiliRedirectRequest, fetch_dash_playurl, resolve_redirect,
 };
@@ -132,6 +133,32 @@ static STATUS_SERVICE: OnceLock<Mutex<RuntimeStatusService>> = OnceLock::new();
 #[unsafe(no_mangle)]
 pub extern "C" fn bilikara_runtime_abi_version() -> u32 {
     RUNTIME_ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `request_json` must point to a valid null-terminated UTF-8 AppState request.
+pub unsafe extern "C" fn bilikara_runtime_app_state_request(
+    request_json: *const c_char,
+) -> *mut c_char {
+    let encoded = catch_unwind(AssertUnwindSafe(|| {
+        if request_json.is_null() {
+            return "{\"schema_version\":1,\"status\":\"invalid_request\",\"error\":{\"kind\":\"null_request\",\"message\":\"AppState request pointer is null\"}}".to_owned();
+        }
+        // SAFETY: This C ABI entrypoint requires a valid null-terminated UTF-8 string.
+        match unsafe { CStr::from_ptr(request_json) }.to_str() {
+            Ok(request_text) => execute_app_state_json(request_text),
+            Err(_) => "{\"schema_version\":1,\"status\":\"invalid_request\",\"error\":{\"kind\":\"invalid_utf8\",\"message\":\"AppState request is not UTF-8\"}}".to_owned(),
+        }
+    }))
+    .unwrap_or_else(|_| {
+        "{\"schema_version\":1,\"status\":\"internal_error\",\"error\":{\"kind\":\"panic\",\"message\":\"Rust AppState request panicked\"}}".to_owned()
+    });
+    CString::new(encoded)
+        .ok()
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// # Safety
