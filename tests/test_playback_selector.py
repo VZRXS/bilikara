@@ -882,7 +882,7 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
                     }
 
                 manager._download_selected_streams = fake_download_selected_streams
-                manager.store.update_item = lambda *args, **kwargs: None
+                manager.store.apply_cache_event = lambda *args, **kwargs: True
                 manager._record_item_activity = lambda *args, **kwargs: None
                 manager._append_log_line = lambda *args, **kwargs: None
                 manager._clear_item_download_progress = lambda *args, **kwargs: None

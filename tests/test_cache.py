@@ -1598,6 +1598,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertEqual(refreshed.cache_status, "pending")
                 self.assertEqual(refreshed.video_media_url, "")
                 self.assertEqual(refreshed.audio_variants, [])
+                self.assertEqual(refreshed.selected_audio_variant_id, "")
                 self.assertFalse(item_dir.exists())
                 enqueue_mock.assert_called_once_with("song-a")
             finally:
@@ -2092,6 +2093,107 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertEqual(cached.cache_status, "ready")
                 self.assertTrue(should_resync)
                 sync_mock.assert_not_called()
+            finally:
+                manager.shutdown()
+
+    def test_python_cache_lifecycle_uses_typed_appstate_events(self):
+        item = self.make_item("song-python-events")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                    manager.python_worker_download_sources[item.id] = (
+                        DOWNLOAD_SOURCE_BBDOWN
+                    )
+
+                projected_events: list[tuple[int, dict[str, object]]] = []
+                apply_cache_event = self.store.apply_cache_event
+
+                def record_event(
+                    item_id: str,
+                    *,
+                    generation: int,
+                    event: dict[str, object],
+                ) -> bool:
+                    projected_events.append((generation, dict(event)))
+                    return apply_cache_event(
+                        item_id,
+                        generation=generation,
+                        event=event,
+                    )
+
+                cache_result = {
+                    "video_file": self.cache_dir / item.id / "video.mp4",
+                    "video_relative_path": f"{item.id}/video.mp4",
+                    "video_media_url": f"/media/{item.id}/video.mp4",
+                    "audio_variants": [
+                        {
+                            "id": "p1",
+                            "label": "P1",
+                            "audio_url": f"/media/{item.id}/audio.m4a",
+                        }
+                    ],
+                    "selected_audio_variant_id": "p1",
+                    "validation_files": [],
+                }
+
+                def download_with_progress(*_args, **_kwargs):
+                    manager._project_cache_progress(
+                        item.id,
+                        progress=42.0,
+                        message="BBDown 缓存中 42%",
+                    )
+                    return cache_result
+
+                with patch.object(
+                    self.store,
+                    "apply_cache_event",
+                    side_effect=record_event,
+                ), patch.object(
+                    self.store,
+                    "update_item",
+                    side_effect=AssertionError("generic item patch used by cache worker"),
+                ), patch.object(
+                    manager,
+                    "_ensure_downloader",
+                    return_value=Path("BBDown"),
+                ), patch.object(
+                    manager,
+                    "_ensure_ffmpeg",
+                    return_value=Path("ffmpeg"),
+                ), patch.object(
+                    manager,
+                    "_download_selected_streams",
+                    side_effect=download_with_progress,
+                ), patch.object(manager, "_validate_cache_result"):
+                    self.assertTrue(
+                        manager._cache_item_multi(
+                            item.id,
+                            item,
+                            allow_refresh_retry=False,
+                        )
+                    )
+
+                self.assertEqual(
+                    [event["kind"] for _, event in projected_events],
+                    ["queued", "started", "progress", "ready"],
+                )
+                self.assertEqual(
+                    [generation for generation, _ in projected_events],
+                    [0, 0, 0, 0],
+                )
+                cached = self.store.get_item(item.id)
+                self.assertEqual(cached.cache_status, "ready")
+                self.assertEqual(cached.video_relative_path, f"{item.id}/video.mp4")
+                self.assertEqual(cached.selected_audio_variant_id, "p1")
             finally:
                 manager.shutdown()
 

@@ -382,6 +382,8 @@ pub enum CacheEvent {
     },
     Reset {
         message: String,
+        #[serde(default)]
+        clear_selected_audio_variant: bool,
     },
 }
 
@@ -2055,13 +2057,22 @@ fn apply_cache_event(
         }
         CacheEvent::Cancelled { message }
         | CacheEvent::Evicted { message }
-        | CacheEvent::Reset { message } => {
+        | CacheEvent::Reset { message, .. } => {
             item.cache_status = "pending".to_owned();
             item.cache_progress = 0.0;
             item.cache_message.clone_from(message);
             item.video_relative_path.clear();
             item.video_media_url.clear();
             item.audio_variants.clear();
+            if matches!(
+                event,
+                CacheEvent::Reset {
+                    clear_selected_audio_variant: true,
+                    ..
+                }
+            ) {
+                item.selected_audio_variant_id.clear();
+            }
         }
     }
     validate_item(item)?;

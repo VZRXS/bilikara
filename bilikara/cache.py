@@ -354,6 +354,43 @@ class CacheManager:
         with self.native_cache_call_lock:
             return rust_runtime.cache_runtime_request(command, **fields)
 
+    def _project_cache_event(
+        self,
+        item_id: str,
+        kind: str,
+        *,
+        generation: int = 0,
+        **fields: Any,
+    ) -> bool:
+        return self.store.apply_cache_event(
+            item_id,
+            generation=max(0, int(generation)),
+            event={"kind": str(kind), **fields},
+        )
+
+    def _project_cache_progress(
+        self,
+        item_id: str,
+        *,
+        progress: object | None = None,
+        message: object | None = None,
+        generation: int = 0,
+    ) -> bool:
+        if progress is None:
+            item = self.store.get_item(item_id)
+            progress = item.cache_progress if item is not None else 0.0
+        event: dict[str, Any] = {
+            "progress": float(progress),
+        }
+        if message is not None:
+            event["message"] = str(message)
+        return self._project_cache_event(
+            item_id,
+            "progress",
+            generation=generation,
+            **event,
+        )
+
     def _ensure_native_cache_runtime(self) -> None:
         with self.lock:
             if self.native_cache_started:
@@ -481,12 +518,11 @@ class CacheManager:
             return
 
         if kind == "queued":
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="queued",
-                cache_progress=0.0,
-                cache_message="等待 Rust 缓存队列",
-                persist_backup=False,
+                "queued",
+                generation=generation,
+                message="等待 Rust 缓存队列",
             )
         elif kind == "started":
             tracks = payload.get("tracks")
@@ -497,17 +533,13 @@ class CacheManager:
             }
             with self.lock:
                 self.item_download_progress[item_id] = normalized_tracks
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="downloading",
-                cache_progress=0.0,
-                cache_message=self._cache_start_message(item),
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                persist_backup=False,
+                "started",
+                generation=generation,
+                message=self._cache_start_message(item),
             )
-            self._publish_download_progress(item_id)
+            self._publish_download_progress(item_id, generation=generation)
         elif kind == "progress":
             track = payload.get("track")
             if not isinstance(track, dict):
@@ -518,50 +550,48 @@ class CacheManager:
             with self.lock:
                 tracks = self.item_download_progress.setdefault(item_id, {})
                 tracks[track_key] = dict(track)
-            self.store.update_item(
-                item_id,
-                cache_status="downloading",
-                persist_backup=False,
-            )
-            self._publish_download_progress(item_id)
+            self._publish_download_progress(item_id, generation=generation)
         elif kind == "ready":
             variants = payload.get("audio_variants")
             if not isinstance(variants, list) or not variants:
-                self._mark_native_cache_failed(item_id, "Rust 缓存结果缺少音轨")
+                self._mark_native_cache_failed(
+                    item_id,
+                    "Rust 缓存结果缺少音轨",
+                    generation=generation,
+                )
                 if sequence > 0:
                     with self.lock:
                         self.native_cache_terminal_sequences[item_id] = sequence
                 return
             self._clear_item_download_progress(item_id)
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="ready",
-                cache_progress=100.0,
-                cache_message=self._ready_message(item),
+                "ready",
+                generation=generation,
+                progress=100.0,
+                message=self._ready_message(item),
                 video_relative_path=str(payload.get("video_relative_path") or ""),
                 video_media_url=str(payload.get("video_media_url") or ""),
-                audio_variants=[dict(variant) for variant in variants if isinstance(variant, dict)],
+                audio_variants=[
+                    dict(variant) for variant in variants if isinstance(variant, dict)
+                ],
                 selected_audio_variant_id=str(
                     payload.get("selected_audio_variant_id") or ""
                 ),
-                persist_backup=False,
             )
         elif kind == "failed":
             self._mark_native_cache_failed(
                 item_id,
                 str(payload.get("message") or "Rust 缓存任务失败"),
+                generation=generation,
             )
         elif kind in {"cancelled", "evicted"}:
             self._clear_item_download_progress(item_id)
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="pending",
-                cache_progress=0.0,
-                cache_message=str(payload.get("reason") or self._outside_window_message()),
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                persist_backup=False,
+                kind,
+                generation=generation,
+                message=str(payload.get("reason") or self._outside_window_message()),
             )
         else:
             return
@@ -573,13 +603,15 @@ class CacheManager:
                 )
         self._record_item_activity(item_id)
 
-    def _mark_native_cache_failed(self, item_id: str, message: str) -> None:
+    def _mark_native_cache_failed(
+        self, item_id: str, message: str, *, generation: int = 0
+    ) -> None:
         self._clear_item_download_progress(item_id)
-        self.store.update_item(
+        self._project_cache_event(
             item_id,
-            cache_status="failed",
-            cache_message=f"缓存失败: {message}",
-            persist_backup=False,
+            "failed",
+            generation=generation,
+            message=f"缓存失败: {message}",
         )
         self._record_item_activity(item_id)
 
@@ -1143,15 +1175,10 @@ class CacheManager:
         for item in items:
             if item.cache_status != "ready" or self._item_cache_ready(item):
                 continue
-            self.store.update_item(
+            self._project_cache_event(
                 item.id,
-                cache_status="pending",
-                cache_progress=0.0,
-                cache_message="缓存文件已清空，等待重新缓存",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                persist_backup=False,
+                "evicted",
+                message="缓存文件已清空，等待重新缓存",
             )
             self._record_item_activity(item.id)
             invalidated_ids.append(item.id)
@@ -1478,15 +1505,10 @@ class CacheManager:
             self.desired_ids.clear()
             self.ordered_desired_ids.clear()
         for item in self.store.list_items():
-            self.store.update_item(
+            self._project_cache_event(
                 item.id,
-                cache_status="pending",
-                cache_progress=0.0,
-                cache_message=self._waiting_message(),
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                persist_backup=False,
+                "reset",
+                message=self._waiting_message(),
             )
             self._record_item_activity(item.id)
         self.sync_with_playlist()
@@ -1544,15 +1566,10 @@ class CacheManager:
             self.native_cache_terminal_sequences.clear()
             self.native_cache_snapshot.clear()
         for item in self.store.list_items():
-            self.store.update_item(
+            self._project_cache_event(
                 item.id,
-                cache_status="pending",
-                cache_progress=0.0,
-                cache_message="缓存已在退出时清空",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                persist_backup=False,
+                "cancelled",
+                message="缓存已在退出时清空",
             )
             self._record_item_activity(item.id)
 
@@ -1627,15 +1644,10 @@ class CacheManager:
                 and primary_active_item_id
                 and primary_active_item_id != item_id
             )
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="pending",
-                cache_progress=0.0,
-                cache_message="准备重新下载",
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                persist_backup=False,
+                "reset",
+                message="准备重新下载",
             )
             self._record_item_activity(item_id)
             try:
@@ -1686,15 +1698,10 @@ class CacheManager:
             if preempted_item_id:
                 self.cache_interrupted_messages[preempted_item_id] = "等待当前歌曲重新下载"
 
-        self.store.update_item(
+        self._project_cache_event(
             item_id,
-            cache_status="pending",
-            cache_progress=0.0,
-            cache_message="准备重新下载",
-            video_relative_path="",
-            video_media_url="",
-            audio_variants=[],
-            persist_backup=False,
+            "reset",
+            message="准备重新下载",
         )
         self._record_item_activity(item_id)
 
@@ -1999,11 +2006,10 @@ class CacheManager:
                     log_path,
                     f"[{self._log_timestamp()}] Unexpected urgent-cache error: {exc}",
                 )
-                self.store.update_item(
+                self._project_cache_event(
                     item_id,
-                    cache_status="failed",
-                    cache_message=f"缓存发生意外错误: {exc}",
-                    persist_backup=False,
+                    "failed",
+                    message=f"缓存发生意外错误: {exc}",
                 )
             except Exception:
                 pass
@@ -2143,11 +2149,10 @@ class CacheManager:
                     except Exception:
                         pass
                     try:
-                        self.store.update_item(
+                        self._project_cache_event(
                             item_id,
-                            cache_status="failed",
-                            cache_message=f"缓存发生意外错误: {exc}",
-                            persist_backup=False,
+                            "failed",
+                            message=f"缓存发生意外错误: {exc}",
                         )
                     except Exception:
                         pass
@@ -2201,12 +2206,10 @@ class CacheManager:
         playback_selector: PlaybackSelector | None = None,
     ) -> bool:
         self._clear_item_download_progress(item_id)
-        self.store.update_item(
+        self._project_cache_event(
             item_id,
-            cache_status="queued",
-            cache_progress=0.0,
-            cache_message="等待缓存队列",
-            persist_backup=False,
+            "queued",
+            message="等待缓存队列",
         )
         self._record_item_activity(item_id)
 
@@ -2228,11 +2231,10 @@ class CacheManager:
                     log_path,
                     f"[{self._log_timestamp()}] Rust runtime unavailable: {message}",
                 )
-                self.store.update_item(
+                self._project_cache_event(
                     item_id,
-                    cache_status="failed",
-                    cache_message=f"Rust Native 不可用: {message}",
-                    persist_backup=False,
+                    "failed",
+                    message=f"Rust Native 不可用: {message}",
                 )
                 return False
             binary_path = Path()
@@ -2242,11 +2244,10 @@ class CacheManager:
                 binary_path = self._ensure_downloader(download_source)
             except Exception as exc:  # noqa: BLE001
                 label = self._download_source_label(download_source)
-                self.store.update_item(
+                self._project_cache_event(
                     item_id,
-                    cache_status="failed",
-                    cache_message=f"{label} 不可用: {exc}",
-                    persist_backup=False,
+                    "failed",
+                    message=f"{label} 不可用: {exc}",
                 )
                 return False
             try:
@@ -2256,22 +2257,20 @@ class CacheManager:
                     log_path,
                     f"[{self._log_timestamp()}] ffmpeg unavailable: {exc}",
                 )
-                self.store.update_item(
+                self._project_cache_event(
                     item_id,
-                    cache_status="failed",
-                    cache_message=f"FFmpeg 不可用: {exc}",
-                    persist_backup=False,
+                    "failed",
+                    message=f"FFmpeg 不可用: {exc}",
                 )
                 return False
 
         if not self._should_cache(item_id):
             return False
 
-        self.store.update_item(
+        self._project_cache_event(
             item_id,
-            cache_status="downloading",
-            cache_message=self._cache_start_message(item),
-            persist_backup=False,
+            "started",
+            message=self._cache_start_message(item),
         )
         self._record_item_activity(item_id)
 
@@ -2351,11 +2350,10 @@ class CacheManager:
             self._clear_item_download_progress(item_id)
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="failed",
-                cache_message=f"缓存失败: {last_message}",
-                persist_backup=False,
+                "failed",
+                message=f"缓存失败: {last_message}",
             )
             self._record_item_activity(item_id)
             return False
@@ -2372,27 +2370,25 @@ class CacheManager:
             self._clear_item_download_progress(item_id)
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="failed",
-                cache_message=f"缓存失败: {last_message}",
-                persist_backup=False,
+                "failed",
+                message=f"缓存失败: {last_message}",
             )
             self._record_item_activity(item_id)
             return False
 
         video_file = cache_result["video_file"]
         self._clear_item_download_progress(item_id)
-        self.store.update_item(
+        self._project_cache_event(
             item_id,
-            cache_status="ready",
-            cache_progress=100.0,
-            cache_message=self._ready_message(item),
+            "ready",
+            progress=100.0,
+            message=self._ready_message(item),
             video_relative_path=cache_result["video_relative_path"],
             video_media_url=cache_result["video_media_url"],
             audio_variants=cache_result["audio_variants"],
             selected_audio_variant_id=cache_result["selected_audio_variant_id"],
-            persist_backup=False,
         )
         self._record_item_activity(item_id)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {video_file.name}")
@@ -2733,11 +2729,10 @@ class CacheManager:
                 )
             )
 
-        self.store.update_item(
+        self._project_cache_progress(
             item.id,
-            cache_progress=99.0,
-            cache_message=f"准备 {len(audio_files)} 条音轨",
-            persist_backup=False,
+            progress=99.0,
+            message=f"准备 {len(audio_files)} 条音轨",
         )
         self._record_item_activity(item.id)
 
@@ -4664,16 +4659,11 @@ class CacheManager:
                     self.retry_requested_ids.add(item_id)
 
         for item_id in item_ids:
-            self.store.update_item(
+            self._project_cache_event(
                 item_id,
-                cache_status="pending",
-                cache_progress=0.0,
-                cache_message=message,
-                video_relative_path="",
-                video_media_url="",
-                audio_variants=[],
-                selected_audio_variant_id="",
-                persist_backup=False,
+                "reset",
+                message=message,
+                clear_selected_audio_variant=True,
             )
             self._record_item_activity(item_id)
             if item_id == active_item_id or item_id in pending_ids:
@@ -5310,11 +5300,10 @@ class CacheManager:
             )
             return
 
-        self.store.update_item(
+        self._project_cache_progress(
             item_id,
-            cache_progress=99.5,
-            cache_message="正在校验缓存",
-            persist_backup=False,
+            progress=99.5,
+            message="正在校验缓存",
         )
         self._record_item_activity(item_id)
         self._append_log_line(
@@ -6031,7 +6020,7 @@ class CacheManager:
                 track["target_bytes"] = int(track.get("current_bytes") or 0)
         self._publish_download_progress(item_id)
 
-    def _publish_download_progress(self, item_id: str) -> None:
+    def _publish_download_progress(self, item_id: str, *, generation: int = 0) -> None:
         with self.lock:
             tracks_by_key = self.item_download_progress.get(item_id) or {}
             tracks = [dict(track) for track in tracks_by_key.values()]
@@ -6070,7 +6059,12 @@ class CacheManager:
             if self.item_stage_progress_signatures.get(item_id) == signature:
                 return
             self.item_stage_progress_signatures[item_id] = signature
-        self.store.update_item(item_id, persist_backup=False, **changes)
+        self._project_cache_progress(
+            item_id,
+            progress=changes.get("cache_progress"),
+            message=changes["cache_message"],
+            generation=generation,
+        )
         self._record_item_activity(item_id)
 
     @classmethod
@@ -6204,7 +6198,11 @@ class CacheManager:
             if self.item_stage_progress_signatures.get(item_id) == signature:
                 return
             self.item_stage_progress_signatures[item_id] = signature
-        self.store.update_item(item_id, persist_backup=False, **changes)
+        self._project_cache_progress(
+            item_id,
+            progress=changes.get("cache_progress"),
+            message=changes["cache_message"],
+        )
         self._record_item_activity(item_id)
 
     def _monitor_structured_stage_progress(
@@ -8001,15 +7999,15 @@ class CacheManager:
         if item.cache_status == "failed":
             return
         if self._item_cache_ready(item):
-            self.store.update_item(
+            self._project_cache_event(
                 item.id,
+                "ready",
+                progress=100.0,
+                message="缓存已完成",
+                video_relative_path=item.video_relative_path,
                 video_media_url=self._build_media_url(item.video_relative_path) if item.video_relative_path else "",
                 audio_variants=item.audio_variants,
                 selected_audio_variant_id=item.selected_audio_variant_id,
-                cache_status="ready",
-                cache_progress=100.0,
-                cache_message="缓存已完成",
-                persist_backup=False,
             )
             return
 
@@ -8018,15 +8016,10 @@ class CacheManager:
         if already_in_flight:
             return
 
-        self.store.update_item(
+        self._project_cache_event(
             item.id,
-            cache_status="pending",
-            cache_progress=0.0,
-            cache_message="等待缓存",
-            video_relative_path="",
-            video_media_url="",
-            audio_variants=[],
-            persist_backup=False,
+            "reset",
+            message="等待缓存",
         )
         self._record_item_activity(item.id)
         self.enqueue(item.id)
@@ -8034,15 +8027,10 @@ class CacheManager:
     def _drop_item_cache(self, item_id: str, message: str) -> None:
         self._clear_item_download_progress(item_id)
         self._remove_cache_dir(item_id)
-        self.store.update_item(
+        self._project_cache_event(
             item_id,
-            cache_status="pending",
-            cache_progress=0.0,
-            cache_message=message,
-            video_relative_path="",
-            video_media_url="",
-            audio_variants=[],
-            persist_backup=False,
+            "cancelled",
+            message=message,
         )
         self._record_item_activity(item_id)
 
