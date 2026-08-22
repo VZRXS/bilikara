@@ -423,9 +423,16 @@ class CacheManager:
         with self.lock:
             self.native_cache_snapshot = dict(snapshot)
             if self.download_source == DOWNLOAD_SOURCE_NATIVE:
-                self.active_item_id = primary_id or None
-                self.pending_ids = pending_ids | active_ids
-                self.urgent_cache_ids = urgent_ids
+                python_owned_ids = set(self.python_worker_download_sources)
+                python_active_id = (
+                    self.active_item_id
+                    if self.active_item_id in python_owned_ids
+                    else None
+                )
+                python_urgent_ids = self.urgent_cache_ids & python_owned_ids
+                self.active_item_id = python_active_id or primary_id or None
+                self.pending_ids = pending_ids | active_ids | python_owned_ids
+                self.urgent_cache_ids = urgent_ids | python_urgent_ids
         for event in terminal_events:
             self._apply_native_cache_event(event)
 
@@ -456,6 +463,19 @@ class CacheManager:
                     return
                 if not expected_generation or generation > expected_generation:
                     self.native_cache_generations[item_id] = generation
+            matching_native_terminal = bool(
+                terminal
+                and generation > 0
+                and self.native_cache_generations.get(item_id) == generation
+            )
+            if (
+                matching_native_terminal
+                and item_id not in self.python_worker_download_sources
+            ):
+                self.pending_ids.discard(item_id)
+                self.urgent_cache_ids.discard(item_id)
+                if self.active_item_id == item_id:
+                    self.active_item_id = None
         item = self.store.get_item(item_id)
         if not item:
             return
@@ -1448,7 +1468,7 @@ class CacheManager:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
             self.item_download_progress.clear()
-            getattr(self, "python_worker_download_sources", {}).clear()
+            self.python_worker_download_sources.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
             self.pending_ids.clear()
@@ -1512,7 +1532,7 @@ class CacheManager:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
             self.item_download_progress.clear()
-            getattr(self, "python_worker_download_sources", {}).clear()
+            self.python_worker_download_sources.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
             self.urgent_cache_ids.clear()
@@ -1560,7 +1580,7 @@ class CacheManager:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
             self.item_download_progress.clear()
-            getattr(self, "python_worker_download_sources", {}).clear()
+            self.python_worker_download_sources.clear()
             self.active_process = None
             self.active_processes.clear()
             self.active_process_item_ids.clear()
@@ -1817,9 +1837,7 @@ class CacheManager:
         desired_ids = set(plan.desired_ids)
         retained_ids = set(plan.retained_ids)
         with self.lock:
-            python_owned_ids = set(
-                getattr(self, "python_worker_download_sources", {})
-            )
+            python_owned_ids = set(self.python_worker_download_sources)
         jobs: list[dict[str, Any]] = []
         for item in items:
             if (
@@ -1902,7 +1920,18 @@ class CacheManager:
         self._apply_cache_plan_priority(items, priority_plan)
 
     def enqueue(self, item_id: str) -> None:
-        if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
+        with self.lock:
+            download_source = self.download_source
+            if download_source != DOWNLOAD_SOURCE_NATIVE:
+                if (
+                    item_id in self.pending_ids
+                    or item_id in self.urgent_cache_ids
+                    or self.stop_event.is_set()
+                ):
+                    return
+                self.pending_ids.add(item_id)
+                self.python_worker_download_sources[item_id] = download_source
+        if download_source == DOWNLOAD_SOURCE_NATIVE:
             item = self.store.get_item(item_id)
             if not item:
                 return
@@ -1922,14 +1951,6 @@ class CacheManager:
             except Exception as exc:  # noqa: BLE001
                 self._mark_native_cache_failed(item_id, str(exc))
             return
-        with self.lock:
-            if (
-                item_id in self.pending_ids
-                or item_id in self.urgent_cache_ids
-                or self.stop_event.is_set()
-            ):
-                return
-            self.pending_ids.add(item_id)
         self.tasks.put(item_id)
 
     def _remove_queued_item(self, item_id: str) -> None:
@@ -1951,11 +1972,9 @@ class CacheManager:
         with self.lock:
             if self.stop_event.is_set() or item_id in self.urgent_cache_ids:
                 return
-            worker_sources = getattr(self, "python_worker_download_sources", None)
-            if worker_sources is None:
-                worker_sources = {}
-                self.python_worker_download_sources = worker_sources
-            worker_sources.setdefault(item_id, self._current_download_source())
+            self.python_worker_download_sources.setdefault(
+                item_id, self.download_source
+            )
             self.urgent_cache_ids.add(item_id)
             self.pending_ids.add(item_id)
             worker = threading.Thread(
@@ -1993,7 +2012,7 @@ class CacheManager:
                 self.urgent_cache_ids.discard(item_id)
                 self.urgent_workers.pop(item_id, None)
                 self.pending_ids.discard(item_id)
-                getattr(self, "python_worker_download_sources", {}).pop(item_id, None)
+                self.python_worker_download_sources.pop(item_id, None)
         if should_resync and not self.stop_event.is_set():
             self.sync_with_playlist()
 
@@ -2016,6 +2035,9 @@ class CacheManager:
 
             ordered = [item_id]
             self.pending_ids.add(item_id)
+            self.python_worker_download_sources.setdefault(
+                item_id, self.download_source
+            )
             if requeue_after and requeue_after != item_id and requeue_after in self.desired_ids:
                 ordered.append(requeue_after)
                 self.pending_ids.add(requeue_after)
@@ -2044,6 +2066,7 @@ class CacheManager:
                     drained.append(queued_id)
                 else:
                     self.pending_ids.discard(queued_id)
+                    self.python_worker_download_sources.pop(queued_id, None)
                 self.tasks.task_done()
 
             drained_set = set(drained)
@@ -2107,13 +2130,6 @@ class CacheManager:
                 try:
                     with self.lock:
                         self.active_item_id = item_id
-                        worker_sources = getattr(
-                            self, "python_worker_download_sources", None
-                        )
-                        if worker_sources is None:
-                            worker_sources = {}
-                            self.python_worker_download_sources = worker_sources
-                        worker_sources.setdefault(item_id, self._current_download_source())
                     should_resync = self._cache_item(item_id)
                 except Exception as exc:  # noqa: BLE001
                     _debug_print(f"[bilikara-cache] Unexpected error caching item {item_id}: {exc}")
@@ -2152,7 +2168,7 @@ class CacheManager:
                         self.requeued_active_ids.discard(item_id)
                     else:
                         self.pending_ids.discard(item_id)
-                    getattr(self, "python_worker_download_sources", {}).pop(item_id, None)
+                        self.python_worker_download_sources.pop(item_id, None)
                 self.tasks.task_done()
             if should_resync and not self.stop_event.is_set():
                 self.sync_with_playlist()
@@ -2197,13 +2213,7 @@ class CacheManager:
         item_dir = CACHE_DIR / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
         with self.lock:
-            worker_sources = getattr(self, "python_worker_download_sources", None)
-            if worker_sources is None:
-                worker_sources = {}
-                self.python_worker_download_sources = worker_sources
-            download_source = worker_sources.setdefault(
-                item_id, self._current_download_source()
-            )
+            download_source = self.python_worker_download_sources[item_id]
         if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
             self._cleanup_attempt_dirs(item_dir)
         log_path = self._item_log_path(item_id, download_source)

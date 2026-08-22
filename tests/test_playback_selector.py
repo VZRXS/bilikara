@@ -809,6 +809,10 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
         manager.active_process = None
         manager.requeued_active_ids = set()
         manager.pending_ids = {"bad", "good"}
+        manager.python_worker_download_sources = {
+            "bad": "bbdown",
+            "good": "bbdown",
+        }
         captured = []
 
         def capture_playback_selector():
@@ -863,6 +867,7 @@ class PlaybackSelectorWorkerTest(unittest.TestCase):
                 manager.avc_quality_cap = ""
                 manager.audio_hires = True
                 manager.download_source = "native"
+                manager.python_worker_download_sources = {"song": "native"}
                 manager._item_log_path = lambda item_id, source: Path("/tmp/song.log")
 
                 item = SimpleNamespace(

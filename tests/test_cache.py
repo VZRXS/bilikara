@@ -529,6 +529,236 @@ class CacheManagerPolicyTest(unittest.TestCase):
             [future.id],
         )
 
+    def test_python_queue_captures_source_before_native_switch(self):
+        worker_loop = CacheManager._worker_loop
+        queued = self.make_item("song-python-queued")
+        future = self.make_item("song-native-future")
+        for item in (queued, future):
+            item.selected_pages = [1]
+            item.selected_cids = [456]
+            item.selected_durations = [120]
+            self.store.add_item(item, requester_name="cache-test-user")
+        plan = CachePlan(
+            desired_ids=(queued.id, future.id),
+            pending_order=(queued.id, future.id),
+            retained_ids=(queued.id, future.id),
+            preempt_ids=(),
+        )
+        calls = []
+
+        def runtime_request(command, **fields):
+            calls.append((command, fields))
+            if command == "sync":
+                return {
+                    "generations": {future.id: 1},
+                    "snapshot": {
+                        "primary_active_item_id": None,
+                        "active_item_ids": [],
+                        "urgent_item_ids": [],
+                        "pending_ids": [future.id],
+                    },
+                }
+            if command == "submit":
+                return {"generation": 2}
+            return {"events": [], "snapshot": {}}
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                manager.enqueue(queued.id)
+                self.assertEqual(
+                    manager.python_worker_download_sources[queued.id],
+                    DOWNLOAD_SOURCE_BBDOWN,
+                )
+
+                manager.set_cache_policy(download_source=DOWNLOAD_SOURCE_NATIVE)
+                with patch.object(
+                    manager,
+                    "_stable_cache_plan_snapshot",
+                    return_value=(plan, manager._cache_priority_state()),
+                ), patch.object(manager, "_ensure_native_cache_runtime"), patch.object(
+                    manager, "_native_cache_request", side_effect=runtime_request
+                ):
+                    manager.sync_with_playlist()
+
+                    executed_sources = []
+
+                    def execute_python_item(item_id):
+                        executed_sources.append(
+                            manager.python_worker_download_sources[item_id]
+                        )
+                        manager.stop_event.set()
+                        return False
+
+                    with patch.object(
+                        manager, "_cache_item", side_effect=execute_python_item
+                    ):
+                        worker_loop(manager)
+                    manager.stop_event.clear()
+                    manager.enqueue(future.id)
+
+                sync_request = next(
+                    fields for command, fields in calls if command == "sync"
+                )
+                self.assertEqual(
+                    [job["item_id"] for job in sync_request["jobs"]],
+                    [future.id],
+                )
+                self.assertEqual(executed_sources, [DOWNLOAD_SOURCE_BBDOWN])
+                submit_request = next(
+                    fields for command, fields in calls if command == "submit"
+                )
+                self.assertEqual(submit_request["job"]["item_id"], future.id)
+                self.assertNotIn(future.id, manager.python_worker_download_sources)
+            finally:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                manager.shutdown()
+
+    def test_requeued_python_item_retains_original_source_after_switch(self):
+        worker_loop = CacheManager._worker_loop
+        item = self.make_item("song-python-requeued")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                manager.enqueue(item.id)
+                with manager.lock:
+                    manager.requeued_active_ids.add(item.id)
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                executed_sources = []
+
+                def interrupt_and_requeue(item_id):
+                    executed_sources.append(
+                        manager.python_worker_download_sources[item_id]
+                    )
+                    manager.stop_event.set()
+                    return False
+
+                with patch.object(
+                    manager, "_cache_item", side_effect=interrupt_and_requeue
+                ):
+                    worker_loop(manager)
+
+                self.assertEqual(executed_sources, [DOWNLOAD_SOURCE_BBDOWN])
+                self.assertEqual(
+                    manager.python_worker_download_sources[item.id],
+                    DOWNLOAD_SOURCE_BBDOWN,
+                )
+                self.assertIn(item.id, manager.pending_ids)
+            finally:
+                manager.stop_event.clear()
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                manager.shutdown()
+
+    def test_native_terminal_events_release_bookkeeping_after_source_switch(self):
+        terminal_payloads = {
+            "ready": {
+                "video_relative_path": "video.mp4",
+                "video_media_url": "/media/video.mp4",
+                "audio_variants": [
+                    {
+                        "id": "p1",
+                        "label": "P1",
+                        "page": 1,
+                        "audio_url": "/media/audio.m4a",
+                    }
+                ],
+                "selected_audio_variant_id": "p1",
+            },
+            "failed": {"message": "native failure"},
+            "cancelled": {"reason": "cancelled"},
+            "evicted": {"reason": "evicted"},
+        }
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=4)
+            try:
+                for sequence, (kind, payload) in enumerate(
+                    terminal_payloads.items(), start=1
+                ):
+                    with self.subTest(kind=kind):
+                        item = self.make_item(f"song-native-{kind}")
+                        self.store.add_item(item, requester_name="cache-test-user")
+                        with manager.lock:
+                            manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                            manager.native_cache_generations[item.id] = 7
+                            manager.pending_ids.add(item.id)
+                            manager.urgent_cache_ids.add(item.id)
+                            manager.active_item_id = item.id
+
+                        manager._apply_native_cache_event(
+                            {
+                                "generation": 7,
+                                "sequence": sequence,
+                                "item_id": item.id,
+                                "kind": kind,
+                                "payload": payload,
+                            }
+                        )
+
+                        with manager.lock:
+                            self.assertNotIn(item.id, manager.pending_ids)
+                            self.assertNotIn(item.id, manager.urgent_cache_ids)
+                            self.assertIsNone(manager.active_item_id)
+                        manager.enqueue(item.id)
+                        self.assertEqual(
+                            manager.python_worker_download_sources[item.id],
+                            DOWNLOAD_SOURCE_BBDOWN,
+                        )
+                        self.assertEqual(manager.tasks.get_nowait(), item.id)
+                        manager.tasks.task_done()
+                        with manager.lock:
+                            manager.pending_ids.discard(item.id)
+                            manager.python_worker_download_sources.pop(item.id)
+            finally:
+                manager.shutdown()
+
+    def test_native_terminal_event_does_not_clear_active_python_bookkeeping(self):
+        item = self.make_item("song-python-active-after-native")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                with manager.lock:
+                    manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                    manager.native_cache_generations[item.id] = 3
+                    manager.python_worker_download_sources[item.id] = (
+                        DOWNLOAD_SOURCE_BBDOWN
+                    )
+                    manager.pending_ids.add(item.id)
+                    manager.urgent_cache_ids.add(item.id)
+                    manager.active_item_id = item.id
+
+                manager._apply_native_cache_event(
+                    {
+                        "generation": 3,
+                        "sequence": 1,
+                        "item_id": item.id,
+                        "kind": "cancelled",
+                        "payload": {"reason": "old native job ended"},
+                    }
+                )
+
+                with manager.lock:
+                    self.assertIn(item.id, manager.pending_ids)
+                    self.assertIn(item.id, manager.urgent_cache_ids)
+                    self.assertEqual(manager.active_item_id, item.id)
+                    self.assertEqual(
+                        manager.python_worker_download_sources[item.id],
+                        DOWNLOAD_SOURCE_BBDOWN,
+                    )
+            finally:
+                manager.shutdown()
+
     def test_native_sync_service_failure_does_not_fan_out_to_valid_jobs(self):
         ready = self.make_item("song-ready")
         pending = self.make_item("song-pending")
@@ -1831,6 +2061,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                     manager.ordered_desired_ids = ["song-a"]
+                    manager.python_worker_download_sources["song-a"] = (
+                        DOWNLOAD_SOURCE_NATIVE
+                    )
                 cache_result = {
                     "video_file": Path("/tmp/video.mp4"),
                     "video_relative_path": "song-a/video.mp4",
@@ -1880,6 +2113,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {item.id}
                     manager.ordered_desired_ids = [item.id]
+                    manager.python_worker_download_sources[item.id] = (
+                        DOWNLOAD_SOURCE_NATIVE
+                    )
 
                 def prevalidated_result(*_args, **_kwargs):
                     item_dir = self.cache_dir / item.id
