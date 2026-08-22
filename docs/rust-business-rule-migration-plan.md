@@ -686,18 +686,21 @@ checks prevent a native result from silently changing fairness or identity.
 7. Cache planning calculations after mutation-free extraction.
 8. Playlist ordering and deduplication after mutation-free extraction.
 
-Phase 2 is complete (8/8). No Phase-2 domain remains. Python still owns all I/O
-and application mutation, all native capabilities were additive, and ABI
-version remains 1.
+Phase 2 is complete (8/8). No Phase-2 domain remains. At Phase-2 completion,
+Python still owned all I/O and application mutation, all native capabilities
+were additive, and ABI version remained 1. The later v0.8 AppState cutover
+supersedes that mutable-state ownership baseline: Rust now owns application
+mutation while Python retains transport, persistence I/O, and external-tool
+orchestration.
 
 The AV-delay state machine added during v0.7.0 stabilization is an additional
-typed Rust transition policy, not Phase-2 Item 9. Python continues to own its
-mutable Store integration, persistence, strict native-response validation, and
-complete compatibility fallback.
+typed Rust transition policy, not Phase-2 Item 9. It is now applied inside the
+authoritative Rust AppState; Python retains persistence I/O and strict
+native-response validation, without a stateful compatibility fallback.
 
-Phase 2 concerns deterministic immutable decisions. The future migration of
-stateful runtime ownership is a different architectural project; see the
-[version roadmap](version-roadmap.md) for the post-v0.7 convergence direction.
+Phase 2 concerns deterministic immutable decisions. The later migration of
+stateful runtime ownership is the separate v0.8 AppState cutover; see the
+[version roadmap](version-roadmap.md) for the convergence direction.
 
 ## Post-Phase-2 ownership rule
 
@@ -708,9 +711,9 @@ new equivalent semantic implementation. New Rust-only capabilities fail
 explicitly when unavailable. Existing Phase-2 `_py_*` references remain frozen
 unless a task specifically changes them.
 
-New stateful backend work must move the relevant ownership to Rust or wait for
-that Rust Core ownership migration. This is not a new "Phase 3." The planned
-architecture is v0.8 Rust Core Convergence / Preview.
+New stateful backend work must extend Rust AppState and must not recreate
+Python-owned mutable state. This is not a new "Phase 3." The active
+architecture milestone is v0.8 Rust Core Convergence / Preview.
 
 ## Historical rationale for the first Phase-2 domain
 

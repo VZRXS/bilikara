@@ -28,26 +28,36 @@ are assigned.
 
 ### v0.8.0 — Rust Core Convergence / Preview
 
-The confirmed objective is to make the Rust runtime the normal execution path,
-instead of using Rust only as a library of deterministic rules.
+The confirmed objective is to make the Rust runtime the authoritative
+application core instead of using Rust only as a library of deterministic
+rules. The first AppState cutover is now established:
 
-- Introduce Rust runtime/application services and Rust `AppState` ownership for
-  stateful store, session, playlist, and cache behavior.
+- One process-wide Rust `AppState` owns mutable session, playlist, current-item,
+  player-setting, history, and playlist-item cache projection state under one
+  serialized lock, with monotonic revision and generation fields.
+- Python `PlaylistStore` is now a strict AppState/FFI and persistence adapter.
+  Its projection is read-only and all persisted semantic state is derived from
+  Rust snapshots.
+- The Python HTTP/SSE Host, external-tool orchestration, filesystem I/O, and
+  compatibility payload adapter remain packaged. Python is not an alternate
+  application core.
+- Rust AppState capability and initialization are startup requirements. There
+  is no whole-application Python Core fallback, no startup selection between
+  Rust and Python state authorities, and no per-operation stateful fallback.
+- The D0 compiled-only desktop build/launch contract remains separate work;
+  this cutover does not remove Python or rewrite the release launch contract.
 - The current application-service slice in `rust-runtime` owns the Bilibili
   QR-login state machine and generation guard, Bilibili WBI/DASH and redirect
   I/O, Rust Native cache queues/retries/cancellation/validated publication,
   Gacha task status plus repository/network refresh, Cloudflare request
   execution and bounded background append scheduling, update transfer and
   installation preparation, diagnostics assembly, and network selection.
-  Python still supplies configuration facts, projects cache events into the
-  compatibility store, starts explicit external-tool workers, and adapts the
-  temporary C ABI.
-- Make the Rust server/runtime the normal path. Retain Python only as a desktop
-  compatibility/startup fallback during the transition.
-- Select one stateful core mode at startup: Rust Core mode for the process, or
-  Python compatibility mode only when Rust initialization or migration fails.
-- Do not use per-operation Rust-to-Python fallback for stateful operations and
-  do not permit split-brain state.
+  Python still supplies configuration facts, commits external-worker cache
+  events through AppState, starts explicit external-tool workers, and adapts
+  the temporary C ABI.
+- Continue converging application services behind the Rust authority without
+  replacing the current Python HTTP/SSE transport in this milestone.
+- Do not permit split-brain state or reintroduce a Python state authority.
 - Reduce repeated JSON FFI transport and duplicate Python recomputation in
   normal Rust mode.
 - Retain transactional fallback only where temporary output can be cleaned up

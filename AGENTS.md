@@ -16,9 +16,9 @@ Bilikara is a Bilibili-based Karaoke system consisting of a Host (PC display & d
 The architecture consists of the following primary layers:
 
 - `static/`: Frontend Host and Remote user interfaces built with vanilla JavaScript, HTML5, and CSS3. UI components use state-driven re-rendering and subscribe to real-time state updates via Server-Sent Events (SSE) at `/api/events`. Bundled and served by the Host server or packaged into the Tauri desktop shell.
-- `bilikara/`: Python Host application engine. Handles the current v0.7 HTTP routing (`http.server.ThreadingHTTPServer`), state management (`AppContext`), persistence (`PlaylistStore`), download management (`BBDown`, `FFmpeg`), version checks/updates, and frozen Python compatibility references created during earlier migration work.
+- `bilikara/`: Python Host transport and compatibility adapter. Handles HTTP/SSE routing (`http.server.ThreadingHTTPServer`), persistence I/O derived from Rust snapshots, external-tool orchestration (`BBDown`, `yt-dlp`, `aria2c`, `FFmpeg`), version checks/updates, and frozen Python compatibility references created during earlier migration work. `PlaylistStore` is an AppState/persistence adapter, not a mutable state authority.
 - `rust/`: Shared typed Rust domain core crate (`bilikara_rust`), compiled as both `cdylib` (for CFFI loading in Python) and `rlib` (for native Rust crate callers). Implements pure, deterministic business logic domains.
-- `rust-runtime/`: Typed Rust runtime infrastructure crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns operational I/O such as the independent HTTP media downloader and exposes a temporary C ABI for the Python compatibility host.
+- `rust-runtime/`: Typed Rust runtime and application-services crate (`bilikara_runtime`), compiled as both `cdylib` and `rlib`. Owns the process-wide authoritative `AppState`, Rust Native cache/runtime services, operational I/O such as the independent HTTP media downloader, and a temporary C ABI for the Python Host adapter.
 - `src-tauri/`: Tauri 2 desktop shell providing native windowing, system tray integration, and cross-platform desktop application packaging.
 - `tests/`: Project test suite using standard Python `unittest`. Includes direct unit tests, integration tests enforcing native library loading (`BILIKARA_REQUIRE_RUST_LIB=1`), and tests that launch Node.js scripts to evaluate frontend JavaScript behavior.
 
@@ -39,9 +39,9 @@ For all **new backend or business functionality** from this point forward:
   must not independently recompute the new policy.
 - A new Rust-only capability must fail explicitly or report itself unavailable
   when Rust cannot execute it. Do not silently add a Python semantic fallback.
-- New stateful backend features must either move the required ownership to Rust
-  first or wait for the relevant Rust Core ownership migration.
-- This boundary is not a new "Phase 3." The next architectural milestone is
+- New stateful backend features must extend the authoritative Rust `AppState`;
+  they must not create Python-owned state or a parallel authority.
+- This boundary is not a new "Phase 3." The current architectural milestone is
   **v0.8 Rust Core Convergence / Preview**.
 
 Pure deterministic policy remains a good small Rust-domain boundary when all
@@ -60,7 +60,18 @@ When adding such a Rust-authoritative rule:
 - **Separation of Concerns**: Keep pure typed domain logic separate from `serde`, JSON adapters, and FFI wire exports.
 - **ABI Compatibility**: Keep additive FFI exports ABI-compatible unless a deliberate FFI ABI migration is requested.
 
-## 4. Temporary v0.7 Host Responsibilities and UI Ownership
+## 4. Rust AppState Authority and Retained Host/UI Responsibilities
+
+The process-wide Rust `AppState` is the only authoritative mutable application
+state. Playlist, session, current-item, player-setting, history, and playlist
+item cache projections are committed under its single serialized lock. Python
+may cache defensive read-only projections and persist Rust snapshots, but it
+must not independently mutate or recompute this state.
+
+Rust AppState availability and initialization are startup requirements. There
+is no whole-application Python Core fallback and no per-operation stateful
+Rust-to-Python fallback. Python remains packaged for the retained work below;
+the separate D0 compiled-only build/launch contract has not been implemented.
 
 Keep the following operations in their respective Host (Python / Tauri) or UI (JavaScript) layers:
 
@@ -70,14 +81,13 @@ Keep the following operations in their respective Host (Python / Tauri) or UI (J
 - Subprocess execution and management for `BBDown`, `yt-dlp`, `aria2c`, `FFmpeg`, or `ffprobe`.
 - Host runtime capability detection and environment variable evaluation.
 - Real-time clock acquisition and timestamping.
-- Existing mutable `PlaylistStore` state mutations, disk persistence, and locks while the v0.7 Python Host remains in service.
-- Cache scheduling, retries, cancellation, and validated publication for explicit BBDown, yt-dlp, aria2c, and FFmpeg compatibility modes. Rust Native cache jobs are owned by `rust-runtime` and Python only submits jobs and projects events into `PlaylistStore`.
+- Atomic state-file reads/writes, legacy-shape loading, backup/archive file handling, and persistence-error reporting. All semantic data written by Python is derived from Rust snapshots.
+- Cache scheduling, retries, cancellation, and external-tool execution for explicit BBDown, yt-dlp, aria2c, and FFmpeg modes. Their queued/started/progress/terminal projections are committed through Rust AppState. Rust Native cache jobs remain owned by `rust-runtime` and use the same AppState projection boundary.
 - Tauri application lifecycle, native menus, and OS shell integrations (`src-tauri/`).
 
-These are temporary retained responsibilities, not targets for new Python
-feature ownership. Existing operational code may be maintained for release
-safety, but new stateful backend capabilities belong under Rust ownership or
-must wait for Rust Core convergence.
+These are retained adapter and I/O responsibilities, not Python application-core
+ownership. Existing operational code may be maintained for release safety, but
+new stateful backend capabilities belong in Rust AppState.
 
 `bilikara/playlist_export.py` is an explicit frozen legacy exception for v0.7.
 Its Pillow renderer and `prewarm_playlist_export_fonts()` must remain together:
@@ -173,7 +183,7 @@ When completing a task, agents must report:
 | File | Purpose |
 | :--- | :--- |
 | `server.py` | HTTP Server, API endpoints, SSE event hub (`AppContext`). |
-| `store.py` | `PlaylistStore` managing JSON state persistence (`data/state.json`). |
+| `store.py` | `PlaylistStore` AppState/FFI adapter, defensive read-only projection, and atomic JSON persistence derived from Rust snapshots. |
 | `bilibili.py` | Bilibili API querying, metadata parsing, media-page selection wrapper. |
 | `cache.py` | Rust CacheRuntime adapter/state projection plus compatibility orchestration for explicit BBDown, yt-dlp, aria2c, and FFmpeg modes. |
 | `rust_backend.py` | Native FFI loader, JSON payload validation, frozen compatibility fallbacks for older domains, and fail-closed adapters for new Rust-authoritative capabilities. |
@@ -206,6 +216,7 @@ When completing a task, agents must report:
 ### Rust Runtime Infrastructure (`rust-runtime/`)
 | File / Module | Purpose |
 | :--- | :--- |
+| `src/app_state.rs` | Process-wide authoritative mutable application state, strict commands, revision/generation tracking, snapshots, and persistence effects. |
 | `src/http_downloader.rs` | Typed HTTP transfer, URL fallback, progress, cancellation, response validation, and atomic publication. |
 | `src/cache_runtime.rs` | Rust Native cache queues, primary/urgent workers, retries, cancellation, multi-track validation, and atomic cache-group publication. |
 | `src/media_backend.rs` | Native media probing and MP4/FLAC normalization for Rust Native playback artifacts. |
@@ -216,7 +227,7 @@ When completing a task, agents must report:
 | `src/update_installer.rs` | Update extraction, helper generation, and helper launch validation. |
 | `src/diagnostics.rs` | Diagnostic sanitization and artifact assembly. |
 | `src/networking.rs` | Native LAN interface discovery and address ranking. |
-| `src/ffi.rs` | Temporary C ABI used by the Python compatibility host. |
+| `src/ffi.rs` | Temporary C ABI, including the additive schema-v1 AppState request entry used by the Python Host adapter. |
 
 ### Tauri Shell Layer (`src-tauri/`)
 | File / Module | Purpose |

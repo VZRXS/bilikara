@@ -13,7 +13,10 @@ policy remain in Python.
 This is a historical inventory. Phase 2 is also complete. Its existing Python
 references may remain frozen, but new backend/business functionality is now
 Rust-authoritative and must not receive a new equivalent Python semantic
-fallback.
+fallback. The v0.8 AppState cutover supersedes the Phase-2-era mutable-state
+ownership descriptions below: Rust AppState is now the sole application-state
+authority, while Python retains transport, persistence I/O, and external-tool
+orchestration.
 
 ## Existing native utility domains
 
@@ -292,16 +295,16 @@ Missing optional symbols disable only their matching capabilities.
 | `video_stream_ranking` | `rust_select_video_stream` / `select_video_stream` | Implements exact codec/quality/AVC filtering, current two fallback stages, descending quality/bandwidth ranking, stable ties, and selected/ranked original indices. Python retains DASH fetching, stream dictionaries, URLs, and fallback. |
 | `audio_stream_ranking` | `rust_select_audio_stream` / `select_audio_stream` | Implements only regular audio quality ordering and Hi-Res filtering/fallback. Bandwidth remains intentionally irrelevant and equal quality preserves input order. Python retains DASH fetching, stream dictionaries, and complete fallback. |
 | `preferred_audio_source_binding` | `rust_select_preferred_audio_source` / `select_preferred_audio_source` | Implements preferred-source binding without regular ranking: the first supplied regular candidate is retained, then FLAC and Dolby override it in that order only when Hi-Res is enabled. Python retains object mapping, URLs, file extension/application, and complete fallback. |
-| `cache_planning` | `rust_plan_cache_window` / `plan_cache_window` | Phase-2 Item 7. Plans desired, pending, retained, and preempted cache IDs from an immutable snapshot. Python retains files, workers, locks, retries, cancellation, and plan application. |
-| `playlist_planning` | `rust_plan_playlist_order`, `rust_decide_playlist_duplicate` / matching capabilities | Phase-2 Item 8. Plans queue ordering and duplicate identity from immutable descriptors. Python retains Store mutation, object identity, history/session updates, persistence, locking, and complete fallback. |
+| `cache_planning` | `rust_plan_cache_window` / `plan_cache_window` | Phase-2 Item 7. Plans desired, pending, retained, and preempted cache IDs from an immutable snapshot. Python retains external-tool files/workers and operational scheduling; playlist-item cache state is committed through Rust AppState. |
+| `playlist_planning` | `rust_plan_playlist_order`, `rust_decide_playlist_duplicate` / matching capabilities | Phase-2 Item 8. Plans queue ordering and duplicate identity from immutable descriptors and is now used internally by Rust AppState. Python retains wire adaptation and persistence I/O, with no stateful fallback. |
 
 The following typed policies were added during v0.7.0 stabilization and are
 not additional Phase-2 items or a new "Phase 3":
 
 | Typed Rust policy | Optional JSON export / Python capability | Status and retained Python ownership |
 | --- | --- | --- |
-| `av_delay` | `rust_apply_av_delay_action` / `apply_av_delay_action` | Canonical pure lock, unlock, adjust, reset, clamping, and button-state transitions. Python retains mutable Store integration, global/locked persistence, legacy migration, strict native-response validation, and complete fallback. |
-| `playback_selector_policy` | `rust_decide_playback_selector_policy` / `decide_playback_selector_policy` | Rust-authoritative valid/default selector modes, explicit validation, and persisted-mode normalization. Python supplies capability availability, persists the result, and formats warnings. Only narrow Python-mode bootstrap compatibility remains when Rust is wholly unavailable. |
+| `av_delay` | `rust_apply_av_delay_action` / `apply_av_delay_action` | Canonical pure lock, unlock, adjust, reset, clamping, and button-state transitions, now applied inside Rust AppState. Python retains legacy-file adaptation and persistence I/O, with no stateful fallback. |
+| `playback_selector_policy` | `rust_decide_playback_selector_policy` / `decide_playback_selector_policy` | Rust-authoritative valid/default selector modes, explicit validation, and persisted-mode normalization, now committed by Rust AppState. Python supplies explicit capability facts, persists Rust snapshots, and formats warnings. An explicitly configured Python playback-rule mode is not an alternate AppState authority. |
 | `tool_prepare_policy` | `rust_decide_tool_prepare_policy` / `decide_tool_prepare_policy` | Rust-authoritative prepare routing from immutable override/install/refresh/version facts. Python retains chmod, metadata and subprocess I/O, release HTTP, download, validation, extraction, and publication. No Python semantic fallback is introduced. |
 
 Audio binding transports only original index, page number, duration, and part
@@ -323,9 +326,8 @@ New backend/business work must start under Rust ownership when its required
 domain is ready. Preserve public compatibility APIs where needed, expose
 independently detectable capabilities, and distinguish invalid values from
 backend failures, but do not create new Python semantic counterparts. Existing
-v0.7 Python I/O and orchestration may adapt and apply Rust decisions. New
-stateful features must move the relevant ownership into Rust or wait for v0.8
-Rust Core Convergence / Preview.
+Python I/O and orchestration may adapt Rust commands and persist Rust
+snapshots. New stateful features must extend the existing Rust AppState.
 
 The intentionally deferred helpers in the audit remain deferred. In
 particular, Bilibili short-link resolution, download-source defaults,
