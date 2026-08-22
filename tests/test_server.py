@@ -11,11 +11,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
+from bilikara import rust_runtime
 import bilikara.diagnostics as diagnostics
 from bilikara.diagnostics import DiagnosticArtifact
+from bilikara.models import PlaylistItem
 from bilikara.remote_identity import RemoteIdentityStore
 from bilikara.server import AppContext, BilikaraHandler, run
-from bilikara.store import PlaylistStore
+from bilikara.store import PlaylistStore, PlaylistStoreCommandError
 
 
 class FileServingPathSecurityTest(unittest.TestCase):
@@ -276,6 +278,21 @@ class AppContextRemoteIdentityTest(unittest.TestCase):
 
 
 class AppContextStateRevisionTest(unittest.TestCase):
+    def test_shutdown_stops_cache_before_uninitializing_appstate(self):
+        context = AppContext.__new__(AppContext)
+        context._closed = False
+        calls: list[str] = []
+        context.cache_manager = SimpleNamespace(
+            shutdown=lambda: calls.append("cache")
+        )
+        context.store = SimpleNamespace(shutdown=lambda: calls.append("appstate"))
+
+        context.shutdown()
+        context.shutdown()
+
+        self.assertTrue(context._closed)
+        self.assertEqual(calls, ["cache", "appstate"])
+
     def test_background_tasks_include_one_time_prewarm_targets(self):
         context = AppContext.__new__(AppContext)
         context._startup_lock = threading.RLock()
@@ -432,6 +449,28 @@ class AppContextSsePayloadCacheTest(unittest.TestCase):
             {"state_revision": 7, "value": "same"},
         )
 
+    def test_state_event_carries_authoritative_rust_revision(self):
+        context = self.make_context(revision=7)
+        context.snapshot = lambda: {
+            "revision": 41,
+            "session_generation": 3,
+            "playback_generation": 9,
+            "state_revision": context._state_revision,
+        }
+
+        transport_revision, payload = context.serialized_sse_state_event()
+
+        self.assertEqual(transport_revision, 7)
+        self.assertEqual(
+            self.decode_state_event(payload),
+            {
+                "revision": 41,
+                "session_generation": 3,
+                "playback_generation": 9,
+                "state_revision": 7,
+            },
+        )
+
     def test_revision_change_builds_and_publishes_new_payload(self):
         context = self.make_context(revision=4)
         snapshot_calls = 0
@@ -555,6 +594,41 @@ class AppContextSsePayloadCacheTest(unittest.TestCase):
             self.decode_state_event(payload),
             {"state_revision": 3, "value": "recovered"},
         )
+
+
+class StateApiCompatibilityTest(unittest.TestCase):
+    def test_host_and_remote_receive_the_same_revisioned_snapshot(self):
+        snapshot = {
+            "revision": 19,
+            "session_generation": 4,
+            "playback_generation": 8,
+            "current_item": None,
+            "playlist": [],
+        }
+        context = SimpleNamespace(
+            touch_client=lambda *_args, **_kwargs: None,
+            snapshot=lambda: dict(snapshot),
+        )
+
+        def request(referer: str) -> dict[str, object]:
+            handler = BilikaraHandler.__new__(BilikaraHandler)
+            handler.path = "/api/state"
+            handler.headers = {
+                "X-Bilikara-Client": "test-client",
+                "Referer": referer,
+            }
+            writes: list[dict[str, object]] = []
+            handler._write_json = lambda payload, status=None: writes.append(payload)
+            with patch("bilikara.server.CONTEXT", context):
+                handler.do_GET()
+            return writes[0]
+
+        host = request("http://127.0.0.1:8080/")
+        remote = request("http://127.0.0.1:8080/remote")
+
+        self.assertEqual(host, remote)
+        self.assertEqual(host["data"]["revision"], 19)
+        self.assertEqual(host["data"]["playback_generation"], 8)
 
 
 class AppContextRatingSubmissionTest(unittest.TestCase):
@@ -991,6 +1065,14 @@ class PlaylistAddRequestTest(unittest.TestCase):
             )
 
         self.assertEqual(len(added), 1)
+        self.assertEqual(
+            added[0][1],
+            {
+                "position": "tail",
+                "requester_name": "VZRXS",
+                "allow_repeat": False,
+            },
+        )
         append_entries.assert_called_once_with(
             [
                 {
@@ -1005,6 +1087,77 @@ class PlaylistAddRequestTest(unittest.TestCase):
             ]
         )
         self.assertEqual(writes, [({"ok": True, "data": {"playlist": []}}, None)])
+
+    def test_duplicate_add_is_decided_atomically_by_rust_appstate(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        item = PlaylistItem(
+            id="incoming",
+            original_url="https://www.bilibili.com/video/BV1xx411c7mD",
+            resolved_url="https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+            bvid="BV1xx411c7mD",
+            aid=123,
+            cid=456,
+            page=1,
+            title="Song title",
+            part_title="P1",
+            display_title="Song title - P1",
+            cover_url="",
+            embed_url="https://player.bilibili.com/player.html?aid=123",
+        )
+        active = PlaylistItem.from_dict({**item.serialize(), "id": "active"})
+        response = {
+            "schema_version": 1,
+            "status": "rejected",
+            "error": {
+                "kind": "duplicate_session_request",
+                "message": "duplicate",
+                "details": {
+                    "identity_key": "BV1xx411c7mD:p1:a1",
+                    "session_entry": None,
+                    "active_item": active.serialize(),
+                },
+            },
+        }
+        rust_error = rust_runtime.RustAppStateRejectedError(
+            "rejected",
+            "duplicate_session_request",
+            "duplicate",
+            response=response,
+        )
+        rejection = PlaylistStoreCommandError(rust_error)
+        add_calls = []
+
+        def reject_add(added_item, **kwargs):
+            add_calls.append((added_item, kwargs))
+            raise rejection
+
+        context = SimpleNamespace(
+            has_session_users=lambda: True,
+            capture_playback_selector=lambda: "rust",
+            add_item=reject_add,
+        )
+
+        with patch("bilikara.server.CONTEXT", context), patch(
+            "bilikara.server.fetch_video_item",
+            return_value=item,
+        ), patch(
+            "bilikara.server.append_lark_pool_entries_in_background",
+            side_effect=AssertionError("rejected add must not be indexed"),
+        ):
+            with self.assertRaises(server_module.DuplicateSessionRequestError) as raised:
+                handler._handle_add(
+                    {
+                        "url": item.original_url,
+                        "requester_name": "VZRXS",
+                        "allow_repeat": False,
+                    }
+                )
+
+        self.assertEqual(len(add_calls), 1)
+        self.assertFalse(add_calls[0][1]["allow_repeat"])
+        self.assertIs(raised.exception.item, item)
+        self.assertIsNone(raised.exception.session_entry)
+        self.assertEqual(raised.exception.active_item.id, "active")
 
     def test_add_indexing_payload_falls_back_to_display_title_and_original_url(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)

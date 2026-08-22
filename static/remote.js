@@ -2295,10 +2295,8 @@ async function refreshCacheStatusOnly() {
     const response = await fetch("/api/state", { headers: clientHeaders() });
     const payload = await response.json();
     if (response.ok && payload.ok && payload.data) {
-      const previousSnapshot = state.data;
-      state.data = payload.data;
+      applyStateSnapshot(payload.data);
       const current = state.data.current_item;
-      renderCacheStatusOnly(previousSnapshot);
       if (current) {
         if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
           state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);

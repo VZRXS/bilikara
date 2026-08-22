@@ -86,6 +86,7 @@ from .config import (
     ensure_directories,
 )
 from .diagnostics import DiagnosticArtifact, build_diagnostic_artifact, redact_text
+from .models import HistoryEntry, PlaylistItem
 from .networking import detect_lan_ipv4_addresses
 from .playlist_export import (
     playlist_csv_bytes,
@@ -93,7 +94,7 @@ from .playlist_export import (
     prewarm_playlist_export_fonts,
 )
 from .remote_identity import RemoteIdentityStore
-from .store import PlaylistStore
+from .store import PlaylistStore, PlaylistStoreCommandError
 from .updater import AppUpdateManager, check_for_update
 
 mimetypes.add_type("video/mp4", ".mp4")
@@ -505,12 +506,20 @@ class AppContext:
             startup_schema_rebuild=True,
         )
 
-    def add_item(self, item, *, position: str, requester_name: str) -> None:
+    def add_item(
+        self,
+        item,
+        *,
+        position: str,
+        requester_name: str,
+        allow_repeat: bool,
+    ) -> None:
         self.store.add_item(
             item,
             position=position,
             requester_name=requester_name,
             reset_av_delay=self.cache_manager.reset_offset_on_next,
+            allow_repeat=allow_repeat,
         )
         self.cache_manager.sync_with_playlist()
 
@@ -694,9 +703,11 @@ class AppContext:
         with self.store.lock:
             mode = self.store.playback_selector_mode
             warning = self.store.playback_selector_warning
+            revision = self.store.revision
             state_revision = self._state_revision
         return {
             "playback_selector": playback_selector_snapshot(mode, warning),
+            "revision": revision,
             "state_revision": state_revision,
         }
 
@@ -1032,6 +1043,7 @@ class AppContext:
             return
         self._closed = True
         self.cache_manager.shutdown()
+        self.store.shutdown()
 
     def _owner_enrichment_loop(self) -> None:
         for source_url in self.store.missing_owner_urls():
@@ -2276,11 +2288,42 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             selected_audio_pages=selected_audio_pages,
             playback_selector=playback_selector,
         )
-        existing_session_entry = CONTEXT.store.session_request_for_item(item)
-        active_duplicate = CONTEXT.store.active_duplicate_for_item(item)
-        if (existing_session_entry or active_duplicate) and not allow_repeat:
-            raise DuplicateSessionRequestError(item, existing_session_entry, active_duplicate)
-        CONTEXT.add_item(item, position=position, requester_name=requester_name)
+        try:
+            CONTEXT.add_item(
+                item,
+                position=position,
+                requester_name=requester_name,
+                allow_repeat=allow_repeat,
+            )
+        except PlaylistStoreCommandError as exc:
+            if exc.kind != "duplicate_session_request":
+                raise
+            details = exc.details
+            if not isinstance(details, dict):
+                raise RuntimeError("Rust AppState returned invalid duplicate details") from exc
+            session_payload = details.get("session_entry")
+            active_payload = details.get("active_item")
+            if session_payload is not None and not isinstance(session_payload, dict):
+                raise RuntimeError("Rust AppState returned invalid session duplicate") from exc
+            if active_payload is not None and not isinstance(active_payload, dict):
+                raise RuntimeError("Rust AppState returned invalid active duplicate") from exc
+            session_entry = (
+                HistoryEntry.from_dict(session_payload)
+                if isinstance(session_payload, dict)
+                else None
+            )
+            active_duplicate = (
+                PlaylistItem.from_dict(active_payload)
+                if isinstance(active_payload, dict)
+                else None
+            )
+            if session_entry is None and active_duplicate is None:
+                raise RuntimeError("Rust AppState returned an empty duplicate decision") from exc
+            raise DuplicateSessionRequestError(
+                item,
+                session_entry,
+                active_duplicate,
+            ) from exc
         try:
             append_lark_pool_entries_in_background(
                 [

@@ -17,6 +17,7 @@ class RemoteSseFrontendTest(unittest.TestCase):
         if not cls.node:
             raise unittest.SkipTest("node is unavailable")
         source = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
+        cls.source = source
         start = source.index("function clearEventStreamReconnectTimer")
         end = source.index("function connectStateStream", start)
         cls.reconnect_source = source[start:end]
@@ -107,6 +108,14 @@ console.log(JSON.stringify({
                 "activeTimer": None,
             },
         )
+
+    def test_cache_polling_uses_the_revision_guard(self):
+        start = self.source.index("async function refreshCacheStatusOnly")
+        end = self.source.index("function currentStateRevision", start)
+        polling_source = self.source[start:end]
+
+        self.assertIn("applyStateSnapshot(payload.data);", polling_source)
+        self.assertNotIn("state.data = payload.data", polling_source)
 
 
 if __name__ == "__main__":
