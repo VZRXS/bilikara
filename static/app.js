@@ -91,6 +91,7 @@ const state = {
   clientId: createClientId(),
   disconnectSent: false,
   data: null,
+  hasValidStateResponse: false,
   lastPollRenderSignature: "",
   currentTitleRenderSignature: "",
   listHeaderRenderSignature: "",
@@ -2554,6 +2555,55 @@ function localizedApiMessage(message) {
   return raw;
 }
 
+async function parseApiResponse(response, requestUrl = "") {
+  const status = Number(response?.status || 0);
+  const responseOk = Boolean(response?.ok);
+  const contentType = String(response?.headers?.get?.("content-type") || "").toLowerCase();
+  const jsonContentType = contentType
+    .split(";", 1)[0]
+    .trim()
+    .match(/^(?:application|text)\/(?:[a-z0-9.+-]*\+)?json$/);
+  let responseUrl = String(response?.url || "");
+  if (!responseUrl && requestUrl) {
+    try {
+      responseUrl = new URL(requestUrl, window.location?.href || undefined).href;
+    } catch {
+      responseUrl = String(requestUrl);
+    }
+  }
+  const tauriAssetApiResponse = /^(?:tauri:\/\/localhost|https?:\/\/tauri\.localhost)\/api(?:\/|$)/i
+    .test(responseUrl);
+
+  if (!jsonContentType) {
+    const error = new Error("Backend returned a non-JSON response");
+    error.kind = "non_json_response";
+    error.status = status;
+    error.contentType = contentType;
+    error.responseUrl = responseUrl;
+    error.backendNotReady = responseOk && tauriAssetApiResponse;
+    throw error;
+  }
+
+  try {
+    return await response.json();
+  } catch (cause) {
+    const error = new Error("Backend returned invalid JSON");
+    error.kind = "invalid_json_response";
+    error.status = status;
+    error.contentType = contentType;
+    error.responseUrl = responseUrl;
+    error.cause = cause;
+    throw error;
+  }
+}
+
+function shouldReportStateFetchError(error) {
+  if (!state.hasValidStateResponse) {
+    return !error?.backendNotReady;
+  }
+  return ["non_json_response", "invalid_json_response"].includes(error?.kind);
+}
+
 async function apiPost(url, payload = {}, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
   const controller = timeoutMs > 0 && typeof AbortController === "function"
@@ -2569,7 +2619,7 @@ async function apiPost(url, payload = {}, options = {}) {
       body: JSON.stringify(payload),
       ...(controller ? { signal: controller.signal } : {}),
     });
-    const data = await response.json();
+    const data = await parseApiResponse(response, url);
     if (!response.ok || !data.ok) {
       const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
       error.status = response.status;
@@ -2986,7 +3036,7 @@ async function apiGet(url, options = {}) {
     headers: clientHeaders(),
     signal: options.signal,
   });
-  const data = await response.json();
+  const data = await parseApiResponse(response, url);
   if (!response.ok || !data.ok) {
     const error = new Error(localizedApiMessage(data.error) || t("error.requestFailed"));
     error.status = response.status;
@@ -3089,13 +3139,14 @@ async function fetchState() {
   const response = await fetch("/api/state", {
     headers: clientHeaders(),
   });
-  const payload = await response.json();
+  const payload = await parseApiResponse(response, "/api/state");
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
   if (!applyFreshStateSnapshot(payload.data)) {
     return;
   }
+  state.hasValidStateResponse = true;
   maybeShowIncomingRequestToast(previousData, state.data);
   maybeShowSongTransitionOverlay(previousData, state.data);
 
@@ -15393,14 +15444,18 @@ async function startPolling() {
   try {
     await fetchState();
   } catch (error) {
-    setAppMessage(error.message, true);
+    if (shouldReportStateFetchError(error)) {
+      setAppMessage(error.message, true);
+    }
   }
   await loadPlaybackSelectorCapability();
   window.setInterval(async () => {
     try {
       await fetchState();
-    } catch {
-      // Ignore transient polling errors and keep the last state on screen.
+    } catch (error) {
+      if (shouldReportStateFetchError(error)) {
+        setAppMessage(error.message, true);
+      }
     }
   }, pollIntervalMs);
 }
