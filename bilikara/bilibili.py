@@ -3352,11 +3352,30 @@ def fetch_dash_playurl(
     code = int(payload.get("code") or 0) if isinstance(payload.get("code"), (int, float)) else 0
     if code != 0:
         message = str(payload.get("message") or "获取播放地址失败")
-        if code in {-404, -403, 62002}:
-            raise BilibiliError(f"视频播放地址不可用: {message}")
-        if code == -352:
-            raise BilibiliError(f"请求被风控拦截: {message}")
-        raise BilibiliError(message)
+        kind = {
+            -101: "authentication",
+            -403: "forbidden",
+            -404: "unavailable",
+            -400: "invalid_request",
+            -352: "risk_control",
+            -412: "risk_control",
+            412: "risk_control",
+            62002: "unavailable",
+        }.get(code, "api")
+        if kind == "authentication":
+            display_message = (
+                f"Bilibili login/Cookie is invalid or expired (API {code})"
+            )
+        elif kind in {"forbidden", "unavailable"}:
+            display_message = f"视频播放地址不可用: {message}"
+        elif kind == "risk_control":
+            display_message = f"请求被风控拦截: {message}"
+        else:
+            display_message = message
+        error = BilibiliError(display_message)
+        error.kind = kind
+        error.api_code = code
+        raise error
 
     data = payload.get("data")
     if not isinstance(data, dict):

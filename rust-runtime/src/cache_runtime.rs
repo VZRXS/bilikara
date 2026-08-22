@@ -1,8 +1,11 @@
 use crate::bilibili_service::{BilibiliDashRequest, BilibiliStream, fetch_dash_playurl};
 use crate::http_downloader::{
-    DownloadCandidate, DownloadErrorKind, DownloadRequest, HttpHeader, download_to_path,
+    DownloadCandidate, DownloadError, DownloadErrorKind, DownloadRequest, HttpHeader,
+    download_to_path,
 };
-use crate::media_backend::{ExpectedMediaKind, MediaNormalizeRequest, MediaProbe, normalize_media};
+use crate::media_backend::{
+    ExpectedMediaKind, MediaErrorKind, MediaNormalizeRequest, MediaProbe, normalize_media,
+};
 use bilikara_rust::{
     AudioStreamDescriptor, AudioStreamSelection, AudioStreamSelectionRequest, QualityPolicyRequest,
     VideoCodec, VideoStreamDescriptor, VideoStreamSelection, VideoStreamSelectionRequest,
@@ -145,6 +148,10 @@ pub enum CacheRuntimeCommand {
 pub struct CacheRuntimeError {
     pub kind: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_code: Option<i64>,
 }
 
 impl CacheRuntimeError {
@@ -152,6 +159,8 @@ impl CacheRuntimeError {
         Self {
             kind: kind.to_owned(),
             message: message.into(),
+            status_code: None,
+            api_code: None,
         }
     }
 }
@@ -885,7 +894,9 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                 job.generation,
                 &job.spec.item_id,
                 "failed",
-                json!({"kind": error.kind, "message": error.message}),
+                serde_json::to_value(&error).unwrap_or_else(|_| {
+                    json!({"kind": "invalid_response", "message": "cache error serialization failed"})
+                }),
             ),
         }
         shared.wake.notify_all();
@@ -995,6 +1006,9 @@ fn run_track(
             Ok(stream) => stream,
             Err(error) => {
                 last_error = error;
+                if is_terminal_track_error(&last_error) {
+                    return Err(last_error);
+                }
                 if !wait_for_retry(cancel, attempt) {
                     return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
                 }
@@ -1044,8 +1058,7 @@ fn run_track(
             if error.kind == DownloadErrorKind::Cancelled {
                 return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
             }
-            last_error =
-                CacheRuntimeError::new("download", format!("{}: {}", track.label, error.message));
+            last_error = cache_download_error(track, error);
             append_log(
                 &job.spec.log_file,
                 &format!(
@@ -1053,6 +1066,9 @@ fn run_track(
                     track.label, attempt, TRACK_ATTEMPTS, last_error.message
                 ),
             );
+            if is_terminal_track_error(&last_error) {
+                return Err(last_error);
+            }
             if !wait_for_retry(cancel, attempt) {
                 return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
             }
@@ -1096,10 +1112,16 @@ fn run_track(
                 }
             }
             Err(error) => {
-                last_error = CacheRuntimeError::new(
-                    "invalid_media",
-                    format!("{}: {}", track.label, error.message),
-                );
+                let kind = match error.kind {
+                    MediaErrorKind::InvalidRequest => "invalid_request",
+                    MediaErrorKind::SourceMissing => "source_missing",
+                    MediaErrorKind::DestinationExists => "destination_exists",
+                    MediaErrorKind::UnsupportedCodec => "unsupported_codec",
+                    MediaErrorKind::InvalidMedia => "invalid_media",
+                    MediaErrorKind::Io => "io",
+                };
+                last_error =
+                    CacheRuntimeError::new(kind, format!("{}: {}", track.label, error.message));
                 let _ = fs::remove_dir_all(&attempt_dir);
             }
         }
@@ -1110,17 +1132,86 @@ fn run_track(
                 track.label, attempt, TRACK_ATTEMPTS, last_error.message
             ),
         );
+        if is_terminal_track_error(&last_error) {
+            return Err(last_error);
+        }
         if !wait_for_retry(cancel, attempt) {
             return Err(CacheRuntimeError::new("cancelled", "cache cancelled"));
         }
     }
-    Err(CacheRuntimeError::new(
-        last_error.kind.as_str(),
-        format!(
-            "{} failed after {} attempts: {}",
-            track.label, TRACK_ATTEMPTS, last_error.message
+    last_error.message = format!(
+        "{} failed after {} attempts: {}",
+        track.label, TRACK_ATTEMPTS, last_error.message
+    );
+    Err(last_error)
+}
+
+fn cache_download_error(track: &TrackSpec, error: DownloadError) -> CacheRuntimeError {
+    let status_code = error.http_status;
+    let (kind, message) = match (error.kind, status_code) {
+        (DownloadErrorKind::HttpStatus, Some(401)) => (
+            "authentication",
+            format!(
+                "{}: Bilibili login/Cookie is invalid or expired (HTTP 401)",
+                track.label
+            ),
         ),
-    ))
+        (DownloadErrorKind::HttpStatus, Some(402)) => (
+            "unavailable",
+            format!(
+                "{}: Bilibili media access is unavailable or requires payment (HTTP 402)",
+                track.label
+            ),
+        ),
+        (DownloadErrorKind::HttpStatus, Some(403)) => (
+            "forbidden",
+            format!(
+                "{}: Bilibili media access was forbidden (HTTP 403)",
+                track.label
+            ),
+        ),
+        (kind, _) => {
+            let kind = match kind {
+                DownloadErrorKind::InvalidRequest => "invalid_request",
+                DownloadErrorKind::DestinationExists => "destination_exists",
+                DownloadErrorKind::Network => "network",
+                DownloadErrorKind::HttpStatus => "http_status",
+                DownloadErrorKind::Io => "io",
+                DownloadErrorKind::LengthMismatch => "length_mismatch",
+                DownloadErrorKind::EmptyBody => "empty_body",
+                DownloadErrorKind::Cancelled => "cancelled",
+            };
+            (kind, format!("{}: {}", track.label, error.message))
+        }
+    };
+    CacheRuntimeError {
+        kind: kind.to_owned(),
+        message,
+        status_code,
+        api_code: None,
+    }
+}
+
+fn is_terminal_track_error(error: &CacheRuntimeError) -> bool {
+    if matches!(
+        error.kind.as_str(),
+        "authentication"
+            | "forbidden"
+            | "invalid_request"
+            | "risk_control"
+            | "selection"
+            | "source_missing"
+            | "destination_exists"
+            | "unavailable"
+            | "unsupported"
+            | "unsupported_codec"
+    ) {
+        return true;
+    }
+    matches!(
+        (error.kind.as_str(), error.status_code),
+        ("http_status", Some(401..=403)) | ("http", Some(400 | 401 | 402 | 403 | 404 | 412))
+    )
 }
 
 fn wait_for_retry(cancel: &AtomicBool, attempt: u32) -> bool {
@@ -1153,7 +1244,12 @@ fn resolve_track_stream(
         referer: job.referer.clone(),
         timeout_ms: job.timeout_ms,
     })
-    .map_err(|error| CacheRuntimeError::new(error.kind.as_str(), error.message))?;
+    .map_err(|error| CacheRuntimeError {
+        kind: error.kind,
+        message: error.message,
+        status_code: error.status_code,
+        api_code: error.api_code,
+    })?;
     match track.kind {
         ExpectedMediaKind::Video => select_video(&dash.video, job),
         ExpectedMediaKind::Audio => select_audio(&dash.audio, dash.flac.as_ref(), job.audio_hires),
@@ -1872,6 +1968,106 @@ mod tests {
     fn variant_ids_match_the_python_compatibility_format() {
         assert_eq!(variant_id(2, "Off Vocal", 0), "p2_off_vocal");
         assert_eq!(variant_id(1, "伴奏", 1), "p1_track_2");
+    }
+
+    #[test]
+    fn guest_download_request_omits_cookie_header() {
+        let root = std::env::temp_dir().join("bilikara-cache-runtime-guest-headers");
+        let guest_job = job(&root);
+        let stream = BilibiliStream {
+            url: "https://media.example/video.m4s".to_owned(),
+            backup_urls: vec!["https://backup.example/video.m4s".to_owned()],
+            codec_id: Some(7),
+            codec_name: Some("avc".to_owned()),
+            codecs: Some("avc1.640028".to_owned()),
+            mime_type: Some("video/mp4".to_owned()),
+            width: Some(1280),
+            height: Some(720),
+            quality_id: Some(64),
+            bandwidth: Some(1_000_000),
+            order: None,
+        };
+        let request = download_request(&guest_job, &stream, root.join("guest.m4s"))
+            .expect("guest download request");
+        assert_eq!(request.candidates.len(), 2);
+        assert!(request.candidates.iter().all(|candidate| {
+            candidate
+                .headers
+                .iter()
+                .all(|header| !header.name.eq_ignore_ascii_case("cookie"))
+        }));
+    }
+
+    #[test]
+    fn guest_quality_uses_best_available_lower_avc_stream() {
+        let root = std::env::temp_dir().join("bilikara-cache-runtime-guest-quality");
+        let mut guest_job = job(&root);
+        guest_job.video_quality = "1080P 高清".to_owned();
+        let stream = |quality_id, bandwidth| BilibiliStream {
+            url: format!("https://media.example/{quality_id}.m4s"),
+            backup_urls: Vec::new(),
+            codec_id: Some(7),
+            codec_name: Some("avc".to_owned()),
+            codecs: Some("avc1.640028".to_owned()),
+            mime_type: Some("video/mp4".to_owned()),
+            width: Some(1280),
+            height: Some(720),
+            quality_id: Some(quality_id),
+            bandwidth: Some(bandwidth),
+            order: None,
+        };
+        let selected = select_video(&[stream(32, 500_000), stream(64, 1_000_000)], &guest_job)
+            .expect("guest stream selection");
+        assert_eq!(selected.quality_id, Some(64));
+    }
+
+    #[test]
+    fn terminal_track_errors_are_distinct_from_transient_failures() {
+        let track = TrackSpec {
+            key: "video-p1".to_owned(),
+            label: "video P1".to_owned(),
+            order: 0,
+            page: CachePageSpec {
+                page: 1,
+                cid: 456,
+                duration_seconds: Some(120.0),
+                label: "P1".to_owned(),
+            },
+            kind: ExpectedMediaKind::Video,
+        };
+        let authentication = cache_download_error(
+            &track,
+            DownloadError {
+                kind: DownloadErrorKind::HttpStatus,
+                message: "HTTP 401".to_owned(),
+                candidate_index: Some(0),
+                http_status: Some(401),
+            },
+        );
+        let forbidden = cache_download_error(
+            &track,
+            DownloadError {
+                kind: DownloadErrorKind::HttpStatus,
+                message: "HTTP 403".to_owned(),
+                candidate_index: Some(0),
+                http_status: Some(403),
+            },
+        );
+        let unknown_api = CacheRuntimeError::new("api", "unknown API error");
+        let transient = CacheRuntimeError::new("network", "connection reset");
+        let incomplete = CacheRuntimeError::new("length_mismatch", "short body");
+        let unsupported = CacheRuntimeError::new("unsupported_codec", "codec rejected");
+
+        assert_eq!(authentication.kind, "authentication");
+        assert!(authentication.message.contains("invalid or expired"));
+        assert_eq!(forbidden.kind, "forbidden");
+        assert!(forbidden.message.contains("media access was forbidden"));
+        assert!(is_terminal_track_error(&authentication));
+        assert!(is_terminal_track_error(&forbidden));
+        assert!(is_terminal_track_error(&unsupported));
+        assert!(!is_terminal_track_error(&unknown_api));
+        assert!(!is_terminal_track_error(&transient));
+        assert!(!is_terminal_track_error(&incomplete));
     }
 
     #[test]

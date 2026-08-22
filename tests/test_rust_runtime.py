@@ -800,6 +800,8 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
     def test_downkyi_selected_stream_path_never_calls_native_downloader(self):
         with TemporaryDirectory() as temp_dir, patch(
             "bilikara.cache.CACHE_DIR", Path(temp_dir)
+        ), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"
         ):
             cache_dir = Path(temp_dir)
             manager = self.make_manager()

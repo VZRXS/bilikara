@@ -2885,6 +2885,20 @@ class BilibiliParserTest(unittest.TestCase):
         with self.assertRaisesRegex(BilibiliError, "播放地址响应格式异常"):
             fetch_dash_playurl("BV1xx411c7mD", 456)
 
+    @patch("bilikara.bilibili.request_json")
+    @patch("bilikara.bilibili.get_cached_wbi_keys")
+    def test_fetch_dash_playurl_preserves_explicit_authentication_error(
+        self, mock_get_cached_wbi_keys, mock_request_json
+    ):
+        mock_get_cached_wbi_keys.return_value = ("a" * 32, "b" * 32)
+        mock_request_json.return_value = {"code": -101, "message": "账号未登录"}
+
+        with self.assertRaisesRegex(BilibiliError, "invalid or expired") as raised:
+            fetch_dash_playurl("BV1xx411c7mD", 456)
+
+        self.assertEqual(raised.exception.kind, "authentication")
+        self.assertEqual(raised.exception.api_code, -101)
+
 
 if __name__ == "__main__":
     unittest.main()

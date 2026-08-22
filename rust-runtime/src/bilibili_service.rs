@@ -101,6 +101,8 @@ pub struct BilibiliServiceError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_code: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -227,11 +229,7 @@ pub fn resolve_redirect(
         .send()
         .map_err(|error| service_error("network", error.to_string(), None))?;
     if !response.status().is_success() {
-        return Err(service_error(
-            "http",
-            format!("Bilibili returned HTTP {}", response.status().as_u16()),
-            Some(response.status().as_u16()),
-        ));
+        return Err(http_status_error(response.status().as_u16()));
     }
     Ok(BilibiliRedirectResult {
         url: response.url().to_string(),
@@ -297,13 +295,7 @@ fn cached_wbi_keys(client: &Client) -> Result<(String, String), BilibiliServiceE
         }
     }
     let payload = get_json(client, NAV_URL)?;
-    ensure_api_success(&payload, "WBI key request failed")?;
-    let wbi = payload
-        .pointer("/data/wbi_img")
-        .and_then(Value::as_object)
-        .ok_or_else(|| service_error("invalid_response", "WBI key information is missing", None))?;
-    let img_key = asset_key(wbi.get("img_url"))?;
-    let sub_key = asset_key(wbi.get("sub_url"))?;
+    let (img_key, sub_key) = parse_wbi_keys(&payload)?;
     let mut guard = cache
         .lock()
         .map_err(|_| service_error("state", "WBI key cache lock is poisoned", None))?;
@@ -312,6 +304,24 @@ fn cached_wbi_keys(client: &Client) -> Result<(String, String), BilibiliServiceE
         sub_key: sub_key.clone(),
         loaded_at: Instant::now(),
     });
+    Ok((img_key, sub_key))
+}
+
+fn parse_wbi_keys(payload: &Value) -> Result<(String, String), BilibiliServiceError> {
+    let code = payload.get("code").and_then(Value::as_i64).unwrap_or(0);
+    if code != 0 && code != -101 {
+        ensure_api_success(payload, "WBI key request failed")?;
+    }
+    let Some(wbi) = payload.pointer("/data/wbi_img").and_then(Value::as_object) else {
+        ensure_api_success(payload, "WBI key request failed")?;
+        return Err(service_error(
+            "invalid_response",
+            "WBI key information is missing",
+            None,
+        ));
+    };
+    let img_key = asset_key(wbi.get("img_url"))?;
+    let sub_key = asset_key(wbi.get("sub_url"))?;
     Ok((img_key, sub_key))
 }
 
@@ -336,15 +346,30 @@ fn get_json(client: &Client, url: &str) -> Result<Value, BilibiliServiceError> {
         .map_err(|error| service_error("network", error.to_string(), None))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(service_error(
-            "http",
-            format!("Bilibili returned HTTP {}", status.as_u16()),
-            Some(status.as_u16()),
-        ));
+        return Err(http_status_error(status.as_u16()));
     }
     response
         .json::<Value>()
         .map_err(|error| service_error("invalid_response", error.to_string(), None))
+}
+
+fn http_status_error(status_code: u16) -> BilibiliServiceError {
+    let (kind, message) = match status_code {
+        401 => (
+            "authentication",
+            "Bilibili login/Cookie is invalid or expired (HTTP 401)".to_owned(),
+        ),
+        402 => (
+            "unavailable",
+            "Bilibili media access is unavailable or requires payment (HTTP 402)".to_owned(),
+        ),
+        403 => (
+            "forbidden",
+            "Bilibili media access was forbidden (HTTP 403)".to_owned(),
+        ),
+        _ => ("http", format!("Bilibili returned HTTP {status_code}")),
+    };
+    service_error(kind, message, Some(status_code))
 }
 
 fn ensure_api_success(payload: &Value, fallback: &str) -> Result<(), BilibiliServiceError> {
@@ -358,11 +383,16 @@ fn ensure_api_success(payload: &Value, fallback: &str) -> Result<(), BilibiliSer
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(fallback);
     let kind = match code {
+        -101 => "authentication",
         -352 | -412 | 412 => "risk_control",
-        -404 | -403 | 62002 => "unavailable",
+        -403 => "forbidden",
+        -404 | 62002 => "unavailable",
+        -400 => "invalid_request",
         _ => "api",
     };
-    Err(service_error(kind, message, None))
+    let mut error = service_error(kind, message, None);
+    error.api_code = Some(code);
+    Err(error)
 }
 
 fn parse_playurl_payload(payload: &Value) -> Result<BilibiliDashResult, BilibiliServiceError> {
@@ -596,6 +626,7 @@ fn service_error(
         kind: kind.to_owned(),
         message: message.into(),
         status_code,
+        api_code: None,
     }
 }
 
@@ -674,5 +705,100 @@ mod tests {
         let error = parse_playurl_payload(&json!({"code": -352, "message": "risk"}))
             .expect_err("risk-control response must fail");
         assert_eq!(error.kind, "risk_control");
+        assert_eq!(error.api_code, Some(-352));
+    }
+
+    #[test]
+    fn classifies_explicit_authentication_and_access_responses() {
+        let authentication =
+            parse_playurl_payload(&json!({"code": -101, "message": "not logged in"}))
+                .expect_err("authentication response must fail");
+        assert_eq!(authentication.kind, "authentication");
+        assert_eq!(authentication.api_code, Some(-101));
+
+        let forbidden = parse_playurl_payload(&json!({"code": -403, "message": "forbidden"}))
+            .expect_err("forbidden response must fail");
+        assert_eq!(forbidden.kind, "forbidden");
+        assert_eq!(forbidden.api_code, Some(-403));
+
+        let unavailable = parse_playurl_payload(&json!({"code": 62002, "message": "unavailable"}))
+            .expect_err("unavailable response must fail");
+        assert_eq!(unavailable.kind, "unavailable");
+        assert_eq!(unavailable.api_code, Some(62002));
+    }
+
+    #[test]
+    fn anonymous_nav_auth_response_with_valid_wbi_data_produces_keys() {
+        let payload = json!({
+            "code": -101,
+            "message": "账号未登录",
+            "data": {
+                "isLogin": false,
+                "wbi_img": {
+                    "img_url": "https://i0.hdslb.com/bfs/wbi/0123456789abcdef.png",
+                    "sub_url": "https://i0.hdslb.com/bfs/wbi/fedcba9876543210.png"
+                }
+            }
+        });
+
+        assert_eq!(
+            parse_wbi_keys(&payload).expect("anonymous WBI keys"),
+            ("0123456789abcdef".to_owned(), "fedcba9876543210".to_owned())
+        );
+    }
+
+    #[test]
+    fn anonymous_nav_auth_response_without_wbi_data_remains_an_error() {
+        let error = parse_wbi_keys(&json!({
+            "code": -101,
+            "message": "账号未登录",
+            "data": {"isLogin": false}
+        }))
+        .expect_err("missing anonymous WBI data must fail");
+
+        assert_eq!(error.kind, "authentication");
+        assert_eq!(error.api_code, Some(-101));
+    }
+
+    #[test]
+    fn classifies_http_authentication_payment_and_forbidden_responses() {
+        let authentication = http_status_error(401);
+        assert_eq!(authentication.kind, "authentication");
+        assert!(authentication.message.contains("invalid or expired"));
+
+        let unavailable = http_status_error(402);
+        assert_eq!(unavailable.kind, "unavailable");
+        assert!(unavailable.message.contains("requires payment"));
+
+        let forbidden = http_status_error(403);
+        assert_eq!(forbidden.kind, "forbidden");
+        assert!(forbidden.message.contains("media access was forbidden"));
+    }
+
+    #[test]
+    fn guest_request_headers_omit_cookie_without_weakening_logged_in_requests() {
+        let mut request = BilibiliDashRequest {
+            schema_version: 1,
+            bvid: "BV1xx411c7mD".to_owned(),
+            cid: 456,
+            avid: 0,
+            qn: default_qn(),
+            fnval: default_fnval(),
+            cookie: String::new(),
+            user_agent: default_user_agent(),
+            referer: default_referer(),
+            timeout_ms: default_timeout_ms(),
+        };
+        let guest_headers = request_headers(&request).expect("guest headers");
+        assert!(!guest_headers.contains_key(COOKIE));
+
+        request.cookie = "SESSDATA=test".to_owned();
+        let logged_in_headers = request_headers(&request).expect("logged-in headers");
+        assert_eq!(
+            logged_in_headers
+                .get(COOKIE)
+                .and_then(|value| value.to_str().ok()),
+            Some("SESSDATA=test")
+        );
     }
 }

@@ -18,7 +18,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from bilikara import rust_backend
+from bilikara import rust_backend, rust_runtime
 from bilikara.cache import (
     CachePlan,
     CacheManager,
@@ -5084,6 +5084,309 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
             selected_parts=["P1"],
             video_page=1,
         )
+
+    def test_rust_native_guest_resolves_dash_and_downgrades_quality_without_python_fallback(self):
+        item = self._single_downkyi_item("native-guest")
+        guest_dash = {
+            "video": [
+                {
+                    "url": "https://media.example/480.m4s",
+                    "backup_urls": [],
+                    "codec_name": "avc",
+                    "quality_id": 32,
+                    "bandwidth": 500_000,
+                },
+                {
+                    "url": "https://media.example/720.m4s",
+                    "backup_urls": [],
+                    "codec_name": "avc",
+                    "quality_id": 64,
+                    "bandwidth": 1_000_000,
+                },
+            ],
+            "audio": [
+                {
+                    "url": "https://media.example/audio.m4s",
+                    "backup_urls": [],
+                    "quality_id": 30280,
+                    "bandwidth": 192_000,
+                }
+            ],
+            "flac": None,
+            "dolby": None,
+        }
+        with patch.object(CacheManager, "_worker_loop", lambda self: None), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value=""
+        ), patch(
+            "bilikara.cache.rust_runtime.fetch_bilibili_dash_playurl",
+            return_value=guest_dash,
+        ) as native_dash, patch(
+            "bilikara.cache.fetch_dash_playurl"
+        ) as python_dash:
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager.video_quality = "1080P 高清"
+                manager.audio_hires = False
+                selected = manager._resolve_dash_streams(item, native_media=True)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(native_dash.call_args.kwargs["cookie"], "")
+        self.assertEqual(selected["video"][0]["quality_id"], 64)
+        self.assertEqual(selected["audio"][0]["quality_id"], 30280)
+        python_dash.assert_not_called()
+
+    def test_rust_native_guest_media_download_omits_cookie_header(self):
+        item = self._single_downkyi_item("native-guest-media")
+        captured = {}
+
+        def fake_download(*, destination, headers, **_kwargs):
+            captured["headers"] = list(headers)
+            destination.write_bytes(b"guest-media")
+            return {"bytes_written": len(b"guest-media"), "candidate_index": 0}
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None), patch(
+            "bilikara.cache.rust_runtime.download_to_path", side_effect=fake_download
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                manager._begin_download_progress(
+                    item.id,
+                    [{"key": "video-p1", "label": "视频轨P1", "order": 0}],
+                )
+                result = manager._download_stream_with_rust(
+                    item.id,
+                    self.cache_dir / item.id / "video-p1",
+                    Path(self.temp_dir.name) / "native-guest.log",
+                    urls=["https://media.example/video.m4s"],
+                    out_name="video-p1.mp4",
+                    cookie="",
+                    stage_label="下载视频轨 P1",
+                    track_key="video-p1",
+                    stream_kind="video",
+                )
+            finally:
+                manager.shutdown()
+
+        self.assertTrue(result.is_file())
+        self.assertFalse(any(name.lower() == "cookie" for name, _value in captured["headers"]))
+
+    def test_rust_native_http_status_wrappers_distinguish_access_failures(self):
+        expected = {
+            401: ("authentication", "login/Cookie is invalid or expired"),
+            402: ("unavailable", "unavailable or requires payment"),
+            403: ("forbidden", "media access was forbidden"),
+        }
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                for status, (kind, message) in expected.items():
+                    with self.subTest(status=status), patch(
+                        "bilikara.cache.rust_runtime.download_to_path",
+                        side_effect=rust_runtime.RustDownloadError(
+                            "http_status",
+                            f"HTTP {status}",
+                            response={
+                                "error": {
+                                    "kind": "http_status",
+                                    "http_status": status,
+                                }
+                            },
+                        ),
+                    ):
+                        with self.assertRaises(DownloadCommandError) as raised:
+                            manager._download_stream_with_rust(
+                                f"native-http-{status}",
+                                self.cache_dir / f"native-http-{status}",
+                                Path(self.temp_dir.name) / f"native-http-{status}.log",
+                                urls=["https://media.example/video.m4s"],
+                                out_name="video-p1.mp4",
+                                cookie="",
+                                stage_label="下载视频轨 P1",
+                                track_key="video-p1",
+                                stream_kind="video",
+                            )
+                        self.assertEqual(raised.exception.kind, kind)
+                        self.assertIn(message, str(raised.exception))
+                        self.assertEqual(raised.exception.http_status, status)
+            finally:
+                manager.shutdown()
+
+    def test_unknown_api_error_is_not_automatically_terminal(self):
+        unknown = DownloadCommandError("unclassified API failure")
+        unknown.kind = "api"
+        unknown.api_code = -999
+        authentication = DownloadCommandError("not logged in")
+        authentication.kind = "api"
+        authentication.api_code = -101
+
+        self.assertFalse(CacheManager._is_terminal_track_failure(unknown))
+        self.assertTrue(CacheManager._is_terminal_track_failure(authentication))
+
+    def test_downkyi_without_cookie_fails_before_tool_preparation_or_track_work(self):
+        item = self._single_downkyi_item("downkyi-no-cookie")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value=""
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.python_worker_download_sources[item.id] = DOWNLOAD_SOURCE_DOWNKYI
+                with patch.object(manager, "_ensure_downloader") as prepare_aria2c, patch.object(
+                    manager, "_ensure_ffmpeg"
+                ) as prepare_ffmpeg, patch.object(
+                    manager, "_begin_download_progress"
+                ) as begin_tracks, patch.object(
+                    manager, "_resolve_dash_streams"
+                ) as resolve_dash, patch.object(
+                    manager, "_download_dash_streams_with_aria2c"
+                ) as aria2_download, patch.object(
+                    manager.stop_event, "wait", wraps=manager.stop_event.wait
+                ) as retry_wait, patch.object(
+                    manager, "_project_cache_event", wraps=manager._project_cache_event
+                ) as project_event:
+                    result = manager._cache_item_multi(
+                        item.id,
+                        item,
+                        allow_refresh_retry=True,
+                    )
+                self.assertFalse(result)
+                prepare_aria2c.assert_not_called()
+                prepare_ffmpeg.assert_not_called()
+                begin_tracks.assert_not_called()
+                resolve_dash.assert_not_called()
+                aria2_download.assert_not_called()
+                retry_wait.assert_not_called()
+                self.assertFalse(
+                    any(call.args[1] == "started" for call in project_event.call_args_list)
+                )
+                refreshed = self.store.get_item(item.id)
+                self.assertEqual(refreshed.cache_status, "failed")
+                self.assertEqual(
+                    refreshed.cache_message,
+                    "缓存失败: DownKyi/aria2c requires a valid Bilibili login/Cookie",
+                )
+            finally:
+                manager.shutdown()
+
+    def test_downkyi_explicit_forbidden_failure_stops_after_one_track_attempt(self):
+        item = self._single_downkyi_item("downkyi-expired-cookie")
+        forbidden_error = DownloadCommandError(
+            "DownKyi/aria2c Bilibili media access was forbidden (HTTP 403)"
+        )
+        forbidden_error.kind = "forbidden"
+        forbidden_error.http_status = 403
+        download_calls = []
+
+        def fail_download(*args, **kwargs):
+            download_calls.append((args, kwargs))
+            raise forbidden_error
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                with patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")
+                ), patch.object(
+                    manager, "_download_stream_with_aria2c", side_effect=fail_download
+                ), patch.object(
+                    manager.stop_event, "wait", wraps=manager.stop_event.wait
+                ) as retry_wait:
+                    with self.assertRaisesRegex(
+                        DownloadCommandError, r"access was forbidden \(HTTP 403\)"
+                    ) as raised:
+                        manager._download_dash_streams_with_aria2c(
+                            item=item,
+                            binary_path=Path("/tools/aria2c"),
+                            ffmpeg_path=Path("/tools/ffmpeg"),
+                            item_dir=self.cache_dir / item.id,
+                            log_path=Path(self.temp_dir.name) / "expired-cookie.log",
+                            dash_streams={
+                                "video": [
+                                    {
+                                        "url": "https://media.example/video.m4s",
+                                        "backup_urls": [],
+                                        "quality_id": 64,
+                                    }
+                                ]
+                            },
+                            video_track={
+                                "key": "video-p1",
+                                "page": 1,
+                                "stream_kind": "video",
+                                "label": "V1",
+                                "order": 0,
+                            },
+                            audio_tracks=[],
+                            validate_tracks=True,
+                        )
+                retry_wait.assert_not_called()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(len(download_calls), 1)
+        self.assertNotIn("10", str(raised.exception))
+
+    def test_aria2_http_statuses_are_classified_and_redacted(self):
+        item = self._single_downkyi_item("downkyi-aria-http")
+        expected = {
+            401: ("authentication", "login/Cookie is invalid or expired"),
+            402: ("unavailable", "unavailable or requires payment"),
+            403: ("forbidden", "media access was forbidden"),
+        }
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                with manager.lock:
+                    manager.desired_ids = {item.id}
+                    manager.ordered_desired_ids = [item.id]
+                    manager.active_item_id = item.id
+                for status, (kind, message) in expected.items():
+                    with self.subTest(status=status):
+                        log_path = Path(self.temp_dir.name) / f"aria-http-{status}.log"
+                        target_dir = self.cache_dir / item.id / f"video-p{status}"
+                        target_dir.mkdir(parents=True)
+                        track_key = f"video-p{status}"
+                        manager._begin_download_progress(
+                            item.id,
+                            [{"key": track_key, "label": "视频轨", "order": 0}],
+                        )
+                        command = [
+                            sys.executable,
+                            "-c",
+                            (
+                                "print('errorCode=22 The response status is not successful. "
+                                f"status={status} URI=https://media.example/video.m4s?' + "
+                                "'token' + '=' + 'secret'); raise SystemExit(1)"
+                            ),
+                        ]
+                        with self.assertRaises(DownloadCommandError) as raised:
+                            manager._run_item_command(
+                                item.id,
+                                command,
+                                Path(sys.executable),
+                                log_path,
+                                stage_label="下载视频轨 P1",
+                                stream_kind="video",
+                                target_dir=target_dir,
+                                track_key=track_key,
+                                tool_dir=Path(self.temp_dir.name),
+                                progress_from_output=True,
+                            )
+                        self.assertEqual(raised.exception.kind, kind)
+                        self.assertEqual(raised.exception.http_status, status)
+                        self.assertIn(message, str(raised.exception))
+                        log_text = log_path.read_text(encoding="utf-8")
+                        self.assertNotIn("token=secret", log_text)
+                        self.assertNotIn(
+                            "https://media.example/video.m4s?token=secret", log_text
+                        )
+            finally:
+                manager.shutdown()
 
     def test_downkyi_multi_page_audio_resolves_correct_cids_and_urls(self):
         item = PlaylistItem(

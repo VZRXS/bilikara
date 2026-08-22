@@ -73,6 +73,7 @@ ARIA2_PROGRESS_RE = re.compile(
     r"\(([0-9.]+)%\)",
     re.IGNORECASE,
 )
+ARIA2_HTTP_STATUS_RE = re.compile(r"\bstatus=(401|402|403)\b", re.IGNORECASE)
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 STREAM_SIZE_HINT_RE = re.compile(r"~?\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b", re.IGNORECASE)
 CACHE_LIMIT_CHOICES = (1, 2, 3, 4, 5)
@@ -80,6 +81,9 @@ CACHE_RETENTION_BUFFER_ITEMS = 3
 MAX_PARALLEL_TRACK_DOWNLOADS = 4
 DOWNKYI_TRACK_MAX_ATTEMPTS = 10
 DOWNKYI_TRACK_RETRY_WAIT_SECONDS = 3.0
+DOWNKYI_AUTH_REQUIRED_MESSAGE = (
+    "DownKyi/aria2c requires a valid Bilibili login/Cookie"
+)
 BILIBILI_QR_GENERATE_URL = (
     "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
     "?source=main-fe-header"
@@ -2205,6 +2209,21 @@ class CacheManager:
         allow_refresh_retry: bool,
         playback_selector: PlaybackSelector | None = None,
     ) -> bool:
+        with self.lock:
+            download_source = self.python_worker_download_sources[item_id]
+        if (
+            download_source == DOWNLOAD_SOURCE_DOWNKYI
+            and not effective_bilibili_cookie()
+        ):
+            self._clear_item_download_progress(item_id)
+            self._project_cache_event(
+                item_id,
+                "failed",
+                message=f"缓存失败: {DOWNKYI_AUTH_REQUIRED_MESSAGE}",
+            )
+            self._record_item_activity(item_id)
+            return False
+
         self._clear_item_download_progress(item_id)
         self._project_cache_event(
             item_id,
@@ -2215,8 +2234,6 @@ class CacheManager:
 
         item_dir = CACHE_DIR / item_id
         item_dir.mkdir(parents=True, exist_ok=True)
-        with self.lock:
-            download_source = self.python_worker_download_sources[item_id]
         if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
             self._cleanup_attempt_dirs(item_dir)
         log_path = self._item_log_path(item_id, download_source)
@@ -2848,6 +2865,57 @@ class CacheManager:
         return sorted(exceptions, key=priority)[0]
 
     @staticmethod
+    def _is_terminal_track_failure(exc: BaseException) -> bool:
+        terminal_kinds = {
+            "access_forbidden",
+            "authentication",
+            "authentication_required",
+            "codec_policy",
+            "forbidden",
+            "invalid_request",
+            "no_matching_stream",
+            "risk_control",
+            "selection",
+            "unavailable",
+            "unsupported",
+            "unsupported_codec",
+            "unsupported_content",
+        }
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            kind = str(getattr(current, "kind", "") or "").strip().lower()
+            response = getattr(current, "response", None)
+            error = response.get("error") if isinstance(response, dict) else None
+            error = error if isinstance(error, dict) else {}
+            if not kind:
+                kind = str(error.get("kind") or "").strip().lower()
+            raw_status = (
+                getattr(current, "http_status", None)
+                or getattr(current, "status_code", None)
+                or error.get("http_status")
+                or error.get("status_code")
+            )
+            raw_api_code = getattr(current, "api_code", None) or error.get("api_code")
+            try:
+                status = int(raw_status) if raw_status is not None else None
+            except (TypeError, ValueError):
+                status = None
+            try:
+                api_code = int(raw_api_code) if raw_api_code is not None else None
+            except (TypeError, ValueError):
+                api_code = None
+            if kind in terminal_kinds:
+                return True
+            if kind in {"http", "http_status"} and status in {401, 402, 403}:
+                return True
+            if api_code in {-101, -400, -403, -404, -352, -412, 412, 62002}:
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
+    @staticmethod
     def _download_track_key(stream_kind: str, page: int) -> str:
         return f"{stream_kind}-p{page}"
 
@@ -3145,8 +3213,6 @@ class CacheManager:
           - "dolby": Dolby stream dict or None
         """
         cookie = effective_bilibili_cookie()
-        if not cookie:
-            raise BilibiliError("Downkyi 模式需要 Bilibili Cookie 才能获取播放地址")
 
         resolved_cid = cid if cid is not None else item.cid
 
@@ -3754,11 +3820,15 @@ class CacheManager:
                     last_error = self._compact_probe_error(str(exc))
                     if raw_path is not None:
                         self._safe_rmtree(raw_path.parent)
+                    terminal = self._is_terminal_track_failure(exc)
                     self._append_log_line(
                         log_path,
-                        f"[{self._log_timestamp()}] Rust Native track attempt "
-                        f"{attempt}/{DOWNKYI_TRACK_MAX_ATTEMPTS} failed: {last_error}",
+                        f"[{self._log_timestamp()}] Rust Native track "
+                        f"{'terminal failure' if terminal else f'attempt {attempt}/{DOWNKYI_TRACK_MAX_ATTEMPTS} failed'}: "
+                        f"{last_error}",
                     )
+                    if terminal:
+                        raise
                     if attempt < DOWNKYI_TRACK_MAX_ATTEMPTS:
                         self._set_download_track_phase(
                             item_id,
@@ -4050,11 +4120,14 @@ class CacheManager:
                     last_error = self._compact_probe_error(str(exc)) or type(exc).__name__
                     if media_path is not None:
                         self._safe_rmtree(media_path.parent)
+                    terminal = self._is_terminal_track_failure(exc)
                     self._append_log_line(
                         log_path,
                         f"[{self._log_timestamp()}] media_diagnostic: "
                         f"{json.dumps({'event': 'downkyi_track_attempt', 'item_id': item_id, 'track_key': track_key, 'stream_kind': stream_kind, 'page': page, 'attempt': attempt, 'max_attempts': max_attempts, 'status': 'failed', 'error': last_error}, ensure_ascii=False, sort_keys=True)}",
                     )
+                    if terminal:
+                        raise
                     if attempt >= max_attempts:
                         raise DownloadCommandError(
                             f"{validation_label} 已尝试 {max_attempts} 次仍失败: {last_error}"
@@ -4550,9 +4623,44 @@ class CacheManager:
             raise CacheCancelledError("Rust HTTP download cancelled") from exc
         except rust_runtime.RustDownloadError as exc:
             self._safe_rmtree(attempt_dir)
-            raise DownloadCommandError(
-                f"{stage_label}: Rust HTTP downloader failed ({exc.kind})"
-            ) from exc
+            error_payload = (
+                exc.response.get("error") if isinstance(exc.response, dict) else None
+            )
+            error_payload = error_payload if isinstance(error_payload, dict) else {}
+            raw_status = error_payload.get("http_status") or error_payload.get("status_code")
+            try:
+                status = int(raw_status) if raw_status is not None else None
+            except (TypeError, ValueError):
+                status = None
+            if exc.kind == "http_status" and status == 401:
+                message = (
+                    f"{stage_label}: Rust Native Bilibili login/Cookie is invalid or "
+                    "expired (HTTP 401)"
+                )
+                kind = "authentication"
+            elif exc.kind == "http_status" and status == 402:
+                message = (
+                    f"{stage_label}: Rust Native Bilibili media access is unavailable "
+                    "or requires payment (HTTP 402)"
+                )
+                kind = "unavailable"
+            elif exc.kind == "http_status" and status == 403:
+                message = (
+                    f"{stage_label}: Rust Native Bilibili media access was forbidden "
+                    "(HTTP 403)"
+                )
+                kind = "forbidden"
+            elif exc.kind == "invalid_request":
+                message = f"{stage_label}: Rust Native rejected an invalid media request"
+                kind = exc.kind
+            else:
+                message = f"{stage_label}: Rust HTTP downloader failed ({exc.kind})"
+                kind = exc.kind
+            wrapped = DownloadCommandError(message)
+            wrapped.kind = kind
+            wrapped.http_status = status
+            wrapped.status_code = status
+            raise wrapped from exc
 
         final_size = int(result.get("bytes_written") or 0)
         if final_size <= 0 or not expected_path.is_file():
@@ -4722,6 +4830,7 @@ class CacheManager:
         target_bytes_state = {"value": 0}
         current_bytes_state = {"value": 0}
         progress_percent_state: dict[str, float | None] = {"value": None}
+        classified_http_status: int | None = None
         monitor_stop = threading.Event()
 
         process = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
@@ -4770,10 +4879,22 @@ class CacheManager:
                 line = self._normalize_output_line(raw_line)
                 if not line:
                     continue
-                last_message = line
+                status_match = (
+                    ARIA2_HTTP_STATUS_RE.search(line)
+                    if progress_from_output
+                    else None
+                )
+                if status_match is not None:
+                    classified_http_status = int(status_match.group(1))
+                safe_line = (
+                    self._sanitized_bilibili_login_error(line)
+                    if progress_from_output
+                    else line
+                )
+                last_message = safe_line
                 if not silent:
-                    _debug_print(f"[bilikara-cache] [{stage_label}] {line}")
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] {line}")
+                    _debug_print(f"[bilikara-cache] [{stage_label}] {safe_line}")
+                self._append_log_line(log_path, f"[{self._log_timestamp()}] {safe_line}")
                 self._record_item_activity(item_id)
                 aria2_progress = self._aria2_progress_bytes(line) if progress_from_output else None
                 if aria2_progress is not None:
@@ -4809,6 +4930,8 @@ class CacheManager:
         finally:
             monitor_stop.set()
             monitor.join(timeout=1.0)
+            if process.stdout is not None:
+                process.stdout.close()
             self._unregister_active_process(process)
 
         interrupt_message = self._peek_cache_interrupt_message(item_id)
@@ -4832,7 +4955,31 @@ class CacheManager:
         if return_code != 0:
             if not silent:
                 _debug_print(f"[bilikara-cache] [{stage_label}] FAILED exit_code={return_code} last_message={last_message}")
-            error = DownloadCommandError(f"{stage_label}: {last_message}")
+            if classified_http_status == 401:
+                error = DownloadCommandError(
+                    "DownKyi/aria2c Bilibili login/Cookie is invalid or expired "
+                    "(HTTP 401)"
+                )
+                error.kind = "authentication"
+                error.http_status = classified_http_status
+                error.status_code = classified_http_status
+            elif classified_http_status == 402:
+                error = DownloadCommandError(
+                    "DownKyi/aria2c Bilibili media access is unavailable or requires "
+                    "payment (HTTP 402)"
+                )
+                error.kind = "unavailable"
+                error.http_status = classified_http_status
+                error.status_code = classified_http_status
+            elif classified_http_status == 403:
+                error = DownloadCommandError(
+                    "DownKyi/aria2c Bilibili media access was forbidden (HTTP 403)"
+                )
+                error.kind = "forbidden"
+                error.http_status = classified_http_status
+                error.status_code = classified_http_status
+            else:
+                error = DownloadCommandError(f"{stage_label}: {last_message}")
             error.return_code = return_code
             raise error
 
