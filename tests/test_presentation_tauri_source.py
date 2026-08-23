@@ -147,6 +147,25 @@ class PresentationTauriSourceTest(unittest.TestCase):
         )
         self.assertIn("complete_activation_if_ready", activation)
 
+    def test_presentation_native_lifecycle_is_recorded_in_diagnostic_logs(self):
+        self.assertIn('join("runtime")', self.main)
+        self.assertIn('join("logs")', self.main)
+        self.assertIn("app.manage(startup_log)", self.main)
+        self.assertIn('"presentation_window_destroyed"', self.main)
+        for stage in (
+            "activation_command_begin",
+            "controller_build_begin",
+            "controller_build_end",
+            "main_thread_result_wait_begin",
+            "main_thread_operation_begin",
+            "window_mutation_begin",
+            "window_mutation_end",
+            "recovery_claimed",
+            "recovery_restore_end",
+            "app_shutdown_controller_close_end",
+        ):
+            self.assertIn(f'"{stage}"', self.presentation)
+
     def test_stale_activation_cannot_mutate_after_recovery_claim(self):
         mutation = self.presentation[
             self.presentation.index("fn run_activation_window_mutation") :
