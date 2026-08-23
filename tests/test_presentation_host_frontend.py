@@ -366,6 +366,95 @@ function tauriInvoke() {{
         self.assertIn("state.presentationControlBusy = false", toggle)
         self.assertNotIn("setTimeout", toggle)
 
+    def test_presentation_toggle_busy_state_tracks_invoke_settlement(self):
+        functions = self.source_slice(
+            "async function activateLocalPresentation",
+            "function selectPresentationDisplay",
+        )
+        script = f"""
+const calls = [];
+const renders = [];
+const messages = [];
+const busyAtInvoke = [];
+let settle = null;
+let nextInvoke = (name, payload) => {{
+  busyAtInvoke.push(state.presentationControlBusy);
+  calls.push([name, payload]);
+  return new Promise((resolve, reject) => {{ settle = {{ resolve, reject }}; }});
+}};
+const state = {{
+  presentationSelectedDisplayId: "display:audience",
+  presentationControlBusy: false,
+  presentationDisplayBusy: false,
+  presentationSession: {{ phase: "inactive", generation: 0 }},
+}};
+function tauriInvoke() {{ return (name, payload) => nextInvoke(name, payload); }}
+function presentationDisplayById(displayId) {{
+  return displayId === "display:audience" ? {{ selectable: true }} : null;
+}}
+function renderPresentationOutputControl() {{ renders.push(state.presentationControlBusy); }}
+function setAppMessage(message, isError) {{ messages.push([message, isError]); }}
+function t(key, values = {{}}) {{ return values.message ? `${{key}}:${{values.message}}` : key; }}
+async function handlePresentationSession(session) {{
+  state.presentationSession = session;
+  return session;
+}}
+{functions}
+(async () => {{
+  const activation = toggleLocalPresentation();
+  const busyDuringActivation = state.presentationControlBusy;
+  settle.resolve({{ phase: "activating", generation: 7 }});
+  await activation;
+  const busyAfterActivation = state.presentationControlBusy;
+
+  nextInvoke = async (name, payload) => {{
+    busyAtInvoke.push(state.presentationControlBusy);
+    calls.push([name, payload]);
+    return {{ phase: "inactive", generation: 8 }};
+  }};
+  await toggleLocalPresentation();
+  const busyAfterCancellation = state.presentationControlBusy;
+
+  state.presentationSession = {{ phase: "inactive", generation: 8 }};
+  nextInvoke = (name, payload) => {{
+    busyAtInvoke.push(state.presentationControlBusy);
+    calls.push([name, payload]);
+    return Promise.reject(new Error("activation rejected"));
+  }};
+  await toggleLocalPresentation();
+  process.stdout.write(JSON.stringify({{
+    calls,
+    renders,
+    messages,
+    busyAtInvoke,
+    busyDuringActivation,
+    busyAfterActivation,
+    busyAfterCancellation,
+    busyAfterRejection: state.presentationControlBusy,
+  }}));
+}})();
+"""
+        result = self.run_node(script)
+        self.assertEqual(result["busyAtInvoke"], [True, True, True])
+        self.assertTrue(result["busyDuringActivation"])
+        self.assertFalse(result["busyAfterActivation"])
+        self.assertFalse(result["busyAfterCancellation"])
+        self.assertFalse(result["busyAfterRejection"])
+        self.assertEqual(
+            [call[0] for call in result["calls"]],
+            [
+                "activate_local_presentation",
+                "deactivate_local_presentation",
+                "activate_local_presentation",
+            ],
+        )
+        self.assertEqual(result["calls"][1][1]["generation"], 7)
+        self.assertEqual(
+            result["messages"],
+            [["display.presentationTransitionFailed:activation rejected", True]],
+        )
+        self.assertNotIn("setTimeout", functions)
+
     def test_display_discovery_and_transition_controls_fail_closed_while_busy(self):
         presentation = self.source_slice(
             "async function refreshPresentationDisplays",

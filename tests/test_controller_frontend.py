@@ -139,6 +139,7 @@ let deferNextSend = true;
 let emitStateDuringRegistration = false;
 let deferPlaybackListener = false;
 let resolvePlaybackListener = null;
+let rejectControllerReady = false;
 const sent = [];
 
 async function listen(name, callback) {{
@@ -158,6 +159,7 @@ async function invoke(name, payload = {{}}) {{
   trace.push(`invoke:${{name}}`);
   if (name === "get_presentation_session") return {{ ...session }};
   if (name === "mark_presentation_controller_ready") {{
+    if (rejectControllerReady) throw new Error("controller readiness rejected");
     session = {{ ...session, controllerReady: true }};
     return {{ ...session }};
   }}
@@ -467,6 +469,25 @@ deferPlaybackListener = true;
             result,
             {"unavailableVisible": True, "controlsDisabled": True, "exitDisabled": True},
         )
+
+    def test_controller_readiness_failure_is_visible_and_fails_closed(self):
+        result = self.run_node(
+            """
+  process.stdout.write(JSON.stringify({
+    error: elements["controller-error"].textContent,
+    unavailableVisible: !elements["controller-unavailable"].classList.contains("hidden"),
+    controlsDisabled: commandIds.every((id) => elements[id].disabled),
+    readyAttempts: trace.filter(
+      (entry) => entry === "invoke:mark_presentation_controller_ready",
+    ).length,
+  }));
+""",
+            before_eval="rejectControllerReady = true;",
+        )
+        self.assertEqual(result["error"], "controller readiness rejected")
+        self.assertTrue(result["unavailableVisible"])
+        self.assertTrue(result["controlsDisabled"])
+        self.assertEqual(result["readyAttempts"], 1)
 
 
 if __name__ == "__main__":

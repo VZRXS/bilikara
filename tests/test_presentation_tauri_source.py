@@ -113,6 +113,67 @@ class PresentationTauriSourceTest(unittest.TestCase):
         self.assertLess(placement, show)
         self.assertLess(show, fullscreen)
 
+    def test_activation_uses_tauri_async_executor_before_controller_construction(self):
+        start = self.presentation.index(
+            "#[tauri::command(async)]\npub(crate) fn activate_local_presentation"
+        )
+        end = self.presentation.index("fn complete_activation_if_ready")
+        activation = self.presentation[start:end]
+        self.assertIn("ActivationAttemptGuard::new", activation)
+        self.assertIn("run_on_main_thread_with_result", activation)
+        self.assertLess(
+            activation.index("create_controller_window("),
+            activation.index("run_on_main_thread_with_result("),
+        )
+        self.assertLess(
+            activation.index("place_controller_for_activation("),
+            activation.index("mark_activation_published("),
+        )
+        self.assertLess(
+            activation.index("place_host_for_activation("),
+            activation.index("mark_activation_published("),
+        )
+        self.assertLess(
+            activation.index("|| controller.show()"),
+            activation.index("mark_activation_published("),
+        )
+        self.assertLess(
+            activation.index("emit_composition("),
+            activation.index("mark_activation_published("),
+        )
+        self.assertLess(
+            activation.index("mark_activation_published("),
+            activation.index("start_generation_watchers("),
+        )
+        self.assertIn("complete_activation_if_ready", activation)
+
+    def test_stale_activation_cannot_mutate_after_recovery_claim(self):
+        mutation = self.presentation[
+            self.presentation.index("fn run_activation_window_mutation") :
+            self.presentation.index("fn place_host_for_activation")
+        ]
+        self.assertLess(
+            mutation.index("ensure_activation_native_owner"),
+            mutation.index("operation()"),
+        )
+        finalization = self.presentation[
+            self.presentation.index("fn complete_activation_if_ready") :
+            self.presentation.index("fn run_activation_readiness_step")
+        ]
+        fullscreen = finalization.index("host.set_fullscreen(true)")
+        self.assertLess(
+            finalization.rindex("ensure_activation_native_owner", 0, fullscreen),
+            fullscreen,
+        )
+        settlement = self.presentation[
+            self.presentation.index("fn settle_activation_attempt") :
+            self.presentation.index("fn complete_activation_if_ready")
+        ]
+        self.assertLess(
+            settlement.index("activation_attempt.finish()"),
+            settlement.index("force_finalize_recovery"),
+        )
+
     def test_display_identity_is_native_and_unsupported_platforms_fail_closed(self):
         self.assertIn("DISPLAYCONFIG_TARGET_DEVICE_NAME", self.presentation)
         self.assertIn("target.monitorDevicePath", self.presentation)

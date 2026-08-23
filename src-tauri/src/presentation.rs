@@ -299,6 +299,19 @@ struct HostCompositionEvent {
     composition: HostComposition,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeLifecycleOwner {
+    Activation(u64),
+    Recovery(u64),
+}
+
+#[derive(Clone, Debug)]
+struct RecoveryClaim {
+    session: PresentationSession,
+    started: bool,
+    owns_native_lifecycle: bool,
+}
+
 #[derive(Default)]
 struct PresentationRuntime {
     session: PresentationSession,
@@ -308,6 +321,9 @@ struct PresentationRuntime {
     pending_commands: VecDeque<ControllerCommandEnvelope>,
     in_flight_command_sequence: Option<u64>,
     placement_prepared: bool,
+    activation_published: bool,
+    activation_attempt_generation: Option<u64>,
+    native_lifecycle_owner: Option<NativeLifecycleOwner>,
     host_window_restored: bool,
     activation_finalization_claimed: bool,
     shutting_down: bool,
@@ -336,6 +352,12 @@ impl PresentationState {
         host_placement: HostWindowPlacement,
     ) -> Result<PresentationSession, String> {
         let mut runtime = self.lock_runtime()?;
+        if runtime.activation_attempt_generation.is_some() {
+            return Err("a presentation activation attempt is still in flight".to_string());
+        }
+        if runtime.native_lifecycle_owner.is_some() {
+            return Err("a presentation native lifecycle transition is still active".to_string());
+        }
         if runtime.session.phase != PresentationPhase::Inactive {
             return Err("a presentation transition is already active".to_string());
         }
@@ -363,6 +385,9 @@ impl PresentationState {
         runtime.pending_commands.clear();
         runtime.in_flight_command_sequence = None;
         runtime.placement_prepared = false;
+        runtime.activation_published = false;
+        runtime.activation_attempt_generation = Some(generation);
+        runtime.native_lifecycle_owner = Some(NativeLifecycleOwner::Activation(generation));
         runtime.host_window_restored = false;
         runtime.activation_finalization_claimed = false;
         Ok(runtime.session.clone())
@@ -372,6 +397,7 @@ impl PresentationState {
         let mut runtime = self.lock_runtime()?;
         if runtime.session.generation != generation
             || runtime.session.phase != PresentationPhase::Activating
+            || runtime.native_lifecycle_owner != Some(NativeLifecycleOwner::Activation(generation))
         {
             return Err("presentation placement generation is stale".to_string());
         }
@@ -394,13 +420,27 @@ impl PresentationState {
             WindowRole::Host => runtime.session.host_ready = true,
             WindowRole::Controller => runtime.session.controller_ready = true,
         }
-        let should_finalize = runtime.session.host_ready
-            && runtime.session.controller_ready
-            && runtime.placement_prepared
-            && !runtime.activation_finalization_claimed;
-        if should_finalize {
-            runtime.activation_finalization_claimed = true;
+        let should_finalize = claim_activation_finalization(&mut runtime);
+        Ok((runtime.session.clone(), should_finalize))
+    }
+
+    fn mark_activation_published(
+        &self,
+        generation: u64,
+    ) -> Result<(PresentationSession, bool), String> {
+        let mut runtime = self.lock_runtime()?;
+        if runtime.session.generation != generation
+            || runtime.session.phase != PresentationPhase::Activating
+            || !runtime.placement_prepared
+            || runtime.native_lifecycle_owner != Some(NativeLifecycleOwner::Activation(generation))
+        {
+            return Err("presentation activation publication is stale".to_string());
         }
+        if runtime.activation_published {
+            return Err("presentation activation was already published".to_string());
+        }
+        runtime.activation_published = true;
+        let should_finalize = claim_activation_finalization(&mut runtime);
         Ok((runtime.session.clone(), should_finalize))
     }
 
@@ -411,20 +451,65 @@ impl PresentationState {
             || !runtime.session.host_ready
             || !runtime.session.controller_ready
             || !runtime.placement_prepared
+            || !runtime.activation_published
             || !runtime.activation_finalization_claimed
+            || runtime.native_lifecycle_owner != Some(NativeLifecycleOwner::Activation(generation))
         {
             return Err("presentation activation is not ready to complete".to_string());
         }
         runtime.session.phase = PresentationPhase::Active;
+        runtime.activation_published = false;
         runtime.activation_finalization_claimed = false;
+        if runtime.activation_attempt_generation != Some(generation) {
+            runtime.native_lifecycle_owner = None;
+        }
         Ok(runtime.session.clone())
+    }
+
+    fn finish_activation_attempt(&self, generation: u64) -> Result<Option<u64>, String> {
+        let mut runtime = self.lock_runtime()?;
+        if runtime.activation_attempt_generation != Some(generation) {
+            return Err("presentation activation attempt is stale".to_string());
+        }
+        runtime.activation_attempt_generation = None;
+        if runtime.session.phase == PresentationPhase::Recovering {
+            let recovery_generation = runtime.session.generation;
+            runtime.native_lifecycle_owner =
+                Some(NativeLifecycleOwner::Recovery(recovery_generation));
+            return Ok(Some(recovery_generation));
+        }
+        if runtime.native_lifecycle_owner == Some(NativeLifecycleOwner::Activation(generation)) {
+            runtime.native_lifecycle_owner = None;
+        }
+        Ok(None)
+    }
+
+    fn ensure_activation_native_owner(&self, generation: u64) -> Result<(), String> {
+        let runtime = self.lock_runtime()?;
+        if runtime.session.generation != generation
+            || runtime.session.phase != PresentationPhase::Activating
+            || runtime.native_lifecycle_owner != Some(NativeLifecycleOwner::Activation(generation))
+        {
+            return Err("presentation activation native lifecycle is stale".to_string());
+        }
+        Ok(())
+    }
+
+    fn ensure_active_generation(&self, generation: u64) -> Result<(), String> {
+        let runtime = self.lock_runtime()?;
+        if runtime.session.generation != generation
+            || runtime.session.phase != PresentationPhase::Active
+        {
+            return Err("presentation active generation is stale".to_string());
+        }
+        Ok(())
     }
 
     fn begin_recovery(
         &self,
         expected_generation: Option<u64>,
         reason: PresentationRecoveryReason,
-    ) -> Result<(PresentationSession, bool), String> {
+    ) -> Result<RecoveryClaim, String> {
         let mut runtime = self.lock_runtime()?;
         if let Some(expected_generation) = expected_generation
             && runtime.session.generation != expected_generation
@@ -432,11 +517,26 @@ impl PresentationState {
             return Err("presentation recovery generation is stale".to_string());
         }
         if runtime.session.phase == PresentationPhase::Inactive {
-            return Ok((runtime.session.clone(), false));
+            return Ok(RecoveryClaim {
+                session: runtime.session.clone(),
+                started: false,
+                owns_native_lifecycle: false,
+            });
         }
         if runtime.session.phase == PresentationPhase::Recovering {
-            return Ok((runtime.session.clone(), false));
+            return Ok(RecoveryClaim {
+                session: runtime.session.clone(),
+                started: false,
+                owns_native_lifecycle: matches!(
+                    runtime.native_lifecycle_owner,
+                    Some(NativeLifecycleOwner::Recovery(generation))
+                        if generation == runtime.session.generation
+                ),
+            });
         }
+        let previous_generation = runtime.session.generation;
+        let activation_attempt_in_flight =
+            runtime.activation_attempt_generation == Some(previous_generation);
         let generation = next_sequence(runtime.session.generation, "presentation generation")?;
         runtime.session.phase = PresentationPhase::Recovering;
         runtime.session.generation = generation;
@@ -450,9 +550,32 @@ impl PresentationState {
         runtime.pending_commands.clear();
         runtime.in_flight_command_sequence = None;
         runtime.placement_prepared = false;
+        runtime.activation_published = false;
         runtime.host_window_restored = false;
         runtime.activation_finalization_claimed = false;
-        Ok((runtime.session.clone(), true))
+        if activation_attempt_in_flight {
+            runtime.native_lifecycle_owner =
+                Some(NativeLifecycleOwner::Activation(previous_generation));
+        } else {
+            runtime.native_lifecycle_owner = Some(NativeLifecycleOwner::Recovery(generation));
+        }
+        Ok(RecoveryClaim {
+            session: runtime.session.clone(),
+            started: true,
+            owns_native_lifecycle: !activation_attempt_in_flight,
+        })
+    }
+
+    fn ensure_recovery_native_owner(&self, generation: u64) -> Result<(), String> {
+        let runtime = self.lock_runtime()?;
+        if runtime.session.generation != generation
+            || runtime.session.phase != PresentationPhase::Recovering
+            || runtime.activation_attempt_generation.is_some()
+            || runtime.native_lifecycle_owner != Some(NativeLifecycleOwner::Recovery(generation))
+        {
+            return Err("presentation recovery native lifecycle is stale".to_string());
+        }
+        Ok(())
     }
 
     fn mark_recovery_host_ready(&self, generation: u64) -> Result<PresentationSession, String> {
@@ -503,6 +626,8 @@ impl PresentationState {
             || runtime.session.phase != PresentationPhase::Recovering
             || !runtime.session.host_ready
             || !runtime.host_window_restored
+            || runtime.activation_attempt_generation.is_some()
+            || runtime.native_lifecycle_owner != Some(NativeLifecycleOwner::Recovery(generation))
         {
             return Err("presentation recovery generation is stale".to_string());
         }
@@ -514,6 +639,8 @@ impl PresentationState {
         let mut runtime = self.lock_runtime()?;
         if runtime.session.generation != generation
             || runtime.session.phase != PresentationPhase::Recovering
+            || runtime.activation_attempt_generation.is_some()
+            || runtime.native_lifecycle_owner != Some(NativeLifecycleOwner::Recovery(generation))
         {
             return Err("presentation recovery generation is stale".to_string());
         }
@@ -685,6 +812,9 @@ impl PresentationState {
             runtime.pending_commands.clear();
             runtime.in_flight_command_sequence = None;
             runtime.placement_prepared = false;
+            runtime.activation_published = false;
+            runtime.activation_attempt_generation = None;
+            runtime.native_lifecycle_owner = None;
             runtime.host_window_restored = false;
             runtime.activation_finalization_claimed = false;
         }
@@ -711,6 +841,56 @@ impl PresentationState {
 enum WindowRole {
     Host,
     Controller,
+}
+
+struct ActivationAttemptGuard<'a> {
+    state: &'a PresentationState,
+    generation: u64,
+    finished: bool,
+}
+
+impl<'a> ActivationAttemptGuard<'a> {
+    fn new(state: &'a PresentationState, generation: u64) -> Self {
+        Self {
+            state,
+            generation,
+            finished: false,
+        }
+    }
+
+    fn finish(mut self) -> Result<Option<u64>, String> {
+        let result = self.state.finish_activation_attempt(self.generation);
+        self.finished = result.is_ok();
+        result
+    }
+}
+
+impl Drop for ActivationAttemptGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.state.finish_activation_attempt(self.generation);
+        }
+    }
+}
+
+fn claim_activation_finalization(runtime: &mut PresentationRuntime) -> bool {
+    let generation = runtime.session.generation;
+    let native_lifecycle_available = match runtime.native_lifecycle_owner {
+        None => true,
+        Some(NativeLifecycleOwner::Activation(owner_generation)) => owner_generation == generation,
+        Some(NativeLifecycleOwner::Recovery(_)) => false,
+    };
+    let should_finalize = runtime.session.host_ready
+        && runtime.session.controller_ready
+        && runtime.placement_prepared
+        && runtime.activation_published
+        && !runtime.activation_finalization_claimed
+        && native_lifecycle_available;
+    if should_finalize {
+        runtime.activation_finalization_claimed = true;
+        runtime.native_lifecycle_owner = Some(NativeLifecycleOwner::Activation(generation));
+    }
+    should_finalize
 }
 
 fn next_sequence(current: u64, label: &str) -> Result<u64, String> {
@@ -746,6 +926,8 @@ fn reset_runtime_to_inactive(
     runtime.pending_commands.clear();
     runtime.in_flight_command_sequence = None;
     runtime.placement_prepared = false;
+    runtime.activation_published = false;
+    runtime.native_lifecycle_owner = None;
     runtime.host_window_restored = false;
     runtime.activation_finalization_claimed = false;
     runtime.session.clone()
@@ -1280,32 +1462,53 @@ fn capture_host_placement(window: &tauri::WebviewWindow) -> Result<HostWindowPla
     })
 }
 
+fn run_activation_window_mutation(
+    state: &PresentationState,
+    generation: u64,
+    action: &str,
+    operation: impl FnOnce() -> tauri::Result<()>,
+) -> Result<(), String> {
+    state.ensure_activation_native_owner(generation)?;
+    operation().map_err(|error| format!("{action}: {error}"))
+}
+
 fn place_host_for_activation(
     window: &tauri::WebviewWindow,
     monitor: &tauri::window::Monitor,
+    state: &PresentationState,
+    generation: u64,
 ) -> Result<(), String> {
-    window
-        .set_fullscreen(false)
-        .map_err(|error| error.to_string())?;
-    window.unminimize().map_err(|error| error.to_string())?;
-    window.unmaximize().map_err(|error| error.to_string())?;
-    window
-        .set_decorations(false)
-        .map_err(|error| error.to_string())?;
-    window
-        .set_resizable(false)
-        .map_err(|error| error.to_string())?;
-    window
-        .set_position(*monitor.position())
-        .map_err(|error| error.to_string())?;
-    window
-        .set_size(*monitor.size())
-        .map_err(|error| error.to_string())?;
-    window.show().map_err(|error| error.to_string())
+    run_activation_window_mutation(state, generation, "leave fullscreen", || {
+        window.set_fullscreen(false)
+    })?;
+    run_activation_window_mutation(state, generation, "unminimize Host", || window.unminimize())?;
+    run_activation_window_mutation(state, generation, "unmaximize Host", || window.unmaximize())?;
+    run_activation_window_mutation(state, generation, "remove Host decorations", || {
+        window.set_decorations(false)
+    })?;
+    run_activation_window_mutation(state, generation, "lock Host resizing", || {
+        window.set_resizable(false)
+    })?;
+    run_activation_window_mutation(state, generation, "position Host", || {
+        window.set_position(*monitor.position())
+    })?;
+    run_activation_window_mutation(state, generation, "resize Host", || {
+        window.set_size(*monitor.size())
+    })?;
+    run_activation_window_mutation(state, generation, "show Host", || window.show())
 }
 
-fn collect_window_result(result: tauri::Result<()>, action: &str, errors: &mut Vec<String>) {
-    if let Err(error) = result {
+fn collect_recovery_window_mutation(
+    state: &PresentationState,
+    generation: u64,
+    action: &str,
+    operation: impl FnOnce() -> tauri::Result<()>,
+    errors: &mut Vec<String>,
+) {
+    if let Err(error) = state
+        .ensure_recovery_native_owner(generation)
+        .and_then(|_| operation().map_err(|error| error.to_string()))
+    {
         errors.push(format!("{action}: {error}"));
     }
 }
@@ -1345,7 +1548,10 @@ fn restore_host_window(
     window: &tauri::WebviewWindow,
     placement: &HostWindowPlacement,
     preserve_original_fullscreen: bool,
+    state: &PresentationState,
+    generation: u64,
 ) -> Result<(), String> {
+    state.ensure_recovery_native_owner(generation)?;
     let monitors = window
         .available_monitors()
         .map_err(|error| error.to_string())?;
@@ -1363,42 +1569,82 @@ fn restore_host_window(
     let (position, size, original_is_visible) =
         visible_restore_placement(placement, &monitor_geometries, primary_work_area);
     let mut errors = Vec::new();
-    collect_window_result(
-        window.set_fullscreen(false),
+    collect_recovery_window_mutation(
+        state,
+        generation,
         "leave fullscreen",
+        || window.set_fullscreen(false),
         &mut errors,
     );
-    collect_window_result(window.unmaximize(), "leave maximized state", &mut errors);
-    collect_window_result(
-        window.set_decorations(placement.decorations),
+    collect_recovery_window_mutation(
+        state,
+        generation,
+        "leave maximized state",
+        || window.unmaximize(),
+        &mut errors,
+    );
+    collect_recovery_window_mutation(
+        state,
+        generation,
         "restore decorations",
+        || window.set_decorations(placement.decorations),
         &mut errors,
     );
-    collect_window_result(
-        window.set_resizable(placement.resizable),
+    collect_recovery_window_mutation(
+        state,
+        generation,
         "restore resizable state",
+        || window.set_resizable(placement.resizable),
         &mut errors,
     );
-    collect_window_result(
-        window.set_position(position),
+    collect_recovery_window_mutation(
+        state,
+        generation,
         "restore position",
+        || window.set_position(position),
         &mut errors,
     );
-    collect_window_result(window.set_size(size), "restore size", &mut errors);
-    collect_window_result(window.show(), "show Host", &mut errors);
+    collect_recovery_window_mutation(
+        state,
+        generation,
+        "restore size",
+        || window.set_size(size),
+        &mut errors,
+    );
+    collect_recovery_window_mutation(
+        state,
+        generation,
+        "show Host",
+        || window.show(),
+        &mut errors,
+    );
     if preserve_original_fullscreen && original_is_visible {
         if placement.maximized {
-            collect_window_result(window.maximize(), "restore maximized state", &mut errors);
+            collect_recovery_window_mutation(
+                state,
+                generation,
+                "restore maximized state",
+                || window.maximize(),
+                &mut errors,
+            );
         }
         if placement.fullscreen {
-            collect_window_result(
-                window.set_fullscreen(true),
+            collect_recovery_window_mutation(
+                state,
+                generation,
                 "restore fullscreen state",
+                || window.set_fullscreen(true),
                 &mut errors,
             );
         }
     }
-    let _ = window.set_focus();
+    collect_recovery_window_mutation(
+        state,
+        generation,
+        "focus Host",
+        || window.set_focus(),
+        &mut errors,
+    );
     if errors.is_empty() {
         Ok(())
     } else {
@@ -1420,7 +1666,6 @@ fn controller_url(host: &tauri::WebviewWindow, generation: u64) -> Result<tauri:
 fn create_controller_window(
     app: &tauri::AppHandle,
     host: &tauri::WebviewWindow,
-    primary: &tauri::window::Monitor,
     generation: u64,
 ) -> Result<tauri::WebviewWindow, String> {
     if app.get_webview_window("controller").is_some() {
@@ -1428,7 +1673,7 @@ fn create_controller_window(
     }
     let url = controller_url(host, generation)?;
     let allowed_origin = url.clone();
-    let controller = WebviewWindowBuilder::new(app, "controller", WebviewUrl::External(url))
+    WebviewWindowBuilder::new(app, "controller", WebviewUrl::External(url))
         .on_navigation(move |candidate| {
             super::window_origin_authorized(candidate.as_str(), allowed_origin.as_str())
         })
@@ -1439,20 +1684,27 @@ fn create_controller_window(
         .focused(false)
         .inner_size(CONTROLLER_WIDTH, CONTROLLER_HEIGHT)
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())
+}
+
+fn place_controller_for_activation(
+    controller: &tauri::WebviewWindow,
+    primary: &tauri::window::Monitor,
+    state: &PresentationState,
+    generation: u64,
+) -> Result<(), String> {
     let work = primary.work_area();
     let scale = primary.scale_factor();
     let width = ((CONTROLLER_WIDTH * scale).round() as u32).min(work.size.width);
     let height = ((CONTROLLER_HEIGHT * scale).round() as u32).min(work.size.height);
     let x = work.position.x + (work.size.width.saturating_sub(width) / 2) as i32;
     let y = work.position.y + (work.size.height.saturating_sub(height) / 2) as i32;
-    controller
-        .set_size(tauri::PhysicalSize::new(width, height))
-        .map_err(|error| error.to_string())?;
-    controller
-        .set_position(tauri::PhysicalPosition::new(x, y))
-        .map_err(|error| error.to_string())?;
-    Ok(controller)
+    run_activation_window_mutation(state, generation, "resize Controller", || {
+        controller.set_size(tauri::PhysicalSize::new(width, height))
+    })?;
+    run_activation_window_mutation(state, generation, "position Controller", || {
+        controller.set_position(tauri::PhysicalPosition::new(x, y))
+    })
 }
 
 pub(crate) fn authorize_window(
@@ -1531,6 +1783,15 @@ fn close_controller(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn close_controller_for_recovery(
+    app: &tauri::AppHandle,
+    state: &PresentationState,
+    generation: u64,
+) -> Result<(), String> {
+    state.ensure_recovery_native_owner(generation)?;
+    close_controller(app)
+}
+
 fn restore_recovery_window(
     app: &tauri::AppHandle,
     state: &PresentationState,
@@ -1546,7 +1807,13 @@ fn restore_recovery_window(
     let placement = state
         .recovery_placement(generation)?
         .ok_or_else(|| "the original Host placement is unavailable".to_string())?;
-    restore_host_window(&host, &placement, preserve_original_window_mode)?;
+    restore_host_window(
+        &host,
+        &placement,
+        preserve_original_window_mode,
+        state,
+        generation,
+    )?;
     state.mark_host_window_restored(generation)
 }
 
@@ -1555,6 +1822,7 @@ fn finalize_recovery(
     state: &PresentationState,
     generation: u64,
 ) -> Result<PresentationSession, String> {
+    state.ensure_recovery_native_owner(generation)?;
     let session = state.snapshot()?;
     if session.generation != generation || session.phase != PresentationPhase::Recovering {
         return Err("presentation recovery generation is stale".to_string());
@@ -1565,7 +1833,7 @@ fn finalize_recovery(
     );
     let restore_error =
         restore_recovery_window(app, state, generation, preserve_original_window_mode).err();
-    let close_error = close_controller(app).err();
+    let close_error = close_controller_for_recovery(app, state, generation).err();
     if let Some(restore_error) = restore_error {
         let mut errors = vec![restore_error];
         errors.extend(close_error);
@@ -1589,6 +1857,7 @@ fn force_finalize_recovery(
     state: &PresentationState,
     generation: u64,
 ) -> Result<PresentationSession, String> {
+    state.ensure_recovery_native_owner(generation)?;
     let session = state.snapshot()?;
     if session.generation != generation || session.phase != PresentationPhase::Recovering {
         return Err("presentation recovery generation is stale".to_string());
@@ -1597,10 +1866,13 @@ fn force_finalize_recovery(
         session.recovery_reason,
         Some(PresentationRecoveryReason::DisplayDisconnected)
     );
-    let composition_error = emit_composition(app, generation, HostComposition::Combined).err();
+    let composition_error = state
+        .ensure_recovery_native_owner(generation)
+        .and_then(|_| emit_composition(app, generation, HostComposition::Combined))
+        .err();
     let restore_error =
         restore_recovery_window(app, state, generation, preserve_original_window_mode).err();
-    let close_error = close_controller(app).err();
+    let close_error = close_controller_for_recovery(app, state, generation).err();
     let inactive = state.force_complete_recovery(generation)?;
     let state_error = emit_state(app, &inactive).err();
     let errors = [composition_error, restore_error, close_error, state_error]
@@ -1647,15 +1919,21 @@ fn begin_recovery_transaction(
     expected_generation: u64,
     reason: PresentationRecoveryReason,
 ) -> Result<PresentationSession, String> {
-    let (recovering, started) = state.begin_recovery(Some(expected_generation), reason)?;
-    if !started {
-        return Ok(recovering);
+    let claim = state.begin_recovery(Some(expected_generation), reason)?;
+    if !claim.started || !claim.owns_native_lifecycle {
+        return Ok(claim.session);
     }
+    let recovering = claim.session;
     start_recovery_finalization_deadline(app.clone(), recovering.generation);
     let restore_error = restore_recovery_window(app, state, recovering.generation, false).err();
-    let state_error = emit_state(app, &recovering).err();
-    let composition_error =
-        emit_composition(app, recovering.generation, HostComposition::Combined).err();
+    let state_error = state
+        .ensure_recovery_native_owner(recovering.generation)
+        .and_then(|_| emit_state(app, &recovering))
+        .err();
+    let composition_error = state
+        .ensure_recovery_native_owner(recovering.generation)
+        .and_then(|_| emit_composition(app, recovering.generation, HostComposition::Combined))
+        .err();
     let errors = [restore_error, state_error, composition_error]
         .into_iter()
         .flatten()
@@ -1665,29 +1943,6 @@ fn begin_recovery_transaction(
     } else {
         Err(errors.join("; "))
     }
-}
-
-fn rollback_unpublished_activation(
-    app: &tauri::AppHandle,
-    state: &PresentationState,
-    generation: u64,
-) -> Result<PresentationSession, String> {
-    let (recovering, _) = state.begin_recovery(
-        Some(generation),
-        PresentationRecoveryReason::ActivationFailed,
-    )?;
-    start_recovery_finalization_deadline(app.clone(), recovering.generation);
-    if let Err(error) = restore_recovery_window(app, state, recovering.generation, false) {
-        let _ = emit_state(app, &recovering);
-        let _ = emit_composition(app, recovering.generation, HostComposition::Combined);
-        return Err(error);
-    }
-    state.mark_recovery_host_ready(recovering.generation)?;
-    restore_recovery_window(app, state, recovering.generation, true)?;
-    close_controller(app)?;
-    let inactive = state.complete_recovery(recovering.generation)?;
-    emit_state(app, &inactive)?;
-    Ok(inactive)
 }
 
 fn recover_after_activation_failure(
@@ -1710,6 +1965,22 @@ fn recover_after_activation_failure(
     }
 }
 
+fn run_on_main_thread_with_result<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    // In pinned Tauri 2.11, `#[command(async)]` runs this command body through
+    // `async_runtime::spawn`. Only that worker waits; the main-thread closure never waits on it.
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = sender.send(operation());
+    })
+    .map_err(|error| format!("failed to schedule presentation lifecycle work: {error}"))?;
+    receiver
+        .recv()
+        .map_err(|error| format!("presentation lifecycle work did not return a result: {error}"))?
+}
+
 #[tauri::command]
 pub(crate) fn get_presentation_displays(
     window: tauri::WebviewWindow,
@@ -1730,7 +2001,9 @@ pub(crate) fn get_presentation_session(
     state.snapshot()
 }
 
-#[tauri::command]
+// Controller construction must not run inline in the WebView IPC callback. Tauri documents
+// WebviewWindowBuilder as deadlocking on Windows from synchronous commands/event handlers.
+#[tauri::command(async)]
 pub(crate) fn activate_local_presentation(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -1760,96 +2033,149 @@ pub(crate) fn activate_local_presentation(
         controller_record.display.id.clone(),
         placement.clone(),
     )?;
-    let controller = match create_controller_window(
+    let activation_attempt = ActivationAttemptGuard::new(&state, activating.generation);
+    let activation_result = create_controller_window(&app, &window, activating.generation)
+        .map_err(|error| format!("failed to create Controller: {error}"))
+        .and_then(|controller| {
+            let lifecycle_app = app.clone();
+            let host = window.clone();
+            let target_monitor = target.monitor.clone();
+            let controller_monitor = controller_record.monitor.clone();
+            let selected_display_id = target.display.id.clone();
+            let activating = activating.clone();
+            run_on_main_thread_with_result(&app, move || {
+                let state = lifecycle_app.state::<PresentationState>();
+                state.ensure_activation_native_owner(activating.generation)?;
+                place_controller_for_activation(
+                    &controller,
+                    &controller_monitor,
+                    &state,
+                    activating.generation,
+                )?;
+                place_host_for_activation(&host, &target_monitor, &state, activating.generation)?;
+                state.ensure_activation_native_owner(activating.generation)?;
+                let placement_is_valid = discover_display_records(&host)
+                    .map_err(|error| format!("failed to verify presentation placement: {error}"))?
+                    .iter()
+                    .any(|record| {
+                        record.display.id == selected_display_id && record.display.selectable
+                    });
+                if !placement_is_valid {
+                    return Err(
+                        "the selected presentation display changed during placement".to_string()
+                    );
+                }
+                let activating = state
+                    .mark_placement_prepared(activating.generation)
+                    .map_err(|error| format!("failed to commit presentation placement: {error}"))?;
+                run_activation_window_mutation(
+                    &state,
+                    activating.generation,
+                    "show Controller",
+                    || controller.show(),
+                )?;
+                run_activation_window_mutation(
+                    &state,
+                    activating.generation,
+                    "focus Controller",
+                    || controller.set_focus(),
+                )?;
+                state.ensure_activation_native_owner(activating.generation)?;
+                emit_state(&lifecycle_app, &activating)
+                    .map_err(|error| format!("failed to publish activating state: {error}"))?;
+                state.ensure_activation_native_owner(activating.generation)?;
+                emit_composition(
+                    &lifecycle_app,
+                    activating.generation,
+                    HostComposition::StageOnly,
+                )
+                .map_err(|error| format!("failed to publish Stage-only composition: {error}"))?;
+                let (_, should_finalize) =
+                    state
+                        .mark_activation_published(activating.generation)
+                        .map_err(|error| format!("failed to publish activation: {error}"))?;
+                start_generation_watchers(
+                    lifecycle_app.clone(),
+                    activating.generation,
+                    selected_display_id,
+                );
+                complete_activation_if_ready(
+                    &lifecycle_app,
+                    &state,
+                    activating.generation,
+                    should_finalize,
+                )
+            })
+        });
+    settle_activation_attempt(
         &app,
-        &window,
-        &controller_record.monitor,
+        &state,
         activating.generation,
-    ) {
-        Ok(controller) => controller,
-        Err(error) => {
-            let rollback =
-                rollback_unpublished_activation(&app, &state, activating.generation).err();
-            return Err(match rollback {
-                Some(rollback) => format!(
-                    "failed to create Controller: {error}; activation rollback failed: {rollback}"
-                ),
-                None => format!("failed to create Controller: {error}"),
-            });
-        }
-    };
-    if let Err(error) = place_host_for_activation(&window, &target.monitor) {
-        let rollback = rollback_unpublished_activation(&app, &state, activating.generation).err();
-        return Err(match rollback {
-            Some(rollback) => format!(
-                "failed to place Host on the presentation display: {error}; activation rollback failed: {rollback}"
-            ),
-            None => format!("failed to place Host on the presentation display: {error}"),
-        });
-    }
-    let placement_is_valid = match discover_display_records(&window) {
-        Ok(records) => records
-            .iter()
-            .any(|record| record.display.id == target.display.id && record.display.selectable),
-        Err(error) => {
-            let rollback =
-                rollback_unpublished_activation(&app, &state, activating.generation).err();
-            return Err(match rollback {
-                Some(rollback) => format!(
-                    "failed to verify presentation placement: {error}; rollback failed: {rollback}"
-                ),
-                None => format!("failed to verify presentation placement: {error}"),
-            });
-        }
-    };
-    if !placement_is_valid {
-        let rollback = rollback_unpublished_activation(&app, &state, activating.generation).err();
-        return Err(match rollback {
-            Some(rollback) => format!(
-                "the selected presentation display changed during placement; rollback failed: {rollback}"
-            ),
-            None => "the selected presentation display changed during placement".to_string(),
-        });
-    }
-    let activating = match state.mark_placement_prepared(activating.generation) {
-        Ok(activating) => activating,
-        Err(error) => {
-            let rollback =
-                rollback_unpublished_activation(&app, &state, activating.generation).err();
-            return Err(match rollback {
-                Some(rollback) => format!(
-                    "failed to commit presentation placement: {error}; rollback failed: {rollback}"
-                ),
-                None => format!("failed to commit presentation placement: {error}"),
-            });
-        }
-    };
-    if let Err(error) = controller.show() {
-        let rollback = rollback_unpublished_activation(&app, &state, activating.generation).err();
-        return Err(match rollback {
-            Some(rollback) => {
-                format!("failed to show Controller: {error}; rollback failed: {rollback}")
-            }
-            None => format!("failed to show Controller: {error}"),
-        });
-    }
-    let _ = controller.set_focus();
-    if let Err(error) = emit_state(&app, &activating)
-        .and_then(|_| emit_composition(&app, activating.generation, HostComposition::StageOnly))
+        activation_attempt,
+        activation_result,
+    )
+}
+
+fn settle_activation_attempt(
+    app: &tauri::AppHandle,
+    state: &PresentationState,
+    generation: u64,
+    activation_attempt: ActivationAttemptGuard<'_>,
+    result: Result<PresentationSession, String>,
+) -> Result<PresentationSession, String> {
+    let mut error = result.as_ref().err().cloned();
+    if error.is_some()
+        && let Ok(session) = state.snapshot()
+        && session.generation == generation
+        && matches!(
+            session.phase,
+            PresentationPhase::Activating | PresentationPhase::Active
+        )
+        && let Err(recovery_error) = state.begin_recovery(
+            Some(generation),
+            PresentationRecoveryReason::ActivationFailed,
+        )
     {
-        return Err(recover_after_activation_failure(
-            &app,
-            &state,
-            activating.generation,
-            format!("failed to publish activation: {error}"),
-        ));
+        let message = format!("activation recovery claim failed: {recovery_error}");
+        error = Some(match error {
+            Some(error) => format!("{error}; {message}"),
+            None => message,
+        });
     }
-    start_generation_watchers(app, activating.generation, target.display.id.clone());
-    Ok(activating)
+    let deferred_recovery = match activation_attempt.finish() {
+        Ok(deferred_recovery) => deferred_recovery,
+        Err(settlement_error) => {
+            let message = format!("activation attempt settlement failed: {settlement_error}");
+            error = Some(match error {
+                Some(error) => format!("{error}; {message}"),
+                None => message,
+            });
+            None
+        }
+    };
+    if let Some(recovery_generation) = deferred_recovery {
+        let recovery_app = app.clone();
+        if let Err(recovery_error) = run_on_main_thread_with_result(app, move || {
+            let state = recovery_app.state::<PresentationState>();
+            force_finalize_recovery(&recovery_app, &state, recovery_generation)
+        }) {
+            let message = format!("deferred activation recovery failed: {recovery_error}");
+            error = Some(match error {
+                Some(error) => format!("{error}; {message}"),
+                None => message,
+            });
+        } else if error.is_none() {
+            error = Some("presentation activation was interrupted before it settled".to_string());
+        }
+    }
+    match error {
+        Some(error) => Err(error),
+        None => result,
+    }
 }
 
 fn complete_activation_if_ready(
-    app: tauri::AppHandle,
+    app: &tauri::AppHandle,
     state: &PresentationState,
     generation: u64,
     should_finalize: bool,
@@ -1858,6 +2184,7 @@ fn complete_activation_if_ready(
         return state.snapshot();
     }
     let result = (|| {
+        state.ensure_activation_native_owner(generation)?;
         let host = app
             .get_webview_window("main")
             .ok_or_else(|| "main window is unavailable".to_string())?;
@@ -1866,23 +2193,28 @@ fn complete_activation_if_ready(
             .selected_output_display_id
             .as_deref()
             .ok_or_else(|| "the presentation display identity is unavailable".to_string())?;
+        state.ensure_activation_native_owner(generation)?;
         let target_is_still_valid = discover_display_records(&host)?
             .iter()
             .any(|record| record.display.id == selected_id && record.display.selectable);
         if !target_is_still_valid {
             return Err("the selected presentation display changed before fullscreen".to_string());
         }
-        host.set_fullscreen(true)
-            .map_err(|error| format!("failed to fullscreen Host: {error}"))?;
+        run_activation_window_mutation(state, generation, "fullscreen Host", || {
+            host.set_fullscreen(true)
+        })?;
         let active = state.complete_activation(generation)?;
-        emit_state(&app, &active)
+        emit_state(app, &active)
             .map_err(|error| format!("failed to publish active presentation state: {error}"))?;
         if let Some(controller) = app.get_webview_window("controller") {
-            let _ = controller.set_focus();
+            state.ensure_active_generation(generation)?;
+            controller
+                .set_focus()
+                .map_err(|error| format!("failed to focus Controller: {error}"))?;
         }
         Ok(active)
     })();
-    result.map_err(|error| recover_after_activation_failure(&app, state, generation, error))
+    result.map_err(|error| recover_after_activation_failure(app, state, generation, error))
 }
 
 fn run_activation_readiness_step<T>(
@@ -1920,7 +2252,7 @@ pub(crate) fn mark_presentation_host_ready(
                 },
                 |error| recover_after_activation_failure(&app, &state, generation, error),
             )?;
-            complete_activation_if_ready(app, &state, generation, should_finalize)
+            complete_activation_if_ready(&app, &state, generation, should_finalize)
         }
         HostComposition::Combined => {
             let ready = state.mark_recovery_host_ready(generation)?;
@@ -1964,7 +2296,7 @@ pub(crate) fn mark_presentation_controller_ready(
         },
         |error| recover_after_activation_failure(&app, &state, generation, error),
     )?;
-    complete_activation_if_ready(app, &state, generation, should_finalize)
+    complete_activation_if_ready(&app, &state, generation, should_finalize)
 }
 
 #[tauri::command]
@@ -2211,12 +2543,12 @@ fn start_generation_watchers(app: tauri::AppHandle, generation: u64, selected_di
 #[cfg(test)]
 mod tests {
     use super::{
-        ControllerCommand, ControllerCommandRequest, ControllerPlaybackState, HostWindowPlacement,
-        MAX_PENDING_COMMANDS, MAX_SAFE_JS_INTEGER, MediaRendererOwner, MonitorGeometry,
-        PlaybackAuthorityIdentity, PresentationMode, PresentationPhase, PresentationRecoveryReason,
-        PresentationSession, PresentationState, WindowRole, display_source_is_mirrored,
-        next_sequence, run_activation_readiness_step, validate_controller_command,
-        validate_playback_state, visible_restore_placement,
+        ActivationAttemptGuard, ControllerCommand, ControllerCommandRequest,
+        ControllerPlaybackState, HostWindowPlacement, MAX_PENDING_COMMANDS, MAX_SAFE_JS_INTEGER,
+        MediaRendererOwner, MonitorGeometry, PlaybackAuthorityIdentity, PresentationMode,
+        PresentationPhase, PresentationRecoveryReason, PresentationSession, PresentationState,
+        WindowRole, display_source_is_mirrored, next_sequence, run_activation_readiness_step,
+        validate_controller_command, validate_playback_state, visible_restore_placement,
     };
 
     fn host_placement() -> HostWindowPlacement {
@@ -2250,6 +2582,9 @@ mod tests {
         state
             .mark_placement_prepared(generation)
             .expect("placement should be prepared");
+        state
+            .mark_activation_published(generation)
+            .expect("activation should be published");
         let (_, should_finalize) = state
             .mark_ready(generation, WindowRole::Host)
             .expect("Host readiness should be accepted");
@@ -2257,6 +2592,9 @@ mod tests {
         state
             .complete_activation(generation)
             .expect("activation should complete");
+        state
+            .finish_activation_attempt(generation)
+            .expect("activation command should settle");
         (state, generation)
     }
 
@@ -2283,6 +2621,9 @@ mod tests {
         state
             .mark_placement_prepared(generation)
             .expect("placement should be accepted");
+        state
+            .mark_activation_published(generation)
+            .expect("activation publication should be accepted");
         let (both_ready, finalize) = state
             .mark_ready(generation, WindowRole::Host)
             .expect("Host readiness should be accepted");
@@ -2307,6 +2648,9 @@ mod tests {
         state
             .mark_placement_prepared(generation)
             .expect("placement should be prepared");
+        state
+            .mark_activation_published(generation)
+            .expect("activation should be published");
         state
             .mark_ready(generation, WindowRole::Controller)
             .expect("Controller readiness should be accepted");
@@ -2340,6 +2684,9 @@ mod tests {
             .mark_placement_prepared(generation)
             .expect("placement should be prepared");
         state
+            .mark_activation_published(generation)
+            .expect("activation should be published");
+        state
             .mark_ready(generation, WindowRole::Host)
             .expect("Host readiness should be accepted");
         let (_, should_finalize) = state
@@ -2362,6 +2709,185 @@ mod tests {
         assert_eq!(
             state.snapshot().expect("snapshot").phase,
             PresentationPhase::Recovering
+        );
+    }
+
+    #[test]
+    fn readiness_before_activation_publication_completes_exactly_once() {
+        let (state, generation) = begin_state();
+        let (_, controller_finalize) = state
+            .mark_ready(generation, WindowRole::Controller)
+            .expect("early Controller readiness should be accepted");
+        let (_, host_finalize) = state
+            .mark_ready(generation, WindowRole::Host)
+            .expect("early Host readiness should be accepted");
+        assert!(!controller_finalize);
+        assert!(!host_finalize);
+        state
+            .mark_placement_prepared(generation)
+            .expect("placement should be accepted after readiness");
+        let (_, publication_finalize) = state
+            .mark_activation_published(generation)
+            .expect("publication should claim finalization");
+        assert!(publication_finalize);
+        let active = state
+            .complete_activation(generation)
+            .expect("published ready activation should complete");
+        assert_eq!(active.phase, PresentationPhase::Active);
+        assert!(state.complete_activation(generation).is_err());
+    }
+
+    #[test]
+    fn recovered_attempt_cannot_overlap_until_original_command_settles() {
+        let (state, generation) = begin_state();
+        let attempt = ActivationAttemptGuard::new(&state, generation);
+        let recovery = state
+            .begin_recovery(
+                Some(generation),
+                PresentationRecoveryReason::ActivationFailed,
+            )
+            .expect("activation recovery should begin");
+        let recovering = recovery.session;
+        assert!(recovery.started);
+        assert!(!recovery.owns_native_lifecycle);
+        assert!(state.ensure_activation_native_owner(generation).is_err());
+        assert!(
+            state
+                .ensure_recovery_native_owner(recovering.generation)
+                .is_err()
+        );
+        assert!(
+            state
+                .force_complete_recovery(recovering.generation)
+                .is_err()
+        );
+        assert!(
+            state
+                .begin_activation(
+                    "display:other".to_string(),
+                    "display:primary".to_string(),
+                    host_placement(),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            attempt.finish().expect("activation command should settle"),
+            Some(recovering.generation)
+        );
+        state
+            .mark_host_window_restored(recovering.generation)
+            .expect("recovery placement should be restored");
+        let inactive = state
+            .force_complete_recovery(recovering.generation)
+            .expect("settled activation should allow recovery to finish");
+        assert_eq!(inactive.phase, PresentationPhase::Inactive);
+        assert!(
+            state
+                .begin_activation(
+                    "display:other".to_string(),
+                    "display:primary".to_string(),
+                    host_placement(),
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn recovery_claim_revokes_stale_activation_publication_and_native_mutation() {
+        let (state, generation) = begin_state();
+        let attempt = ActivationAttemptGuard::new(&state, generation);
+        let recovery = state
+            .begin_recovery(
+                Some(generation),
+                PresentationRecoveryReason::ControllerClosed,
+            )
+            .expect("Controller destruction should claim one recovery");
+        assert!(recovery.started);
+        assert!(!recovery.owns_native_lifecycle);
+        let duplicate = state
+            .begin_recovery(
+                Some(recovery.session.generation),
+                PresentationRecoveryReason::ControllerClosed,
+            )
+            .expect("duplicate Controller destruction should observe existing recovery");
+        assert!(!duplicate.started);
+        assert!(state.mark_placement_prepared(generation).is_err());
+        assert!(state.mark_activation_published(generation).is_err());
+        assert!(state.ensure_activation_native_owner(generation).is_err());
+        assert_eq!(
+            attempt.finish().expect("stale activation should settle"),
+            Some(recovery.session.generation)
+        );
+        assert!(
+            state
+                .ensure_recovery_native_owner(recovery.session.generation)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn finalization_and_recovery_cannot_both_claim_native_ownership() {
+        let (state, generation) = begin_state();
+        state
+            .mark_placement_prepared(generation)
+            .expect("placement should be prepared");
+        state
+            .mark_activation_published(generation)
+            .expect("activation should be published");
+        state
+            .finish_activation_attempt(generation)
+            .expect("initial activation command should settle");
+        state
+            .mark_ready(generation, WindowRole::Host)
+            .expect("Host readiness should be accepted");
+        let (_, should_finalize) = state
+            .mark_ready(generation, WindowRole::Controller)
+            .expect("Controller readiness should claim finalization");
+        assert!(should_finalize);
+        assert!(state.ensure_activation_native_owner(generation).is_ok());
+        let recovery = state
+            .begin_recovery(
+                Some(generation),
+                PresentationRecoveryReason::ControllerClosed,
+            )
+            .expect("recovery should supersede unstarted finalization");
+        assert!(recovery.started);
+        assert!(recovery.owns_native_lifecycle);
+        assert!(state.ensure_activation_native_owner(generation).is_err());
+        assert!(state.complete_activation(generation).is_err());
+        assert!(
+            state
+                .ensure_recovery_native_owner(recovery.session.generation)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn ordinary_activation_error_guard_clears_after_settlement() {
+        let (state, generation) = begin_state();
+        let attempt = ActivationAttemptGuard::new(&state, generation);
+        let recovery = state
+            .begin_recovery(
+                Some(generation),
+                PresentationRecoveryReason::ActivationFailed,
+            )
+            .expect("ordinary activation failure should claim recovery");
+        let recovery_generation = attempt
+            .finish()
+            .expect("ordinary activation failure should settle")
+            .expect("settlement should transfer recovery ownership");
+        assert_eq!(recovery_generation, recovery.session.generation);
+        state
+            .force_complete_recovery(recovery_generation)
+            .expect("ordinary activation failure should converge to inactive");
+        assert!(
+            state
+                .begin_activation(
+                    "display:other".to_string(),
+                    "display:primary".to_string(),
+                    host_placement(),
+                )
+                .is_ok()
         );
     }
 
@@ -2526,13 +3052,15 @@ mod tests {
     #[test]
     fn recovery_advances_generation_and_never_selects_a_fallback_display() {
         let (state, generation) = active_state();
-        let (recovering, started) = state
+        let recovery = state
             .begin_recovery(
                 Some(generation),
                 PresentationRecoveryReason::DisplayDisconnected,
             )
             .expect("recovery should begin");
-        assert!(started);
+        let recovering = recovery.session;
+        assert!(recovery.started);
+        assert!(recovery.owns_native_lifecycle);
         assert_eq!(recovering.phase, PresentationPhase::Recovering);
         assert_eq!(recovering.generation, generation + 1);
         assert_eq!(
@@ -2560,13 +3088,15 @@ mod tests {
     #[test]
     fn forced_recovery_completion_clears_session_without_host_readiness() {
         let (state, generation) = active_state();
-        let (recovering, started) = state
+        let recovery = state
             .begin_recovery(
                 Some(generation),
                 PresentationRecoveryReason::ControllerClosed,
             )
             .expect("recovery should begin");
-        assert!(started);
+        let recovering = recovery.session;
+        assert!(recovery.started);
+        assert!(recovery.owns_native_lifecycle);
         assert!(!recovering.host_ready);
         let inactive = state
             .force_complete_recovery(recovering.generation)
