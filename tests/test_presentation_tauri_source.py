@@ -41,7 +41,10 @@ class PresentationTauriSourceTest(unittest.TestCase):
             "bilikara-presentation-playback-state",
         ):
             self.assertIn(event, self.presentation)
-        self.assertIn('#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]', self.presentation)
+        self.assertIn('tag = "type"', self.presentation)
+        self.assertIn('rename_all = "camelCase"', self.presentation)
+        self.assertIn('rename_all_fields = "camelCase"', self.presentation)
+        self.assertIn("deny_unknown_fields", self.presentation)
         for variant in ("Play", "Pause", "SeekRelative", "SeekAbsolute", "NextTrack", "SetVolume"):
             self.assertRegex(self.presentation, rf"\b{variant}\b")
         self.assertIn("MAX_PENDING_COMMANDS", self.presentation)

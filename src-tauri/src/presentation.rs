@@ -223,7 +223,12 @@ pub enum HostComposition {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ControllerCommand {
     Play,
     Pause,
@@ -3253,6 +3258,57 @@ mod tests {
                 volume_percent: 101,
                 muted: false,
             })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn controller_command_json_uses_camel_case_fields() {
+        let cases = [
+            (
+                serde_json::json!({"type": "seekRelative", "deltaSeconds": -15.0}),
+                ControllerCommand::SeekRelative {
+                    delta_seconds: -15.0,
+                },
+            ),
+            (
+                serde_json::json!({"type": "seekAbsolute", "targetSeconds": 55.0}),
+                ControllerCommand::SeekAbsolute {
+                    target_seconds: 55.0,
+                },
+            ),
+            (
+                serde_json::json!({
+                    "type": "setVolume",
+                    "volumePercent": 75,
+                    "muted": false
+                }),
+                ControllerCommand::SetVolume {
+                    volume_percent: 75,
+                    muted: false,
+                },
+            ),
+        ];
+
+        for (payload, expected) in cases {
+            let request: ControllerCommandRequest = serde_json::from_value(serde_json::json!({
+                "generation": 7,
+                "sequence": 1,
+                "command": payload.clone()
+            }))
+            .expect("camelCase Controller request should deserialize");
+            assert_eq!(request.command, expected);
+            assert_eq!(
+                serde_json::to_value(request.command).expect("Controller command should serialize"),
+                payload
+            );
+        }
+
+        assert!(
+            serde_json::from_value::<ControllerCommand>(serde_json::json!({
+                "type": "seekAbsolute",
+                "target_seconds": 55.0
+            }))
             .is_err()
         );
     }
