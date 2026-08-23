@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 import threading
@@ -1228,6 +1229,46 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(payload["code"], 0)
         self.assertEqual(request.call_args.args[:2], ("GET", "https://api.bilibili.com/example"))
         self.assertEqual(request.call_args.kwargs["headers"]["Cookie"], "SESSDATA=test")
+
+    def test_guest_json_transport_does_not_write_to_legacy_windows_stdout(self):
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="strict")
+        with (
+            patch.object(sys, "stdout", stdout),
+            patch.object(bilibili_module, "effective_bilibili_cookie", return_value=""),
+            patch.object(
+                bilibili_module.rust_runtime,
+                "json_http_request",
+                return_value={"code": 0, "data": {"ok": True}},
+            ) as request,
+        ):
+            payload = bilibili_module.request_json("https://api.bilibili.com/example")
+
+        self.assertEqual(payload["code"], 0)
+        self.assertNotIn("Cookie", request.call_args.kwargs["headers"])
+
+    def test_guest_python_json_fallback_does_not_write_to_legacy_windows_stdout(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc_value, _traceback):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"code": 0, "data": {"ok": true}}'
+
+        stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp932", errors="strict")
+        with (
+            patch.object(sys, "stdout", stdout),
+            patch.object(bilibili_module, "effective_bilibili_cookie", return_value=""),
+            patch.object(bilibili_module.urllib.request, "urlopen", return_value=Response()) as request,
+        ):
+            payload = bilibili_module._py_request_json("https://api.bilibili.com/example")
+
+        self.assertEqual(payload["code"], 0)
+        sent_request = request.call_args.args[0]
+        self.assertNotIn("Cookie", sent_request.headers)
 
     def test_short_video_url_resolution_delegates_to_rust_runtime(self):
         with patch.object(
