@@ -464,10 +464,13 @@ fn desktop_startup_log_path(current_exe: &Path) -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        let runtime_dir = current_exe.parent()?.join("runtime");
-        if runtime_dir.is_dir() {
+        let install_dir = current_exe.parent()?;
+        let packaged_layout =
+            install_dir.join("bilikara.exe").is_file() || install_dir.join("_internal").is_dir();
+        if packaged_layout {
             return Some(
-                runtime_dir
+                install_dir
+                    .join("runtime")
                     .join("data")
                     .join("logs")
                     .join(DESKTOP_STARTUP_LOG_NAME),
@@ -3148,15 +3151,17 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn packaged_windows_desktop_log_joins_the_diagnostic_log_directory() {
+    fn packaged_windows_desktop_log_does_not_require_runtime_to_exist_yet() {
         let temp_dir = std::env::temp_dir().join(format!(
             "bilikara_desktop_log_path_test_{}_{}",
             std::process::id(),
             unix_timestamp_millis()
         ));
         let runtime_dir = temp_dir.join("runtime");
-        fs::create_dir_all(&runtime_dir).expect("create packaged runtime directory");
+        fs::create_dir_all(temp_dir.join("_internal")).expect("create packaged internal directory");
         let executable = temp_dir.join("bilikara-desktop.exe");
+
+        assert!(!runtime_dir.exists());
 
         assert_eq!(
             desktop_startup_log_path(&executable),
