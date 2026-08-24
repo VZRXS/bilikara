@@ -344,6 +344,7 @@ class PlaybackCapabilityWorkerTest(unittest.TestCase):
             "bad": "bbdown",
             "good": "bbdown",
         }
+        manager.python_cache_attempt_tokens = {"bad": 1, "good": 2}
         manager.store = SimpleNamespace()
         manager.sync_with_playlist = lambda: None
         manager._current_download_source = lambda: "bbdown"
@@ -353,9 +354,11 @@ class PlaybackCapabilityWorkerTest(unittest.TestCase):
         processed = []
         good_processed = threading.Event()
 
-        def cache_item(item_id):
+        def cache_item(item_id, cache_attempt_token):
             if item_id == "bad":
+                self.assertEqual(cache_attempt_token, 1)
                 raise rust_backend.PlaybackCapabilityError("select_video_stream")
+            self.assertEqual(cache_attempt_token, 2)
             processed.append(item_id)
             good_processed.set()
             manager.stop_event.set()

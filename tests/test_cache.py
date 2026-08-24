@@ -178,20 +178,26 @@ class CacheManagerOutputTest(unittest.TestCase):
                     handle.write(b"x")
                 self.assertEqual(sparse.stat().st_size, 10 * 1024 * 1024)
 
-                manager._begin_download_progress("song", [{
-                    "key": "video-p1",
-                    "label": "视频轨P1",
-                    "order": 0,
-                }])
-                manager._update_download_track_progress(
-                    "song",
-                    track_key="video-p1",
-                    target_dir=attempt,
-                    current_bytes=1024 * 1024,
-                    target_bytes=10 * 1024 * 1024,
-                    progress_percent=10,
-                    measure_path=False,
-                )
+                with patch.object(manager, "_project_cache_progress"):
+                    manager._begin_download_progress(
+                        "song",
+                        [{
+                            "key": "video-p1",
+                            "label": "视频轨P1",
+                            "order": 0,
+                        }],
+                        cache_attempt_token=1,
+                    )
+                    manager._update_download_track_progress(
+                        "song",
+                        cache_attempt_token=1,
+                        track_key="video-p1",
+                        target_dir=attempt,
+                        current_bytes=1024 * 1024,
+                        target_bytes=10 * 1024 * 1024,
+                        progress_percent=10,
+                        measure_path=False,
+                    )
                 progress = manager.item_download_progress["song"]["video-p1"]
                 self.assertEqual(progress["current_bytes"], 1024 * 1024)
                 self.assertEqual(progress["target_bytes"], 10 * 1024 * 1024)
@@ -351,9 +357,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
             "song-native/audio.m4a",
         )
 
-    def test_native_cache_events_project_state_and_ignore_stale_generations(self):
+    def test_native_cache_events_project_state_and_reject_stale_attempt_tokens(self):
         item = self.make_item("song-native-events")
         self.store.add_item(item, requester_name="cache-test-user")
+        stale_token = self.store.begin_cache_attempt(item.id)
+        cache_attempt_token = self.store.begin_cache_attempt(item.id)
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
         ):
@@ -363,6 +371,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager._apply_native_cache_event(
                     {
                         "generation": 2,
+                        "cache_attempt_token": cache_attempt_token,
                         "item_id": item.id,
                         "kind": "started",
                         "payload": {
@@ -386,6 +395,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager._apply_native_cache_event(
                     {
                         "generation": 2,
+                        "cache_attempt_token": cache_attempt_token,
                         "item_id": item.id,
                         "kind": "ready",
                         "payload": {
@@ -403,22 +413,32 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         },
                     }
                 )
-                manager._apply_native_cache_event(
-                    {
-                        "generation": 1,
-                        "item_id": item.id,
-                        "kind": "failed",
-                        "payload": {"message": "stale failure"},
-                    }
-                )
+                with manager.lock:
+                    manager.pending_ids.add(item.id)
+                    manager.active_item_id = item.id
+                with self.assertRaisesRegex(ValueError, "superseded"):
+                    manager._apply_native_cache_event(
+                        {
+                            "generation": 2,
+                            "cache_attempt_token": stale_token,
+                            "item_id": item.id,
+                            "kind": "failed",
+                            "payload": {"message": "stale failure"},
+                        }
+                    )
                 cached = self.store.get_item(item.id)
                 cached_status = cached.cache_status
                 selected_variant_id = cached.selected_audio_variant_id
+                with manager.lock:
+                    stale_terminal_kept_pending = item.id in manager.pending_ids
+                    stale_terminal_kept_active = manager.active_item_id == item.id
             finally:
                 manager.shutdown()
 
         self.assertEqual(cached_status, "ready")
         self.assertEqual(selected_variant_id, "p1_track_1")
+        self.assertTrue(stale_terminal_kept_pending)
+        self.assertTrue(stale_terminal_kept_active)
         self.assertEqual(manager.native_cache_generations, {})
 
     def test_native_sync_submits_rust_jobs_without_using_python_worker_queue(self):
@@ -434,6 +454,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             if command == "sync":
                 return {
                     "generations": {item.id: 7},
+                    "cache_attempt_tokens": {item.id: 107},
                     "snapshot": {
                         "primary_active_item_id": None,
                         "active_item_ids": [],
@@ -455,11 +476,13 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.sync_with_playlist()
                 queued = manager.tasks.qsize()
                 generation = manager.native_cache_generations[item.id]
+                cache_attempt_token = manager.native_cache_attempt_tokens[item.id]
             finally:
                 manager.shutdown()
 
         self.assertEqual(queued, 0)
         self.assertEqual(generation, 7)
+        self.assertEqual(cache_attempt_token, 107)
         sync_request = next(fields for command, fields in calls if command == "sync")
         self.assertEqual(sync_request["jobs"][0]["item_id"], item.id)
         self.assertEqual(sync_request["ordered_ids"], [item.id])
@@ -492,6 +515,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             if command == "sync":
                 return {
                     "generations": {future.id: 1},
+                    "cache_attempt_tokens": {future.id: 101},
                     "snapshot": {
                         "primary_active_item_id": None,
                         "active_item_ids": [],
@@ -551,6 +575,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             if command == "sync":
                 return {
                     "generations": {future.id: 1},
+                    "cache_attempt_tokens": {future.id: 101},
                     "snapshot": {
                         "primary_active_item_id": None,
                         "active_item_ids": [],
@@ -559,7 +584,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     },
                 }
             if command == "submit":
-                return {"generation": 2}
+                return {"generation": 2, "cache_attempt_token": 102}
             return {"events": [], "snapshot": {}}
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
@@ -569,6 +594,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 manager.enqueue(queued.id)
+                queued_token = manager.python_cache_attempt_tokens[queued.id]
                 self.assertEqual(
                     manager.python_worker_download_sources[queued.id],
                     DOWNLOAD_SOURCE_BBDOWN,
@@ -584,11 +610,14 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 ):
                     manager.sync_with_playlist()
 
-                    executed_sources = []
+                    executed_attempts = []
 
-                    def execute_python_item(item_id):
-                        executed_sources.append(
-                            manager.python_worker_download_sources[item_id]
+                    def execute_python_item(item_id, cache_attempt_token):
+                        executed_attempts.append(
+                            (
+                                manager.python_worker_download_sources[item_id],
+                                cache_attempt_token,
+                            )
                         )
                         manager.stop_event.set()
                         return False
@@ -607,7 +636,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     [job["item_id"] for job in sync_request["jobs"]],
                     [future.id],
                 )
-                self.assertEqual(executed_sources, [DOWNLOAD_SOURCE_BBDOWN])
+                self.assertEqual(
+                    executed_attempts,
+                    [(DOWNLOAD_SOURCE_BBDOWN, queued_token)],
+                )
                 submit_request = next(
                     fields for command, fields in calls if command == "submit"
                 )
@@ -616,6 +648,144 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                 manager.shutdown()
+
+    def test_external_sources_reserve_before_worker_queueing(self):
+        for index, download_source in enumerate(
+            (DOWNLOAD_SOURCE_BBDOWN, DOWNLOAD_SOURCE_YTDLP),
+            start=1,
+        ):
+            with self.subTest(download_source=download_source), patch.object(
+                CacheManager, "_worker_loop", lambda self: None
+            ):
+                item = self.make_item(f"song-reserve-{index}")
+                self.store.add_item(item, requester_name="cache-test-user")
+                manager = CacheManager(self.store, max_cache_items=1)
+                events: list[str] = []
+                original_begin = manager._begin_cache_attempt
+
+                def reserve(item_id: str) -> int:
+                    events.append("reserve")
+                    return original_begin(item_id)
+
+                try:
+                    manager.download_source = download_source
+                    with patch.object(
+                        manager,
+                        "_begin_cache_attempt",
+                        side_effect=reserve,
+                    ), patch.object(
+                        manager.tasks,
+                        "put",
+                        side_effect=lambda _item_id: events.append("queue"),
+                    ):
+                        manager.enqueue(item.id)
+
+                    self.assertEqual(events, ["reserve", "queue"])
+                    self.assertGreater(
+                        manager.python_cache_attempt_tokens[item.id],
+                        0,
+                    )
+                    self.assertEqual(
+                        manager.python_worker_download_sources[item.id],
+                        download_source,
+                    )
+                finally:
+                    manager.shutdown()
+
+    def test_downkyi_checks_cookie_then_reserves_without_starting_work(self):
+        item = self.make_item("song-downkyi-reservation-order")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=1)
+            events: list[str] = []
+            original_begin = manager._begin_cache_attempt
+
+            def check_cookie() -> str:
+                events.append("cookie")
+                return ""
+
+            def reserve(item_id: str) -> int:
+                events.append("reserve")
+                return original_begin(item_id)
+
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_DOWNKYI
+                with patch(
+                    "bilikara.cache.effective_bilibili_cookie",
+                    side_effect=check_cookie,
+                ), patch.object(
+                    manager,
+                    "_begin_cache_attempt",
+                    side_effect=reserve,
+                ), patch.object(
+                    manager.tasks,
+                    "put",
+                ) as queue_work, patch.object(
+                    manager,
+                    "_ensure_downloader",
+                ) as prepare_tool, patch(
+                    "bilikara.cache.subprocess.Popen",
+                ) as spawn_process:
+                    manager.enqueue(item.id)
+
+                self.assertEqual(events, ["cookie", "reserve"])
+                queue_work.assert_not_called()
+                prepare_tool.assert_not_called()
+                spawn_process.assert_not_called()
+                self.assertEqual(self.store.get_item(item.id).cache_status, "failed")
+            finally:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                manager.shutdown()
+
+    def test_external_reservation_failure_starts_no_worker_or_process(self):
+        item = self.make_item("song-reservation-failure")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                with patch.object(
+                    manager,
+                    "_begin_cache_attempt",
+                    side_effect=RuntimeError("reservation failed"),
+                ), patch.object(
+                    manager.tasks,
+                    "put",
+                ) as queue_work, patch.object(
+                    manager,
+                    "_ensure_downloader",
+                ) as prepare_tool, patch(
+                    "bilikara.cache.subprocess.Popen",
+                ) as spawn_process:
+                    with self.assertRaisesRegex(RuntimeError, "reservation failed"):
+                        manager.enqueue(item.id)
+
+                queue_work.assert_not_called()
+                prepare_tool.assert_not_called()
+                spawn_process.assert_not_called()
+                self.assertNotIn(item.id, manager.pending_ids)
+                self.assertNotIn(item.id, manager.python_worker_download_sources)
+                self.assertNotIn(item.id, manager.python_cache_attempt_tokens)
+            finally:
+                manager.shutdown()
+
+    def test_shutdown_skips_items_removed_before_attempt_reservation(self):
+        item = self.make_item("song-removed-before-shutdown")
+        self.store.add_item(item, requester_name="cache-test-user")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=1)
+            replacement_store = PlaylistStore(
+                state_file=Path(self.temp_dir.name) / "replacement-state.json",
+                backup_file=Path(self.temp_dir.name) / "replacement-backup.json",
+            )
+            try:
+                with patch.object(manager, "_clear_cache_root") as clear_cache:
+                    manager.shutdown()
+
+                clear_cache.assert_called_once_with()
+                self.assertTrue(manager.stop_event.is_set())
+            finally:
+                replacement_store.shutdown()
 
     def test_requeued_python_item_retains_original_source_after_switch(self):
         worker_loop = CacheManager._worker_loop
@@ -633,7 +803,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 executed_sources = []
 
-                def interrupt_and_requeue(item_id):
+                def interrupt_and_requeue(item_id, _cache_attempt_token):
                     executed_sources.append(
                         manager.python_worker_download_sources[item_id]
                     )
@@ -686,6 +856,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     with self.subTest(kind=kind):
                         item = self.make_item(f"song-native-{kind}")
                         self.store.add_item(item, requester_name="cache-test-user")
+                        cache_attempt_token = self.store.begin_cache_attempt(item.id)
                         with manager.lock:
                             manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                             manager.native_cache_generations[item.id] = 7
@@ -696,6 +867,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         manager._apply_native_cache_event(
                             {
                                 "generation": 7,
+                                "cache_attempt_token": cache_attempt_token,
                                 "sequence": sequence,
                                 "item_id": item.id,
                                 "kind": kind,
@@ -717,12 +889,15 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         with manager.lock:
                             manager.pending_ids.discard(item.id)
                             manager.python_worker_download_sources.pop(item.id)
+                            manager.python_cache_attempt_tokens.pop(item.id)
             finally:
                 manager.shutdown()
 
     def test_native_terminal_event_does_not_clear_active_python_bookkeeping(self):
         item = self.make_item("song-python-active-after-native")
         self.store.add_item(item, requester_name="cache-test-user")
+        native_token = self.store.begin_cache_attempt(item.id)
+        python_token = self.store.begin_cache_attempt(item.id)
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
         ):
@@ -734,19 +909,22 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.python_worker_download_sources[item.id] = (
                         DOWNLOAD_SOURCE_BBDOWN
                     )
+                    manager.python_cache_attempt_tokens[item.id] = python_token
                     manager.pending_ids.add(item.id)
                     manager.urgent_cache_ids.add(item.id)
                     manager.active_item_id = item.id
 
-                manager._apply_native_cache_event(
-                    {
-                        "generation": 3,
-                        "sequence": 1,
-                        "item_id": item.id,
-                        "kind": "cancelled",
-                        "payload": {"reason": "old native job ended"},
-                    }
-                )
+                with self.assertRaisesRegex(ValueError, "superseded"):
+                    manager._apply_native_cache_event(
+                        {
+                            "generation": 3,
+                            "cache_attempt_token": native_token,
+                            "sequence": 1,
+                            "item_id": item.id,
+                            "kind": "cancelled",
+                            "payload": {"reason": "old native job ended"},
+                        }
+                    )
 
                 with manager.lock:
                     self.assertIn(item.id, manager.pending_ids)
@@ -818,9 +996,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def test_native_snapshot_recovers_lost_terminal_event_once(self):
         item = self.make_item("song-terminal-recovery")
         self.store.add_item(item, requester_name="cache-test-user")
+        cache_attempt_token = self.store.begin_cache_attempt(item.id)
         terminal = {
             "sequence": 9,
             "generation": 3,
+            "cache_attempt_token": cache_attempt_token,
             "item_id": item.id,
             "kind": "ready",
             "payload": {
@@ -874,9 +1054,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def test_native_drain_applies_events_before_terminal_snapshot_recovery(self):
         item = self.make_item("song-terminal-order")
         self.store.add_item(item, requester_name="cache-test-user")
+        cache_attempt_token = self.store.begin_cache_attempt(item.id)
         ready = {
             "sequence": 9,
             "generation": 3,
+            "cache_attempt_token": cache_attempt_token,
             "item_id": item.id,
             "kind": "ready",
             "payload": {
@@ -898,6 +1080,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 {
                     "sequence": 8,
                     "generation": 3,
+                    "cache_attempt_token": cache_attempt_token,
                     "item_id": item.id,
                     "kind": "queued",
                     "payload": {"priority": "normal"},
@@ -2115,18 +2298,24 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     )
 
                 projected_events: list[tuple[int, dict[str, object]]] = []
+                operation_order: list[str] = []
                 apply_cache_event = self.store.apply_cache_event
+                begin_cache_attempt = manager._begin_cache_attempt
+
+                def reserve_attempt(item_id: str) -> int:
+                    operation_order.append("reserve")
+                    return begin_cache_attempt(item_id)
 
                 def record_event(
                     item_id: str,
                     *,
-                    generation: int,
+                    cache_attempt_token: int,
                     event: dict[str, object],
                 ) -> bool:
-                    projected_events.append((generation, dict(event)))
+                    projected_events.append((cache_attempt_token, dict(event)))
                     return apply_cache_event(
                         item_id,
-                        generation=generation,
+                        cache_attempt_token=cache_attempt_token,
                         event=event,
                     )
 
@@ -2146,8 +2335,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 }
 
                 def download_with_progress(*_args, **_kwargs):
+                    operation_order.append("download")
                     manager._project_cache_progress(
                         item.id,
+                        cache_attempt_token=_kwargs["cache_attempt_token"],
                         progress=42.0,
                         message="BBDown 缓存中 42%",
                     )
@@ -2158,17 +2349,27 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     "apply_cache_event",
                     side_effect=record_event,
                 ), patch.object(
+                    manager,
+                    "_begin_cache_attempt",
+                    side_effect=reserve_attempt,
+                ), patch.object(
                     self.store,
                     "update_item",
                     side_effect=AssertionError("generic item patch used by cache worker"),
                 ), patch.object(
                     manager,
                     "_ensure_downloader",
-                    return_value=Path("BBDown"),
+                    side_effect=lambda _source: (
+                        operation_order.append("prepare-downloader")
+                        or Path("BBDown")
+                    ),
                 ), patch.object(
                     manager,
                     "_ensure_ffmpeg",
-                    return_value=Path("ffmpeg"),
+                    side_effect=lambda **_kwargs: (
+                        operation_order.append("prepare-ffmpeg")
+                        or Path("ffmpeg")
+                    ),
                 ), patch.object(
                     manager,
                     "_download_selected_streams",
@@ -2187,8 +2388,13 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     ["queued", "started", "progress", "ready"],
                 )
                 self.assertEqual(
-                    [generation for generation, _ in projected_events],
-                    [0, 0, 0, 0],
+                    [token for token, _ in projected_events],
+                    [projected_events[0][0]] * 4,
+                )
+                self.assertGreater(projected_events[0][0], 0)
+                self.assertEqual(
+                    operation_order,
+                    ["reserve", "prepare-downloader", "prepare-ffmpeg", "download"],
                 )
                 cached = self.store.get_item(item.id)
                 self.assertEqual(cached.cache_status, "ready")
@@ -2274,6 +2480,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 manager.pending_ids = {"song-a"}
+                manager.python_cache_attempt_tokens["song-a"] = 1
                 manager.tasks.put("song-a")
                 resync_states = []
 
@@ -2291,6 +2498,58 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 sync_mock.assert_called_once_with()
                 self.assertEqual(resync_states, [(set(), None)])
             finally:
+                manager.shutdown()
+
+    def test_worker_continues_after_typed_attempt_publication_rejection(self):
+        worker_loop = CacheManager._worker_loop
+        bad = self.make_item("song-stale-publication")
+        good = self.make_item("song-after-stale-publication")
+        for item in (bad, good):
+            self.store.add_item(item, requester_name="cache-test-user")
+        stale_token = self.store.begin_cache_attempt(bad.id)
+        self.store.begin_cache_attempt(bad.id)
+        good_token = self.store.begin_cache_attempt(good.id)
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=2)
+            processed: list[str] = []
+            try:
+                with manager.lock:
+                    manager.pending_ids = {bad.id, good.id}
+                    manager.python_worker_download_sources = {
+                        bad.id: DOWNLOAD_SOURCE_BBDOWN,
+                        good.id: DOWNLOAD_SOURCE_BBDOWN,
+                    }
+                    manager.python_cache_attempt_tokens = {
+                        bad.id: stale_token,
+                        good.id: good_token,
+                    }
+                manager.tasks.put(bad.id)
+                manager.tasks.put(good.id)
+
+                def cache_item(item_id: str, cache_attempt_token: int) -> bool:
+                    if item_id == bad.id:
+                        manager._project_cache_event(
+                            item_id,
+                            "failed",
+                            cache_attempt_token=cache_attempt_token,
+                            message="stale terminal",
+                        )
+                    processed.append(item_id)
+                    manager.stop_event.set()
+                    return False
+
+                with patch.object(manager, "_cache_item", side_effect=cache_item):
+                    worker_loop(manager)
+
+                self.assertEqual(processed, [good.id])
+                self.assertEqual(self.store.get_item(bad.id).cache_status, "pending")
+            finally:
+                manager.stop_event.clear()
                 manager.shutdown()
 
     def test_sync_with_playlist_keeps_three_ready_items_as_retention_buffer(self):
@@ -2372,6 +2631,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         cookie="",
                         stage_label="download video",
                         track_key="video-p1",
+                        cache_attempt_token=1,
                         stream_kind="video",
                     )
 
@@ -2512,7 +2772,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
             urgent_started = threading.Event()
             release_urgent = threading.Event()
 
-            def fake_cache_item(item_id, allow_refresh_retry=True):
+            def fake_cache_item(
+                item_id, _cache_attempt_token, allow_refresh_retry=True
+            ):
                 self.assertEqual(item_id, "song-a")
                 urgent_started.set()
                 self.assertTrue(release_urgent.wait(2))
@@ -2810,10 +3072,23 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                     manager.retry_requested_ids.add("song-a")
+                old_token = self.store.begin_cache_attempt("song-a")
+                manager.python_cache_attempt_tokens["song-a"] = old_token
                 with patch.object(manager, "_cache_item_multi") as cache_item_multi_mock:
-                    manager._cache_item("song-a")
+                    manager._cache_item(
+                        "song-a",
+                        old_token,
+                    )
                     self.assertFalse((self.cache_dir / "song-a").exists())
                     cache_item_multi_mock.assert_called_once()
+                    fresh_token = cache_item_multi_mock.call_args.kwargs[
+                        "cache_attempt_token"
+                    ]
+                    self.assertGreater(fresh_token, old_token)
+                    self.assertEqual(
+                        manager.python_cache_attempt_tokens["song-a"],
+                        fresh_token,
+                    )
             finally:
                 manager.shutdown()
 
@@ -2924,6 +3199,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                             },
                             Path("/tools/ffmpeg"),
                             log_path,
+                            cache_attempt_token=1,
                         )
                 log_text = log_path.read_text(encoding="utf-8")
             finally:
@@ -3721,6 +3997,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item = self.make_item("song-a")
                 item.selected_pages = [1]
                 item.video_page = 1
+                self.store.add_item(item, requester_name="cache-test-user")
+                cache_attempt_token = self.store.begin_cache_attempt(item.id)
                 manager.desired_ids.add(item.id)
                 with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_file]):
                     result = manager._download_selected_streams(
@@ -3729,6 +4007,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        cache_attempt_token=cache_attempt_token,
                         download_source="bbdown",
                     )
             finally:
@@ -3763,6 +4042,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item.available_pages = [1, 2]
                 item.available_parts = ["原曲", "伴奏"]
                 item.video_page = 2
+                self.store.add_item(item, requester_name="cache-test-user")
+                cache_attempt_token = self.store.begin_cache_attempt(item.id)
                 manager.desired_ids.add(item.id)
                 with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_file]):
                     result = manager._download_selected_streams(
@@ -3771,6 +4052,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        cache_attempt_token=cache_attempt_token,
                         download_source="bbdown",
                     )
             finally:
@@ -3806,6 +4088,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item.available_parts = ["main track", "off vocal"]
                 item.selected_audio_variant_id = "p2_off_vocal"
                 item.video_page = 2
+                self.store.add_item(item, requester_name="cache-test-user")
+                cache_attempt_token = self.store.begin_cache_attempt(item.id)
                 manager.desired_ids.add(item.id)
                 with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_p1_file, audio_p2_file]):
                     result = manager._download_selected_streams(
@@ -3814,6 +4098,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         Path("/tools/ffmpeg"),
                         item_dir,
                         log_path,
+                        cache_attempt_token=cache_attempt_token,
                         download_source="bbdown",
                     )
             finally:
@@ -4367,6 +4652,7 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                             }]},
                             Path("/tools/ffmpeg"),
                             self.log_path,
+                            cache_attempt_token=1,
                         )
             finally:
                 manager.shutdown()
@@ -4409,6 +4695,7 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                             }]},
                             Path("/tools/ffmpeg"),
                             self.log_path,
+                            cache_attempt_token=1,
                         )
             finally:
                 manager.shutdown()
@@ -4494,6 +4781,7 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                             },
                             Path("/tools/ffmpeg"),
                             self.log_path,
+                            cache_attempt_token=1,
                         )
             finally:
                 manager.shutdown()
@@ -4700,7 +4988,11 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                     return_value=Path("/tools/ffprobe"),
                 ), patch("bilikara.cache.subprocess.run", side_effect=probes):
                     manager._validate_cache_result(
-                        "song", cache_result, Path("/tools/ffmpeg"), self.log_path
+                        "song",
+                        cache_result,
+                        Path("/tools/ffmpeg"),
+                        self.log_path,
+                        cache_attempt_token=1,
                     )
             finally:
                 manager.shutdown()
@@ -4807,6 +5099,7 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                             cookie="SESSDATA=secret",
                             stage_label="下载视频轨 P1",
                             track_key="video-p1",
+                            cache_attempt_token=1,
                             stream_kind="video",
                             page=1,
                             cid=123,
@@ -5023,8 +5316,17 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     embed_url="https://player.bilibili.com/player.html?aid=123",
                 )
                 self.store.add_item(item, requester_name="cache-test-user")
+                cache_attempt_token = self.store.begin_cache_attempt(item.id)
 
                 with patch.object(manager, "_cache_item", side_effect=RuntimeError("unexpected crash")):
+                    with manager.lock:
+                        manager.pending_ids.add(item.id)
+                        manager.python_worker_download_sources[item.id] = (
+                            DOWNLOAD_SOURCE_BBDOWN
+                        )
+                        manager.python_cache_attempt_tokens[item.id] = (
+                            cache_attempt_token
+                        )
                     manager.tasks.put("song-err")
                     manager.tasks.join()
 
@@ -5153,6 +5455,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                 manager._begin_download_progress(
                     item.id,
                     [{"key": "video-p1", "label": "视频轨P1", "order": 0}],
+                    cache_attempt_token=1,
                 )
                 result = manager._download_stream_with_rust(
                     item.id,
@@ -5163,6 +5466,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                     cookie="",
                     stage_label="下载视频轨 P1",
                     track_key="video-p1",
+                    cache_attempt_token=1,
                     stream_kind="video",
                 )
             finally:
@@ -5204,6 +5508,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                                 cookie="",
                                 stage_label="下载视频轨 P1",
                                 track_key="video-p1",
+                                cache_attempt_token=1,
                                 stream_kind="video",
                             )
                         self.assertEqual(raised.exception.kind, kind)
@@ -5322,6 +5627,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                                 "order": 0,
                             },
                             audio_tracks=[],
+                            cache_attempt_token=1,
                             validate_tracks=True,
                         )
                 retry_wait.assert_not_called()
@@ -5354,6 +5660,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                         manager._begin_download_progress(
                             item.id,
                             [{"key": track_key, "label": "视频轨", "order": 0}],
+                            cache_attempt_token=1,
                         )
                         command = [
                             sys.executable,
@@ -5374,6 +5681,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                                 stream_kind="video",
                                 target_dir=target_dir,
                                 track_key=track_key,
+                                cache_attempt_token=1,
                                 tool_dir=Path(self.temp_dir.name),
                                 progress_from_output=True,
                             )
@@ -5472,7 +5780,8 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                             "label": "音轨 P3",
                             "order": 3,
                         },
-                    ]
+                    ],
+                    cache_attempt_token=1,
                 )
             finally:
                 manager.shutdown()
@@ -5540,7 +5849,8 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                     log_path=log_path,
                     dash_streams=dash_streams,
                     video_track={"key": "v1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
-                    audio_tracks=[{"key": "a1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}]
+                    audio_tracks=[{"key": "a1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                    cache_attempt_token=1,
                 )
             finally:
                 manager.shutdown()
@@ -5621,6 +5931,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                         },
                         video_track={"key": "video-p1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
                         audio_tracks=[{"key": "audio-p1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                        cache_attempt_token=1,
                         validate_tracks=True,
                     )
             finally:
@@ -5691,6 +6002,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                         },
                         video_track={"key": "video-p1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
                         audio_tracks=[{"key": "audio-p1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                        cache_attempt_token=1,
                         validate_tracks=True,
                     )
             finally:
@@ -5748,6 +6060,7 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                             },
                             video_track={"key": "video-p1", "page": 1, "stream_kind": "video", "label": "V1", "order": 0},
                             audio_tracks=[{"key": "audio-p1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1}],
+                            cache_attempt_token=1,
                             validate_tracks=True,
                         )
             finally:
@@ -5797,7 +6110,8 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
                         audio_tracks=[
                             {"key": "a1", "page": 1, "stream_kind": "audio", "label": "A1", "order": 1},
                             {"key": "a2", "page": 2, "stream_kind": "audio", "label": "A2", "order": 2},
-                        ]
+                        ],
+                        cache_attempt_token=1,
                     )
             finally:
                 manager.shutdown()

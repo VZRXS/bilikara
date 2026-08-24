@@ -62,7 +62,7 @@ from .bilibili import (
     fetch_dash_playurl,
 )
 from . import rust_backend, rust_runtime
-from .store import PlaylistStore
+from .store import PlaylistStore, PlaylistStoreCommandError
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
 AUDIO_EXTENSIONS = {".m4a", ".aac", ".mp3", ".flac", ".ogg", ".opus", ".wav"}
@@ -334,7 +334,9 @@ class CacheManager:
         self.item_activity_at: dict[str, float] = {}
         self.item_stage_progress_signatures: dict[str, str] = {}
         self.item_download_progress: dict[str, dict[str, dict[str, object]]] = {}
+        self.item_download_attempt_tokens: dict[str, int] = {}
         self.python_worker_download_sources: dict[str, str] = {}
+        self.python_cache_attempt_tokens: dict[str, int] = {}
         self.retry_requested_ids: set[str] = set()
         self.cache_interrupted_messages: dict[str, str] = {}
         self.log_dir = LOG_DIR
@@ -344,6 +346,7 @@ class CacheManager:
         self.native_cache_event_stop = threading.Event()
         self.native_cache_event_worker: threading.Thread | None = None
         self.native_cache_generations: dict[str, int] = {}
+        self.native_cache_attempt_tokens: dict[str, int] = {}
         self.native_cache_terminal_sequences: dict[str, int] = {}
         self.native_cache_snapshot: dict[str, Any] = {}
         self.native_cache_error = ""
@@ -362,22 +365,46 @@ class CacheManager:
         item_id: str,
         kind: str,
         *,
-        generation: int = 0,
+        cache_attempt_token: int,
         **fields: Any,
     ) -> bool:
+        token = self._require_cache_attempt_token(cache_attempt_token)
         return self.store.apply_cache_event(
             item_id,
-            generation=max(0, int(generation)),
+            cache_attempt_token=token,
             event={"kind": str(kind), **fields},
         )
+
+    @staticmethod
+    def _require_cache_attempt_token(token: object) -> int:
+        if isinstance(token, bool) or not isinstance(token, int) or token <= 0:
+            raise ValueError("cache attempt token must be a positive integer")
+        return token
+
+    def _begin_cache_attempt(self, item_id: str) -> int:
+        return self._require_cache_attempt_token(
+            self.store.begin_cache_attempt(str(item_id))
+        )
+
+    def _begin_live_cache_attempts(
+        self, items: Iterable[PlaylistItem]
+    ) -> dict[str, int]:
+        tokens: dict[str, int] = {}
+        for item in items:
+            try:
+                tokens[item.id] = self._begin_cache_attempt(item.id)
+            except PlaylistStoreCommandError as exc:
+                if exc.kind != "item_not_found":
+                    raise
+        return tokens
 
     def _project_cache_progress(
         self,
         item_id: str,
         *,
+        cache_attempt_token: int,
         progress: object | None = None,
         message: object | None = None,
-        generation: int = 0,
     ) -> bool:
         if progress is None:
             item = self.store.get_item(item_id)
@@ -390,7 +417,7 @@ class CacheManager:
         return self._project_cache_event(
             item_id,
             "progress",
-            generation=generation,
+            cache_attempt_token=cache_attempt_token,
             **event,
         )
 
@@ -431,7 +458,13 @@ class CacheManager:
             raise RuntimeError("Rust cache runtime returned invalid events")
         for event in events:
             if isinstance(event, dict):
-                self._apply_native_cache_event(event)
+                try:
+                    self._apply_native_cache_event(event)
+                except PlaylistStoreCommandError as exc:
+                    _debug_print(
+                        "[bilikara-cache] rejected Rust cache publication "
+                        f"for item={event.get('item_id')}: {exc.kind}"
+                    )
         snapshot = result.get("snapshot")
         if isinstance(snapshot, dict):
             self._apply_native_cache_snapshot(snapshot)
@@ -474,7 +507,13 @@ class CacheManager:
                 self.pending_ids = pending_ids | active_ids | python_owned_ids
                 self.urgent_cache_ids = urgent_ids | python_urgent_ids
         for event in terminal_events:
-            self._apply_native_cache_event(event)
+            try:
+                self._apply_native_cache_event(event)
+            except PlaylistStoreCommandError as exc:
+                _debug_print(
+                    "[bilikara-cache] rejected Rust terminal cache publication "
+                    f"for item={event.get('item_id')}: {exc.kind}"
+                )
 
     def _apply_native_cache_event(self, event: dict[str, Any]) -> None:
         item_id = str(event.get("item_id") or "").strip()
@@ -484,6 +523,13 @@ class CacheManager:
         try:
             generation = int(event.get("generation") or 0)
         except (TypeError, ValueError):
+            return
+        cache_attempt_token = event.get("cache_attempt_token")
+        if (
+            isinstance(cache_attempt_token, bool)
+            or not isinstance(cache_attempt_token, int)
+            or cache_attempt_token <= 0
+        ):
             return
         try:
             sequence = int(event.get("sequence") or 0)
@@ -498,15 +544,23 @@ class CacheManager:
             ):
                 return
             expected_generation = self.native_cache_generations.get(item_id)
+            expected_cache_attempt_token = self.native_cache_attempt_tokens.get(
+                item_id
+            )
             if generation > 0:
                 if expected_generation and generation < expected_generation:
                     return
                 if not expected_generation or generation > expected_generation:
                     self.native_cache_generations[item_id] = generation
+                    self.native_cache_attempt_tokens[item_id] = cache_attempt_token
+                elif expected_cache_attempt_token is None:
+                    self.native_cache_attempt_tokens[item_id] = cache_attempt_token
             matching_native_terminal = bool(
                 terminal
                 and generation > 0
                 and self.native_cache_generations.get(item_id) == generation
+                and self.native_cache_attempt_tokens.get(item_id)
+                == cache_attempt_token
             )
             if (
                 matching_native_terminal
@@ -524,7 +578,7 @@ class CacheManager:
             self._project_cache_event(
                 item_id,
                 "queued",
-                generation=generation,
+                cache_attempt_token=cache_attempt_token,
                 message="等待 Rust 缓存队列",
             )
         elif kind == "started":
@@ -536,13 +590,17 @@ class CacheManager:
             }
             with self.lock:
                 self.item_download_progress[item_id] = normalized_tracks
+                self.item_download_attempt_tokens[item_id] = cache_attempt_token
             self._project_cache_event(
                 item_id,
                 "started",
-                generation=generation,
+                cache_attempt_token=cache_attempt_token,
                 message=self._cache_start_message(item),
             )
-            self._publish_download_progress(item_id, generation=generation)
+            self._publish_download_progress(
+                item_id,
+                cache_attempt_token=cache_attempt_token,
+            )
         elif kind == "progress":
             track = payload.get("track")
             if not isinstance(track, dict):
@@ -551,26 +609,37 @@ class CacheManager:
             if not track_key:
                 return
             with self.lock:
+                if (
+                    self.item_download_attempt_tokens.get(item_id)
+                    != cache_attempt_token
+                ):
+                    return
                 tracks = self.item_download_progress.setdefault(item_id, {})
                 tracks[track_key] = dict(track)
-            self._publish_download_progress(item_id, generation=generation)
+            self._publish_download_progress(
+                item_id,
+                cache_attempt_token=cache_attempt_token,
+            )
         elif kind == "ready":
             variants = payload.get("audio_variants")
             if not isinstance(variants, list) or not variants:
                 self._mark_native_cache_failed(
                     item_id,
                     "Rust 缓存结果缺少音轨",
-                    generation=generation,
+                    cache_attempt_token=cache_attempt_token,
                 )
                 if sequence > 0:
                     with self.lock:
                         self.native_cache_terminal_sequences[item_id] = sequence
                 return
-            self._clear_item_download_progress(item_id)
+            self._clear_item_download_progress(
+                item_id,
+                cache_attempt_token=cache_attempt_token,
+            )
             self._project_cache_event(
                 item_id,
                 "ready",
-                generation=generation,
+                cache_attempt_token=cache_attempt_token,
                 progress=100.0,
                 message=self._ready_message(item),
                 video_relative_path=str(payload.get("video_relative_path") or ""),
@@ -586,14 +655,17 @@ class CacheManager:
             self._mark_native_cache_failed(
                 item_id,
                 str(payload.get("message") or "Rust 缓存任务失败"),
-                generation=generation,
+                cache_attempt_token=cache_attempt_token,
             )
         elif kind in {"cancelled", "evicted"}:
-            self._clear_item_download_progress(item_id)
+            self._clear_item_download_progress(
+                item_id,
+                cache_attempt_token=cache_attempt_token,
+            )
             self._project_cache_event(
                 item_id,
                 kind,
-                generation=generation,
+                cache_attempt_token=cache_attempt_token,
                 message=str(payload.get("reason") or self._outside_window_message()),
             )
         else:
@@ -607,13 +679,25 @@ class CacheManager:
         self._record_item_activity(item_id)
 
     def _mark_native_cache_failed(
-        self, item_id: str, message: str, *, generation: int = 0
+        self,
+        item_id: str,
+        message: str,
+        *,
+        cache_attempt_token: int | None = None,
     ) -> None:
-        self._clear_item_download_progress(item_id)
+        token = (
+            self._begin_cache_attempt(item_id)
+            if cache_attempt_token is None
+            else self._require_cache_attempt_token(cache_attempt_token)
+        )
+        self._clear_item_download_progress(
+            item_id,
+            cache_attempt_token=token,
+        )
         self._project_cache_event(
             item_id,
             "failed",
-            generation=generation,
+            cache_attempt_token=token,
             message=f"缓存失败: {message}",
         )
         self._record_item_activity(item_id)
@@ -1152,9 +1236,11 @@ class CacheManager:
         for item in items:
             if item.cache_status != "ready" or self._item_cache_ready(item):
                 continue
+            cache_attempt_token = self._begin_cache_attempt(item.id)
             self._project_cache_event(
                 item.id,
                 "evicted",
+                cache_attempt_token=cache_attempt_token,
                 message="缓存文件已清空，等待重新缓存",
             )
             self._record_item_activity(item.id)
@@ -1448,6 +1534,8 @@ class CacheManager:
         }
 
     def prepare_session(self) -> None:
+        items = self.store.list_items()
+        cache_attempt_tokens = self._begin_live_cache_attempts(items)
         if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
             self._ensure_native_cache_runtime()
             self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
@@ -1459,7 +1547,9 @@ class CacheManager:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
             self.item_download_progress.clear()
+            self.item_download_attempt_tokens.clear()
             self.python_worker_download_sources.clear()
+            self.python_cache_attempt_tokens.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
             self.pending_ids.clear()
@@ -1468,10 +1558,14 @@ class CacheManager:
             self.urgent_workers.clear()
             self.desired_ids.clear()
             self.ordered_desired_ids.clear()
-        for item in self.store.list_items():
+        for item in items:
+            cache_attempt_token = cache_attempt_tokens.get(item.id)
+            if cache_attempt_token is None:
+                continue
             self._project_cache_event(
                 item.id,
                 "reset",
+                cache_attempt_token=cache_attempt_token,
                 message=self._waiting_message(),
             )
             self._record_item_activity(item.id)
@@ -1484,6 +1578,8 @@ class CacheManager:
         with self.lock:
             if self.stop_event.is_set():
                 return
+            items = self.store.list_items()
+            cache_attempt_tokens = self._begin_live_cache_attempts(items)
             self.stop_event.set()
             processes = self._active_processes_locked()
             urgent_workers = list(self.urgent_workers.values())
@@ -1518,7 +1614,9 @@ class CacheManager:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
             self.item_download_progress.clear()
+            self.item_download_attempt_tokens.clear()
             self.python_worker_download_sources.clear()
+            self.python_cache_attempt_tokens.clear()
             self.retry_requested_ids.clear()
             self.cache_interrupted_messages.clear()
             self.urgent_cache_ids.clear()
@@ -1527,17 +1625,24 @@ class CacheManager:
             self.native_cache_started = False
             self.native_cache_event_worker = None
             self.native_cache_generations.clear()
+            self.native_cache_attempt_tokens.clear()
             self.native_cache_terminal_sequences.clear()
             self.native_cache_snapshot.clear()
-        for item in self.store.list_items():
+        for item in items:
+            cache_attempt_token = cache_attempt_tokens.get(item.id)
+            if cache_attempt_token is None:
+                continue
             self._project_cache_event(
                 item.id,
                 "cancelled",
+                cache_attempt_token=cache_attempt_token,
                 message="缓存已在退出时清空",
             )
             self._record_item_activity(item.id)
 
     def clear_runtime_cache(self) -> None:
+        items = self.store.list_items()
+        self._begin_live_cache_attempts(items)
         native_cache = (
             self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
             or self.native_cache_started
@@ -1561,12 +1666,15 @@ class CacheManager:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
             self.item_download_progress.clear()
+            self.item_download_attempt_tokens.clear()
             self.python_worker_download_sources.clear()
+            self.python_cache_attempt_tokens.clear()
             self.active_process = None
             self.active_processes.clear()
             self.active_process_item_ids.clear()
             self.active_item_id = None
             self.native_cache_generations.clear()
+            self.native_cache_attempt_tokens.clear()
             self.native_cache_snapshot.clear()
             while True:
                 try:
@@ -1594,6 +1702,12 @@ class CacheManager:
             raise ValueError("当前不在自动缓存窗口中")
 
         download_source = self._current_download_source()
+        if (
+            download_source == DOWNLOAD_SOURCE_DOWNKYI
+            and not effective_bilibili_cookie()
+        ):
+            raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+        reset_token = self._begin_cache_attempt(item_id)
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
 
@@ -1611,6 +1725,7 @@ class CacheManager:
             self._project_cache_event(
                 item_id,
                 "reset",
+                cache_attempt_token=reset_token,
                 message="准备重新下载",
             )
             self._record_item_activity(item_id)
@@ -1620,11 +1735,17 @@ class CacheManager:
                     "retry", job=self._native_cache_job(item), urgent=urgent
                 )
                 generation = int(result.get("generation") or 0)
+                cache_attempt_token = self._require_cache_attempt_token(
+                    result.get("cache_attempt_token")
+                )
                 if generation > 0:
                     with self.lock:
                         self.native_cache_generations[item_id] = max(
                             generation,
                             self.native_cache_generations.get(item_id, 0),
+                        )
+                        self.native_cache_attempt_tokens[item_id] = (
+                            cache_attempt_token
                         )
                 self._drain_native_cache_events()
             except Exception as exc:  # noqa: BLE001
@@ -1665,6 +1786,7 @@ class CacheManager:
         self._project_cache_event(
             item_id,
             "reset",
+            cache_attempt_token=reset_token,
             message="准备重新下载",
         )
         self._record_item_activity(item_id)
@@ -1673,7 +1795,12 @@ class CacheManager:
             self._terminate_processes(active_processes)
             return
 
-        self._remove_cache_dir(item_id)
+        self._remove_cache_dir(
+            item_id,
+            cache_attempt_token=reset_token,
+        )
+        with self.lock:
+            self.python_cache_attempt_tokens.pop(item_id, None)
         if start_concurrent_current_retry:
             self._append_log_line(
                 log_path,
@@ -1839,14 +1966,21 @@ class CacheManager:
             return
 
         generations = result.get("generations")
-        if isinstance(generations, dict):
+        cache_attempt_tokens = result.get("cache_attempt_tokens")
+        if isinstance(generations, dict) and isinstance(cache_attempt_tokens, dict):
             with self.lock:
                 for item_id, generation in generations.items():
                     try:
                         normalized_item_id = str(item_id)
+                        cache_attempt_token = self._require_cache_attempt_token(
+                            cache_attempt_tokens.get(item_id)
+                        )
                         self.native_cache_generations[normalized_item_id] = max(
                             int(generation),
                             self.native_cache_generations.get(normalized_item_id, 0),
+                        )
+                        self.native_cache_attempt_tokens[normalized_item_id] = (
+                            cache_attempt_token
                         )
                     except (TypeError, ValueError):
                         continue
@@ -1891,6 +2025,10 @@ class CacheManager:
         self._apply_cache_plan_priority(items, priority_plan)
 
     def enqueue(self, item_id: str) -> None:
+        item = self.store.get_item(item_id)
+        if not item:
+            return
+        missing_downkyi_cookie = False
         with self.lock:
             download_source = self.download_source
             if download_source != DOWNLOAD_SOURCE_NATIVE:
@@ -1900,27 +2038,46 @@ class CacheManager:
                     or self.stop_event.is_set()
                 ):
                     return
-                self.pending_ids.add(item_id)
-                self.python_worker_download_sources[item_id] = download_source
+                missing_downkyi_cookie = bool(
+                    download_source == DOWNLOAD_SOURCE_DOWNKYI
+                    and not effective_bilibili_cookie()
+                )
+                cache_attempt_token = self._begin_cache_attempt(item_id)
+                if not missing_downkyi_cookie:
+                    self.pending_ids.add(item_id)
+                    self.python_worker_download_sources[item_id] = download_source
+                    self.python_cache_attempt_tokens[item_id] = cache_attempt_token
         if download_source == DOWNLOAD_SOURCE_NATIVE:
-            item = self.store.get_item(item_id)
-            if not item:
-                return
             try:
                 self._ensure_native_cache_runtime()
                 result = self._native_cache_request(
                     "submit", job=self._native_cache_job(item), priority="normal"
                 )
                 generation = int(result.get("generation") or 0)
+                cache_attempt_token = self._require_cache_attempt_token(
+                    result.get("cache_attempt_token")
+                )
                 if generation > 0:
                     with self.lock:
                         self.native_cache_generations[item_id] = max(
                             generation,
                             self.native_cache_generations.get(item_id, 0),
                         )
+                        self.native_cache_attempt_tokens[item_id] = (
+                            cache_attempt_token
+                        )
                 self._drain_native_cache_events()
             except Exception as exc:  # noqa: BLE001
                 self._mark_native_cache_failed(item_id, str(exc))
+            return
+        if missing_downkyi_cookie:
+            self._project_cache_event(
+                item_id,
+                "failed",
+                cache_attempt_token=cache_attempt_token,
+                message=f"缓存失败: {DOWNKYI_AUTH_REQUIRED_MESSAGE}",
+            )
+            self._record_item_activity(item_id)
             return
         self.tasks.put(item_id)
 
@@ -1939,28 +2096,52 @@ class CacheManager:
                 self.tasks.put(queued_id)
 
     def _start_urgent_cache(self, item_id: str) -> None:
-        self._remove_queued_item(item_id)
         with self.lock:
             if self.stop_event.is_set() or item_id in self.urgent_cache_ids:
                 return
-            self.python_worker_download_sources.setdefault(
+            download_source = self.python_worker_download_sources.setdefault(
                 item_id, self.download_source
             )
-            self.urgent_cache_ids.add(item_id)
-            self.pending_ids.add(item_id)
-            worker = threading.Thread(
-                target=self._urgent_cache_worker,
-                args=(item_id,),
-                name=f"bilikara-current-cache-{item_id}",
-                daemon=True,
+            if (
+                download_source == DOWNLOAD_SOURCE_DOWNKYI
+                and not effective_bilibili_cookie()
+            ):
+                cache_attempt_token = self._begin_cache_attempt(item_id)
+                missing_downkyi_cookie = True
+            else:
+                cache_attempt_token = self.python_cache_attempt_tokens.get(item_id)
+                if cache_attempt_token is None:
+                    cache_attempt_token = self._begin_cache_attempt(item_id)
+                    self.python_cache_attempt_tokens[item_id] = cache_attempt_token
+                missing_downkyi_cookie = False
+            if missing_downkyi_cookie:
+                worker = None
+            else:
+                self._remove_queued_item(item_id)
+                self.urgent_cache_ids.add(item_id)
+                self.pending_ids.add(item_id)
+                worker = threading.Thread(
+                    target=self._urgent_cache_worker,
+                    args=(item_id, cache_attempt_token),
+                    name=f"bilikara-current-cache-{item_id}",
+                    daemon=True,
+                )
+                self.urgent_workers[item_id] = worker
+        if missing_downkyi_cookie:
+            self._project_cache_event(
+                item_id,
+                "failed",
+                cache_attempt_token=cache_attempt_token,
+                message=f"缓存失败: {DOWNKYI_AUTH_REQUIRED_MESSAGE}",
             )
-            self.urgent_workers[item_id] = worker
+            return
+        assert worker is not None
         worker.start()
 
-    def _urgent_cache_worker(self, item_id: str) -> None:
+    def _urgent_cache_worker(self, item_id: str, cache_attempt_token: int) -> None:
         should_resync = False
         try:
-            should_resync = self._cache_item(item_id)
+            should_resync = self._cache_item(item_id, cache_attempt_token)
         except Exception as exc:  # noqa: BLE001
             _debug_print(f"[bilikara-cache] Unexpected urgent-cache error for item {item_id}: {exc}")
             try:
@@ -1973,6 +2154,7 @@ class CacheManager:
                 self._project_cache_event(
                     item_id,
                     "failed",
+                    cache_attempt_token=cache_attempt_token,
                     message=f"缓存发生意外错误: {exc}",
                 )
             except Exception:
@@ -1983,6 +2165,11 @@ class CacheManager:
                 self.urgent_workers.pop(item_id, None)
                 self.pending_ids.discard(item_id)
                 self.python_worker_download_sources.pop(item_id, None)
+                if (
+                    self.python_cache_attempt_tokens.get(item_id)
+                    == cache_attempt_token
+                ):
+                    self.python_cache_attempt_tokens.pop(item_id, None)
         if should_resync and not self.stop_event.is_set():
             self.sync_with_playlist()
 
@@ -1990,6 +2177,26 @@ class CacheManager:
         with self.lock:
             if self.stop_event.is_set():
                 return
+            download_source = self.python_worker_download_sources.setdefault(
+                item_id, self.download_source
+            )
+            if (
+                download_source == DOWNLOAD_SOURCE_DOWNKYI
+                and not effective_bilibili_cookie()
+            ):
+                raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+            if item_id not in self.python_cache_attempt_tokens:
+                self.python_cache_attempt_tokens[item_id] = (
+                    self._begin_cache_attempt(item_id)
+                )
+            if (
+                requeue_after
+                and requeue_after == self.active_item_id
+                and requeue_after in self.desired_ids
+            ):
+                self.python_cache_attempt_tokens[requeue_after] = (
+                    self._begin_cache_attempt(requeue_after)
+                )
             drained: list[str] = []
             skip_ids = {item_id}
             if requeue_after:
@@ -2005,9 +2212,6 @@ class CacheManager:
 
             ordered = [item_id]
             self.pending_ids.add(item_id)
-            self.python_worker_download_sources.setdefault(
-                item_id, self.download_source
-            )
             if requeue_after and requeue_after != item_id and requeue_after in self.desired_ids:
                 ordered.append(requeue_after)
                 self.pending_ids.add(requeue_after)
@@ -2017,6 +2221,17 @@ class CacheManager:
                 self.tasks.put(queued_id)
 
     def _enqueue_retry_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
+        with self.lock:
+            download_source = self.download_source
+            if (
+                download_source == DOWNLOAD_SOURCE_DOWNKYI
+                and not effective_bilibili_cookie()
+            ):
+                raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+            self.python_worker_download_sources[item_id] = download_source
+            self.python_cache_attempt_tokens[item_id] = self._begin_cache_attempt(
+                item_id
+            )
         self._enqueue_front(item_id, requeue_after=requeue_after)
 
     def _reorder_pending_cache_queue(self, ordered_ids: list[str]) -> None:
@@ -2037,6 +2252,7 @@ class CacheManager:
                 else:
                     self.pending_ids.discard(queued_id)
                     self.python_worker_download_sources.pop(queued_id, None)
+                    self.python_cache_attempt_tokens.pop(queued_id, None)
                 self.tasks.task_done()
 
             drained_set = set(drained)
@@ -2100,7 +2316,15 @@ class CacheManager:
                 try:
                     with self.lock:
                         self.active_item_id = item_id
-                    should_resync = self._cache_item(item_id)
+                        cache_attempt_token = self.python_cache_attempt_tokens.get(
+                            item_id
+                        )
+                    if cache_attempt_token is None:
+                        raise RuntimeError("queued cache item has no reserved attempt token")
+                    should_resync = self._cache_item(
+                        item_id,
+                        cache_attempt_token,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     _debug_print(f"[bilikara-cache] Unexpected error caching item {item_id}: {exc}")
                     try:
@@ -2116,6 +2340,7 @@ class CacheManager:
                         self._project_cache_event(
                             item_id,
                             "failed",
+                            cache_attempt_token=cache_attempt_token,
                             message=f"缓存发生意外错误: {exc}",
                         )
                     except Exception:
@@ -2138,24 +2363,47 @@ class CacheManager:
                     else:
                         self.pending_ids.discard(item_id)
                         self.python_worker_download_sources.pop(item_id, None)
+                        if (
+                            self.python_cache_attempt_tokens.get(item_id)
+                            == cache_attempt_token
+                        ):
+                            self.python_cache_attempt_tokens.pop(item_id, None)
                 self.tasks.task_done()
             if should_resync and not self.stop_event.is_set():
                 self.sync_with_playlist()
 
-    def _cache_item(self, item_id: str, allow_refresh_retry: bool = True) -> bool:
+    def _cache_item(
+        self,
+        item_id: str,
+        cache_attempt_token: int,
+        allow_refresh_retry: bool = True,
+    ) -> bool:
+        cache_attempt_token = self._require_cache_attempt_token(
+            cache_attempt_token
+        )
         if self.stop_event.is_set() or not self._should_cache(item_id):
             return False
         if self._take_retry_request(item_id):
-            self._remove_cache_dir(item_id)
+            cache_attempt_token = self._begin_cache_attempt(item_id)
+            with self.lock:
+                self.python_cache_attempt_tokens[item_id] = cache_attempt_token
+            self._remove_cache_dir(
+                item_id,
+                cache_attempt_token=cache_attempt_token,
+            )
         item = self.store.get_item(item_id)
         if not item:
-            self._remove_cache_dir(item_id)
+            self._remove_cache_dir(
+                item_id,
+                cache_attempt_token=cache_attempt_token,
+            )
             return False
         # Current cache flow keeps video and audio tracks separate so the host
         # can switch audio variants without remuxing a single output file.
         return self._cache_item_multi(
             item_id,
             item,
+            cache_attempt_token=cache_attempt_token,
             allow_refresh_retry=allow_refresh_retry,
         )
 
@@ -2164,6 +2412,7 @@ class CacheManager:
         item_id: str,
         item,
         *,
+        cache_attempt_token: int | None = None,
         allow_refresh_retry: bool,
     ) -> bool:
         with self.lock:
@@ -2172,19 +2421,34 @@ class CacheManager:
             download_source == DOWNLOAD_SOURCE_DOWNKYI
             and not effective_bilibili_cookie()
         ):
-            self._clear_item_download_progress(item_id)
+            token = self._begin_cache_attempt(item_id)
+            self._clear_item_download_progress(
+                item_id,
+                cache_attempt_token=token,
+            )
             self._project_cache_event(
                 item_id,
                 "failed",
+                cache_attempt_token=token,
                 message=f"缓存失败: {DOWNKYI_AUTH_REQUIRED_MESSAGE}",
             )
             self._record_item_activity(item_id)
             return False
 
-        self._clear_item_download_progress(item_id)
+        token = (
+            self._begin_cache_attempt(item_id)
+            if cache_attempt_token is None
+            else self._require_cache_attempt_token(cache_attempt_token)
+        )
+
+        self._clear_item_download_progress(
+            item_id,
+            cache_attempt_token=token,
+        )
         self._project_cache_event(
             item_id,
             "queued",
+            cache_attempt_token=token,
             message="等待缓存队列",
         )
         self._record_item_activity(item_id)
@@ -2208,6 +2472,7 @@ class CacheManager:
                 self._project_cache_event(
                     item_id,
                     "failed",
+                    cache_attempt_token=token,
                     message=f"Rust Native 不可用: {message}",
                 )
                 return False
@@ -2221,6 +2486,7 @@ class CacheManager:
                 self._project_cache_event(
                     item_id,
                     "failed",
+                    cache_attempt_token=token,
                     message=f"{label} 不可用: {exc}",
                 )
                 return False
@@ -2234,6 +2500,7 @@ class CacheManager:
                 self._project_cache_event(
                     item_id,
                     "failed",
+                    cache_attempt_token=token,
                     message=f"FFmpeg 不可用: {exc}",
                 )
                 return False
@@ -2244,6 +2511,7 @@ class CacheManager:
         self._project_cache_event(
             item_id,
             "started",
+            cache_attempt_token=token,
             message=self._cache_start_message(item),
         )
         self._record_item_activity(item_id)
@@ -2255,6 +2523,7 @@ class CacheManager:
                 ffmpeg_path,
                 item_dir,
                 log_path,
+                cache_attempt_token=token,
                 download_source=download_source,
             )
             self._raise_if_retry_requested(item_id)
@@ -2268,7 +2537,13 @@ class CacheManager:
             if download_source == DOWNLOAD_SOURCE_DOWNKYI and not downkyi_tracks_prevalidated:
                 self._normalize_downkyi_cache_result(cache_result, ffmpeg_path, log_path)
             if not native_tracks_prevalidated and not downkyi_tracks_prevalidated:
-                self._validate_cache_result(item.id, cache_result, ffmpeg_path, log_path)
+                self._validate_cache_result(
+                    item.id,
+                    cache_result,
+                    ffmpeg_path,
+                    log_path,
+                    cache_attempt_token=token,
+                )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
             if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
@@ -2276,24 +2551,50 @@ class CacheManager:
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._take_retry_request(item_id)
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                    retry_token = self._begin_cache_attempt(item_id)
+                    with self.lock:
+                        self.python_cache_attempt_tokens[item_id] = retry_token
+                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                    self._remove_cache_dir(
+                        item_id,
+                        cache_attempt_token=retry_token,
+                    )
+                    return self._cache_item_multi(
+                        item_id,
+                        fresh_item,
+                        cache_attempt_token=retry_token,
+                        allow_refresh_retry=allow_refresh_retry,
+                    )
                 return False
             self._take_cache_interrupt_message(item_id)
             self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
-            self._drop_item_cache(item_id, str(exc))
+            self._drop_item_cache(
+                item_id,
+                str(exc),
+                cache_attempt_token=token,
+            )
             return False
         except DownloadCommandError as exc:
             self._cleanup_attempt_dirs(item_dir)
             if self._take_retry_request(item_id):
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                    retry_token = self._begin_cache_attempt(item_id)
+                    with self.lock:
+                        self.python_cache_attempt_tokens[item_id] = retry_token
+                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                    self._remove_cache_dir(
+                        item_id,
+                        cache_attempt_token=retry_token,
+                    )
+                    return self._cache_item_multi(
+                        item_id,
+                        fresh_item,
+                        cache_attempt_token=retry_token,
+                        allow_refresh_retry=allow_refresh_retry,
+                    )
                 return False
             last_message = str(exc)
             if (
@@ -2310,22 +2611,38 @@ class CacheManager:
                     f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
                 )
                 try:
+                    retry_token = self._begin_cache_attempt(item_id)
+                    with self.lock:
+                        self.python_cache_attempt_tokens[item_id] = retry_token
+                    token = retry_token
                     self._ensure_bbdown(force_refresh=True)
-                    self._clear_item_download_progress(item_id)
+                    self._clear_item_download_progress(
+                        item_id,
+                        cache_attempt_token=token,
+                    )
                     self._safe_rmtree(item_dir)
                     item_dir.mkdir(parents=True, exist_ok=True)
-                    return self._cache_item_multi(item_id, item, allow_refresh_retry=False)
+                    return self._cache_item_multi(
+                        item_id,
+                        item,
+                        cache_attempt_token=retry_token,
+                        allow_refresh_retry=False,
+                    )
                 except Exception as refresh_exc:  # noqa: BLE001
                     self._append_log_line(
                         log_path,
                         f"[{self._log_timestamp()}] forced BBDown refresh failed: {refresh_exc}",
                     )
-            self._clear_item_download_progress(item_id)
+            self._clear_item_download_progress(
+                item_id,
+                cache_attempt_token=token,
+            )
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
             self._project_cache_event(
                 item_id,
                 "failed",
+                cache_attempt_token=token,
                 message=f"缓存失败: {last_message}",
             )
             self._record_item_activity(item_id)
@@ -2333,29 +2650,48 @@ class CacheManager:
         except Exception as exc:  # noqa: BLE001
             self._cleanup_attempt_dirs(item_dir)
             if self._take_retry_request(item_id):
-                self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                self._remove_cache_dir(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    return self._cache_item_multi(item_id, fresh_item, allow_refresh_retry=allow_refresh_retry)
+                    retry_token = self._begin_cache_attempt(item_id)
+                    with self.lock:
+                        self.python_cache_attempt_tokens[item_id] = retry_token
+                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                    self._remove_cache_dir(
+                        item_id,
+                        cache_attempt_token=retry_token,
+                    )
+                    return self._cache_item_multi(
+                        item_id,
+                        fresh_item,
+                        cache_attempt_token=retry_token,
+                        allow_refresh_retry=allow_refresh_retry,
+                    )
                 return False
             last_message = str(exc)
-            self._clear_item_download_progress(item_id)
+            self._clear_item_download_progress(
+                item_id,
+                cache_attempt_token=token,
+            )
             _debug_print(f"[bilikara-cache] item={item_id} download_source={download_source} FAILED: {last_message}")
             self._append_log_line(log_path, f"[{self._log_timestamp()}] failed: {last_message}")
             self._project_cache_event(
                 item_id,
                 "failed",
+                cache_attempt_token=token,
                 message=f"缓存失败: {last_message}",
             )
             self._record_item_activity(item_id)
             return False
 
         video_file = cache_result["video_file"]
-        self._clear_item_download_progress(item_id)
+        self._clear_item_download_progress(
+            item_id,
+            cache_attempt_token=token,
+        )
         self._project_cache_event(
             item_id,
             "ready",
+            cache_attempt_token=token,
             progress=100.0,
             message=self._ready_message(item),
             video_relative_path=cache_result["video_relative_path"],
@@ -2562,8 +2898,12 @@ class CacheManager:
         item_dir: Path,
         log_path: Path,
         *,
+        cache_attempt_token: int,
         download_source: str,
     ) -> dict[str, object]:
+        cache_attempt_token = self._require_cache_attempt_token(
+            cache_attempt_token
+        )
         self._raise_if_priority_shift(item.id)
         selected_pages = self._selected_pages_for_item(item)
         video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
@@ -2585,7 +2925,11 @@ class CacheManager:
             for index, page in enumerate(selected_pages)
         ]
         download_tracks = [video_track, *audio_tracks]
-        self._begin_download_progress(item.id, download_tracks)
+        self._begin_download_progress(
+            item.id,
+            download_tracks,
+            cache_attempt_token=cache_attempt_token,
+        )
 
         if download_source == DOWNLOAD_SOURCE_YTDLP:
             ordered_tracks = [*audio_tracks, video_track]
@@ -2602,6 +2946,7 @@ class CacheManager:
                     page=int(track["page"]),
                     stream_kind=str(track["stream_kind"]),
                     track_key=str(track["key"]),
+                    cache_attempt_token=cache_attempt_token,
                     download_source=download_source,
                 )
         elif download_source == DOWNLOAD_SOURCE_NATIVE:
@@ -2616,6 +2961,7 @@ class CacheManager:
                 dash_streams=dash_streams,
                 video_track=video_track,
                 audio_tracks=audio_tracks,
+                cache_attempt_token=cache_attempt_token,
             )
         elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
             dash_streams = self._resolve_dash_streams(item)
@@ -2628,6 +2974,7 @@ class CacheManager:
                 dash_streams=dash_streams,
                 video_track=video_track,
                 audio_tracks=audio_tracks,
+                cache_attempt_token=cache_attempt_token,
                 validate_tracks=True,
             )
         else:
@@ -2645,6 +2992,7 @@ class CacheManager:
                     page=int(track["page"]),
                     stream_kind=str(track["stream_kind"]),
                     track_key=str(track["key"]),
+                    cache_attempt_token=cache_attempt_token,
                     download_source=download_source,
                 ): track
                 for track in download_tracks
@@ -2695,6 +3043,7 @@ class CacheManager:
 
         self._project_cache_progress(
             item.id,
+            cache_attempt_token=cache_attempt_token,
             progress=99.0,
             message=f"准备 {len(audio_files)} 条音轨",
         )
@@ -2882,6 +3231,7 @@ class CacheManager:
         page: int,
         stream_kind: str,
         track_key: str,
+        cache_attempt_token: int,
         download_source: str,
     ) -> Path:
         page_url = self._page_url(item.resolved_url, page)
@@ -2909,6 +3259,7 @@ class CacheManager:
             stream_kind=stream_kind,
             target_dir=target_dir,
             track_key=track_key,
+            cache_attempt_token=cache_attempt_token,
             tool_dir=binary_path.parent,
         )
 
@@ -2923,6 +3274,7 @@ class CacheManager:
             final_size = 0
         self._update_download_track_progress(
             item.id,
+            cache_attempt_token=cache_attempt_token,
             track_key=track_key,
             target_dir=target_dir,
             target_bytes=final_size,
@@ -3507,6 +3859,7 @@ class CacheManager:
         dash_streams: dict,
         video_track: dict,
         audio_tracks: list[dict],
+        cache_attempt_token: int,
     ) -> dict[str, Path]:
         item_id = item.id
         cookie = effective_bilibili_cookie()
@@ -3575,10 +3928,15 @@ class CacheManager:
                 self._raise_if_retry_requested(item_id)
                 self._raise_if_priority_shift(item_id)
                 if attempt > 1:
-                    self._reset_download_track_progress(item_id, track_key)
+                    self._reset_download_track_progress(
+                        item_id,
+                        track_key,
+                        cache_attempt_token=cache_attempt_token,
+                    )
                 self._set_download_track_phase(
                     item_id,
                     track_key,
+                    cache_attempt_token=cache_attempt_token,
                     phase="downloading",
                     attempt=attempt,
                     max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
@@ -3595,6 +3953,7 @@ class CacheManager:
                         cookie=cookie,
                         stage_label=stage_label,
                         track_key=track_key,
+                        cache_attempt_token=cache_attempt_token,
                         stream_kind=stream_kind,
                         page=page,
                         cid=cid,
@@ -3604,6 +3963,7 @@ class CacheManager:
                     self._set_download_track_phase(
                         item_id,
                         track_key,
+                        cache_attempt_token=cache_attempt_token,
                         phase="validating",
                         attempt=attempt,
                         max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
@@ -3643,6 +4003,7 @@ class CacheManager:
                     final_size = normalized_path.stat().st_size
                     self._update_download_track_progress(
                         item_id,
+                        cache_attempt_token=cache_attempt_token,
                         track_key=track_key,
                         target_dir=normalized_path.parent,
                         current_bytes=final_size,
@@ -3653,6 +4014,7 @@ class CacheManager:
                     self._set_download_track_phase(
                         item_id,
                         track_key,
+                        cache_attempt_token=cache_attempt_token,
                         phase="ready",
                         attempt=attempt,
                         max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
@@ -3684,6 +4046,7 @@ class CacheManager:
                         self._set_download_track_phase(
                             item_id,
                             track_key,
+                            cache_attempt_token=cache_attempt_token,
                             phase="retrying",
                             attempt=attempt,
                             max_attempts=DOWNKYI_TRACK_MAX_ATTEMPTS,
@@ -3741,6 +4104,7 @@ class CacheManager:
         dash_streams: dict,
         video_track: dict,
         audio_tracks: list[dict],
+        cache_attempt_token: int,
         validate_tracks: bool = False,
     ) -> dict[str, Path]:
         item_id = item.id
@@ -3835,10 +4199,15 @@ class CacheManager:
                     self._raise_if_retry_requested(item_id)
                     self._raise_if_priority_shift(item_id)
                 if attempt > 1:
-                    self._reset_download_track_progress(item_id, track_key)
+                    self._reset_download_track_progress(
+                        item_id,
+                        track_key,
+                        cache_attempt_token=cache_attempt_token,
+                    )
                 self._set_download_track_phase(
                     item_id,
                     track_key,
+                    cache_attempt_token=cache_attempt_token,
                     phase="downloading",
                     attempt=attempt,
                     max_attempts=max_attempts,
@@ -3857,6 +4226,7 @@ class CacheManager:
                         cookie=cookie,
                         stage_label=stage_label,
                         track_key=track_key,
+                        cache_attempt_token=cache_attempt_token,
                         stream_kind=stream_kind,
                         page=page,
                         cid=cid,
@@ -3867,6 +4237,7 @@ class CacheManager:
                         self._set_download_track_phase(
                             item_id,
                             track_key,
+                            cache_attempt_token=cache_attempt_token,
                             phase="validating",
                             attempt=attempt,
                             max_attempts=max_attempts,
@@ -3926,6 +4297,7 @@ class CacheManager:
                         final_size = media_path.stat().st_size
                         self._update_download_track_progress(
                             item_id,
+                            cache_attempt_token=cache_attempt_token,
                             track_key=track_key,
                             target_dir=media_path.parent,
                             current_bytes=final_size,
@@ -3936,6 +4308,7 @@ class CacheManager:
                         self._set_download_track_phase(
                             item_id,
                             track_key,
+                            cache_attempt_token=cache_attempt_token,
                             phase="ready",
                             attempt=attempt,
                             max_attempts=max_attempts,
@@ -3952,6 +4325,7 @@ class CacheManager:
                     self._set_download_track_phase(
                         item_id,
                         track_key,
+                        cache_attempt_token=cache_attempt_token,
                         phase="retrying",
                         attempt=attempt,
                         max_attempts=max_attempts,
@@ -4219,6 +4593,7 @@ class CacheManager:
         cookie: str,
         stage_label: str,
         track_key: str,
+        cache_attempt_token: int,
         stream_kind: str,
         page: int = 0,
         cid: int = 0,
@@ -4299,6 +4674,7 @@ class CacheManager:
                 stream_kind=stream_kind,
                 target_dir=attempt_dir,
                 track_key=track_key,
+                cache_attempt_token=cache_attempt_token,
                 tool_dir=binary_path.parent,
                 silent=True,
                 is_preallocated=False,
@@ -4338,6 +4714,7 @@ class CacheManager:
         final_size = expected_path.stat().st_size
         self._update_download_track_progress(
             item_id,
+            cache_attempt_token=cache_attempt_token,
             track_key=track_key,
             target_dir=attempt_dir,
             current_bytes=final_size,
@@ -4358,6 +4735,7 @@ class CacheManager:
         cookie: str,
         stage_label: str,
         track_key: str,
+        cache_attempt_token: int,
         stream_kind: str,
         page: int = 0,
         cid: int = 0,
@@ -4410,6 +4788,7 @@ class CacheManager:
         def on_progress(current_bytes: int, target_bytes: int) -> None:
             self._update_download_track_progress(
                 item_id,
+                cache_attempt_token=cache_attempt_token,
                 track_key=track_key,
                 target_dir=attempt_dir,
                 current_bytes=current_bytes,
@@ -4478,6 +4857,7 @@ class CacheManager:
             raise DownloadCommandError(f"{stage_label}: Rust HTTP downloader produced no output")
         self._update_download_track_progress(
             item_id,
+            cache_attempt_token=cache_attempt_token,
             track_key=track_key,
             target_dir=attempt_dir,
             current_bytes=final_size,
@@ -4569,6 +4949,17 @@ class CacheManager:
             active_item_id = self.active_item_id if self.active_item_id in item_ids else None
             active_processes = self._active_processes_locked(active_item_id) if active_item_id else []
             pending_ids = set(self.pending_ids)
+            download_source = self.download_source
+        if (
+            download_source == DOWNLOAD_SOURCE_DOWNKYI
+            and item_ids
+            and not effective_bilibili_cookie()
+        ):
+            raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
+        reset_tokens = {
+            item_id: self._begin_cache_attempt(item_id) for item_id in item_ids
+        }
+        with self.lock:
             for item_id in item_ids:
                 if item_id == active_item_id or item_id in pending_ids:
                     self.retry_requested_ids.add(item_id)
@@ -4577,13 +4968,17 @@ class CacheManager:
             self._project_cache_event(
                 item_id,
                 "reset",
+                cache_attempt_token=reset_tokens[item_id],
                 message=message,
                 clear_selected_audio_variant=True,
             )
             self._record_item_activity(item_id)
             if item_id == active_item_id or item_id in pending_ids:
                 continue
-            self._remove_cache_dir(item_id)
+            self._remove_cache_dir(
+                item_id,
+                cache_attempt_token=reset_tokens[item_id],
+            )
             self.enqueue(item_id)
 
         self._terminate_processes(active_processes)
@@ -4616,6 +5011,7 @@ class CacheManager:
         stream_kind: str,
         target_dir: Path,
         track_key: str,
+        cache_attempt_token: int,
         tool_dir: Path | None = None,
         silent: bool = True,
         is_preallocated: bool = False,
@@ -4649,6 +5045,7 @@ class CacheManager:
         self._register_active_process(item_id, process)
         self._update_download_track_progress(
             item_id,
+            cache_attempt_token=cache_attempt_token,
             track_key=track_key,
             target_dir=target_dir,
             target_bytes=0,
@@ -4659,6 +5056,7 @@ class CacheManager:
             target=self._monitor_download_track_progress,
             kwargs={
                 "item_id": item_id,
+                "cache_attempt_token": cache_attempt_token,
                 "process": process,
                 "stop_event": monitor_stop,
                 "track_key": track_key,
@@ -4711,6 +5109,7 @@ class CacheManager:
                     target_bytes_state["value"] = max(target_bytes_state["value"], target_bytes)
                 self._update_download_track_progress(
                     item_id,
+                    cache_attempt_token=cache_attempt_token,
                     track_key=track_key,
                     target_dir=target_dir,
                     current_bytes=downloaded_bytes,
@@ -4785,6 +5184,7 @@ class CacheManager:
         if mark_done_on_exit:
             self._update_download_track_progress(
                 item_id,
+                cache_attempt_token=cache_attempt_token,
                 track_key=track_key,
                 target_dir=target_dir,
                 target_bytes=target_bytes_state["value"],
@@ -5221,7 +5621,12 @@ class CacheManager:
         cache_result: dict[str, object],
         ffmpeg_path: Path,
         log_path: Path,
+        *,
+        cache_attempt_token: int,
     ) -> None:
+        cache_attempt_token = self._require_cache_attempt_token(
+            cache_attempt_token
+        )
         validation_files = cache_result.get("validation_files")
         if not isinstance(validation_files, list):
             return
@@ -5246,12 +5651,14 @@ class CacheManager:
             )
             return
 
-        self._project_cache_progress(
-            item_id,
-            progress=99.5,
-            message="正在校验缓存",
-        )
-        self._record_item_activity(item_id)
+        if self.store.get_item(item_id) is not None:
+            self._project_cache_progress(
+                item_id,
+                cache_attempt_token=cache_attempt_token,
+                progress=99.5,
+                message="正在校验缓存",
+            )
+            self._record_item_activity(item_id)
         self._append_log_line(
             log_path,
             f"[{self._log_timestamp()}] ffprobe validate: start ({len(validation_files)} files)",
@@ -5836,9 +6243,17 @@ class CacheManager:
             return f"{stage_label} · 已写入 {cls._format_stage_bytes(normalized_current)}"
         return f"{stage_label} 准备中"
 
-    def _begin_download_progress(self, item_id: str, tracks: list[dict[str, object]]) -> None:
+    def _begin_download_progress(
+        self,
+        item_id: str,
+        tracks: list[dict[str, object]],
+        *,
+        cache_attempt_token: int,
+    ) -> None:
+        token = self._require_cache_attempt_token(cache_attempt_token)
         with self.lock:
             self.item_stage_progress_signatures.pop(item_id, None)
+            self.item_download_attempt_tokens[item_id] = token
             self.item_download_progress[item_id] = {
                 str(track.get("key") or ""): {
                     "key": str(track.get("key") or ""),
@@ -5855,15 +6270,41 @@ class CacheManager:
                 for track in tracks
                 if str(track.get("key") or "")
             }
-        self._publish_download_progress(item_id)
+        self._publish_download_progress(
+            item_id,
+            cache_attempt_token=token,
+        )
 
-    def _clear_item_download_progress(self, item_id: str) -> None:
+    def _clear_item_download_progress(
+        self,
+        item_id: str,
+        *,
+        cache_attempt_token: int | None = None,
+    ) -> None:
         with self.lock:
+            if (
+                cache_attempt_token is not None
+                and self.item_download_attempt_tokens.get(item_id)
+                != self._require_cache_attempt_token(cache_attempt_token)
+            ):
+                return
             self.item_stage_progress_signatures.pop(item_id, None)
             self.item_download_progress.pop(item_id, None)
+            self.item_download_attempt_tokens.pop(item_id, None)
 
-    def _reset_download_track_progress(self, item_id: str, track_key: str) -> None:
+    def _reset_download_track_progress(
+        self,
+        item_id: str,
+        track_key: str,
+        *,
+        cache_attempt_token: int,
+    ) -> None:
         with self.lock:
+            if (
+                self.item_download_attempt_tokens.get(item_id)
+                != cache_attempt_token
+            ):
+                return
             tracks = self.item_download_progress.get(item_id)
             if not tracks or track_key not in tracks:
                 return
@@ -5873,18 +6314,27 @@ class CacheManager:
             track["progress_percent"] = None
             track["done"] = False
             self.item_stage_progress_signatures.pop(item_id, None)
-        self._publish_download_progress(item_id)
+        self._publish_download_progress(
+            item_id,
+            cache_attempt_token=cache_attempt_token,
+        )
 
     def _set_download_track_phase(
         self,
         item_id: str,
         track_key: str,
         *,
+        cache_attempt_token: int,
         phase: str,
         attempt: int,
         max_attempts: int,
     ) -> None:
         with self.lock:
+            if (
+                self.item_download_attempt_tokens.get(item_id)
+                != cache_attempt_token
+            ):
+                return
             tracks = self.item_download_progress.get(item_id)
             if not tracks or track_key not in tracks:
                 return
@@ -5893,7 +6343,10 @@ class CacheManager:
             track["attempt"] = max(0, int(attempt or 0))
             track["max_attempts"] = max(0, int(max_attempts or 0))
             self.item_stage_progress_signatures.pop(item_id, None)
-        self._publish_download_progress(item_id)
+        self._publish_download_progress(
+            item_id,
+            cache_attempt_token=cache_attempt_token,
+        )
 
     @staticmethod
     def _download_track_progress_label(track: dict[str, object]) -> str:
@@ -5913,6 +6366,7 @@ class CacheManager:
         self,
         item_id: str,
         *,
+        cache_attempt_token: int,
         track_key: str,
         target_dir: Path,
         current_bytes: int | None = None,
@@ -5923,6 +6377,11 @@ class CacheManager:
         measure_path: bool = True,
     ) -> None:
         with self.lock:
+            if (
+                self.item_download_attempt_tokens.get(item_id)
+                != cache_attempt_token
+            ):
+                return
             tracks = self.item_download_progress.get(item_id)
             if not tracks or track_key not in tracks:
                 return
@@ -5964,13 +6423,26 @@ class CacheManager:
 
             if done:
                 track["target_bytes"] = int(track.get("current_bytes") or 0)
-        self._publish_download_progress(item_id)
+        self._publish_download_progress(
+            item_id,
+            cache_attempt_token=cache_attempt_token,
+        )
 
-    def _publish_download_progress(self, item_id: str, *, generation: int = 0) -> None:
+    def _publish_download_progress(
+        self,
+        item_id: str,
+        *,
+        cache_attempt_token: int,
+    ) -> None:
+        token = self._require_cache_attempt_token(cache_attempt_token)
         with self.lock:
+            if self.item_download_attempt_tokens.get(item_id) != token:
+                return
             tracks_by_key = self.item_download_progress.get(item_id) or {}
             tracks = [dict(track) for track in tracks_by_key.values()]
         if not tracks:
+            return
+        if self.store.get_item(item_id) is None:
             return
 
         tracks.sort(key=lambda track: int(track.get("order") or 0))
@@ -5995,6 +6467,7 @@ class CacheManager:
         signature = json.dumps(
             {
                 "item_id": item_id,
+                "cache_attempt_token": token,
                 "message": message,
                 "cache_progress": cache_progress_signature,
             },
@@ -6007,9 +6480,9 @@ class CacheManager:
             self.item_stage_progress_signatures[item_id] = signature
         self._project_cache_progress(
             item_id,
+            cache_attempt_token=token,
             progress=changes.get("cache_progress"),
             message=changes["cache_message"],
-            generation=generation,
         )
         self._record_item_activity(item_id)
 
@@ -6085,6 +6558,7 @@ class CacheManager:
         self,
         *,
         item_id: str,
+        cache_attempt_token: int,
         process: subprocess.Popen[str],
         stop_event: threading.Event,
         track_key: str,
@@ -6098,6 +6572,7 @@ class CacheManager:
         while not stop_event.wait(1.0):
             self._update_download_track_progress(
                 item_id,
+                cache_attempt_token=cache_attempt_token,
                 track_key=track_key,
                 target_dir=target_dir,
                 current_bytes=(current_bytes_state or {}).get("value"),
@@ -6113,6 +6588,7 @@ class CacheManager:
         self,
         item_id: str,
         *,
+        cache_attempt_token: int,
         stage_label: str,
         target_dir: Path,
         target_bytes: int,
@@ -6146,6 +6622,7 @@ class CacheManager:
             self.item_stage_progress_signatures[item_id] = signature
         self._project_cache_progress(
             item_id,
+            cache_attempt_token=cache_attempt_token,
             progress=changes.get("cache_progress"),
             message=changes["cache_message"],
         )
@@ -6155,6 +6632,7 @@ class CacheManager:
         self,
         *,
         item_id: str,
+        cache_attempt_token: int,
         process: subprocess.Popen[str],
         stop_event: threading.Event,
         stage_label: str,
@@ -6166,6 +6644,7 @@ class CacheManager:
         while not stop_event.wait(1.0):
             self._update_structured_stage_progress(
                 item_id,
+                cache_attempt_token=cache_attempt_token,
                 stage_label=stage_label,
                 target_dir=target_dir,
                 target_bytes=target_bytes_state.get("value", 0),
@@ -7945,9 +8424,11 @@ class CacheManager:
         if item.cache_status == "failed":
             return
         if self._item_cache_ready(item):
+            cache_attempt_token = self._begin_cache_attempt(item.id)
             self._project_cache_event(
                 item.id,
                 "ready",
+                cache_attempt_token=cache_attempt_token,
                 progress=100.0,
                 message="缓存已完成",
                 video_relative_path=item.video_relative_path,
@@ -7962,26 +8443,51 @@ class CacheManager:
         if already_in_flight:
             return
 
+        reset_token = self._begin_cache_attempt(item.id)
         self._project_cache_event(
             item.id,
             "reset",
+            cache_attempt_token=reset_token,
             message="等待缓存",
         )
         self._record_item_activity(item.id)
         self.enqueue(item.id)
 
-    def _drop_item_cache(self, item_id: str, message: str) -> None:
-        self._clear_item_download_progress(item_id)
-        self._remove_cache_dir(item_id)
+    def _drop_item_cache(
+        self,
+        item_id: str,
+        message: str,
+        *,
+        cache_attempt_token: int | None = None,
+    ) -> None:
+        token = (
+            self._begin_cache_attempt(item_id)
+            if cache_attempt_token is None
+            else self._require_cache_attempt_token(cache_attempt_token)
+        )
+        self._clear_item_download_progress(
+            item_id,
+            cache_attempt_token=token,
+        )
+        self._remove_cache_dir(item_id, cache_attempt_token=token)
         self._project_cache_event(
             item_id,
             "cancelled",
+            cache_attempt_token=token,
             message=message,
         )
         self._record_item_activity(item_id)
 
-    def _remove_cache_dir(self, item_id: str) -> None:
-        self._clear_item_download_progress(item_id)
+    def _remove_cache_dir(
+        self,
+        item_id: str,
+        *,
+        cache_attempt_token: int | None = None,
+    ) -> None:
+        self._clear_item_download_progress(
+            item_id,
+            cache_attempt_token=cache_attempt_token,
+        )
         self._safe_rmtree(CACHE_DIR / item_id)
         self._remove_item_log(item_id)
 

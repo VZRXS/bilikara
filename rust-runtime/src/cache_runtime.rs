@@ -1,3 +1,4 @@
+use crate::app_state::begin_cache_attempt_for_runtime;
 use crate::bilibili_service::{BilibiliDashRequest, BilibiliStream, fetch_dash_playurl};
 use crate::http_downloader::{
     DownloadCandidate, DownloadError, DownloadErrorKind, DownloadRequest, HttpHeader,
@@ -177,6 +178,7 @@ impl std::error::Error for CacheRuntimeError {}
 struct CacheEvent {
     sequence: u64,
     generation: u64,
+    cache_attempt_token: u64,
     item_id: String,
     kind: String,
     payload: Value,
@@ -185,11 +187,13 @@ struct CacheEvent {
 #[derive(Clone)]
 struct QueuedJob {
     generation: u64,
+    cache_attempt_token: u64,
     spec: CacheJobSpec,
 }
 
 struct ActiveJob {
     generation: u64,
+    cache_attempt_token: u64,
     cancel: Arc<AtomicBool>,
     urgent: bool,
 }
@@ -197,6 +201,7 @@ struct ActiveJob {
 #[derive(Clone)]
 struct CompletedJob {
     generation: u64,
+    cache_attempt_token: u64,
     result: CacheReadyResult,
 }
 
@@ -225,6 +230,16 @@ struct SharedRuntime {
 struct CacheRuntime {
     shared: Arc<SharedRuntime>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    reserve_cache_attempt: CacheAttemptReserver,
+}
+
+type CacheAttemptReserver =
+    Arc<dyn Fn(&str) -> Result<u64, CacheRuntimeError> + Send + Sync + 'static>;
+
+#[derive(Clone, Copy, Debug)]
+struct CacheAttemptIdentity {
+    generation: u64,
+    cache_attempt_token: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -329,12 +344,15 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
         ),
         CacheRuntimeCommand::Submit { job, priority } => {
             validate_job(&job)?;
-            let generation = active_runtime()?.submit(job, priority, false)?;
-            Ok(json!({"generation": generation}))
+            let attempt = active_runtime()?.submit(job, priority, false)?;
+            Ok(json!({
+                "generation": attempt.generation,
+                "cache_attempt_token": attempt.cache_attempt_token,
+            }))
         }
         CacheRuntimeCommand::Retry { job, urgent } => {
             validate_job(&job)?;
-            let generation = active_runtime()?.submit(
+            let attempt = active_runtime()?.submit(
                 job,
                 if urgent {
                     CacheJobPriority::Urgent
@@ -343,7 +361,10 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
                 },
                 true,
             )?;
-            Ok(json!({"generation": generation}))
+            Ok(json!({
+                "generation": attempt.generation,
+                "cache_attempt_token": attempt.cache_attempt_token,
+            }))
         }
         CacheRuntimeCommand::Cancel { item_id, reason } => {
             let cancelled = active_runtime()?.cancel_item(
@@ -392,6 +413,15 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
 
 impl CacheRuntime {
     fn new() -> Result<Self, CacheRuntimeError> {
+        Self::new_with_attempt_reserver(Arc::new(|item_id| {
+            begin_cache_attempt_for_runtime(item_id)
+                .map_err(|error| CacheRuntimeError::new(&error.kind, error.message))
+        }))
+    }
+
+    fn new_with_attempt_reserver(
+        reserve_cache_attempt: CacheAttemptReserver,
+    ) -> Result<Self, CacheRuntimeError> {
         let shared = Arc::new(SharedRuntime {
             state: Mutex::new(RuntimeState::default()),
             wake: Condvar::new(),
@@ -420,7 +450,20 @@ impl CacheRuntime {
         Ok(Self {
             shared,
             workers: Mutex::new(vec![primary, urgent]),
+            reserve_cache_attempt,
         })
+    }
+
+    #[cfg(test)]
+    fn new_without_workers(reserve_cache_attempt: CacheAttemptReserver) -> Self {
+        Self {
+            shared: Arc::new(SharedRuntime {
+                state: Mutex::new(RuntimeState::default()),
+                wake: Condvar::new(),
+            }),
+            workers: Mutex::new(Vec::new()),
+            reserve_cache_attempt,
+        }
     }
 
     fn submit(
@@ -428,7 +471,7 @@ impl CacheRuntime {
         job: CacheJobSpec,
         priority: CacheJobPriority,
         replace: bool,
-    ) -> Result<u64, CacheRuntimeError> {
+    ) -> Result<CacheAttemptIdentity, CacheRuntimeError> {
         validate_job(&job)?;
         let item_id = job.item_id.clone();
         let mut state = lock_state(&self.shared);
@@ -446,20 +489,36 @@ impl CacheRuntime {
         }
         if !replace {
             if let Some(active) = state.active.get(&item_id) {
-                return Ok(active.generation);
+                return Ok(CacheAttemptIdentity {
+                    generation: active.generation,
+                    cache_attempt_token: active.cache_attempt_token,
+                });
             }
             if let Some(existing) = state.jobs.get(&item_id) {
-                return Ok(existing.generation);
+                return Ok(CacheAttemptIdentity {
+                    generation: existing.generation,
+                    cache_attempt_token: existing.cache_attempt_token,
+                });
             }
             if let Some(completed) = state.completed.get(&item_id)
                 && completed_artifacts_ready(&job.cache_root, &completed.result)
             {
-                return Ok(completed.generation);
+                return Ok(CacheAttemptIdentity {
+                    generation: completed.generation,
+                    cache_attempt_token: completed.cache_attempt_token,
+                });
             }
-            state.completed.remove(&item_id);
         }
+        let next_generation = state
+            .next_generation
+            .checked_add(1)
+            .filter(|generation| *generation > 0)
+            .ok_or_else(|| {
+                CacheRuntimeError::new("generation_exhausted", "cache generation is exhausted")
+            })?;
+        let cache_attempt_token = self.reserve_attempt(&item_id)?;
+        state.completed.remove(&item_id);
         if replace {
-            state.completed.remove(&item_id);
             if let Some(active) = state.active.get(&item_id) {
                 active.cancel.store(true, Ordering::Release);
                 let generation = active.generation;
@@ -470,12 +529,13 @@ impl CacheRuntime {
             remove_queued_locked(&mut state, &item_id);
         }
         state.terminal_events.remove(&item_id);
-        state.next_generation = state.next_generation.saturating_add(1).max(1);
-        let generation = state.next_generation;
+        state.next_generation = next_generation;
+        let generation = next_generation;
         state.jobs.insert(
             item_id.clone(),
             QueuedJob {
                 generation,
+                cache_attempt_token,
                 spec: job,
             },
         );
@@ -483,12 +543,27 @@ impl CacheRuntime {
         push_event_locked(
             &mut state,
             generation,
+            cache_attempt_token,
             &item_id,
             "queued",
             json!({"priority": priority_name(priority)}),
         );
         self.shared.wake.notify_all();
-        Ok(generation)
+        Ok(CacheAttemptIdentity {
+            generation,
+            cache_attempt_token,
+        })
+    }
+
+    fn reserve_attempt(&self, item_id: &str) -> Result<u64, CacheRuntimeError> {
+        let cache_attempt_token = (self.reserve_cache_attempt)(item_id)?;
+        if cache_attempt_token == 0 {
+            return Err(CacheRuntimeError::new(
+                "invalid_cache_attempt_token",
+                "AppState returned a zero cache attempt token",
+            ));
+        }
+        Ok(cache_attempt_token)
     }
 
     fn sync(
@@ -529,6 +604,12 @@ impl CacheRuntime {
         let active_ids_for_cleanup;
         {
             let mut state = lock_state(&self.shared);
+            let mut eviction_tokens = HashMap::new();
+            for item_id in current.difference(&retained) {
+                if !state.active.contains_key(item_id) && !state.jobs.contains_key(item_id) {
+                    eviction_tokens.insert(item_id.clone(), self.reserve_attempt(item_id)?);
+                }
+            }
             state
                 .terminal_events
                 .retain(|item_id, _| current.contains(item_id));
@@ -538,7 +619,10 @@ impl CacheRuntime {
             });
             let queued_ids: Vec<String> = state.jobs.keys().cloned().collect();
             for item_id in queued_ids {
-                if desired.contains(&item_id) || state.active.contains_key(&item_id) {
+                if desired.contains(&item_id)
+                    || state.active.contains_key(&item_id)
+                    || (current.contains(&item_id) && !retained.contains(&item_id))
+                {
                     continue;
                 }
                 if let Some(job) = state.jobs.remove(&item_id) {
@@ -546,6 +630,7 @@ impl CacheRuntime {
                     push_event_locked(
                         &mut state,
                         job.generation,
+                        job.cache_attempt_token,
                         &item_id,
                         "cancelled",
                         json!({"reason": "outside cache window"}),
@@ -577,6 +662,7 @@ impl CacheRuntime {
                     push_event_locked(
                         &mut state,
                         job.generation,
+                        job.cache_attempt_token,
                         item_id,
                         "evicted",
                         json!({"reason": "outside cache window"}),
@@ -585,6 +671,12 @@ impl CacheRuntime {
                     push_event_locked(
                         &mut state,
                         0,
+                        *eviction_tokens.get(item_id).ok_or_else(|| {
+                            CacheRuntimeError::new(
+                                "cache_attempt_not_reserved",
+                                "eviction cache attempt was not reserved",
+                            )
+                        })?,
                         item_id,
                         "evicted",
                         json!({"reason": "outside cache window"}),
@@ -598,6 +690,7 @@ impl CacheRuntime {
         }
 
         let mut generations = serde_json::Map::new();
+        let mut cache_attempt_tokens = serde_json::Map::new();
         let preempt_item_id = preempt_item_id.trim();
         for job in jobs {
             if existing_artifacts_ready(&job) {
@@ -607,12 +700,14 @@ impl CacheRuntime {
                 continue;
             }
             let replace = !preempt_item_id.is_empty() && job.item_id == preempt_item_id;
-            let generation = self.submit(job.clone(), CacheJobPriority::Normal, replace)?;
-            generations.insert(job.item_id, json!(generation));
+            let attempt = self.submit(job.clone(), CacheJobPriority::Normal, replace)?;
+            generations.insert(job.item_id.clone(), json!(attempt.generation));
+            cache_attempt_tokens.insert(job.item_id, json!(attempt.cache_attempt_token));
         }
         self.reorder(&ordered_ids);
         Ok(json!({
             "generations": generations,
+            "cache_attempt_tokens": cache_attempt_tokens,
             "snapshot": self.snapshot(),
         }))
     }
@@ -659,6 +754,7 @@ impl CacheRuntime {
                 push_event_locked(
                     &mut state,
                     job.generation,
+                    job.cache_attempt_token,
                     item_id,
                     "cancelled",
                     json!({"reason": reason}),
@@ -695,6 +791,7 @@ impl CacheRuntime {
                 push_event_locked(
                     &mut state,
                     job.generation,
+                    job.cache_attempt_token,
                     &job.spec.item_id,
                     "cancelled",
                     json!({"reason": reason}),
@@ -827,6 +924,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                     item_id.clone(),
                     ActiveJob {
                         generation: job.generation,
+                        cache_attempt_token: job.cache_attempt_token,
                         cancel: Arc::clone(&cancel),
                         urgent: matches!(kind, WorkerKind::Urgent),
                     },
@@ -838,6 +936,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                 push_event_locked(
                     &mut state,
                     job.generation,
+                    job.cache_attempt_token,
                     &item_id,
                     "started",
                     json!({"tracks": initial_tracks}),
@@ -870,6 +969,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                         job.spec.item_id.clone(),
                         CompletedJob {
                             generation: job.generation,
+                            cache_attempt_token: job.cache_attempt_token,
                             result: result.clone(),
                         },
                     );
@@ -877,6 +977,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                 push_event_locked(
                     &mut state,
                     job.generation,
+                    job.cache_attempt_token,
                     &job.spec.item_id,
                     "ready",
                     serde_json::to_value(result).unwrap_or_else(|_| json!({})),
@@ -885,6 +986,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
             JobOutcome::Cancelled => push_event_locked(
                 &mut state,
                 job.generation,
+                job.cache_attempt_token,
                 &job.spec.item_id,
                 "cancelled",
                 json!({"reason": cancellation_reason}),
@@ -892,6 +994,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
             JobOutcome::Failed(error) => push_event_locked(
                 &mut state,
                 job.generation,
+                job.cache_attempt_token,
                 &job.spec.item_id,
                 "failed",
                 serde_json::to_value(&error).unwrap_or_else(|_| {
@@ -1583,6 +1686,7 @@ fn terminal_event(kind: &str) -> bool {
 fn push_event_locked(
     state: &mut RuntimeState,
     generation: u64,
+    cache_attempt_token: u64,
     item_id: &str,
     kind: &str,
     payload: Value,
@@ -1591,6 +1695,7 @@ fn push_event_locked(
     let event = CacheEvent {
         sequence: state.next_event_sequence,
         generation,
+        cache_attempt_token,
         item_id: item_id.to_owned(),
         kind: kind.to_owned(),
         payload,
@@ -1618,6 +1723,7 @@ fn emit_track_progress(
     push_event_locked(
         &mut state,
         job.generation,
+        job.cache_attempt_token,
         &job.spec.item_id,
         "progress",
         json!({
@@ -1965,6 +2071,125 @@ mod tests {
     }
 
     #[test]
+    fn native_submission_reserves_once_and_carries_the_exact_token() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara-cache-runtime-reservation-{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let issued = Arc::new(AtomicU64::new(40));
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let runtime = CacheRuntime::new_without_workers(Arc::new({
+            let issued = Arc::clone(&issued);
+            let requested = Arc::clone(&requested);
+            move |item_id| {
+                requested
+                    .lock()
+                    .expect("reservation request lock")
+                    .push(item_id.to_owned());
+                Ok(issued.fetch_add(1, Ordering::Relaxed) + 1)
+            }
+        }));
+
+        let first = runtime
+            .submit(job(&root), CacheJobPriority::Normal, false)
+            .expect("reserve first native attempt");
+        let retry = runtime
+            .submit(job(&root), CacheJobPriority::Front, true)
+            .expect("reserve retry native attempt");
+
+        assert_eq!(first.cache_attempt_token, 41);
+        assert_eq!(retry.cache_attempt_token, 42);
+        assert!(retry.generation > first.generation);
+        assert_eq!(
+            *requested.lock().expect("reservation requests"),
+            ["song-a", "song-a"]
+        );
+        let state = lock_state(&runtime.shared);
+        let queued = state.jobs.get("song-a").expect("queued retry");
+        assert_eq!(queued.cache_attempt_token, retry.cache_attempt_token);
+        assert!(state.events.iter().all(|event| {
+            event.item_id != "song-a"
+                || event.cache_attempt_token == 41
+                || event.cache_attempt_token == 42
+        }));
+        assert_eq!(
+            state.events.back().map(|event| event.cache_attempt_token),
+            Some(retry.cache_attempt_token)
+        );
+        drop(state);
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_reservation_failure_queues_no_job_and_starts_no_output() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara-cache-runtime-reservation-failure-{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_| {
+            Err(CacheRuntimeError::new(
+                "cache_attempt_token_exhausted",
+                "attempt allocator exhausted",
+            ))
+        }));
+        let before = runtime.snapshot();
+
+        let error = runtime
+            .submit(job(&root), CacheJobPriority::Normal, false)
+            .expect_err("reservation must fail");
+
+        assert_eq!(error.kind, "cache_attempt_token_exhausted");
+        assert_eq!(runtime.snapshot(), before);
+        assert!(!root.join("song-a").exists());
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queued_eviction_reuses_the_jobs_attempt_without_terminal_conflict() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara-cache-runtime-queued-eviction-{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_| Ok(73)));
+        let submitted = runtime
+            .submit(job(&root), CacheJobPriority::Normal, false)
+            .expect("queue native cache job");
+
+        runtime
+            .sync(
+                &root,
+                vec!["song-a".to_owned()],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                "",
+            )
+            .expect("evict queued job");
+
+        let state = lock_state(&runtime.shared);
+        let terminal_events = state
+            .events
+            .iter()
+            .filter(|event| terminal_event(&event.kind))
+            .collect::<Vec<_>>();
+        assert_eq!(terminal_events.len(), 1);
+        assert_eq!(terminal_events[0].kind, "evicted");
+        assert_eq!(
+            terminal_events[0].cache_attempt_token,
+            submitted.cache_attempt_token
+        );
+        assert!(!state.jobs.contains_key("song-a"));
+        drop(state);
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn variant_ids_match_the_python_compatibility_format() {
         assert_eq!(variant_id(2, "Off Vocal", 0), "p2_off_vocal");
         assert_eq!(variant_id(1, "伴奏", 1), "p1_track_2");
@@ -2128,6 +2353,7 @@ mod tests {
                 "song-a".to_owned(),
                 CompletedJob {
                     generation: 7,
+                    cache_attempt_token: 70,
                     result: CacheReadyResult {
                         video_relative_path: "song-a/video-p1.mp4".to_owned(),
                         video_media_url: "/media/song-a/video-p1.mp4".to_owned(),
@@ -2178,6 +2404,7 @@ mod tests {
                 "song-a".to_owned(),
                 ActiveJob {
                     generation: 1,
+                    cache_attempt_token: 10,
                     cancel: Arc::clone(&cancel),
                     urgent: false,
                 },
@@ -2212,6 +2439,7 @@ mod tests {
             push_event_locked(
                 &mut state,
                 1,
+                10,
                 "song-a",
                 "ready",
                 json!({
@@ -2230,6 +2458,7 @@ mod tests {
                 push_event_locked(
                     &mut state,
                     2,
+                    20,
                     "song-b",
                     "progress",
                     json!({"track": {"key": "video-p1", "current_bytes": index}}),

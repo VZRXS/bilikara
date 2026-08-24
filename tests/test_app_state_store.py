@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 from bilikara import rust_runtime
 from bilikara.models import PlaylistItem
-from bilikara.store import PlaylistStore, _py_apply_av_delay_action
+from bilikara.store import (
+    PlaylistStore,
+    PlaylistStoreCommandError,
+    _py_apply_av_delay_action,
+)
 
 
 def item(item_id: str, *, song: str | None = None) -> PlaylistItem:
@@ -89,6 +93,85 @@ class RustAppStateStoreTest(unittest.TestCase):
         snapshot = store.authoritative_snapshot()
         self.assertEqual(snapshot["revision"], before_rejection)
         self.assertEqual(store.revision, before_rejection)
+
+    def test_cache_attempt_reservation_is_opaque_and_operational_only(self):
+        changes: list[str] = []
+        store = self.store(on_change=lambda: changes.append("changed"))
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+        changes.clear()
+        before = store.authoritative_snapshot()
+        persisted_before = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*")
+            if path.is_file()
+        }
+
+        first = store.begin_cache_attempt("a")
+        second = store.begin_cache_attempt("a")
+
+        self.assertGreater(first, 0)
+        self.assertGreater(second, first)
+        self.assertEqual(store.authoritative_snapshot(), before)
+        self.assertEqual(changes, [])
+        self.assertEqual(
+            {
+                path.relative_to(self.root): path.read_bytes()
+                for path in self.root.rglob("*")
+                if path.is_file()
+            },
+            persisted_before,
+        )
+        self.assertNotIn(
+            "cache_attempt",
+            json.dumps(store.authoritative_snapshot(), sort_keys=True),
+        )
+        self.assertNotIn(
+            "cache_attempt",
+            b"\n".join(persisted_before.values()).decode("utf-8"),
+        )
+
+        with self.assertRaises(PlaylistStoreCommandError) as rejected:
+            store.apply_cache_event(
+                "a",
+                cache_attempt_token=first,
+                event={"kind": "queued", "message": "old"},
+            )
+        self.assertEqual(rejected.exception.kind, "cache_attempt_superseded")
+        self.assertEqual(store.authoritative_snapshot(), before)
+        self.assertEqual(changes, [])
+
+        self.assertTrue(
+            store.apply_cache_event(
+                "a",
+                cache_attempt_token=second,
+                event={"kind": "queued", "message": "current"},
+            )
+        )
+        self.assertEqual(store.get_item("a").cache_message, "current")
+        self.assertEqual(changes, ["changed"])
+
+    def test_begin_cache_attempt_returns_the_opaque_rust_token(self):
+        store = self.store()
+        with patch.object(
+            store,
+            "_request",
+            return_value={"cache_attempt_token": 9_007_199_254_740_991},
+        ) as request:
+            token = store.begin_cache_attempt("opaque-item")
+
+        self.assertEqual(token, 9_007_199_254_740_991)
+        request.assert_called_once_with(
+            "begin_cache_attempt",
+            include_now=False,
+            item_id="opaque-item",
+        )
+        with self.assertRaises(TypeError):
+            store.apply_cache_event(
+                "opaque-item",
+                generation=0,
+                event={"kind": "queued", "message": "legacy"},
+            )
 
     def test_session_and_playback_generations_change_only_at_identity_boundaries(self):
         store = self.store()

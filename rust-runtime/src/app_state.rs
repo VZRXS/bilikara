@@ -7,6 +7,7 @@ use bilikara_rust::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path};
 use std::sync::{Mutex, OnceLock};
 
 const SCHEMA_VERSION: u32 = 1;
@@ -336,7 +337,7 @@ pub enum AvDelayCommand {
     ToggleLock,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CacheEvent {
     Queued {
@@ -359,6 +360,7 @@ pub enum CacheEvent {
         video_relative_path: String,
         video_media_url: String,
         audio_variants: Vec<Map<String, Value>>,
+        #[serde(default)]
         selected_audio_variant_id: String,
     },
     Failed {
@@ -596,11 +598,14 @@ pub enum AppStateRequest {
         schema_version: u32,
         item: PlaylistItem,
     },
+    BeginCacheAttempt {
+        schema_version: u32,
+        item_id: String,
+    },
     ApplyCacheEvent {
         schema_version: u32,
         item_id: String,
-        #[serde(default)]
-        generation: u64,
+        cache_attempt_token: u64,
         event: CacheEvent,
         now: f64,
     },
@@ -651,6 +656,7 @@ impl AppStateRequest {
             | Self::AppendSessionPlayed { schema_version, .. }
             | Self::UpdateOwnerInfo { schema_version, .. }
             | Self::QueryDuplicate { schema_version, .. }
+            | Self::BeginCacheAttempt { schema_version, .. }
             | Self::ApplyCacheEvent { schema_version, .. }
             | Self::Shutdown { schema_version } => *schema_version,
         }
@@ -698,6 +704,7 @@ impl AppStateRequest {
             Self::Initialize { .. }
             | Self::Snapshot { .. }
             | Self::QueryDuplicate { .. }
+            | Self::BeginCacheAttempt { .. }
             | Self::Shutdown { .. } => None,
         }
     }
@@ -840,17 +847,25 @@ struct AppStateData {
     previous_session: Option<SessionArchiveSeed>,
     backup: Option<BackupSeed>,
     updated_at: f64,
-    cache_generations: HashMap<String, u64>,
+    active_cache_attempts: HashMap<String, ActiveCacheAttempt>,
 }
 
 #[derive(Debug, Default)]
 pub struct AppState {
     data: Option<AppStateData>,
+    next_cache_attempt_token: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ActiveCacheAttempt {
+    token: u64,
+    terminal_event: Option<CacheEvent>,
 }
 
 #[derive(Debug)]
 struct MutationResult {
     changed: bool,
+    operational_changed: bool,
     result: Value,
     effects: PersistenceEffects,
 }
@@ -859,6 +874,7 @@ impl MutationResult {
     fn unchanged(result: Value) -> Self {
         Self {
             changed: false,
+            operational_changed: false,
             result,
             effects: PersistenceEffects::default(),
         }
@@ -867,6 +883,7 @@ impl MutationResult {
     fn changed(result: Value, persist_backup: bool) -> Self {
         Self {
             changed: true,
+            operational_changed: false,
             result,
             effects: PersistenceEffects {
                 write_core: true,
@@ -875,6 +892,11 @@ impl MutationResult {
                 ..PersistenceEffects::default()
             },
         }
+    }
+
+    fn with_operational_change(mut self) -> Self {
+        self.operational_changed = true;
+        self
     }
 }
 
@@ -963,6 +985,126 @@ fn validate_audio_variants(variants: &[Map<String, Value>]) -> Result<(), Execut
         }
     }
     Ok(())
+}
+
+fn valid_cache_relative_path(value: &str) -> bool {
+    if !valid_string(value, MAX_STRING_BYTES, false) {
+        return false;
+    }
+    let normalized = value.trim().replace('\\', "/");
+    let path = Path::new(&normalized);
+    !normalized.is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+fn decode_cache_url_path(value: &str) -> Option<String> {
+    fn hex(value: u8) -> Option<u8> {
+        match value {
+            b'0'..=b'9' => Some(value - b'0'),
+            b'a'..=b'f' => Some(value - b'a' + 10),
+            b'A'..=b'F' => Some(value - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2]))
+        {
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn cache_media_path(value: &str) -> Option<String> {
+    let without_query = value.split(['?', '#']).next().unwrap_or(value);
+    if let Some(relative) = without_query.strip_prefix("/media/") {
+        return decode_cache_url_path(relative);
+    }
+    if let Some(relative) = without_query.strip_prefix("media/") {
+        return decode_cache_url_path(relative);
+    }
+    let parsed = url::Url::parse(value).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    parsed
+        .path()
+        .strip_prefix("/media/")
+        .and_then(decode_cache_url_path)
+}
+
+fn valid_cache_media_url(value: &str) -> bool {
+    if !valid_string(value, MAX_STRING_BYTES, false) {
+        return false;
+    }
+    cache_media_path(value).is_some_and(|relative| {
+        !relative.is_empty()
+            && !relative
+                .split('/')
+                .any(|segment| segment.eq_ignore_ascii_case("%2e%2e"))
+            && valid_cache_relative_path(&relative)
+    })
+}
+
+fn validate_ready_audio_variants(
+    variants: &[Map<String, Value>],
+) -> Result<Vec<String>, ExecuteError> {
+    if variants.is_empty() {
+        return Err(rejected(
+            "invalid_cache_ready",
+            "ready cache projection requires at least one audio variant",
+        ));
+    }
+    validate_audio_variants(variants)?;
+    let mut ids = Vec::with_capacity(variants.len());
+    let mut seen = HashSet::with_capacity(variants.len());
+    for variant in variants {
+        let Some(id) = variant.get("id").and_then(Value::as_str) else {
+            return Err(rejected(
+                "invalid_cache_ready",
+                "ready audio variant id must be a string",
+            ));
+        };
+        let Some(audio_url) = variant.get("audio_url").and_then(Value::as_str) else {
+            return Err(rejected(
+                "invalid_cache_ready",
+                "ready audio variant URL must be a string",
+            ));
+        };
+        if id.trim().is_empty() || !valid_string(id, MAX_STRING_BYTES, false) {
+            return Err(rejected(
+                "invalid_cache_ready",
+                "ready audio variant id is invalid",
+            ));
+        }
+        if !seen.insert(id.to_owned()) {
+            return Err(rejected(
+                "duplicate_audio_variant_id",
+                "ready audio variant ids must be unique",
+            ));
+        }
+        if !valid_cache_media_url(audio_url) {
+            return Err(rejected(
+                "invalid_cache_ready",
+                "ready audio variant URL is invalid",
+            ));
+        }
+        ids.push(id.to_owned());
+    }
+    Ok(ids)
 }
 
 fn validate_item(item: &PlaylistItem) -> Result<(), ExecuteError> {
@@ -1255,7 +1397,7 @@ impl AppStateData {
                 .backup
                 .filter(|entry| entry.current_item.is_some() || !entry.playlist.is_empty()),
             updated_at: seed.updated_at,
-            cache_generations: HashMap::new(),
+            active_cache_attempts: HashMap::new(),
         })
     }
 
@@ -1860,35 +2002,148 @@ fn increment_session_generation(data: &mut AppStateData) -> Result<(), ExecuteEr
     Ok(())
 }
 
+fn terminal_cache_event(event: &CacheEvent) -> bool {
+    matches!(
+        event,
+        CacheEvent::Ready { .. }
+            | CacheEvent::Failed { .. }
+            | CacheEvent::Cancelled { .. }
+            | CacheEvent::Evicted { .. }
+            | CacheEvent::Reset { .. }
+    )
+}
+
 fn apply_cache_event(
     data: &mut AppStateData,
     item_id: &str,
-    generation: u64,
+    cache_attempt_token: u64,
+    issued_through: u64,
     event: &CacheEvent,
 ) -> Result<MutationResult, ExecuteError> {
-    if data.find_item(item_id).is_none() {
-        return Err(rejected("item_not_found", "playlist item does not exist"));
+    if cache_attempt_token == 0 {
+        return Err(rejected(
+            "invalid_cache_attempt_token",
+            "cache attempt token must be positive",
+        ));
     }
-    let mut generation_changed = false;
-    if generation > 0 {
-        let known = data.cache_generations.get(item_id).copied().unwrap_or(0);
-        if generation < known {
+    if cache_attempt_token > issued_through {
+        return Err(rejected_with_details(
+            "unissued_cache_attempt_token",
+            "cache attempt token has not been issued",
+            json!({
+                "cache_attempt_token": cache_attempt_token,
+                "issued_through": issued_through,
+            }),
+        ));
+    }
+    let belongs_to = data
+        .active_cache_attempts
+        .iter()
+        .find_map(|(owner_item_id, attempt)| {
+            (attempt.token == cache_attempt_token).then_some(owner_item_id.as_str())
+        });
+    if let Some(owner_item_id) = belongs_to
+        && owner_item_id != item_id
+    {
+        return Err(rejected_with_details(
+            "cache_attempt_wrong_item",
+            "cache attempt belongs to a different live item",
+            json!({
+                "cache_attempt_token": cache_attempt_token,
+                "item_id": item_id,
+                "owner_item_id": owner_item_id,
+            }),
+        ));
+    }
+    let Some(active) = data.active_cache_attempts.get(item_id).cloned() else {
+        return Err(rejected_with_details(
+            "cache_attempt_not_active",
+            "cache attempt does not own this live item",
+            json!({
+                "cache_attempt_token": cache_attempt_token,
+                "item_id": item_id,
+            }),
+        ));
+    };
+    if active.token != cache_attempt_token {
+        return Err(rejected_with_details(
+            "cache_attempt_superseded",
+            "cache attempt has been superseded",
+            json!({
+                "cache_attempt_token": cache_attempt_token,
+                "active_cache_attempt_token": active.token,
+                "item_id": item_id,
+            }),
+        ));
+    }
+    if let Some(terminal_event) = active.terminal_event {
+        if terminal_cache_event(event) && terminal_event == *event {
             return Ok(MutationResult::unchanged(json!({
-                "applied": false,
-                "reason": "stale_generation",
-                "known_generation": known,
+                "applied": true,
+                "replayed": true,
             })));
         }
-        if generation > known {
-            data.cache_generations
-                .insert(item_id.to_owned(), generation);
-            generation_changed = true;
-        }
+        return Err(rejected_with_details(
+            if terminal_cache_event(event) {
+                "cache_terminal_conflict"
+            } else {
+                "cache_attempt_already_terminal"
+            },
+            "cache attempt is already terminal",
+            json!({
+                "cache_attempt_token": cache_attempt_token,
+                "item_id": item_id,
+            }),
+        ));
+    }
+    if data.find_item(item_id).is_none() {
+        return Err(rejected(
+            "cache_attempt_item_removed",
+            "cache attempt item no longer exists",
+        ));
     }
     let before = data
         .find_item(item_id)
         .cloned()
         .ok_or_else(|| rejected("item_not_found", "playlist item does not exist"))?;
+    let ready_selected_audio_variant_id = match event {
+        CacheEvent::Ready {
+            progress,
+            message,
+            video_relative_path,
+            video_media_url,
+            audio_variants,
+            selected_audio_variant_id,
+        } => {
+            if !progress.is_finite()
+                || !valid_string(message, MAX_STRING_BYTES, true)
+                || !valid_cache_relative_path(video_relative_path)
+                || !valid_cache_media_url(video_media_url)
+                || !valid_string(selected_audio_variant_id, MAX_STRING_BYTES, true)
+            {
+                return Err(rejected(
+                    "invalid_cache_ready",
+                    "ready cache projection is invalid",
+                ));
+            }
+            let variant_ids = validate_ready_audio_variants(audio_variants)?;
+            let current = before.selected_audio_variant_id.as_str();
+            let proposal = selected_audio_variant_id.as_str();
+            Some(
+                variant_ids
+                    .iter()
+                    .find(|variant_id| variant_id.as_str() == current)
+                    .or_else(|| {
+                        variant_ids
+                            .iter()
+                            .find(|variant_id| variant_id.as_str() == proposal)
+                    })
+                    .unwrap_or(&variant_ids[0])
+                    .clone(),
+            )
+        }
+        _ => None,
+    };
     let item = data
         .find_item_mut(item_id)
         .ok_or_else(|| rejected("item_not_found", "playlist item does not exist"))?;
@@ -1925,23 +2180,19 @@ fn apply_cache_event(
             video_relative_path,
             video_media_url,
             audio_variants,
-            selected_audio_variant_id,
+            selected_audio_variant_id: _,
         } => {
-            if !progress.is_finite() || audio_variants.is_empty() {
-                return Err(rejected(
-                    "invalid_cache_ready",
-                    "ready cache projection is invalid",
-                ));
-            }
-            validate_audio_variants(audio_variants)?;
             item.cache_status = "ready".to_owned();
             item.cache_progress = progress.clamp(0.0, 100.0);
             item.cache_message.clone_from(message);
             item.video_relative_path.clone_from(video_relative_path);
             item.video_media_url.clone_from(video_media_url);
             item.audio_variants.clone_from(audio_variants);
-            item.selected_audio_variant_id
-                .clone_from(selected_audio_variant_id);
+            item.selected_audio_variant_id.clone_from(
+                ready_selected_audio_variant_id.as_ref().ok_or_else(|| {
+                    ExecuteError::Internal("validated Ready selection is missing".to_owned())
+                })?,
+            );
         }
         CacheEvent::Failed { message } => {
             item.cache_status = "failed".to_owned();
@@ -1968,17 +2219,30 @@ fn apply_cache_event(
         }
     }
     validate_item(item)?;
-    let changed = before != *item || generation_changed;
-    if changed {
-        Ok(MutationResult::changed(json!({"applied": true}), false))
+    let changed = before != *item;
+    let terminal = terminal_cache_event(event);
+    if terminal {
+        let active = data.active_cache_attempts.get_mut(item_id).ok_or_else(|| {
+            ExecuteError::Internal("active cache attempt disappeared during apply".to_owned())
+        })?;
+        active.terminal_event = Some(event.clone());
+    }
+    let result = if changed {
+        MutationResult::changed(json!({"applied": true, "replayed": false}), false)
     } else {
-        Ok(MutationResult::unchanged(json!({"applied": true})))
+        MutationResult::unchanged(json!({"applied": true, "replayed": false}))
+    };
+    if terminal {
+        Ok(result.with_operational_change())
+    } else {
+        Ok(result)
     }
 }
 
 fn apply_mutation(
     data: &mut AppStateData,
     request: AppStateRequest,
+    issued_cache_attempt_tokens: u64,
 ) -> Result<MutationResult, ExecuteError> {
     match request {
         AppStateRequest::AddItem {
@@ -2592,7 +2856,6 @@ fn apply_mutation(
             replace_session_archive(data, &new_session);
             data.previous_session = None;
             data.backup = None;
-            data.cache_generations.clear();
             increment_session_generation(data)?;
             let mut result = MutationResult::changed(mutation_value(true), false);
             result.effects = PersistenceEffects {
@@ -2737,12 +3000,19 @@ fn apply_mutation(
         }
         AppStateRequest::ApplyCacheEvent {
             item_id,
-            generation,
+            cache_attempt_token,
             event,
             ..
-        } => apply_cache_event(data, &item_id, generation, &event),
+        } => apply_cache_event(
+            data,
+            &item_id,
+            cache_attempt_token,
+            issued_cache_attempt_tokens,
+            &event,
+        ),
         AppStateRequest::Initialize { .. }
         | AppStateRequest::Snapshot { .. }
+        | AppStateRequest::BeginCacheAttempt { .. }
         | AppStateRequest::Shutdown { .. } => Err(ExecuteError::Internal(
             "lifecycle request reached mutation dispatcher".to_owned(),
         )),
@@ -2798,6 +3068,44 @@ impl AppState {
                     result: json!({"snapshot": true}),
                 }))
             }
+            AppStateRequest::BeginCacheAttempt { item_id, .. } => {
+                let Some(data) = self.data.as_ref() else {
+                    return uninitialized_response();
+                };
+                if data.find_item(&item_id).is_none() {
+                    return execute_error_response(rejected(
+                        "item_not_found",
+                        "playlist item does not exist",
+                    ));
+                }
+                let Some(cache_attempt_token) = self.next_cache_attempt_token.checked_add(1) else {
+                    return execute_error_response(rejected(
+                        "cache_attempt_token_exhausted",
+                        "cache attempt token allocator is exhausted",
+                    ));
+                };
+                self.next_cache_attempt_token = cache_attempt_token;
+                let data = self
+                    .data
+                    .as_mut()
+                    .expect("initialized AppState disappeared during cache reservation");
+                data.active_cache_attempts.insert(
+                    item_id,
+                    ActiveCacheAttempt {
+                        token: cache_attempt_token,
+                        terminal_event: None,
+                    },
+                );
+                AppStateResponse::Success(Box::new(AppStateSuccess {
+                    schema_version: SCHEMA_VERSION,
+                    status: "completed",
+                    committed: false,
+                    snapshot: Some(data.snapshot()),
+                    persistence: Some(data.persistence_snapshot()),
+                    effects: PersistenceEffects::default(),
+                    result: json!({"cache_attempt_token": cache_attempt_token}),
+                }))
+            }
             AppStateRequest::Shutdown { .. } => {
                 let was_initialized = self.data.take().is_some();
                 AppStateResponse::Success(Box::new(AppStateSuccess {
@@ -2817,11 +3125,31 @@ impl AppState {
                 let mut next = current.clone();
                 let before_current = current.current_identity().map(str::to_owned);
                 let now = request.now();
-                let mutation = match apply_mutation(&mut next, request) {
-                    Ok(mutation) => mutation,
-                    Err(error) => return execute_error_response(error),
-                };
+                let replaces_live_items = matches!(
+                    &request,
+                    AppStateRequest::RestoreBackup { .. }
+                        | AppStateRequest::DiscardBackup { .. }
+                        | AppStateRequest::BeginSession { .. }
+                        | AppStateRequest::ResetRuntime { .. }
+                );
+                let mutation =
+                    match apply_mutation(&mut next, request, self.next_cache_attempt_token) {
+                        Ok(mutation) => mutation,
+                        Err(error) => return execute_error_response(error),
+                    };
                 if mutation.changed {
+                    if replaces_live_items {
+                        next.active_cache_attempts.clear();
+                    } else {
+                        let live_item_ids: HashSet<String> = next
+                            .current_item
+                            .iter()
+                            .chain(next.playlist.iter())
+                            .map(|item| item.id.clone())
+                            .collect();
+                        next.active_cache_attempts
+                            .retain(|item_id, _| live_item_ids.contains(item_id));
+                    }
                     let Some(revision) = current.revision.checked_add(1) else {
                         return internal_error_response("AppState revision overflow");
                     };
@@ -2858,12 +3186,17 @@ impl AppState {
                         result: mutation.result,
                     }))
                 } else {
+                    let snapshot = current.snapshot();
+                    let persistence = current.persistence_snapshot();
+                    if mutation.operational_changed {
+                        self.data = Some(next);
+                    }
                     AppStateResponse::Success(Box::new(AppStateSuccess {
                         schema_version: SCHEMA_VERSION,
                         status: "completed",
                         committed: false,
-                        snapshot: Some(current.snapshot()),
-                        persistence: Some(current.persistence_snapshot()),
+                        snapshot: Some(snapshot),
+                        persistence: Some(persistence),
                         effects: PersistenceEffects::default(),
                         result: mutation.result,
                     }))
@@ -2926,6 +3259,25 @@ pub fn execute_app_state(request: AppStateRequest) -> AppStateResponse {
         return internal_error_response("Rust AppState lock is poisoned");
     };
     state.execute(request)
+}
+
+pub(crate) fn begin_cache_attempt_for_runtime(item_id: &str) -> Result<u64, AppStateError> {
+    match execute_app_state(AppStateRequest::BeginCacheAttempt {
+        schema_version: SCHEMA_VERSION,
+        item_id: item_id.to_owned(),
+    }) {
+        AppStateResponse::Success(success) => success
+            .result
+            .get("cache_attempt_token")
+            .and_then(Value::as_u64)
+            .filter(|token| *token > 0)
+            .ok_or_else(|| AppStateError {
+                kind: "invalid_cache_attempt_response".to_owned(),
+                message: "AppState returned an invalid cache attempt token".to_owned(),
+                details: None,
+            }),
+        AppStateResponse::Failure(failure) => Err(failure.error),
+    }
 }
 
 pub fn execute_app_state_json(request_json: &str) -> String {
@@ -3066,6 +3418,59 @@ mod tests {
         match response {
             AppStateResponse::Failure(failure) => failure,
             AppStateResponse::Success(success) => panic!("unexpected success: {success:?}"),
+        }
+    }
+
+    fn begin_cache_attempt(state: &mut AppState, item_id: &str) -> (u64, AppStateSuccess) {
+        let response = success(state.execute(AppStateRequest::BeginCacheAttempt {
+            schema_version: 1,
+            item_id: item_id.to_owned(),
+        }));
+        let token = response.result["cache_attempt_token"]
+            .as_u64()
+            .expect("positive cache attempt token");
+        (token, response)
+    }
+
+    fn apply_cache(
+        state: &mut AppState,
+        item_id: &str,
+        cache_attempt_token: u64,
+        event: CacheEvent,
+        now: f64,
+    ) -> AppStateResponse {
+        state.execute(AppStateRequest::ApplyCacheEvent {
+            schema_version: 1,
+            item_id: item_id.to_owned(),
+            cache_attempt_token,
+            event,
+            now,
+        })
+    }
+
+    fn ready_event(
+        video_name: &str,
+        variants: &[(&str, &str)],
+        producer_selection: &str,
+    ) -> CacheEvent {
+        CacheEvent::Ready {
+            progress: 100.0,
+            message: "ready".to_owned(),
+            video_relative_path: format!("a/{video_name}"),
+            video_media_url: format!("/media/a/{video_name}"),
+            audio_variants: variants
+                .iter()
+                .map(|(id, audio_name)| {
+                    Map::from_iter([
+                        ("id".to_owned(), json!(id)),
+                        (
+                            "audio_url".to_owned(),
+                            json!(format!("/media/a/{audio_name}")),
+                        ),
+                    ])
+                })
+                .collect(),
+            selected_audio_variant_id: producer_selection.to_owned(),
         }
     }
 
@@ -3303,53 +3708,481 @@ mod tests {
     }
 
     #[test]
-    fn stale_cache_generation_cannot_overwrite_ready_projection() {
+    fn cache_attempt_reservation_is_unique_and_operational_only() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        let before = initialize(&mut state, initial);
+
+        let (first, reserved) = begin_cache_attempt(&mut state, "a");
+        assert!(first > 0);
+        assert!(!reserved.committed);
+        assert_eq!(reserved.snapshot.as_ref(), Some(&before));
+        assert_eq!(
+            reserved.persistence,
+            Some(state.data.as_ref().expect("data").persistence_snapshot())
+        );
+        assert_eq!(reserved.effects, PersistenceEffects::default());
+        let (second, superseded) = begin_cache_attempt(&mut state, "a");
+        assert!(second > first);
+        assert!(!superseded.committed);
+        assert_eq!(superseded.snapshot.as_ref(), Some(&before));
+        assert_eq!(
+            state.data.as_ref().expect("data").active_cache_attempts["a"].token,
+            second
+        );
+    }
+
+    #[test]
+    fn cache_attempt_acceptance_requires_exact_live_ownership() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.playlist = vec![item("b", "BV-b", "Bob")];
+        let before = initialize(&mut state, initial);
+        let (old, _) = begin_cache_attempt(&mut state, "a");
+        let (current, _) = begin_cache_attempt(&mut state, "a");
+        let (other, _) = begin_cache_attempt(&mut state, "b");
+        let allocator_before = state.next_cache_attempt_token;
+        let attempts_before = state
+            .data
+            .as_ref()
+            .expect("data")
+            .active_cache_attempts
+            .clone();
+
+        for (token, expected_kind) in [
+            (0, "invalid_cache_attempt_token"),
+            (allocator_before + 1, "unissued_cache_attempt_token"),
+            (old, "cache_attempt_superseded"),
+            (other, "cache_attempt_wrong_item"),
+        ] {
+            let rejected = failure(apply_cache(
+                &mut state,
+                "a",
+                token,
+                CacheEvent::Progress {
+                    progress: 50.0,
+                    message: Some("stale".to_owned()),
+                },
+                11.0,
+            ));
+            assert_eq!(rejected.error.kind, expected_kind);
+            assert_eq!(state.next_cache_attempt_token, allocator_before);
+            assert_eq!(
+                state.data.as_ref().expect("data").active_cache_attempts,
+                attempts_before
+            );
+            let snapshot = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+                .snapshot
+                .expect("snapshot");
+            assert_eq!(snapshot, before);
+        }
+
+        let applied = success(apply_cache(
+            &mut state,
+            "a",
+            current,
+            CacheEvent::Progress {
+                progress: 50.0,
+                message: Some("current".to_owned()),
+            },
+            12.0,
+        ));
+        assert!(applied.committed);
+    }
+
+    #[test]
+    fn removed_and_reused_item_ids_never_inherit_old_attempts() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-old", "Alice"));
+        initialize(&mut state, initial);
+        let (old, _) = begin_cache_attempt(&mut state, "a");
+        success(state.execute(AppStateRequest::RemoveItem {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            now: 11.0,
+        }));
+        assert!(
+            !state
+                .data
+                .as_ref()
+                .expect("data")
+                .active_cache_attempts
+                .contains_key("a")
+        );
+        let removed = failure(apply_cache(
+            &mut state,
+            "a",
+            old,
+            CacheEvent::Failed {
+                message: "removed failure".to_owned(),
+            },
+            11.5,
+        ));
+        assert_eq!(removed.error.kind, "cache_attempt_not_active");
+        success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("a", "BV-new", ""),
+            position: "tail".to_owned(),
+            requester_name: "Alice".to_owned(),
+            reset_av_delay: false,
+            allow_repeat: true,
+            now: 12.0,
+        }));
+        let rejected = failure(apply_cache(
+            &mut state,
+            "a",
+            old,
+            CacheEvent::Failed {
+                message: "old failure".to_owned(),
+            },
+            13.0,
+        ));
+        assert_eq!(rejected.error.kind, "cache_attempt_not_active");
+        assert_eq!(
+            state
+                .data
+                .as_ref()
+                .expect("data")
+                .find_item("a")
+                .expect("re-added item")
+                .bvid,
+            "BV-new"
+        );
+    }
+
+    #[test]
+    fn clearing_or_replacing_live_items_clears_their_attempt_bindings() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.playlist = vec![item("b", "BV-b", "Bob")];
+        initialize(&mut state, initial);
+        let (current_token, _) = begin_cache_attempt(&mut state, "a");
+        let (queued_token, _) = begin_cache_attempt(&mut state, "b");
+
+        success(state.execute(AppStateRequest::ClearPlaylist {
+            schema_version: 1,
+            now: 11.0,
+        }));
+        let queued_rejection = failure(apply_cache(
+            &mut state,
+            "b",
+            queued_token,
+            CacheEvent::Failed {
+                message: "cleared".to_owned(),
+            },
+            12.0,
+        ));
+        assert_eq!(queued_rejection.error.kind, "cache_attempt_not_active");
+        assert_eq!(
+            state.data.as_ref().expect("data").active_cache_attempts["a"].token,
+            current_token
+        );
+
+        success(state.execute(AppStateRequest::BeginSession {
+            schema_version: 1,
+            new_session: SessionArchiveSeed {
+                file_name: "next.json".to_owned(),
+                session_started_at: 13.0,
+                items: Vec::new(),
+            },
+            now: 13.0,
+        }));
+        assert!(
+            state
+                .data
+                .as_ref()
+                .expect("data")
+                .active_cache_attempts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cache_attempt_tokens_survive_shutdown_reinitialize_and_overflow_atomically() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initialize(&mut state, initial.clone());
+        let (first, _) = begin_cache_attempt(&mut state, "a");
+        success(state.execute(AppStateRequest::Shutdown { schema_version: 1 }));
+        initialize(&mut state, initial);
+        let (second, _) = begin_cache_attempt(&mut state, "a");
+        assert!(second > first);
+        let stale = failure(apply_cache(
+            &mut state,
+            "a",
+            first,
+            CacheEvent::Failed {
+                message: "previous lifetime".to_owned(),
+            },
+            11.0,
+        ));
+        assert_eq!(stale.error.kind, "cache_attempt_superseded");
+
+        state.next_cache_attempt_token = u64::MAX;
+        let data_before = state.data.clone();
+        let rejected = failure(state.execute(AppStateRequest::BeginCacheAttempt {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+        }));
+        assert_eq!(rejected.error.kind, "cache_attempt_token_exhausted");
+        assert_eq!(state.next_cache_attempt_token, u64::MAX);
+        assert_eq!(state.data, data_before);
+    }
+
+    #[test]
+    fn terminal_cache_publications_settle_once_and_replay_exactly() {
         let mut state = AppState::default();
         let mut initial = seed();
         initial.current_item = Some(item("a", "BV-a", "Alice"));
         initialize(&mut state, initial);
-        let ready = CacheEvent::Ready {
-            progress: 100.0,
-            message: "ready".to_owned(),
-            video_relative_path: "a/video.mp4".to_owned(),
-            video_media_url: "/media/a/video.mp4".to_owned(),
-            audio_variants: vec![Map::from_iter([
-                ("id".to_owned(), json!("p1")),
-                ("audio_url".to_owned(), json!("/media/a/audio.m4a")),
-            ])],
-            selected_audio_variant_id: "p1".to_owned(),
+        let (token, _) = begin_cache_attempt(&mut state, "a");
+        let terminal = CacheEvent::Failed {
+            message: "network failed".to_owned(),
         };
-        let ready = success(state.execute(AppStateRequest::ApplyCacheEvent {
+        let accepted = success(apply_cache(&mut state, "a", token, terminal.clone(), 11.0));
+        assert!(accepted.committed);
+        let accepted_snapshot = accepted.snapshot.expect("accepted snapshot");
+
+        let replay = success(apply_cache(&mut state, "a", token, terminal, 12.0));
+        assert!(!replay.committed);
+        assert_eq!(replay.result["replayed"], json!(true));
+        assert_eq!(replay.effects, PersistenceEffects::default());
+        assert_eq!(replay.snapshot, Some(accepted_snapshot.clone()));
+
+        for (event, expected_kind) in [
+            (
+                CacheEvent::Failed {
+                    message: "different failure".to_owned(),
+                },
+                "cache_terminal_conflict",
+            ),
+            (
+                CacheEvent::Cancelled {
+                    message: "different terminal".to_owned(),
+                },
+                "cache_terminal_conflict",
+            ),
+            (
+                CacheEvent::Progress {
+                    progress: 60.0,
+                    message: None,
+                },
+                "cache_attempt_already_terminal",
+            ),
+        ] {
+            let rejected = failure(apply_cache(&mut state, "a", token, event, 13.0));
+            assert_eq!(rejected.error.kind, expected_kind);
+            let snapshot = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+                .snapshot
+                .expect("snapshot");
+            assert_eq!(snapshot, accepted_snapshot);
+        }
+    }
+
+    #[test]
+    fn ready_preserves_newer_selection_then_uses_proposal_then_first_variant() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        let mut current = item("a", "BV-a", "Alice");
+        current.audio_variants = vec![
+            Map::from_iter([
+                ("id".to_owned(), json!("original")),
+                ("audio_url".to_owned(), json!("/media/a/old-original.m4a")),
+            ]),
+            Map::from_iter([
+                ("id".to_owned(), json!("accompaniment")),
+                (
+                    "audio_url".to_owned(),
+                    json!("/media/a/old-accompaniment.m4a"),
+                ),
+            ]),
+        ];
+        current.selected_audio_variant_id = "original".to_owned();
+        initial.current_item = Some(current);
+        initialize(&mut state, initial);
+
+        let (first, _) = begin_cache_attempt(&mut state, "a");
+        success(state.execute(AppStateRequest::SetAudioVariant {
             schema_version: 1,
             item_id: "a".to_owned(),
-            generation: 2,
-            event: ready,
+            variant_id: "accompaniment".to_owned(),
             now: 11.0,
-        }))
-        .snapshot
-        .expect("ready snapshot");
-        let ready_revision = ready.revision;
+        }));
+        let preserved = success(apply_cache(
+            &mut state,
+            "a",
+            first,
+            ready_event(
+                "first.mp4",
+                &[
+                    ("original", "first-original.m4a"),
+                    ("accompaniment", "first-accompaniment.m4a"),
+                ],
+                "original",
+            ),
+            12.0,
+        ));
         assert_eq!(
-            ready.current_item.as_ref().expect("current").cache_status,
-            "ready"
+            preserved
+                .snapshot
+                .as_ref()
+                .expect("snapshot")
+                .current_item
+                .as_ref()
+                .expect("current")
+                .selected_audio_variant_id,
+            "accompaniment"
         );
 
-        let stale = success(state.execute(AppStateRequest::ApplyCacheEvent {
+        success(state.execute(AppStateRequest::UpdateItem {
             schema_version: 1,
             item_id: "a".to_owned(),
-            generation: 1,
-            event: CacheEvent::Failed {
-                message: "stale failure".to_owned(),
+            changes: PlaylistItemPatch {
+                selected_audio_variant_id: Some("removed".to_owned()),
+                ..PlaylistItemPatch::default()
             },
-            now: 12.0,
+            persist_backup: false,
+            now: 13.0,
         }));
-        assert!(!stale.committed);
-        let stale = stale.snapshot.expect("stale snapshot");
-        assert_eq!(stale.revision, ready_revision);
+        let (second, _) = begin_cache_attempt(&mut state, "a");
+        let proposed = success(apply_cache(
+            &mut state,
+            "a",
+            second,
+            ready_event(
+                "second.mp4",
+                &[("first", "second-first.m4a"), ("proposal", "proposal.m4a")],
+                "proposal",
+            ),
+            14.0,
+        ));
         assert_eq!(
-            stale.current_item.as_ref().expect("current").cache_status,
-            "ready"
+            proposed
+                .snapshot
+                .as_ref()
+                .expect("snapshot")
+                .current_item
+                .as_ref()
+                .expect("current")
+                .selected_audio_variant_id,
+            "proposal"
         );
+
+        success(state.execute(AppStateRequest::UpdateItem {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            changes: PlaylistItemPatch {
+                selected_audio_variant_id: Some("removed-again".to_owned()),
+                ..PlaylistItemPatch::default()
+            },
+            persist_backup: false,
+            now: 15.0,
+        }));
+        let (third, _) = begin_cache_attempt(&mut state, "a");
+        let fallback = success(apply_cache(
+            &mut state,
+            "a",
+            third,
+            ready_event(
+                "third.mp4",
+                &[
+                    ("deterministic-first", "first.m4a"),
+                    ("second", "second.m4a"),
+                ],
+                "missing-proposal",
+            ),
+            16.0,
+        ));
+        assert_eq!(
+            fallback
+                .snapshot
+                .as_ref()
+                .expect("snapshot")
+                .current_item
+                .as_ref()
+                .expect("current")
+                .selected_audio_variant_id,
+            "deterministic-first"
+        );
+    }
+
+    #[test]
+    fn invalid_ready_payloads_leave_projection_and_attempt_unsettled() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        let initial_snapshot = initialize(&mut state, initial);
+        let (token, _) = begin_cache_attempt(&mut state, "a");
+        let allocator = state.next_cache_attempt_token;
+
+        let duplicate = ready_event(
+            "duplicate.mp4",
+            &[("same", "one.m4a"), ("same", "two.m4a")],
+            "same",
+        );
+        let mut empty_path = ready_event("video.mp4", &[("a", "a.m4a")], "a");
+        let mut empty_video_url = empty_path.clone();
+        let mut empty_variant_id = empty_path.clone();
+        let mut empty_audio_url = empty_path.clone();
+        let mut encoded_traversal = empty_path.clone();
+        let mut malformed_proposal = empty_path.clone();
+        if let CacheEvent::Ready {
+            video_relative_path,
+            ..
+        } = &mut empty_path
+        {
+            video_relative_path.clear();
+        }
+        if let CacheEvent::Ready {
+            video_media_url, ..
+        } = &mut empty_video_url
+        {
+            video_media_url.clear();
+        }
+        if let CacheEvent::Ready { audio_variants, .. } = &mut empty_variant_id {
+            audio_variants[0].insert("id".to_owned(), json!(""));
+        }
+        if let CacheEvent::Ready { audio_variants, .. } = &mut empty_audio_url {
+            audio_variants[0].insert("audio_url".to_owned(), json!(""));
+        }
+        if let CacheEvent::Ready {
+            video_media_url, ..
+        } = &mut encoded_traversal
+        {
+            *video_media_url = "/media/a/%2e%2e/outside.mp4".to_owned();
+        }
+        if let CacheEvent::Ready {
+            selected_audio_variant_id,
+            ..
+        } = &mut malformed_proposal
+        {
+            *selected_audio_variant_id = "bad\0proposal".to_owned();
+        }
+
+        for event in [
+            duplicate,
+            empty_path,
+            empty_video_url,
+            empty_variant_id,
+            empty_audio_url,
+            encoded_traversal,
+            malformed_proposal,
+        ] {
+            let rejected = failure(apply_cache(&mut state, "a", token, event, 11.0));
+            assert!(matches!(
+                rejected.error.kind.as_str(),
+                "invalid_cache_ready" | "duplicate_audio_variant_id"
+            ));
+            assert_eq!(state.next_cache_attempt_token, allocator);
+            let data = state.data.as_ref().expect("data");
+            assert_eq!(data.snapshot(), initial_snapshot);
+            assert!(data.active_cache_attempts["a"].terminal_event.is_none());
+        }
     }
 
     #[test]
@@ -3392,6 +4225,11 @@ mod tests {
         let invalid: Value =
             serde_json::from_str(&execute_app_state_json("{}")).expect("invalid response JSON");
         assert_eq!(invalid["status"], "invalid_request");
+        let legacy_generation: Value = serde_json::from_str(&execute_app_state_json(
+            r#"{"command":"apply_cache_event","schema_version":1,"item_id":"a","generation":0,"event":{"kind":"queued","message":"legacy"},"now":1.0}"#,
+        ))
+        .expect("legacy generation response JSON");
+        assert_eq!(legacy_generation["status"], "invalid_request");
 
         let mut state = AppState::default();
         let uninitialized = failure(state.execute(AppStateRequest::Snapshot { schema_version: 1 }));

@@ -802,14 +802,20 @@ class PlaylistStore:
         self,
         item_id: str,
         *,
-        generation: int,
+        cache_attempt_token: int,
         event: dict[str, Any],
     ) -> bool:
+        if (
+            isinstance(cache_attempt_token, bool)
+            or not isinstance(cache_attempt_token, int)
+            or cache_attempt_token <= 0
+        ):
+            raise ValueError("cache attempt token must be a positive integer")
         try:
             result = self._request(
                 "apply_cache_event",
                 item_id=str(item_id),
-                generation=int(generation),
+                cache_attempt_token=cache_attempt_token,
                 event=copy.deepcopy(event),
             )
         except PlaylistStoreCommandError as exc:
@@ -817,6 +823,22 @@ class PlaylistStore:
                 return False
             raise
         return bool(result.get("applied"))
+
+    def begin_cache_attempt(self, item_id: str) -> int:
+        result = self._request(
+            "begin_cache_attempt",
+            include_now=False,
+            item_id=str(item_id),
+        )
+        token = result.get("cache_attempt_token")
+        if isinstance(token, bool) or not isinstance(token, int) or token <= 0:
+            raise rust_runtime.RustAppStateError(
+                "internal_error",
+                "invalid_cache_attempt_token",
+                "Rust AppState returned an invalid cache attempt token",
+                response={"result": copy.deepcopy(result)},
+            )
+        return token
 
     def add_session_user(self, name: str) -> bool:
         return self._changed(self._request("add_session_user", name=str(name or "")))

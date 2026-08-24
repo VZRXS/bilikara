@@ -687,6 +687,7 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
                 dash_streams=dash,
                 video_track=video_track,
                 audio_tracks=[audio_track],
+                cache_attempt_token=1,
             )
 
         self.assertEqual(paths["audio-p1"].suffix, ".flac")
@@ -724,6 +725,7 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
                 cookie="",
                 stage_label="download",
                 track_key="video-p1",
+                cache_attempt_token=1,
                 stream_kind="video",
             )
 
@@ -789,6 +791,7 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
                 Path(),
                 item_dir,
                 cache_dir / "native.log",
+                cache_attempt_token=1,
                 download_source="native",
             )
 
@@ -838,6 +841,7 @@ class RustRuntimeCacheRoutingTest(unittest.TestCase):
                 Path("ffmpeg"),
                 cache_dir / "target",
                 cache_dir / "download.log",
+                cache_attempt_token=1,
                 download_source="downkyi",
             )
 
