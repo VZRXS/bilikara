@@ -87,8 +87,8 @@ function element(id, hidden = false) {{
 
 const ids = [
   "controller-shell", "controller-status", "controller-title", "controller-time",
-  "controller-seek", "controller-play-toggle", "controller-back-10",
-  "controller-forward-10", "controller-next", "controller-volume",
+  "controller-seek", "controller-play-toggle", "controller-back-15",
+  "controller-forward-15", "controller-next", "controller-volume",
   "controller-volume-value", "controller-mute", "controller-exit",
   "controller-error", "controller-unavailable",
 ];
@@ -97,8 +97,8 @@ const elements = Object.fromEntries(ids.map((id) => [
   element(id, id === "controller-error" || id === "controller-unavailable"),
 ]));
 const commandIds = [
-  "controller-seek", "controller-play-toggle", "controller-back-10",
-  "controller-forward-10", "controller-next", "controller-volume", "controller-mute",
+  "controller-seek", "controller-play-toggle", "controller-back-15",
+  "controller-forward-15", "controller-next", "controller-volume", "controller-mute",
 ];
 const windowListeners = {{}};
 global.window = global;
@@ -228,8 +228,8 @@ async function flush() {{
                 "controller-time",
                 "controller-seek",
                 "controller-play-toggle",
-                "controller-back-10",
-                "controller-forward-10",
+                "controller-back-15",
+                "controller-forward-15",
                 "controller-next",
                 "controller-volume",
                 "controller-mute",
@@ -267,14 +267,14 @@ async function flush() {{
     },
   }});
 
-  elements["controller-back-10"].dispatch("click");
+  elements["controller-back-15"].dispatch("click");
   await Promise.resolve();
   const busyDuringSend = {
-    disabled: elements["controller-back-10"].disabled,
-    ariaBusy: elements["controller-back-10"].attributes["aria-busy"],
+    disabled: elements["controller-back-15"].disabled,
+    ariaBusy: elements["controller-back-15"].attributes["aria-busy"],
     sentCount: sent.length,
   };
-  elements["controller-forward-10"].dispatch("click");
+  elements["controller-forward-15"].dispatch("click");
   await Promise.resolve();
   const sentAfterDuplicate = sent.length;
   session = { ...session, lastAcceptedCommandSequence: 1 };
@@ -326,7 +326,7 @@ async function flush() {{
     sentBeforeSeekInput,
     sentAfterSeekInput,
     sent,
-    busyRestored: !elements["controller-back-10"].attributes["aria-busy"],
+    busyRestored: !elements["controller-back-15"].attributes["aria-busy"],
     titleAfterStale,
     titleAfterFresh,
     exitCalled: trace.includes("invoke:deactivate_local_presentation"),
@@ -352,7 +352,7 @@ async function flush() {{
         self.assertEqual(result["sent"][0], {
             "generation": 7,
             "sequence": 1,
-            "command": {"type": "seekRelative", "deltaSeconds": -10},
+            "command": {"type": "seekRelative", "deltaSeconds": -15},
         })
         self.assertEqual(result["sent"][1], {
             "generation": 7,
@@ -381,8 +381,8 @@ async function flush() {{
   }});
   const empty = {
     play: elements["controller-play-toggle"].disabled,
-    back: elements["controller-back-10"].disabled,
-    forward: elements["controller-forward-10"].disabled,
+    back: elements["controller-back-15"].disabled,
+    forward: elements["controller-forward-15"].disabled,
     seek: elements["controller-seek"].disabled,
     next: elements["controller-next"].disabled,
     volume: elements["controller-volume"].disabled,
@@ -399,8 +399,8 @@ async function flush() {{
   }});
   const playable = {
     play: elements["controller-play-toggle"].disabled,
-    back: elements["controller-back-10"].disabled,
-    forward: elements["controller-forward-10"].disabled,
+    back: elements["controller-back-15"].disabled,
+    forward: elements["controller-forward-15"].disabled,
     seek: elements["controller-seek"].disabled,
     next: elements["controller-next"].disabled,
     playLabel: elements["controller-play-toggle"].label.textContent,

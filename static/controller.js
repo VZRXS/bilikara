@@ -29,8 +29,8 @@
     time: document.getElementById("controller-time"),
     seek: document.getElementById("controller-seek"),
     play: document.getElementById("controller-play-toggle"),
-    back: document.getElementById("controller-back-10"),
-    forward: document.getElementById("controller-forward-10"),
+    back: document.getElementById("controller-back-15"),
+    forward: document.getElementById("controller-forward-15"),
     next: document.getElementById("controller-next"),
     volume: document.getElementById("controller-volume"),
     volumeValue: document.getElementById("controller-volume-value"),
@@ -382,10 +382,10 @@
       sendCommand(elements.play, { type: state.playback?.paused ? "play" : "pause" });
     });
     elements.back.addEventListener("click", () => {
-      sendCommand(elements.back, { type: "seekRelative", deltaSeconds: -10 });
+      sendCommand(elements.back, { type: "seekRelative", deltaSeconds: -15 });
     });
     elements.forward.addEventListener("click", () => {
-      sendCommand(elements.forward, { type: "seekRelative", deltaSeconds: 10 });
+      sendCommand(elements.forward, { type: "seekRelative", deltaSeconds: 15 });
     });
     elements.next.addEventListener("click", () => {
       sendCommand(elements.next, { type: "nextTrack" });

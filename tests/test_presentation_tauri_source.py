@@ -41,7 +41,10 @@ class PresentationTauriSourceTest(unittest.TestCase):
             "bilikara-presentation-playback-state",
         ):
             self.assertIn(event, self.presentation)
-        self.assertIn('#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]', self.presentation)
+        self.assertIn('tag = "type"', self.presentation)
+        self.assertIn('rename_all = "camelCase"', self.presentation)
+        self.assertIn('rename_all_fields = "camelCase"', self.presentation)
+        self.assertIn("deny_unknown_fields", self.presentation)
         for variant in ("Play", "Pause", "SeekRelative", "SeekAbsolute", "NextTrack", "SetVolume"):
             self.assertRegex(self.presentation, rf"\b{variant}\b")
         self.assertIn("MAX_PENDING_COMMANDS", self.presentation)
@@ -146,6 +149,25 @@ class PresentationTauriSourceTest(unittest.TestCase):
             activation.index("start_generation_watchers("),
         )
         self.assertIn("complete_activation_if_ready", activation)
+
+    def test_presentation_native_lifecycle_is_recorded_in_diagnostic_logs(self):
+        self.assertIn('join("runtime")', self.main)
+        self.assertIn('join("logs")', self.main)
+        self.assertIn("app.manage(startup_log)", self.main)
+        self.assertIn('"presentation_window_destroyed"', self.main)
+        for stage in (
+            "activation_command_begin",
+            "controller_build_begin",
+            "controller_build_end",
+            "main_thread_result_wait_begin",
+            "main_thread_operation_begin",
+            "window_mutation_begin",
+            "window_mutation_end",
+            "recovery_claimed",
+            "recovery_restore_end",
+            "app_shutdown_controller_close_end",
+        ):
+            self.assertIn(f'"{stage}"', self.presentation)
 
     def test_stale_activation_cannot_mutate_after_recovery_claim(self):
         mutation = self.presentation[

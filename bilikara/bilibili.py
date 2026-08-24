@@ -2616,8 +2616,6 @@ def _py_request_json(url: str) -> dict:
     cookie = effective_bilibili_cookie()
     if cookie:
         headers["Cookie"] = cookie
-    else:
-        print("Warning: [bilikara] COOKIE 变量为空，API 将以游客身份访问。")
     request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -2629,8 +2627,6 @@ def request_json(url: str) -> dict:
     cookie = effective_bilibili_cookie()
     if cookie:
         headers["Cookie"] = cookie
-    else:
-        print("Warning: [bilikara] COOKIE 变量为空，API 将以游客身份访问。")
     try:
         payload = rust_runtime.json_http_request(
             "GET",

@@ -125,6 +125,16 @@ impl DesktopStartupLog {
     }
 }
 
+pub(crate) fn append_desktop_diagnostic(
+    app: &tauri::AppHandle,
+    event: &str,
+    detail: impl AsRef<str>,
+) {
+    if let Some(log) = app.try_state::<DesktopStartupLog>() {
+        log.append(event, detail);
+    }
+}
+
 #[derive(Clone, Deserialize, Debug, PartialEq, Eq)]
 struct ReadyEvent {
     event: String,
@@ -451,6 +461,23 @@ fn desktop_startup_log_path(current_exe: &Path) -> Option<PathBuf> {
     {
         return Some(PathBuf::from(override_path));
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        let install_dir = current_exe.parent()?;
+        let packaged_layout =
+            install_dir.join("bilikara.exe").is_file() || install_dir.join("_internal").is_dir();
+        if packaged_layout {
+            return Some(
+                install_dir
+                    .join("runtime")
+                    .join("data")
+                    .join("logs")
+                    .join(DESKTOP_STARTUP_LOG_NAME),
+            );
+        }
+    }
+
     if !is_packaged_macos_executable(current_exe) {
         return None;
     }
@@ -1754,6 +1781,9 @@ fn main() {
         ])
         .setup(move |app| {
             let startup_log = startup_log_for_setup.clone();
+            if let Some(startup_log) = startup_log.clone() {
+                let _ = app.manage(startup_log);
+            }
 
             #[cfg(target_os = "macos")]
             create_macos_main_webview_window(app)?;
@@ -2102,16 +2132,39 @@ fn main() {
             if window.label() == "controller"
                 && let tauri::WindowEvent::Destroyed = event
             {
+                append_desktop_diagnostic(
+                    window.app_handle(),
+                    "presentation_window_destroyed",
+                    "window=controller",
+                );
                 presentation::handle_controller_destroyed(window.app_handle());
             }
             if window.label() == "main"
                 && let tauri::WindowEvent::Destroyed = event
                 && let Some(state) = window.try_state::<BackendProcess>()
             {
+                append_desktop_diagnostic(
+                    window.app_handle(),
+                    "presentation_window_destroyed",
+                    "window=main cleanup=begin",
+                );
                 presentation::prepare_app_shutdown(window.app_handle());
+                append_desktop_diagnostic(
+                    window.app_handle(),
+                    "desktop_shutdown",
+                    "stage=presentation_shutdown_prepared",
+                );
                 wait_for_active_backend_downloads(
                     &state.active_downloads,
                     ACTIVE_BACKEND_DOWNLOAD_SHUTDOWN_GRACE,
+                );
+                append_desktop_diagnostic(
+                    window.app_handle(),
+                    "desktop_shutdown",
+                    format!(
+                        "stage=active_download_wait_finished remaining={}",
+                        state.active_downloads.load(Ordering::Acquire)
+                    ),
                 );
                 let shutdown_url = state
                     .base_url
@@ -2122,6 +2175,11 @@ fn main() {
                     .as_deref()
                     .map(|url| request_backend_shutdown(url, &state.shutdown_token))
                     .unwrap_or(false);
+                append_desktop_diagnostic(
+                    window.app_handle(),
+                    "desktop_shutdown",
+                    format!("stage=backend_shutdown_requested accepted={shutdown_requested}"),
+                );
 
                 if let Ok(mut child_lock) = state.child.lock()
                     && let Some(mut child) = child_lock.take()
@@ -2129,10 +2187,25 @@ fn main() {
                     if shutdown_requested
                         && wait_for_child_exit(&mut child, Duration::from_secs(20))
                     {
+                        append_desktop_diagnostic(
+                            window.app_handle(),
+                            "desktop_shutdown",
+                            "stage=backend_exited_gracefully",
+                        );
                         return;
                     }
+                    append_desktop_diagnostic(
+                        window.app_handle(),
+                        "desktop_shutdown",
+                        "stage=backend_force_kill_begin",
+                    );
                     let _ = child.kill();
                     let _ = child.wait();
+                    append_desktop_diagnostic(
+                        window.app_handle(),
+                        "desktop_shutdown",
+                        "stage=backend_force_kill_finished",
+                    );
                 }
             }
         })
@@ -3074,6 +3147,33 @@ mod tests {
             snapshot.last().map(String::as_str),
             Some(format!("line-{}", MAX_BACKEND_TAIL_LINES + 4).as_str())
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn packaged_windows_desktop_log_does_not_require_runtime_to_exist_yet() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "bilikara_desktop_log_path_test_{}_{}",
+            std::process::id(),
+            unix_timestamp_millis()
+        ));
+        let runtime_dir = temp_dir.join("runtime");
+        fs::create_dir_all(temp_dir.join("_internal")).expect("create packaged internal directory");
+        let executable = temp_dir.join("bilikara-desktop.exe");
+
+        assert!(!runtime_dir.exists());
+
+        assert_eq!(
+            desktop_startup_log_path(&executable),
+            Some(
+                runtime_dir
+                    .join("data")
+                    .join("logs")
+                    .join(DESKTOP_STARTUP_LOG_NAME)
+            )
+        );
+
+        fs::remove_dir_all(temp_dir).expect("remove packaged runtime directory");
     }
 
     #[test]
