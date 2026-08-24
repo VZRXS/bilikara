@@ -153,7 +153,9 @@ class PresentationTauriSourceTest(unittest.TestCase):
     def test_presentation_native_lifecycle_is_recorded_in_diagnostic_logs(self):
         self.assertIn('join("runtime")', self.main)
         self.assertIn('join("logs")', self.main)
-        self.assertIn("app.manage(startup_log)", self.main)
+        self.assertIn("install_runtime_desktop_diagnostics", self.main)
+        self.assertIn("sender.try_send(record)", self.main)
+        self.assertNotIn("try_state::<DesktopStartupLog>", self.main)
         self.assertIn('"presentation_window_destroyed"', self.main)
         for stage in (
             "activation_command_begin",
@@ -168,6 +170,15 @@ class PresentationTauriSourceTest(unittest.TestCase):
             "app_shutdown_controller_close_end",
         ):
             self.assertIn(f'"{stage}"', self.presentation)
+
+        lifecycle_result = self.presentation[
+            self.presentation.index("fn deliver_main_thread_operation_result") :
+            self.presentation.index("fn run_on_main_thread_with_result")
+        ]
+        self.assertLess(
+            lifecycle_result.index("sender.send(result)"),
+            lifecycle_result.index("completion_diagnostic(succeeded)"),
+        )
 
     def test_stale_activation_cannot_mutate_after_recovery_claim(self):
         mutation = self.presentation[

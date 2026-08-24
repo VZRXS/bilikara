@@ -849,13 +849,12 @@ enum WindowRole {
 }
 
 fn trace_presentation(
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     generation: Option<u64>,
     stage: &str,
     detail: impl AsRef<str>,
 ) {
     super::append_desktop_diagnostic(
-        app,
         "presentation_trace",
         format!(
             "generation={} stage={} thread={:?} {}",
@@ -2101,6 +2100,16 @@ fn recover_after_activation_failure(
     }
 }
 
+fn deliver_main_thread_operation_result<T>(
+    sender: std::sync::mpsc::SyncSender<Result<T, String>>,
+    result: Result<T, String>,
+    completion_diagnostic: impl FnOnce(bool),
+) {
+    let succeeded = result.is_ok();
+    let _ = sender.send(result);
+    completion_diagnostic(succeeded);
+}
+
 fn run_on_main_thread_with_result<T: Send + 'static>(
     app: &tauri::AppHandle,
     generation: u64,
@@ -2125,17 +2134,18 @@ fn run_on_main_thread_with_result<T: Send + 'static>(
             format!("operation={operation_name}"),
         );
         let result = operation();
-        trace_presentation(
-            &callback_app,
-            Some(generation),
-            "main_thread_operation_end",
-            format!(
-                "operation={} status={}",
-                operation_name,
-                if result.is_ok() { "ok" } else { "error" }
-            ),
-        );
-        let _ = sender.send(result);
+        deliver_main_thread_operation_result(sender, result, |succeeded| {
+            trace_presentation(
+                &callback_app,
+                Some(generation),
+                "main_thread_operation_end",
+                format!(
+                    "operation={} status={}",
+                    operation_name,
+                    if succeeded { "ok" } else { "error" }
+                ),
+            );
+        });
     })
     .map_err(|error| format!("failed to schedule presentation lifecycle work: {error}"))?;
     trace_presentation(
@@ -2808,9 +2818,12 @@ mod tests {
         ControllerPlaybackState, HostWindowPlacement, MAX_PENDING_COMMANDS, MAX_SAFE_JS_INTEGER,
         MediaRendererOwner, MonitorGeometry, PlaybackAuthorityIdentity, PresentationMode,
         PresentationPhase, PresentationRecoveryReason, PresentationSession, PresentationState,
-        WindowRole, display_source_is_mirrored, next_sequence, run_activation_readiness_step,
-        validate_controller_command, validate_playback_state, visible_restore_placement,
+        WindowRole, deliver_main_thread_operation_result, display_source_is_mirrored,
+        next_sequence, run_activation_readiness_step, validate_controller_command,
+        validate_playback_state, visible_restore_placement,
     };
+    use crate::{RuntimeDesktopDiagnosticEnqueue, RuntimeDesktopDiagnostics};
+    use std::cell::RefCell;
 
     fn host_placement() -> HostWindowPlacement {
         HostWindowPlacement {
@@ -2857,6 +2870,61 @@ mod tests {
             .finish_activation_attempt(generation)
             .expect("activation command should settle");
         (state, generation)
+    }
+
+    #[test]
+    fn presentation_success_result_precedes_full_completion_diagnostic() {
+        let (diagnostic_sender, _diagnostic_receiver) = std::sync::mpsc::sync_channel(1);
+        let diagnostics = RuntimeDesktopDiagnostics::from_sender(diagnostic_sender);
+        assert_eq!(
+            diagnostics.enqueue("occupied", "record"),
+            RuntimeDesktopDiagnosticEnqueue::Enqueued
+        );
+        let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
+        let delivered_result = RefCell::new(None);
+        let completion_outcome = RefCell::new(None);
+
+        deliver_main_thread_operation_result(result_sender, Ok(42_u32), |succeeded| {
+            assert!(succeeded);
+            *delivered_result.borrow_mut() = result_receiver.try_recv().ok();
+            *completion_outcome.borrow_mut() = Some(diagnostics.enqueue("completion", "status=ok"));
+        });
+
+        assert_eq!(*delivered_result.borrow(), Some(Ok(42_u32)));
+        assert_eq!(
+            *completion_outcome.borrow(),
+            Some(RuntimeDesktopDiagnosticEnqueue::DroppedFull)
+        );
+    }
+
+    #[test]
+    fn presentation_failure_result_precedes_disconnected_completion_diagnostic() {
+        let (diagnostic_sender, diagnostic_receiver) = std::sync::mpsc::sync_channel(1);
+        drop(diagnostic_receiver);
+        let diagnostics = RuntimeDesktopDiagnostics::from_sender(diagnostic_sender);
+        let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
+        let delivered_result = RefCell::new(None);
+        let completion_outcome = RefCell::new(None);
+
+        deliver_main_thread_operation_result(
+            result_sender,
+            Err::<(), _>("native mutation failed".to_string()),
+            |succeeded| {
+                assert!(!succeeded);
+                *delivered_result.borrow_mut() = result_receiver.try_recv().ok();
+                *completion_outcome.borrow_mut() =
+                    Some(diagnostics.enqueue("completion", "status=error"));
+            },
+        );
+
+        assert_eq!(
+            *delivered_result.borrow(),
+            Some(Err("native mutation failed".to_string()))
+        );
+        assert_eq!(
+            *completion_outcome.borrow(),
+            Some(RuntimeDesktopDiagnosticEnqueue::DroppedDisconnected)
+        );
     }
 
     #[test]
