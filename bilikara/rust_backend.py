@@ -52,7 +52,6 @@ PHASE2_CAPABILITIES = (
 )
 
 RUST_AUTHORITATIVE_POLICY_CAPABILITIES = (
-    "decide_playback_selector_policy",
     "decide_tool_prepare_policy",
 )
 
@@ -75,6 +74,17 @@ RUST_STRICT_EQUIVALENCE_ENV = "BILIKARA_RUST_STRICT_EQUIVALENCE"
 RUST_TIMING_DIAGNOSTICS_ENV = "BILIKARA_RUST_TIMING_DIAGNOSTICS"
 _TIMING_LOCK = threading.Lock()
 _TIMING_DIAGNOSTICS: dict[str, dict[str, int | float]] = {}
+
+
+class PlaybackCapabilityError(RuntimeError):
+    """A Rust-authoritative playback processing capability failed."""
+
+    def __init__(self, capability: str, detail: str = "") -> None:
+        self.capability = capability
+        message = f"Rust playback capability failed: {capability}"
+        if detail:
+            message = f"{message} ({detail})"
+        super().__init__(message)
 
 
 def _env_enabled(name: str) -> bool:
@@ -127,6 +137,32 @@ def python_fallback(capability: str, callback: Callable[[], Any]) -> Any:
             python_fallback_count=1,
             python_fallback_elapsed_seconds=time.perf_counter() - started,
         )
+
+
+def require_playback_capability(
+    capability: str,
+    rust_call: Callable[[], tuple[bool, Any | None]],
+    *,
+    decode: Callable[[Any], Any] | None = None,
+) -> Any:
+    """Invoke and decode one production playback capability fail-closed."""
+
+    try:
+        completed, response = rust_call()
+    except PlaybackCapabilityError:
+        raise
+    except Exception as exc:
+        raise PlaybackCapabilityError(capability, "native invocation failed") from exc
+    if not completed or response is None:
+        raise PlaybackCapabilityError(capability)
+    if decode is None:
+        return response
+    try:
+        return decode(response)
+    except PlaybackCapabilityError:
+        raise
+    except Exception as exc:
+        raise PlaybackCapabilityError(capability, "invalid native result") from exc
 
 
 def _call_json_capability(
@@ -311,11 +347,6 @@ _SYMBOLS = {
     ),
     "decide_audio_binding": (
         "rust_decide_audio_binding",
-        [ctypes.c_char_p],
-        ctypes.c_void_p,
-    ),
-    "decide_playback_selector_policy": (
-        "rust_decide_playback_selector_policy",
         [ctypes.c_char_p],
         ctypes.c_void_p,
     ),
@@ -746,82 +777,6 @@ def is_downloadable_archive(name: str, url: str) -> bool | None:
         return None
     except Exception:
         return None
-
-
-def _playback_selector_policy_request(request: object) -> bool:
-    if not isinstance(request, dict):
-        return False
-    operation = request.get("operation")
-    common_fields = {"schema_version", "operation", "rust_available", "mode"}
-    expected_fields = (
-        common_fields
-        if operation == "validate_requested"
-        else common_fields | {"is_set"}
-        if operation == "resolve_persisted"
-        else set()
-    )
-    return bool(expected_fields) and set(request) == expected_fields and (
-        not isinstance(request.get("schema_version"), bool)
-        and request.get("schema_version") == 1
-        and isinstance(request.get("rust_available"), bool)
-        and (
-            operation != "resolve_persisted"
-            or isinstance(request.get("is_set"), bool)
-        )
-    )
-
-
-def _valid_playback_selector_policy_response(response: object) -> bool:
-    if not isinstance(response, dict) or set(response) != {
-        "schema_version",
-        "status",
-        "effective_mode",
-        "reason",
-    }:
-        return False
-    schema_version = response.get("schema_version")
-    status = response.get("status")
-    effective_mode = response.get("effective_mode")
-    reason = response.get("reason")
-    if (
-        isinstance(schema_version, bool)
-        or schema_version != 1
-        or status not in {"accepted", "normalized", "rejected"}
-        or reason
-        not in {
-            "default",
-            "explicit_python",
-            "explicit_rust",
-            "invalid_persisted",
-            "invalid_requested",
-            "rust_unavailable",
-        }
-    ):
-        return False
-    if status == "rejected":
-        return effective_mode is None and reason in {
-            "invalid_requested",
-            "rust_unavailable",
-        }
-    return effective_mode in {"python", "rust"}
-
-
-def try_decide_playback_selector_policy(
-    request: dict[str, object],
-) -> tuple[bool, dict[str, Any] | None]:
-    """Invoke the Rust-authoritative selector policy without semantic fallback."""
-
-    if not _playback_selector_policy_request(request):
-        return False, None
-    response = _call_json_capability(
-        "decide_playback_selector_policy",
-        "rust_decide_playback_selector_policy",
-        request,
-    )
-    if not _valid_playback_selector_policy_response(response):
-        return False, None
-    assert isinstance(response, dict)
-    return True, response
 
 
 def _tool_prepare_policy_request(request: object) -> bool:
@@ -1446,7 +1401,7 @@ def _valid_audio_binding_response(
 def try_decide_audio_binding(
     request: dict[str, object],
     *,
-    allow_python_reference: bool = True,
+    allow_python_reference: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call the coarse native audio-binding decision and validate its response."""
 
@@ -1955,7 +1910,7 @@ def _valid_media_download_plan_response(
 def try_plan_media_download_candidates(
     request: dict[str, object],
     *,
-    allow_python_reference: bool = True,
+    allow_python_reference: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly validate media primary/backup URL planning."""
 
@@ -2536,7 +2491,7 @@ def _valid_quality_policy_response(
 def try_decide_quality_policy(
     request: dict[str, object],
     *,
-    allow_python_reference: bool = True,
+    allow_python_reference: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct the canonical quality-policy decision."""
 
@@ -2749,7 +2704,7 @@ def _valid_video_stream_response(
 def try_select_video_stream(
     request: dict[str, object],
     *,
-    allow_python_reference: bool = True,
+    allow_python_reference: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct DASH video ranking."""
 
@@ -2872,7 +2827,7 @@ def _valid_audio_stream_response(
 def try_select_audio_stream(
     request: dict[str, object],
     *,
-    allow_python_reference: bool = True,
+    allow_python_reference: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct regular DASH audio ranking."""
 
@@ -3005,7 +2960,7 @@ def _valid_preferred_audio_source_response(
 def try_select_preferred_audio_source(
     request: dict[str, object],
     *,
-    allow_python_reference: bool = True,
+    allow_python_reference: bool = False,
 ) -> tuple[bool, dict[str, Any] | None]:
     """Call and strictly reconstruct preferred DASH audio source binding."""
 

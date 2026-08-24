@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from bilikara import playback_selector, updater
+from bilikara import updater
 
 
 def release(
@@ -208,10 +208,6 @@ class UpdateChannelDecisionTest(unittest.TestCase):
             updater,
             "is_newer_version",
             side_effect=AssertionError("channel switches must not use is_newer_version"),
-        ), patch.object(
-            playback_selector.PlaybackSelector,
-            "dispatch",
-            side_effect=AssertionError("updater must not consult playback routing"),
         ):
             result = updater.check_for_update(
                 current_version="v0.7.0-preview.3",

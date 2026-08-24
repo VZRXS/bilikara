@@ -314,25 +314,6 @@ pub unsafe extern "C" fn rust_decide_audio_binding(request_json: *const c_char) 
     })
 }
 
-/// Decides validation and persisted normalization for playback selector mode.
-///
-/// Rust availability is supplied as an immutable fact. This function performs
-/// no backend probing, persistence, or user-facing message construction.
-///
-/// # Safety
-///
-/// `request_json` must point to a valid null-terminated UTF-8 C string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rust_decide_playback_selector_policy(
-    request_json: *const c_char,
-) -> *mut c_char {
-    ffi_string_result(|| {
-        // SAFETY: Required by this export's C ABI contract.
-        let request_json = unsafe { input(request_json)? };
-        crate::playback_selector_policy::decide_playback_selector_policy_json(request_json)
-    })
-}
-
 /// Routes tool preparation from immutable filesystem facts.
 ///
 /// The caller retains all filesystem, subprocess, HTTP, archive, and runtime

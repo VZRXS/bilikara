@@ -46,7 +46,6 @@ EXPECTED_PHASE2_CAPABILITIES = {
 }
 
 EXPECTED_RUST_AUTHORITATIVE_POLICY_CAPABILITIES = {
-    "decide_playback_selector_policy",
     "decide_tool_prepare_policy",
 }
 
@@ -89,19 +88,6 @@ class NativeUtilityReleaseGateTest(unittest.TestCase):
             set(rust_backend.RUST_AUTHORITATIVE_POLICY_CAPABILITIES),
             EXPECTED_RUST_AUTHORITATIVE_POLICY_CAPABILITIES,
         )
-        completed, selector_decision = (
-            rust_backend.try_decide_playback_selector_policy(
-                {
-                    "schema_version": 1,
-                    "operation": "resolve_persisted",
-                    "rust_available": True,
-                    "is_set": False,
-                    "mode": None,
-                }
-            )
-        )
-        self.assertTrue(completed)
-        self.assertEqual(selector_decision["effective_mode"], "rust")
         completed, prepare_decision = rust_backend.try_decide_tool_prepare_policy(
             {
                 "schema_version": 1,

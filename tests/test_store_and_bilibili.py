@@ -2810,7 +2810,7 @@ class BilibiliParserTest(unittest.TestCase):
         self.assertEqual(item.video_page, 1)
 
     @patch("bilikara.bilibili.request_json")
-    def test_fetch_video_item_native_and_forced_python_outputs_match(self, mock_request_json):
+    def test_fetch_video_item_native_binding_matches_frozen_reference(self, mock_request_json):
         if not bilibili_module.rust_backend._CAPABILITIES.get(
             "decide_audio_binding", False
         ):
@@ -2830,6 +2830,17 @@ class BilibiliParserTest(unittest.TestCase):
             },
         }
 
+        reference_pages = [
+            bilibili_module.VideoPage(
+                page=1, cid=456, duration=300, part="plain"
+            ),
+            bilibili_module.VideoPage(
+                page=2, cid=789, duration=301, part="off vocal"
+            ),
+        ]
+        reference = bilibili_module._py_decide_audio_binding(reference_pages)
+        self.assertIsNotNone(reference)
+
         with patch.object(
             bilibili_module.rust_backend,
             "strict_equivalence_enabled",
@@ -2842,34 +2853,17 @@ class BilibiliParserTest(unittest.TestCase):
             native_item = fetch_video_item(
                 "https://www.bilibili.com/video/BV1xx411c7mD"
             )
-        with patch.object(
-            bilibili_module.rust_backend,
-            "try_decide_audio_binding",
-            return_value=(False, None),
-        ):
-            python_item = fetch_video_item(
-                "https://www.bilibili.com/video/BV1xx411c7mD"
-            )
 
-        fields = (
-            "resolved_url",
-            "page",
-            "cid",
-            "video_page",
-            "part_title",
-            "display_title",
-            "embed_url",
-            "selected_pages",
-            "selected_cids",
-            "selected_durations",
-            "selected_parts",
-            "selected_audio_variant_id",
-            "manual_selection",
+        expected_pages = [
+            reference_pages[index].page for index in reference.selected_indices
+        ]
+        expected_video_page = (
+            1
+            if reference.automatic_video_index is None
+            else reference_pages[reference.automatic_video_index].page
         )
-        self.assertEqual(
-            {field: getattr(native_item, field) for field in fields},
-            {field: getattr(python_item, field) for field in fields},
-        )
+        self.assertEqual(native_item.selected_pages, expected_pages)
+        self.assertEqual(native_item.video_page, expected_video_page)
 
     def test_fetch_gatcha_videos_for_uid_retries_once_on_412(self):
         if not hasattr(bilibili_module, "_fetch_gatcha_videos_for_uid"):

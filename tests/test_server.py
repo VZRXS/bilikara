@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import bilikara.server as server_module
-from bilikara import rust_runtime
+from bilikara import rust_backend, rust_runtime
 import bilikara.diagnostics as diagnostics
 from bilikara.diagnostics import DiagnosticArtifact
 from bilikara.models import PlaylistItem
@@ -885,7 +885,6 @@ class AppContextPlayerDiagnosticTest(unittest.TestCase):
                 snapshot=lambda: {
                     "current_item": None,
                     "playlist": [],
-                    "playback_selector": "auto",
                     "session_users": ["AliceSecretUser"],
                 }
             )
@@ -1005,6 +1004,64 @@ class PortSelectionTest(unittest.TestCase):
         self.assertEqual(port, 8081)
 
 
+class PlaybackCapabilityHttpBoundaryTest(unittest.TestCase):
+    @staticmethod
+    def context():
+        return SimpleNamespace(touch_client=lambda _client_id, is_host=True: None)
+
+    def test_removed_processing_backend_routes_are_not_dispatched(self):
+        route = "/api/player/" + "playback-" + "selector"
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = route
+        handler.headers = {}
+        served = []
+        handler._serve_static = lambda value: served.append(value)
+        handler._write_json = lambda *_args, **_kwargs: None
+        with patch("bilikara.server.CONTEXT", self.context()):
+            handler.do_GET()
+        self.assertEqual(served, [route])
+
+        writes = []
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = route
+        handler.headers = {}
+        handler._read_json_body = lambda: {"mode": "rust"}
+        handler._write_json = lambda payload, status=None: writes.append(
+            (payload, status)
+        )
+        with patch("bilikara.server.CONTEXT", self.context()):
+            handler.do_POST()
+        self.assertEqual(writes[0][1], server_module.HTTPStatus.NOT_FOUND)
+        self.assertIn("未知接口", writes[0][0]["error"])
+
+    def test_direct_capability_failure_preserves_stable_503_shape(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = "/api/playlist/add"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"url": "https://example.test/video"}
+        handler._handle_add = lambda _body: (_ for _ in ()).throw(
+            rust_backend.PlaybackCapabilityError("decide_audio_binding")
+        )
+        writes = []
+        handler._write_json = lambda payload, status=None: writes.append(
+            (payload, status)
+        )
+
+        with patch("bilikara.server.CONTEXT", self.context()):
+            handler.do_POST()
+
+        self.assertEqual(writes[0][1], server_module.HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            writes[0][0],
+            {
+                "ok": False,
+                "error": "Rust playback capability failed: decide_audio_binding",
+                "code": "playback_capability_failed",
+                "capability": "decide_audio_binding",
+            },
+        )
+
+
 class PlaylistAddRequestTest(unittest.TestCase):
     def test_add_requires_session_user_before_parsing_video(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -1043,7 +1100,6 @@ class PlaylistAddRequestTest(unittest.TestCase):
         added = []
         context = SimpleNamespace(
             has_session_users=lambda: True,
-            capture_playback_selector=lambda: "rust",
             store=SimpleNamespace(
                 session_request_for_item=lambda _item: None,
                 active_duplicate_for_item=lambda _item: None,
@@ -1133,7 +1189,6 @@ class PlaylistAddRequestTest(unittest.TestCase):
 
         context = SimpleNamespace(
             has_session_users=lambda: True,
-            capture_playback_selector=lambda: "rust",
             add_item=reject_add,
         )
 
@@ -1175,7 +1230,6 @@ class PlaylistAddRequestTest(unittest.TestCase):
         )
         context = SimpleNamespace(
             has_session_users=lambda: True,
-            capture_playback_selector=lambda: "rust",
             store=SimpleNamespace(
                 session_request_for_item=lambda _item: None,
                 active_duplicate_for_item=lambda _item: None,
@@ -1212,7 +1266,6 @@ class PlaylistAddRequestTest(unittest.TestCase):
         added = []
         context = SimpleNamespace(
             has_session_users=lambda: True,
-            capture_playback_selector=lambda: "rust",
             store=SimpleNamespace(
                 session_request_for_item=lambda _item: None,
                 active_duplicate_for_item=lambda _item: None,

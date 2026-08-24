@@ -66,11 +66,7 @@ from .lark_pool_client import (
     verify_cloudflare_bilikara_secret,
 )
 from .cache import CacheManager
-from .playback_selector import (
-    PlaybackCapabilityError,
-    PlaybackSelector,
-    playback_selector_snapshot,
-)
+from .rust_backend import PlaybackCapabilityError
 from .config import (
     APP_RELEASES_URL,
     APP_VERSION,
@@ -693,24 +689,6 @@ class AppContext:
     def move_session_user_to_index(self, name: str, index: int) -> None:
         self.store.move_session_user_to_index(name, index)
 
-    def capture_playback_selector(self) -> PlaybackSelector:
-        return self.store.capture_playback_selector()
-
-    def set_playback_selector_mode(self, mode: object) -> None:
-        self.store.set_playback_selector_mode(mode)
-
-    def playback_selector_capability_snapshot(self) -> dict[str, object]:
-        with self.store.lock:
-            mode = self.store.playback_selector_mode
-            warning = self.store.playback_selector_warning
-            revision = self.store.revision
-            state_revision = self._state_revision
-        return {
-            "playback_selector": playback_selector_snapshot(mode, warning),
-            "revision": revision,
-            "state_revision": state_revision,
-        }
-
     def set_cache_policy(
         self,
         *,
@@ -1171,20 +1149,6 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/state":
             self._write_json({"ok": True, "data": CONTEXT.snapshot()})
-            return
-        if route == "/api/player/playback-selector":
-            if not self._is_local_client():
-                self._write_json(
-                    {"ok": False, "error": "forbidden"},
-                    status=HTTPStatus.FORBIDDEN,
-                )
-                return
-            self._write_json(
-                {
-                    "ok": True,
-                    "data": CONTEXT.playback_selector_capability_snapshot(),
-                }
-            )
             return
         if route == "/api/remote-identity":
             self._write_json({"ok": True, "data": CONTEXT.remote_identity_snapshot(self._remote_identity_token())})
@@ -1861,18 +1825,6 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.set_mode(mode)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
-            if route == "/api/player/playback-selector":
-                if not self._is_local_client():
-                    self._write_json(
-                        {"ok": False, "error": "forbidden"},
-                        status=HTTPStatus.FORBIDDEN,
-                    )
-                    return
-                if set(body) != {"mode"}:
-                    raise ValueError("request must contain only mode")
-                CONTEXT.set_playback_selector_mode(body.get("mode"))
-                self._write_json({"ok": True, "data": CONTEXT.snapshot()})
-                return
             if route == "/api/player/av-offset":
                 offset_ms = body.get("offset_ms")
                 if not isinstance(offset_ms, int):
@@ -2281,12 +2233,10 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         selected_audio_pages = raw_selected_audio_pages if isinstance(raw_selected_audio_pages, list) else None
         if not CONTEXT.has_session_users():
             raise ValueError("请先在服务端添加本场 KTV 用户")
-        playback_selector = CONTEXT.capture_playback_selector()
         item = fetch_video_item(
             url,
             selected_video_page=selected_video_page,
             selected_audio_pages=selected_audio_pages,
-            playback_selector=playback_selector,
         )
         try:
             CONTEXT.add_item(

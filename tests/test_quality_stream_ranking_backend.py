@@ -247,7 +247,7 @@ class QualityStreamBackendValidationTest(unittest.TestCase):
         for request in invalid:
             self.assertIsNone(rust_backend._preferred_audio_source_request(request))
 
-    def test_preferred_audio_invalid_native_results_fall_back_to_first_object(self):
+    def test_preferred_audio_invalid_native_results_fail_closed(self):
         best_audio = [
             {"quality_id": 30216, "bandwidth": 1, "url": "first"},
             {"quality_id": 30280, "bandwidth": 999, "url": "second"},
@@ -280,11 +280,17 @@ class QualityStreamBackendValidationTest(unittest.TestCase):
                     {"select_preferred_audio_source": True},
                 ), patch.object(
                     rust_backend, "_read_rust_string", return_value=response_json
+                ), patch.object(
+                    CacheManager,
+                    "_py_select_preferred_dash_audio",
+                    side_effect=AssertionError("frozen Python reference was invoked"),
+                ) as reference, self.assertRaises(
+                    rust_backend.PlaybackCapabilityError
                 ):
-                    selected = CacheManager._select_preferred_dash_audio(
+                    CacheManager._select_preferred_dash_audio(
                         best_audio, None, None, audio_hires=False
                     )
-                self.assertIs(selected, best_audio[0])
+                reference.assert_not_called()
 
     def test_missing_library_symbol_malformed_json_null_and_capability_isolation(self):
         calls = (

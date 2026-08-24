@@ -21,9 +21,9 @@ are assigned.
   without new equivalent Python semantic fallbacks.
 - The AV-delay state machine is an additional typed Rust policy introduced
   during stabilization. It is not a ninth Phase-2 domain.
-- Preview stabilization also includes Rust-authoritative playback-selector mode
-  policy and BBDown prepare routing. These focused policies are not a new
-  "Phase 3" and do not begin the full stateful-core migration.
+- Preview stabilization also includes Rust-authoritative BBDown prepare
+  routing. This focused policy is not a new "Phase 3" and does not begin the
+  full stateful-core migration.
 - v0.7 is not the final Rust runtime architecture.
 
 ### v0.8.0 — Rust Core Convergence / Preview

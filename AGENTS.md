@@ -207,7 +207,6 @@ When completing a task, agents must report:
 | `src/cache_planning.rs` | Pure cache-window desired, pending, retention, and preemption planning policy. |
 | `src/playlist_planning.rs` | Pure playlist ordering and duplicate-identity planning policy. |
 | `src/av_delay.rs` | Pure global/local AV-delay transition, clamping, and lock-button state policy. |
-| `src/playback_selector_policy.rs` | Rust-authoritative selector-mode validation and persisted-mode normalization from explicit capability availability. |
 | `src/tool_prepare_policy.rs` | Rust-authoritative deterministic tool prepare routing from immutable host-gathered facts. |
 | `src/release_selection.rs` | Semantic version sorting and release filtering rules. |
 | `src/asset_selection.rs` | Update package scoring by platform and architecture. |

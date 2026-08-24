@@ -1,3 +1,4 @@
+import json
 import threading
 import unittest
 from pathlib import Path
@@ -6,7 +7,7 @@ from unittest.mock import patch
 
 from bilikara import rust_runtime
 from bilikara.models import PlaylistItem
-from bilikara.store import PlaylistStore
+from bilikara.store import PlaylistStore, _py_apply_av_delay_action
 
 
 def item(item_id: str, *, song: str | None = None) -> PlaylistItem:
@@ -176,6 +177,105 @@ class RustAppStateStoreTest(unittest.TestCase):
         ):
             with self.assertRaises(rust_runtime.RustAppStateError):
                 self.store()
+
+    def test_legacy_processing_backend_key_is_dropped_from_state_and_persistence(self):
+        legacy_key = "playback_" + "selector" + "_mode"
+        (self.root / "player_state.json").write_text(
+            json.dumps(
+                {
+                    legacy_key: "python",
+                    "player_settings": {"volume_percent": 41},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        store = self.store()
+        snapshot = store.authoritative_snapshot()
+        persisted = json.loads(
+            (self.root / "player_state.json").read_text(encoding="utf-8")
+        )
+
+        self.assertNotIn("playback_" + "selector", snapshot)
+        self.assertNotIn(legacy_key, persisted)
+        self.assertEqual(snapshot["player_settings"]["volume_percent"], 41)
+
+    def test_av_delay_read_only_snapshots_are_backend_free_and_exact(self):
+        states = (
+            (0, 0, False),
+            (5000, 0, True),
+            (-5000, 0, True),
+            (125, -25, True),
+            (0, 125, False),
+            (0, -125, False),
+            (4999, 1, True),
+            (-4999, -1, True),
+        )
+        store = self.store()
+        with patch(
+            "bilikara.rust_backend.try_apply_av_delay_action",
+            side_effect=AssertionError(
+                "read-only snapshot must not invoke the legacy adapter"
+            ),
+        ):
+            for global_delay, local_delay, locked in states:
+                with self.subTest(
+                    global_delay=global_delay,
+                    local_delay=local_delay,
+                    locked=locked,
+                ):
+                    store.set_av_offset_ms(global_delay if locked else 0)
+                    if local_delay:
+                        store.apply_av_delay_action(
+                            {"type": "adjust", "delta_ms": local_delay}
+                        )
+                    expected = _py_apply_av_delay_action(
+                        {
+                            "global_delay_ms": global_delay,
+                            "local_delay_ms": local_delay,
+                            "locked": locked,
+                        },
+                        {"type": "snapshot"},
+                    )
+                    actual = store.snapshot()["player_settings"]["av_delay"]
+                    self.assertEqual(actual, expected)
+
+    def test_av_delay_snapshot_and_mutation_are_owned_by_app_state(self):
+        store = self.store()
+        expected = _py_apply_av_delay_action(
+            {
+                "global_delay_ms": 0,
+                "local_delay_ms": 0,
+                "locked": False,
+            },
+            {"type": "adjust", "delta_ms": 125},
+        )
+        before_revision = store.revision
+
+        with patch(
+            "bilikara.rust_backend.try_apply_av_delay_action",
+            side_effect=AssertionError("AppState must not call the legacy adapter"),
+        ):
+            result = store.apply_av_delay_action(
+                {"type": "adjust", "delta_ms": 125}
+            )
+            snapshot = store.snapshot()["player_settings"]["av_delay"]
+
+        self.assertEqual(result, expected)
+        self.assertEqual(snapshot, expected)
+        self.assertEqual(store.revision, before_revision + 1)
+
+    def test_playlist_ordering_remains_internal_to_app_state(self):
+        store = self.store()
+        with patch(
+            "bilikara.rust_backend.try_plan_playlist_order",
+            side_effect=AssertionError("legacy planner adapter must not run"),
+        ) as planner:
+            store.add_session_user("A")
+            store.add_session_user("B")
+            store.add_item(item("a"), requester_name="A")
+
+        planner.assert_not_called()
 
 
 if __name__ == "__main__":

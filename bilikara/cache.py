@@ -62,7 +62,6 @@ from .bilibili import (
     fetch_dash_playurl,
 )
 from . import rust_backend, rust_runtime
-from .playback_selector import PlaybackCapabilityError, PlaybackSelector
 from .store import PlaylistStore
 
 MEDIA_EXTENSIONS = {".mp4", ".mkv", ".webm", ".flv", ".m4v"}
@@ -941,7 +940,6 @@ class CacheManager:
             return dict(self.client_media_capabilities)
 
     def set_client_media_capabilities(self, payload: dict[str, Any]) -> dict[str, Any]:
-        playback_selector = self.store.capture_playback_selector()
         hevc_supported = payload.get("hevc_supported")
         if not isinstance(hevc_supported, bool):
             raise ValueError("hevc_supported must be a boolean")
@@ -957,10 +955,8 @@ class CacheManager:
             avc_supported = False
         max_avc_quality = self._quality_from_choice_index(
             payload.get("max_avc_quality_index"),
-            playback_selector=playback_selector,
         ) or self._optional_video_quality(
             payload.get("max_avc_quality"),
-            playback_selector=playback_selector,
         )
         if not hevc_supported and not max_avc_quality:
             max_avc_quality = VIDEO_QUALITY_CHOICES[-1]
@@ -1035,31 +1031,23 @@ class CacheManager:
         video_quality: object,
         quality_cap: object = "",
         choice_index: int | None = None,
-        *,
-        playback_selector: PlaybackSelector | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         request = {
             "schema_version": 1,
             "raw_quality": str(video_quality or ""),
             "raw_cap": str(quality_cap or ""),
             "choice_index": choice_index,
         }
-        if playback_selector is not None:
-            return playback_selector.dispatch(
-                "decide_quality_policy",
-                python=lambda: None,
-                rust=lambda: rust_backend.try_decide_quality_policy(
-                    request, allow_python_reference=False
-                ),
-            )
-        completed, response = rust_backend.try_decide_quality_policy(request)
-        return response if completed else None
+        return rust_backend.require_playback_capability(
+            "decide_quality_policy",
+            lambda: rust_backend.try_decide_quality_policy(
+                request, allow_python_reference=False
+            ),
+        )
 
     @staticmethod
     def _quality_from_choice_index(
         index: object,
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> str | None:
         try:
             normalized_index = int(index)
@@ -1068,30 +1056,15 @@ class CacheManager:
         response = CacheManager._native_quality_policy(
             "",
             choice_index=normalized_index,
-            playback_selector=playback_selector,
         )
-        if response is not None:
-            return response["indexed_quality"]
-        return rust_backend.python_fallback(
-            "decide_quality_policy",
-            lambda: CacheManager._py_quality_from_choice_index(index),
-        )
+        return response["indexed_quality"]
 
     @staticmethod
     def _optional_video_quality(
         video_quality: object,
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> str | None:
-        response = CacheManager._native_quality_policy(
-            video_quality, playback_selector=playback_selector
-        )
-        if response is not None:
-            return response["optional_quality"]
-        return rust_backend.python_fallback(
-            "decide_quality_policy",
-            lambda: CacheManager._py_optional_video_quality(video_quality),
-        )
+        response = CacheManager._native_quality_policy(video_quality)
+        return response["optional_quality"]
 
     def enrich_snapshot(
         self,
@@ -1224,11 +1197,6 @@ class CacheManager:
         download_source: str | None = None,
         reset_offset_on_next: bool | None = None,
     ) -> dict[str, Any]:
-        playback_selector = (
-            self.store.capture_playback_selector()
-            if video_quality is not None
-            else None
-        )
         changed = False
         cache_limit_changed = False
         with self.lock:
@@ -1239,9 +1207,7 @@ class CacheManager:
                     changed = True
                     cache_limit_changed = True
             if video_quality is not None:
-                normalized_quality = self._normalize_video_quality(
-                    video_quality, playback_selector=playback_selector
-                )
+                normalized_quality = self._normalize_video_quality(video_quality)
                 if self.video_quality != normalized_quality:
                     self.video_quality = normalized_quality
                     changed = True
@@ -1325,15 +1291,9 @@ class CacheManager:
     @staticmethod
     def _normalize_video_quality(
         video_quality: object,
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> str:
-        response = CacheManager._native_quality_policy(
-            video_quality, playback_selector=playback_selector
-        )
-        if response is not None:
-            return str(response["normalized_quality"])
-        return CacheManager._py_normalize_video_quality(video_quality)
+        response = CacheManager._native_quality_policy(video_quality)
+        return str(response["normalized_quality"])
 
     @staticmethod
     def _normalize_download_source(download_source: object) -> str:
@@ -2183,7 +2143,6 @@ class CacheManager:
                 self.sync_with_playlist()
 
     def _cache_item(self, item_id: str, allow_refresh_retry: bool = True) -> bool:
-        playback_selector = self.store.capture_playback_selector()
         if self.stop_event.is_set() or not self._should_cache(item_id):
             return False
         if self._take_retry_request(item_id):
@@ -2198,7 +2157,6 @@ class CacheManager:
             item_id,
             item,
             allow_refresh_retry=allow_refresh_retry,
-            playback_selector=playback_selector,
         )
 
     def _cache_item_multi(
@@ -2207,7 +2165,6 @@ class CacheManager:
         item,
         *,
         allow_refresh_retry: bool,
-        playback_selector: PlaybackSelector | None = None,
     ) -> bool:
         with self.lock:
             download_source = self.python_worker_download_sources[item_id]
@@ -2299,7 +2256,6 @@ class CacheManager:
                 item_dir,
                 log_path,
                 download_source=download_source,
-                playback_selector=playback_selector,
             )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
@@ -2607,7 +2563,6 @@ class CacheManager:
         log_path: Path,
         *,
         download_source: str,
-        playback_selector: PlaybackSelector | None = None,
     ) -> dict[str, object]:
         self._raise_if_priority_shift(item.id)
         selected_pages = self._selected_pages_for_item(item)
@@ -2648,12 +2603,10 @@ class CacheManager:
                     stream_kind=str(track["stream_kind"]),
                     track_key=str(track["key"]),
                     download_source=download_source,
-                    playback_selector=playback_selector,
                 )
         elif download_source == DOWNLOAD_SOURCE_NATIVE:
             dash_streams = self._resolve_dash_streams(
                 item,
-                playback_selector=playback_selector,
                 native_media=True,
             )
             result_paths = self._download_dash_streams_native(
@@ -2663,13 +2616,9 @@ class CacheManager:
                 dash_streams=dash_streams,
                 video_track=video_track,
                 audio_tracks=audio_tracks,
-                playback_selector=playback_selector,
             )
         elif download_source == DOWNLOAD_SOURCE_DOWNKYI:
-            dash_streams = self._resolve_dash_streams(
-                item,
-                playback_selector=playback_selector,
-            )
+            dash_streams = self._resolve_dash_streams(item)
             result_paths = self._download_dash_streams_with_aria2c(
                 item,
                 binary_path,
@@ -2680,7 +2629,6 @@ class CacheManager:
                 video_track=video_track,
                 audio_tracks=audio_tracks,
                 validate_tracks=True,
-                playback_selector=playback_selector,
             )
         else:
             result_paths = {}
@@ -2698,7 +2646,6 @@ class CacheManager:
                     stream_kind=str(track["stream_kind"]),
                     track_key=str(track["key"]),
                     download_source=download_source,
-                    playback_selector=playback_selector,
                 ): track
                 for track in download_tracks
             }
@@ -2936,7 +2883,6 @@ class CacheManager:
         stream_kind: str,
         track_key: str,
         download_source: str,
-        playback_selector: PlaybackSelector | None = None,
     ) -> Path:
         page_url = self._page_url(item.resolved_url, page)
         target_dir = item_dir / f"{stream_kind}-p{page}"
@@ -2949,7 +2895,6 @@ class CacheManager:
             page=page,
             stream_kind=stream_kind,
             target_dir=target_dir,
-            playback_selector=playback_selector,
         )
 
         label = "视频轨" if stream_kind == "video" else "音轨"
@@ -2995,7 +2940,6 @@ class CacheManager:
         page: int,
         stream_kind: str,
         target_dir: Path,
-        playback_selector: PlaybackSelector | None = None,
     ) -> list[str]:
         if download_source == DOWNLOAD_SOURCE_YTDLP:
             return self._ytdlp_download_command(
@@ -3005,7 +2949,6 @@ class CacheManager:
                 page=page,
                 stream_kind=stream_kind,
                 target_dir=target_dir,
-                playback_selector=playback_selector,
             )
         if download_source == DOWNLOAD_SOURCE_DOWNKYI:
             return self._downkyi_download_command(
@@ -3023,7 +2966,6 @@ class CacheManager:
             page=page,
             stream_kind=stream_kind,
             target_dir=target_dir,
-            playback_selector=playback_selector,
         )
 
     def _bbdown_download_command(
@@ -3035,14 +2977,13 @@ class CacheManager:
         page: int,
         stream_kind: str,
         target_dir: Path,
-        playback_selector: PlaybackSelector | None = None,
     ) -> list[str]:
         command = [
             self._tool_arg_path(binary_path),
             page_url,
             "-p",
             str(page),
-            *self._bbdown_stream_preference_args(stream_kind, playback_selector=playback_selector),
+            *self._bbdown_stream_preference_args(stream_kind),
             "--work-dir",
             self._tool_arg_path(target_dir),
             "--ffmpeg-path",
@@ -3069,7 +3010,6 @@ class CacheManager:
         page: int,
         stream_kind: str,
         target_dir: Path,
-        playback_selector: PlaybackSelector | None = None,
     ) -> list[str]:
         command = [
             self._tool_arg_path(binary_path),
@@ -3090,7 +3030,7 @@ class CacheManager:
             "--ffmpeg-location",
             self._tool_arg_path(ffmpeg_path),
             "-f",
-            self._ytdlp_format_selector(stream_kind, playback_selector=playback_selector),
+            self._ytdlp_format_selector(stream_kind),
             "-o",
             self._tool_arg_path(target_dir / f"{stream_kind}-p{page}.%(ext)s"),
             page_url,
@@ -3106,8 +3046,6 @@ class CacheManager:
     def _ytdlp_format_selector(
         self,
         stream_kind: str,
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> str:
         if stream_kind == "audio":
             with self.lock:
@@ -3118,9 +3056,7 @@ class CacheManager:
             video_quality = self.video_quality
             force_avc = self._should_force_avc_locked()
             avc_quality_cap = self.avc_quality_cap if force_avc else ""
-        max_height = self._ytdlp_max_height(
-            video_quality, avc_quality_cap, playback_selector=playback_selector
-        )
+        max_height = self._ytdlp_max_height(video_quality, avc_quality_cap)
         codec_filter = "[vcodec^=avc1]" if force_avc else ""
         height_filter = f"[height<={max_height}]" if max_height else ""
         return (
@@ -3152,15 +3088,9 @@ class CacheManager:
     def _ytdlp_max_height(
         video_quality: object,
         quality_cap: object = "",
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> int:
-        response = CacheManager._native_quality_policy(
-            video_quality, quality_cap, playback_selector=playback_selector
-        )
-        if response is not None:
-            return int(response["effective_max_height"])
-        return CacheManager._py_ytdlp_max_height(video_quality, quality_cap)
+        response = CacheManager._native_quality_policy(video_quality, quality_cap)
+        return int(response["effective_max_height"])
 
     @staticmethod
     def _ytdlp_browser_cookie_source() -> str:
@@ -3201,7 +3131,6 @@ class CacheManager:
         item,
         cid: int | None = None,
         *,
-        playback_selector: PlaybackSelector | None = None,
         native_media: bool = False,
     ) -> dict:
         """Resolve DASH stream URLs from Bilibili API for the given item.
@@ -3243,21 +3172,18 @@ class CacheManager:
 
         video_streams = dash.get("video") or []
         codec_filter = "avc" if force_avc or native_media else None
-        max_quality_id = self._dash_max_quality_id(
-            video_quality, playback_selector=playback_selector
-        )
+        max_quality_id = self._dash_max_quality_id(video_quality)
         filtered_video = self._select_dash_video_stream(
             video_streams,
             max_quality_id=max_quality_id,
             codec_filter=codec_filter,
             avc_quality_cap=avc_quality_cap,
-            playback_selector=playback_selector,
         )
         if native_media and filtered_video and filtered_video.get("codec_name") != "avc":
             raise BilibiliError("Rust Native 未找到可用的 AVC 视频流")
         audio_streams = dash.get("audio") or []
         selected_audio = self._select_dash_audio_stream(
-            audio_streams, audio_hires=audio_hires, playback_selector=playback_selector
+            audio_streams, audio_hires=audio_hires
         )
         flac_info = dash.get("flac")
         dolby_info = dash.get("dolby")
@@ -3269,7 +3195,6 @@ class CacheManager:
                 flac_info,
                 None,
                 audio_hires=audio_hires,
-                playback_selector=playback_selector,
             )
 
         result = {
@@ -3365,19 +3290,9 @@ class CacheManager:
         return quality_id_map.get(video_quality, 80)
 
     @staticmethod
-    def _dash_max_quality_id(
-        video_quality: str,
-        *,
-        playback_selector: PlaybackSelector | None = None,
-    ) -> int:
-        if not isinstance(video_quality, str):
-            return CacheManager._py_dash_max_quality_id(video_quality)
-        response = CacheManager._native_quality_policy(
-            video_quality, playback_selector=playback_selector
-        )
-        if response is not None:
-            return int(response["dash_max_quality_id"])
-        return CacheManager._py_dash_max_quality_id(video_quality)
+    def _dash_max_quality_id(video_quality: str) -> int:
+        response = CacheManager._native_quality_policy(video_quality)
+        return int(response["dash_max_quality_id"])
 
     @staticmethod
     def _py_select_dash_video_stream(
@@ -3422,7 +3337,6 @@ class CacheManager:
         max_quality_id: int,
         codec_filter: str | None = None,
         avc_quality_cap: str = "",
-        playback_selector: PlaybackSelector | None = None,
     ) -> dict | None:
         try:
             streams = [
@@ -3435,9 +3349,7 @@ class CacheManager:
                 for index, stream in enumerate(video_streams)
             ]
             max_avc_quality_id = (
-                CacheManager._dash_max_quality_id(
-                    avc_quality_cap, playback_selector=playback_selector
-                )
+                CacheManager._dash_max_quality_id(avc_quality_cap)
                 if avc_quality_cap
                 else None
             )
@@ -3448,42 +3360,24 @@ class CacheManager:
                 "max_avc_quality_id": max_avc_quality_id,
                 "streams": streams,
             }
-            if playback_selector is not None:
-                def decode_native_video(response: object) -> dict | None:
-                    if not isinstance(response, dict):
-                        raise ValueError("invalid video stream response")
-                    if response.get("status") == "no_match":
-                        return None
-                    return video_streams[response["selected_index"]]
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise rust_backend.PlaybackCapabilityError(
+                "select_video_stream", "invalid request"
+            ) from exc
 
-                return playback_selector.decide(
-                    "select_video_stream",
-                    python=lambda: CacheManager._py_select_dash_video_stream(
-                        video_streams,
-                        max_quality_id=max_quality_id,
-                        codec_filter=codec_filter,
-                        avc_quality_cap=avc_quality_cap,
-                    ),
-                    rust=lambda: rust_backend.try_select_video_stream(
-                        request, allow_python_reference=False
-                    ),
-                    decode_rust=decode_native_video,
-                )
-            completed, response = rust_backend.try_select_video_stream(request)
-            if completed and response is not None:
-                if response["status"] == "no_match":
-                    return None
-                return video_streams[response["selected_index"]]
-        except (AttributeError, IndexError, TypeError, ValueError):
-            pass
-        return rust_backend.python_fallback(
+        def decode_native_video(response: object) -> dict | None:
+            if not isinstance(response, dict):
+                raise ValueError("invalid video stream response")
+            if response.get("status") == "no_match":
+                return None
+            return video_streams[response["selected_index"]]
+
+        return rust_backend.require_playback_capability(
             "select_video_stream",
-            lambda: CacheManager._py_select_dash_video_stream(
-                video_streams,
-                max_quality_id=max_quality_id,
-                codec_filter=codec_filter,
-                avc_quality_cap=avc_quality_cap,
+            lambda: rust_backend.try_select_video_stream(
+                request, allow_python_reference=False
             ),
+            decode=decode_native_video,
         )
 
     @staticmethod
@@ -3513,7 +3407,6 @@ class CacheManager:
         audio_streams: list[dict],
         *,
         audio_hires: bool = True,
-        playback_selector: PlaybackSelector | None = None,
     ) -> dict | None:
         try:
             request = {
@@ -3528,34 +3421,23 @@ class CacheManager:
                     for index, stream in enumerate(audio_streams)
                 ],
             }
-            if playback_selector is not None:
-                def decode_native_audio(response: object) -> dict | None:
-                    if not isinstance(response, dict):
-                        raise ValueError("invalid audio stream response")
-                    selected_index = response["selected_index"]
-                    return None if selected_index is None else audio_streams[selected_index]
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise rust_backend.PlaybackCapabilityError(
+                "select_audio_stream", "invalid request"
+            ) from exc
 
-                return playback_selector.decide(
-                    "select_audio_stream",
-                    python=lambda: CacheManager._py_select_dash_audio_stream(
-                        audio_streams, audio_hires=audio_hires
-                    ),
-                    rust=lambda: rust_backend.try_select_audio_stream(
-                        request, allow_python_reference=False
-                    ),
-                    decode_rust=decode_native_audio,
-                )
-            completed, response = rust_backend.try_select_audio_stream(request)
-            if completed and response is not None:
-                selected_index = response["selected_index"]
-                return None if selected_index is None else audio_streams[selected_index]
-        except (AttributeError, IndexError, TypeError, ValueError):
-            pass
-        return rust_backend.python_fallback(
+        def decode_native_audio(response: object) -> dict | None:
+            if not isinstance(response, dict):
+                raise ValueError("invalid audio stream response")
+            selected_index = response["selected_index"]
+            return None if selected_index is None else audio_streams[selected_index]
+
+        return rust_backend.require_playback_capability(
             "select_audio_stream",
-            lambda: CacheManager._py_select_dash_audio_stream(
-                audio_streams, audio_hires=audio_hires
+            lambda: rust_backend.try_select_audio_stream(
+                request, allow_python_reference=False
             ),
+            decode=decode_native_audio,
         )
 
     @staticmethod
@@ -3580,7 +3462,6 @@ class CacheManager:
         dolby_audio: dict | None,
         *,
         audio_hires: bool,
-        playback_selector: PlaybackSelector | None = None,
     ) -> dict | None:
         try:
             request = {
@@ -3592,53 +3473,29 @@ class CacheManager:
                 "flac_available": bool(flac_audio),
                 "dolby_available": bool(dolby_audio),
             }
-            if playback_selector is not None:
-                def decode_native_preferred(response: object) -> dict | None:
-                    if not isinstance(response, dict):
-                        raise ValueError("invalid preferred audio response")
-                    source = response["preferred_source"]
-                    if source == "dolby":
-                        return dolby_audio
-                    if source == "flac":
-                        return flac_audio
-                    if source == "regular":
-                        return best_audio[response["selected_regular_index"]]
-                    return None
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise rust_backend.PlaybackCapabilityError(
+                "select_preferred_audio_source", "invalid request"
+            ) from exc
 
-                return playback_selector.decide(
-                    "select_preferred_audio_source",
-                    python=lambda: CacheManager._py_select_preferred_dash_audio(
-                        best_audio,
-                        flac_audio,
-                        dolby_audio,
-                        audio_hires=audio_hires,
-                    ),
-                    rust=lambda: rust_backend.try_select_preferred_audio_source(
-                        request, allow_python_reference=False
-                    ),
-                    decode_rust=decode_native_preferred,
-                )
-            completed, response = rust_backend.try_select_preferred_audio_source(request)
-            if completed and response is not None:
-                source = response["preferred_source"]
-                if source == "dolby":
-                    return dolby_audio
-                if source == "flac":
-                    return flac_audio
-                if source == "regular":
-                    selected_index = response["selected_regular_index"]
-                    return best_audio[selected_index]
-                return None
-        except (AttributeError, IndexError, TypeError, ValueError):
-            pass
-        return rust_backend.python_fallback(
+        def decode_native_preferred(response: object) -> dict | None:
+            if not isinstance(response, dict):
+                raise ValueError("invalid preferred audio response")
+            source = response["preferred_source"]
+            if source == "dolby":
+                return dolby_audio
+            if source == "flac":
+                return flac_audio
+            if source == "regular":
+                return best_audio[response["selected_regular_index"]]
+            return None
+
+        return rust_backend.require_playback_capability(
             "select_preferred_audio_source",
-            lambda: CacheManager._py_select_preferred_dash_audio(
-                best_audio,
-                flac_audio,
-                dolby_audio,
-                audio_hires=audio_hires,
+            lambda: rust_backend.try_select_preferred_audio_source(
+                request, allow_python_reference=False
             ),
+            decode=decode_native_preferred,
         )
 
     def _download_dash_streams_native(
@@ -3650,16 +3507,13 @@ class CacheManager:
         dash_streams: dict,
         video_track: dict,
         audio_tracks: list[dict],
-        playback_selector: PlaybackSelector | None = None,
     ) -> dict[str, Path]:
         item_id = item.id
         cookie = effective_bilibili_cookie()
         selected_pages = self._selected_pages_for_item(item)
         video_page = item.video_page if item.video_page in selected_pages else selected_pages[0]
         video_stream = (dash_streams.get("video") or [{}])[0]
-        video_urls = self._dash_stream_urls(
-            dash_streams, "video", playback_selector=playback_selector
-        )
+        video_urls = self._dash_stream_urls(dash_streams, "video")
         if not video_urls or str(video_stream.get("codec_name") or "") != "avc":
             raise DownloadCommandError("Rust Native 未找到可用的 AVC 视频流")
 
@@ -3685,15 +3539,12 @@ class CacheManager:
                 page_dash = self._resolve_dash_streams(
                     item,
                     cid=cid,
-                    playback_selector=playback_selector,
                     native_media=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 raise DownloadCommandError(f"P{page} 音频解析失败: {exc}") from exc
             audio_stream = (page_dash.get("audio") or [{}])[0]
-            audio_urls = self._preferred_audio_urls(
-                audio_stream, playback_selector=playback_selector
-            )
+            audio_urls = self._preferred_audio_urls(audio_stream)
             if not audio_urls:
                 raise DownloadCommandError(f"Rust Native 未找到音频轨 P{page} 的下载地址")
             audio_extension = (
@@ -3891,7 +3742,6 @@ class CacheManager:
         video_track: dict,
         audio_tracks: list[dict],
         validate_tracks: bool = False,
-        playback_selector: PlaybackSelector | None = None,
     ) -> dict[str, Path]:
         item_id = item.id
         cookie = effective_bilibili_cookie()
@@ -3902,9 +3752,7 @@ class CacheManager:
         with self.lock:
             audio_hires = self.audio_hires
 
-        video_urls = self._dash_stream_urls(
-            dash_streams, "video", playback_selector=playback_selector
-        )
+        video_urls = self._dash_stream_urls(dash_streams, "video")
         if not video_urls:
             raise DownloadCommandError("未找到视频流下载地址")
         video_target_dir = item_dir / f"video-p{video_page}"
@@ -3936,9 +3784,7 @@ class CacheManager:
             self._append_log_line(log_path, f"[{self._log_timestamp()}] download audio track: page={page}, label={label}")
 
             try:
-                page_dash_streams = self._resolve_dash_streams(
-                    item, cid=cid, playback_selector=playback_selector
-                )
+                page_dash_streams = self._resolve_dash_streams(item, cid=cid)
             except Exception as exc:
                 raise RuntimeError(f"P{page} 音频解析失败: {exc}") from exc
 
@@ -3950,17 +3796,12 @@ class CacheManager:
                 flac_audio,
                 dolby_audio,
                 audio_hires=audio_hires,
-                playback_selector=playback_selector,
             )
 
             if preferred_audio:
-                audio_urls = self._preferred_audio_urls(
-                    preferred_audio, playback_selector=playback_selector
-                )
+                audio_urls = self._preferred_audio_urls(preferred_audio)
             else:
-                audio_urls = self._dash_stream_urls(
-                    page_dash_streams, "audio", playback_selector=playback_selector
-                )
+                audio_urls = self._dash_stream_urls(page_dash_streams, "audio")
             if not audio_urls:
                 raise DownloadCommandError(f"未找到音频轨 P{page} 的下载地址")
 
@@ -4215,58 +4056,42 @@ class CacheManager:
     def _dash_stream_urls(
         dash_streams: dict,
         stream_kind: str,
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> list[str]:
         if stream_kind not in {"video", "audio"}:
-            if playback_selector is not None:
-                if playback_selector.mode == "rust":
-                    raise PlaybackCapabilityError(
-                        "plan_media_download_candidates",
-                        "invalid stream_kind",
-                    )
-                return CacheManager._py_dash_stream_urls(
-                    dash_streams, stream_kind
-                )
-            return rust_backend.python_fallback(
+            raise rust_backend.PlaybackCapabilityError(
                 "plan_media_download_candidates",
-                lambda: CacheManager._py_dash_stream_urls(dash_streams, stream_kind),
+                "invalid stream_kind",
             )
-        streams = dash_streams.get(stream_kind) or []
-        request = {
-            "schema_version": 1,
-            "mode": "dash_streams",
-            "stream_kind": stream_kind,
-            "streams": [
-                {
-                    "original_index": index,
-                    "primary_url": str(stream.get("url") or ""),
-                    "backup_urls": [
-                        str(backup) for backup in (stream.get("backup_urls") or [])
-                    ],
-                }
-                for index, stream in enumerate(streams)
-            ],
-        }
-        if playback_selector is not None:
-            return playback_selector.decide(
-                "plan_media_download_candidates",
-                python=lambda: CacheManager._py_dash_stream_urls(
-                    dash_streams, stream_kind
-                ),
-                rust=lambda: rust_backend.try_plan_media_download_candidates(
-                    request, allow_python_reference=False
-                ),
-                decode_rust=lambda response: [
-                    candidate["url"] for candidate in response["candidates"]
+        try:
+            streams = dash_streams.get(stream_kind) or []
+            request = {
+                "schema_version": 1,
+                "mode": "dash_streams",
+                "stream_kind": stream_kind,
+                "streams": [
+                    {
+                        "original_index": index,
+                        "primary_url": str(stream.get("url") or ""),
+                        "backup_urls": [
+                            str(backup)
+                            for backup in (stream.get("backup_urls") or [])
+                        ],
+                    }
+                    for index, stream in enumerate(streams)
                 ],
-            )
-        completed, response = rust_backend.try_plan_media_download_candidates(request)
-        if completed and response is not None:
-            return [candidate["url"] for candidate in response["candidates"]]
-        return rust_backend.python_fallback(
+            }
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise rust_backend.PlaybackCapabilityError(
+                "plan_media_download_candidates", "invalid request"
+            ) from exc
+        return rust_backend.require_playback_capability(
             "plan_media_download_candidates",
-            lambda: CacheManager._py_dash_stream_urls(dash_streams, stream_kind),
+            lambda: rust_backend.try_plan_media_download_candidates(
+                request, allow_python_reference=False
+            ),
+            decode=lambda response: [
+                candidate["url"] for candidate in response["candidates"]
+            ],
         )
 
     @staticmethod
@@ -4278,24 +4103,20 @@ class CacheManager:
     @staticmethod
     def _preferred_audio_urls(
         preferred_audio: dict,
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> list[str]:
-        primary_url = preferred_audio["url"]
-        backup_urls = list(preferred_audio.get("backup_urls") or [])
+        try:
+            primary_url = preferred_audio["url"]
+            backup_urls = list(preferred_audio.get("backup_urls") or [])
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise rust_backend.PlaybackCapabilityError(
+                "plan_media_download_candidates", "invalid request"
+            ) from exc
         if not isinstance(primary_url, str) or not all(
             isinstance(url, str) for url in backup_urls
         ):
-            if playback_selector is not None:
-                if playback_selector.mode == "rust":
-                    raise PlaybackCapabilityError(
-                        "plan_media_download_candidates",
-                        "preferred audio URLs must be strings",
-                    )
-                return CacheManager._py_preferred_audio_urls(preferred_audio)
-            return rust_backend.python_fallback(
+            raise rust_backend.PlaybackCapabilityError(
                 "plan_media_download_candidates",
-                lambda: CacheManager._py_preferred_audio_urls(preferred_audio),
+                "preferred audio URLs must be strings",
             )
         request = {
             "schema_version": 1,
@@ -4309,25 +4130,14 @@ class CacheManager:
                 }
             ],
         }
-        if playback_selector is not None:
-            return playback_selector.decide(
-                "plan_media_download_candidates",
-                python=lambda: CacheManager._py_preferred_audio_urls(
-                    preferred_audio
-                ),
-                rust=lambda: rust_backend.try_plan_media_download_candidates(
-                    request, allow_python_reference=False
-                ),
-                decode_rust=lambda response: [
-                    candidate["url"] for candidate in response["candidates"]
-                ],
-            )
-        completed, response = rust_backend.try_plan_media_download_candidates(request)
-        if completed and response is not None:
-            return [candidate["url"] for candidate in response["candidates"]]
-        return rust_backend.python_fallback(
+        return rust_backend.require_playback_capability(
             "plan_media_download_candidates",
-            lambda: CacheManager._py_preferred_audio_urls(preferred_audio),
+            lambda: rust_backend.try_plan_media_download_candidates(
+                request, allow_python_reference=False
+            ),
+            decode=lambda response: [
+                candidate["url"] for candidate in response["candidates"]
+            ],
         )
 
     @staticmethod
@@ -4726,8 +4536,6 @@ class CacheManager:
     def _bbdown_stream_preference_args(
         self,
         stream_kind: str,
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> list[str]:
         with self.lock:
             video_quality = self.video_quality
@@ -4740,7 +4548,6 @@ class CacheManager:
                 self._video_quality_priority(
                     video_quality,
                     avc_quality_cap,
-                    playback_selector=playback_selector,
                 ),
             ]
             if force_avc:
@@ -4794,17 +4601,9 @@ class CacheManager:
     def _video_quality_priority(
         video_quality: object,
         quality_cap: object = "",
-        *,
-        playback_selector: PlaybackSelector | None = None,
     ) -> str:
-        response = CacheManager._native_quality_policy(
-            video_quality,
-            quality_cap,
-            playback_selector=playback_selector,
-        )
-        if response is not None:
-            return ",".join(response["bbdown_quality_order"])
-        return CacheManager._py_video_quality_priority(video_quality, quality_cap)
+        response = CacheManager._native_quality_policy(video_quality, quality_cap)
+        return ",".join(response["bbdown_quality_order"])
 
     def _run_item_command(
         self,

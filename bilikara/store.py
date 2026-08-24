@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import sys
 import threading
 import time
 from collections import defaultdict
@@ -13,7 +12,6 @@ from typing import Any, Callable
 
 from . import rust_runtime
 from .models import HistoryEntry, PlaylistItem, SessionPlayedEntry
-from .playback_selector import PlaybackSelector, rust_playback_availability
 
 MAX_SESSION_USERS = 32
 MAX_SESSION_USER_NAME_LENGTH = 24
@@ -426,11 +424,6 @@ class PlaylistStore:
         with self.lock:
             self._accept_response_unlocked(response, initializing=True)
             self._persist_response_unlocked(response)
-            warning = str(
-                self._snapshot.get("playback_selector", {}).get("warning") or ""
-            )
-            if warning:
-                print(f"[bilikara] {warning}", file=sys.stderr, flush=True)
 
     @property
     def revision(self) -> int:
@@ -451,16 +444,6 @@ class PlaylistStore:
     def playback_mode(self) -> str:
         with self.lock:
             return str(self._snapshot["playback_mode"])
-
-    @property
-    def playback_selector_mode(self) -> str:
-        with self.lock:
-            return str(self._snapshot["playback_selector"]["mode"])
-
-    @property
-    def playback_selector_warning(self) -> str:
-        with self.lock:
-            return str(self._snapshot["playback_selector"].get("warning") or "")
 
     @property
     def av_global_delay_ms(self) -> int:
@@ -641,13 +624,6 @@ class PlaylistStore:
                 isinstance(current, dict)
                 and current.get("id") == str(item_id or "")
             )
-
-    def capture_playback_selector(self) -> PlaybackSelector:
-        return PlaybackSelector(self.playback_selector_mode)
-
-    def set_playback_selector_mode(self, mode: object) -> str:
-        result = self._request("set_playback_selector_mode", mode=str(mode))
-        return str(result["mode"])
 
     def add_item(
         self,
@@ -1090,7 +1066,6 @@ class PlaylistStore:
             "session_played",
         }
         snapshot_objects = {
-            "playback_selector",
             "player_settings",
             "backup",
             "previous_session",
@@ -1102,7 +1077,6 @@ class PlaylistStore:
         }
         persistence_required = {
             "playback_mode",
-            "playback_selector_mode",
             "player_settings",
             "session_started_at",
             "session_played_file",
@@ -1137,7 +1111,6 @@ class PlaylistStore:
                 for key in persistence_collections
             )
             and isinstance(persistence.get("playback_mode"), str)
-            and isinstance(persistence.get("playback_selector_mode"), str)
             and isinstance(persistence.get("session_played_file"), str)
         )
         if not valid:
@@ -1159,7 +1132,6 @@ class PlaylistStore:
                 self.player_state_file,
                 {
                     "playback_mode": persistence["playback_mode"],
-                    "playback_selector_mode": persistence["playback_selector_mode"],
                     "player_settings": {
                         "global_av_delay_ms": settings["global_av_delay_ms"],
                         "av_delay_locked": settings["av_delay_locked"],
@@ -1264,20 +1236,8 @@ class PlaylistStore:
         session_file = self._session_played_file_for_timestamp(now)
         previous = self._latest_previous_session_seed(session_file)
         backup = self._backup_seed(now)
-        selector_mode = (
-            player.get("playback_selector_mode")
-            if "playback_selector_mode" in player
-            else None
-        )
-        selector_rust_available, selector_availability_warning = (
-            rust_playback_availability()
-        )
         return {
             "playback_mode": "local",
-            "playback_selector_mode": selector_mode,
-            "playback_selector_warning": "",
-            "playback_selector_rust_available": selector_rust_available,
-            "playback_selector_availability_warning": selector_availability_warning,
             "player_settings": {
                 "global_av_delay_ms": global_delay,
                 "local_av_delay_ms": 0,

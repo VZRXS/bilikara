@@ -31,7 +31,7 @@ class MediaDownloadCandidatePlanningPolicyTest(unittest.TestCase):
             [" primary ", "", " primary ", "歌曲"],
         )
 
-    def test_public_wrappers_fall_back_completely(self):
+    def test_public_wrappers_fail_closed_without_python_references(self):
         dash = {"audio": [{"url": " a ", "backup_urls": ["", "a"]}]}
         preferred = {"url": " a ", "backup_urls": ["", "a"]}
         with patch.object(
@@ -47,12 +47,12 @@ class MediaDownloadCandidatePlanningPolicyTest(unittest.TestCase):
             "_py_preferred_audio_urls",
             wraps=CacheManager._py_preferred_audio_urls,
         ) as preferred_fallback:
-            self.assertEqual(CacheManager._dash_stream_urls(dash, "audio"), ["a", "a"])
-            self.assertEqual(
-                CacheManager._preferred_audio_urls(preferred), [" a ", "", "a"]
-            )
-            dash_fallback.assert_called_once()
-            preferred_fallback.assert_called_once()
+            with self.assertRaises(rust_backend.PlaybackCapabilityError):
+                CacheManager._dash_stream_urls(dash, "audio")
+            with self.assertRaises(rust_backend.PlaybackCapabilityError):
+                CacheManager._preferred_audio_urls(preferred)
+            dash_fallback.assert_not_called()
+            preferred_fallback.assert_not_called()
 
     def test_real_native_equivalence_across_generated_fixtures(self):
         available = rust_backend.backend_status()["capabilities"].get(

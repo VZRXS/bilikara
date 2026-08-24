@@ -51,16 +51,16 @@ class QualityPolicyReferenceTest(unittest.TestCase):
             "480P 清晰,360P 流畅",
         )
 
-    def test_public_quality_wrappers_fall_back_to_independent_python(self):
+    def test_public_quality_wrapper_fails_closed_without_python_reference(self):
         with patch.object(
             rust_backend, "try_decide_quality_policy", return_value=(False, None)
         ), patch.object(
             CacheManager,
             "_py_normalize_video_quality",
             wraps=CacheManager._py_normalize_video_quality,
-        ) as fallback:
-            self.assertEqual(CacheManager._normalize_video_quality(" 720P 高清 "), "720P 高清")
-            fallback.assert_called_once()
+        ) as fallback, self.assertRaises(rust_backend.PlaybackCapabilityError):
+            CacheManager._normalize_video_quality(" 720P 高清 ")
+        fallback.assert_not_called()
 
 
 class StreamRankingReferenceTest(unittest.TestCase):
@@ -180,7 +180,7 @@ class StreamRankingReferenceTest(unittest.TestCase):
             )
         )
 
-    def test_public_stream_wrappers_fall_back_completely(self):
+    def test_public_stream_wrappers_fail_closed_without_python_references(self):
         video = [{"quality_id": 80, "bandwidth": 1, "codec_name": "avc"}]
         audio = [{"quality_id": 30280, "bandwidth": 1}]
         unsorted_audio = [
@@ -208,23 +208,17 @@ class StreamRankingReferenceTest(unittest.TestCase):
             "_py_select_preferred_dash_audio",
             wraps=CacheManager._py_select_preferred_dash_audio,
         ) as preferred_fallback:
-            self.assertIs(
-                CacheManager._select_dash_video_stream(video, max_quality_id=80),
-                video[0],
-            )
-            self.assertIs(
-                CacheManager._select_dash_audio_stream(audio, audio_hires=True),
-                audio[0],
-            )
-            self.assertIs(
+            with self.assertRaises(rust_backend.PlaybackCapabilityError):
+                CacheManager._select_dash_video_stream(video, max_quality_id=80)
+            with self.assertRaises(rust_backend.PlaybackCapabilityError):
+                CacheManager._select_dash_audio_stream(audio, audio_hires=True)
+            with self.assertRaises(rust_backend.PlaybackCapabilityError):
                 CacheManager._select_preferred_dash_audio(
                     unsorted_audio, None, None, audio_hires=False
-                ),
-                unsorted_audio[0],
-            )
-            video_fallback.assert_called_once()
-            audio_fallback.assert_called_once()
-            preferred_fallback.assert_called_once()
+                )
+            video_fallback.assert_not_called()
+            audio_fallback.assert_not_called()
+            preferred_fallback.assert_not_called()
 
 
 class NativeQualityStreamEquivalenceTest(unittest.TestCase):
