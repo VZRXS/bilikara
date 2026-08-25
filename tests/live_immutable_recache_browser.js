@@ -2,10 +2,11 @@
 
 const { chromium } = require("playwright");
 
-const [baseUrl, scenario, executablePath] = process.argv.slice(2);
+const [baseUrl, scenario, executablePath, screenshotPath] = process.argv.slice(2);
 const observations = [];
 const consoleErrors = [];
 const pageErrors = [];
+let pageIdentity = null;
 
 function assert(condition, message, detail = undefined) {
   if (!condition) {
@@ -77,6 +78,8 @@ async function media(page) {
         ? window.__acceptanceReplacements.slice()
         : [],
       naturalEndedCount: Number(window.__acceptanceNaturalEndedCount || 0),
+      videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
+      audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
     };
   });
 }
@@ -241,6 +244,37 @@ async function clickCurrentRecache(page) {
   await settingsToggle.click();
 }
 
+async function clickPlayerReset(page) {
+  const settingsToggle = page.locator("#cache-settings-toggle");
+  if ((await settingsToggle.getAttribute("aria-expanded")) !== "true") {
+    await settingsToggle.click();
+  }
+  const advancedToggle = page.locator("#cache-panel-advanced-trigger");
+  if ((await advancedToggle.getAttribute("aria-expanded")) !== "true") {
+    await advancedToggle.click();
+  }
+  await page.locator("#player-reset-button").click();
+  const confirm = page.locator("#confirm-popover");
+  assert(
+    !(await confirm.evaluate((element) => element.classList.contains("hidden"))),
+    "player reset confirmation did not open",
+  );
+  const responsePromise = page.waitForResponse(
+    (response) => response.url() === `${baseUrl}/api/player/reset`
+      && response.request().method() === "POST",
+  );
+  await page.locator("#confirm-ok").click();
+  const response = await responsePromise;
+  assert(response.ok(), "player reset request failed", response.status());
+  const payload = await response.json();
+  assert(payload?.ok === true, "player reset response was rejected", payload);
+  await waitFor(
+    async () => (await confirm.evaluate((element) => element.classList.contains("hidden"))),
+    "player reset confirmation did not close",
+  );
+  return payload.data;
+}
+
 async function clickPlayNow(page, itemId) {
   const item = page.locator(`.song-item[data-id="${itemId}"]`);
   await item.locator('button[data-action="toggle-menu"]').click();
@@ -336,6 +370,95 @@ async function recachePlaying(page) {
   const replacement = settled.replacements[0];
   assert(Math.abs(settled.currentTime - replacement.oldTime) <= 1.25, "playing refresh time was not restored within 1.25s", { settled, replacement });
   observations.push({ boundary: "playing-refresh-restored", media: settled, replacement, descriptor: replaced.next });
+}
+
+async function playerReset(page) {
+  const started = await startPlayback(page, "A");
+  const before = await state(page);
+  assert(before.playback_program?.item_id === "A", "reset fixture had no requested program", before.playback_program);
+  assert(before.playback_program?.artifact_set_id, "reset fixture was not mountable", before.playback_program);
+  await installReplacementObserver(page);
+  await page.evaluate(() => {
+    window.__acceptanceResetOldVideo = document.querySelector('video[data-player-role="video"]');
+    window.__acceptanceResetOldAudio = document.querySelector('audio[data-player-role="audio"]');
+  });
+
+  const response = await clickPlayerReset(page);
+  assert(
+    JSON.stringify(response.playback_program) === JSON.stringify(before.playback_program),
+    "reset response changed the program descriptor",
+    { before: before.playback_program, after: response.playback_program },
+  );
+  assert(
+    response.playback_generation === before.playback_generation + 1,
+    "reset response did not advance exactly one program generation",
+    { before: before.playback_generation, after: response.playback_generation },
+  );
+
+  const remounted = await waitForMedia(page, "A");
+  assert(remounted.currentTime < started.currentTime, "reset did not restart the media clock", { started, remounted });
+  const retirement = await page.evaluate(() => {
+    const video = document.querySelector('video[data-player-role="video"]');
+    const audio = document.querySelector('audio[data-player-role="audio"]');
+    return {
+      oldVideoConnected: Boolean(window.__acceptanceResetOldVideo?.isConnected),
+      oldAudioConnected: Boolean(window.__acceptanceResetOldAudio?.isConnected),
+      oldVideoSrc: window.__acceptanceResetOldVideo?.getAttribute("src") || "",
+      oldAudioSrc: window.__acceptanceResetOldAudio?.getAttribute("src") || "",
+      videoReplaced: video !== window.__acceptanceResetOldVideo,
+      audioReplaced: audio !== window.__acceptanceResetOldAudio,
+    };
+  });
+  assert(
+    !retirement.oldVideoConnected
+      && !retirement.oldAudioConnected
+      && !retirement.oldVideoSrc
+      && !retirement.oldAudioSrc
+      && retirement.videoReplaced
+      && retirement.audioReplaced,
+    "reset did not retire the old media pair",
+    retirement,
+  );
+  const automatic = await observeAutomaticPlayback(page, "A", 0.15);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const after = await state(page);
+  const stable = await media(page);
+  assert(
+    JSON.stringify(after.playback_program) === JSON.stringify(before.playback_program),
+    "post-reset state changed the program descriptor",
+    { before: before.playback_program, after: after.playback_program },
+  );
+  assert(
+    after.playback_generation === before.playback_generation + 1,
+    "post-reset state duplicated or lost the generation advance",
+    { before: before.playback_generation, after: after.playback_generation },
+  );
+  assert(after.current_item?.id === "A", "player reset unexpectedly advanced the playlist", after.current_item);
+  assert(
+    stable.videoCount === 1
+      && stable.audioCount === 1
+      && stable.replacementCount === 1
+      && stable.itemId === "A"
+      && !stable.preparing
+      && !stable.paused
+      && stable.currentTime > automatic.currentTime,
+    "reset did not settle as exactly one stable automatically playing pair",
+    { stable, automatic },
+  );
+  observations.push({
+    boundary: "player-reset-fresh-lifetime",
+    before: {
+      playbackProgram: before.playback_program,
+      playbackGeneration: before.playback_generation,
+      currentTime: started.currentTime,
+    },
+    response: {
+      playbackProgram: response.playback_program,
+      playbackGeneration: response.playback_generation,
+    },
+    retirement,
+    media: stable,
+  });
 }
 
 async function recachePaused(page) {
@@ -507,9 +630,22 @@ async function run() {
   page.on("pageerror", (error) => pageErrors.push(error.message));
   try {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    pageIdentity = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      bodyTextLength: String(document.body?.innerText || "").trim().length,
+      frameworkOverlay: Boolean(document.querySelector(
+        "nextjs-portal, vite-error-overlay, #webpack-dev-server-client-overlay",
+      )),
+    }));
+    assert(pageIdentity.url === `${baseUrl}/`, "browser opened the wrong Host page", pageIdentity);
+    assert(pageIdentity.title && pageIdentity.bodyTextLength > 0, "Host page was blank", pageIdentity);
+    assert(!pageIdentity.frameworkOverlay, "Host page showed a framework error overlay", pageIdentity);
     await waitFor(async () => (await state(page)).current_item?.cache_status === "ready", "initial current item was not Ready");
     await waitForMedia(page, "A");
-    if (scenario === "recache-playing") {
+    if (scenario === "player-reset") {
+      await playerReset(page);
+    } else if (scenario === "recache-playing") {
       await recachePlaying(page);
     } else if (scenario === "recache-paused") {
       await recachePaused(page);
@@ -532,7 +668,10 @@ async function run() {
     const unexpectedConsoleErrors = consoleErrors.filter((entry) => !allowedConsoleError(entry));
     assert(pageErrors.length === 0, "unexpected page errors", pageErrors);
     assert(unexpectedConsoleErrors.length === 0, "unexpected console errors", unexpectedConsoleErrors);
-    return { passed: true, scenario, observations, consoleErrors, allowedConsoleErrors, pageErrors };
+    if (screenshotPath) {
+      await page.screenshot({ path: screenshotPath, fullPage: false });
+    }
+    return { passed: true, scenario, pageIdentity, observations, consoleErrors, allowedConsoleErrors, pageErrors, screenshotPath };
   } finally {
     await browser.close();
   }
@@ -549,6 +688,7 @@ run().then(
       error: error.message,
       detail: error.detail,
       stack: error.stack,
+      pageIdentity,
       observations,
       consoleErrors,
       pageErrors,

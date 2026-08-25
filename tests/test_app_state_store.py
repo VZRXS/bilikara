@@ -1,3 +1,4 @@
+import copy
 import json
 import threading
 import unittest
@@ -381,6 +382,94 @@ class RustAppStateStoreTest(unittest.TestCase):
         self.assertTrue(store.discard_backup())
         self.assertEqual(store.session_generation, initial_session + 1)
         self.assertEqual(store.playback_generation, after_first + 2)
+
+    def test_playback_program_projection_is_preserved_validated_and_not_persisted(self):
+        store = self.store()
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+
+        snapshot = store.snapshot()
+        current = snapshot["current_item"]
+        expected_program = {
+            "item_id": "a",
+            "item_incarnation_id": current["item_incarnation_id"],
+            "selected_audio_variant_id": "",
+            "artifact_set_id": None,
+        }
+        self.assertEqual(snapshot["playback_program"], expected_program)
+
+        before = store.authoritative_snapshot()
+        with self.assertRaisesRegex(ValueError, "playback_program"):
+            store.update_item("a", playback_program={"item_id": "forged"})
+        self.assertEqual(store.authoritative_snapshot(), before)
+
+        response = rust_runtime.app_state_request("snapshot")
+        self.assertEqual(response["snapshot"]["playback_program"], expected_program)
+        self.assertNotIn("playback_program", response["persistence"])
+        self.assertNotIn("playback_generation", response["persistence"])
+        for persisted_file in self.root.rglob("*.json"):
+            persisted_text = persisted_file.read_text(encoding="utf-8")
+            self.assertNotIn('"playback_program"', persisted_text)
+            self.assertNotIn('"playback_generation"', persisted_text)
+
+        malformed_responses = []
+        malformed_artifact = copy.deepcopy(response)
+        malformed_artifact["snapshot"]["playback_program"]["artifact_set_id"] = 7
+        malformed_responses.append(malformed_artifact)
+        missing_program_field = copy.deepcopy(response)
+        del missing_program_field["snapshot"]["playback_program"]
+        malformed_responses.append(missing_program_field)
+        unsafe_generation = copy.deepcopy(response)
+        unsafe_generation["snapshot"]["playback_generation"] = 9_007_199_254_740_992
+        malformed_responses.append(unsafe_generation)
+
+        for malformed in malformed_responses:
+            with self.subTest(snapshot=malformed["snapshot"]):
+                with self.assertRaisesRegex(
+                    rust_runtime.RustAppStateError,
+                    "invalid authoritative projection",
+                ):
+                    with store.lock:
+                        store._accept_response_unlocked(malformed)
+                self.assertEqual(store.authoritative_snapshot(), before)
+
+    def test_reset_player_accepts_rust_generation_without_runtime_only_persistence(self):
+        store = self.store()
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+        before = store.authoritative_snapshot()
+        persisted_before = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*.json")
+        }
+        rust_responses = []
+        app_state_request = rust_runtime.app_state_request
+
+        def capture_request(command, **fields):
+            response = app_state_request(command, **fields)
+            if command == "reset_player":
+                rust_responses.append(copy.deepcopy(response))
+            return response
+
+        with patch(
+            "bilikara.rust_runtime.app_state_request",
+            side_effect=capture_request,
+        ):
+            store.reset_player_state()
+
+        after = store.authoritative_snapshot()
+        self.assertEqual(after["playback_program"], before["playback_program"])
+        self.assertEqual(
+            after["playback_generation"], before["playback_generation"] + 1
+        )
+        self.assertEqual(after, rust_responses[0]["snapshot"])
+        self.assertTrue(rust_responses[0]["committed"])
+        self.assertFalse(any(rust_responses[0]["effects"].values()))
+        persisted_after = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*.json")
+        }
+        self.assertEqual(persisted_after, persisted_before)
 
     def test_concurrent_ffi_callers_are_serialized_by_rust_revision(self):
         store = self.store()

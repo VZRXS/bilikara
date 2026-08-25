@@ -638,7 +638,13 @@ class StateApiCompatibilityTest(unittest.TestCase):
             "revision": 19,
             "session_generation": 4,
             "playback_generation": 8,
-            "current_item": None,
+            "playback_program": {
+                "item_id": "song-a",
+                "item_incarnation_id": "i-exact",
+                "selected_audio_variant_id": "instrumental",
+                "artifact_set_id": "a-exact",
+            },
+            "current_item": {"id": "song-a"},
             "playlist": [],
         }
         context = SimpleNamespace(
@@ -665,6 +671,7 @@ class StateApiCompatibilityTest(unittest.TestCase):
         self.assertEqual(host, remote)
         self.assertEqual(host["data"]["revision"], 19)
         self.assertEqual(host["data"]["playback_generation"], 8)
+        self.assertEqual(host["data"]["playback_program"], snapshot["playback_program"])
 
 
 class AppContextRatingSubmissionTest(unittest.TestCase):
@@ -2246,25 +2253,64 @@ class CacheDownloaderRouteTest(unittest.TestCase):
 
 
 class PlayerResetRouteTest(unittest.TestCase):
-    def test_player_reset_route_returns_fresh_snapshot(self):
-        handler = BilikaraHandler.__new__(BilikaraHandler)
-        writes: list[dict] = []
-        context = SimpleNamespace(
-            touch_client=lambda client_id, is_host=True: None,
-            reset_player_state=lambda: writes.append({"reset_player": True}),
-            snapshot=lambda: {"playback_mode": "local"},
-        )
+    def test_player_reset_route_returns_rust_forced_program_lifetime(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            store = PlaylistStore(
+                root / "state.json",
+                root / "backup.json",
+                root / "played",
+            )
+            store.add_session_user("Alice")
+            store.add_item(
+                PlaylistItem(
+                    id="song-a",
+                    original_url="https://example.test/song-a",
+                    resolved_url="https://example.test/song-a?p=1",
+                    bvid="BV0000000001",
+                    aid=1,
+                    cid=2,
+                    page=1,
+                    title="Song A",
+                    part_title="P1",
+                    display_title="Song A - P1",
+                    cover_url="",
+                    embed_url="",
+                ),
+                requester_name="Alice",
+            )
+            before = store.authoritative_snapshot()
+            handler = BilikaraHandler.__new__(BilikaraHandler)
+            writes: list[dict] = []
+            context = SimpleNamespace(
+                touch_client=lambda client_id, is_host=True: None,
+                reset_player_state=store.reset_player_state,
+                snapshot=store.snapshot,
+            )
 
-        handler.path = "/api/player/reset"
-        handler.headers = {}
-        handler._read_json_body = lambda: {}
-        handler._write_json = lambda payload, status=None: writes.append(payload)
+            handler.path = "/api/player/reset"
+            handler.headers = {}
+            handler._read_json_body = lambda: {}
+            handler._write_json = lambda payload, status=None: writes.append(payload)
 
-        with patch("bilikara.server.CONTEXT", context):
-            handler.do_POST()
+            with patch("bilikara.server.CONTEXT", context):
+                handler.do_POST()
 
-        self.assertEqual(writes[0], {"reset_player": True})
-        self.assertEqual(writes[1], {"ok": True, "data": {"playback_mode": "local"}})
+            self.assertEqual(len(writes), 1)
+            returned = writes[0]["data"]
+            self.assertEqual(returned["playback_program"], before["playback_program"])
+            self.assertEqual(
+                returned["playback_generation"],
+                before["playback_generation"] + 1,
+            )
+            authoritative = store.authoritative_snapshot()
+            self.assertEqual(
+                returned["playback_program"], authoritative["playback_program"]
+            )
+            self.assertEqual(
+                returned["playback_generation"],
+                authoritative["playback_generation"],
+            )
 
 
 class CacheRetryRouteTest(unittest.TestCase):

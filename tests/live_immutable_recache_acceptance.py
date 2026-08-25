@@ -27,6 +27,7 @@ BROWSER_DRIVER = Path(__file__).with_name("live_immutable_recache_browser.js")
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 SCENARIOS = (
+    "player-reset",
     "recache-playing",
     "recache-paused",
     "recache-failed",
@@ -242,6 +243,8 @@ def _fixtures(
 
 def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[str, Any]]], list[str]]:
     delayed_a2 = {"fixture": "a2", "delay": 1.8}
+    if scenario == "player-reset":
+        return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
     if scenario == "recache-playing":
         return ["A"], 1, {"A": [{"fixture": "a1"}, delayed_a2]}, ["A"]
     if scenario == "recache-paused":
@@ -588,6 +591,8 @@ def _worker(args: argparse.Namespace) -> int:
         args.scenario,
         args.chromium,
     ]
+    if args.screenshot:
+        command.append(args.screenshot)
     completed = subprocess.run(
         command,
         cwd=REPOSITORY_ROOT,
@@ -701,6 +706,8 @@ def _main(args: argparse.Namespace) -> int:
         fixtures_json = temp_root / "fixtures.json"
         fixtures_json.write_text(json.dumps(fixtures), encoding="utf-8")
         results: list[dict[str, Any]] = []
+        evidence_path = Path(args.evidence).resolve()
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
         selected_scenarios = (args.scenario,) if args.scenario else SCENARIOS
         for scenario in selected_scenarios:
             runtime_root = temp_root / f"runtime-{scenario}"
@@ -723,6 +730,17 @@ def _main(args: argparse.Namespace) -> int:
                 "--ffprobe",
                 str(ffprobe),
             ]
+            if scenario == "player-reset":
+                command.extend(
+                    [
+                        "--screenshot",
+                        str(
+                            evidence_path.with_name(
+                                f"{evidence_path.stem}-player-reset.png"
+                            )
+                        ),
+                    ]
+                )
             completed = subprocess.run(
                 command,
                 cwd=REPOSITORY_ROOT,
@@ -776,6 +794,7 @@ def _main(args: argparse.Namespace) -> int:
                     "old/new Range reads overlap authoritative publication",
                     "multiple concurrent readers access the old committed set",
                     "playing and paused recache preserve time and intent",
+                    "player reset retires one media pair and mounts one fresh lifetime",
                     "normal next rejects a late old-element ended callback",
                     "Play Now Ready and uncached reject late old-item work/events",
                     "natural media end advances and archives exactly once",
@@ -852,8 +871,6 @@ def _main(args: argparse.Namespace) -> int:
                 ),
             },
         }
-        evidence_path = Path(args.evidence).resolve()
-        evidence_path.parent.mkdir(parents=True, exist_ok=True)
         evidence_path.write_text(
             json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -875,6 +892,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chromium")
     parser.add_argument("--ffmpeg")
     parser.add_argument("--ffprobe")
+    parser.add_argument("--screenshot")
     return parser.parse_args()
 
 

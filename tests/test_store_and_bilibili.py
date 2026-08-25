@@ -261,10 +261,16 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A")
         self.add_item("b", requester_name="B")
         self.mark_started("a")
+        before_reset = self.store.snapshot()
 
         self.store.reset_player_state()
 
         snapshot = self.store.snapshot()
+        self.assertEqual(snapshot["playback_program"], before_reset["playback_program"])
+        self.assertEqual(
+            snapshot["playback_generation"],
+            before_reset["playback_generation"] + 1,
+        )
         self.assertEqual(snapshot["playback_mode"], "local")
         self.assertEqual(snapshot["player_settings"]["av_offset_ms"], 0)
         self.assertEqual(snapshot["player_settings"]["volume_percent"], 100)

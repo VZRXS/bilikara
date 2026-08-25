@@ -21,6 +21,7 @@ const DEFAULT_SONG_ADVANCE_DELAY_SECONDS: i32 = 3;
 const MAX_SONG_ADVANCE_DELAY_SECONDS: i32 = 30;
 const MIN_KEY_SHIFT: i32 = -6;
 const MAX_KEY_SHIFT: i32 = 6;
+const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 const IDENTITY_NAMESPACE_BYTES: usize = 16;
 const ARTIFACT_ROOT_COMPONENT: &str = "artifacts";
 
@@ -723,12 +724,21 @@ pub struct PreviousSessionSummary {
     item_count: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PlaybackProgram {
+    pub item_id: String,
+    pub item_incarnation_id: String,
+    pub selected_audio_variant_id: String,
+    pub artifact_set_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AppSnapshot {
     pub schema_version: u32,
     pub revision: u64,
     pub session_generation: u64,
     pub playback_generation: u64,
+    pub playback_program: Option<PlaybackProgram>,
     pub playback_mode: String,
     pub player_settings: PlayerSettingsSnapshot,
     pub current_item: Option<PlaylistItem>,
@@ -878,6 +888,7 @@ impl Default for AppState {
 struct MutationResult {
     changed: bool,
     operational_changed: bool,
+    force_program_lifetime: bool,
     result: Value,
     effects: PersistenceEffects,
 }
@@ -887,6 +898,7 @@ impl MutationResult {
         Self {
             changed: false,
             operational_changed: false,
+            force_program_lifetime: false,
             result,
             effects: PersistenceEffects::default(),
         }
@@ -896,6 +908,7 @@ impl MutationResult {
         Self {
             changed: true,
             operational_changed: false,
+            force_program_lifetime: false,
             result,
             effects: PersistenceEffects {
                 write_core: true,
@@ -975,6 +988,76 @@ fn valid_artifact_relative_directory(
     artifact_set_id: &str,
 ) -> bool {
     value == artifact_relative_directory(item_incarnation_id, artifact_set_id)
+}
+
+fn invalid_playback_program(message: &str) -> ExecuteError {
+    rejected("invalid_playback_program", message)
+}
+
+fn derive_playback_program(item: &PlaylistItem) -> Result<PlaybackProgram, ExecuteError> {
+    if !valid_string(&item.id, MAX_ITEM_ID_BYTES, false)
+        || !valid_authoritative_identity(&item.item_incarnation_id, 'i')
+        || !valid_string(&item.selected_audio_variant_id, MAX_STRING_BYTES, true)
+    {
+        return Err(invalid_playback_program(
+            "current item identity or selected audio variant is invalid",
+        ));
+    }
+
+    let has_artifact_input = !item.artifact_set_id.is_empty()
+        || !item.artifact_relative_directory.is_empty()
+        || !item.video_relative_path.is_empty()
+        || !item.video_media_url.is_empty()
+        || !item.audio_variants.is_empty();
+    let artifact_set_id = if !has_artifact_input {
+        None
+    } else {
+        if !valid_authoritative_identity(&item.artifact_set_id, 'a')
+            || !valid_artifact_relative_directory(
+                &item.artifact_relative_directory,
+                &item.item_incarnation_id,
+                &item.artifact_set_id,
+            )
+            || !valid_artifact_file_path(
+                &item.video_relative_path,
+                &item.artifact_relative_directory,
+            )
+            || !valid_cache_media_url(&item.video_media_url)
+            || cache_media_path(&item.video_media_url).as_deref()
+                != Some(item.video_relative_path.as_str())
+        {
+            return Err(invalid_playback_program(
+                "current item committed video or artifact identity is invalid",
+            ));
+        }
+        let mut seen_paths = HashSet::from([item.video_relative_path.clone()]);
+        let variant_ids = validate_ready_audio_variants(
+            &item.audio_variants,
+            &item.artifact_relative_directory,
+            &mut seen_paths,
+        )
+        .map_err(|_| {
+            invalid_playback_program("current item committed audio variants are invalid")
+        })?;
+        if variant_ids
+            .iter()
+            .filter(|variant_id| *variant_id == &item.selected_audio_variant_id)
+            .count()
+            != 1
+        {
+            return Err(invalid_playback_program(
+                "current item selected audio variant is not exactly mountable",
+            ));
+        }
+        Some(item.artifact_set_id.clone())
+    };
+
+    Ok(PlaybackProgram {
+        item_id: item.id.clone(),
+        item_incarnation_id: item.item_incarnation_id.clone(),
+        selected_audio_variant_id: item.selected_audio_variant_id.clone(),
+        artifact_set_id,
+    })
 }
 
 fn clear_committed_artifact(item: &mut PlaylistItem, clear_selected_audio_variant: bool) {
@@ -1574,6 +1657,13 @@ impl AppStateData {
         self.current_item.as_ref().map(|item| item.id.as_str())
     }
 
+    fn playback_program(&self) -> Result<Option<PlaybackProgram>, ExecuteError> {
+        self.current_item
+            .as_ref()
+            .map(derive_playback_program)
+            .transpose()
+    }
+
     fn find_item(&self, item_id: &str) -> Option<&PlaylistItem> {
         self.current_item
             .as_ref()
@@ -1646,13 +1736,22 @@ impl AppStateData {
         }
     }
 
-    fn snapshot(&self) -> AppSnapshot {
+    fn snapshot(&self) -> Result<AppSnapshot, ExecuteError> {
+        let playback_program = self.playback_program()?;
+        Ok(self.snapshot_with_playback_program(playback_program))
+    }
+
+    fn snapshot_with_playback_program(
+        &self,
+        playback_program: Option<PlaybackProgram>,
+    ) -> AppSnapshot {
         let av_delay = self.av_snapshot();
         AppSnapshot {
             schema_version: SCHEMA_VERSION,
             revision: self.revision,
             session_generation: self.session_generation,
             playback_generation: self.playback_generation,
+            playback_program,
             playback_mode: self.playback_mode.clone(),
             player_settings: PlayerSettingsSnapshot {
                 av_offset_ms: av_delay.effective_delay_ms,
@@ -2021,10 +2120,6 @@ fn update_backup_from_state(data: &mut AppStateData) {
         }),
         updated_at: data.updated_at,
     });
-}
-
-fn current_changed(before: Option<&str>, after: Option<&str>) -> bool {
-    before != after
 }
 
 fn mutation_value(changed: bool) -> Value {
@@ -3092,16 +3187,23 @@ fn apply_mutation(
             Ok(result)
         }
         AppStateRequest::ResetPlayer { .. } => {
-            let changed = data.playback_mode != "local"
-                || data.player_settings != PlayerSettingsSeed::default()
-                || data.current_item_started;
+            let persisted_settings_changed = data.playback_mode != "local"
+                || data.player_settings != PlayerSettingsSeed::default();
+            let force_program_lifetime = data.current_item.is_some();
+            let changed =
+                persisted_settings_changed || data.current_item_started || force_program_lifetime;
             if !changed {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             }
             data.playback_mode = "local".to_owned();
             data.player_settings = PlayerSettingsSeed::default();
             data.current_item_started = false;
-            Ok(MutationResult::changed(mutation_value(true), false))
+            let mut result = MutationResult::changed(mutation_value(true), false);
+            result.force_program_lifetime = force_program_lifetime;
+            if !persisted_settings_changed {
+                result.effects = PersistenceEffects::default();
+            }
+            Ok(result)
         }
         AppStateRequest::MarkCurrentItemStarted { item_id, .. } => {
             if data.current_identity() != Some(item_id.trim()) {
@@ -3268,7 +3370,10 @@ impl AppState {
                 let mut next_item_incarnation_id = self.next_item_incarnation_id;
                 match AppStateData::from_seed(*state, &namespace, &mut next_item_incarnation_id) {
                     Ok(data) => {
-                        let snapshot = data.snapshot();
+                        let snapshot = match data.snapshot() {
+                            Ok(snapshot) => snapshot,
+                            Err(error) => return execute_error_response(error),
+                        };
                         let persistence = data.persistence_snapshot();
                         self.data = Some(data);
                         self.next_item_incarnation_id = next_item_incarnation_id;
@@ -3293,11 +3398,15 @@ impl AppState {
                 let Some(data) = &self.data else {
                     return uninitialized_response();
                 };
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
                 AppStateResponse::Success(Box::new(AppStateSuccess {
                     schema_version: SCHEMA_VERSION,
                     status: "completed",
                     committed: false,
-                    snapshot: Some(data.snapshot()),
+                    snapshot: Some(snapshot),
                     persistence: Some(data.persistence_snapshot()),
                     effects: PersistenceEffects::default(),
                     result: json!({"snapshot": true}),
@@ -3334,6 +3443,11 @@ impl AppState {
                         }),
                     ));
                 }
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
+                let persistence = data.persistence_snapshot();
                 let Some(cache_attempt_token) = self.next_cache_attempt_token.checked_add(1) else {
                     return execute_error_response(rejected(
                         "cache_attempt_token_exhausted",
@@ -3386,8 +3500,8 @@ impl AppState {
                     schema_version: SCHEMA_VERSION,
                     status: "completed",
                     committed: false,
-                    snapshot: Some(data.snapshot()),
-                    persistence: Some(data.persistence_snapshot()),
+                    snapshot: Some(snapshot),
+                    persistence: Some(persistence),
                     effects: PersistenceEffects::default(),
                     result: serde_json::to_value(reservation)
                         .unwrap_or_else(|_| json!({"cache_attempt_token": cache_attempt_token})),
@@ -3427,11 +3541,15 @@ impl AppState {
                 ) {
                     return execute_error_response(error);
                 }
+                let snapshot = match data.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => return execute_error_response(error),
+                };
                 AppStateResponse::Success(Box::new(AppStateSuccess {
                     schema_version: SCHEMA_VERSION,
                     status: "completed",
                     committed: false,
-                    snapshot: Some(data.snapshot()),
+                    snapshot: Some(snapshot),
                     persistence: Some(data.persistence_snapshot()),
                     effects: PersistenceEffects::default(),
                     result: json!({"authorized": true}),
@@ -3459,7 +3577,10 @@ impl AppState {
                     Err(message) => return internal_error_response(message),
                 };
                 let mut next_item_incarnation_id = self.next_item_incarnation_id;
-                let before_current = current.current_identity().map(str::to_owned);
+                let before_program = match current.playback_program() {
+                    Ok(program) => program,
+                    Err(error) => return execute_error_response(error),
+                };
                 let now = request.now();
                 let replaces_live_items = matches!(
                     &request,
@@ -3479,6 +3600,10 @@ impl AppState {
                     Err(error) => return execute_error_response(error),
                 };
                 if mutation.changed {
+                    let after_program = match next.playback_program() {
+                        Ok(program) => program,
+                        Err(error) => return execute_error_response(error),
+                    };
                     if replaces_live_items {
                         next.active_cache_attempts.clear();
                     } else {
@@ -3495,8 +3620,12 @@ impl AppState {
                         return internal_error_response("AppState revision overflow");
                     };
                     next.revision = revision;
-                    if current_changed(before_current.as_deref(), next.current_identity()) {
-                        let Some(generation) = current.playback_generation.checked_add(1) else {
+                    if before_program != after_program || mutation.force_program_lifetime {
+                        let Some(generation) = current
+                            .playback_generation
+                            .checked_add(1)
+                            .filter(|generation| *generation <= MAX_SAFE_JSON_INTEGER)
+                        else {
                             return internal_error_response(
                                 "AppState playback generation overflow",
                             );
@@ -3514,7 +3643,7 @@ impl AppState {
                             effects.delete_backup = true;
                         }
                     }
-                    let snapshot = next.snapshot();
+                    let snapshot = next.snapshot_with_playback_program(after_program);
                     let persistence = next.persistence_snapshot();
                     self.data = Some(next);
                     self.next_item_incarnation_id = next_item_incarnation_id;
@@ -3528,7 +3657,7 @@ impl AppState {
                         result: mutation.result,
                     }))
                 } else {
-                    let snapshot = current.snapshot();
+                    let snapshot = current.snapshot_with_playback_program(before_program);
                     let persistence = current.persistence_snapshot();
                     if mutation.operational_changed {
                         self.data = Some(next);
@@ -3988,6 +4117,851 @@ mod tests {
         .expect("reset snapshot");
         assert_eq!(reset.session_generation, added.session_generation + 1);
         assert_eq!(reset.playback_generation, added.playback_generation + 1);
+    }
+
+    #[test]
+    fn playback_program_shape_tracks_requested_and_mountable_current_identity() {
+        let mut state = AppState::default();
+        let empty = initialize(&mut state, seed());
+        let empty_value = serde_json::to_value(&empty).expect("empty snapshot JSON");
+        assert!(
+            empty_value
+                .as_object()
+                .expect("snapshot object")
+                .contains_key("playback_program")
+        );
+        assert_eq!(empty_value["playback_program"], Value::Null);
+
+        let pending = success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("a", "BV-a", ""),
+            position: "tail".to_owned(),
+            requester_name: "Alice".to_owned(),
+            reset_av_delay: false,
+            allow_repeat: false,
+            now: 11.0,
+        }))
+        .snapshot
+        .expect("pending snapshot");
+        let pending_item = pending.current_item.as_ref().expect("pending current item");
+        let pending_value = serde_json::to_value(&pending).expect("pending snapshot JSON");
+        assert_eq!(pending_value["playback_program"]["item_id"], "a");
+        assert_eq!(
+            pending_value["playback_program"]["item_incarnation_id"],
+            pending_item.item_incarnation_id
+        );
+        assert_eq!(
+            pending_value["playback_program"]["selected_audio_variant_id"],
+            ""
+        );
+        assert_eq!(
+            pending_value["playback_program"]["artifact_set_id"],
+            Value::Null
+        );
+
+        let (token, reservation_response) = begin_cache_attempt(&mut state, "a");
+        let reservation = cache_reservation(&reservation_response);
+        let ready = ready_event(
+            &state,
+            "a",
+            token,
+            "video.mp4",
+            &[
+                ("original", "original.m4a"),
+                ("instrumental", "instrumental.m4a"),
+            ],
+            "instrumental",
+        );
+        let mounted = success(apply_cache(&mut state, "a", token, ready, 12.0))
+            .snapshot
+            .expect("mounted snapshot");
+        let mounted_value = serde_json::to_value(&mounted).expect("mounted snapshot JSON");
+        assert_eq!(mounted.playback_generation, pending.playback_generation + 1);
+        assert_eq!(mounted_value["playback_program"]["item_id"], "a");
+        assert_eq!(
+            mounted_value["playback_program"]["item_incarnation_id"],
+            reservation.item_incarnation_id
+        );
+        assert_eq!(
+            mounted_value["playback_program"]["selected_audio_variant_id"],
+            "instrumental"
+        );
+        assert_eq!(
+            mounted_value["playback_program"]["artifact_set_id"],
+            reservation.artifact_set_id
+        );
+
+        let (invalid_token, _) = begin_cache_attempt(&mut state, "a");
+        let mut invalid_ready = ready_event(
+            &state,
+            "a",
+            invalid_token,
+            "video-v2.mp4",
+            &[("original", "original-v2.m4a")],
+            "original",
+        );
+        if let CacheEvent::Ready {
+            video_media_url, ..
+        } = &mut invalid_ready
+        {
+            *video_media_url = "/media/outside/video-v2.mp4".to_owned();
+        }
+        let rejected = failure(apply_cache(
+            &mut state,
+            "a",
+            invalid_token,
+            invalid_ready,
+            13.0,
+        ));
+        assert_eq!(rejected.error.kind, "invalid_cache_ready");
+        let after_rejection =
+            success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+                .snapshot
+                .expect("snapshot after invalid Ready");
+        assert_eq!(after_rejection, mounted);
+    }
+
+    #[test]
+    fn playback_generation_tracks_refresh_selection_reset_and_republication() {
+        let mut state = AppState::default();
+        let initial = initialize(&mut state, seed());
+        let pending = success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("a", "BV-a", ""),
+            position: "tail".to_owned(),
+            requester_name: "Alice".to_owned(),
+            reset_av_delay: false,
+            allow_repeat: false,
+            now: 11.0,
+        }))
+        .snapshot
+        .expect("pending snapshot");
+        assert_eq!(pending.playback_generation, initial.playback_generation + 1);
+
+        let (fill_token, _) = begin_cache_attempt(&mut state, "a");
+        for event in [
+            CacheEvent::Queued {
+                message: "queued".to_owned(),
+            },
+            CacheEvent::Started {
+                message: "started".to_owned(),
+            },
+            CacheEvent::Progress {
+                progress: 50.0,
+                message: Some("progress".to_owned()),
+            },
+        ] {
+            let snapshot = success(apply_cache(&mut state, "a", fill_token, event, 11.5))
+                .snapshot
+                .expect("cache progress snapshot");
+            assert_eq!(snapshot.playback_generation, pending.playback_generation);
+        }
+
+        let first_ready = ready_event(
+            &state,
+            "a",
+            fill_token,
+            "video-v1.mp4",
+            &[
+                ("original", "original-v1.m4a"),
+                ("instrumental", "instrumental-v1.m4a"),
+            ],
+            "original",
+        );
+        let mounted = success(apply_cache(&mut state, "a", fill_token, first_ready, 12.0))
+            .snapshot
+            .expect("first Ready snapshot");
+        assert_eq!(mounted.playback_generation, pending.playback_generation + 1);
+
+        let selected = success(state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            variant_id: "instrumental".to_owned(),
+            now: 12.5,
+        }))
+        .snapshot
+        .expect("selected variant snapshot");
+        assert_eq!(
+            selected.playback_generation,
+            mounted.playback_generation + 1
+        );
+        let no_op_selection = success(state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            variant_id: "instrumental".to_owned(),
+            now: 12.6,
+        }));
+        assert!(!no_op_selection.committed);
+        assert_eq!(
+            no_op_selection
+                .snapshot
+                .expect("no-op selection snapshot")
+                .playback_generation,
+            selected.playback_generation
+        );
+
+        let (failed_refresh, _) = begin_cache_attempt(&mut state, "a");
+        for event in [
+            CacheEvent::Queued {
+                message: "refresh queued".to_owned(),
+            },
+            CacheEvent::Started {
+                message: "refresh started".to_owned(),
+            },
+            CacheEvent::Progress {
+                progress: 75.0,
+                message: Some("refresh progress".to_owned()),
+            },
+        ] {
+            let snapshot = success(apply_cache(&mut state, "a", failed_refresh, event, 13.0))
+                .snapshot
+                .expect("refresh progress snapshot");
+            assert_eq!(snapshot.playback_generation, selected.playback_generation);
+        }
+        let failed_event = CacheEvent::Failed {
+            message: "refresh failed".to_owned(),
+        };
+        let failed = success(apply_cache(
+            &mut state,
+            "a",
+            failed_refresh,
+            failed_event.clone(),
+            13.5,
+        ))
+        .snapshot
+        .expect("failed refresh snapshot");
+        assert_eq!(failed.playback_generation, selected.playback_generation);
+        let replay = success(apply_cache(
+            &mut state,
+            "a",
+            failed_refresh,
+            failed_event,
+            13.6,
+        ));
+        assert!(!replay.committed);
+        assert_eq!(replay.result["replayed"], json!(true));
+        assert_eq!(
+            replay
+                .snapshot
+                .expect("terminal replay snapshot")
+                .playback_generation,
+            selected.playback_generation
+        );
+
+        let (cancelled_refresh, _) = begin_cache_attempt(&mut state, "a");
+        let cancelled = success(apply_cache(
+            &mut state,
+            "a",
+            cancelled_refresh,
+            CacheEvent::Cancelled {
+                message: "refresh cancelled".to_owned(),
+            },
+            14.0,
+        ))
+        .snapshot
+        .expect("cancelled refresh snapshot");
+        assert_eq!(cancelled.playback_generation, selected.playback_generation);
+
+        let (refresh_token, refresh_response) = begin_cache_attempt(&mut state, "a");
+        let refresh_reservation = cache_reservation(&refresh_response);
+        let refresh_ready = ready_event(
+            &state,
+            "a",
+            refresh_token,
+            "video-v2.mp4",
+            &[
+                ("original", "original-v2.m4a"),
+                ("instrumental", "instrumental-v2.m4a"),
+            ],
+            "original",
+        );
+        let refreshed = success(apply_cache(
+            &mut state,
+            "a",
+            refresh_token,
+            refresh_ready,
+            14.5,
+        ))
+        .snapshot
+        .expect("successful refresh snapshot");
+        assert_eq!(
+            refreshed.playback_generation,
+            selected.playback_generation + 1
+        );
+        assert_eq!(
+            refreshed
+                .playback_program
+                .as_ref()
+                .and_then(|program| program.artifact_set_id.as_deref()),
+            Some(refresh_reservation.artifact_set_id.as_str())
+        );
+
+        let (evict_token, _) = begin_cache_attempt(&mut state, "a");
+        let evicted = success(apply_cache(
+            &mut state,
+            "a",
+            evict_token,
+            CacheEvent::Evicted {
+                message: "evicted".to_owned(),
+            },
+            15.0,
+        ))
+        .snapshot
+        .expect("evicted snapshot");
+        assert_eq!(
+            evicted.playback_generation,
+            refreshed.playback_generation + 1
+        );
+        assert_eq!(
+            evicted
+                .playback_program
+                .as_ref()
+                .and_then(|program| program.artifact_set_id.as_ref()),
+            None
+        );
+
+        let (republish_token, _) = begin_cache_attempt(&mut state, "a");
+        let republish_ready = ready_event(
+            &state,
+            "a",
+            republish_token,
+            "video-v3.mp4",
+            &[
+                ("original", "original-v3.m4a"),
+                ("instrumental", "instrumental-v3.m4a"),
+            ],
+            "original",
+        );
+        let republished = success(apply_cache(
+            &mut state,
+            "a",
+            republish_token,
+            republish_ready,
+            15.5,
+        ))
+        .snapshot
+        .expect("republished snapshot");
+        assert_eq!(
+            republished.playback_generation,
+            evicted.playback_generation + 1
+        );
+    }
+
+    #[test]
+    fn playback_generation_ignores_settings_metadata_and_non_current_work() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.playlist = vec![item("b", "BV-b", "Bob"), item("c", "BV-c", "Alice")];
+        initial.session_played = vec![played("a", "Alice")];
+        let initialized = initialize(&mut state, initial);
+        let generation = initialized.playback_generation;
+
+        macro_rules! assert_no_program_bump {
+            ($request:expr) => {{
+                let response = success(state.execute($request));
+                assert_eq!(
+                    response
+                        .snapshot
+                        .as_ref()
+                        .expect("mutation snapshot")
+                        .playback_generation,
+                    generation
+                );
+                response
+            }};
+        }
+
+        assert_no_program_bump!(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 50,
+            now: 11.0,
+        });
+        assert_no_program_bump!(AppStateRequest::SetMuted {
+            schema_version: 1,
+            is_muted: true,
+            now: 11.1,
+        });
+        assert_no_program_bump!(AppStateRequest::ApplyAvDelay {
+            schema_version: 1,
+            action: AvDelayCommand::Adjust { delta_ms: 25 },
+            now: 11.2,
+        });
+        assert_no_program_bump!(AppStateRequest::SetKeyShift {
+            schema_version: 1,
+            key_shift: 2,
+            now: 11.3,
+        });
+        assert_no_program_bump!(AppStateRequest::SetSongAdvanceDelay {
+            schema_version: 1,
+            delay_seconds: 7,
+            now: 11.4,
+        });
+        assert_no_program_bump!(AppStateRequest::MarkCurrentItemStarted {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            now: 11.5,
+        });
+        assert_no_program_bump!(AppStateRequest::UpdateItem {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            changes: PlaylistItemPatch {
+                display_title: Some("metadata only".to_owned()),
+                ..PlaylistItemPatch::default()
+            },
+            persist_backup: false,
+            now: 11.6,
+        });
+        assert_no_program_bump!(AppStateRequest::AppendHistory {
+            schema_version: 1,
+            entry: history("BV-history:p1:a1", "Alice"),
+            now: 11.7,
+        });
+        assert_no_program_bump!(AppStateRequest::MarkSessionPlayedThreshold {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            now: 11.8,
+        });
+        assert_no_program_bump!(AppStateRequest::UpdateOwnerInfo {
+            schema_version: 1,
+            source_url: "https://example.test/a".to_owned(),
+            owner_mid: 42,
+            owner_name: "owner".to_owned(),
+            owner_url: "https://example.test/owner".to_owned(),
+            now: 11.9,
+        });
+        assert_no_program_bump!(AppStateRequest::SetPlaybackMode {
+            schema_version: 1,
+            mode: "online".to_owned(),
+            now: 12.0,
+        });
+        assert_no_program_bump!(AppStateRequest::MoveItem {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            direction: "down".to_owned(),
+            now: 12.1,
+        });
+        assert_no_program_bump!(AppStateRequest::RenameSessionUser {
+            schema_version: 1,
+            current_name: "Alice".to_owned(),
+            new_name: "Alicia".to_owned(),
+            now: 12.2,
+        });
+
+        let (queued_token, _) = begin_cache_attempt(&mut state, "b");
+        let queued_ready = ready_event(
+            &state,
+            "b",
+            queued_token,
+            "video-b.mp4",
+            &[
+                ("original", "original-b.m4a"),
+                ("instrumental", "instrumental-b.m4a"),
+            ],
+            "original",
+        );
+        let queued_publication = success(apply_cache(
+            &mut state,
+            "b",
+            queued_token,
+            queued_ready,
+            12.4,
+        ));
+        assert_eq!(
+            queued_publication
+                .snapshot
+                .expect("queued Ready snapshot")
+                .playback_generation,
+            generation
+        );
+        assert_no_program_bump!(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            variant_id: "instrumental".to_owned(),
+            now: 12.5,
+        });
+        let (queued_refresh_token, _) = begin_cache_attempt(&mut state, "b");
+        for event in [
+            CacheEvent::Queued {
+                message: "queued refresh".to_owned(),
+            },
+            CacheEvent::Started {
+                message: "started refresh".to_owned(),
+            },
+            CacheEvent::Progress {
+                progress: 80.0,
+                message: Some("refresh progress".to_owned()),
+            },
+            CacheEvent::Failed {
+                message: "refresh failed".to_owned(),
+            },
+        ] {
+            let queued_refresh = success(apply_cache(
+                &mut state,
+                "b",
+                queued_refresh_token,
+                event,
+                12.55,
+            ));
+            assert_eq!(
+                queued_refresh
+                    .snapshot
+                    .expect("queued refresh snapshot")
+                    .playback_generation,
+                generation
+            );
+        }
+        let (queued_recache_token, _) = begin_cache_attempt(&mut state, "b");
+        let queued_recache_ready = ready_event(
+            &state,
+            "b",
+            queued_recache_token,
+            "video-b-v2.mp4",
+            &[
+                ("original", "original-b-v2.m4a"),
+                ("instrumental", "instrumental-b-v2.m4a"),
+            ],
+            "original",
+        );
+        let queued_recache = success(apply_cache(
+            &mut state,
+            "b",
+            queued_recache_token,
+            queued_recache_ready,
+            12.58,
+        ));
+        assert_eq!(
+            queued_recache
+                .snapshot
+                .expect("queued recache snapshot")
+                .playback_generation,
+            generation
+        );
+        let (queued_reset_token, _) = begin_cache_attempt(&mut state, "b");
+        let queued_reset = success(apply_cache(
+            &mut state,
+            "b",
+            queued_reset_token,
+            CacheEvent::Reset {
+                message: "queued reset".to_owned(),
+                clear_selected_audio_variant: true,
+            },
+            12.6,
+        ));
+        assert_eq!(
+            queued_reset
+                .snapshot
+                .expect("queued reset snapshot")
+                .playback_generation,
+            generation
+        );
+
+        let no_op = assert_no_program_bump!(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 50,
+            now: 12.7,
+        });
+        assert!(!no_op.committed);
+    }
+
+    #[test]
+    fn reset_player_forces_exactly_one_current_program_lifetime() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        let pending = initialize(&mut state, initial);
+        let pending_program = pending.playback_program.clone();
+
+        let pending_reset = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 13.0,
+        }));
+        assert!(pending_reset.committed);
+        let pending_reset_snapshot = pending_reset.snapshot.expect("pending reset snapshot");
+        assert_eq!(pending_reset_snapshot.playback_program, pending_program);
+        assert_eq!(
+            pending_reset_snapshot.playback_generation,
+            pending.playback_generation + 1
+        );
+        assert_eq!(pending_reset_snapshot.revision, pending.revision + 1);
+        assert_eq!(pending_reset.effects, PersistenceEffects::default());
+
+        let second_reset = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 13.1,
+        }));
+        assert!(second_reset.committed);
+        let second_reset_snapshot = second_reset.snapshot.expect("second reset snapshot");
+        assert_eq!(second_reset_snapshot.playback_program, pending_program);
+        assert_eq!(
+            second_reset_snapshot.playback_generation,
+            pending_reset_snapshot.playback_generation + 1
+        );
+        assert_eq!(
+            second_reset_snapshot.revision,
+            pending_reset_snapshot.revision + 1
+        );
+        assert_eq!(second_reset.effects, PersistenceEffects::default());
+
+        success(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 42,
+            now: 13.2,
+        }));
+        success(state.execute(AppStateRequest::SetMuted {
+            schema_version: 1,
+            is_muted: true,
+            now: 13.3,
+        }));
+        success(state.execute(AppStateRequest::ApplyAvDelay {
+            schema_version: 1,
+            action: AvDelayCommand::Adjust { delta_ms: 50 },
+            now: 13.4,
+        }));
+        success(state.execute(AppStateRequest::SetKeyShift {
+            schema_version: 1,
+            key_shift: 3,
+            now: 13.5,
+        }));
+        success(state.execute(AppStateRequest::MarkCurrentItemStarted {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            now: 13.6,
+        }));
+        let before_settings_reset =
+            success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+                .snapshot
+                .expect("snapshot before settings reset");
+        let settings_reset = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 13.7,
+        }));
+        assert!(settings_reset.committed);
+        let settings_reset_snapshot = settings_reset.snapshot.expect("settings reset snapshot");
+        assert_eq!(settings_reset_snapshot.playback_program, pending_program);
+        assert_eq!(
+            settings_reset_snapshot.playback_generation,
+            before_settings_reset.playback_generation + 1
+        );
+        assert_eq!(settings_reset_snapshot.player_settings.av_offset_ms, 0);
+        assert_eq!(settings_reset_snapshot.player_settings.volume_percent, 100);
+        assert!(!settings_reset_snapshot.player_settings.is_muted);
+        assert_eq!(settings_reset_snapshot.player_settings.key_shift, 0);
+        assert!(!settings_reset_snapshot.current_item_started);
+        assert!(settings_reset.effects.write_core);
+        assert!(settings_reset.effects.write_session_played);
+
+        let (fill_token, _) = begin_cache_attempt(&mut state, "a");
+        let ready = ready_event(
+            &state,
+            "a",
+            fill_token,
+            "video.mp4",
+            &[("original", "original.m4a")],
+            "original",
+        );
+        let mounted = success(apply_cache(&mut state, "a", fill_token, ready, 14.0))
+            .snapshot
+            .expect("mounted snapshot");
+        let mounted_program = mounted.playback_program.clone();
+        let mounted_reset = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 14.1,
+        }));
+        assert!(mounted_reset.committed);
+        let mounted_reset_snapshot = mounted_reset.snapshot.expect("mounted reset snapshot");
+        assert_eq!(mounted_reset_snapshot.playback_program, mounted_program);
+        assert_eq!(
+            mounted_reset_snapshot.playback_generation,
+            mounted.playback_generation + 1
+        );
+        assert_eq!(mounted_reset.effects, PersistenceEffects::default());
+    }
+
+    #[test]
+    fn reset_player_without_a_program_never_creates_a_generation() {
+        let mut state = AppState::default();
+        let initial = initialize(&mut state, seed());
+
+        let no_op = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 11.0,
+        }));
+        assert!(!no_op.committed);
+        let no_op_snapshot = no_op.snapshot.expect("no-op reset snapshot");
+        assert_eq!(no_op_snapshot, initial);
+        assert_eq!(no_op.effects, PersistenceEffects::default());
+
+        success(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 42,
+            now: 11.1,
+        }));
+        let before_settings_reset =
+            success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+                .snapshot
+                .expect("snapshot before no-program settings reset");
+        let settings_reset = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 11.2,
+        }));
+        assert!(settings_reset.committed);
+        let settings_reset_snapshot = settings_reset.snapshot.expect("settings reset snapshot");
+        assert_eq!(settings_reset_snapshot.playback_program, None);
+        assert_eq!(
+            settings_reset_snapshot.playback_generation,
+            before_settings_reset.playback_generation
+        );
+        assert!(settings_reset.effects.write_core);
+        assert!(settings_reset.effects.write_session_played);
+    }
+
+    #[test]
+    fn reset_player_generation_overflow_is_fully_atomic() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.player_settings.volume_percent = 42;
+        initial.current_item_started = true;
+        initialize(&mut state, initial);
+        state
+            .data
+            .as_mut()
+            .expect("initialized state")
+            .playback_generation = MAX_SAFE_JSON_INTEGER;
+        let before = state.data.clone();
+        let incarnation_counter_before = state.next_item_incarnation_id;
+
+        let overflow = failure(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 11.0,
+        }));
+        assert_eq!(overflow.status, "internal_error");
+        assert!(
+            overflow
+                .error
+                .message
+                .contains("playback generation overflow")
+        );
+        assert_eq!(state.data, before);
+        assert_eq!(state.next_item_incarnation_id, incarnation_counter_before);
+    }
+
+    #[test]
+    fn same_id_new_incarnation_and_invalid_or_overflowing_programs_are_atomic() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-live", "Alice"));
+        initial.backup = Some(BackupSeed {
+            current_item: Some(item("a", "BV-restored", "Alice")),
+            playlist: Vec::new(),
+            played_session: None,
+            updated_at: 9.0,
+        });
+        let initialized = initialize(&mut state, initial);
+        let initial_incarnation = initialized
+            .playback_program
+            .as_ref()
+            .expect("initial program")
+            .item_incarnation_id
+            .clone();
+        let (ready_token, _) = begin_cache_attempt(&mut state, "a");
+        let current_ready = ready_event(
+            &state,
+            "a",
+            ready_token,
+            "video.mp4",
+            &[("original", "original.m4a")],
+            "original",
+        );
+        let mounted = success(apply_cache(
+            &mut state,
+            "a",
+            ready_token,
+            current_ready,
+            11.0,
+        ))
+        .snapshot
+        .expect("mounted snapshot");
+        let restored = success(state.execute(AppStateRequest::RestoreBackup {
+            schema_version: 1,
+            reset_av_delay: false,
+            now: 12.0,
+        }))
+        .snapshot
+        .expect("restored snapshot");
+        let restored_program = restored
+            .playback_program
+            .as_ref()
+            .expect("restored program");
+        assert_eq!(restored_program.item_id, "a");
+        assert_ne!(restored_program.item_incarnation_id, initial_incarnation);
+        assert!(restored_program.artifact_set_id.is_none());
+        assert!(restored_program.selected_audio_variant_id.is_empty());
+        assert_eq!(
+            restored.playback_generation,
+            mounted.playback_generation + 1
+        );
+
+        let mut invalid_state = AppState::default();
+        let mut invalid_initial = seed();
+        invalid_initial.current_item = Some(item("spaced", "BV-spaced", "Alice"));
+        initialize(&mut invalid_state, invalid_initial);
+        let (invalid_token, _) = begin_cache_attempt(&mut invalid_state, "spaced");
+        let invalid_ready = ready_event(
+            &invalid_state,
+            "spaced",
+            invalid_token,
+            "video.mp4",
+            &[(" original ", "original.m4a")],
+            " original ",
+        );
+        success(apply_cache(
+            &mut invalid_state,
+            "spaced",
+            invalid_token,
+            invalid_ready,
+            11.0,
+        ));
+        let invalid_before = invalid_state.data.clone();
+        let rejected = failure(invalid_state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "spaced".to_owned(),
+            variant_id: "original".to_owned(),
+            now: 12.0,
+        }));
+        assert_eq!(rejected.error.kind, "invalid_playback_program");
+        assert_eq!(invalid_state.data, invalid_before);
+
+        let mut overflow_state = AppState::default();
+        let mut overflow_initial = seed();
+        overflow_initial.current_item = Some(item("overflow", "BV-overflow", "Alice"));
+        initialize(&mut overflow_state, overflow_initial);
+        overflow_state
+            .data
+            .as_mut()
+            .expect("overflow state data")
+            .playback_generation = MAX_SAFE_JSON_INTEGER;
+        let overflow_before = overflow_state.data.clone();
+        let incarnation_counter_before = overflow_state.next_item_incarnation_id;
+        let overflow = failure(overflow_state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "overflow".to_owned(),
+            variant_id: "p1_p1".to_owned(),
+            now: 13.0,
+        }));
+        assert_eq!(overflow.status, "internal_error");
+        assert!(
+            overflow
+                .error
+                .message
+                .contains("playback generation overflow")
+        );
+        assert_eq!(overflow_state.data, overflow_before);
+        assert_eq!(
+            overflow_state.next_item_incarnation_id,
+            incarnation_counter_before
+        );
     }
 
     #[test]
@@ -4610,11 +5584,14 @@ mod tests {
         let mut state = AppState::default();
         let mut initial = seed();
         initial.current_item = Some(item("a", "BV-a", "Alice"));
-        initialize(&mut state, initial.clone());
+        let first_lifecycle = initialize(&mut state, initial.clone());
+        assert_eq!(first_lifecycle.playback_generation, 1);
         let (first, first_response) = begin_cache_attempt(&mut state, "a");
         let first_reservation = cache_reservation(&first_response);
-        success(state.execute(AppStateRequest::Shutdown { schema_version: 1 }));
-        initialize(&mut state, initial);
+        let shutdown = success(state.execute(AppStateRequest::Shutdown { schema_version: 1 }));
+        assert!(shutdown.snapshot.is_none());
+        let second_lifecycle = initialize(&mut state, initial);
+        assert_eq!(second_lifecycle.playback_generation, 1);
         let (second, second_response) = begin_cache_attempt(&mut state, "a");
         let second_reservation = cache_reservation(&second_response);
         assert!(second > first);
@@ -5007,7 +5984,7 @@ mod tests {
             ));
             assert_eq!(state.next_cache_attempt_token, allocator);
             let data = state.data.as_ref().expect("data");
-            assert_eq!(data.snapshot(), initial_snapshot);
+            assert_eq!(data.snapshot().expect("valid snapshot"), initial_snapshot);
             assert!(data.active_cache_attempts["a"].terminal_event.is_none());
         }
     }

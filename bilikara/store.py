@@ -27,6 +27,7 @@ MAX_PLAYLIST_PLAN_ITEMS = 10_000
 MAX_PLAYLIST_STRING_BYTES = 512
 MAX_PLAYLIST_HISTORY_KEY_BYTES = 8_192
 MAX_PLAYLIST_AUDIO_PAGES = 256
+MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 
 
 def _py_apply_av_delay_action(
@@ -1246,14 +1247,41 @@ class PlaylistStore:
             snapshot.get("session_generation"),
             snapshot.get("playback_generation"),
         ]
+        playback_program = snapshot.get("playback_program")
+        program_keys = {
+            "item_id",
+            "item_incarnation_id",
+            "selected_audio_variant_id",
+            "artifact_set_id",
+        }
+        valid_program = playback_program is None or (
+            isinstance(playback_program, dict)
+            and set(playback_program) == program_keys
+            and isinstance(playback_program.get("item_id"), str)
+            and bool(playback_program["item_id"])
+            and isinstance(playback_program.get("item_incarnation_id"), str)
+            and bool(playback_program["item_incarnation_id"])
+            and isinstance(playback_program.get("selected_audio_variant_id"), str)
+            and (
+                playback_program.get("artifact_set_id") is None
+                or (
+                    isinstance(playback_program.get("artifact_set_id"), str)
+                    and bool(playback_program["artifact_set_id"])
+                )
+            )
+        )
         valid = bool(valid) and (
             isinstance(snapshot.get("playback_mode"), str)
             and isinstance(snapshot.get("current_item_started"), bool)
             and isinstance(snapshot.get("updated_at"), (int, float))
+            and "playback_program" in snapshot
+            and valid_program
+            and (snapshot.get("current_item") is None) == (playback_program is None)
             and all(
                 isinstance(value, int) and not isinstance(value, bool) and value >= 1
                 for value in generations
             )
+            and snapshot.get("playback_generation") <= MAX_SAFE_JSON_INTEGER
             and all(key in persistence for key in persistence_required)
             and isinstance(persistence.get("player_settings"), dict)
             and all(
