@@ -26,6 +26,7 @@ class SongTransitionFrontendTest(unittest.TestCase):
                 (
                     "(async () => {\n"
                     "function applyFreshStateSnapshot(snapshot) { state.data = snapshot; return true; }\n"
+                    "async function apiPostStateSnapshot(url, payload) { return applyFreshStateSnapshot(await apiPost(url, payload)); }\n"
                     f"{script}\n"
                     "})().catch((error) => { console.error(error); process.exit(1); });"
                 ),
@@ -163,7 +164,7 @@ console.log(JSON.stringify({{
 
     def test_inverse_play_now_responses_cannot_restore_an_older_current_item(self):
         freshness = self.source_slice(
-            "function hostStateRevision", "function syncCachePanelVisibility"
+            "function isSafeHostSnapshotInteger", "function syncCachePanelVisibility"
         )
         playlist_action = self.source_slice(
             "async function handlePlaylistAction", "elements.addForm.addEventListener"
@@ -171,10 +172,34 @@ console.log(JSON.stringify({{
         result = self.run_node(
             f"""
 const state = {{
-  data: {{ state_revision: 1, current_item: {{ id: "song-a" }} }},
+  data: snapshot(1, 1, 1, "song-a", "i-a", "a-a"),
   localShouldBePlaying: true,
   localAdvanceInFlight: false,
 }};
+const window = {{ location: {{ href: "http://127.0.0.1:8080/" }} }};
+function snapshot(stateRevision, revision, generation, itemId, incarnation, artifact) {{
+  const variantId = "instrumental";
+  const currentItem = {{
+    id: itemId,
+    item_incarnation_id: incarnation,
+    selected_audio_variant_id: variantId,
+    artifact_set_id: artifact,
+    video_media_url: `/media/${{artifact}}/video.mp4`,
+    audio_variants: [{{ id: variantId, audio_url: `/media/${{artifact}}/audio.m4a` }}],
+  }};
+  return {{
+    state_revision: stateRevision,
+    revision,
+    playback_generation: generation,
+    playback_program: {{
+      item_id: itemId,
+      item_incarnation_id: incarnation,
+      selected_audio_variant_id: variantId,
+      artifact_set_id: artifact,
+    }},
+    current_item: currentItem,
+  }};
+}}
 class Button {{
   constructor(id) {{
     this.dataset = {{ id, action: "play-now" }};
@@ -203,9 +228,9 @@ function syncMountedLocalPlayer() {{}}
 {playlist_action}
 const playB = handlePlaylistAction(new Button("song-b"));
 const playC = handlePlaylistAction(new Button("song-c"));
-pending.get("song-c")({{ state_revision: 3, current_item: {{ id: "song-c" }} }});
+pending.get("song-c")(snapshot(3, 3, 3, "song-c", "i-c", "a-c"));
 await Promise.resolve();
-pending.get("song-b")({{ state_revision: 2, current_item: {{ id: "song-b" }} }});
+pending.get("song-b")(snapshot(2, 2, 2, "song-b", "i-b", "a-b"));
 await Promise.all([playB, playC]);
 console.log(JSON.stringify({{
   current: state.data.current_item.id,
@@ -373,7 +398,7 @@ console.log(JSON.stringify({{
         self.assertIn('requestNextTrack().catch(() => {})', self.source)
         self.assertIn('action === "play-now"', self.source)
         self.assertIn("state.pendingSongTransitionOverlayData = null", self.source_slice(
-            "function teardownMountedPlayer", "function activeLocalPlayerElements"
+            "function retireHostPlaybackSession", "function replaceHostPlayerView"
         ))
 
 

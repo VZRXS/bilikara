@@ -28,6 +28,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 SCENARIOS = (
     "player-reset",
+    "failed-reset",
     "recache-playing",
     "recache-paused",
     "recache-failed",
@@ -36,6 +37,9 @@ SCENARIOS = (
     "play-now-ready",
     "play-now-uncached",
     "natural-ended",
+    "session-rerender",
+    "inverse-snapshot",
+    "page-restore",
 )
 
 
@@ -245,6 +249,8 @@ def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[s
     delayed_a2 = {"fixture": "a2", "delay": 1.8}
     if scenario == "player-reset":
         return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
+    if scenario == "failed-reset":
+        return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
     if scenario == "recache-playing":
         return ["A"], 1, {"A": [{"fixture": "a1"}, delayed_a2]}, ["A"]
     if scenario == "recache-paused":
@@ -283,6 +289,19 @@ def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[s
             "A": [{"fixture": "n1"}],
             "B": [{"fixture": "b1"}],
         }, ["A", "B"]
+    if scenario == "session-rerender":
+        return ["A", "B"], 2, {
+            "A": [{"fixture": "a1"}],
+            "B": [{"fixture": "b1"}],
+        }, ["A", "B"]
+    if scenario == "inverse-snapshot":
+        return ["A", "B", "C"], 3, {
+            "A": [{"fixture": "a1"}],
+            "B": [{"fixture": "b1"}],
+            "C": [{"fixture": "c1"}],
+        }, ["A", "B", "C"]
+    if scenario == "page-restore":
+        return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
     raise ValueError(f"unknown scenario: {scenario}")
 
 
@@ -625,7 +644,7 @@ def _worker(args: argparse.Namespace) -> int:
         "B"
         if args.scenario in {"normal-switch", "natural-ended"}
         else "C"
-        if args.scenario in {"play-now-ready", "play-now-uncached"}
+        if args.scenario in {"play-now-ready", "play-now-uncached", "inverse-snapshot"}
         else "A"
     )
     server_acceptance = bool(
@@ -770,7 +789,7 @@ def _main(args: argparse.Namespace) -> int:
                 break
 
         evidence = {
-            "contract": "immutable-recache-publication-v1",
+            "contract": "host-playback-session-lifetime-v1",
             "platform": sys.platform,
             "python": sys.version.split()[0],
             "browser_engine": "Playwright Chromium",
@@ -798,6 +817,9 @@ def _main(args: argparse.Namespace) -> int:
                     "normal next rejects a late old-element ended callback",
                     "Play Now Ready and uncached reject late old-item work/events",
                     "natural media end advances and archives exactly once",
+                    "unchanged-program Host rerenders preserve one advancing media pair",
+                    "inverse full-snapshot delivery cannot roll back the accepted program",
+                    "page restore and Host reload each advance Rust generation before one fresh media lifetime",
                 ],
                 "automated_coverage": [
                     "stale filesystem publication leaves an orphan",
@@ -825,10 +847,6 @@ def _main(args: argparse.Namespace) -> int:
                     "audio_variant_change_during_refresh": (
                         "deterministic live fixtures expose one audio variant; multi-variant "
                         "selection precedence is covered by Rust AppState tests"
-                    ),
-                    "rapid_play_now_a_b_c": (
-                        "inverse-response ordering is covered by the executable frontend harness; "
-                        "the live gate exercises Ready and uncached Play Now separately"
                     ),
                     "manual_next_play_now_overlap": (
                         "bounded transition deduplication is covered by frontend behavioral tests"

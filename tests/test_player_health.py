@@ -158,7 +158,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
 
     def test_manual_current_cache_retry_remains_forced(self):
         self.assertIn(
-            'apiPost("/api/cache/retry", { item_id: itemId, force: true })',
+            'apiPostStateSnapshot("/api/cache/retry", { item_id: itemId, force: true })',
             self.app_source,
         )
         self.assertIn(

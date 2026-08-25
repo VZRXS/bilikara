@@ -471,6 +471,36 @@ class RustAppStateStoreTest(unittest.TestCase):
         }
         self.assertEqual(persisted_after, persisted_before)
 
+    def test_restart_playback_program_preserves_settings_without_persistence(self):
+        store = self.store()
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+        store.set_mode("online")
+        store.set_volume_percent(37)
+        store.set_muted(True)
+        before = store.authoritative_snapshot()
+        persisted_before = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*.json")
+        }
+
+        changed = store.restart_playback_program()
+
+        after = store.authoritative_snapshot()
+        self.assertTrue(changed)
+        self.assertEqual(after["playback_program"], before["playback_program"])
+        self.assertEqual(after["player_settings"], before["player_settings"])
+        self.assertEqual(after["playback_mode"], before["playback_mode"])
+        self.assertEqual(after["revision"], before["revision"] + 1)
+        self.assertEqual(
+            after["playback_generation"], before["playback_generation"] + 1
+        )
+        persisted_after = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*.json")
+        }
+        self.assertEqual(persisted_after, persisted_before)
+
     def test_concurrent_ffi_callers_are_serialized_by_rust_revision(self):
         store = self.store()
         initial_revision = store.revision

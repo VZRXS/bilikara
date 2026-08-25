@@ -461,6 +461,86 @@ async function playerReset(page) {
   });
 }
 
+async function failedPlayerReset(page) {
+  await startPlayback(page, "A");
+  const before = await state(page);
+  await installReplacementObserver(page);
+  const captured = await page.evaluate(() => {
+    window.__acceptanceFailedResetVideo = document.querySelector('video[data-player-role="video"]');
+    window.__acceptanceFailedResetAudio = document.querySelector('audio[data-player-role="audio"]');
+    return {
+      currentTime: Number(window.__acceptanceFailedResetVideo?.currentTime || 0),
+      volumePreference: window.localStorage.getItem("bilikara.player.volume"),
+      mutedPreference: window.localStorage.getItem("bilikara.player.muted"),
+    };
+  });
+  await page.route("**/api/player/reset", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, error: "injected reset failure" }),
+    });
+  }, { times: 1 });
+
+  const settingsToggle = page.locator("#cache-settings-toggle");
+  if ((await settingsToggle.getAttribute("aria-expanded")) !== "true") {
+    await settingsToggle.click();
+  }
+  const advancedToggle = page.locator("#cache-panel-advanced-trigger");
+  if ((await advancedToggle.getAttribute("aria-expanded")) !== "true") {
+    await advancedToggle.click();
+  }
+  await page.locator("#player-reset-button").click();
+  const responsePromise = page.waitForResponse(
+    (response) => response.url() === `${baseUrl}/api/player/reset`
+      && response.request().method() === "POST",
+  );
+  await page.locator("#confirm-ok").click();
+  const response = await responsePromise;
+  const payload = await response.json();
+  assert(response.ok() && payload?.ok === false, "failed-reset fixture did not reject the request", payload);
+  await page.unroute("**/api/player/reset");
+
+  const advanced = await waitFor(async () => {
+    const value = await media(page);
+    return !value.paused && value.currentTime > captured.currentTime + 0.25 ? value : null;
+  }, "failed player reset stopped the healthy playback clock");
+  const after = await state(page);
+  const identity = await page.evaluate(() => ({
+    sameVideo: document.querySelector('video[data-player-role="video"]')
+      === window.__acceptanceFailedResetVideo,
+    sameAudio: document.querySelector('audio[data-player-role="audio"]')
+      === window.__acceptanceFailedResetAudio,
+    volumePreference: window.localStorage.getItem("bilikara.player.volume"),
+    mutedPreference: window.localStorage.getItem("bilikara.player.muted"),
+  }));
+  assert(
+    identity.sameVideo
+      && identity.sameAudio
+      && identity.volumePreference === captured.volumePreference
+      && identity.mutedPreference === captured.mutedPreference
+      && advanced.videoCount === 1
+      && advanced.audioCount === 1
+      && advanced.replacementCount === 0,
+    "failed player reset changed the healthy media lifetime or local preferences",
+    { captured, identity, advanced },
+  );
+  assert(
+    after.revision === before.revision
+      && after.playback_generation === before.playback_generation
+      && JSON.stringify(after.playback_program) === JSON.stringify(before.playback_program)
+      && JSON.stringify(after.player_settings) === JSON.stringify(before.player_settings),
+    "failed player reset changed authoritative state",
+    { before, after },
+  );
+  observations.push({
+    boundary: "failed-player-reset-preserves-session",
+    generation: after.playback_generation,
+    identity,
+    media: advanced,
+  });
+}
+
 async function recachePaused(page) {
   await startPlayback(page, "A");
   const pausedBefore = await pausePlayback(page, "A");
@@ -610,6 +690,305 @@ async function naturalEnded(page) {
   observations.push({ boundary: "natural-ended-advanced-once", currentItem: bState.current_item?.id, naturalEndedCount: naturalCount, media: afterMedia });
 }
 
+async function sessionRerender(page) {
+  const started = await startPlayback(page, "A");
+  await installReplacementObserver(page);
+  const before = await state(page);
+  const result = await page.evaluate(async () => {
+    const frame = document.querySelector("#player-frame");
+    const video = frame?.querySelector('video[data-player-role="video"]') || null;
+    const audio = frame?.querySelector('audio[data-player-role="audio"]') || null;
+    window.__acceptanceSessionVideo = video;
+    window.__acceptanceSessionAudio = audio;
+    const beforeTime = Number(video?.currentTime || 0);
+
+    setLanguage("ja");
+    applyTheme("dark");
+    render();
+    const settingsAccepted = await apiPostStateSnapshot("/api/player/volume", {
+      volume_percent: 73,
+      is_muted: false,
+    });
+    render();
+    const queueAccepted = await apiPostStateSnapshot("/api/playlist/remove", {
+      item_id: "B",
+    });
+    render();
+
+    const activeSession = applyPresentationSession({
+      mode: "localDualScreen",
+      phase: "active",
+      generation: 1,
+      selectedOutputDisplayId: "display:audience",
+      controllerDisplayId: "display:controller",
+      hostReady: true,
+      controllerReady: true,
+      lastAcceptedCommandSequence: 0,
+      lastAppliedCommandSequence: 0,
+      playbackAuthority: "host",
+      mediaRendererOwner: "host",
+      recoveryReason: "",
+    });
+    const entered = applyPresentationCompositionDom(1, "stageOnly");
+    const stage = {
+      sameVideo: frame.querySelector('video[data-player-role="video"]') === video,
+      sameAudio: frame.querySelector('audio[data-player-role="audio"]') === audio,
+      inert: frame.inert,
+      activeClass: document.body.classList.contains("is-presentation-stage-only"),
+    };
+    applyPresentationSession({
+      ...activeSession,
+      phase: "recovering",
+      generation: 2,
+      hostReady: false,
+      controllerReady: false,
+    });
+    const exited = applyPresentationCompositionDom(2, "combined");
+    render();
+    return {
+      beforeTime,
+      settingsAccepted,
+      queueAccepted,
+      entered,
+      exited,
+      stage,
+      exit: {
+        sameVideo: frame.querySelector('video[data-player-role="video"]') === video,
+        sameAudio: frame.querySelector('audio[data-player-role="audio"]') === audio,
+        inert: frame.inert,
+        activeClass: document.body.classList.contains("is-presentation-stage-only"),
+      },
+    };
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  const settled = await media(page);
+  const identity = await page.evaluate(() => ({
+    sameVideo: document.querySelector('video[data-player-role="video"]')
+      === window.__acceptanceSessionVideo,
+    sameAudio: document.querySelector('audio[data-player-role="audio"]')
+      === window.__acceptanceSessionAudio,
+  }));
+  const after = await state(page);
+  assert(result.entered && result.exited, "presentation composition did not apply", result);
+  assert(
+    result.stage.sameVideo && result.stage.sameAudio && result.stage.inert && result.stage.activeClass,
+    "dual-screen composition replaced the Host media pair",
+    result.stage,
+  );
+  assert(
+    result.exit.sameVideo && result.exit.sameAudio && !result.exit.inert && !result.exit.activeClass,
+    "single-screen composition replaced the Host media pair",
+    result.exit,
+  );
+  assert(
+    identity.sameVideo
+      && identity.sameAudio
+      && settled.videoCount === 1
+      && settled.audioCount === 1
+      && settled.replacementCount === 0
+      && settled.currentTime > Math.max(started.currentTime, result.beforeTime) + 0.2,
+    "unchanged-program rerenders did not preserve one advancing pair",
+    { started, result, identity, settled },
+  );
+  assert(
+    after.current_item?.id === "A"
+      && (after.playlist || []).length === 0
+      && after.player_settings?.volume_percent === 73
+      && after.player_settings?.is_muted === false,
+    "settings/queue rerenders did not reach the authoritative snapshot",
+    { result, after },
+  );
+  assert(after.playback_generation === before.playback_generation, "unchanged rerenders advanced playback generation", { before, after });
+  observations.push({ boundary: "unchanged-program-rerenders", result, identity, media: settled });
+}
+
+async function inverseSnapshot(page) {
+  await startPlayback(page, "A");
+  await installReplacementObserver(page);
+  let releaseOlder;
+  const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
+  let olderCapturedResolve;
+  const olderCaptured = new Promise((resolve) => { olderCapturedResolve = resolve; });
+  let newerDeliveredResolve;
+  const newerDelivered = new Promise((resolve) => { newerDeliveredResolve = resolve; });
+  const responses = {};
+
+  await page.route("**/api/playlist/play-now", async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON();
+    const response = await route.fetch();
+    const responseBody = await response.body();
+    const payload = JSON.parse(responseBody.toString("utf8"));
+    responses[body.item_id] = payload.data;
+    if (body.item_id === "B") {
+      olderCapturedResolve();
+      await olderGate;
+    }
+    await route.fulfill({ response, body: responseBody });
+    if (body.item_id === "C") {
+      newerDeliveredResolve();
+    }
+  });
+
+  await clickPlayNow(page, "B");
+  await olderCaptured;
+  await clickPlayNow(page, "C");
+  await newerDelivered;
+  const cPlaying = await observeAutomaticPlayback(page, "C", 0.15);
+  releaseOlder();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await page.unroute("**/api/playlist/play-now");
+
+  const after = await state(page);
+  const settled = await media(page);
+  assert(
+    responses.C.state_revision > responses.B.state_revision,
+    "inverse fixture did not produce ordered complete snapshots",
+    responses,
+  );
+  assert(
+    after.current_item?.id === "C"
+      && settled.itemId === "C"
+      && settled.replacementCount === 1
+      && settled.videoCount === 1
+      && settled.audioCount === 1
+      && !settled.paused
+      && settled.currentTime > cPlaying.currentTime + 0.1,
+    "late older complete snapshot rolled back or remounted the accepted program",
+    { responses, after: after.current_item, cPlaying, settled },
+  );
+  assert(
+    responses.C.playback_generation > responses.B.playback_generation,
+    "inverse snapshots did not carry distinct Rust program generations",
+    responses,
+  );
+  observations.push({
+    boundary: "inverse-full-snapshot-ordering",
+    older: {
+      stateRevision: responses.B.state_revision,
+      revision: responses.B.revision,
+      playbackGeneration: responses.B.playback_generation,
+    },
+    newer: {
+      stateRevision: responses.C.state_revision,
+      revision: responses.C.revision,
+      playbackGeneration: responses.C.playback_generation,
+    },
+    media: settled,
+  });
+}
+
+async function pageRestore(page) {
+  const started = await startPlayback(page, "A");
+  const before = await state(page);
+  await installReplacementObserver(page);
+  await page.evaluate(() => {
+    window.__acceptancePageHideVideo = document.querySelector('video[data-player-role="video"]');
+    window.__acceptancePageHideAudio = document.querySelector('audio[data-player-role="audio"]');
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+  });
+  const retired = await page.evaluate(() => ({
+    videoSrc: window.__acceptancePageHideVideo?.getAttribute("src") || "",
+    audioSrc: window.__acceptancePageHideAudio?.getAttribute("src") || "",
+    videoPaused: Boolean(window.__acceptancePageHideVideo?.paused),
+    audioPaused: Boolean(window.__acceptancePageHideAudio?.paused),
+  }));
+  assert(!retired.videoSrc && !retired.audioSrc && retired.videoPaused && retired.audioPaused, "pagehide did not retire the exact media pair", retired);
+
+  const responsePromise = page.waitForResponse(
+    (response) => response.url() === `${baseUrl}/api/player/restart-program`
+      && response.request().method() === "POST",
+  );
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  const response = await responsePromise;
+  const payload = await response.json();
+  assert(response.ok() && payload?.ok === true, "page restore restart request failed", payload);
+  assert(
+    payload.data.playback_generation === before.playback_generation + 1
+      && payload.data.revision === before.revision + 1
+      && payload.data.state_revision > before.state_revision
+      && JSON.stringify(payload.data.playback_program) === JSON.stringify(before.playback_program)
+      && JSON.stringify(payload.data.player_settings) === JSON.stringify(before.player_settings),
+    "page restore restart did not preserve the Rust program and settings",
+    { before, response: payload.data },
+  );
+  const automatic = await observeAutomaticPlayback(page, "A", 0.15);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  const settled = await media(page);
+  const retirement = await page.evaluate(() => ({
+    oldVideoConnected: Boolean(window.__acceptancePageHideVideo?.isConnected),
+    oldAudioConnected: Boolean(window.__acceptancePageHideAudio?.isConnected),
+    sameVideo: document.querySelector('video[data-player-role="video"]')
+      === window.__acceptancePageHideVideo,
+    sameAudio: document.querySelector('audio[data-player-role="audio"]')
+      === window.__acceptancePageHideAudio,
+  }));
+  assert(
+    !retirement.oldVideoConnected
+      && !retirement.oldAudioConnected
+      && !retirement.sameVideo
+      && !retirement.sameAudio
+      && settled.replacementCount === 1
+      && settled.videoCount === 1
+      && settled.audioCount === 1
+      && !settled.paused
+      && settled.currentTime > automatic.currentTime + 0.1,
+    "page restore did not settle as one fresh automatically playing pair",
+    { started, automatic, retirement, settled },
+  );
+  observations.push({
+    boundary: "pagehide-pageshow-rust-restart",
+    beforeGeneration: before.playback_generation,
+    afterGeneration: payload.data.playback_generation,
+    beforeStateRevision: before.state_revision,
+    afterStateRevision: payload.data.state_revision,
+    retired,
+    retirement,
+    media: settled,
+  });
+
+  const beforeReload = await state(page);
+  const reloadResponsePromise = page.waitForResponse(
+    (candidate) => candidate.url() === `${baseUrl}/api/player/restart-program`
+      && candidate.request().method() === "POST",
+  );
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const reloadResponse = await reloadResponsePromise;
+  const reloadPayload = await reloadResponse.json();
+  assert(
+    reloadResponse.ok()
+      && reloadPayload?.ok === true
+      && reloadPayload.data.playback_generation === beforeReload.playback_generation + 1
+      && reloadPayload.data.revision === beforeReload.revision + 1
+      && reloadPayload.data.state_revision > beforeReload.state_revision
+      && JSON.stringify(reloadPayload.data.playback_program) === JSON.stringify(beforeReload.playback_program)
+      && JSON.stringify(reloadPayload.data.player_settings) === JSON.stringify(beforeReload.player_settings),
+    "Host reload bootstrap did not advance one settings-preserving Rust lifetime",
+    { beforeReload, response: reloadPayload?.data },
+  );
+  const reloadAutomatic = await observeAutomaticPlayback(page, "A", 0.15);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  const reloadSettled = await media(page);
+  assert(
+    reloadSettled.videoCount === 1
+      && reloadSettled.audioCount === 1
+      && !reloadSettled.paused
+      && reloadSettled.currentTime > reloadAutomatic.currentTime + 0.1,
+    "Host reload bootstrap did not settle as one automatically playing pair",
+    { reloadAutomatic, reloadSettled },
+  );
+  observations.push({
+    boundary: "host-reload-rust-bootstrap",
+    beforeGeneration: beforeReload.playback_generation,
+    afterGeneration: reloadPayload.data.playback_generation,
+    beforeStateRevision: beforeReload.state_revision,
+    afterStateRevision: reloadPayload.data.state_revision,
+    media: reloadSettled,
+  });
+}
+
 async function run() {
   const browser = await chromium.launch({
     executablePath,
@@ -645,6 +1024,8 @@ async function run() {
     await waitForMedia(page, "A");
     if (scenario === "player-reset") {
       await playerReset(page);
+    } else if (scenario === "failed-reset") {
+      await failedPlayerReset(page);
     } else if (scenario === "recache-playing") {
       await recachePlaying(page);
     } else if (scenario === "recache-paused") {
@@ -661,6 +1042,12 @@ async function run() {
       await playNow(page, true);
     } else if (scenario === "natural-ended") {
       await naturalEnded(page);
+    } else if (scenario === "session-rerender") {
+      await sessionRerender(page);
+    } else if (scenario === "inverse-snapshot") {
+      await inverseSnapshot(page);
+    } else if (scenario === "page-restore") {
+      await pageRestore(page);
     } else {
       throw new Error(`unknown scenario: ${scenario}`);
     }

@@ -24,8 +24,9 @@ class AudioPitchLifecycleTest(unittest.TestCase):
         cls.snapshot_source = cls._slice(
             "function syncLocalPlayerSettingsFromSnapshot", "function markLocalVolumeWrite"
         )
-        cls.teardown_source = cls._slice(
-            "function teardownMountedPlayer", "function activeLocalPlayerElements"
+        cls.teardown_source = (
+            cls._slice("function retireHostPlaybackSession", "function replaceHostPlayerView")
+            + cls._slice("function teardownMountedPlayer", "function activeLocalPlayerElements")
         )
         cls.reset_source = cls._slice(
             "async function resetPlayerState", "async function installAppUpdate"
@@ -118,9 +119,7 @@ const window = {{ AudioContext: MockAudioContext, webkitAudioContext: null }};
 const state = {{
   data: {{ player_settings: {{ key_shift: 0 }} }},
   audioContext: null,
-  playerSignature: "mounted",
-  playerContext: {{}},
-  localPlayerEventCleanups: [],
+  hostPlaybackSession: null,
   localPlayerSyncLastSeekAt: 0,
   localPlayerSyncLastAction: "",
   localPlayerSyncLastDiagnosticAt: 0,
@@ -149,7 +148,12 @@ function clearLocalPlayerEventListeners() {{ state.localPlayerEventCleanups = []
 function clearLocalAdvanceDelay() {{}}
 function clearTauriMediaSessionState() {{}}
 function persistLocalVolumePreferences() {{}}
-async function apiPost() {{ return {{ player_settings: {{ key_shift: 0 }} }}; }}
+async function apiPostStateSnapshot(_url, _payload, options) {{
+  if (typeof options?.onAccepted === "function") {{
+    options.onAccepted();
+  }}
+  return true;
+}}
 function closeConfirm() {{}}
 function render() {{}}
 function setAppMessage() {{}}
@@ -195,6 +199,7 @@ const nonZeroAgain = {{
 }};
 
 mountedMedia = [audio];
+state.hostPlaybackSession = {{ cleanupState: "active", video: null, audio, eventCleanups: [] }};
 teardownMountedPlayer();
 const afterTeardown = {{
   activeProcessors,
@@ -208,6 +213,7 @@ state.data.player_settings.key_shift = 2;
 for (let index = 0; index < 5; index += 1) {{
   const transitionAudio = new MockAudio();
   mountedMedia = [transitionAudio];
+  state.hostPlaybackSession = {{ cleanupState: "active", video: null, audio: transitionAudio, eventCleanups: [] }};
   setupAudioPitchShifter(transitionAudio);
   teardownMountedPlayer();
 }}
@@ -215,6 +221,7 @@ const afterTransitions = {{ activeProcessors, processorCreates, processorDisposa
 
 const resetAudio = new MockAudio();
 mountedMedia = [resetAudio];
+state.hostPlaybackSession = {{ cleanupState: "active", video: null, audio: resetAudio, eventCleanups: [] }};
 setupAudioPitchShifter(resetAudio);
 await resetPlayerState();
 const afterReset = {{

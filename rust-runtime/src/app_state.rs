@@ -528,6 +528,9 @@ pub enum AppStateRequest {
         schema_version: u32,
         now: f64,
     },
+    RestartPlaybackProgram {
+        schema_version: u32,
+    },
     MarkCurrentItemStarted {
         schema_version: u32,
         item_id: String,
@@ -621,6 +624,7 @@ impl AppStateRequest {
             | Self::BeginSession { schema_version, .. }
             | Self::ResetRuntime { schema_version, .. }
             | Self::ResetPlayer { schema_version, .. }
+            | Self::RestartPlaybackProgram { schema_version }
             | Self::MarkCurrentItemStarted { schema_version, .. }
             | Self::MarkSessionPlayedThreshold { schema_version, .. }
             | Self::AppendHistory { schema_version, .. }
@@ -675,6 +679,7 @@ impl AppStateRequest {
             | Self::ApplyCacheEvent { now, .. } => Some(*now),
             Self::Initialize { .. }
             | Self::Snapshot { .. }
+            | Self::RestartPlaybackProgram { .. }
             | Self::QueryDuplicate { .. }
             | Self::BeginCacheAttempt { .. }
             | Self::AuthorizeCachePublication { .. }
@@ -3205,6 +3210,15 @@ fn apply_mutation(
             }
             Ok(result)
         }
+        AppStateRequest::RestartPlaybackProgram { .. } => {
+            if data.current_item.is_none() {
+                return Ok(MutationResult::unchanged(mutation_value(false)));
+            }
+            let mut result = MutationResult::changed(mutation_value(true), false);
+            result.force_program_lifetime = true;
+            result.effects = PersistenceEffects::default();
+            Ok(result)
+        }
         AppStateRequest::MarkCurrentItemStarted { item_id, .. } => {
             if data.current_identity() != Some(item_id.trim()) {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
@@ -4836,6 +4850,80 @@ mod tests {
             schema_version: 1,
             now: 11.0,
         }));
+        assert_eq!(overflow.status, "internal_error");
+        assert!(
+            overflow
+                .error
+                .message
+                .contains("playback generation overflow")
+        );
+        assert_eq!(state.data, before);
+        assert_eq!(state.next_item_incarnation_id, incarnation_counter_before);
+    }
+
+    #[test]
+    fn restart_playback_program_preserves_program_settings_and_persistence() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.playback_mode = "online".to_owned();
+        initial.player_settings = PlayerSettingsSeed {
+            global_av_delay_ms: 125,
+            local_av_delay_ms: -25,
+            av_delay_locked: true,
+            volume_percent: 42,
+            is_muted: true,
+            song_advance_delay_seconds: 8,
+            key_shift: 3,
+        };
+        initial.current_item_started = true;
+        let before = initialize(&mut state, initial);
+
+        let restarted =
+            success(state.execute(AppStateRequest::RestartPlaybackProgram { schema_version: 1 }));
+        assert!(restarted.committed);
+        assert_eq!(restarted.effects, PersistenceEffects::default());
+        assert_eq!(restarted.result, mutation_value(true));
+        let after = restarted.snapshot.expect("restart snapshot");
+        assert_eq!(after.revision, before.revision + 1);
+        assert_eq!(after.playback_generation, before.playback_generation + 1);
+        assert_eq!(after.playback_program, before.playback_program);
+        assert_eq!(after.playback_mode, before.playback_mode);
+        assert_eq!(after.player_settings, before.player_settings);
+        assert_eq!(after.current_item, before.current_item);
+        assert_eq!(after.current_item_started, before.current_item_started);
+        assert_eq!(after.updated_at, before.updated_at);
+    }
+
+    #[test]
+    fn restart_playback_program_without_current_program_is_a_no_op() {
+        let mut state = AppState::default();
+        let before = initialize(&mut state, seed());
+
+        let no_op =
+            success(state.execute(AppStateRequest::RestartPlaybackProgram { schema_version: 1 }));
+        assert!(!no_op.committed);
+        assert_eq!(no_op.effects, PersistenceEffects::default());
+        assert_eq!(no_op.result, mutation_value(false));
+        assert_eq!(no_op.snapshot.expect("no-op restart snapshot"), before);
+    }
+
+    #[test]
+    fn restart_playback_program_generation_overflow_is_fully_atomic() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initialize(&mut state, initial);
+        state
+            .data
+            .as_mut()
+            .expect("initialized state")
+            .playback_generation = MAX_SAFE_JSON_INTEGER;
+        let before = state.data.clone();
+        let incarnation_counter_before = state.next_item_incarnation_id;
+
+        let overflow =
+            failure(state.execute(AppStateRequest::RestartPlaybackProgram { schema_version: 1 }));
         assert_eq!(overflow.status, "internal_error");
         assert!(
             overflow

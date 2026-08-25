@@ -70,12 +70,17 @@ class SplitPlayerSyncTest(unittest.TestCase):
             'elements.playerFrame?.addEventListener("click",',
             'elements.playerFrame?.addEventListener("dblclick",',
         )
-        cls.renderer_fast_path_source = (
-            cls._slice(
-                "function playerRenderDescriptor(currentItem, playbackMode)",
-                "  const previousPlayerContext",
-            )
-            + "}\n"
+        cls.session_foundation_source = cls._slice(
+            "function hostPlaybackMountData",
+            "function renderPlayer",
+        )
+        cls.renderer_source = cls._slice(
+            "function renderPlayer(currentItem, playbackMode)",
+            "function applyRemotePlayerControl",
+        )
+        cls.program_equality_source = cls._slice(
+            "function playbackProgramDescriptorsEqual",
+            "function isValidHostMediaLocator",
         )
         cls.webkit_helpers_source = cls._slice(
             "function isWebKitPlaybackRuntime",
@@ -116,6 +121,7 @@ const state = {{
   localPlayerControlsHideGeneration: 0,
   localPlaybackStartupWatchdogTimer: null,
   localPlayerEventCleanups: [],
+  hostPlaybackSession: {{ eventCleanups: [] }},
   tauriMediaSessionOwner: null,
   lastTauriMediaSessionPositionAt: 0,
 }};
@@ -790,12 +796,12 @@ let intervalClears = 0; let timeoutClears = 0; let listenerCleanups = 0;
 global.window = { clearInterval() { intervalClears += 1; }, clearTimeout() { timeoutClears += 1; } };
 state.localPlayerSyncTimer = 1; state.localPlayerStartupTimer = 2;
 state.localPlaybackStartupWatchdogTimer = 3;
-state.localPlayerEventCleanups.push(() => { listenerCleanups += 1; });
+state.hostPlaybackSession.eventCleanups.push(() => { listenerCleanups += 1; });
 clearLocalPlayerSyncTimer(); clearLocalPlayerEventListeners();
 console.log(JSON.stringify({ intervalClears, timeoutClears, listenerCleanups,
   syncTimer: state.localPlayerSyncTimer, startupTimer: state.localPlayerStartupTimer,
   watchdogTimer: state.localPlaybackStartupWatchdogTimer,
-  cleanupCount: state.localPlayerEventCleanups.length }));
+  cleanupCount: state.hostPlaybackSession.eventCleanups.length }));
 """,
             self.lifecycle_source,
         )
@@ -813,71 +819,74 @@ console.log(JSON.stringify({ intervalClears, timeoutClears, listenerCleanups,
 let syncCalls = 0;
 let videoSeekWrites = 0;
 let audioSeekWrites = 0;
+const video = {{ currentTime: 23.5 }};
+const audio = {{ currentTime: 23.5 }};
+const program = {{
+  item_id: "item",
+  item_incarnation_id: "incarnation",
+  selected_audio_variant_id: "instrumental",
+  artifact_set_id: "artifact",
+}};
 const state = {{
-  data: {{ revision: 2, player_settings: {{ key_shift: 0 }} }},
-  language: "en",
-  playerSignature: "item|local|video.mp4|audio.m4a|ready|cached|en",
+  data: {{ playback_generation: 2, playback_program: program }},
+  hostPlaybackSession: {{
+    playbackGeneration: 2, playbackProgram: program, cleanupState: "active",
+    video, audio, eventCleanups: [],
+  }},
 }};
 function handleRatingCurrentItemChange() {{}}
-function selectedVideoUrlForItem() {{ return "video.mp4"; }}
-function selectedAudioUrlForItem() {{ return "audio.m4a"; }}
-function hostCacheDetailTextForItem() {{ return "cached"; }}
 function syncMountedLocalPlayer() {{
   syncCalls += 1;
   videoSeekWrites += 1;
   audioSeekWrites += 1;
 }}
-function syncPlayerFrameCacheHint() {{}}
-{self.renderer_fast_path_source}
-const item = {{ id: "item", cache_status: "ready" }};
+{self.program_equality_source}
+{self.session_foundation_source}
+{self.renderer_source}
+const item = {{ id: "item", item_incarnation_id: "incarnation" }};
 renderPlayer(item, "local");
-console.log(JSON.stringify({{ syncCalls, videoSeekWrites, audioSeekWrites }}));
-"""
-        )
-        self.assertEqual(
-            result,
-            {"syncCalls": 0, "videoSeekWrites": 0, "audioSeekWrites": 0},
-        )
-
-    def test_refresh_progress_preserves_mounted_pair_and_new_artifact_changes_identity_once(self):
-        result = self.run_node_script(
-            f"""
-const state = {{ language: "en", playerSignature: "" }};
-let selectedVideo = "/media/artifacts/item/set-a1/video-p1.mp4";
-let selectedAudio = "/media/artifacts/item/set-a1/audio-p1.m4a";
-let frameQueries = 0;
-const elements = {{ playerFrame: {{ querySelector() {{ frameQueries += 1; return {{}}; }} }} }};
-function handleRatingCurrentItemChange() {{}}
-function selectedVideoUrlForItem() {{ return selectedVideo; }}
-function selectedAudioUrlForItem() {{ return selectedAudio; }}
-function hostCacheDetailTextForItem(item) {{ return item.cache_message || ""; }}
-function syncPlayerFrameCacheHint() {{}}
-{self.renderer_fast_path_source}
-const current = {{ id: "song-a", cache_status: "ready", cache_progress: 100 }};
-const initial = playerRenderDescriptor(current, "local");
-state.playerSignature = initial.signature;
-const refreshing = {{ ...current, cache_progress: 61, cache_message: "refreshing" }};
-renderPlayer(refreshing, "local");
-const refreshSignature = playerRenderDescriptor(refreshing, "local").signature;
-state.language = "ja";
-const languageSignature = playerRenderDescriptor(refreshing, "local").signature;
-selectedVideo = "/media/artifacts/item/set-a2/video-p1.mp4";
-selectedAudio = "/media/artifacts/item/set-a2/audio-p1.m4a";
-const replacementSignature = playerRenderDescriptor(refreshing, "local").signature;
-const repeatedReplacementSignature = playerRenderDescriptor(refreshing, "local").signature;
 console.log(JSON.stringify({{
-  frameQueries,
-  sameDuringRefresh: initial.signature === refreshSignature,
-  sameAfterLanguageChange: refreshSignature === languageSignature,
-  replacementChanged: replacementSignature !== refreshSignature,
-  replacementStable: replacementSignature === repeatedReplacementSignature,
+  syncCalls, videoSeekWrites, audioSeekWrites,
+  sameVideo: state.hostPlaybackSession.video === video,
+  sameAudio: state.hostPlaybackSession.audio === audio,
+  currentTime: video.currentTime,
 }}));
 """
         )
         self.assertEqual(
             result,
             {
-                "frameQueries": 0,
+                "syncCalls": 0,
+                "videoSeekWrites": 0,
+                "audioSeekWrites": 0,
+                "sameVideo": True,
+                "sameAudio": True,
+                "currentTime": 23.5,
+            },
+        )
+
+    def test_refresh_progress_preserves_mounted_pair_and_new_artifact_changes_identity_once(self):
+        result = self.run_node_script(
+            f"""
+{self.program_equality_source}
+const initial = {{
+  item_id: "song-a", item_incarnation_id: "incarnation",
+  selected_audio_variant_id: "instrumental", artifact_set_id: "set-a1",
+}};
+const progressRefresh = {{ ...initial }};
+const languageRefresh = {{ ...initial }};
+const replacement = {{ ...initial, artifact_set_id: "set-a2" }};
+console.log(JSON.stringify({{
+  sameDuringRefresh: playbackProgramDescriptorsEqual(initial, progressRefresh),
+  sameAfterLanguageChange: playbackProgramDescriptorsEqual(progressRefresh, languageRefresh),
+  replacementChanged: !playbackProgramDescriptorsEqual(replacement, progressRefresh),
+  replacementStable: playbackProgramDescriptorsEqual(replacement, {{ ...replacement }}),
+}}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
                 "sameDuringRefresh": True,
                 "sameAfterLanguageChange": True,
                 "replacementChanged": True,
@@ -943,26 +952,46 @@ console.log(JSON.stringify({{
             f"""
 let syncCalls = 0;
 let videoSeekWrites = 0;
+const video = {{ currentTime: 30 }};
+const audio = {{ currentTime: 30 }};
+const program = {{
+  item_id: "item", item_incarnation_id: "incarnation",
+  selected_audio_variant_id: "instrumental", artifact_set_id: "artifact",
+}};
 const state = {{
-  data: {{ player_settings: {{ key_shift: 0 }} }},
-  language: "en",
-  playerSignature: "item|local|video.mp4|audio.m4a|ready|cached|en",
+  data: {{ playback_generation: 4, playback_program: program, player_settings: {{ key_shift: 0 }} }},
+  hostPlaybackSession: {{
+    playbackGeneration: 4, playbackProgram: program, cleanupState: "active",
+    video, audio, eventCleanups: [],
+  }},
 }};
 function handleRatingCurrentItemChange() {{}}
-function selectedVideoUrlForItem() {{ return "video.mp4"; }}
-function selectedAudioUrlForItem() {{ return "audio.m4a"; }}
-function hostCacheDetailTextForItem() {{ return "cached"; }}
 function syncMountedLocalPlayer() {{ syncCalls += 1; videoSeekWrites += 1; }}
-function syncPlayerFrameCacheHint() {{}}
-{self.renderer_fast_path_source}
-const item = {{ id: "item", cache_status: "ready" }};
+{self.program_equality_source}
+{self.session_foundation_source}
+{self.renderer_source}
+const item = {{ id: "item", item_incarnation_id: "incarnation" }};
 state.data.player_settings.key_shift = 2;
 renderPlayer(item, "local");
 renderPlayer(item, "local");
-console.log(JSON.stringify({{ syncCalls, videoSeekWrites }}));
+console.log(JSON.stringify({{
+  syncCalls, videoSeekWrites,
+  sameVideo: state.hostPlaybackSession.video === video,
+  sameAudio: state.hostPlaybackSession.audio === audio,
+  currentTime: video.currentTime,
+}}));
 """
         )
-        self.assertEqual(result, {"syncCalls": 0, "videoSeekWrites": 0})
+        self.assertEqual(
+            result,
+            {
+                "syncCalls": 0,
+                "videoSeekWrites": 0,
+                "sameVideo": True,
+                "sameAudio": True,
+                "currentTime": 30,
+            },
+        )
 
     def test_startup_readiness_events_coalesce_without_timeline_write_storm(self):
         result = self.run_node(
@@ -3163,6 +3192,7 @@ const playerControlsAutoHideMs = 5000;
         automatic_renderer = renderer[: renderer.index('  ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach')]
         automatic_sources = (
             automatic_renderer,
+            self._slice("function mountHostPlaybackSessionElements", "function reconcileHostPlaybackSession"),
             self._slice("function startLocalAdvanceDelay", "function clearLocalAdvanceDelay"),
             self._slice("async function handleSplitVideoEnded", "function holdVideoForAudio"),
             self._slice("function requireSplitPlaybackUserGesture", "function setSplitPlaybackIntent"),
@@ -3172,15 +3202,16 @@ const playerControlsAutoHideMs = 5000;
             self._slice('window.addEventListener("pageshow",', "startPolling();"),
         )
 
-        self.assertIn("videoElement.controls = false", automatic_renderer)
-        self.assertIn('videoElement.removeAttribute("controls")', automatic_renderer)
-        self.assertIn("videoElement.tabIndex = 0", automatic_renderer)
+        mount = automatic_sources[1]
+        self.assertIn("video.controls = false", mount)
+        self.assertIn('video.removeAttribute("controls")', mount)
+        self.assertIn("video.tabIndex = 0", mount)
         self.assertNotIn("showMountedPlayerControls", self.source)
         self.assertEqual(self.source.count("revealMountedPlayerControlsForUserInteraction"), 4)
         for source in automatic_sources:
             self.assertNotIn("revealMountedPlayerControlsForUserInteraction", source)
 
-        teardown = self._slice("function teardownMountedPlayer", "function activeLocalPlayerElements")
+        teardown = self._slice("function retireHostPlaybackSession", "function replaceHostPlayerView")
         self.assertIn("clearLocalPlayerControlsHideTimer()", teardown)
 
     def test_policy_rejection_stops_periodic_play_retry_storm(self):
@@ -3309,7 +3340,7 @@ console.log(JSON.stringify({
         self.assertEqual(result["newState"], "established")
         self.assertTrue(result["newIntent"])
         self.assertEqual(result["newCalls"], [1, 1])
-        teardown = self._slice("function teardownMountedPlayer", "function activeLocalPlayerElements")
+        teardown = self._slice("function retireHostPlaybackSession", "function replaceHostPlayerView")
         renderer = self._slice("function renderPlayer(currentItem, playbackMode)", "function applyRemotePlayerControl")
         self.assertIn('state.localPlaybackStartState = "idle"', teardown)
         self.assertIn('setSplitPlaybackStartState("pending", video, audio)', renderer)
@@ -3318,7 +3349,7 @@ console.log(JSON.stringify({
         self.assertEqual(self.source.count("function renderPlayer(currentItem, playbackMode)"), 1)
         renderer = self._slice("function renderPlayer(currentItem, playbackMode)", "function applyRemotePlayerControl")
         self.assertEqual(renderer.count("state.localPlayerSyncTimer = window.setInterval"), 1)
-        self.assertIn("clearLocalPlayerEventListeners()", self.source)
+        self.assertIn("clearLocalPlayerEventListeners(session)", self.source)
 
     def test_frontend_has_no_duplicate_active_function_declarations(self):
         pattern = re.compile(r"^(?:async )?function ([A-Za-z0-9_]+)", re.MULTILINE)

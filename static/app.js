@@ -115,13 +115,15 @@ const state = {
   volumeControlsRenderSignature: "",
   queueCurrentRenderSignature: "",
   audioVariantBarRenderSignature: "",
-  playerSignature: "",
-  playerContext: null,
+  hostPlaybackSession: null,
+  hostPlaybackBootstrapRestartPending: true,
+  pageHidePlaybackRestartRequired: false,
+  pageHiddenPlaybackGeneration: null,
+  pageRestoreRestartInFlight: false,
   audioContext: null,
   localPlayerSyncTimer: null,
   localPlayerStartupTimer: null,
   localPlaybackStartupWatchdogTimer: null,
-  localPlayerEventCleanups: [],
   localPlayerRequestedRate: 1,
   localPlayerSyncLastSeekAt: 0,
   localPlayerSyncLastAction: "",
@@ -874,7 +876,6 @@ function invalidateLanguageSensitiveRenderCache() {
   state.historyRenderSignature = "";
   state.audioVariantBarRenderSignature = "";
   state.volumeControlsRenderSignature = "";
-  state.playerSignature = "";
 }
 
 function setLanguage(language) {
@@ -2254,8 +2255,10 @@ function clearLocalPlayerControlsHideTimer() {
 }
 
 function mountedLocalVideoElement() {
-  return elements.playerFrame.querySelector('video[data-player-role="video"]')
-    || elements.playerFrame.querySelector("video");
+  const session = state.hostPlaybackSession;
+  return isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+    ? session.video
+    : null;
 }
 
 function hidePlayerControls(video) {
@@ -3135,8 +3138,8 @@ async function fetchState() {
   if (!response.ok || !payload.ok) {
     throw new Error(localizedApiMessage(payload.error) || t("error.stateFailed"));
   }
-  if (!applyFreshStateSnapshot(payload.data)) {
-    return;
+  if (!acceptHostStateSnapshot(payload.data)) {
+    return false;
   }
   state.hasValidStateResponse = true;
   maybeShowIncomingRequestToast(previousData, state.data);
@@ -3150,7 +3153,7 @@ async function fetchState() {
     const serverMuted = Boolean(state.data?.player_settings?.is_muted);
     state.localPreferencesHydrated = true;
     if (rememberedVolume !== serverVolume || rememberedMute !== serverMuted) {
-      state.data = await apiPost("/api/player/volume", {
+      await apiPostStateSnapshot("/api/player/volume", {
         volume_percent: rememberedVolume,
         is_muted: rememberedMute,
       });
@@ -3166,6 +3169,7 @@ async function fetchState() {
     refreshRetryButtons();
   }
   resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs);
+  return true;
 }
 
 function renderSignatureForData(data) {
@@ -6639,7 +6643,7 @@ function maybeStartBBDownLogin(login, options = {}) {
 async function startBBDownLogin(options = {}) {
   state.bbdownLoginRequesting = true;
   try {
-    state.data = await apiPost("/api/bbdown/login/start", {
+    await apiPostStateSnapshot("/api/bbdown/login/start", {
       force: Boolean(options.force),
     });
     render();
@@ -6881,22 +6885,176 @@ function renderCachePolicyControls(cachePolicy) {
   }
 }
 
-function hostStateRevision(snapshot = state.data) {
-  const revision = Number(snapshot?.state_revision || 0);
-  return Number.isFinite(revision) && revision >= 0 ? revision : 0;
+function isSafeHostSnapshotInteger(value, minimum = 0) {
+  return Number.isSafeInteger(value) && value >= minimum;
 }
 
-function applyFreshStateSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== "object") {
+function playbackProgramDescriptorsEqual(left, right) {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return Boolean(
+    left
+    && right
+    && left.item_id === right.item_id
+    && left.item_incarnation_id === right.item_incarnation_id
+    && left.selected_audio_variant_id === right.selected_audio_variant_id
+    && left.artifact_set_id === right.artifact_set_id
+  );
+}
+
+function isValidHostMediaLocator(value) {
+  if (typeof value !== "string" || !value.trim()) {
     return false;
   }
-  const currentRevision = hostStateRevision(state.data);
-  const nextRevision = hostStateRevision(snapshot);
-  if (currentRevision > 0 && (nextRevision === 0 || nextRevision < currentRevision)) {
+  try {
+    const locator = new URL(value, window.location.href);
+    if (locator.protocol !== "http:" && locator.protocol !== "https:") {
+      return false;
+    }
+    const decodedPath = decodeURIComponent(locator.pathname);
+    if (!decodedPath.startsWith("/media/")) {
+      return false;
+    }
+    const segments = decodedPath.slice("/media/".length).split("/");
+    return segments.length > 0
+      && segments.every((segment) => segment && segment !== "." && segment !== "..");
+  } catch {
     return false;
+  }
+}
+
+function validatedHostSnapshotIdentity(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return null;
+  }
+  const stateRevision = snapshot.state_revision;
+  const rustRevision = snapshot.revision;
+  const playbackGeneration = snapshot.playback_generation;
+  if (
+    !isSafeHostSnapshotInteger(stateRevision)
+    || !isSafeHostSnapshotInteger(rustRevision, 1)
+    || !isSafeHostSnapshotInteger(playbackGeneration, 1)
+    || !Object.hasOwn(snapshot, "playback_program")
+    || !Object.hasOwn(snapshot, "current_item")
+  ) {
+    return null;
+  }
+
+  const program = snapshot.playback_program;
+  const currentItem = snapshot.current_item;
+  if ((program === null) !== (currentItem === null)) {
+    return null;
+  }
+  if (program === null) {
+    return { stateRevision, rustRevision, playbackGeneration, program: null };
+  }
+  if (
+    typeof program !== "object"
+    || Array.isArray(program)
+    || Object.keys(program).length !== 4
+    || !Object.hasOwn(program, "item_id")
+    || !Object.hasOwn(program, "item_incarnation_id")
+    || !Object.hasOwn(program, "selected_audio_variant_id")
+    || !Object.hasOwn(program, "artifact_set_id")
+    || typeof program.item_id !== "string"
+    || !program.item_id
+    || typeof program.item_incarnation_id !== "string"
+    || !program.item_incarnation_id
+    || typeof program.selected_audio_variant_id !== "string"
+    || (program.artifact_set_id !== null
+      && (typeof program.artifact_set_id !== "string" || !program.artifact_set_id))
+    || !currentItem
+    || typeof currentItem !== "object"
+    || Array.isArray(currentItem)
+    || currentItem.id !== program.item_id
+    || currentItem.item_incarnation_id !== program.item_incarnation_id
+    || currentItem.selected_audio_variant_id !== program.selected_audio_variant_id
+    || typeof currentItem.artifact_set_id !== "string"
+    || !Array.isArray(currentItem.audio_variants)
+  ) {
+    return null;
+  }
+
+  if (program.artifact_set_id === null) {
+    if (
+      currentItem.artifact_set_id
+      || String(currentItem.video_media_url || "").trim()
+      || currentItem.audio_variants.length > 0
+    ) {
+      return null;
+    }
+  } else {
+    if (
+      currentItem.artifact_set_id !== program.artifact_set_id
+      || !isValidHostMediaLocator(currentItem.video_media_url)
+    ) {
+      return null;
+    }
+    const selectedVariants = currentItem.audio_variants.filter(
+      (variant) => variant
+        && typeof variant === "object"
+        && !Array.isArray(variant)
+        && variant.id === program.selected_audio_variant_id,
+    );
+    if (
+      selectedVariants.length !== 1
+      || !isValidHostMediaLocator(selectedVariants[0].audio_url)
+    ) {
+      return null;
+    }
+  }
+
+  return { stateRevision, rustRevision, playbackGeneration, program };
+}
+
+function acceptHostStateSnapshot(snapshot) {
+  const next = validatedHostSnapshotIdentity(snapshot);
+  if (!next) {
+    return false;
+  }
+  const current = state.data ? validatedHostSnapshotIdentity(state.data) : null;
+  if (state.data && !current) {
+    return false;
+  }
+  if (current) {
+    const sameProgram = playbackProgramDescriptorsEqual(current.program, next.program);
+    if (next.stateRevision < current.stateRevision) {
+      return false;
+    }
+    if (next.stateRevision === current.stateRevision) {
+      if (
+        next.rustRevision !== current.rustRevision
+        || next.playbackGeneration !== current.playbackGeneration
+        || !sameProgram
+      ) {
+        return false;
+      }
+      return false;
+    }
+    if (
+      next.rustRevision < current.rustRevision
+      || next.playbackGeneration < current.playbackGeneration
+      || (next.rustRevision === current.rustRevision
+        && (next.playbackGeneration !== current.playbackGeneration || !sameProgram))
+      || (next.playbackGeneration === current.playbackGeneration && !sameProgram)
+      || (next.playbackGeneration > current.playbackGeneration
+        && next.rustRevision <= current.rustRevision)
+    ) {
+      return false;
+    }
   }
   state.data = snapshot;
   return true;
+}
+
+async function apiPostStateSnapshot(url, payload = {}, options = {}) {
+  const { onAccepted, ...requestOptions } = options;
+  const accepted = acceptHostStateSnapshot(await apiPost(url, payload, requestOptions));
+  if (accepted && typeof onAccepted === "function") {
+    onAccepted();
+  }
+  return accepted;
 }
 
 function syncCachePanelVisibility(options = {}) {
@@ -7386,8 +7544,9 @@ function clearLocalPlayerSyncTimer() {
   clearSplitPlaybackStartupWatchdog();
 }
 
-function clearLocalPlayerEventListeners() {
-  state.localPlayerEventCleanups.splice(0).forEach((cleanup) => {
+function clearLocalPlayerEventListeners(session = state.hostPlaybackSession) {
+  const cleanups = Array.isArray(session?.eventCleanups) ? session.eventCleanups : [];
+  cleanups.splice(0).forEach((cleanup) => {
     try {
       cleanup();
     } catch {
@@ -7397,10 +7556,18 @@ function clearLocalPlayerEventListeners() {
 }
 
 function addMountedPlayerListener(media, eventName, listener, options) {
+  const session = state.hostPlaybackSession;
+  if (
+    !isCurrentHostPlaybackSession(session)
+    || (media !== session.video && media !== session.audio)
+  ) {
+    return false;
+  }
   media.addEventListener(eventName, listener, options);
-  state.localPlayerEventCleanups.push(() => {
+  session.eventCleanups.push(() => {
     media.removeEventListener(eventName, listener, options);
   });
+  return true;
 }
 
 function clearLocalPlayerSeekState() {
@@ -7832,49 +7999,19 @@ function syncPlayerFrameCacheHint(currentItem) {
 }
 
 function teardownMountedPlayer({ preserveAdvanceDelayOverlay = false } = {}) {
-  clearWebKitAudioStarvationTimer();
-  state.localWebKitStartRetryDone = false;
-  clearLocalPlayerSyncTimer();
-  clearLocalPlayerControlsHideTimer();
-  clearLocalPlayerSeekState();
-  clearLocalPlayerEventListeners();
-  state.localPlayerSyncLastSeekAt = 0;
-  state.localPlayerSyncLastAction = "";
-  state.localPlayerSyncLastDiagnosticAt = 0;
-  state.localVideoHeldForAudio = false;
-  state.localVideoDeferredRecovery = false;
-  state.localAudioPlaybackBlocked = false;
-  state.localVideoPlaybackBlocked = false;
-  state.localPlaybackStartState = "idle";
-  state.localPlaybackStartGeneration = 0;
-  state.localPlaybackStartPromisesSettled = false;
-  state.localPlaybackEndHandled = false;
-  clearTauriMediaSessionState();
-  if (!preserveAdvanceDelayOverlay) {
-    state.pendingSongTransitionOverlayData = null;
-    state.pendingSongTransitionGeneration = 0;
-    clearLocalAdvanceDelay({ resetInFlight: true });
-  }
-  elements.playerFrame.querySelectorAll("video, audio").forEach((media) => {
-    disposeAudioPitchShifter(media);
-    try {
-      media.pause();
-    } catch {
-      // Ignore pause failures during teardown.
-    }
-    try {
-      media.removeAttribute("src");
-      media.load();
-    } catch {
-      // Ignore cleanup failures and let DOM replacement finish the teardown.
-    }
+  return retireHostPlaybackSession(state.hostPlaybackSession, {
+    preserveAdvanceDelayOverlay,
   });
 }
 
 function activeLocalPlayerElements() {
+  const session = state.hostPlaybackSession;
+  if (!isCurrentHostPlaybackSession(session, session?.video, session?.audio)) {
+    return { video: null, audio: null };
+  }
   return {
-    video: elements.playerFrame.querySelector('video[data-player-role="video"]'),
-    audio: elements.playerFrame.querySelector('audio[data-player-role="audio"]'),
+    video: session.video,
+    audio: session.audio,
   };
 }
 
@@ -7883,8 +8020,7 @@ function activePrimaryVideoElement() {
 }
 
 function isActiveSplitPlayer(video, audio) {
-  const active = activeLocalPlayerElements();
-  return active.video === video && active.audio === audio;
+  return isCurrentHostPlaybackSession(state.hostPlaybackSession, video, audio);
 }
 
 function isSplitPlayerSeekSettling(video, audio) {
@@ -9465,11 +9601,13 @@ async function setLocalPlayerKeyShift(keyShift) {
 
   try {
     const nextData = await apiPost("/api/player/key-shift", { key_shift: boundedKeyShift });
+    const accepted = acceptHostStateSnapshot(nextData);
     if (requestSeq !== state.volumeSaveSeq) {
       return;
     }
-    state.data = nextData;
-    syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    if (accepted) {
+      syncLocalPlayerSettingsFromSnapshot(state.data?.player_settings);
+    }
     renderKeyShiftControls(frontendPlaybackMode(state.data?.playback_mode));
   } catch (error) {
     // Ignore or handle errors gracefully
@@ -9640,11 +9778,13 @@ async function setLocalPlayerVolumeAndMuted(
       volume_percent: Math.round(normalizedVolume * 100),
       is_muted: state.localPlayerMuted,
     });
+    const accepted = acceptHostStateSnapshot(nextData);
     if (requestSeq !== state.volumeSaveSeq) {
       return;
     }
-    state.data = nextData;
-    render();
+    if (accepted) {
+      render();
+    }
   } catch (error) {
     if (requestSeq !== state.volumeSaveSeq) {
       return;
@@ -9886,166 +10026,283 @@ function createSplitPlayerStartupSynchronizer(video, audio, maybeRestorePlayback
   };
 }
 
-function playerRenderDescriptor(currentItem, playbackMode) {
-  const videoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
-  const audioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
-  const hasSplitPlayback = Boolean(videoUrl && audioUrl);
-  const cacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
-  const signatureParts = [
-    currentItem ? currentItem.id : "none",
-    playbackMode,
-    videoUrl,
-    audioUrl,
-  ];
-  if (!hasSplitPlayback) {
-    signatureParts.push(
-      currentItem ? currentItem.cache_status : "",
-      cacheDetailText,
-      state.language,
-    );
-  }
+function hostPlaybackMountData(currentItem, program = state.data?.playback_program) {
   return {
-    videoUrl,
-    audioUrl,
-    hasSplitPlayback,
-    cacheDetailText,
-    signature: signatureParts.join("|"),
+    videoUrl: selectedVideoUrlForItem(currentItem),
+    audioUrl: selectedAudioUrlForItem(currentItem),
+    mountable: Boolean(program?.artifact_set_id),
   };
+}
+
+function createHostPlaybackSession(playbackGeneration, playbackProgram) {
+  return {
+    playbackGeneration,
+    playbackProgram,
+    cleanupState: "active",
+    video: null,
+    audio: null,
+    eventCleanups: [],
+  };
+}
+
+function isCurrentHostPlaybackSession(session, video, audio) {
+  if (
+    !session
+    || state.hostPlaybackSession !== session
+    || session.cleanupState !== "active"
+    || state.data?.playback_generation !== session.playbackGeneration
+    || !playbackProgramDescriptorsEqual(
+      state.data?.playback_program ?? null,
+      session.playbackProgram,
+    )
+  ) {
+    return false;
+  }
+  if (video !== undefined && session.video !== video) {
+    return false;
+  }
+  if (audio !== undefined && session.audio !== audio) {
+    return false;
+  }
+  return true;
+}
+
+function retireHostPlaybackSession(
+  session,
+  { preserveAdvanceDelayOverlay = false } = {},
+) {
+  if (!session || session.cleanupState !== "active") {
+    return false;
+  }
+  const ownsCurrentSession = state.hostPlaybackSession === session;
+  session.cleanupState = "retiring";
+  clearLocalPlayerEventListeners(session);
+
+  if (ownsCurrentSession) {
+    clearWebKitAudioStarvationTimer();
+    state.localWebKitStartRetryDone = false;
+    clearLocalPlayerSyncTimer();
+    clearLocalPlayerControlsHideTimer();
+    clearLocalPlayerSeekState();
+    state.localPlayerSyncLastSeekAt = 0;
+    state.localPlayerSyncLastAction = "";
+    state.localPlayerSyncLastDiagnosticAt = 0;
+    state.localVideoHeldForAudio = false;
+    state.localVideoDeferredRecovery = false;
+    state.localAudioPlaybackBlocked = false;
+    state.localVideoPlaybackBlocked = false;
+    state.localPlaybackStartState = "idle";
+    state.localPlaybackStartGeneration = 0;
+    state.localPlaybackStartPromisesSettled = false;
+    state.localPlaybackEndHandled = false;
+    clearTauriMediaSessionState();
+    if (!preserveAdvanceDelayOverlay) {
+      state.pendingSongTransitionOverlayData = null;
+      state.pendingSongTransitionGeneration = 0;
+      clearLocalAdvanceDelay({ resetInFlight: true });
+    }
+  }
+
+  [session.video, session.audio].filter(Boolean).forEach((media) => {
+    disposeAudioPitchShifter(media);
+    try {
+      media.pause();
+    } catch {
+      // Ignore pause failures during exact session retirement.
+    }
+    try {
+      media.removeAttribute("src");
+      media.load();
+    } catch {
+      // Detached media can finish retiring without further cleanup.
+    }
+  });
+  session.cleanupState = "retired";
+  return true;
+}
+
+function replaceHostPlayerView(...nodes) {
+  const overlay = playerDelayOverlay();
+  elements.playerFrame.replaceChildren(...nodes);
+  if (overlay) {
+    elements.playerFrame.appendChild(overlay);
+  }
+}
+
+function renderEmptyHostPlaybackState() {
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  const text = document.createElement("p");
+  text.textContent = t("player.emptyShort");
+  empty.appendChild(text);
+  replaceHostPlayerView(empty);
+}
+
+function renderPreparingHostPlaybackState(currentItem) {
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  const text = document.createElement("p");
+  text.textContent = t("player.preparingTracks");
+  const hint = document.createElement("p");
+  hint.className = "empty-hint";
+  hint.textContent = hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback");
+  empty.append(text, hint);
+  replaceHostPlayerView(empty);
+}
+
+function captureHostPlaybackRestoreForReplacement(session, nextProgram, currentItem) {
+  if (
+    state.pendingPlaybackRestore
+    || !session
+    || session.cleanupState !== "active"
+    || state.hostPlaybackSession !== session
+    || !session.video
+    || !session.audio
+    || !session.playbackProgram?.artifact_set_id
+    || !nextProgram?.artifact_set_id
+    || session.playbackProgram.item_id !== nextProgram.item_id
+    || session.playbackProgram.item_incarnation_id !== nextProgram.item_incarnation_id
+    || playbackProgramDescriptorsEqual(session.playbackProgram, nextProgram)
+  ) {
+    return;
+  }
+  captureLocalPlayerPreferences();
+  state.pendingPlaybackRestore = {
+    itemId: currentItem.id,
+    variantId: nextProgram.selected_audio_variant_id,
+    currentTime: Number(session.video.currentTime || 0),
+    wasPlaying: state.localShouldBePlaying || !session.video.paused,
+  };
+}
+
+function mountHostPlaybackSessionElements(session, currentItem, mountData) {
+  const video = document.createElement("video");
+  video.dataset.playerRole = "video";
+  video.controls = false;
+  video.removeAttribute("controls");
+  video.setAttribute("controlsList", "nofullscreen");
+  // Start the split pair together once both streams expose metadata. Waiting
+  // for canplay deadlocks WebKit when the video intentionally preloads metadata.
+  video.autoplay = false;
+  video.playsInline = true;
+  video.tabIndex = 0;
+  video.preload = "metadata";
+  video.src = mountData.videoUrl;
+  const audio = document.createElement("audio");
+  audio.dataset.playerRole = "audio";
+  audio.preload = "auto";
+  audio.src = mountData.audioUrl;
+  video.dataset.playerItemId = currentItem.id;
+  session.video = video;
+  session.audio = audio;
+  replaceHostPlayerView(video, audio);
+  return { video, audio };
+}
+
+function reconcileHostPlaybackSession(currentItem) {
+  const playbackGeneration = state.data?.playback_generation;
+  const playbackProgram = state.data?.playback_program ?? null;
+  const existing = state.hostPlaybackSession;
+
+  if (!playbackProgram || !currentItem) {
+    retireHostPlaybackSession(existing);
+    state.pendingPlaybackRestore = null;
+    renderEmptyHostPlaybackState();
+    return { kind: "empty", session: null, video: null, audio: null };
+  }
+
+  if (
+    state.hostPlaybackBootstrapRestartPending
+    || state.pageHidePlaybackRestartRequired
+  ) {
+    if (
+      !existing
+      || existing.playbackGeneration !== playbackGeneration
+      || !playbackProgramDescriptorsEqual(existing.playbackProgram, playbackProgram)
+    ) {
+      retireHostPlaybackSession(existing);
+      const retiredSession = createHostPlaybackSession(
+        playbackGeneration,
+        playbackProgram,
+      );
+      retiredSession.cleanupState = "retired";
+      state.hostPlaybackSession = retiredSession;
+      return {
+        kind: "retired",
+        session: retiredSession,
+        video: null,
+        audio: null,
+      };
+    }
+    retireHostPlaybackSession(existing);
+    return { kind: "retired", session: existing, video: null, audio: null };
+  }
+
+  const sameAcceptedProgram = Boolean(
+    existing
+    && existing.playbackGeneration === playbackGeneration
+    && playbackProgramDescriptorsEqual(existing.playbackProgram, playbackProgram)
+  );
+  if (sameAcceptedProgram) {
+    if (existing.cleanupState !== "active") {
+      return { kind: "retired", session: existing, video: null, audio: null };
+    }
+    if (existing.video || existing.audio) {
+      if (!existing.video || !existing.audio) {
+        return { kind: "inconsistent", session: existing, video: null, audio: null };
+      }
+      return {
+        kind: "reused",
+        session: existing,
+        video: existing.video,
+        audio: existing.audio,
+      };
+    }
+    renderPreparingHostPlaybackState(currentItem);
+    return { kind: "pending", session: existing, video: null, audio: null };
+  }
+
+  if (existing && playbackGeneration <= existing.playbackGeneration) {
+    return {
+      kind: "stale",
+      session: existing,
+      video: existing.video,
+      audio: existing.audio,
+    };
+  }
+  if (
+    state.pendingPlaybackRestore
+    && state.pendingPlaybackRestore.itemId !== currentItem.id
+  ) {
+    state.pendingPlaybackRestore = null;
+  }
+  captureHostPlaybackRestoreForReplacement(existing, playbackProgram, currentItem);
+  const preserveAdvanceDelayOverlay = Boolean(
+    hasPendingSongTransitionOverlayForItem(currentItem)
+    || hasLocalAdvanceDelayOverlay()
+  );
+  retireHostPlaybackSession(existing, { preserveAdvanceDelayOverlay });
+
+  const session = createHostPlaybackSession(playbackGeneration, playbackProgram);
+  state.hostPlaybackSession = session;
+  const mountData = hostPlaybackMountData(currentItem, playbackProgram);
+  if (!mountData.mountable) {
+    renderPreparingHostPlaybackState(currentItem);
+    return { kind: "pending", session, video: null, audio: null };
+  }
+  const pair = mountHostPlaybackSessionElements(session, currentItem, mountData);
+  return { kind: "mounted", session, ...pair };
 }
 
 function renderPlayer(currentItem, playbackMode) {
   handleRatingCurrentItemChange(currentItem);
-  const descriptor = playerRenderDescriptor(currentItem, playbackMode);
-  const selectedVideoUrl = descriptor.videoUrl;
-  const selectedAudioUrl = descriptor.audioUrl;
-  const hasSplitPlayback = descriptor.hasSplitPlayback;
-  const playerCacheDetailText = descriptor.cacheDetailText;
-  const signature = descriptor.signature;
-
-  if (signature === state.playerSignature) {
-    if (!hasSplitPlayback) {
-      syncPlayerFrameCacheHint(currentItem);
-    }
+  const reconciliation = reconcileHostPlaybackSession(currentItem);
+  if (reconciliation.kind !== "mounted") {
     return;
   }
-
-  const previousPlayerContext = state.playerContext;
-  if (!currentItem || previousPlayerContext?.itemId !== currentItem.id) {
-    state.pendingPlaybackRestore = null;
-  }
-  if (
-    !state.pendingPlaybackRestore
-    && playbackMode === "local"
-    && currentItem
-    && hasSplitPlayback
-    && previousPlayerContext?.playbackMode === "local"
-    && previousPlayerContext.itemId === currentItem.id
-    && (
-      previousPlayerContext.videoUrl !== selectedVideoUrl
-      || previousPlayerContext.audioUrl !== selectedAudioUrl
-    )
-  ) {
-    const currentVideo = elements.playerFrame.querySelector('video[data-player-role="video"]')
-      || elements.playerFrame.querySelector("video");
-
-    if (currentVideo) {
-      captureLocalPlayerPreferences();
-      state.pendingPlaybackRestore = {
-        itemId: currentItem.id,
-        variantId: selectedAudioVariantForItem(currentItem)?.id || "",
-        currentTime: Number(currentVideo.currentTime || 0),
-        wasPlaying: state.localShouldBePlaying || !currentVideo.paused,
-      };
-    }
-  }
-
-  state.playerSignature = signature;
-  state.playerContext = {
-    itemId: currentItem ? currentItem.id : "",
-    videoUrl: selectedVideoUrl,
-    audioUrl: selectedAudioUrl,
-    playbackMode,
-  };
-
-  captureLocalPlayerPreferences();
-  if (shouldHoldCurrentItemForTransition(currentItem)) {
-    state.localShouldBePlaying = false;
-  }
-  const preserveAdvanceDelayOverlay = Boolean(
-    currentItem
-    && (
-      hasPendingSongTransitionOverlayForItem(currentItem)
-      || hasLocalAdvanceDelayOverlay()
-    ),
-  );
-  teardownMountedPlayer({ preserveAdvanceDelayOverlay });
-
-  if (!currentItem) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    const text = document.createElement("p");
-    text.textContent = t("player.emptyShort");
-    empty.appendChild(text);
-    elements.playerFrame.replaceChildren(empty);
-    return;
-  }
-
-  // LEGACY: online embed playback is kept for reference, but normal frontend
-  // rendering now passes only the local mode.
-  if (playbackMode === "online") {
-    const iframeSrc = safeHttpUrl(currentItem.embed_url);
-    const iframe = document.createElement("iframe");
-    iframe.src = iframeSrc || "about:blank";
-    iframe.allow = "autoplay; fullscreen";
-    iframe.allowFullscreen = true;
-    iframe.referrerPolicy = "origin";
-    iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox");
-    iframe.title = String(currentItem.display_title || "");
-    elements.playerFrame.replaceChildren(iframe);
-    return;
-  }
-
-  if (!hasSplitPlayback) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    const text = document.createElement("p");
-    text.textContent = t("player.preparingTracks");
-    const hint = document.createElement("p");
-    hint.className = "empty-hint";
-    hint.textContent = hostCacheDetailTextForItem(currentItem) || t("player.cachingFallback");
-    empty.append(text, hint);
-    elements.playerFrame.replaceChildren(empty);
-    return;
-  }
-
+  const { video, audio } = reconciliation;
   const shouldAutoplay = !shouldHoldCurrentItemForTransition(currentItem);
 
-  const videoElement = document.createElement("video");
-  videoElement.dataset.playerRole = "video";
-  videoElement.controls = false;
-  videoElement.removeAttribute("controls");
-  videoElement.setAttribute("controlsList", "nofullscreen");
-  // Start the split pair together once both streams expose metadata. Waiting
-  // for canplay deadlocks WebKit when the video intentionally preloads metadata.
-  videoElement.autoplay = false;
-  videoElement.playsInline = true;
-  videoElement.tabIndex = 0;
-  videoElement.preload = "metadata";
-  videoElement.src = selectedVideoUrl;
-  const audioElement = document.createElement("audio");
-  audioElement.dataset.playerRole = "audio";
-  audioElement.preload = "auto";
-  audioElement.src = selectedAudioUrl;
-  elements.playerFrame.replaceChildren(videoElement, audioElement);
-
-  const video = elements.playerFrame.querySelector('video[data-player-role="video"]');
-  const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
-
-  if (!video || !audio) {
-    return;
-  }
-
-  video.dataset.playerItemId = currentItem.id;
   state.localShouldBePlaying = shouldAutoplay;
   setSplitPlaybackStartState("pending", video, audio);
   state.localPlayerRequestedRate = Number(video.playbackRate || 1) || 1;
@@ -11331,7 +11588,7 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
 }
 
 async function submitAddRequest(url, position, options = {}) {
-  return apiPost("/api/playlist/add", {
+  return apiPostStateSnapshot("/api/playlist/add", {
     url,
     position,
     requester_name: String(options.requesterName || ""),
@@ -11748,7 +12005,7 @@ async function confirmBindingModal() {
   }
 
   try {
-    state.data = await submitAddRequest(intent.url, intent.position || "tail", {
+    await submitAddRequest(intent.url, intent.position || "tail", {
       requesterName: intent.requesterName || selectedRequesterName(),
       allowRepeat: Boolean(intent.allowRepeat),
       selectedVideoPage,
@@ -11844,7 +12101,7 @@ async function handleAdd(position, anchorPoint) {
 
   setFormMessage(t("request.parsing"));
   try {
-    state.data = await submitAddRequest(url, position, { requesterName });
+    await submitAddRequest(url, position, { requesterName });
     elements.urlInput.value = "";
     setFormMessage(position === "next" ? t("request.addedNext") : t("request.addedTail"));
     render();
@@ -11902,7 +12159,7 @@ async function handleAddByUrl(
   const isHistory = source === "history";
   setMessageForSource(source, isHistory ? t("history.addingFromHistory") : t("request.parsing"));
   try {
-    state.data = await submitAddRequest(url, position, { requesterName });
+    await submitAddRequest(url, position, { requesterName });
     const message = isHistory
       ? (position === "next" ? t("history.addedNext") : t("history.addedTail"))
       : (position === "next" ? t("request.addedNext") : t("request.addedTail"));
@@ -11955,7 +12212,7 @@ async function handleAddByUrl(
 
 async function discardBackup() {
   try {
-    state.data = await apiPost("/api/backup/discard");
+    await apiPostStateSnapshot("/api/backup/discard");
     dismissBackupBanner();
     closeConfirm();
     setAppMessage(t("backup.cleared"));
@@ -11967,7 +12224,7 @@ async function discardBackup() {
 
 async function continuePreviousSession() {
   try {
-    state.data = await apiPost("/api/session/continue-previous");
+    await apiPostStateSnapshot("/api/session/continue-previous");
     state.previousSessionPromptEligible = false;
     dismissBackupBanner();
     setAppMessage(t("backup.previousSessionContinued"));
@@ -11982,7 +12239,7 @@ async function continuePreviousSession() {
 
 async function clearPlaylist() {
   try {
-    state.data = await apiPost("/api/playlist/clear");
+    await apiPostStateSnapshot("/api/playlist/clear");
     closeConfirm();
     setAppMessage(t("list.cleared"));
     render();
@@ -11993,7 +12250,7 @@ async function clearPlaylist() {
 
 async function clearHistory() {
   try {
-    state.data = await apiPost("/api/history/clear");
+    await apiPostStateSnapshot("/api/history/clear");
     closeConfirm();
     setAppMessage(t("history.cleared"));
     render();
@@ -12436,16 +12693,17 @@ async function downloadDiagnosticsPackage() {
 
 async function resetRuntimeData() {
   try {
-    teardownMountedPlayer();
-    disposeSharedAudioContext();
-    state.playerSignature = "";
-    state.playerContext = null;
-    state.data = await apiPost("/api/data/reset");
-    closeConfirm();
-    dismissBackupBanner();
-    state.listView = "queue";
-    setAppMessage(t("service.dataCleared"));
-    render();
+    await apiPostStateSnapshot("/api/data/reset", {}, {
+      onAccepted: () => {
+        teardownMountedPlayer();
+        disposeSharedAudioContext();
+        closeConfirm();
+        dismissBackupBanner();
+        state.listView = "queue";
+        setAppMessage(t("service.dataCleared"));
+        render();
+      },
+    });
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -12453,20 +12711,21 @@ async function resetRuntimeData() {
 
 async function resetPlayerState() {
   try {
-    teardownMountedPlayer();
-    disposeSharedAudioContext();
-    state.playerSignature = "";
-    state.playerContext = null;
-    state.localPlayerVolume = 1;
-    state.localPlayerMuted = false;
-    state.playerSettingsEchoSuppressUntil = 0;
-    state.volumeSaveSeq += 1;
-    state.avOffsetSaving = false;
-    persistLocalVolumePreferences();
-    state.data = await apiPost("/api/player/reset");
-    closeConfirm();
-    render();
-    setAppMessage(t("service.playerReset"));
+    await apiPostStateSnapshot("/api/player/reset", {}, {
+      onAccepted: () => {
+        teardownMountedPlayer();
+        disposeSharedAudioContext();
+        state.localPlayerVolume = 1;
+        state.localPlayerMuted = false;
+        state.playerSettingsEchoSuppressUntil = 0;
+        state.volumeSaveSeq += 1;
+        state.avOffsetSaving = false;
+        persistLocalVolumePreferences();
+        closeConfirm();
+        render();
+        setAppMessage(t("service.playerReset"));
+      },
+    });
   } catch (error) {
     setAppMessage(error.message, true);
   }
@@ -12478,10 +12737,7 @@ async function installAppUpdate(includePreview = false) {
       include_preview: Boolean(includePreview),
     });
     if (state.data) {
-      state.data = {
-        ...state.data,
-        app_update: updateStatus,
-      };
+      state.data.app_update = updateStatus;
     }
     closeConfirm();
     renderUpdatePreviewControl();
@@ -12569,7 +12825,7 @@ async function addSessionUser() {
     return;
   }
   try {
-    state.data = await apiPost("/api/session-users/add", { name });
+    await apiPostStateSnapshot("/api/session-users/add", { name });
     elements.sessionUserInput.value = "";
     setAppMessage(t("session.added", { name }));
     render();
@@ -12580,7 +12836,7 @@ async function addSessionUser() {
 
 async function moveSessionUser(name, index) {
   try {
-    state.data = await apiPost("/api/session-users/reorder", { name, index });
+    await apiPostStateSnapshot("/api/session-users/reorder", { name, index });
     setAppMessage(t("session.orderUpdated"));
     render();
   } catch (error) {
@@ -12590,7 +12846,7 @@ async function moveSessionUser(name, index) {
 
 async function removeSessionUser(name) {
   try {
-    state.data = await apiPost("/api/session-users/remove", { name });
+    await apiPostStateSnapshot("/api/session-users/remove", { name });
     if (elements.requesterSelect.value === name) {
       elements.requesterSelect.value = "";
     }
@@ -12619,8 +12875,7 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
   state.localAdvanceInFlight = true;
   try {
     const previousData = state.data;
-    const nextData = await apiPost("/api/player/next");
-    if (!applyFreshStateSnapshot(nextData)) {
+    if (!await apiPostStateSnapshot("/api/player/next")) {
       return false;
     }
     if (showTransition && transitionGeneration) {
@@ -12662,12 +12917,12 @@ async function handleLocalPlaybackEnded(reason = "media-ended") {
 }
 
 async function reorderPlaylist(itemId, index) {
-  state.data = await apiPost("/api/playlist/reorder", { item_id: itemId, index });
+  await apiPostStateSnapshot("/api/playlist/reorder", { item_id: itemId, index });
   render();
 }
 
 async function resortPlaylistByCycle() {
-  state.data = await apiPost("/api/playlist/resort");
+  await apiPostStateSnapshot("/api/playlist/resort");
   setAppMessage(t("list.resorted"));
   render();
 }
@@ -12685,7 +12940,7 @@ async function setCacheLimit(maxCacheItems) {
   state.cacheLimitSaving = true;
   renderCacheSlider(state.data?.cache_policy);
   try {
-    state.data = await apiPost("/api/cache-policy", { max_cache_items: maxCacheItems });
+    await apiPostStateSnapshot("/api/cache-policy", { max_cache_items: maxCacheItems });
     setAppMessage(t("service.cacheLimitUpdated", { count: maxCacheItems }));
     render();
   } catch (error) {
@@ -12712,7 +12967,7 @@ async function setAdvanceDelay(delaySeconds) {
   state.advanceDelaySaving = true;
   renderAdvanceDelaySlider(state.data?.player_settings);
   try {
-    state.data = await apiPost("/api/player/advance-delay", { delay_seconds: delaySeconds });
+    await apiPostStateSnapshot("/api/player/advance-delay", { delay_seconds: delaySeconds });
     setAppMessage(t("service.advanceDelayUpdated", { seconds: delaySeconds }));
     render();
   } catch (error) {
@@ -12821,7 +13076,7 @@ async function prepareDownloadSourceAndApply(intent) {
   setAppMessage(t("service.aria2cPreparing"));
   try {
     await apiPost("/api/cache-downloader/prepare", { download_source: downloadSource });
-    state.data = await apiPost("/api/cache-policy", { download_source: downloadSource });
+    await apiPostStateSnapshot("/api/cache-policy", { download_source: downloadSource });
     closeConfirm();
     setAppMessage(t("service.downloadSourceUpdated", { source: intent.selectedLabel || downloadSource }));
     render();
@@ -12843,7 +13098,7 @@ async function setCachePolicyPreference(payload, successMessage) {
   state.cachePolicySaving = true;
   renderCachePolicyControls(state.data?.cache_policy);
   try {
-    state.data = await apiPost("/api/cache-policy", payload);
+    await apiPostStateSnapshot("/api/cache-policy", payload);
     setAppMessage(successMessage);
     render();
   } catch (error) {
@@ -12880,13 +13135,10 @@ async function dispatchAvDelayAction(action) {
       action,
       { timeoutMs: avDelayRequestTimeoutMs },
     );
-    state.data = {
-      ...state.data,
-      player_settings: {
-        ...state.data?.player_settings,
-        av_offset_ms: Number(decision?.effective_delay_ms || 0),
-        av_delay: decision,
-      },
+    state.data.player_settings = {
+      ...state.data?.player_settings,
+      av_offset_ms: Number(decision?.effective_delay_ms || 0),
+      av_delay: decision,
     };
     render();
     resyncMountedLocalPlayerIfOffsetChanged(previousOffsetMs);
@@ -12948,8 +13200,7 @@ async function handlePlaylistAction(button) {
   }
   try {
     const previousData = state.data;
-    const nextData = await apiPost(target[0], target[1]);
-    if (!applyFreshStateSnapshot(nextData)) {
+    if (!await apiPostStateSnapshot(target[0], target[1])) {
       return;
     }
     if (action === "play-now") {
@@ -13593,7 +13844,7 @@ elements.bbdownLoginButton?.addEventListener("click", async () => {
     return;
   }
   try {
-    state.data = await apiPost("/api/bbdown/logout");
+    await apiPostStateSnapshot("/api/bbdown/logout");
     setAppMessage(t("service.bbdownLoggedOut"));
     render();
   } catch (error) {
@@ -13871,8 +14122,7 @@ elements.queueCurrentRetry.addEventListener("click", async () => {
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   try {
-    const nextData = await apiPost("/api/cache/retry", { item_id: itemId, force: true });
-    applyFreshStateSnapshot(nextData);
+    await apiPostStateSnapshot("/api/cache/retry", { item_id: itemId, force: true });
     setAppMessage(t("cache.retryStarted"));
     render();
   } catch (error) {
@@ -13891,7 +14141,7 @@ elements.modeSwitch?.addEventListener("click", async (event) => {
     return;
   }
   try {
-    state.data = await apiPost("/api/mode", { mode: "local" });
+    await apiPostStateSnapshot("/api/mode", { mode: "local" });
     render();
   } catch (error) {
     setAppMessage(error.message, true);
@@ -13947,11 +14197,10 @@ elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   try {
-    const nextData = await apiPost("/api/cache/retry", {
+    await apiPostStateSnapshot("/api/cache/retry", {
       item_id: currentItem.id,
       force: true,
     });
-    applyFreshStateSnapshot(nextData);
     setAppMessage(t("service.retryCurrentStarted"));
     render();
   } catch (error) {
@@ -14009,7 +14258,7 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
       return;
     }
     try {
-      state.data = await submitAddRequest(currentItem.original_url || currentItem.resolved_url, "tail", {
+      await submitAddRequest(currentItem.original_url || currentItem.resolved_url, "tail", {
         requesterName,
         selectedVideoPage: page,
         selectedAudioPages: [page],
@@ -14063,11 +14312,10 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     wasPlaying: video ? !video.paused : true,
   };
   try {
-    state.data = await apiPost("/api/player/audio-variant", {
+    await apiPostStateSnapshot("/api/player/audio-variant", {
       item_id: currentItem.id,
       variant_id: nextVariantId,
     });
-    state.playerSignature = "";
     render();
   } catch (error) {
     state.pendingPlaybackRestore = null;
@@ -14338,14 +14586,14 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "remove-item" && intent.itemId) {
-      state.data = await apiPost("/api/playlist/remove", { item_id: intent.itemId });
+      await apiPostStateSnapshot("/api/playlist/remove", { item_id: intent.itemId });
       closeConfirm();
       setAppMessage(t("list.removedSong"));
       render();
       return;
     }
     if (intent.type === "remove-history" && intent.key) {
-      state.data = await apiPost("/api/history/remove", { key: intent.key });
+      await apiPostStateSnapshot("/api/history/remove", { key: intent.key });
       closeConfirm();
       setAppMessage(t("history.removed"));
       render();
@@ -14363,7 +14611,7 @@ elements.confirmOk.addEventListener("click", async () => {
     }
     if (intent.type === "duplicate-add" && intent.url) {
       const source = intent.source || "request-form";
-      state.data = await submitAddRequest(intent.url, intent.position || "tail", {
+      await submitAddRequest(intent.url, intent.position || "tail", {
         requesterName: intent.requesterName || selectedRequesterName(),
         allowRepeat: true,
         selectedVideoPage: Number.isInteger(intent.selectedVideoPage) ? intent.selectedVideoPage : undefined,
@@ -15231,7 +15479,7 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
 
   setGatchaMessage(t("gatcha.nozomi"));
   try {
-    state.data = await submitAddRequest(url, "tail", { requesterName });
+    await submitAddRequest(url, "tail", { requesterName });
     setFormMessage(t("gatcha.requestSuccess", { title: state.gatchaCandidate.title }));
 
 
@@ -15359,6 +15607,7 @@ async function startPolling() {
       setAppMessage(error.message, true);
     }
   }
+  await restartHostPlaybackAfterBootstrap();
   window.setInterval(async () => {
     try {
       await fetchState();
@@ -15367,13 +15616,95 @@ async function startPolling() {
         setAppMessage(error.message, true);
       }
     }
+    await restartHostPlaybackAfterBootstrap();
   }, pollIntervalMs);
+}
+
+async function restartHostPlaybackAfterBootstrap() {
+  if (!state.hostPlaybackBootstrapRestartPending || !state.hasValidStateResponse) {
+    return false;
+  }
+  state.hostPlaybackBootstrapRestartPending = false;
+  if (!state.data?.playback_program) {
+    return false;
+  }
+  try {
+    const accepted = await apiPostStateSnapshot("/api/player/restart-program");
+    if (accepted) {
+      render();
+    }
+    return accepted;
+  } catch (error) {
+    setAppMessage(error.message, true);
+    return false;
+  }
+}
+
+async function restartHostPlaybackAfterPageRestore() {
+  if (
+    !state.pageHidePlaybackRestartRequired
+    || state.pageRestoreRestartInFlight
+  ) {
+    return false;
+  }
+  if (!state.data?.playback_program) {
+    state.pageHidePlaybackRestartRequired = false;
+    state.pageHiddenPlaybackGeneration = null;
+    return false;
+  }
+  const pageHiddenPlaybackGeneration = state.pageHiddenPlaybackGeneration;
+  state.pageRestoreRestartInFlight = true;
+  let accepted = false;
+  try {
+    accepted = await apiPostStateSnapshot("/api/player/restart-program");
+  } catch (error) {
+    setAppMessage(error.message, true);
+  } finally {
+    state.pageHidePlaybackRestartRequired = false;
+    state.pageHiddenPlaybackGeneration = null;
+    state.pageRestoreRestartInFlight = false;
+  }
+  if (accepted) {
+    render();
+  } else if (
+    Number.isSafeInteger(pageHiddenPlaybackGeneration)
+    && Number.isSafeInteger(state.data?.playback_generation)
+    && state.data.playback_generation > pageHiddenPlaybackGeneration
+    && state.data?.playback_program
+  ) {
+    const session = state.hostPlaybackSession;
+    if (
+      session?.cleanupState === "retired"
+      && session.playbackGeneration === state.data.playback_generation
+      && playbackProgramDescriptorsEqual(
+        session.playbackProgram,
+        state.data.playback_program,
+      )
+      && !session.video
+      && !session.audio
+    ) {
+      state.hostPlaybackSession = null;
+    }
+    render();
+  }
+  return accepted;
 }
 
 window.addEventListener("resize", scheduleConfirmPopoverPositionSync);
 window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 
 window.addEventListener("pagehide", () => {
+  const session = state.hostPlaybackSession;
+  const restartRequired = Boolean(
+    state.data?.playback_program
+    && session?.video
+    && session?.audio
+    && isCurrentHostPlaybackSession(session, session.video, session.audio),
+  );
+  state.pageHidePlaybackRestartRequired = restartRequired;
+  state.pageHiddenPlaybackGeneration = restartRequired
+    ? session.playbackGeneration
+    : null;
   teardownMountedPlayer();
   disposeSharedAudioContext();
   teardownLocalPresentationListeners();
@@ -15383,6 +15714,7 @@ window.addEventListener("beforeunload", disconnectClient);
 window.addEventListener("pageshow", () => {
   initializeLocalPresentation().catch(() => {});
   renderVolumeControls(frontendPlaybackMode(state.data?.playback_mode));
+  restartHostPlaybackAfterPageRestore().catch(() => {});
 });
 
 startPolling();

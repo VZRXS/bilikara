@@ -999,6 +999,11 @@ class PlaylistStore:
     def reset_player_state(self) -> None:
         self._request("reset_player")
 
+    def restart_playback_program(self) -> bool:
+        return self._changed(
+            self._request("restart_playback_program", include_now=False)
+        )
+
     def backup_summary(self) -> dict[str, Any]:
         with self.lock:
             return copy.deepcopy(self._snapshot.get("backup") or {"available": False})

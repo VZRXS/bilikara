@@ -2313,6 +2313,78 @@ class PlayerResetRouteTest(unittest.TestCase):
             )
 
 
+class PlayerRestartProgramRouteTest(unittest.TestCase):
+    def test_local_host_restart_returns_one_settings_preserving_lifetime(self):
+        before = {
+            "state_revision": 4,
+            "revision": 8,
+            "playback_generation": 5,
+            "playback_program": {"item_id": "song-a"},
+            "player_settings": {"volume_percent": 37, "is_muted": True},
+        }
+        after = {
+            **before,
+            "state_revision": 5,
+            "revision": 9,
+            "playback_generation": 6,
+        }
+        restarts: list[bool] = []
+        writes: list[tuple[dict, object]] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            restart_playback_program=lambda: restarts.append(True),
+            snapshot=lambda: after,
+        )
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = "/api/player/restart-program"
+        handler.headers = {"X-Bilikara-Client": "host-client"}
+        handler._is_local_client = lambda: True
+        handler._read_json_body = lambda: {}
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(restarts, [True])
+        self.assertEqual(writes, [({"ok": True, "data": after}, None)])
+        self.assertEqual(after["playback_program"], before["playback_program"])
+        self.assertEqual(after["player_settings"], before["player_settings"])
+        self.assertEqual(after["revision"], before["revision"] + 1)
+        self.assertEqual(
+            after["playback_generation"], before["playback_generation"] + 1
+        )
+
+    def test_nonlocal_remote_cannot_restart_program(self):
+        writes: list[tuple[dict, object]] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            restart_playback_program=lambda: self.fail("remote restart must be rejected"),
+            snapshot=lambda: self.fail("remote restart must not return a snapshot"),
+        )
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = "/api/player/restart-program"
+        handler.headers = {"Referer": "http://192.168.1.20:8080/remote"}
+        handler._is_local_client = lambda: False
+        handler._read_json_body = lambda: {}
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(
+            writes,
+            [({"ok": False, "error": "forbidden"}, server_module.HTTPStatus.FORBIDDEN)],
+        )
+        controller = (Path(__file__).resolve().parents[1] / "static" / "controller.js").read_text(
+            encoding="utf-8"
+        )
+        remote = (Path(__file__).resolve().parents[1] / "static" / "remote.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("/api/player/restart-program", controller)
+        self.assertNotIn("/api/player/restart-program", remote)
+
+
 class CacheRetryRouteTest(unittest.TestCase):
     def test_explicit_force_retries_current_item_with_recache(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)

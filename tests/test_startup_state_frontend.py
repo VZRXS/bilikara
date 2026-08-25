@@ -25,6 +25,10 @@ class StartupStateFrontendTest(unittest.TestCase):
             "async function fetchState",
             "function renderSignatureForData",
         )
+        snapshot_acceptance = self.source_slice(
+            "function isSafeHostSnapshotInteger",
+            "function syncCachePanelVisibility",
+        )
         script = f"""
 const responseSpecs = {json.dumps(responses)};
 let responseIndex = 0;
@@ -63,11 +67,6 @@ function clientHeaders() {{ return {{}}; }}
 function localizedApiMessage(message) {{ return String(message || ""); }}
 function t() {{ return "State request failed"; }}
 function currentAvOffsetMs() {{ return 0; }}
-function applyFreshStateSnapshot(snapshot) {{
-  if (!snapshot || typeof snapshot !== "object") return false;
-  state.data = snapshot;
-  return true;
-}}
 function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay() {{}}
 function syncLocalPlayerSettingsFromSnapshot() {{}}
@@ -85,6 +84,7 @@ function setAppMessage(message, isError) {{
 }}
 
 {response_parser}
+{snapshot_acceptance}
 {fetch_state}
 
 async function pollOnce() {{
@@ -151,7 +151,17 @@ async function pollOnce() {{
                     "url": "http://127.0.0.1:43123/api/state",
                     "status": 200,
                     "contentType": "application/json; charset=utf-8",
-                    "payload": {"ok": True, "data": {"state_revision": 1, "playlist": []}},
+                    "payload": {
+                        "ok": True,
+                        "data": {
+                            "state_revision": 1,
+                            "revision": 1,
+                            "playback_generation": 1,
+                            "playback_program": None,
+                            "current_item": None,
+                            "playlist": [],
+                        },
+                    },
                 },
             ]
         )
@@ -183,7 +193,17 @@ async function pollOnce() {{
                     "url": "http://127.0.0.1:43123/api/state",
                     "status": 200,
                     "contentType": "application/json",
-                    "payload": {"ok": True, "data": {"state_revision": 1, "playlist": []}},
+                    "payload": {
+                        "ok": True,
+                        "data": {
+                            "state_revision": 1,
+                            "revision": 1,
+                            "playback_generation": 1,
+                            "playback_program": None,
+                            "current_item": None,
+                            "playlist": [],
+                        },
+                    },
                 },
                 {
                     "url": "http://127.0.0.1:43123/api/state",
