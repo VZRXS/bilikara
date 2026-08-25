@@ -411,6 +411,9 @@ class PlaylistStore:
         self._snapshot: dict[str, Any] = {}
         self._persistence: dict[str, Any] = {}
         self._previous_session_path: Path | None = None
+        self._cache_attempt_reservations: dict[
+            int, tuple[str, dict[str, Any]]
+        ] = {}
 
         if not rust_runtime.app_state_available():
             status = rust_runtime.runtime_status()
@@ -779,12 +782,23 @@ class PlaylistStore:
         persist_backup: bool = False,
         **changes: object,
     ) -> bool:
-        allowed = PlaylistItem.__dataclass_fields__
-        patch = {
-            key: copy.deepcopy(value)
-            for key, value in changes.items()
-            if key in allowed and key != "id"
+        allowed = {
+            "title",
+            "part_title",
+            "display_title",
+            "cover_url",
+            "embed_url",
+            "owner_mid",
+            "owner_name",
+            "owner_url",
         }
+        unsupported = sorted(set(changes).difference(allowed))
+        if unsupported:
+            raise ValueError(
+                "unsupported PlaylistItem metadata fields: "
+                + ", ".join(unsupported)
+            )
+        patch = {key: copy.deepcopy(value) for key, value in changes.items()}
         try:
             self._request(
                 "update_item",
@@ -811,6 +825,13 @@ class PlaylistStore:
             or cache_attempt_token <= 0
         ):
             raise ValueError("cache attempt token must be a positive integer")
+        terminal = str(event.get("kind") or "") in {
+            "ready",
+            "failed",
+            "cancelled",
+            "evicted",
+            "reset",
+        }
         try:
             result = self._request(
                 "apply_cache_event",
@@ -822,23 +843,113 @@ class PlaylistStore:
             if exc.kind == "item_not_found":
                 return False
             raise
+        finally:
+            if terminal:
+                with self.lock:
+                    self._cache_attempt_reservations.pop(
+                        cache_attempt_token, None
+                    )
         return bool(result.get("applied"))
 
-    def begin_cache_attempt(self, item_id: str) -> int:
-        result = self._request(
-            "begin_cache_attempt",
-            include_now=False,
-            item_id=str(item_id),
-        )
-        token = result.get("cache_attempt_token")
-        if isinstance(token, bool) or not isinstance(token, int) or token <= 0:
-            raise rust_runtime.RustAppStateError(
-                "internal_error",
-                "invalid_cache_attempt_token",
-                "Rust AppState returned an invalid cache attempt token",
-                response={"result": copy.deepcopy(result)},
+    def begin_cache_attempt(
+        self,
+        item_id: str,
+        expected_item_incarnation_id: str,
+    ) -> int:
+        normalized_item_id = str(item_id)
+        if not isinstance(expected_item_incarnation_id, str) or not expected_item_incarnation_id:
+            raise ValueError("expected item incarnation must be a non-empty Rust identity")
+        with self.lock:
+            result = self._request(
+                "begin_cache_attempt",
+                include_now=False,
+                item_id=normalized_item_id,
+                expected_item_incarnation_id=expected_item_incarnation_id,
+            )
+            token = result.get("cache_attempt_token")
+            if (
+                isinstance(token, bool)
+                or not isinstance(token, int)
+                or token <= 0
+            ):
+                raise rust_runtime.RustAppStateError(
+                    "internal_error",
+                    "invalid_cache_attempt_token",
+                    "Rust AppState returned an invalid cache attempt token",
+                    response={"result": copy.deepcopy(result)},
+                )
+            reservation_item_id = result.get("item_id")
+            item_incarnation_id = result.get("item_incarnation_id")
+            artifact_set_id = result.get("artifact_set_id")
+            artifact_relative_directory = result.get(
+                "artifact_relative_directory"
+            )
+            if (
+                reservation_item_id != normalized_item_id
+                or item_incarnation_id != expected_item_incarnation_id
+                or not all(
+                    isinstance(value, str) and bool(value)
+                    for value in (
+                        item_incarnation_id,
+                        artifact_set_id,
+                        artifact_relative_directory,
+                    )
+                )
+                or not isinstance(result.get("refresh"), bool)
+            ):
+                raise rust_runtime.RustAppStateError(
+                    "internal_error",
+                    "invalid_cache_attempt_reservation",
+                    "Rust AppState returned an invalid cache attempt reservation",
+                    response={"result": copy.deepcopy(result)},
+                )
+            superseded = [
+                existing_token
+                for existing_token, (existing_item_id, _reservation) in (
+                    self._cache_attempt_reservations.items()
+                )
+                if existing_item_id == normalized_item_id
+            ]
+            for existing_token in superseded:
+                self._cache_attempt_reservations.pop(existing_token, None)
+            self._cache_attempt_reservations[token] = (
+                normalized_item_id,
+                copy.deepcopy(result),
             )
         return token
+
+    def cache_attempt_reservation(self, cache_attempt_token: int) -> dict[str, Any]:
+        if (
+            isinstance(cache_attempt_token, bool)
+            or not isinstance(cache_attempt_token, int)
+            or cache_attempt_token <= 0
+        ):
+            raise ValueError("cache attempt token must be a positive integer")
+        with self.lock:
+            record = self._cache_attempt_reservations.get(cache_attempt_token)
+            if record is None:
+                raise ValueError("cache attempt reservation is unavailable")
+            return copy.deepcopy(record[1])
+
+    def authorize_cache_publication(
+        self,
+        item_id: str,
+        *,
+        cache_attempt_token: int,
+        item_incarnation_id: str,
+        artifact_set_id: str,
+        artifact_relative_directory: str,
+    ) -> bool:
+        result = self._request(
+            "authorize_cache_publication",
+            include_now=False,
+            item_id=str(item_id),
+            cache_attempt_token=int(cache_attempt_token),
+            item_incarnation_id=str(item_incarnation_id),
+            artifact_set_id=str(artifact_set_id),
+            artifact_relative_directory=str(artifact_relative_directory),
+        )
+        return result.get("authorized") is True
 
     def add_session_user(self, name: str) -> bool:
         return self._changed(self._request("add_session_user", name=str(name or "")))
@@ -977,6 +1088,7 @@ class PlaylistStore:
             rust_runtime.app_state_request("shutdown")
             self._snapshot = {}
             self._persistence = {}
+            self._cache_attempt_reservations.clear()
 
     def history_key_for_item(self, item: PlaylistItem) -> str:
         result = self._request(
@@ -1071,6 +1183,22 @@ class PlaylistStore:
             )
         self._snapshot = copy.deepcopy(snapshot)
         self._persistence = copy.deepcopy(persistence)
+        live_incarnations = {
+            str(item.get("id") or ""): str(
+                item.get("item_incarnation_id") or ""
+            )
+            for item in self._item_payloads_unlocked()
+        }
+        stale_reservations = [
+            token
+            for token, (item_id, reservation) in (
+                self._cache_attempt_reservations.items()
+            )
+            if live_incarnations.get(item_id)
+            != str(reservation.get("item_incarnation_id") or "")
+        ]
+        for token in stale_reservations:
+            self._cache_attempt_reservations.pop(token, None)
         if not self._snapshot.get("previous_session", {}).get("available"):
             self._previous_session_path = None
 

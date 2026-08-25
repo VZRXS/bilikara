@@ -2349,8 +2349,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
         prefix = "/media/"
         relative = route[len(prefix):] if route.startswith(prefix) else route
         decoded = unquote(relative)
+        decoded_path = Path(decoded)
         media_path = (CACHE_DIR / decoded).resolve()
-        if not _is_path_within(media_path, CACHE_DIR.resolve()) or not media_path.exists():
+        if (
+            decoded_path.is_absolute()
+            or not decoded_path.parts
+            or any(part in {".", ".."} or part.startswith(".") for part in decoded_path.parts)
+            or not _is_path_within(media_path, CACHE_DIR.resolve())
+            or not media_path.is_file()
+        ):
             self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
             return
         self._stream_file(

@@ -360,6 +360,32 @@ class CacheManager:
         with self.native_cache_call_lock:
             return rust_runtime.cache_runtime_request(command, **fields)
 
+    @staticmethod
+    def _cache_incarnation_mismatch(error: BaseException) -> bool:
+        return getattr(error, "kind", None) == "item_incarnation_mismatch"
+
+    def _accept_native_cache_attempt_identity(
+        self,
+        item_id: str,
+        generation: int,
+        cache_attempt_token: int,
+    ) -> bool:
+        if generation <= 0:
+            return False
+        with self.lock:
+            current_generation = self.native_cache_generations.get(item_id)
+            current_token = self.native_cache_attempt_tokens.get(item_id)
+            if current_generation is None or generation > current_generation:
+                self.native_cache_generations[item_id] = generation
+                self.native_cache_attempt_tokens[item_id] = cache_attempt_token
+                return True
+            if generation < current_generation:
+                return False
+            if current_token is None:
+                self.native_cache_attempt_tokens[item_id] = cache_attempt_token
+                return True
+            return current_token == cache_attempt_token
+
     def _project_cache_event(
         self,
         item_id: str,
@@ -381,10 +407,73 @@ class CacheManager:
             raise ValueError("cache attempt token must be a positive integer")
         return token
 
-    def _begin_cache_attempt(self, item_id: str) -> int:
+    @staticmethod
+    def _path_is_within(candidate: Path, root: Path) -> bool:
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return False
+        return True
+
+    def _begin_cache_attempt(
+        self,
+        item_id: str,
+        expected_item_incarnation_id: str,
+    ) -> int:
         return self._require_cache_attempt_token(
-            self.store.begin_cache_attempt(str(item_id))
+            self.store.begin_cache_attempt(
+                str(item_id),
+                expected_item_incarnation_id,
+            )
         )
+
+    def _begin_cache_attempt_for_item(self, item: PlaylistItem) -> int:
+        return self._begin_cache_attempt(item.id, item.item_incarnation_id)
+
+    def _cache_attempt_reservation_for_item(
+        self,
+        item: PlaylistItem,
+        cache_attempt_token: int,
+    ) -> dict[str, Any]:
+        token = self._require_cache_attempt_token(cache_attempt_token)
+        reservation = self.store.cache_attempt_reservation(token)
+        if (
+            reservation.get("item_id") != item.id
+            or reservation.get("item_incarnation_id")
+            != item.item_incarnation_id
+        ):
+            raise RuntimeError(
+                "cache item incarnation changed before downloader preparation"
+            )
+        return reservation
+
+    def _cache_attempt_paths(
+        self,
+        cache_attempt_token: int,
+    ) -> tuple[dict[str, Any], Path, Path]:
+        token = self._require_cache_attempt_token(cache_attempt_token)
+        reservation = self.store.cache_attempt_reservation(token)
+        if reservation.get("cache_attempt_token") != token:
+            raise ValueError("cache attempt reservation token mismatch")
+        relative_directory = str(
+            reservation.get("artifact_relative_directory") or ""
+        )
+        relative_path = Path(relative_directory)
+        if (
+            not relative_directory
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+        ):
+            raise ValueError("Rust artifact directory is invalid")
+        cache_root = CACHE_DIR.resolve()
+        committed_dir = (CACHE_DIR / relative_path).resolve()
+        staging_dir = (CACHE_DIR / ".staging" / f"attempt-{token}").resolve()
+        if (
+            not self._path_is_within(committed_dir, cache_root)
+            or not self._path_is_within(staging_dir, cache_root)
+        ):
+            raise ValueError("Rust artifact directory escapes the cache root")
+        return reservation, staging_dir, committed_dir
 
     def _begin_live_cache_attempts(
         self, items: Iterable[PlaylistItem]
@@ -392,7 +481,7 @@ class CacheManager:
         tokens: dict[str, int] = {}
         for item in items:
             try:
-                tokens[item.id] = self._begin_cache_attempt(item.id)
+                tokens[item.id] = self._begin_cache_attempt_for_item(item)
             except PlaylistStoreCommandError as exc:
                 if exc.kind != "item_not_found":
                     raise
@@ -543,18 +632,12 @@ class CacheManager:
                 and sequence <= self.native_cache_terminal_sequences.get(item_id, 0)
             ):
                 return
-            expected_generation = self.native_cache_generations.get(item_id)
-            expected_cache_attempt_token = self.native_cache_attempt_tokens.get(
-                item_id
-            )
-            if generation > 0:
-                if expected_generation and generation < expected_generation:
-                    return
-                if not expected_generation or generation > expected_generation:
-                    self.native_cache_generations[item_id] = generation
-                    self.native_cache_attempt_tokens[item_id] = cache_attempt_token
-                elif expected_cache_attempt_token is None:
-                    self.native_cache_attempt_tokens[item_id] = cache_attempt_token
+            if generation > 0 and not self._accept_native_cache_attempt_identity(
+                item_id,
+                generation,
+                cache_attempt_token,
+            ):
+                return
             matching_native_terminal = bool(
                 terminal
                 and generation > 0
@@ -650,6 +733,13 @@ class CacheManager:
                 selected_audio_variant_id=str(
                     payload.get("selected_audio_variant_id") or ""
                 ),
+                item_incarnation_id=str(
+                    payload.get("item_incarnation_id") or ""
+                ),
+                artifact_set_id=str(payload.get("artifact_set_id") or ""),
+                artifact_relative_directory=str(
+                    payload.get("artifact_relative_directory") or ""
+                ),
             )
         elif kind == "failed":
             self._mark_native_cache_failed(
@@ -684,12 +774,29 @@ class CacheManager:
         message: str,
         *,
         cache_attempt_token: int | None = None,
+        expected_item_incarnation_id: str | None = None,
     ) -> None:
-        token = (
-            self._begin_cache_attempt(item_id)
-            if cache_attempt_token is None
-            else self._require_cache_attempt_token(cache_attempt_token)
-        )
+        if cache_attempt_token is None and (
+            not isinstance(expected_item_incarnation_id, str)
+            or not expected_item_incarnation_id
+        ):
+            raise ValueError(
+                "tokenless Native failure requires the observed item incarnation"
+            )
+        item = self.store.get_item(item_id)
+        if item is None:
+            return
+        if cache_attempt_token is None:
+            if item.item_incarnation_id != expected_item_incarnation_id:
+                return
+            try:
+                token = self._begin_cache_attempt_for_item(item)
+            except PlaylistStoreCommandError as exc:
+                if exc.kind in {"item_not_found", "item_incarnation_mismatch"}:
+                    return
+                raise
+        else:
+            token = self._require_cache_attempt_token(cache_attempt_token)
         self._clear_item_download_progress(
             item_id,
             cache_attempt_token=token,
@@ -744,6 +851,7 @@ class CacheManager:
         return {
             "schema_version": 1,
             "item_id": item.id,
+            "item_incarnation_id": str(item.item_incarnation_id or ""),
             "bvid": item.bvid,
             "aid": max(0, int(item.aid or 0)),
             "video_page": video_page,
@@ -1236,7 +1344,7 @@ class CacheManager:
         for item in items:
             if item.cache_status != "ready" or self._item_cache_ready(item):
                 continue
-            cache_attempt_token = self._begin_cache_attempt(item.id)
+            cache_attempt_token = self._begin_cache_attempt_for_item(item)
             self._project_cache_event(
                 item.id,
                 "evicted",
@@ -1491,46 +1599,44 @@ class CacheManager:
             "message": message,
         }
     def cache_metrics(self) -> dict[str, Any]:
-        if (
-            self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
-            and self.native_cache_started
-        ):
-            try:
-                result = self._native_cache_request(
-                    "metrics", cache_root=str(CACHE_DIR.resolve())
-                )
-                if (
-                    isinstance(result.get("item_bytes"), dict)
-                    and isinstance(result.get("total_bytes"), int)
-                    and isinstance(result.get("item_count"), int)
-                ):
-                    return result
-            except Exception as exc:  # noqa: BLE001
-                with self.lock:
-                    self.native_cache_error = str(exc)
         item_bytes: dict[str, int] = {}
-        total_bytes = 0
+        logical_total_bytes = 0
         item_count = 0
         if not CACHE_DIR.exists():
             return {
                 "item_bytes": item_bytes,
-                "total_bytes": total_bytes,
+                "total_bytes": logical_total_bytes,
                 "item_count": item_count,
+                "physical_total_bytes": 0,
+                "retained_bytes": 0,
+                "staging_bytes": 0,
             }
 
-        for child in CACHE_DIR.iterdir():
-            if not child.is_dir():
+        for item in self.store.list_items():
+            relative_directory = str(
+                getattr(item, "artifact_relative_directory", "") or ""
+            )
+            committed_dir = self._cache_path_from_relative_path(relative_directory)
+            if committed_dir is None:
                 continue
-            size = self._path_size(child)
-            item_bytes[child.name] = size
-            total_bytes += size
+            size = self._path_size(committed_dir)
+            item_bytes[item.id] = size
+            logical_total_bytes += size
             if size > 0:
                 item_count += 1
 
+        physical_total_bytes = self._path_size(CACHE_DIR)
+        staging_bytes = self._path_size(CACHE_DIR / ".staging")
         return {
             "item_bytes": item_bytes,
-            "total_bytes": total_bytes,
+            "total_bytes": logical_total_bytes,
             "item_count": item_count,
+            "physical_total_bytes": physical_total_bytes,
+            "retained_bytes": max(
+                0,
+                physical_total_bytes - logical_total_bytes - staging_bytes,
+            ),
+            "staging_bytes": staging_bytes,
         }
 
     def prepare_session(self) -> None:
@@ -1642,16 +1748,20 @@ class CacheManager:
 
     def clear_runtime_cache(self) -> None:
         items = self.store.list_items()
-        self._begin_live_cache_attempts(items)
+        cache_attempt_tokens = self._begin_live_cache_attempts(items)
         native_cache = (
             self._current_download_source() == DOWNLOAD_SOURCE_NATIVE
             or self.native_cache_started
         )
         if native_cache:
             self._ensure_native_cache_runtime()
-            self._native_cache_request("clear", cache_root=str(CACHE_DIR.resolve()))
-            self._drain_native_cache_events()
-            self._clear_log_root()
+            for item in items:
+                try:
+                    self._native_cache_request("cancel", item_id=item.id)
+                except Exception as exc:  # noqa: BLE001
+                    _debug_print(
+                        f"[bilikara-cache] Rust cache cancel failed for item={item.id}: {exc}"
+                    )
         with self.lock:
             processes = self._active_processes_locked()
             urgent_workers = list(self.urgent_workers.values())
@@ -1687,8 +1797,17 @@ class CacheManager:
             if worker is current_thread:
                 continue
             worker.join(timeout=5.0)
-        if not native_cache:
-            self._clear_cache_root()
+        for item in items:
+            token = cache_attempt_tokens.get(item.id)
+            if token is None:
+                continue
+            self._project_cache_event(
+                item.id,
+                "evicted",
+                cache_attempt_token=token,
+                message="缓存已清空",
+            )
+            self._record_item_activity(item.id)
 
     def retry_item(self, item_id: str, *, force: bool = False) -> None:
         item = self.store.get_item(item_id)
@@ -1707,7 +1826,6 @@ class CacheManager:
             and not effective_bilibili_cookie()
         ):
             raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
-        reset_token = self._begin_cache_attempt(item_id)
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
 
@@ -1722,13 +1840,6 @@ class CacheManager:
                 and primary_active_item_id
                 and primary_active_item_id != item_id
             )
-            self._project_cache_event(
-                item_id,
-                "reset",
-                cache_attempt_token=reset_token,
-                message="准备重新下载",
-            )
-            self._record_item_activity(item_id)
             try:
                 self._ensure_native_cache_runtime()
                 result = self._native_cache_request(
@@ -1739,20 +1850,23 @@ class CacheManager:
                     result.get("cache_attempt_token")
                 )
                 if generation > 0:
-                    with self.lock:
-                        self.native_cache_generations[item_id] = max(
-                            generation,
-                            self.native_cache_generations.get(item_id, 0),
-                        )
-                        self.native_cache_attempt_tokens[item_id] = (
-                            cache_attempt_token
-                        )
+                    self._accept_native_cache_attempt_identity(
+                        item_id,
+                        generation,
+                        cache_attempt_token,
+                    )
                 self._drain_native_cache_events()
             except Exception as exc:  # noqa: BLE001
-                self._mark_native_cache_failed(item_id, str(exc))
+                if not self._cache_incarnation_mismatch(exc):
+                    self._mark_native_cache_failed(
+                        item_id,
+                        str(exc),
+                        expected_item_incarnation_id=item.item_incarnation_id,
+                    )
             return
 
         is_current_item = self.store.is_current_item(item_id)
+        refresh_token = self._begin_cache_attempt_for_item(item)
         with self.lock:
             active_processes = self._active_processes_locked(item_id)
             target_is_primary_active = self.active_item_id == item_id
@@ -1780,13 +1894,15 @@ class CacheManager:
             )
             if in_flight:
                 self.retry_requested_ids.add(item_id)
+            self.python_worker_download_sources[item_id] = download_source
+            self.python_cache_attempt_tokens[item_id] = refresh_token
             if preempted_item_id:
                 self.cache_interrupted_messages[preempted_item_id] = "等待当前歌曲重新下载"
 
         self._project_cache_event(
             item_id,
-            "reset",
-            cache_attempt_token=reset_token,
+            "queued",
+            cache_attempt_token=refresh_token,
             message="准备重新下载",
         )
         self._record_item_activity(item_id)
@@ -1795,12 +1911,6 @@ class CacheManager:
             self._terminate_processes(active_processes)
             return
 
-        self._remove_cache_dir(
-            item_id,
-            cache_attempt_token=reset_token,
-        )
-        with self.lock:
-            self.python_cache_attempt_tokens.pop(item_id, None)
         if start_concurrent_current_retry:
             self._append_log_line(
                 log_path,
@@ -1947,7 +2057,11 @@ class CacheManager:
             try:
                 jobs.append(self._native_cache_job(item))
             except Exception as exc:  # noqa: BLE001
-                self._mark_native_cache_failed(item.id, str(exc))
+                self._mark_native_cache_failed(
+                    item.id,
+                    str(exc),
+                    expected_item_incarnation_id=item.item_incarnation_id,
+                )
 
         try:
             self._ensure_native_cache_runtime()
@@ -1955,6 +2069,9 @@ class CacheManager:
                 "sync",
                 cache_root=str(CACHE_DIR.resolve()),
                 current_ids=[item.id for item in items],
+                current_item_incarnations={
+                    item.id: item.item_incarnation_id for item in items
+                },
                 retained_ids=[item.id for item in items if item.id in retained_ids],
                 jobs=jobs,
                 ordered_ids=list(plan.pending_order),
@@ -1975,12 +2092,10 @@ class CacheManager:
                         cache_attempt_token = self._require_cache_attempt_token(
                             cache_attempt_tokens.get(item_id)
                         )
-                        self.native_cache_generations[normalized_item_id] = max(
+                        self._accept_native_cache_attempt_identity(
+                            normalized_item_id,
                             int(generation),
-                            self.native_cache_generations.get(normalized_item_id, 0),
-                        )
-                        self.native_cache_attempt_tokens[normalized_item_id] = (
-                            cache_attempt_token
+                            cache_attempt_token,
                         )
                     except (TypeError, ValueError):
                         continue
@@ -2042,7 +2157,9 @@ class CacheManager:
                     download_source == DOWNLOAD_SOURCE_DOWNKYI
                     and not effective_bilibili_cookie()
                 )
-                cache_attempt_token = self._begin_cache_attempt(item_id)
+                cache_attempt_token = self.python_cache_attempt_tokens.get(item_id)
+                if cache_attempt_token is None:
+                    cache_attempt_token = self._begin_cache_attempt_for_item(item)
                 if not missing_downkyi_cookie:
                     self.pending_ids.add(item_id)
                     self.python_worker_download_sources[item_id] = download_source
@@ -2058,17 +2175,19 @@ class CacheManager:
                     result.get("cache_attempt_token")
                 )
                 if generation > 0:
-                    with self.lock:
-                        self.native_cache_generations[item_id] = max(
-                            generation,
-                            self.native_cache_generations.get(item_id, 0),
-                        )
-                        self.native_cache_attempt_tokens[item_id] = (
-                            cache_attempt_token
-                        )
+                    self._accept_native_cache_attempt_identity(
+                        item_id,
+                        generation,
+                        cache_attempt_token,
+                    )
                 self._drain_native_cache_events()
             except Exception as exc:  # noqa: BLE001
-                self._mark_native_cache_failed(item_id, str(exc))
+                if not self._cache_incarnation_mismatch(exc):
+                    self._mark_native_cache_failed(
+                        item_id,
+                        str(exc),
+                        expected_item_incarnation_id=item.item_incarnation_id,
+                    )
             return
         if missing_downkyi_cookie:
             self._project_cache_event(
@@ -2096,6 +2215,9 @@ class CacheManager:
                 self.tasks.put(queued_id)
 
     def _start_urgent_cache(self, item_id: str) -> None:
+        item = self.store.get_item(item_id)
+        if item is None:
+            return
         with self.lock:
             if self.stop_event.is_set() or item_id in self.urgent_cache_ids:
                 return
@@ -2106,12 +2228,12 @@ class CacheManager:
                 download_source == DOWNLOAD_SOURCE_DOWNKYI
                 and not effective_bilibili_cookie()
             ):
-                cache_attempt_token = self._begin_cache_attempt(item_id)
+                cache_attempt_token = self._begin_cache_attempt_for_item(item)
                 missing_downkyi_cookie = True
             else:
                 cache_attempt_token = self.python_cache_attempt_tokens.get(item_id)
                 if cache_attempt_token is None:
-                    cache_attempt_token = self._begin_cache_attempt(item_id)
+                    cache_attempt_token = self._begin_cache_attempt_for_item(item)
                     self.python_cache_attempt_tokens[item_id] = cache_attempt_token
                 missing_downkyi_cookie = False
             if missing_downkyi_cookie:
@@ -2174,6 +2296,10 @@ class CacheManager:
             self.sync_with_playlist()
 
     def _enqueue_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
+        item = self.store.get_item(item_id)
+        if item is None:
+            return
+        requeue_item = self.store.get_item(requeue_after) if requeue_after else None
         with self.lock:
             if self.stop_event.is_set():
                 return
@@ -2187,15 +2313,16 @@ class CacheManager:
                 raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
             if item_id not in self.python_cache_attempt_tokens:
                 self.python_cache_attempt_tokens[item_id] = (
-                    self._begin_cache_attempt(item_id)
+                    self._begin_cache_attempt_for_item(item)
                 )
             if (
                 requeue_after
+                and requeue_item is not None
                 and requeue_after == self.active_item_id
                 and requeue_after in self.desired_ids
             ):
                 self.python_cache_attempt_tokens[requeue_after] = (
-                    self._begin_cache_attempt(requeue_after)
+                    self._begin_cache_attempt_for_item(requeue_item)
                 )
             drained: list[str] = []
             skip_ids = {item_id}
@@ -2221,6 +2348,9 @@ class CacheManager:
                 self.tasks.put(queued_id)
 
     def _enqueue_retry_front(self, item_id: str, *, requeue_after: str | None = None) -> None:
+        item = self.store.get_item(item_id)
+        if item is None:
+            return
         with self.lock:
             download_source = self.download_source
             if (
@@ -2229,9 +2359,10 @@ class CacheManager:
             ):
                 raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
             self.python_worker_download_sources[item_id] = download_source
-            self.python_cache_attempt_tokens[item_id] = self._begin_cache_attempt(
-                item_id
-            )
+            if item_id not in self.python_cache_attempt_tokens:
+                self.python_cache_attempt_tokens[item_id] = (
+                    self._begin_cache_attempt_for_item(item)
+                )
         self._enqueue_front(item_id, requeue_after=requeue_after)
 
     def _reorder_pending_cache_queue(self, ordered_ids: list[str]) -> None:
@@ -2383,14 +2514,6 @@ class CacheManager:
         )
         if self.stop_event.is_set() or not self._should_cache(item_id):
             return False
-        if self._take_retry_request(item_id):
-            cache_attempt_token = self._begin_cache_attempt(item_id)
-            with self.lock:
-                self.python_cache_attempt_tokens[item_id] = cache_attempt_token
-            self._remove_cache_dir(
-                item_id,
-                cache_attempt_token=cache_attempt_token,
-            )
         item = self.store.get_item(item_id)
         if not item:
             self._remove_cache_dir(
@@ -2398,6 +2521,16 @@ class CacheManager:
                 cache_attempt_token=cache_attempt_token,
             )
             return False
+        self._cache_attempt_reservation_for_item(item, cache_attempt_token)
+        if self._take_retry_request(item_id):
+            with self.lock:
+                replacement_token = self.python_cache_attempt_tokens.get(item_id)
+            if replacement_token is None or replacement_token == cache_attempt_token:
+                replacement_token = self._begin_cache_attempt_for_item(item)
+                with self.lock:
+                    self.python_cache_attempt_tokens[item_id] = replacement_token
+            cache_attempt_token = replacement_token
+            self._cache_attempt_reservation_for_item(item, cache_attempt_token)
         # Current cache flow keeps video and audio tracks separate so the host
         # can switch audio variants without remuxing a single output file.
         return self._cache_item_multi(
@@ -2407,6 +2540,21 @@ class CacheManager:
             allow_refresh_retry=allow_refresh_retry,
         )
 
+    def _replacement_cache_attempt_token(
+        self,
+        item: PlaylistItem,
+        previous_token: int,
+    ) -> int:
+        item_id = item.id
+        with self.lock:
+            replacement_token = self.python_cache_attempt_tokens.get(item_id)
+        if replacement_token is None or replacement_token == previous_token:
+            replacement_token = self._begin_cache_attempt_for_item(item)
+            with self.lock:
+                self.python_cache_attempt_tokens[item_id] = replacement_token
+        self._cache_attempt_reservation_for_item(item, replacement_token)
+        return replacement_token
+
     def _cache_item_multi(
         self,
         item_id: str,
@@ -2415,13 +2563,21 @@ class CacheManager:
         cache_attempt_token: int | None = None,
         allow_refresh_retry: bool,
     ) -> bool:
+        if item.id != item_id:
+            raise RuntimeError("cache item owner changed before downloader preparation")
+        if cache_attempt_token is not None:
+            self._cache_attempt_reservation_for_item(item, cache_attempt_token)
         with self.lock:
             download_source = self.python_worker_download_sources[item_id]
         if (
             download_source == DOWNLOAD_SOURCE_DOWNKYI
             and not effective_bilibili_cookie()
         ):
-            token = self._begin_cache_attempt(item_id)
+            token = (
+                self._begin_cache_attempt_for_item(item)
+                if cache_attempt_token is None
+                else self._require_cache_attempt_token(cache_attempt_token)
+            )
             self._clear_item_download_progress(
                 item_id,
                 cache_attempt_token=token,
@@ -2436,10 +2592,11 @@ class CacheManager:
             return False
 
         token = (
-            self._begin_cache_attempt(item_id)
+            self._begin_cache_attempt_for_item(item)
             if cache_attempt_token is None
             else self._require_cache_attempt_token(cache_attempt_token)
         )
+        self._cache_attempt_reservation_for_item(item, token)
 
         self._clear_item_download_progress(
             item_id,
@@ -2453,10 +2610,9 @@ class CacheManager:
         )
         self._record_item_activity(item_id)
 
-        item_dir = CACHE_DIR / item_id
-        item_dir.mkdir(parents=True, exist_ok=True)
-        if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
-            self._cleanup_attempt_dirs(item_dir)
+        reservation, item_dir, _committed_dir = self._cache_attempt_paths(token)
+        item_dir.parent.mkdir(parents=True, exist_ok=True)
+        item_dir.mkdir(parents=False, exist_ok=False)
         log_path = self._item_log_path(item_id, download_source)
         self._append_log_line(log_path, "")
         self._append_log_line(log_path, f"[{self._log_timestamp()}] start cache: {item.display_title}")
@@ -2489,6 +2645,7 @@ class CacheManager:
                     cache_attempt_token=token,
                     message=f"{label} 不可用: {exc}",
                 )
+                self._safe_rmtree(item_dir)
                 return False
             try:
                 ffmpeg_path = self._ensure_ffmpeg(force_refresh=False)
@@ -2503,9 +2660,11 @@ class CacheManager:
                     cache_attempt_token=token,
                     message=f"FFmpeg 不可用: {exc}",
                 )
+                self._safe_rmtree(item_dir)
                 return False
 
         if not self._should_cache(item_id):
+            self._safe_rmtree(item_dir)
             return False
 
         self._project_cache_event(
@@ -2546,21 +2705,24 @@ class CacheManager:
                 )
             self._raise_if_retry_requested(item_id)
             self._raise_if_priority_shift(item_id)
-            if download_source in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_NATIVE):
-                self._publish_validated_cache_result(cache_result, log_path)
+            self._publish_validated_cache_result(
+                item_id,
+                token,
+                reservation,
+                item_dir,
+                cache_result,
+                log_path,
+            )
         except CacheCancelledError as exc:
             if str(exc) == RETRY_REQUESTED_MESSAGE:
                 self._take_retry_request(item_id)
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    retry_token = self._begin_cache_attempt(item_id)
-                    with self.lock:
-                        self.python_cache_attempt_tokens[item_id] = retry_token
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                    self._remove_cache_dir(
-                        item_id,
-                        cache_attempt_token=retry_token,
+                    retry_token = self._replacement_cache_attempt_token(
+                        fresh_item, token
                     )
+                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
+                    self._safe_rmtree(item_dir)
                     return self._cache_item_multi(
                         item_id,
                         fresh_item,
@@ -2570,25 +2732,28 @@ class CacheManager:
                 return False
             self._take_cache_interrupt_message(item_id)
             self._append_log_line(log_path, f"[{self._log_timestamp()}] cancelled: {exc}")
-            self._drop_item_cache(
+            self._safe_rmtree(item_dir)
+            self._clear_item_download_progress(
                 item_id,
-                str(exc),
                 cache_attempt_token=token,
             )
+            self._project_cache_event(
+                item_id,
+                "cancelled",
+                cache_attempt_token=token,
+                message=str(exc),
+            )
+            self._record_item_activity(item_id)
             return False
         except DownloadCommandError as exc:
-            self._cleanup_attempt_dirs(item_dir)
+            self._safe_rmtree(item_dir)
             if self._take_retry_request(item_id):
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    retry_token = self._begin_cache_attempt(item_id)
-                    with self.lock:
-                        self.python_cache_attempt_tokens[item_id] = retry_token
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                    self._remove_cache_dir(
-                        item_id,
-                        cache_attempt_token=retry_token,
+                    retry_token = self._replacement_cache_attempt_token(
+                        fresh_item, token
                     )
+                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
                     return self._cache_item_multi(
                         item_id,
                         fresh_item,
@@ -2611,17 +2776,14 @@ class CacheManager:
                     f"[{self._log_timestamp()}] detected stale BBDown hint, forcing refresh and retry",
                 )
                 try:
-                    retry_token = self._begin_cache_attempt(item_id)
-                    with self.lock:
-                        self.python_cache_attempt_tokens[item_id] = retry_token
-                    token = retry_token
+                    retry_token = self._replacement_cache_attempt_token(
+                        item, token
+                    )
                     self._ensure_bbdown(force_refresh=True)
                     self._clear_item_download_progress(
                         item_id,
-                        cache_attempt_token=token,
+                        cache_attempt_token=retry_token,
                     )
-                    self._safe_rmtree(item_dir)
-                    item_dir.mkdir(parents=True, exist_ok=True)
                     return self._cache_item_multi(
                         item_id,
                         item,
@@ -2648,18 +2810,14 @@ class CacheManager:
             self._record_item_activity(item_id)
             return False
         except Exception as exc:  # noqa: BLE001
-            self._cleanup_attempt_dirs(item_dir)
+            self._safe_rmtree(item_dir)
             if self._take_retry_request(item_id):
                 fresh_item = self.store.get_item(item_id)
                 if fresh_item and self._should_cache(item_id):
-                    retry_token = self._begin_cache_attempt(item_id)
-                    with self.lock:
-                        self.python_cache_attempt_tokens[item_id] = retry_token
-                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
-                    self._remove_cache_dir(
-                        item_id,
-                        cache_attempt_token=retry_token,
+                    retry_token = self._replacement_cache_attempt_token(
+                        fresh_item, token
                     )
+                    self._append_log_line(log_path, f"[{self._log_timestamp()}] restarting cache by manual request")
                     return self._cache_item_multi(
                         item_id,
                         fresh_item,
@@ -2698,6 +2856,11 @@ class CacheManager:
             video_media_url=cache_result["video_media_url"],
             audio_variants=cache_result["audio_variants"],
             selected_audio_variant_id=cache_result["selected_audio_variant_id"],
+            item_incarnation_id=cache_result["item_incarnation_id"],
+            artifact_set_id=cache_result["artifact_set_id"],
+            artifact_relative_directory=cache_result[
+                "artifact_relative_directory"
+            ],
         )
         self._record_item_activity(item_id)
         self._append_log_line(log_path, f"[{self._log_timestamp()}] ready: {video_file.name}")
@@ -4956,29 +5119,33 @@ class CacheManager:
             and not effective_bilibili_cookie()
         ):
             raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
-        reset_tokens = {
-            item_id: self._begin_cache_attempt(item_id) for item_id in item_ids
+        observed_items = {
+            item.id: item
+            for item in self.store.list_items()
+            if item.id in item_ids
         }
+        refresh_tokens = {
+            item_id: self._begin_cache_attempt_for_item(item)
+            for item_id, item in observed_items.items()
+        }
+        item_ids = set(refresh_tokens)
         with self.lock:
             for item_id in item_ids:
+                self.python_worker_download_sources[item_id] = download_source
+                self.python_cache_attempt_tokens[item_id] = refresh_tokens[item_id]
                 if item_id == active_item_id or item_id in pending_ids:
                     self.retry_requested_ids.add(item_id)
 
         for item_id in item_ids:
             self._project_cache_event(
                 item_id,
-                "reset",
-                cache_attempt_token=reset_tokens[item_id],
+                "queued",
+                cache_attempt_token=refresh_tokens[item_id],
                 message=message,
-                clear_selected_audio_variant=True,
             )
             self._record_item_activity(item_id)
             if item_id == active_item_id or item_id in pending_ids:
                 continue
-            self._remove_cache_dir(
-                item_id,
-                cache_attempt_token=reset_tokens[item_id],
-            )
             self.enqueue(item_id)
 
         self._terminate_processes(active_processes)
@@ -5509,75 +5676,100 @@ class CacheManager:
             f"{json.dumps({'event': 'downkyi_track_remuxed', 'path': str(media_path), 'stream_kind': stream_kind, 'raw_size': raw_size, 'remuxed_size': normalized_size}, ensure_ascii=False, sort_keys=True)}",
         )
 
-    @staticmethod
-    def _final_path_for_attempt(path: Path) -> Path:
-        if path.parent.name.startswith(".attempt-"):
-            return path.parent.parent / path.name
-        return path
-
-    @classmethod
-    def _cleanup_attempt_dirs(cls, item_dir: Path) -> None:
-        try:
-            attempts = [
-                path
-                for path in item_dir.rglob(".attempt-*")
-                if path.is_dir()
-            ]
-        except OSError:
-            return
-        for attempt_dir in sorted(attempts, key=lambda path: len(path.parts), reverse=True):
-            cls._safe_rmtree(attempt_dir)
-
     def _publish_validated_cache_result(
         self,
+        item_id: str,
+        cache_attempt_token: int,
+        reservation: dict[str, Any],
+        staging_dir: Path,
         cache_result: dict[str, object],
         log_path: Path,
     ) -> None:
+        token = self._require_cache_attempt_token(cache_attempt_token)
+        expected_reservation, expected_staging_dir, committed_dir = (
+            self._cache_attempt_paths(token)
+        )
+        if reservation != expected_reservation or staging_dir != expected_staging_dir:
+            raise DownloadCommandError("缓存发布失败: Rust 缓存尝试身份不匹配")
         validation_files = cache_result.get("validation_files")
-        if not isinstance(validation_files, list):
+        if not isinstance(validation_files, list) or not validation_files:
             raise DownloadCommandError("缓存发布失败: 缺少校验文件清单")
 
+        complete_dir = staging_dir / "complete"
+        try:
+            complete_dir.mkdir(parents=False, exist_ok=False)
+        except OSError as exc:
+            raise DownloadCommandError(f"缓存发布失败: 无法建立完整集合: {exc}") from exc
+
         publish_pairs: list[tuple[Path, Path]] = []
-        for entry in validation_files:
+        seen_names: set[str] = set()
+        staging_root = staging_dir.resolve()
+        for index, entry in enumerate(validation_files):
             if not isinstance(entry, dict):
-                continue
+                raise DownloadCommandError("缓存发布失败: 校验文件描述无效")
             source = entry.get("path")
             if not isinstance(source, Path):
                 raise DownloadCommandError("缓存发布失败: 媒体路径无效")
-            final_path = self._final_path_for_attempt(source)
-            if final_path == source:
-                continue
-            if not source.exists() or source.stat().st_size <= 0:
+            resolved_source = source.resolve()
+            if (
+                source.is_symlink()
+                or not self._path_is_within(resolved_source, staging_root)
+                or not resolved_source.is_file()
+                or resolved_source.stat().st_size <= 0
+            ):
                 raise DownloadCommandError(f"缓存发布失败: 临时文件不可用 {source.name}")
-            publish_pairs.append((source, final_path))
+            stream_kind = str(entry.get("stream_kind") or "").strip().lower()
+            page = max(1, int(entry.get("page") or index + 1))
+            if stream_kind not in {"video", "audio"}:
+                raise DownloadCommandError("缓存发布失败: 媒体轨道类型无效")
+            suffix = source.suffix.lower()
+            if not suffix or any(character not in ".abcdefghijklmnopqrstuvwxyz0123456789" for character in suffix):
+                raise DownloadCommandError("缓存发布失败: 媒体文件扩展名无效")
+            final_name = f"{stream_kind}-p{page}{suffix}"
+            if final_name in seen_names:
+                raise DownloadCommandError("缓存发布失败: 多条媒体轨道指向同一最终路径")
+            seen_names.add(final_name)
+            publish_pairs.append((source, complete_dir / final_name))
 
-        if not publish_pairs:
-            raise DownloadCommandError("缓存发布失败: DownKyi 没有待发布的临时文件")
-        if len({str(final) for _source, final in publish_pairs}) != len(publish_pairs):
-            raise DownloadCommandError("缓存发布失败: 多条媒体轨道指向同一最终路径")
-
-        published: dict[str, Path] = {}
+        staged_to_complete: dict[str, Path] = {}
         try:
             for source, final_path in publish_pairs:
-                final_path.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(source, final_path)
-                published[str(source)] = final_path
+                os.rename(source, final_path)
+                staged_to_complete[str(source)] = final_path
                 self._append_log_line(
                     log_path,
                     f"[{self._log_timestamp()}] media_diagnostic: "
-                    f"{json.dumps({'event': 'downkyi_track_published', 'temporary_output': str(source), 'final_output': str(final_path), 'size': final_path.stat().st_size}, ensure_ascii=False, sort_keys=True)}",
+                    f"{json.dumps({'event': 'cache_track_assembled', 'temporary_output': str(source), 'assembled_output': str(final_path), 'size': final_path.stat().st_size}, ensure_ascii=False, sort_keys=True)}",
                 )
         except OSError as exc:
-            for final_path in published.values():
-                try:
-                    final_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
             raise DownloadCommandError(f"缓存发布失败: {exc}") from exc
 
+        if not self.store.authorize_cache_publication(
+            item_id,
+            cache_attempt_token=token,
+            item_incarnation_id=str(reservation.get("item_incarnation_id") or ""),
+            artifact_set_id=str(reservation.get("artifact_set_id") or ""),
+            artifact_relative_directory=str(
+                reservation.get("artifact_relative_directory") or ""
+            ),
+        ):
+            raise DownloadCommandError("缓存发布失败: Rust 拒绝发布所有权")
+        if committed_dir.exists():
+            raise DownloadCommandError("缓存发布失败: 不可变缓存集合目标已存在")
+        try:
+            committed_dir.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(complete_dir, committed_dir)
+        except OSError as exc:
+            raise DownloadCommandError(f"缓存发布失败: 无法原子发布完整集合: {exc}") from exc
+
+        published = {
+            source: committed_dir / complete_path.name
+            for source, complete_path in staged_to_complete.items()
+        }
+        if any(not path.is_file() or path.stat().st_size <= 0 for path in published.values()):
+            raise DownloadCommandError("缓存发布失败: 已发布集合不完整")
+
         for entry in validation_files:
-            if not isinstance(entry, dict):
-                continue
             source = entry.get("path")
             if isinstance(source, Path) and str(source) in published:
                 entry["path"] = published[str(source)]
@@ -5612,8 +5804,16 @@ class CacheManager:
                 if current_url in url_map:
                     variant["audio_url"] = url_map[current_url]
 
-        for source, _final_path in publish_pairs:
-            self._safe_rmtree(source.parent)
+        cache_result["item_incarnation_id"] = str(
+            reservation.get("item_incarnation_id") or ""
+        )
+        cache_result["artifact_set_id"] = str(
+            reservation.get("artifact_set_id") or ""
+        )
+        cache_result["artifact_relative_directory"] = str(
+            reservation.get("artifact_relative_directory") or ""
+        )
+        self._safe_rmtree(staging_dir)
 
     def _validate_cache_result(
         self,
@@ -8340,13 +8540,11 @@ class CacheManager:
             return
 
     def _cleanup_orphan_cache_dirs(self, valid_ids: set[str]) -> None:
-        for child in CACHE_DIR.iterdir():
-            if child.name not in valid_ids:
-                if child.is_dir():
-                    self._safe_rmtree(child)
-                else:
-                    self._safe_unlink(child)
-                self._remove_item_log(child.name)
+        # Committed artifact sets are deliberately retained for the lifetime of
+        # this process because a Host media element or HTTP Range reader may
+        # still hold an older immutable URL. Session preparation/shutdown owns
+        # the safe physical-retirement boundary.
+        del valid_ids
 
     def _clear_cache_root(self) -> None:
         for child in CACHE_DIR.iterdir():
@@ -8424,18 +8622,6 @@ class CacheManager:
         if item.cache_status == "failed":
             return
         if self._item_cache_ready(item):
-            cache_attempt_token = self._begin_cache_attempt(item.id)
-            self._project_cache_event(
-                item.id,
-                "ready",
-                cache_attempt_token=cache_attempt_token,
-                progress=100.0,
-                message="缓存已完成",
-                video_relative_path=item.video_relative_path,
-                video_media_url=self._build_media_url(item.video_relative_path) if item.video_relative_path else "",
-                audio_variants=item.audio_variants,
-                selected_audio_variant_id=item.selected_audio_variant_id,
-            )
             return
 
         with self.lock:
@@ -8443,14 +8629,6 @@ class CacheManager:
         if already_in_flight:
             return
 
-        reset_token = self._begin_cache_attempt(item.id)
-        self._project_cache_event(
-            item.id,
-            "reset",
-            cache_attempt_token=reset_token,
-            message="等待缓存",
-        )
-        self._record_item_activity(item.id)
         self.enqueue(item.id)
 
     def _drop_item_cache(
@@ -8460,8 +8638,11 @@ class CacheManager:
         *,
         cache_attempt_token: int | None = None,
     ) -> None:
+        item = self.store.get_item(item_id)
+        if item is None:
+            return
         token = (
-            self._begin_cache_attempt(item_id)
+            self._begin_cache_attempt_for_item(item)
             if cache_attempt_token is None
             else self._require_cache_attempt_token(cache_attempt_token)
         )
@@ -8472,11 +8653,12 @@ class CacheManager:
         self._remove_cache_dir(item_id, cache_attempt_token=token)
         self._project_cache_event(
             item_id,
-            "cancelled",
+            "evicted",
             cache_attempt_token=token,
             message=message,
         )
         self._record_item_activity(item_id)
+        self._remove_item_log(item_id)
 
     def _remove_cache_dir(
         self,
@@ -8488,8 +8670,9 @@ class CacheManager:
             item_id,
             cache_attempt_token=cache_attempt_token,
         )
-        self._safe_rmtree(CACHE_DIR / item_id)
-        self._remove_item_log(item_id)
+        if cache_attempt_token is not None:
+            token = self._require_cache_attempt_token(cache_attempt_token)
+            self._safe_rmtree(CACHE_DIR / ".staging" / f"attempt-{token}")
 
     def _remove_item_log(self, item_id: str) -> None:
         for source in DOWNLOAD_SOURCE_CHOICES:

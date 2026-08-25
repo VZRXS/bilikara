@@ -1,4 +1,7 @@
-use crate::app_state::begin_cache_attempt_for_runtime;
+use crate::app_state::{
+    CacheAttemptReservation, authorize_cache_publication_for_runtime,
+    begin_cache_attempt_for_runtime,
+};
 use crate::bilibili_service::{BilibiliDashRequest, BilibiliStream, fetch_dash_playurl};
 use crate::http_downloader::{
     DownloadCandidate, DownloadError, DownloadErrorKind, DownloadRequest, HttpHeader,
@@ -59,6 +62,7 @@ pub struct CacheJobSpec {
     #[serde(default = "schema_version")]
     pub schema_version: u32,
     pub item_id: String,
+    pub item_incarnation_id: String,
     pub bvid: String,
     #[serde(default)]
     pub aid: u64,
@@ -107,6 +111,8 @@ pub enum CacheRuntimeCommand {
         cache_root: PathBuf,
         #[serde(default)]
         current_ids: Vec<String>,
+        #[serde(default)]
+        current_item_incarnations: HashMap<String, String>,
         #[serde(default)]
         retained_ids: Vec<String>,
         #[serde(default)]
@@ -188,12 +194,14 @@ struct CacheEvent {
 struct QueuedJob {
     generation: u64,
     cache_attempt_token: u64,
+    reservation: CacheAttemptReservation,
     spec: CacheJobSpec,
 }
 
 struct ActiveJob {
     generation: u64,
     cache_attempt_token: u64,
+    reservation: CacheAttemptReservation,
     cancel: Arc<AtomicBool>,
     urgent: bool,
 }
@@ -202,6 +210,7 @@ struct ActiveJob {
 struct CompletedJob {
     generation: u64,
     cache_attempt_token: u64,
+    reservation: CacheAttemptReservation,
     result: CacheReadyResult,
 }
 
@@ -233,13 +242,21 @@ struct CacheRuntime {
     reserve_cache_attempt: CacheAttemptReserver,
 }
 
-type CacheAttemptReserver =
-    Arc<dyn Fn(&str) -> Result<u64, CacheRuntimeError> + Send + Sync + 'static>;
+type CacheAttemptReserver = Arc<
+    dyn Fn(&str, &str) -> Result<CacheAttemptReservation, CacheRuntimeError>
+        + Send
+        + Sync
+        + 'static,
+>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Serialize)]
 struct CacheAttemptIdentity {
     generation: u64,
     cache_attempt_token: u64,
+    item_incarnation_id: String,
+    artifact_set_id: String,
+    artifact_relative_directory: String,
+    refresh: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -264,7 +281,7 @@ struct TrackResult {
     probe: MediaProbe,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ReadyAudioVariant {
     id: String,
     label: String,
@@ -272,12 +289,15 @@ struct ReadyAudioVariant {
     audio_url: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct CacheReadyResult {
     video_relative_path: String,
     video_media_url: String,
     audio_variants: Vec<ReadyAudioVariant>,
     selected_audio_variant_id: String,
+    item_incarnation_id: String,
+    artifact_set_id: String,
+    artifact_relative_directory: String,
 }
 
 enum JobOutcome {
@@ -330,24 +350,45 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
         CacheRuntimeCommand::Sync {
             cache_root,
             current_ids,
+            current_item_incarnations,
             retained_ids,
             jobs,
             ordered_ids,
             preempt_item_id,
-        } => active_runtime()?.sync(
-            &cache_root,
-            current_ids,
-            retained_ids,
-            jobs,
-            ordered_ids,
-            &preempt_item_id,
-        ),
+        } => {
+            let current: HashSet<String> = current_ids
+                .into_iter()
+                .filter(|value| valid_item_id(value))
+                .collect();
+            if current.len() != current_item_incarnations.len()
+                || current
+                    .iter()
+                    .any(|item_id| !current_item_incarnations.contains_key(item_id))
+            {
+                return Err(CacheRuntimeError::new(
+                    "invalid_request",
+                    "current cache item identities are inconsistent",
+                ));
+            }
+            active_runtime()?.sync(
+                &cache_root,
+                current_item_incarnations,
+                retained_ids,
+                jobs,
+                ordered_ids,
+                &preempt_item_id,
+            )
+        }
         CacheRuntimeCommand::Submit { job, priority } => {
             validate_job(&job)?;
             let attempt = active_runtime()?.submit(job, priority, false)?;
             Ok(json!({
                 "generation": attempt.generation,
                 "cache_attempt_token": attempt.cache_attempt_token,
+                "item_incarnation_id": attempt.item_incarnation_id,
+                "artifact_set_id": attempt.artifact_set_id,
+                "artifact_relative_directory": attempt.artifact_relative_directory,
+                "refresh": attempt.refresh,
             }))
         }
         CacheRuntimeCommand::Retry { job, urgent } => {
@@ -364,6 +405,10 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
             Ok(json!({
                 "generation": attempt.generation,
                 "cache_attempt_token": attempt.cache_attempt_token,
+                "item_incarnation_id": attempt.item_incarnation_id,
+                "artifact_set_id": attempt.artifact_set_id,
+                "artifact_relative_directory": attempt.artifact_relative_directory,
+                "refresh": attempt.refresh,
             }))
         }
         CacheRuntimeCommand::Cancel { item_id, reason } => {
@@ -413,8 +458,8 @@ pub fn execute_cache_runtime(command: CacheRuntimeCommand) -> Result<Value, Cach
 
 impl CacheRuntime {
     fn new() -> Result<Self, CacheRuntimeError> {
-        Self::new_with_attempt_reserver(Arc::new(|item_id| {
-            begin_cache_attempt_for_runtime(item_id)
+        Self::new_with_attempt_reserver(Arc::new(|item_id, item_incarnation_id| {
+            begin_cache_attempt_for_runtime(item_id, item_incarnation_id)
                 .map_err(|error| CacheRuntimeError::new(&error.kind, error.message))
         }))
     }
@@ -488,25 +533,53 @@ impl CacheRuntime {
             ));
         }
         if !replace {
-            if let Some(active) = state.active.get(&item_id) {
-                return Ok(CacheAttemptIdentity {
-                    generation: active.generation,
-                    cache_attempt_token: active.cache_attempt_token,
-                });
-            }
-            if let Some(existing) = state.jobs.get(&item_id) {
+            if let Some(existing) = state.jobs.get(&item_id)
+                && existing.reservation.item_incarnation_id == job.item_incarnation_id
+            {
                 return Ok(CacheAttemptIdentity {
                     generation: existing.generation,
                     cache_attempt_token: existing.cache_attempt_token,
+                    item_incarnation_id: existing.reservation.item_incarnation_id.clone(),
+                    artifact_set_id: existing.reservation.artifact_set_id.clone(),
+                    artifact_relative_directory: existing
+                        .reservation
+                        .artifact_relative_directory
+                        .clone(),
+                    refresh: existing.reservation.refresh,
                 });
             }
-            if let Some(completed) = state.completed.get(&item_id)
-                && completed_artifacts_ready(&job.cache_root, &completed.result)
-            {
-                return Ok(CacheAttemptIdentity {
-                    generation: completed.generation,
-                    cache_attempt_token: completed.cache_attempt_token,
-                });
+            if !state.jobs.contains_key(&item_id) {
+                if let Some(active) = state.active.get(&item_id)
+                    && active.reservation.item_incarnation_id == job.item_incarnation_id
+                {
+                    return Ok(CacheAttemptIdentity {
+                        generation: active.generation,
+                        cache_attempt_token: active.cache_attempt_token,
+                        item_incarnation_id: active.reservation.item_incarnation_id.clone(),
+                        artifact_set_id: active.reservation.artifact_set_id.clone(),
+                        artifact_relative_directory: active
+                            .reservation
+                            .artifact_relative_directory
+                            .clone(),
+                        refresh: active.reservation.refresh,
+                    });
+                }
+                if let Some(completed) = state.completed.get(&item_id)
+                    && completed.reservation.item_incarnation_id == job.item_incarnation_id
+                    && completed_artifacts_ready(&job.cache_root, &completed.result)
+                {
+                    return Ok(CacheAttemptIdentity {
+                        generation: completed.generation,
+                        cache_attempt_token: completed.cache_attempt_token,
+                        item_incarnation_id: completed.reservation.item_incarnation_id.clone(),
+                        artifact_set_id: completed.reservation.artifact_set_id.clone(),
+                        artifact_relative_directory: completed
+                            .reservation
+                            .artifact_relative_directory
+                            .clone(),
+                        refresh: completed.reservation.refresh,
+                    });
+                }
             }
         }
         let next_generation = state
@@ -516,15 +589,24 @@ impl CacheRuntime {
             .ok_or_else(|| {
                 CacheRuntimeError::new("generation_exhausted", "cache generation is exhausted")
             })?;
-        let cache_attempt_token = self.reserve_attempt(&item_id)?;
+        let replace_existing =
+            replace || state.active.contains_key(&item_id) || state.jobs.contains_key(&item_id);
+        let reservation = self.reserve_attempt(&job.item_id, &job.item_incarnation_id)?;
+        let cache_attempt_token = reservation.cache_attempt_token;
         state.completed.remove(&item_id);
-        if replace {
+        if replace_existing {
             if let Some(active) = state.active.get(&item_id) {
                 active.cancel.store(true, Ordering::Release);
                 let generation = active.generation;
-                state
-                    .cancel_reasons
-                    .insert((item_id.clone(), generation), "retry requested".to_owned());
+                state.cancel_reasons.insert(
+                    (item_id.clone(), generation),
+                    if replace {
+                        "retry requested"
+                    } else {
+                        "item incarnation replaced"
+                    }
+                    .to_owned(),
+                );
             }
             remove_queued_locked(&mut state, &item_id);
         }
@@ -536,6 +618,7 @@ impl CacheRuntime {
             QueuedJob {
                 generation,
                 cache_attempt_token,
+                reservation: reservation.clone(),
                 spec: job,
             },
         );
@@ -552,24 +635,38 @@ impl CacheRuntime {
         Ok(CacheAttemptIdentity {
             generation,
             cache_attempt_token,
+            item_incarnation_id: reservation.item_incarnation_id,
+            artifact_set_id: reservation.artifact_set_id,
+            artifact_relative_directory: reservation.artifact_relative_directory,
+            refresh: reservation.refresh,
         })
     }
 
-    fn reserve_attempt(&self, item_id: &str) -> Result<u64, CacheRuntimeError> {
-        let cache_attempt_token = (self.reserve_cache_attempt)(item_id)?;
-        if cache_attempt_token == 0 {
+    fn reserve_attempt(
+        &self,
+        item_id: &str,
+        expected_item_incarnation_id: &str,
+    ) -> Result<CacheAttemptReservation, CacheRuntimeError> {
+        let reservation = (self.reserve_cache_attempt)(item_id, expected_item_incarnation_id)?;
+        if reservation.cache_attempt_token == 0
+            || reservation.item_id != item_id
+            || reservation.item_incarnation_id != expected_item_incarnation_id
+            || reservation.item_incarnation_id.is_empty()
+            || reservation.artifact_set_id.is_empty()
+            || reservation.artifact_relative_directory.is_empty()
+        {
             return Err(CacheRuntimeError::new(
-                "invalid_cache_attempt_token",
-                "AppState returned a zero cache attempt token",
+                "invalid_cache_attempt_reservation",
+                "AppState returned an invalid cache attempt reservation",
             ));
         }
-        Ok(cache_attempt_token)
+        Ok(reservation)
     }
 
     fn sync(
         &self,
         cache_root: &Path,
-        current_ids: Vec<String>,
+        current_item_incarnations: HashMap<String, String>,
         retained_ids: Vec<String>,
         jobs: Vec<CacheJobSpec>,
         ordered_ids: Vec<String>,
@@ -591,23 +688,38 @@ impl CacheRuntime {
                 ));
             }
         }
-        let current: HashSet<String> = current_ids
-            .into_iter()
-            .filter(|value| valid_item_id(value))
-            .collect();
+        let current: HashSet<String> = current_item_incarnations.keys().cloned().collect();
+        if current.iter().any(|item_id| {
+            current_item_incarnations
+                .get(item_id)
+                .is_none_or(|item_incarnation_id| item_incarnation_id.is_empty())
+        }) {
+            return Err(CacheRuntimeError::new(
+                "invalid_request",
+                "current cache item incarnation is missing",
+            ));
+        }
         let retained: HashSet<String> = retained_ids
             .into_iter()
             .filter(|value| current.contains(value))
             .collect();
         let desired: HashSet<String> = jobs.iter().map(|job| job.item_id.clone()).collect();
-        let mut evict_now = Vec::new();
-        let active_ids_for_cleanup;
         {
             let mut state = lock_state(&self.shared);
             let mut eviction_tokens = HashMap::new();
             for item_id in current.difference(&retained) {
                 if !state.active.contains_key(item_id) && !state.jobs.contains_key(item_id) {
-                    eviction_tokens.insert(item_id.clone(), self.reserve_attempt(item_id)?);
+                    let expected_item_incarnation_id =
+                        current_item_incarnations.get(item_id).ok_or_else(|| {
+                            CacheRuntimeError::new(
+                                "invalid_request",
+                                "current cache item incarnation is missing",
+                            )
+                        })?;
+                    eviction_tokens.insert(
+                        item_id.clone(),
+                        self.reserve_attempt(item_id, expected_item_incarnation_id)?,
+                    );
                 }
             }
             state
@@ -615,6 +727,8 @@ impl CacheRuntime {
                 .retain(|item_id, _| current.contains(item_id));
             state.completed.retain(|item_id, completed| {
                 current.contains(item_id)
+                    && current_item_incarnations.get(item_id)
+                        == Some(&completed.reservation.item_incarnation_id)
                     && completed_artifacts_ready(cache_root, &completed.result)
             });
             let queued_ids: Vec<String> = state.jobs.keys().cloned().collect();
@@ -651,12 +765,10 @@ impl CacheRuntime {
                     .cancel_reasons
                     .insert((item_id, generation), "outside cache window".to_owned());
             }
-            active_ids_for_cleanup = state.active.keys().cloned().collect();
             for item_id in current.difference(&retained) {
                 if state.active.contains_key(item_id) {
                     continue;
                 }
-                evict_now.push(item_id.clone());
                 if let Some(job) = state.jobs.remove(item_id) {
                     remove_queued_locked(&mut state, item_id);
                     push_event_locked(
@@ -671,22 +783,21 @@ impl CacheRuntime {
                     push_event_locked(
                         &mut state,
                         0,
-                        *eviction_tokens.get(item_id).ok_or_else(|| {
-                            CacheRuntimeError::new(
-                                "cache_attempt_not_reserved",
-                                "eviction cache attempt was not reserved",
-                            )
-                        })?,
+                        eviction_tokens
+                            .get(item_id)
+                            .ok_or_else(|| {
+                                CacheRuntimeError::new(
+                                    "cache_attempt_not_reserved",
+                                    "eviction cache attempt was not reserved",
+                                )
+                            })?
+                            .cache_attempt_token,
                         item_id,
                         "evicted",
                         json!({"reason": "outside cache window"}),
                     );
                 }
             }
-        }
-        cleanup_orphan_directories(cache_root, &current, &active_ids_for_cleanup)?;
-        for item_id in evict_now {
-            remove_item_directory(cache_root, &item_id)?;
         }
 
         let mut generations = serde_json::Map::new();
@@ -696,7 +807,7 @@ impl CacheRuntime {
             if existing_artifacts_ready(&job) {
                 continue;
             }
-            if self.completed_artifacts_ready(&job.item_id, cache_root) {
+            if self.completed_artifacts_ready(&job, cache_root) {
                 continue;
             }
             let replace = !preempt_item_id.is_empty() && job.item_id == preempt_item_id;
@@ -821,14 +932,14 @@ impl CacheRuntime {
         snapshot_locked(&state)
     }
 
-    fn completed_artifacts_ready(&self, item_id: &str, cache_root: &Path) -> bool {
+    fn completed_artifacts_ready(&self, job: &CacheJobSpec, cache_root: &Path) -> bool {
         let mut state = lock_state(&self.shared);
-        let ready = state
-            .completed
-            .get(item_id)
-            .is_some_and(|completed| completed_artifacts_ready(cache_root, &completed.result));
+        let ready = state.completed.get(&job.item_id).is_some_and(|completed| {
+            completed.reservation.item_incarnation_id == job.item_incarnation_id
+                && completed_artifacts_ready(cache_root, &completed.result)
+        });
         if !ready {
-            state.completed.remove(item_id);
+            state.completed.remove(&job.item_id);
         }
         ready
     }
@@ -925,6 +1036,7 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
                     ActiveJob {
                         generation: job.generation,
                         cache_attempt_token: job.cache_attempt_token,
+                        reservation: job.reservation.clone(),
                         cancel: Arc::clone(&cancel),
                         urgent: matches!(kind, WorkerKind::Urgent),
                     },
@@ -947,62 +1059,75 @@ fn worker_loop(shared: Arc<SharedRuntime>, kind: WorkerKind) {
 
         let outcome = run_job(&shared, &job, &cancel);
         let mut state = lock_state(&shared);
-        state.active.remove(&job.spec.item_id);
-        if state.primary_active_item_id.as_deref() == Some(job.spec.item_id.as_str()) {
-            state.primary_active_item_id = None;
-        }
-        let current_generation = state
-            .jobs
-            .get(&job.spec.item_id)
-            .map(|value| value.generation);
-        if current_generation == Some(job.generation) {
-            state.jobs.remove(&job.spec.item_id);
-        }
-        let cancellation_reason = state
-            .cancel_reasons
-            .remove(&(job.spec.item_id.clone(), job.generation))
-            .unwrap_or_else(|| "cache cancelled".to_owned());
-        match outcome {
-            JobOutcome::Ready(result) => {
-                if current_generation.is_none() || current_generation == Some(job.generation) {
-                    state.completed.insert(
-                        job.spec.item_id.clone(),
-                        CompletedJob {
-                            generation: job.generation,
-                            cache_attempt_token: job.cache_attempt_token,
-                            result: result.clone(),
-                        },
-                    );
-                }
-                push_event_locked(
-                    &mut state,
-                    job.generation,
-                    job.cache_attempt_token,
-                    &job.spec.item_id,
-                    "ready",
-                    serde_json::to_value(result).unwrap_or_else(|_| json!({})),
-                )
-            }
-            JobOutcome::Cancelled => push_event_locked(
-                &mut state,
-                job.generation,
-                job.cache_attempt_token,
-                &job.spec.item_id,
-                "cancelled",
-                json!({"reason": cancellation_reason}),
-            ),
-            JobOutcome::Failed(error) => push_event_locked(
-                &mut state,
-                job.generation,
-                job.cache_attempt_token,
-                &job.spec.item_id,
-                "failed",
-                serde_json::to_value(&error).unwrap_or_else(|_| {
-                    json!({"kind": "invalid_response", "message": "cache error serialization failed"})
-                }),
-            ),
-        }
+        settle_job_locked(&mut state, &job, outcome);
         shared.wake.notify_all();
+    }
+}
+
+fn settle_job_locked(state: &mut RuntimeState, job: &QueuedJob, outcome: JobOutcome) {
+    if state
+        .active
+        .get(&job.spec.item_id)
+        .is_some_and(|active| active.generation == job.generation)
+    {
+        state.active.remove(&job.spec.item_id);
+    }
+    if state.primary_active_item_id.as_deref() == Some(job.spec.item_id.as_str())
+        && !state.active.contains_key(&job.spec.item_id)
+    {
+        state.primary_active_item_id = None;
+    }
+    let current_generation = state
+        .jobs
+        .get(&job.spec.item_id)
+        .map(|value| value.generation);
+    if current_generation == Some(job.generation) {
+        state.jobs.remove(&job.spec.item_id);
+    }
+    let cancellation_reason = state
+        .cancel_reasons
+        .remove(&(job.spec.item_id.clone(), job.generation))
+        .unwrap_or_else(|| "cache cancelled".to_owned());
+    match outcome {
+        JobOutcome::Ready(result) => {
+            if current_generation.is_none() || current_generation == Some(job.generation) {
+                state.completed.insert(
+                    job.spec.item_id.clone(),
+                    CompletedJob {
+                        generation: job.generation,
+                        cache_attempt_token: job.cache_attempt_token,
+                        reservation: job.reservation.clone(),
+                        result: result.clone(),
+                    },
+                );
+            }
+            push_event_locked(
+                state,
+                job.generation,
+                job.cache_attempt_token,
+                &job.spec.item_id,
+                "ready",
+                serde_json::to_value(result).unwrap_or_else(|_| json!({})),
+            )
+        }
+        JobOutcome::Cancelled => push_event_locked(
+            state,
+            job.generation,
+            job.cache_attempt_token,
+            &job.spec.item_id,
+            "cancelled",
+            json!({"reason": cancellation_reason}),
+        ),
+        JobOutcome::Failed(error) => push_event_locked(
+            state,
+            job.generation,
+            job.cache_attempt_token,
+            &job.spec.item_id,
+            "failed",
+            serde_json::to_value(&error).unwrap_or_else(|_| {
+                json!({"kind": "invalid_response", "message": "cache error serialization failed"})
+            }),
+        ),
     }
 }
 
@@ -1010,8 +1135,21 @@ fn run_job(shared: &Arc<SharedRuntime>, job: &QueuedJob, cancel: &Arc<AtomicBool
     if cancel.load(Ordering::Acquire) {
         return JobOutcome::Cancelled;
     }
-    let item_dir = job.spec.cache_root.join(&job.spec.item_id);
-    if let Err(error) = reset_item_directory(&item_dir) {
+    let staging_dir = job
+        .spec
+        .cache_root
+        .join(".staging")
+        .join(&job.reservation.item_incarnation_id)
+        .join(&job.reservation.artifact_set_id);
+    if let Some(parent) = staging_dir.parent()
+        && let Err(error) = create_directory_within_cache_root(&job.spec.cache_root, parent)
+    {
+        return JobOutcome::Failed(error);
+    }
+    if let Err(error) = fs::create_dir(&staging_dir) {
+        return JobOutcome::Failed(CacheRuntimeError::new("io", error.to_string()));
+    }
+    if let Err(error) = canonical_directory_within_cache_root(&job.spec.cache_root, &staging_dir) {
         return JobOutcome::Failed(error);
     }
     append_log(
@@ -1064,7 +1202,7 @@ fn run_job(shared: &Arc<SharedRuntime>, job: &QueuedJob, cancel: &Arc<AtomicBool
         }
     }
     if !failures.is_empty() {
-        let _ = fs::remove_dir_all(&item_dir);
+        let _ = fs::remove_dir_all(&staging_dir);
         let error = failures.remove(0);
         append_log(
             &job.spec.log_file,
@@ -1073,17 +1211,17 @@ fn run_job(shared: &Arc<SharedRuntime>, job: &QueuedJob, cancel: &Arc<AtomicBool
         return JobOutcome::Failed(error);
     }
     if cancel.load(Ordering::Acquire) {
-        let _ = fs::remove_dir_all(&item_dir);
+        let _ = fs::remove_dir_all(&staging_dir);
         append_log(&job.spec.log_file, "cache cancelled");
         return JobOutcome::Cancelled;
     }
-    match publish_tracks(&job.spec, results) {
+    match publish_tracks_for_attempt(&job.spec, &job.reservation, results) {
         Ok(result) => {
             append_log(&job.spec.log_file, "cache ready");
             JobOutcome::Ready(result)
         }
         Err(error) => {
-            let _ = fs::remove_dir_all(&item_dir);
+            let _ = fs::remove_dir_all(&staging_dir);
             append_log(
                 &job.spec.log_file,
                 &format!("publish failed: {}", error.message),
@@ -1127,11 +1265,17 @@ fn run_track(
             ExpectedMediaKind::Video => format!("video-p{}.{}", track.page.page, extension),
             ExpectedMediaKind::Audio => format!("audio-p{}.{}", track.page.page, extension),
         };
-        let attempt_dir = job.spec.cache_root.join(&job.spec.item_id).join(format!(
-            ".attempt-{}-{}",
-            job.generation,
-            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
+        let attempt_dir = job
+            .spec
+            .cache_root
+            .join(".staging")
+            .join(&job.reservation.item_incarnation_id)
+            .join(&job.reservation.artifact_set_id)
+            .join(format!(
+                "track-{}-{}",
+                job.generation,
+                ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
         if let Err(error) = fs::create_dir_all(&attempt_dir) {
             return Err(CacheRuntimeError::new("io", error.to_string()));
         }
@@ -1495,10 +1639,26 @@ fn download_request(
     })
 }
 
-fn publish_tracks(
+fn publish_tracks_for_attempt(
     job: &CacheJobSpec,
-    mut tracks: Vec<TrackResult>,
+    reservation: &CacheAttemptReservation,
+    tracks: Vec<TrackResult>,
 ) -> Result<CacheReadyResult, CacheRuntimeError> {
+    publish_tracks_with_authorizer(job, reservation, tracks, |item_id, reservation| {
+        authorize_cache_publication_for_runtime(item_id, reservation)
+            .map_err(|error| CacheRuntimeError::new(&error.kind, error.message))
+    })
+}
+
+fn publish_tracks_with_authorizer<F>(
+    job: &CacheJobSpec,
+    reservation: &CacheAttemptReservation,
+    mut tracks: Vec<TrackResult>,
+    authorize: F,
+) -> Result<CacheReadyResult, CacheRuntimeError>
+where
+    F: FnOnce(&str, &CacheAttemptReservation) -> Result<(), CacheRuntimeError>,
+{
     tracks.sort_by_key(|track| track.spec.order);
     if tracks.len() != job.pages.len() + 1 {
         return Err(CacheRuntimeError::new(
@@ -1506,38 +1666,74 @@ fn publish_tracks(
             "cache job did not produce every requested track",
         ));
     }
-    let item_dir = job.cache_root.join(&job.item_id);
-    let mut published = Vec::new();
+    let staging_dir = job
+        .cache_root
+        .join(".staging")
+        .join(&reservation.item_incarnation_id)
+        .join(&reservation.artifact_set_id);
+    let complete_dir = staging_dir.join("complete");
+    let canonical_staging = canonical_directory_within_cache_root(&job.cache_root, &staging_dir)?;
+    fs::create_dir(&complete_dir)
+        .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
+    let mut final_names = HashSet::with_capacity(tracks.len());
     for track in &tracks {
-        if track.probe.file_bytes == 0 || !track.temporary_path.is_file() {
+        if track.probe.file_bytes == 0
+            || !track.temporary_path.is_file()
+            || !final_names.insert(track.final_name.clone())
+        {
             return Err(CacheRuntimeError::new(
                 "publish",
-                "validated cache track is missing",
+                "validated cache track is missing or has a duplicate path",
             ));
         }
-        let destination = item_dir.join(&track.final_name);
-        if destination.exists() {
-            fs::remove_file(&destination)
-                .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
+        let canonical_track = track
+            .temporary_path
+            .canonicalize()
+            .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
+        if !canonical_track.starts_with(&canonical_staging) {
+            return Err(CacheRuntimeError::new(
+                "invalid_cache_path",
+                "validated cache track escaped its attempt staging directory",
+            ));
         }
-        if let Err(error) = fs::rename(&track.temporary_path, &destination) {
-            for path in published {
-                let _ = fs::remove_file(path);
-            }
-            return Err(CacheRuntimeError::new("publish", error.to_string()));
-        }
-        published.push(destination);
+        fs::rename(&track.temporary_path, complete_dir.join(&track.final_name))
+            .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
     }
+    authorize(&job.item_id, reservation)?;
+    let committed_dir =
+        safe_relative_cache_path(&job.cache_root, &reservation.artifact_relative_directory)
+            .ok_or_else(|| {
+                CacheRuntimeError::new(
+                    "invalid_cache_publication_identity",
+                    "Rust artifact directory escaped the cache root",
+                )
+            })?;
+    if committed_dir.exists() {
+        return Err(CacheRuntimeError::new(
+            "artifact_destination_exists",
+            "immutable artifact destination already exists",
+        ));
+    }
+    let committed_parent = committed_dir.parent().ok_or_else(|| {
+        CacheRuntimeError::new("publish", "immutable artifact destination has no parent")
+    })?;
+    create_directory_within_cache_root(&job.cache_root, committed_parent)?;
+    fs::rename(&complete_dir, &committed_dir)
+        .map_err(|error| CacheRuntimeError::new("publish", error.to_string()))?;
     for track in &tracks {
         if let Some(parent) = track.temporary_path.parent() {
             let _ = fs::remove_dir_all(parent);
         }
     }
+    let _ = fs::remove_dir_all(&staging_dir);
     let video = tracks
         .iter()
         .find(|track| track.spec.kind == ExpectedMediaKind::Video)
         .ok_or_else(|| CacheRuntimeError::new("publish", "video track is missing"))?;
-    let video_relative_path = relative_media_path(&job.item_id, &video.final_name);
+    let video_relative_path = format!(
+        "{}/{}",
+        reservation.artifact_relative_directory, video.final_name
+    );
     let mut audio_variants = Vec::new();
     for (index, track) in tracks
         .iter()
@@ -1548,7 +1744,10 @@ fn publish_tracks(
             id: variant_id(track.spec.page.page, &track.spec.page.label, index),
             label: track.spec.page.label.clone(),
             page: track.spec.page.page,
-            audio_url: media_url(&relative_media_path(&job.item_id, &track.final_name)),
+            audio_url: media_url(&format!(
+                "{}/{}",
+                reservation.artifact_relative_directory, track.final_name
+            )),
         });
     }
     let selected = if audio_variants
@@ -1567,6 +1766,9 @@ fn publish_tracks(
         video_relative_path,
         audio_variants,
         selected_audio_variant_id: selected,
+        item_incarnation_id: reservation.item_incarnation_id.clone(),
+        artifact_set_id: reservation.artifact_set_id.clone(),
+        artifact_relative_directory: reservation.artifact_relative_directory.clone(),
     })
 }
 
@@ -1581,6 +1783,12 @@ fn validate_job(job: &CacheJobSpec) -> Result<(), CacheRuntimeError> {
         return Err(CacheRuntimeError::new(
             "invalid_request",
             "cache item ID is invalid",
+        ));
+    }
+    if job.item_incarnation_id.trim().is_empty() {
+        return Err(CacheRuntimeError::new(
+            "invalid_request",
+            "cache item incarnation ID is missing",
         ));
     }
     if !job.bvid.starts_with("BV") || job.bvid.len() < 10 || job.bvid.len() > 32 {
@@ -1844,57 +2052,8 @@ fn variant_id(page: u32, label: &str, index: usize) -> String {
     format!("p{}_{}", page.max(1), suffix)
 }
 
-fn relative_media_path(item_id: &str, file_name: &str) -> String {
-    format!("{item_id}/{file_name}")
-}
-
 fn media_url(relative_path: &str) -> String {
     format!("/media/{}", relative_path.replace('\\', "/"))
-}
-
-fn reset_item_directory(item_dir: &Path) -> Result<(), CacheRuntimeError> {
-    if item_dir.exists() {
-        fs::remove_dir_all(item_dir)
-            .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
-    }
-    fs::create_dir_all(item_dir).map_err(|error| CacheRuntimeError::new("io", error.to_string()))
-}
-
-fn remove_item_directory(cache_root: &Path, item_id: &str) -> Result<(), CacheRuntimeError> {
-    if !valid_item_id(item_id) {
-        return Ok(());
-    }
-    let path = cache_root.join(item_id);
-    if path.exists() {
-        fs::remove_dir_all(path)
-            .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
-    }
-    Ok(())
-}
-
-fn cleanup_orphan_directories(
-    cache_root: &Path,
-    current_ids: &HashSet<String>,
-    active_ids: &HashSet<String>,
-) -> Result<(), CacheRuntimeError> {
-    let entries = fs::read_dir(cache_root)
-        .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if current_ids.contains(&name) || active_ids.contains(&name) {
-            continue;
-        }
-        let path = entry.path();
-        if path.is_dir() {
-            fs::remove_dir_all(path)
-                .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
-        } else {
-            fs::remove_file(path)
-                .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
-        }
-    }
-    Ok(())
 }
 
 fn clear_directory(root: &Path) -> Result<(), CacheRuntimeError> {
@@ -1960,6 +2119,66 @@ fn safe_relative_cache_path(root: &Path, relative: &str) -> Option<PathBuf> {
         return None;
     }
     Some(root.join(path))
+}
+
+fn canonical_directory_within_cache_root(
+    cache_root: &Path,
+    directory: &Path,
+) -> Result<PathBuf, CacheRuntimeError> {
+    let canonical_root = cache_root
+        .canonicalize()
+        .map_err(|error| CacheRuntimeError::new("invalid_cache_path", error.to_string()))?;
+    let canonical_directory = directory
+        .canonicalize()
+        .map_err(|error| CacheRuntimeError::new("invalid_cache_path", error.to_string()))?;
+    if !canonical_directory.starts_with(&canonical_root) {
+        return Err(CacheRuntimeError::new(
+            "invalid_cache_path",
+            "cache directory escaped the configured cache root",
+        ));
+    }
+    Ok(canonical_directory)
+}
+
+fn create_directory_within_cache_root(
+    cache_root: &Path,
+    directory: &Path,
+) -> Result<(), CacheRuntimeError> {
+    let relative = directory.strip_prefix(cache_root).map_err(|_| {
+        CacheRuntimeError::new(
+            "invalid_cache_path",
+            "cache directory is outside the configured cache root",
+        )
+    })?;
+    let mut cursor = cache_root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(CacheRuntimeError::new(
+                "invalid_cache_path",
+                "cache directory contains an invalid path component",
+            ));
+        };
+        cursor.push(component);
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(CacheRuntimeError::new(
+                    "invalid_cache_path",
+                    "cache directory contains a symbolic-link ancestor",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(CacheRuntimeError::new(
+                    "invalid_cache_path",
+                    error.to_string(),
+                ));
+            }
+        }
+    }
+    fs::create_dir_all(directory)
+        .map_err(|error| CacheRuntimeError::new("io", error.to_string()))?;
+    canonical_directory_within_cache_root(cache_root, directory).map(|_| ())
 }
 
 fn nonempty_file(path: &Path) -> bool {
@@ -2028,10 +2247,71 @@ fn append_log(path: &Path, message: &str) {
 mod tests {
     use super::*;
 
+    fn reservation(token: u64) -> CacheAttemptReservation {
+        let item_incarnation_id = format!("i-{:032x}-{token:016x}", 1_u128);
+        let artifact_set_id = format!("a-{:032x}-{token:016x}", 2_u128);
+        CacheAttemptReservation {
+            cache_attempt_token: token,
+            item_id: "song-a".to_owned(),
+            artifact_relative_directory: format!(
+                "artifacts/{item_incarnation_id}/{artifact_set_id}"
+            ),
+            item_incarnation_id,
+            artifact_set_id,
+            refresh: false,
+        }
+    }
+
+    fn reservation_for(
+        token: u64,
+        item_id: &str,
+        item_incarnation_id: &str,
+    ) -> CacheAttemptReservation {
+        let mut reservation = reservation(token);
+        reservation.item_id = item_id.to_owned();
+        reservation.item_incarnation_id = item_incarnation_id.to_owned();
+        reservation.artifact_relative_directory = format!(
+            "artifacts/{}/{}",
+            reservation.item_incarnation_id, reservation.artifact_set_id
+        );
+        reservation
+    }
+
+    fn current_item_incarnations(job: &CacheJobSpec) -> HashMap<String, String> {
+        HashMap::from([(job.item_id.clone(), job.item_incarnation_id.clone())])
+    }
+
+    fn completed_result(reservation: &CacheAttemptReservation) -> CacheReadyResult {
+        CacheReadyResult {
+            video_relative_path: format!(
+                "{}/video-p1.mp4",
+                reservation.artifact_relative_directory
+            ),
+            video_media_url: format!(
+                "/media/{}/video-p1.mp4",
+                reservation.artifact_relative_directory
+            ),
+            audio_variants: vec![ReadyAudioVariant {
+                id: "p1_track_1".to_owned(),
+                label: "P1".to_owned(),
+                page: 1,
+                audio_url: format!(
+                    "/media/{}/audio-p1.m4a",
+                    reservation.artifact_relative_directory
+                ),
+            }],
+            selected_audio_variant_id: "p1_track_1".to_owned(),
+            item_incarnation_id: reservation.item_incarnation_id.clone(),
+            artifact_set_id: reservation.artifact_set_id.clone(),
+            artifact_relative_directory: reservation.artifact_relative_directory.clone(),
+        }
+    }
+
     fn job(root: &Path) -> CacheJobSpec {
         CacheJobSpec {
             schema_version: 1,
             item_id: "song-a".to_owned(),
+            item_incarnation_id: reservation(1).item_incarnation_id,
             bvid: "BV1xx411c7mD".to_owned(),
             aid: 1,
             video_page: 1,
@@ -2055,6 +2335,195 @@ mod tests {
             existing_video_relative_path: String::new(),
             existing_audio_variants: Vec::new(),
         }
+    }
+
+    fn publication_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "bilikara-cache-runtime-{label}-{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn publication_tracks(
+        job: &CacheJobSpec,
+        reservation: &CacheAttemptReservation,
+    ) -> Vec<TrackResult> {
+        let staging = job
+            .cache_root
+            .join(".staging")
+            .join(&reservation.item_incarnation_id)
+            .join(&reservation.artifact_set_id);
+        fs::create_dir_all(&staging).expect("staging directory");
+        [
+            (ExpectedMediaKind::Video, "video-p1.mp4", 0_usize),
+            (ExpectedMediaKind::Audio, "audio-p1.m4a", 1_usize),
+        ]
+        .into_iter()
+        .map(|(kind, final_name, order)| {
+            let track_dir = staging.join(format!("track-{order}"));
+            fs::create_dir(&track_dir).expect("track directory");
+            let temporary_path = track_dir.join(final_name);
+            fs::write(&temporary_path, format!("fixture-{final_name}")).expect("track fixture");
+            let file_bytes = temporary_path.metadata().expect("metadata").len();
+            TrackResult {
+                spec: TrackSpec {
+                    key: final_name.to_owned(),
+                    label: if kind == ExpectedMediaKind::Video {
+                        "video".to_owned()
+                    } else {
+                        "audio".to_owned()
+                    },
+                    order,
+                    page: job.pages[0].clone(),
+                    kind,
+                },
+                probe: MediaProbe {
+                    path: temporary_path.clone(),
+                    kind,
+                    codec: if kind == ExpectedMediaKind::Video {
+                        "h264".to_owned()
+                    } else {
+                        "aac".to_owned()
+                    },
+                    duration_seconds: 1.0,
+                    sample_count: 1,
+                    sample_bytes: file_bytes,
+                    file_bytes,
+                    fragmented: false,
+                    fast_start: true,
+                },
+                temporary_path,
+                final_name: final_name.to_owned(),
+            }
+        })
+        .collect()
+    }
+
+    #[test]
+    fn native_publication_atomically_installs_one_complete_immutable_directory() {
+        let root = publication_root("atomic-publication");
+        let job = job(&root);
+        let reservation = reservation(301);
+        let tracks = publication_tracks(&job, &reservation);
+        let result =
+            publish_tracks_with_authorizer(&job, &reservation, tracks, |_item_id, _reservation| {
+                Ok(())
+            })
+            .expect("complete set publication");
+        let committed = root.join(&reservation.artifact_relative_directory);
+        assert_eq!(
+            fs::read(committed.join("video-p1.mp4")).unwrap(),
+            b"fixture-video-p1.mp4"
+        );
+        assert_eq!(
+            fs::read(committed.join("audio-p1.m4a")).unwrap(),
+            b"fixture-audio-p1.m4a"
+        );
+        assert_eq!(result.artifact_set_id, reservation.artifact_set_id);
+        assert!(
+            !root
+                .join(".staging")
+                .join(&reservation.item_incarnation_id)
+                .join(&reservation.artifact_set_id)
+                .exists()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn stale_or_partial_native_publication_never_changes_a_committed_set() {
+        let root = publication_root("stale-publication");
+        let job = job(&root);
+        let old = root.join("artifacts/old-item/old-set");
+        fs::create_dir_all(&old).expect("old committed directory");
+        fs::write(old.join("video-p1.mp4"), b"old-video").expect("old video");
+
+        let stale = reservation(302);
+        let stale_error = publish_tracks_with_authorizer(
+            &job,
+            &stale,
+            publication_tracks(&job, &stale),
+            |_item_id, _reservation| {
+                Err(CacheRuntimeError::new(
+                    "cache_attempt_superseded",
+                    "stale attempt",
+                ))
+            },
+        )
+        .expect_err("stale publication must fail");
+        assert_eq!(stale_error.kind, "cache_attempt_superseded");
+        assert!(!root.join(&stale.artifact_relative_directory).exists());
+        assert_eq!(fs::read(old.join("video-p1.mp4")).unwrap(), b"old-video");
+
+        let partial = reservation(303);
+        let mut partial_tracks = publication_tracks(&job, &partial);
+        fs::remove_file(&partial_tracks[1].temporary_path).expect("remove audio fixture");
+        let partial_error = publish_tracks_with_authorizer(
+            &job,
+            &partial,
+            std::mem::take(&mut partial_tracks),
+            |_item_id, _reservation| Ok(()),
+        )
+        .expect_err("partial publication must fail");
+        assert_eq!(partial_error.kind, "publish");
+        assert!(!root.join(&partial.artifact_relative_directory).exists());
+        assert_eq!(fs::read(old.join("video-p1.mp4")).unwrap(), b"old-video");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_publication_refuses_an_existing_committed_destination() {
+        let root = publication_root("destination-collision");
+        let job = job(&root);
+        let reservation = reservation(304);
+        let committed = root.join(&reservation.artifact_relative_directory);
+        fs::create_dir_all(&committed).expect("preexisting destination");
+        fs::write(committed.join("marker"), b"existing").expect("collision marker");
+        let error = publish_tracks_with_authorizer(
+            &job,
+            &reservation,
+            publication_tracks(&job, &reservation),
+            |_item_id, _reservation| Ok(()),
+        )
+        .expect_err("immutable destination collision must fail");
+        assert_eq!(error.kind, "artifact_destination_exists");
+        assert_eq!(fs::read(committed.join("marker")).unwrap(), b"existing");
+        assert!(!committed.join("video-p1.mp4").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_publication_rejects_a_symlinked_committed_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let root = publication_root("symlinked-artifact-root");
+        let outside = publication_root("symlinked-artifact-outside");
+        fs::create_dir_all(&root).expect("cache root");
+        fs::create_dir_all(&outside).expect("outside root");
+        symlink(&outside, root.join("artifacts")).expect("artifact root symlink");
+        let job = job(&root);
+        let reservation = reservation(305);
+
+        let error = publish_tracks_with_authorizer(
+            &job,
+            &reservation,
+            publication_tracks(&job, &reservation),
+            |_item_id, _reservation| Ok(()),
+        )
+        .expect_err("symlinked committed ancestor must fail closed");
+
+        assert_eq!(error.kind, "invalid_cache_path");
+        assert!(
+            fs::read_dir(&outside)
+                .expect("outside listing")
+                .next()
+                .is_none()
+        );
+        let _ = fs::remove_file(root.join("artifacts"));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
     }
 
     #[test]
@@ -2082,12 +2551,16 @@ mod tests {
         let runtime = CacheRuntime::new_without_workers(Arc::new({
             let issued = Arc::clone(&issued);
             let requested = Arc::clone(&requested);
-            move |item_id| {
+            move |item_id, expected_item_incarnation_id| {
                 requested
                     .lock()
                     .expect("reservation request lock")
                     .push(item_id.to_owned());
-                Ok(issued.fetch_add(1, Ordering::Relaxed) + 1)
+                Ok(reservation_for(
+                    issued.fetch_add(1, Ordering::Relaxed) + 1,
+                    item_id,
+                    expected_item_incarnation_id,
+                ))
             }
         }));
 
@@ -2123,13 +2596,271 @@ mod tests {
     }
 
     #[test]
+    fn mismatched_injected_reservation_changes_no_runtime_state_or_output() {
+        let root = publication_root("mismatched-reservation");
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|item_id, _expected| {
+            Ok(reservation_for(
+                90,
+                item_id,
+                &reservation(2).item_incarnation_id,
+            ))
+        }));
+        let before = runtime.snapshot();
+
+        let error = runtime
+            .submit(job(&root), CacheJobPriority::Normal, false)
+            .expect_err("mismatched reservation must fail");
+
+        assert_eq!(error.kind, "invalid_cache_attempt_reservation");
+        assert_eq!(runtime.snapshot(), before);
+        assert!(fs::read_dir(&root).is_ok_and(|mut entries| entries.next().is_none()));
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn same_incarnation_active_and_queued_submissions_deduplicate() {
+        let root = publication_root("same-incarnation-dedup");
+        let issued = Arc::new(AtomicU64::new(100));
+        let issued_for_reserver = Arc::clone(&issued);
+        let runtime = CacheRuntime::new_without_workers(Arc::new(move |item_id, incarnation| {
+            Ok(reservation_for(
+                issued_for_reserver.fetch_add(1, Ordering::Relaxed) + 1,
+                item_id,
+                incarnation,
+            ))
+        }));
+        let submitted_job = job(&root);
+        let queued = runtime
+            .submit(submitted_job.clone(), CacheJobPriority::Normal, false)
+            .expect("queue first incarnation");
+        let queued_duplicate = runtime
+            .submit(submitted_job.clone(), CacheJobPriority::Normal, false)
+            .expect("deduplicate queued incarnation");
+        assert_eq!(
+            queued_duplicate.cache_attempt_token,
+            queued.cache_attempt_token
+        );
+        assert_eq!(issued.load(Ordering::Relaxed), 101);
+
+        {
+            let mut state = lock_state(&runtime.shared);
+            let queued_job = state.jobs["song-a"].clone();
+            state.active.insert(
+                "song-a".to_owned(),
+                ActiveJob {
+                    generation: queued_job.generation,
+                    cache_attempt_token: queued_job.cache_attempt_token,
+                    reservation: queued_job.reservation,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                    urgent: false,
+                },
+            );
+        }
+        let active_duplicate = runtime
+            .submit(submitted_job, CacheJobPriority::Normal, false)
+            .expect("deduplicate active incarnation");
+        assert_eq!(
+            active_duplicate.cache_attempt_token,
+            queued.cache_attempt_token
+        );
+        assert_eq!(issued.load(Ordering::Relaxed), 101);
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn different_incarnation_replaces_one_queued_job() {
+        let root = publication_root("queued-incarnation-replacement");
+        let issued = Arc::new(AtomicU64::new(110));
+        let issued_for_reserver = Arc::clone(&issued);
+        let runtime = CacheRuntime::new_without_workers(Arc::new(move |item_id, incarnation| {
+            Ok(reservation_for(
+                issued_for_reserver.fetch_add(1, Ordering::Relaxed) + 1,
+                item_id,
+                incarnation,
+            ))
+        }));
+        let old_job = job(&root);
+        let old_attempt = runtime
+            .submit(old_job, CacheJobPriority::Normal, false)
+            .expect("queue old incarnation");
+        let mut new_job = job(&root);
+        new_job.item_incarnation_id = reservation(2).item_incarnation_id;
+
+        let new_attempt = runtime
+            .submit(new_job.clone(), CacheJobPriority::Normal, false)
+            .expect("replace queued incarnation");
+
+        assert_ne!(
+            new_attempt.cache_attempt_token,
+            old_attempt.cache_attempt_token
+        );
+        let state = lock_state(&runtime.shared);
+        assert_eq!(state.jobs.len(), 1);
+        assert_eq!(
+            state.normal_queue.iter().collect::<Vec<_>>(),
+            [&"song-a".to_owned()]
+        );
+        let queued = &state.jobs["song-a"];
+        assert_eq!(queued.spec.item_incarnation_id, new_job.item_incarnation_id);
+        assert_eq!(
+            queued.reservation.item_incarnation_id,
+            new_job.item_incarnation_id
+        );
+        drop(state);
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queued_replacement_shadows_cancelled_active_attempt_and_survives_old_settlement() {
+        let root = publication_root("active-incarnation-replacement");
+        let issued = Arc::new(AtomicU64::new(120));
+        let issued_for_reserver = Arc::clone(&issued);
+        let old_incarnation = reservation(1).item_incarnation_id;
+        let new_incarnation = reservation(2).item_incarnation_id;
+        let authoritative_incarnation = Arc::new(Mutex::new(old_incarnation.clone()));
+        let authoritative_for_reserver = Arc::clone(&authoritative_incarnation);
+        let runtime = CacheRuntime::new_without_workers(Arc::new(move |item_id, incarnation| {
+            let authoritative = authoritative_for_reserver
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if authoritative.as_str() != incarnation {
+                return Err(CacheRuntimeError::new(
+                    "item_incarnation_mismatch",
+                    "playlist item incarnation changed before cache reservation",
+                ));
+            }
+            Ok(reservation_for(
+                issued_for_reserver.fetch_add(1, Ordering::Relaxed) + 1,
+                item_id,
+                incarnation,
+            ))
+        }));
+        let old_spec = job(&root);
+        runtime
+            .submit(old_spec, CacheJobPriority::Normal, false)
+            .expect("queue old incarnation");
+        let (old_job, old_cancel) = {
+            let mut state = lock_state(&runtime.shared);
+            let old_job = state.jobs["song-a"].clone();
+            let old_cancel = Arc::new(AtomicBool::new(false));
+            state.active.insert(
+                "song-a".to_owned(),
+                ActiveJob {
+                    generation: old_job.generation,
+                    cache_attempt_token: old_job.cache_attempt_token,
+                    reservation: old_job.reservation.clone(),
+                    cancel: Arc::clone(&old_cancel),
+                    urgent: false,
+                },
+            );
+            (old_job, old_cancel)
+        };
+        let mut new_job = job(&root);
+        new_job.item_incarnation_id = new_incarnation.clone();
+        *authoritative_incarnation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_incarnation;
+
+        let new_attempt = runtime
+            .submit(new_job.clone(), CacheJobPriority::Normal, false)
+            .expect("queue new incarnation behind cancelled active job");
+        assert!(old_cancel.load(Ordering::Acquire));
+        {
+            let mut state = lock_state(&runtime.shared);
+            let event_count = state.events.len();
+            let next_generation = state.next_generation;
+            let queued_event = state
+                .events
+                .back()
+                .expect("queued replacement event")
+                .clone();
+            let queued_before = state.jobs["song-a"].clone();
+            drop(state);
+
+            let stale_error = runtime
+                .submit(
+                    CacheJobSpec {
+                        item_incarnation_id: old_incarnation,
+                        ..new_job.clone()
+                    },
+                    CacheJobPriority::Normal,
+                    false,
+                )
+                .expect_err("stale active incarnation must reach AppState precondition");
+            assert_eq!(stale_error.kind, "item_incarnation_mismatch");
+            let repeated_new = runtime
+                .submit(new_job.clone(), CacheJobPriority::Normal, false)
+                .expect("new queued incarnation must deduplicate");
+            assert_eq!(repeated_new.generation, new_attempt.generation);
+            assert_eq!(
+                repeated_new.cache_attempt_token,
+                new_attempt.cache_attempt_token
+            );
+
+            state = lock_state(&runtime.shared);
+            assert_eq!(state.events.len(), event_count);
+            assert_eq!(state.next_generation, next_generation);
+            let queued_event_after = state.events.back().expect("queued replacement event");
+            assert_eq!(queued_event_after.sequence, queued_event.sequence);
+            assert_eq!(queued_event_after.generation, queued_event.generation);
+            assert_eq!(
+                queued_event_after.cache_attempt_token,
+                queued_event.cache_attempt_token
+            );
+            assert_eq!(queued_event_after.kind, queued_event.kind);
+            assert_eq!(queued_event_after.payload, queued_event.payload);
+            assert_eq!(state.jobs["song-a"].generation, queued_before.generation);
+            assert_eq!(
+                state.jobs["song-a"].cache_attempt_token,
+                queued_before.cache_attempt_token
+            );
+            assert!(old_cancel.load(Ordering::Acquire));
+            settle_job_locked(
+                &mut state,
+                &old_job,
+                JobOutcome::Ready(completed_result(&old_job.reservation)),
+            );
+            assert!(!state.active.contains_key("song-a"));
+            assert_eq!(state.jobs["song-a"].generation, new_attempt.generation);
+            assert_eq!(
+                state.jobs["song-a"].spec.item_incarnation_id,
+                new_job.item_incarnation_id
+            );
+            assert!(!state.completed.contains_key("song-a"));
+            assert_eq!(
+                state
+                    .normal_queue
+                    .iter()
+                    .filter(|item_id| *item_id == "song-a")
+                    .count(),
+                1
+            );
+            assert!(state.events.iter().any(|event| {
+                event.kind == "ready"
+                    && event.generation == old_job.generation
+                    && event.cache_attempt_token == old_job.cache_attempt_token
+            }));
+            assert!(state.events.iter().any(|event| {
+                event.kind == "queued"
+                    && event.generation == new_attempt.generation
+                    && event.cache_attempt_token == new_attempt.cache_attempt_token
+            }));
+        }
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_reservation_failure_queues_no_job_and_starts_no_output() {
         let root = std::env::temp_dir().join(format!(
             "bilikara-cache-runtime-reservation-failure-{}-{}",
             std::process::id(),
             ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        let runtime = CacheRuntime::new_without_workers(Arc::new(|_| {
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_, _| {
             Err(CacheRuntimeError::new(
                 "cache_attempt_token_exhausted",
                 "attempt allocator exhausted",
@@ -2155,15 +2886,18 @@ mod tests {
             std::process::id(),
             ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        let runtime = CacheRuntime::new_without_workers(Arc::new(|_| Ok(73)));
+        let current_job = job(&root);
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|item_id, incarnation| {
+            Ok(reservation_for(73, item_id, incarnation))
+        }));
         let submitted = runtime
-            .submit(job(&root), CacheJobPriority::Normal, false)
+            .submit(current_job.clone(), CacheJobPriority::Normal, false)
             .expect("queue native cache job");
 
         runtime
             .sync(
                 &root,
-                vec!["song-a".to_owned()],
+                current_item_incarnations(&current_job),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -2315,12 +3049,13 @@ mod tests {
             page: 1,
             relative_path: "song-a/audio-p1.m4a".to_owned(),
         }];
+        let current_item_incarnations = current_item_incarnations(&ready_job);
         let runtime = CacheRuntime::new().expect("start cache runtime");
 
         let result = runtime
             .sync(
                 &root,
-                vec!["song-a".to_owned()],
+                current_item_incarnations,
                 vec!["song-a".to_owned()],
                 vec![ready_job],
                 Vec::new(),
@@ -2341,11 +3076,17 @@ mod tests {
             std::process::id(),
             ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ));
-        let item_dir = root.join("song-a");
+        let completed_reservation = reservation(70);
+        let item_dir = root.join(&completed_reservation.artifact_relative_directory);
         fs::create_dir_all(&item_dir).expect("create cache fixture");
         fs::write(item_dir.join("video-p1.mp4"), b"video").expect("write video fixture");
         fs::write(item_dir.join("audio-p1.m4a"), b"audio").expect("write audio fixture");
-        let runtime = CacheRuntime::new().expect("start cache runtime");
+        let runtime = CacheRuntime::new_without_workers(Arc::new(|_, _| {
+            Err(CacheRuntimeError::new(
+                "unexpected_reservation",
+                "same-incarnation completed reuse reserved a new attempt",
+            ))
+        }));
         {
             let mut state = lock_state(&runtime.shared);
             state.next_generation = 7;
@@ -2354,27 +3095,21 @@ mod tests {
                 CompletedJob {
                     generation: 7,
                     cache_attempt_token: 70,
-                    result: CacheReadyResult {
-                        video_relative_path: "song-a/video-p1.mp4".to_owned(),
-                        video_media_url: "/media/song-a/video-p1.mp4".to_owned(),
-                        audio_variants: vec![ReadyAudioVariant {
-                            id: "p1_track_1".to_owned(),
-                            label: "P1".to_owned(),
-                            page: 1,
-                            audio_url: "/media/song-a/audio-p1.m4a".to_owned(),
-                        }],
-                        selected_audio_variant_id: "p1_track_1".to_owned(),
-                    },
+                    reservation: completed_reservation.clone(),
+                    result: completed_result(&completed_reservation),
                 },
             );
         }
 
+        let mut current_job = job(&root);
+        current_job.item_incarnation_id = completed_reservation.item_incarnation_id.clone();
+
         let result = runtime
             .sync(
                 &root,
+                current_item_incarnations(&current_job),
                 vec!["song-a".to_owned()],
-                vec!["song-a".to_owned()],
-                vec![job(&root)],
+                vec![current_job.clone()],
                 vec!["song-a".to_owned()],
                 "",
             )
@@ -2387,7 +3122,111 @@ mod tests {
     }
 
     #[test]
-    fn sync_defers_orphan_cleanup_while_the_item_is_active() {
+    fn sync_queues_new_incarnation_when_old_completed_files_still_exist() {
+        let root = std::env::temp_dir().join(format!(
+            "bilikara-cache-runtime-reused-item-id-{}-{}",
+            std::process::id(),
+            ATTEMPT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let old_reservation = reservation(70);
+        let new_reservation = reservation(71);
+        let old_item_dir = root.join(&old_reservation.artifact_relative_directory);
+        fs::create_dir_all(&old_item_dir).expect("create old completed fixture");
+        fs::write(old_item_dir.join("video-p1.mp4"), b"old-video")
+            .expect("write old video fixture");
+        fs::write(old_item_dir.join("audio-p1.m4a"), b"old-audio")
+            .expect("write old audio fixture");
+        let reserved = Arc::new(AtomicU64::new(0));
+        let reserved_for_attempt = Arc::clone(&reserved);
+        let next_reservation = new_reservation.clone();
+        let runtime = CacheRuntime::new_without_workers(Arc::new(move |item_id, expected| {
+            assert_eq!(item_id, "song-a");
+            assert_eq!(expected, next_reservation.item_incarnation_id);
+            reserved_for_attempt.fetch_add(1, Ordering::Relaxed);
+            Ok(next_reservation.clone())
+        }));
+        {
+            let mut state = lock_state(&runtime.shared);
+            state.next_generation = 7;
+            let old_result = completed_result(&old_reservation);
+            state.completed.insert(
+                "song-a".to_owned(),
+                CompletedJob {
+                    generation: 7,
+                    cache_attempt_token: old_reservation.cache_attempt_token,
+                    reservation: old_reservation.clone(),
+                    result: old_result.clone(),
+                },
+            );
+            push_event_locked(
+                &mut state,
+                7,
+                old_reservation.cache_attempt_token,
+                "song-a",
+                "ready",
+                serde_json::to_value(old_result).expect("serialize old ready result"),
+            );
+        }
+        let mut replacement_job = job(&root);
+        replacement_job.item_incarnation_id = new_reservation.item_incarnation_id.clone();
+
+        let result = runtime
+            .sync(
+                &root,
+                current_item_incarnations(&replacement_job),
+                vec!["song-a".to_owned()],
+                vec![replacement_job.clone()],
+                vec!["song-a".to_owned()],
+                "",
+            )
+            .expect("sync replacement incarnation");
+
+        assert_eq!(reserved.load(Ordering::Relaxed), 1);
+        assert_eq!(result["generations"]["song-a"], json!(8));
+        assert_eq!(
+            result["cache_attempt_tokens"]["song-a"],
+            json!(new_reservation.cache_attempt_token)
+        );
+        assert_eq!(result["snapshot"]["pending_ids"], json!(["song-a"]));
+        assert_eq!(result["snapshot"]["terminal_events"], json!([]));
+        assert_eq!(
+            fs::read(old_item_dir.join("video-p1.mp4")).expect("read retained old video"),
+            b"old-video"
+        );
+        let state = lock_state(&runtime.shared);
+        assert!(!state.completed.contains_key("song-a"));
+        let queued = state.jobs.get("song-a").expect("new incarnation queued");
+        assert_eq!(
+            queued.reservation.item_incarnation_id,
+            new_reservation.item_incarnation_id
+        );
+        assert_eq!(
+            queued.cache_attempt_token,
+            new_reservation.cache_attempt_token
+        );
+        assert!(
+            state.events.iter().any(|event| {
+                event.kind == "ready"
+                    && event.generation == 7
+                    && event.cache_attempt_token == old_reservation.cache_attempt_token
+            }),
+            "old terminal evidence must remain distinguishable as stale"
+        );
+        assert!(
+            state.events.iter().any(|event| {
+                event.kind == "queued"
+                    && event.generation == 8
+                    && event.cache_attempt_token == new_reservation.cache_attempt_token
+            }),
+            "new incarnation must own the queued attempt"
+        );
+        drop(state);
+        runtime.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_never_retires_artifacts_without_a_safe_process_boundary() {
         let root = std::env::temp_dir().join(format!(
             "bilikara-cache-runtime-active-orphan-{}-{}",
             std::process::id(),
@@ -2405,6 +3244,7 @@ mod tests {
                 ActiveJob {
                     generation: 1,
                     cache_attempt_token: 10,
+                    reservation: reservation(10),
                     cancel: Arc::clone(&cancel),
                     urgent: false,
                 },
@@ -2413,7 +3253,14 @@ mod tests {
         }
 
         runtime
-            .sync(&root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), "")
+            .sync(
+                &root,
+                HashMap::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                "",
+            )
             .expect("sync active orphan");
 
         assert!(cancel.load(Ordering::Acquire));
@@ -2424,9 +3271,16 @@ mod tests {
             state.primary_active_item_id = None;
         }
         runtime
-            .sync(&root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), "")
-            .expect("cleanup terminal orphan");
-        assert!(!item_dir.exists());
+            .sync(
+                &root,
+                HashMap::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                "",
+            )
+            .expect("sync after worker completion");
+        assert!(item_dir.exists());
         runtime.shutdown();
         let _ = fs::remove_dir_all(root);
     }

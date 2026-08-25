@@ -148,6 +148,42 @@ class FileServingPathSecurityTest(unittest.TestCase):
         self.assertEqual(streams, [])
         self.assertEqual(writes[0]["status"], server_module.HTTPStatus.NOT_FOUND)
 
+    def test_media_route_never_serves_attempt_staging_or_directories(self):
+        with TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "cache"
+            staging = cache_dir / ".staging" / "attempt-1"
+            staging.mkdir(parents=True)
+            (staging / "partial.mp4").write_bytes(b"partial")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.CACHE_DIR", cache_dir):
+                handler._serve_media("/media/.staging/attempt-1/partial.mp4")
+                handler._serve_media("/media/.staging/attempt-1")
+
+        self.assertEqual(streams, [])
+        self.assertEqual(
+            [entry["status"] for entry in writes],
+            [server_module.HTTPStatus.NOT_FOUND, server_module.HTTPStatus.NOT_FOUND],
+        )
+
+    def test_old_and_new_immutable_artifact_urls_remain_distinct_and_servable(self):
+        with TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "cache"
+            old_file = cache_dir / "artifacts" / "item" / "set-old" / "video-p1.mp4"
+            new_file = cache_dir / "artifacts" / "item" / "set-new" / "video-p1.mp4"
+            old_file.parent.mkdir(parents=True)
+            new_file.parent.mkdir(parents=True)
+            old_file.write_bytes(b"old-version")
+            new_file.write_bytes(b"new-version")
+            handler, writes, streams = self.make_handler()
+
+            with patch("bilikara.server.CACHE_DIR", cache_dir):
+                handler._serve_media("/media/artifacts/item/set-old/video-p1.mp4")
+                handler._serve_media("/media/artifacts/item/set-new/video-p1.mp4")
+
+        self.assertEqual(writes, [])
+        self.assertEqual(streams, [old_file, new_file])
+
 
 class AppContextRemoteAccessTest(unittest.TestCase):
     def make_context(self, *, host: str = "0.0.0.0", port: int = 8080) -> AppContext:

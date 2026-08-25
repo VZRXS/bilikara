@@ -32,6 +32,13 @@ def item(item_id: str, *, song: str | None = None) -> PlaylistItem:
     )
 
 
+def begin_cache_attempt(store: PlaylistStore, item_id: str) -> int:
+    observed = store.get_item(item_id)
+    if observed is None:
+        raise AssertionError(f"missing cache item fixture: {item_id}")
+    return store.begin_cache_attempt(item_id, observed.item_incarnation_id)
+
+
 class RustAppStateStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()
@@ -107,8 +114,8 @@ class RustAppStateStoreTest(unittest.TestCase):
             if path.is_file()
         }
 
-        first = store.begin_cache_attempt("a")
-        second = store.begin_cache_attempt("a")
+        first = begin_cache_attempt(store, "a")
+        second = begin_cache_attempt(store, "a")
 
         self.assertGreater(first, 0)
         self.assertGreater(second, first)
@@ -151,20 +158,202 @@ class RustAppStateStoreTest(unittest.TestCase):
         self.assertEqual(store.get_item("a").cache_message, "current")
         self.assertEqual(changes, ["changed"])
 
+    def test_cache_attempt_reservations_stay_bounded_to_live_python_attempts(self):
+        store = self.store()
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+        store.add_item(item("b"), requester_name="Alice")
+
+        superseded = []
+        for _ in range(200):
+            superseded.append(begin_cache_attempt(store, "a"))
+        current_a = superseded[-1]
+        self.assertEqual(len(store._cache_attempt_reservations), 1)
+        for token in superseded[:-1]:
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                store.cache_attempt_reservation(token)
+        self.assertEqual(
+            store.cache_attempt_reservation(current_a)["cache_attempt_token"],
+            current_a,
+        )
+
+        failed_b = begin_cache_attempt(store, "b")
+        self.assertEqual(len(store._cache_attempt_reservations), 2)
+        self.assertTrue(
+            store.apply_cache_event(
+                "b",
+                cache_attempt_token=failed_b,
+                event={"kind": "failed", "message": "expected failure"},
+            )
+        )
+        self.assertEqual(len(store._cache_attempt_reservations), 1)
+
+        rejected_b = begin_cache_attempt(store, "b")
+        with self.assertRaises(PlaylistStoreCommandError) as rejected:
+            store.apply_cache_event(
+                "a",
+                cache_attempt_token=rejected_b,
+                event={"kind": "cancelled", "message": "wrong worker owner"},
+            )
+        self.assertEqual(rejected.exception.kind, "cache_attempt_wrong_item")
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            store.cache_attempt_reservation(rejected_b)
+        self.assertEqual(len(store._cache_attempt_reservations), 1)
+
+        self.assertTrue(store.remove_item("a"))
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            store.cache_attempt_reservation(current_a)
+        self.assertEqual(store._cache_attempt_reservations, {})
+
+    def test_stale_expected_incarnation_is_forwarded_and_rejected_without_side_effects(self):
+        changes: list[str] = []
+        store = self.store(on_change=lambda: changes.append("changed"))
+        store.add_session_user("Alice")
+        store.add_item(item("a", song="old"), requester_name="Alice")
+        stale = store.get_item("a")
+        self.assertIsNotNone(stale)
+        self.assertTrue(store.remove_item("a"))
+        store.add_item(item("a", song="new"), requester_name="Alice")
+        live = store.get_item("a")
+        self.assertIsNotNone(live)
+        self.assertNotEqual(stale.item_incarnation_id, live.item_incarnation_id)
+        changes.clear()
+        snapshot_before = store.authoritative_snapshot()
+        reservations_before = dict(store._cache_attempt_reservations)
+        persisted_before = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*")
+            if path.is_file()
+        }
+
+        with self.assertRaises(PlaylistStoreCommandError) as rejected:
+            store.begin_cache_attempt("a", stale.item_incarnation_id)
+
+        self.assertEqual(rejected.exception.kind, "item_incarnation_mismatch")
+        self.assertEqual(store.authoritative_snapshot(), snapshot_before)
+        self.assertEqual(store._cache_attempt_reservations, reservations_before)
+        self.assertEqual(changes, [])
+        self.assertEqual(
+            {
+                path.relative_to(self.root): path.read_bytes()
+                for path in self.root.rglob("*")
+                if path.is_file()
+            },
+            persisted_before,
+        )
+
+    def test_concurrent_cache_attempts_retain_only_the_newest_rust_reservation(self):
+        store = self.store()
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+        original_request = store._request
+        first_returned = threading.Event()
+        release_first = threading.Event()
+        second_returned = threading.Event()
+        request_index = 0
+        request_index_lock = threading.Lock()
+
+        def delayed_request(command: str, **fields):
+            nonlocal request_index
+            result = original_request(command, **fields)
+            if command != "begin_cache_attempt":
+                return result
+            with request_index_lock:
+                request_index += 1
+                index = request_index
+            if index == 1:
+                first_returned.set()
+                self.assertTrue(release_first.wait(2))
+            elif index == 2:
+                second_returned.set()
+            return result
+
+        tokens: list[int] = []
+        with patch.object(store, "_request", side_effect=delayed_request):
+            first = threading.Thread(
+                target=lambda: tokens.append(begin_cache_attempt(store, "a"))
+            )
+            second = threading.Thread(
+                target=lambda: tokens.append(begin_cache_attempt(store, "a"))
+            )
+            first.start()
+            self.assertTrue(first_returned.wait(2))
+            second.start()
+            if second_returned.wait(0.2):
+                second.join(timeout=2)
+            release_first.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(len(tokens), 2)
+        newest = max(tokens)
+        self.assertEqual(len(store._cache_attempt_reservations), 1)
+        self.assertEqual(
+            store.cache_attempt_reservation(newest)["cache_attempt_token"], newest
+        )
+
+    def test_persistence_adapter_does_not_rewrite_rust_artifact_identities(self):
+        persisted = item("a").serialize()
+        persisted.update(
+            {
+                "item_incarnation_id": (
+                    "i-0123456789abcdef0123456789abcdef-0000000000000001"
+                ),
+                "artifact_set_id": (
+                    "a-0123456789abcdef0123456789abcdef-0000000000000002"
+                ),
+                "artifact_relative_directory": (
+                    "artifacts/"
+                    "i-0123456789abcdef0123456789abcdef-0000000000000001/"
+                    "a-0123456789abcdef0123456789abcdef-0000000000000002"
+                ),
+            }
+        )
+
+        normalized = PlaylistStore._normalized_item_payload(persisted)
+
+        self.assertIsNotNone(normalized)
+        self.assertEqual(
+            normalized["item_incarnation_id"], persisted["item_incarnation_id"]
+        )
+        self.assertEqual(normalized["artifact_set_id"], persisted["artifact_set_id"])
+        self.assertEqual(
+            normalized["artifact_relative_directory"],
+            persisted["artifact_relative_directory"],
+        )
+
     def test_begin_cache_attempt_returns_the_opaque_rust_token(self):
         store = self.store()
         with patch.object(
             store,
             "_request",
-            return_value={"cache_attempt_token": 9_007_199_254_740_991},
+            return_value={
+                "cache_attempt_token": 9_007_199_254_740_991,
+                "item_id": "opaque-item",
+                "item_incarnation_id": "i-0123456789abcdef0123456789abcdef-0000000000000001",
+                "artifact_set_id": "a-0123456789abcdef0123456789abcdef-0000000000000001",
+                "artifact_relative_directory": (
+                    "artifacts/i-0123456789abcdef0123456789abcdef-0000000000000001/"
+                    "a-0123456789abcdef0123456789abcdef-0000000000000001"
+                ),
+                "refresh": False,
+            },
         ) as request:
-            token = store.begin_cache_attempt("opaque-item")
+            token = store.begin_cache_attempt(
+                "opaque-item",
+                "i-0123456789abcdef0123456789abcdef-0000000000000001",
+            )
 
         self.assertEqual(token, 9_007_199_254_740_991)
         request.assert_called_once_with(
             "begin_cache_attempt",
             include_now=False,
             item_id="opaque-item",
+            expected_item_incarnation_id=(
+                "i-0123456789abcdef0123456789abcdef-0000000000000001"
+            ),
         )
         with self.assertRaises(TypeError):
             store.apply_cache_event(

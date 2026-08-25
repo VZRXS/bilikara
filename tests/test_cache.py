@@ -13,6 +13,7 @@ import threading
 import unittest
 import urllib.error
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -32,6 +33,13 @@ from bilikara.cache import (
 )
 from bilikara.models import PlaylistItem
 from bilikara.store import PlaylistStore
+
+
+def begin_cache_attempt(store: PlaylistStore, item_id: str) -> int:
+    observed = store.get_item(item_id)
+    if observed is None:
+        raise AssertionError(f"missing cache item fixture: {item_id}")
+    return store.begin_cache_attempt(item_id, observed.item_incarnation_id)
 
 
 class CacheManagerOutputTest(unittest.TestCase):
@@ -301,23 +309,135 @@ class CacheManagerPolicyTest(unittest.TestCase):
         )
 
     def mark_item_ready_with_files(self, item_id: str) -> None:
-        item_dir = self.cache_dir / item_id
+        token = begin_cache_attempt(self.store, item_id)
+        reservation = self.store.cache_attempt_reservation(token)
+        relative_directory = reservation["artifact_relative_directory"]
+        item_dir = self.cache_dir / relative_directory
         item_dir.mkdir(parents=True, exist_ok=True)
         (item_dir / "video.mp4").write_bytes(b"video")
         (item_dir / "audio.m4a").write_bytes(b"audio")
-        self.store.update_item(
+        self.store.apply_cache_event(
             item_id,
-            cache_status="ready",
-            cache_progress=100.0,
-            cache_message="缓存已完成",
-            video_relative_path=f"{item_id}/video.mp4",
-            video_media_url=f"/media/{item_id}/video.mp4",
-            audio_variants=[
-                {"id": "p1", "label": "P1", "audio_url": f"/media/{item_id}/audio.m4a"}
-            ],
-            selected_audio_variant_id="p1",
-            persist_backup=False,
+            cache_attempt_token=token,
+            event={
+                "kind": "ready",
+                "progress": 100.0,
+                "message": "缓存已完成",
+                "video_relative_path": f"{relative_directory}/video.mp4",
+                "video_media_url": f"/media/{relative_directory}/video.mp4",
+                "audio_variants": [
+                    {
+                        "id": "p1",
+                        "label": "P1",
+                        "page": 1,
+                        "audio_url": f"/media/{relative_directory}/audio.m4a",
+                    }
+                ],
+                "selected_audio_variant_id": "p1",
+                "item_incarnation_id": reservation["item_incarnation_id"],
+                "artifact_set_id": reservation["artifact_set_id"],
+                "artifact_relative_directory": relative_directory,
+            },
         )
+
+    def ready_payload(
+        self,
+        item_id: str,
+        cache_attempt_token: int,
+        *,
+        video_name: str = "video.mp4",
+        audio_name: str = "audio.m4a",
+        variant_id: str = "p1",
+    ) -> dict[str, object]:
+        reservation = self.store.cache_attempt_reservation(cache_attempt_token)
+        relative_directory = reservation["artifact_relative_directory"]
+        return {
+            "video_relative_path": f"{relative_directory}/{video_name}",
+            "video_media_url": f"/media/{relative_directory}/{video_name}",
+            "audio_variants": [
+                {
+                    "id": variant_id,
+                    "label": "P1",
+                    "page": 1,
+                    "audio_url": f"/media/{relative_directory}/{audio_name}",
+                }
+            ],
+            "selected_audio_variant_id": variant_id,
+            "item_incarnation_id": reservation["item_incarnation_id"],
+            "artifact_set_id": reservation["artifact_set_id"],
+            "artifact_relative_directory": relative_directory,
+        }
+
+    def project_cache_started(
+        self, item_id: str, *, message: str, progress: float | None = None
+    ) -> int:
+        token = begin_cache_attempt(self.store, item_id)
+        self.store.apply_cache_event(
+            item_id,
+            cache_attempt_token=token,
+            event={"kind": "started", "message": message},
+        )
+        if progress is not None:
+            self.store.apply_cache_event(
+                item_id,
+                cache_attempt_token=token,
+                event={
+                    "kind": "progress",
+                    "progress": progress,
+                    "message": message,
+                },
+            )
+        return token
+
+    def project_cache_failed(self, item_id: str, *, message: str) -> None:
+        token = begin_cache_attempt(self.store, item_id)
+        self.store.apply_cache_event(
+            item_id,
+            cache_attempt_token=token,
+            event={"kind": "failed", "message": message},
+        )
+
+    def project_missing_ready(self, item_id: str) -> None:
+        token = begin_cache_attempt(self.store, item_id)
+        payload = self.ready_payload(item_id, token)
+        self.store.apply_cache_event(
+            item_id,
+            cache_attempt_token=token,
+            event={"kind": "ready", "progress": 100.0, "message": "缓存已完成", **payload},
+        )
+
+    def staged_cache_result(
+        self,
+        staging_dir: Path,
+        *,
+        native_tracks_prevalidated: bool = False,
+    ) -> dict[str, object]:
+        video = staging_dir / "video-source.mp4"
+        audio = staging_dir / "audio-source.m4a"
+        video.parent.mkdir(parents=True, exist_ok=True)
+        video.write_bytes(b"video")
+        audio.write_bytes(b"audio")
+        return {
+            "video_file": video,
+            "video_relative_path": str(video.relative_to(self.cache_dir)),
+            "video_media_url": f"/media/{video.relative_to(self.cache_dir).as_posix()}",
+            "audio_variants": [
+                {
+                    "id": "p1",
+                    "label": "P1",
+                    "page": 1,
+                    "audio_url": f"/media/{audio.relative_to(self.cache_dir).as_posix()}",
+                }
+            ],
+            "selected_audio_variant_id": "p1",
+            "validation_files": [
+                {"path": video, "stream_kind": "video", "page": 1},
+                {"path": audio, "stream_kind": "audio", "page": 1},
+            ],
+            "validation_metadata": [{"path": str(video)}, {"path": str(audio)}],
+            "validation_failure_count": 0,
+            "native_tracks_prevalidated": native_tracks_prevalidated,
+        }
 
     def test_native_cache_job_contains_selected_pages_policy_and_existing_artifacts(self):
         item = self.make_item("song-native")
@@ -346,6 +466,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertEqual(job["video_page"], 2)
+        self.assertEqual(job["item_incarnation_id"], item.item_incarnation_id)
         self.assertEqual([page["cid"] for page in job["pages"]], [456, 789])
         self.assertEqual([page["label"] for page in job["pages"]], ["Vocal", "Off Vocal"])
         self.assertEqual(job["video_quality"], "720P 高清")
@@ -354,14 +475,14 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertTrue(job["reported_ready"])
         self.assertEqual(
             job["existing_audio_variants"][0]["relative_path"],
-            "song-native/audio.m4a",
+            f"{item.artifact_relative_directory}/audio.m4a",
         )
 
     def test_native_cache_events_project_state_and_reject_stale_attempt_tokens(self):
         item = self.make_item("song-native-events")
         self.store.add_item(item, requester_name="cache-test-user")
-        stale_token = self.store.begin_cache_attempt(item.id)
-        cache_attempt_token = self.store.begin_cache_attempt(item.id)
+        stale_token = begin_cache_attempt(self.store, item.id)
+        cache_attempt_token = begin_cache_attempt(self.store, item.id)
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
         ):
@@ -398,40 +519,37 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         "cache_attempt_token": cache_attempt_token,
                         "item_id": item.id,
                         "kind": "ready",
-                        "payload": {
-                            "video_relative_path": f"{item.id}/video-p1.mp4",
-                            "video_media_url": f"/media/{item.id}/video-p1.mp4",
-                            "audio_variants": [
-                                {
-                                    "id": "p1_track_1",
-                                    "label": "P1",
-                                    "page": 1,
-                                    "audio_url": f"/media/{item.id}/audio-p1.m4a",
-                                }
-                            ],
-                            "selected_audio_variant_id": "p1_track_1",
-                        },
+                        "payload": self.ready_payload(
+                            item.id,
+                            cache_attempt_token,
+                            video_name="video-p1.mp4",
+                            audio_name="audio-p1.m4a",
+                            variant_id="p1_track_1",
+                        ),
                     }
                 )
                 with manager.lock:
                     manager.pending_ids.add(item.id)
                     manager.active_item_id = item.id
-                with self.assertRaisesRegex(ValueError, "superseded"):
-                    manager._apply_native_cache_event(
-                        {
-                            "generation": 2,
-                            "cache_attempt_token": stale_token,
-                            "item_id": item.id,
-                            "kind": "failed",
-                            "payload": {"message": "stale failure"},
-                        }
-                    )
+                manager._apply_native_cache_event(
+                    {
+                        "generation": 2,
+                        "cache_attempt_token": stale_token,
+                        "item_id": item.id,
+                        "kind": "failed",
+                        "payload": {"message": "stale failure"},
+                    }
+                )
                 cached = self.store.get_item(item.id)
                 cached_status = cached.cache_status
                 selected_variant_id = cached.selected_audio_variant_id
                 with manager.lock:
                     stale_terminal_kept_pending = item.id in manager.pending_ids
                     stale_terminal_kept_active = manager.active_item_id == item.id
+                    accepted_identity = (
+                        manager.native_cache_generations[item.id],
+                        manager.native_cache_attempt_tokens[item.id],
+                    )
             finally:
                 manager.shutdown()
 
@@ -439,7 +557,109 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(selected_variant_id, "p1_track_1")
         self.assertTrue(stale_terminal_kept_pending)
         self.assertTrue(stale_terminal_kept_active)
+        self.assertEqual(accepted_identity, (2, cache_attempt_token))
         self.assertEqual(manager.native_cache_generations, {})
+
+    def test_native_attempt_identity_pair_is_idempotent_and_rejects_conflicts(self):
+        item_id = "song-native-identity-order"
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                self.assertTrue(
+                    manager._accept_native_cache_attempt_identity(item_id, 2, 202)
+                )
+                self.assertFalse(
+                    manager._accept_native_cache_attempt_identity(item_id, 1, 101)
+                )
+                self.assertEqual(
+                    (
+                        manager.native_cache_generations[item_id],
+                        manager.native_cache_attempt_tokens[item_id],
+                    ),
+                    (2, 202),
+                )
+                self.assertTrue(
+                    manager._accept_native_cache_attempt_identity(item_id, 2, 202)
+                )
+                self.assertFalse(
+                    manager._accept_native_cache_attempt_identity(item_id, 2, 203)
+                )
+                self.assertEqual(
+                    (
+                        manager.native_cache_generations[item_id],
+                        manager.native_cache_attempt_tokens[item_id],
+                    ),
+                    (2, 202),
+                )
+                manager.native_cache_attempt_tokens.pop(item_id)
+                self.assertTrue(
+                    manager._accept_native_cache_attempt_identity(item_id, 2, 202)
+                )
+                self.assertEqual(manager.native_cache_attempt_tokens[item_id], 202)
+            finally:
+                manager.shutdown()
+
+    def test_inverse_native_submit_completion_keeps_newer_generation_token_pair(self):
+        item = self.make_item("song-native-inverse-submit")
+        item.selected_pages = [1]
+        item.selected_cids = [456]
+        item.selected_durations = [120]
+        self.store.add_item(item, requester_name="cache-test-user")
+        first_processing = threading.Event()
+        newer_recorded = threading.Event()
+
+        class DelayedResult(dict):
+            def get(self, key, default=None):
+                if key == "generation":
+                    first_processing.set()
+                    if not newer_recorded.wait(5.0):
+                        raise AssertionError("newer Native result did not complete")
+                return super().get(key, default)
+
+        responses: queue.Queue[dict[str, object]] = queue.Queue()
+        responses.put(DelayedResult(generation=1, cache_attempt_token=101))
+        responses.put({"generation": 2, "cache_attempt_token": 202})
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=1)
+            original_accept = manager._accept_native_cache_attempt_identity
+
+            def accept_identity(item_id, generation, cache_attempt_token):
+                accepted = original_accept(item_id, generation, cache_attempt_token)
+                if generation == 2:
+                    newer_recorded.set()
+                return accepted
+
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                with patch.object(
+                    manager, "_ensure_native_cache_runtime"
+                ), patch(
+                    "bilikara.cache.rust_runtime.cache_runtime_request",
+                    side_effect=lambda _command, **_fields: responses.get_nowait(),
+                ), patch.object(
+                    manager, "_drain_native_cache_events"
+                ), patch.object(
+                    manager,
+                    "_accept_native_cache_attempt_identity",
+                    side_effect=accept_identity,
+                ):
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        first = executor.submit(manager.enqueue, item.id)
+                        self.assertTrue(first_processing.wait(5.0))
+                        second = executor.submit(manager.enqueue, item.id)
+                        second.result(timeout=5.0)
+                        first.result(timeout=5.0)
+
+                self.assertEqual(
+                    (
+                        manager.native_cache_generations[item.id],
+                        manager.native_cache_attempt_tokens[item.id],
+                    ),
+                    (2, 202),
+                )
+            finally:
+                manager.shutdown()
 
     def test_native_sync_submits_rust_jobs_without_using_python_worker_queue(self):
         item = self.make_item("song-native-sync")
@@ -485,6 +705,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(cache_attempt_token, 107)
         sync_request = next(fields for command, fields in calls if command == "sync")
         self.assertEqual(sync_request["jobs"][0]["item_id"], item.id)
+        observed = self.store.get_item(item.id)
+        self.assertEqual(
+            sync_request["current_item_incarnations"],
+            {item.id: observed.item_incarnation_id},
+        )
         self.assertEqual(sync_request["ordered_ids"], [item.id])
 
     def test_native_sync_excludes_active_python_owner_and_includes_future_item(self):
@@ -495,12 +720,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
             item.selected_cids = [456]
             item.selected_durations = [120]
             self.store.add_item(item, requester_name="cache-test-user")
-        self.store.update_item(
+        self.project_cache_started(
             active.id,
-            cache_status="downloading",
-            cache_progress=42.0,
-            cache_message="BBDown 下载中",
-            persist_backup=False,
+            message="BBDown 下载中",
+            progress=42.0,
         )
         plan = CachePlan(
             desired_ids=(active.id, future.id),
@@ -551,6 +774,13 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.assertEqual(
             [job["item_id"] for job in sync_request["jobs"]],
             [future.id],
+        )
+        self.assertEqual(
+            sync_request["current_item_incarnations"],
+            {
+                item_id: self.store.get_item(item_id).item_incarnation_id
+                for item_id in (active.id, future.id)
+            },
         )
 
     def test_python_queue_captures_source_before_native_switch(self):
@@ -663,9 +893,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 events: list[str] = []
                 original_begin = manager._begin_cache_attempt
 
-                def reserve(item_id: str) -> int:
+                def reserve(item_id: str, item_incarnation_id: str) -> int:
                     events.append("reserve")
-                    return original_begin(item_id)
+                    return original_begin(item_id, item_incarnation_id)
 
                 try:
                     manager.download_source = download_source
@@ -704,9 +934,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 events.append("cookie")
                 return ""
 
-            def reserve(item_id: str) -> int:
+            def reserve(item_id: str, item_incarnation_id: str) -> int:
                 events.append("reserve")
-                return original_begin(item_id)
+                return original_begin(item_id, item_incarnation_id)
 
             try:
                 manager.download_source = DOWNLOAD_SOURCE_DOWNKYI
@@ -766,6 +996,59 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertNotIn(item.id, manager.pending_ids)
                 self.assertNotIn(item.id, manager.python_worker_download_sources)
                 self.assertNotIn(item.id, manager.python_cache_attempt_tokens)
+            finally:
+                manager.shutdown()
+
+    def test_stale_python_attempt_starts_no_tool_native_or_subprocess_work(self):
+        old_item = self.make_item("song-reused-id")
+        self.store.add_item(old_item, requester_name="cache-test-user")
+        old_item = self.store.get_item(old_item.id)
+        self.assertIsNotNone(old_item)
+        stale_token = self.store.begin_cache_attempt(
+            old_item.id,
+            old_item.item_incarnation_id,
+        )
+        self.assertTrue(self.store.remove_item(old_item.id))
+        replacement = self.make_item(old_item.id)
+        replacement.bvid = "BV1yy411c7mE"
+        self.store.add_item(replacement, requester_name="cache-test-user")
+
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_BBDOWN
+                with manager.lock:
+                    manager.desired_ids = {old_item.id}
+                    manager.python_worker_download_sources[old_item.id] = (
+                        DOWNLOAD_SOURCE_BBDOWN
+                    )
+                    manager.python_cache_attempt_tokens[old_item.id] = stale_token
+                with patch.object(
+                    manager,
+                    "_ensure_downloader",
+                ) as prepare_tool, patch.object(
+                    manager,
+                    "_ensure_ffmpeg",
+                ) as prepare_ffmpeg, patch.object(
+                    manager,
+                    "_native_cache_request",
+                ) as native_work, patch(
+                    "bilikara.cache.subprocess.Popen",
+                ) as spawn_process:
+                    with self.assertRaisesRegex(
+                        (RuntimeError, ValueError),
+                        "unavailable|incarnation changed",
+                    ):
+                        manager._cache_item(old_item.id, stale_token)
+
+                prepare_tool.assert_not_called()
+                prepare_ffmpeg.assert_not_called()
+                native_work.assert_not_called()
+                spawn_process.assert_not_called()
+                self.assertEqual(
+                    manager.python_cache_attempt_tokens[old_item.id],
+                    stale_token,
+                )
             finally:
                 manager.shutdown()
 
@@ -856,7 +1139,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     with self.subTest(kind=kind):
                         item = self.make_item(f"song-native-{kind}")
                         self.store.add_item(item, requester_name="cache-test-user")
-                        cache_attempt_token = self.store.begin_cache_attempt(item.id)
+                        cache_attempt_token = begin_cache_attempt(self.store, item.id)
+                        if kind == "ready":
+                            payload = self.ready_payload(
+                                item.id,
+                                cache_attempt_token,
+                            )
                         with manager.lock:
                             manager.download_source = DOWNLOAD_SOURCE_BBDOWN
                             manager.native_cache_generations[item.id] = 7
@@ -896,8 +1184,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def test_native_terminal_event_does_not_clear_active_python_bookkeeping(self):
         item = self.make_item("song-python-active-after-native")
         self.store.add_item(item, requester_name="cache-test-user")
-        native_token = self.store.begin_cache_attempt(item.id)
-        python_token = self.store.begin_cache_attempt(item.id)
+        native_token = begin_cache_attempt(self.store, item.id)
+        python_token = begin_cache_attempt(self.store, item.id)
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
         ):
@@ -984,7 +1272,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 pending_after = self.store.get_item(pending.id)
                 malformed_after = self.store.get_item(malformed.id)
                 self.assertEqual(ready_after.cache_status, "ready")
-                self.assertEqual(ready_after.video_relative_path, f"{ready.id}/video.mp4")
+                self.assertEqual(
+                    ready_after.video_relative_path,
+                    f"{ready_after.artifact_relative_directory}/video.mp4",
+                )
                 self.assertEqual(len(ready_after.audio_variants), 1)
                 self.assertEqual(pending_after.cache_status, "pending")
                 self.assertEqual(malformed_after.cache_status, "failed")
@@ -993,10 +1284,147 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.native_cache_started = False
                 manager.shutdown()
 
+    def test_stale_native_job_build_failure_does_not_mark_reused_item_id(self):
+        old = self.make_item("song-native-stale-build")
+        old.selected_pages = [1]
+        old.selected_cids = [456]
+        old.selected_durations = [120]
+        self.store.add_item(old, requester_name="cache-test-user")
+        observed = self.store.get_item(old.id)
+        replacement = self.make_item(old.id)
+        replacement.bvid = "BV1yy411c7mE"
+        replacement.title = "replacement-build"
+        plan = CachePlan(
+            desired_ids=(old.id,),
+            pending_order=(old.id,),
+            retained_ids=(old.id,),
+            preempt_ids=(),
+        )
+
+        def fail_after_replacement(_item):
+            self.store.remove_item(old.id)
+            self.store.add_item(replacement, requester_name="cache-test-user")
+            raise ValueError("stale Native job fixture")
+
+        def runtime_request(command, **_fields):
+            if command == "sync":
+                return {
+                    "generations": {},
+                    "cache_attempt_tokens": {},
+                    "snapshot": {},
+                }
+            return {"events": [], "snapshot": {}}
+
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                with patch.object(
+                    manager, "_native_cache_job", side_effect=fail_after_replacement
+                ), patch.object(
+                    manager, "_ensure_native_cache_runtime"
+                ), patch.object(
+                    manager, "_native_cache_request", side_effect=runtime_request
+                ), patch.object(
+                    manager, "_begin_cache_attempt_for_item"
+                ) as reserve_attempt:
+                    manager._sync_native_with_playlist([observed], plan)
+
+                live = self.store.get_item(old.id)
+                self.assertEqual(live.bvid, replacement.bvid)
+                self.assertEqual(live.title, replacement.title)
+                self.assertEqual(live.cache_status, "pending")
+                reserve_attempt.assert_not_called()
+                self.assertEqual(self.store._cache_attempt_reservations, {})
+            finally:
+                manager.shutdown()
+
+    def test_stale_native_submit_and_retry_failures_do_not_mark_reused_item_id(self):
+        for action in ("submit", "retry"):
+            with self.subTest(action=action):
+                old = self.make_item(f"song-native-stale-{action}")
+                old.selected_pages = [1]
+                old.selected_cids = [456]
+                old.selected_durations = [120]
+                self.store.add_item(old, requester_name="cache-test-user")
+                replacement = self.make_item(old.id)
+                replacement.bvid = "BV1yy411c7mE"
+                replacement.title = f"replacement-{action}"
+
+                def fail_after_replacement(command, **_fields):
+                    self.assertEqual(command, action)
+                    self.store.remove_item(old.id)
+                    self.store.add_item(
+                        replacement,
+                        requester_name="cache-test-user",
+                    )
+                    raise RuntimeError(f"stale Native {action} fixture")
+
+                with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+                    CacheManager, "_worker_loop", lambda self: None
+                ):
+                    manager = CacheManager(self.store, max_cache_items=1)
+                    try:
+                        manager.download_source = DOWNLOAD_SOURCE_NATIVE
+                        manager.desired_ids = {old.id}
+                        with patch.object(
+                            manager, "_ensure_native_cache_runtime"
+                        ), patch.object(
+                            manager,
+                            "_native_cache_request",
+                            side_effect=fail_after_replacement,
+                        ), patch.object(
+                            manager, "_begin_cache_attempt_for_item"
+                        ) as reserve_attempt, patch.object(
+                            manager, "_append_log_line"
+                        ):
+                            if action == "submit":
+                                manager.enqueue(old.id)
+                            else:
+                                manager.retry_item(old.id)
+
+                        live = self.store.get_item(old.id)
+                        self.assertEqual(live.bvid, replacement.bvid)
+                        self.assertEqual(live.title, replacement.title)
+                        self.assertEqual(live.cache_status, "pending")
+                        reserve_attempt.assert_not_called()
+                        self.assertEqual(self.store._cache_attempt_reservations, {})
+                    finally:
+                        manager.shutdown()
+
+    def test_native_failure_for_current_incarnation_is_still_projected(self):
+        item = self.make_item("song-native-current-failure")
+        self.store.add_item(item, requester_name="cache-test-user")
+        observed = self.store.get_item(item.id)
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = CacheManager(self.store, max_cache_items=1)
+            try:
+                with patch.object(
+                    manager,
+                    "_begin_cache_attempt_for_item",
+                    wraps=manager._begin_cache_attempt_for_item,
+                ) as reserve_attempt:
+                    manager._mark_native_cache_failed(
+                        item.id,
+                        "exact incarnation failure",
+                        expected_item_incarnation_id=observed.item_incarnation_id,
+                    )
+
+                live = self.store.get_item(item.id)
+                self.assertEqual(live.cache_status, "failed")
+                self.assertIn("exact incarnation failure", live.cache_message)
+                reserve_attempt.assert_called_once()
+            finally:
+                manager.shutdown()
+
     def test_native_snapshot_recovers_lost_terminal_event_once(self):
         item = self.make_item("song-terminal-recovery")
         self.store.add_item(item, requester_name="cache-test-user")
-        cache_attempt_token = self.store.begin_cache_attempt(item.id)
+        cache_attempt_token = begin_cache_attempt(self.store, item.id)
+        reservation = self.store.cache_attempt_reservation(cache_attempt_token)
+        relative_directory = reservation["artifact_relative_directory"]
         terminal = {
             "sequence": 9,
             "generation": 3,
@@ -1004,23 +1432,26 @@ class CacheManagerPolicyTest(unittest.TestCase):
             "item_id": item.id,
             "kind": "ready",
             "payload": {
-                "video_relative_path": f"{item.id}/video-p1.mp4",
-                "video_media_url": f"/media/{item.id}/video-p1.mp4",
+                "video_relative_path": f"{relative_directory}/video-p1.mp4",
+                "video_media_url": f"/media/{relative_directory}/video-p1.mp4",
                 "audio_variants": [
                     {
                         "id": "p1-vocal",
                         "label": "Vocal",
                         "page": 1,
-                        "audio_url": f"/media/{item.id}/audio-p1-vocal.m4a",
+                        "audio_url": f"/media/{relative_directory}/audio-p1-vocal.m4a",
                     },
                     {
                         "id": "p1-off-vocal",
                         "label": "Off Vocal",
                         "page": 1,
-                        "audio_url": f"/media/{item.id}/audio-p1-off-vocal.m4a",
+                        "audio_url": f"/media/{relative_directory}/audio-p1-off-vocal.m4a",
                     },
                 ],
                 "selected_audio_variant_id": "p1-vocal",
+                "item_incarnation_id": reservation["item_incarnation_id"],
+                "artifact_set_id": reservation["artifact_set_id"],
+                "artifact_relative_directory": relative_directory,
             },
         }
         snapshot = {
@@ -1038,10 +1469,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 manager._apply_native_cache_snapshot(snapshot)
-                self.store.update_item(
-                    item.id,
-                    selected_audio_variant_id="p1-off-vocal",
-                    persist_backup=False,
+                self.assertTrue(
+                    self.store.set_audio_variant(item.id, "p1-off-vocal")
                 )
                 manager._apply_native_cache_snapshot(snapshot)
                 cached = self.store.get_item(item.id)
@@ -1054,26 +1483,19 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def test_native_drain_applies_events_before_terminal_snapshot_recovery(self):
         item = self.make_item("song-terminal-order")
         self.store.add_item(item, requester_name="cache-test-user")
-        cache_attempt_token = self.store.begin_cache_attempt(item.id)
+        cache_attempt_token = begin_cache_attempt(self.store, item.id)
         ready = {
             "sequence": 9,
             "generation": 3,
             "cache_attempt_token": cache_attempt_token,
             "item_id": item.id,
             "kind": "ready",
-            "payload": {
-                "video_relative_path": f"{item.id}/video-p1.mp4",
-                "video_media_url": f"/media/{item.id}/video-p1.mp4",
-                "audio_variants": [
-                    {
-                        "id": "p1",
-                        "label": "P1",
-                        "page": 1,
-                        "audio_url": f"/media/{item.id}/audio-p1.m4a",
-                    }
-                ],
-                "selected_audio_variant_id": "p1",
-            },
+            "payload": self.ready_payload(
+                item.id,
+                cache_attempt_token,
+                video_name="video-p1.mp4",
+                audio_name="audio-p1.m4a",
+            ),
         }
         result = {
             "events": [
@@ -1109,12 +1531,17 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
     def test_cache_metrics_reports_usage_by_item(self):
-        first = self.cache_dir / "song-a"
-        second = self.cache_dir / "song-b"
-        first.mkdir()
-        second.mkdir()
-        (first / "video.mp4").write_bytes(b"1234")
-        (second / "video.mp4").write_bytes(b"123456")
+        for item_id in ("song-a", "song-b"):
+            self.store.add_item(
+                self.make_item(item_id), requester_name="cache-test-user"
+            )
+            self.mark_item_ready_with_files(item_id)
+        orphan = self.cache_dir / "artifacts" / "orphan"
+        orphan.mkdir(parents=True)
+        (orphan / "retained.bin").write_bytes(b"retained")
+        staging = self.cache_dir / ".staging" / "attempt"
+        staging.mkdir(parents=True)
+        (staging / "partial.bin").write_bytes(b"partial")
 
         log_dir = Path(self.temp_dir.name) / "logs"
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
@@ -1124,10 +1551,16 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-        self.assertEqual(metrics["total_bytes"], 10)
+        self.assertEqual(metrics["total_bytes"], 20)
         self.assertEqual(metrics["item_count"], 2)
-        self.assertEqual(metrics["item_bytes"]["song-a"], 4)
-        self.assertEqual(metrics["item_bytes"]["song-b"], 6)
+        self.assertEqual(metrics["item_bytes"]["song-a"], 10)
+        self.assertEqual(metrics["item_bytes"]["song-b"], 10)
+        self.assertEqual(metrics["retained_bytes"], len(b"retained"))
+        self.assertEqual(metrics["staging_bytes"], len(b"partial"))
+        self.assertEqual(
+            metrics["physical_total_bytes"],
+            metrics["total_bytes"] + metrics["retained_bytes"] + metrics["staging_bytes"],
+        )
 
     def test_set_max_cache_items_clamps_to_picker_range(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
@@ -1209,12 +1642,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
         self.store.add_item(current, requester_name="cache-test-user")
         self.store.add_item(downloading, requester_name="cache-test-user")
         self.mark_item_ready_with_files(current.id)
-        self.store.update_item(
+        self.project_cache_started(
             downloading.id,
-            cache_status="downloading",
-            cache_progress=42.0,
-            cache_message="BBDown 下载中",
-            persist_backup=False,
+            message="BBDown 下载中",
+            progress=42.0,
         )
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch(
@@ -1750,27 +2181,14 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
     def test_hevc_unsupported_requeues_desired_ready_items_for_avc(self):
-        item_dir = self.cache_dir / "song-a"
-        video_file = item_dir / "video-p1" / "video.mp4"
-        video_file.parent.mkdir(parents=True, exist_ok=True)
-        video_file.write_bytes(b"media")
-
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="ready",
-                    cache_progress=100.0,
-                    cache_message="ready",
-                    video_relative_path="song-a/video-p1/video.mp4",
-                    video_media_url="/media/song-a/video-p1/video.mp4",
-                    audio_variants=[{"id": "p1", "audio_url": "/media/song-a/audio-p1/audio.m4a"}],
-                    selected_audio_variant_id="p1",
-                    persist_backup=False,
-                )
+                self.mark_item_ready_with_files("song-a")
+                before = self.store.get_item("song-a")
+                item_dir = self.cache_dir / before.artifact_relative_directory
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                 with patch.object(manager, "enqueue") as enqueue_mock:
@@ -1778,11 +2196,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
 
                 refreshed = self.store.get_item("song-a")
                 self.assertIsNotNone(refreshed)
-                self.assertEqual(refreshed.cache_status, "pending")
-                self.assertEqual(refreshed.video_media_url, "")
-                self.assertEqual(refreshed.audio_variants, [])
-                self.assertEqual(refreshed.selected_audio_variant_id, "")
-                self.assertFalse(item_dir.exists())
+                self.assertEqual(refreshed.cache_status, "ready")
+                self.assertEqual(refreshed.video_media_url, before.video_media_url)
+                self.assertEqual(refreshed.audio_variants, before.audio_variants)
+                self.assertEqual(refreshed.selected_audio_variant_id, "p1")
+                self.assertTrue(item_dir.exists())
                 enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()
@@ -1844,11 +2262,10 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 log_path = manager._item_log_path("song-a")
                 manager._append_log_line(log_path, "缓存日志")
                 manager._drop_item_cache("song-a", "释放缓存")
+                self.assertTrue(item_dir.exists())
+                self.assertFalse(log_path.exists())
             finally:
                 manager.shutdown()
-
-        self.assertFalse(item_dir.exists())
-        self.assertFalse(log_path.exists())
 
     def test_remove_cache_dir_ignores_windows_missing_path_race(self):
         log_dir = Path(self.temp_dir.name) / "logs"
@@ -1861,11 +2278,13 @@ class CacheManagerPolicyTest(unittest.TestCase):
         ) as rmtree_mock:
             manager = CacheManager(self.store, max_cache_items=3)
             try:
-                manager._remove_cache_dir("song-a")
+                manager._remove_cache_dir("song-a", cache_attempt_token=41)
             finally:
                 manager.shutdown()
 
-        rmtree_mock.assert_called_once_with(self.cache_dir / "song-a", ignore_errors=True)
+        rmtree_mock.assert_called_once_with(
+            self.cache_dir / ".staging" / "attempt-41", ignore_errors=True
+        )
 
     def test_path_size_ignores_directory_removed_during_scan(self):
         item_dir = self.cache_dir / "song-a"
@@ -1938,7 +2357,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.assertIsNotNone(updated)
                 self.assertEqual(updated.cache_status, "pending")
                 self.assertEqual(updated.audio_variants, [])
-                self.assertEqual(updated.selected_audio_variant_id, "p2_off_vocal")
+                self.assertEqual(updated.selected_audio_variant_id, "")
             finally:
                 manager.shutdown()
 
@@ -1953,19 +2372,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
                 self.store.add_item(self.make_item("song-b"), requester_name="cache-test-user")
                 self.store.add_item(self.make_item("song-c"), requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="ready",
-                    cache_progress=100.0,
-                    cache_message="缓存已完成",
-                    video_relative_path="song-a/video.mp4",
-                    video_media_url="/media/song-a/video.mp4",
-                    audio_variants=[
-                        {"id": "p1", "label": "P1", "audio_url": "/media/song-a/audio.m4a"}
-                    ],
-                    selected_audio_variant_id="p1",
-                    persist_backup=False,
-                )
+                self.project_missing_ready("song-a")
                 with manager.lock:
                     manager.pending_ids = {"song-b", "song-c"}
                     for item_id in ["song-b", "song-c"]:
@@ -1999,22 +2406,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             manager = CacheManager(self.store, max_cache_items=1)
             try:
                 self.store.add_item(self.make_item("song-a"), requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="ready",
-                    cache_progress=100.0,
-                    cache_message="缓存已完成",
-                    video_relative_path="song-a/missing-video.mp4",
-                    video_media_url="/media/song-a/missing-video.mp4",
-                    audio_variants=[
-                        {
-                            "id": "p1",
-                            "label": "P1",
-                            "audio_url": "/media/song-a/missing-audio.m4a",
-                        }
-                    ],
-                    persist_backup=False,
-                )
+                self.project_missing_ready("song-a")
                 events = []
                 planned_statuses = []
                 original_planner = manager._plan_cache_snapshot
@@ -2066,7 +2458,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 song_a = self.store.get_item("song-a")
                 self.assertIsNotNone(song_a)
                 self.assertEqual(song_a.cache_status, "ready")
-                self.assertTrue((self.cache_dir / "song-a").exists())
+                self.assertTrue(
+                    (self.cache_dir / song_a.artifact_relative_directory).exists()
+                )
                 self.assertEqual(manager.desired_ids, {"song-a", "song-b", "song-c"})
                 self.assertEqual(manager.ordered_desired_ids, ["song-b", "song-c"])
                 self.assertEqual(planner_mock.call_count, 1)
@@ -2242,30 +2636,23 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
+                item = self.store.get_item(item.id)
+                self.assertIsNotNone(item)
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                     manager.ordered_desired_ids = ["song-a"]
                     manager.python_worker_download_sources["song-a"] = (
                         DOWNLOAD_SOURCE_NATIVE
                     )
-                cache_result = {
-                    "video_file": Path("/tmp/video.mp4"),
-                    "video_relative_path": "song-a/video.mp4",
-                    "video_media_url": "/media/song-a/video.mp4",
-                    "audio_variants": [
-                        {"id": "p1", "label": "P1", "audio_url": "/media/song-a/audio.m4a"}
-                    ],
-                    "selected_audio_variant_id": "p1",
-                    "validation_files": [],
-                    "native_tracks_prevalidated": True,
-                }
                 with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True), patch(
                     "bilikara.cache.rust_runtime.media_backend_available", return_value=True
                 ), patch.object(
                     manager,
                     "_download_selected_streams",
-                    return_value=cache_result,
-                ), patch.object(manager, "_publish_validated_cache_result"), patch.object(
+                    side_effect=lambda *_args, **_kwargs: self.staged_cache_result(
+                        _args[3], native_tracks_prevalidated=True
+                    ),
+                ), patch.object(
                     manager,
                     "sync_with_playlist",
                 ) as sync_mock:
@@ -2282,6 +2669,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
     def test_python_cache_lifecycle_uses_typed_appstate_events(self):
         item = self.make_item("song-python-events")
         self.store.add_item(item, requester_name="cache-test-user")
+        item = self.store.get_item(item.id)
+        self.assertIsNotNone(item)
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,
             "_worker_loop",
@@ -2302,9 +2691,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 apply_cache_event = self.store.apply_cache_event
                 begin_cache_attempt = manager._begin_cache_attempt
 
-                def reserve_attempt(item_id: str) -> int:
+                def reserve_attempt(
+                    item_id: str,
+                    item_incarnation_id: str,
+                ) -> int:
                     operation_order.append("reserve")
-                    return begin_cache_attempt(item_id)
+                    return begin_cache_attempt(item_id, item_incarnation_id)
 
                 def record_event(
                     item_id: str,
@@ -2319,21 +2711,6 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         event=event,
                     )
 
-                cache_result = {
-                    "video_file": self.cache_dir / item.id / "video.mp4",
-                    "video_relative_path": f"{item.id}/video.mp4",
-                    "video_media_url": f"/media/{item.id}/video.mp4",
-                    "audio_variants": [
-                        {
-                            "id": "p1",
-                            "label": "P1",
-                            "audio_url": f"/media/{item.id}/audio.m4a",
-                        }
-                    ],
-                    "selected_audio_variant_id": "p1",
-                    "validation_files": [],
-                }
-
                 def download_with_progress(*_args, **_kwargs):
                     operation_order.append("download")
                     manager._project_cache_progress(
@@ -2342,7 +2719,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                         progress=42.0,
                         message="BBDown 缓存中 42%",
                     )
-                    return cache_result
+                    return self.staged_cache_result(_args[3])
 
                 with patch.object(
                     self.store,
@@ -2398,8 +2775,90 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 )
                 cached = self.store.get_item(item.id)
                 self.assertEqual(cached.cache_status, "ready")
-                self.assertEqual(cached.video_relative_path, f"{item.id}/video.mp4")
+                self.assertEqual(
+                    cached.video_relative_path,
+                    f"{cached.artifact_relative_directory}/video-p1.mp4",
+                )
                 self.assertEqual(cached.selected_audio_variant_id, "p1")
+            finally:
+                manager.shutdown()
+
+    def test_all_retained_sources_publish_only_rust_reserved_immutable_paths(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ), patch(
+            "bilikara.cache.effective_bilibili_cookie", return_value="SESSDATA=test"
+        ), patch(
+            "bilikara.cache.rust_runtime.http_download_available", return_value=True
+        ), patch(
+            "bilikara.cache.rust_runtime.media_backend_available", return_value=True
+        ):
+            manager = CacheManager(self.store, max_cache_items=5)
+            try:
+                for source in (
+                    DOWNLOAD_SOURCE_BBDOWN,
+                    DOWNLOAD_SOURCE_YTDLP,
+                    DOWNLOAD_SOURCE_DOWNKYI,
+                    DOWNLOAD_SOURCE_NATIVE,
+                ):
+                    with self.subTest(source=source):
+                        item = self.make_item(f"song-{source}")
+                        self.store.add_item(
+                            item, requester_name="cache-test-user"
+                        )
+                        item = self.store.get_item(item.id)
+                        self.assertIsNotNone(item)
+                        with manager.lock:
+                            manager.download_source = source
+                            manager.desired_ids.add(item.id)
+                            manager.python_worker_download_sources[item.id] = source
+
+                        def fixture(*args, **_kwargs):
+                            result = self.staged_cache_result(
+                                args[3],
+                                native_tracks_prevalidated=(
+                                    source == DOWNLOAD_SOURCE_NATIVE
+                                ),
+                            )
+                            if source == DOWNLOAD_SOURCE_DOWNKYI:
+                                result["downkyi_tracks_prevalidated"] = True
+                            return result
+
+                        with patch.object(
+                            manager, "_ensure_downloader", return_value=Path(source)
+                        ), patch.object(
+                            manager, "_ensure_ffmpeg", return_value=Path("ffmpeg")
+                        ), patch.object(
+                            manager,
+                            "_download_selected_streams",
+                            side_effect=fixture,
+                        ), patch.object(manager, "_validate_cache_result"):
+                            self.assertTrue(
+                                manager._cache_item_multi(
+                                    item.id,
+                                    item,
+                                    allow_refresh_retry=False,
+                                )
+                            )
+
+                        committed = self.store.get_item(item.id)
+                        self.assertEqual(committed.cache_status, "ready")
+                        self.assertTrue(committed.item_incarnation_id.startswith("i-"))
+                        self.assertTrue(committed.artifact_set_id.startswith("a-"))
+                        self.assertTrue(
+                            committed.video_relative_path.startswith(
+                                f"{committed.artifact_relative_directory}/"
+                            )
+                        )
+                        self.assertTrue(
+                            (
+                                self.cache_dir
+                                / committed.artifact_relative_directory
+                                / "video-p1.mp4"
+                            ).is_file()
+                        )
             finally:
                 manager.shutdown()
 
@@ -2417,6 +2876,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item.selected_durations = [120]
                 item.video_page = 1
                 self.store.add_item(item, requester_name="cache-test-user")
+                item = self.store.get_item(item.id)
+                self.assertIsNotNone(item)
                 manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 with manager.lock:
                     manager.desired_ids = {item.id}
@@ -2426,29 +2887,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     )
 
                 def prevalidated_result(*_args, **_kwargs):
-                    item_dir = self.cache_dir / item.id
-                    video = item_dir / "video-p1" / ".attempt-video" / "video-p1.mp4"
-                    audio = item_dir / "audio-p1" / ".attempt-audio" / "audio-p1.m4a"
-                    video.parent.mkdir(parents=True)
-                    audio.parent.mkdir(parents=True)
-                    video.write_bytes(b"video")
-                    audio.write_bytes(b"audio")
-                    return {
-                        "video_file": video,
-                        "video_relative_path": str(video.relative_to(self.cache_dir)),
-                        "video_media_url": f"/media/{video.relative_to(self.cache_dir).as_posix()}",
-                        "audio_variants": [{
-                            "id": "p1",
-                            "label": "P1",
-                            "page": 1,
-                            "audio_url": f"/media/{audio.relative_to(self.cache_dir).as_posix()}",
-                        }],
-                        "selected_audio_variant_id": "p1",
-                        "validation_files": [{"path": video}, {"path": audio}],
-                        "validation_metadata": [{"path": str(video)}, {"path": str(audio)}],
-                        "validation_failure_count": 0,
-                        "native_tracks_prevalidated": True,
-                    }
+                    return self.staged_cache_result(
+                        _args[3], native_tracks_prevalidated=True
+                    )
 
                 with patch("bilikara.cache.rust_runtime.http_download_available", return_value=True), patch(
                     "bilikara.cache.rust_runtime.media_backend_available", return_value=True
@@ -2506,9 +2947,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
         good = self.make_item("song-after-stale-publication")
         for item in (bad, good):
             self.store.add_item(item, requester_name="cache-test-user")
-        stale_token = self.store.begin_cache_attempt(bad.id)
-        self.store.begin_cache_attempt(bad.id)
-        good_token = self.store.begin_cache_attempt(good.id)
+        stale_token = begin_cache_attempt(self.store, bad.id)
+        begin_cache_attempt(self.store, bad.id)
+        good_token = begin_cache_attempt(self.store, good.id)
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager,
@@ -2571,12 +3012,19 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     cached = self.store.get_item(item_id)
                     self.assertIsNotNone(cached)
                     self.assertEqual(cached.cache_status, "ready")
-                    self.assertTrue((self.cache_dir / item_id).exists())
+                    self.assertTrue(
+                        (self.cache_dir / cached.artifact_relative_directory).exists()
+                    )
 
                 song_e = self.store.get_item("song-e")
                 self.assertIsNotNone(song_e)
                 self.assertEqual(song_e.cache_status, "pending")
-                self.assertFalse((self.cache_dir / "song-e").exists())
+                self.assertTrue(
+                    any(
+                        path.is_file()
+                        for path in (self.cache_dir / "artifacts").rglob("*")
+                    )
+                )
             finally:
                 manager.shutdown()
 
@@ -2586,19 +3034,14 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="failed",
-                    cache_message="缓存失败",
-                    persist_backup=False,
-                )
+                self.project_cache_failed("song-a", message="缓存失败")
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                 with patch.object(manager, "enqueue") as enqueue_mock:
                     manager.retry_item("song-a")
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
-                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_status, "queued")
                     self.assertEqual(retried.cache_message, "准备重新下载")
                     enqueue_mock.assert_called_once_with("song-a")
             finally:
@@ -2661,22 +3104,23 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 item = self.make_item("song-a")
                 self.store.add_item(item, requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="ready",
-                    cache_message="缓存完成",
-                    video_media_url="/media/song-a/video.mp4",
-                    persist_backup=False,
-                )
+                self.mark_item_ready_with_files("song-a")
+                before = self.store.get_item("song-a")
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                 with patch.object(manager, "enqueue") as enqueue_mock:
                     manager.retry_item("song-a", force=True)
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
-                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_status, "ready")
                     self.assertEqual(retried.cache_message, "准备重新下载")
-                    self.assertEqual(retried.video_media_url, "")
+                    self.assertEqual(retried.video_media_url, before.video_media_url)
+                    self.assertEqual(retried.artifact_set_id, before.artifact_set_id)
+                    self.assertTrue(
+                        (
+                            self.cache_dir / before.artifact_relative_directory
+                        ).is_dir()
+                    )
                     enqueue_mock.assert_called_once_with("song-a")
             finally:
                 manager.shutdown()
@@ -2690,12 +3134,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item_dir = self.cache_dir / "song-a" / "video-p1"
                 item_dir.mkdir(parents=True, exist_ok=True)
                 (item_dir / "video.mp4").write_bytes(b"media")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="downloading",
-                    cache_message="downloading",
-                    persist_backup=False,
-                )
+                self.project_cache_started("song-a", message="downloading")
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                     manager.pending_ids = {"song-a"}
@@ -2705,7 +3144,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.retry_item("song-a")
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
-                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_status, "queued")
                     self.assertTrue((self.cache_dir / "song-a").exists())
                     self.assertIn("song-a", manager.retry_requested_ids)
                     enqueue_mock.assert_not_called()
@@ -2725,12 +3164,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 active = self.make_item("song-b")
                 self.store.add_item(target, requester_name="cache-test-user")
                 self.store.add_item(active, requester_name="cache-test-user")
-                self.store.update_item(
-                    "song-a",
-                    cache_status="failed",
-                    cache_message="缓存失败",
-                    persist_backup=False,
-                )
+                self.project_cache_failed("song-a", message="缓存失败")
                 fake_process = SimpleNamespace(poll=lambda: 0)
                 with manager.lock:
                     manager.desired_ids = {"song-a", "song-b"}
@@ -2743,7 +3177,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                     manager.retry_item("song-a", force=True)
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
-                    self.assertEqual(retried.cache_status, "pending")
+                    self.assertEqual(retried.cache_status, "queued")
                     self.assertEqual(retried.cache_message, "准备重新下载")
                     self.assertNotIn("song-b", manager.cache_interrupted_messages)
                     urgent_cache_mock.assert_called_once_with("song-a")
@@ -2763,12 +3197,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             active = self.make_item("song-b")
             self.store.add_item(target, requester_name="cache-test-user")
             self.store.add_item(active, requester_name="cache-test-user")
-            self.store.update_item(
-                "song-a",
-                cache_status="failed",
-                cache_message="缓存失败",
-                persist_backup=False,
-            )
+            self.project_cache_failed("song-a", message="缓存失败")
             urgent_started = threading.Event()
             release_urgent = threading.Event()
 
@@ -3060,7 +3489,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_cache_item_clears_old_cache_dir_before_processing_pending_retry(self):
+    def test_cache_item_preserves_committed_dir_before_processing_pending_retry(self):
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
@@ -3072,14 +3501,14 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                     manager.retry_requested_ids.add("song-a")
-                old_token = self.store.begin_cache_attempt("song-a")
+                old_token = begin_cache_attempt(self.store, "song-a")
                 manager.python_cache_attempt_tokens["song-a"] = old_token
                 with patch.object(manager, "_cache_item_multi") as cache_item_multi_mock:
                     manager._cache_item(
                         "song-a",
                         old_token,
                     )
-                    self.assertFalse((self.cache_dir / "song-a").exists())
+                    self.assertTrue((self.cache_dir / "song-a").exists())
                     cache_item_multi_mock.assert_called_once()
                     fresh_token = cache_item_multi_mock.call_args.kwargs[
                         "cache_attempt_token"
@@ -3998,7 +4427,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item.selected_pages = [1]
                 item.video_page = 1
                 self.store.add_item(item, requester_name="cache-test-user")
-                cache_attempt_token = self.store.begin_cache_attempt(item.id)
+                cache_attempt_token = begin_cache_attempt(self.store, item.id)
                 manager.desired_ids.add(item.id)
                 with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_file]):
                     result = manager._download_selected_streams(
@@ -4043,7 +4472,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item.available_parts = ["原曲", "伴奏"]
                 item.video_page = 2
                 self.store.add_item(item, requester_name="cache-test-user")
-                cache_attempt_token = self.store.begin_cache_attempt(item.id)
+                cache_attempt_token = begin_cache_attempt(self.store, item.id)
                 manager.desired_ids.add(item.id)
                 with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_file]):
                     result = manager._download_selected_streams(
@@ -4089,7 +4518,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 item.selected_audio_variant_id = "p2_off_vocal"
                 item.video_page = 2
                 self.store.add_item(item, requester_name="cache-test-user")
-                cache_attempt_token = self.store.begin_cache_attempt(item.id)
+                cache_attempt_token = begin_cache_attempt(self.store, item.id)
                 manager.desired_ids.add(item.id)
                 with patch.object(manager, "_download_page_stream", side_effect=[video_file, audio_p1_file, audio_p2_file]):
                     result = manager._download_selected_streams(
@@ -4454,6 +4883,83 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
 
     def _manager(self):
         return CacheManager(self.store, max_cache_items=3)
+
+    def _add_item(self, item_id: str) -> PlaylistItem:
+        item = PlaylistItem(
+            id=item_id,
+            original_url=f"https://example.test/{item_id}",
+            resolved_url=f"https://example.test/{item_id}?p=1",
+            bvid="BV1xx411c7mD",
+            aid=1,
+            cid=2,
+            page=1,
+            title=item_id,
+            part_title="P1",
+            display_title=f"{item_id} - P1",
+            cover_url="",
+            embed_url="",
+        )
+        self.store.add_item(item, requester_name="diagnostic-user")
+        return item
+
+    def _publication_fixture(
+        self,
+        manager: CacheManager,
+        item_id: str,
+        token: int,
+        marker: bytes,
+    ) -> tuple[dict[str, object], dict[str, object], Path, Path]:
+        reservation, staging, committed = manager._cache_attempt_paths(token)
+        staging.mkdir(parents=True)
+        video = staging / "downloaded-video.mp4"
+        audio = staging / "downloaded-audio.m4a"
+        video.write_bytes(b"video-" + marker)
+        audio.write_bytes(b"audio-" + marker)
+        result: dict[str, object] = {
+            "video_file": video,
+            "video_relative_path": str(video.relative_to(self.cache_dir)),
+            "video_media_url": f"/media/{video.relative_to(self.cache_dir)}",
+            "audio_variants": [
+                {
+                    "id": "p1",
+                    "label": "P1",
+                    "page": 1,
+                    "audio_url": f"/media/{audio.relative_to(self.cache_dir)}",
+                }
+            ],
+            "selected_audio_variant_id": "p1",
+            "validation_files": [
+                {"path": video, "stream_kind": "video", "page": 1},
+                {"path": audio, "stream_kind": "audio", "page": 1},
+            ],
+            "validation_metadata": [{"path": str(video)}, {"path": str(audio)}],
+        }
+        return reservation, result, staging, committed
+
+    def _apply_ready_result(
+        self,
+        item_id: str,
+        token: int,
+        result: dict[str, object],
+    ) -> bool:
+        return self.store.apply_cache_event(
+            item_id,
+            cache_attempt_token=token,
+            event={
+                "kind": "ready",
+                "progress": 100.0,
+                "message": "ready",
+                "video_relative_path": result["video_relative_path"],
+                "video_media_url": result["video_media_url"],
+                "audio_variants": result["audio_variants"],
+                "selected_audio_variant_id": result["selected_audio_variant_id"],
+                "item_incarnation_id": result["item_incarnation_id"],
+                "artifact_set_id": result["artifact_set_id"],
+                "artifact_relative_directory": result[
+                    "artifact_relative_directory"
+                ],
+            },
+        )
 
     @staticmethod
     def _probe_payload(kind: str, duration: str | None) -> dict:
@@ -5108,32 +5614,293 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                 manager.shutdown()
 
     def test_validated_attempt_is_atomically_published_and_urls_rewritten(self):
-        target = self.cache_dir / "song" / "video-p1"
-        attempt = target / ".attempt-test"
-        source = attempt / "video-p1.mp4"
-        source.parent.mkdir(parents=True)
-        source.write_bytes(b"validated")
-        result = {
-            "video_file": source,
-            "video_relative_path": str(source.relative_to(self.cache_dir)),
-            "video_media_url": f"/media/{source.relative_to(self.cache_dir)}",
-            "audio_variants": [],
-            "validation_files": [{"path": source}],
-            "validation_metadata": [{"path": str(source)}],
-        }
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
             CacheManager, "_worker_loop", lambda self: None
         ):
             manager = self._manager()
             try:
-                manager._publish_validated_cache_result(result, self.log_path)
-                final_path = target / "video-p1.mp4"
+                item = PlaylistItem(
+                    id="song",
+                    original_url="https://example.test/song",
+                    resolved_url="https://example.test/song?p=1",
+                    bvid="BV1xx411c7mD",
+                    aid=1,
+                    cid=2,
+                    page=1,
+                    title="song",
+                    part_title="P1",
+                    display_title="song - P1",
+                    cover_url="",
+                    embed_url="",
+                )
+                self.store.add_item(item, requester_name="diagnostic-user")
+                token = begin_cache_attempt(self.store, item.id)
+                reservation, attempt, committed = manager._cache_attempt_paths(token)
+                attempt.mkdir(parents=True)
+                video = attempt / "downloaded-video.mp4"
+                audio = attempt / "downloaded-audio.m4a"
+                video.write_bytes(b"validated-video")
+                audio.write_bytes(b"validated-audio")
+                result = {
+                    "video_file": video,
+                    "video_relative_path": str(video.relative_to(self.cache_dir)),
+                    "video_media_url": f"/media/{video.relative_to(self.cache_dir)}",
+                    "audio_variants": [
+                        {
+                            "id": "p1",
+                            "label": "P1",
+                            "page": 1,
+                            "audio_url": f"/media/{audio.relative_to(self.cache_dir)}",
+                        }
+                    ],
+                    "selected_audio_variant_id": "p1",
+                    "validation_files": [
+                        {"path": video, "stream_kind": "video", "page": 1},
+                        {"path": audio, "stream_kind": "audio", "page": 1},
+                    ],
+                    "validation_metadata": [
+                        {"path": str(video)},
+                        {"path": str(audio)},
+                    ],
+                }
+
+                manager._publish_validated_cache_result(
+                    item.id,
+                    token,
+                    reservation,
+                    attempt,
+                    result,
+                    self.log_path,
+                )
+                final_path = committed / "video-p1.mp4"
                 self.assertTrue(final_path.exists())
+                self.assertTrue((committed / "audio-p1.m4a").exists())
                 self.assertFalse(attempt.exists())
                 self.assertEqual(result["video_file"], final_path)
                 self.assertEqual(result["validation_files"][0]["path"], final_path)
                 self.assertEqual(result["validation_metadata"][0]["path"], str(final_path))
-                self.assertNotIn(".attempt-", result["video_media_url"])
+                self.assertNotIn(".staging", result["video_media_url"])
+                self.assertEqual(self.store.get_item(item.id).cache_status, "pending")
+            finally:
+                manager.shutdown()
+
+    def test_superseded_ready_leaves_only_an_orphan_and_preserves_old_commit(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                item = self._add_item("song-orphan")
+                first_token = begin_cache_attempt(self.store, item.id)
+                first_reservation, first_result, first_staging, first_committed = (
+                    self._publication_fixture(
+                        manager, item.id, first_token, b"first"
+                    )
+                )
+                manager._publish_validated_cache_result(
+                    item.id,
+                    first_token,
+                    first_reservation,
+                    first_staging,
+                    first_result,
+                    self.log_path,
+                )
+                self.assertTrue(
+                    self._apply_ready_result(item.id, first_token, first_result)
+                )
+                committed_before = self.store.get_item(item.id)
+
+                stale_token = begin_cache_attempt(self.store, item.id)
+                stale_reservation, stale_result, stale_staging, stale_committed = (
+                    self._publication_fixture(
+                        manager, item.id, stale_token, b"stale"
+                    )
+                )
+                manager._publish_validated_cache_result(
+                    item.id,
+                    stale_token,
+                    stale_reservation,
+                    stale_staging,
+                    stale_result,
+                    self.log_path,
+                )
+                newest_token = begin_cache_attempt(self.store, item.id)
+                with self.assertRaisesRegex(ValueError, "superseded"):
+                    self._apply_ready_result(item.id, stale_token, stale_result)
+
+                current = self.store.get_item(item.id)
+                self.assertEqual(
+                    current.artifact_set_id, committed_before.artifact_set_id
+                )
+                self.assertEqual(current.video_media_url, committed_before.video_media_url)
+                self.assertEqual(
+                    (first_committed / "video-p1.mp4").read_bytes(),
+                    b"video-first",
+                )
+                self.assertEqual(
+                    (stale_committed / "video-p1.mp4").read_bytes(),
+                    b"video-stale",
+                )
+                self.assertNotEqual(
+                    first_reservation["artifact_set_id"],
+                    stale_reservation["artifact_set_id"],
+                )
+                self.assertGreater(newest_token, stale_token)
+            finally:
+                manager.shutdown()
+
+    def test_generic_update_cannot_change_committed_media_descriptor_or_bytes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                item = self._add_item("song-metadata-boundary")
+                token = begin_cache_attempt(self.store, item.id)
+                reservation, result, staging, committed = self._publication_fixture(
+                    manager, item.id, token, b"committed"
+                )
+                manager._publish_validated_cache_result(
+                    item.id,
+                    token,
+                    reservation,
+                    staging,
+                    result,
+                    self.log_path,
+                )
+                self.assertTrue(self._apply_ready_result(item.id, token, result))
+                before = self.store.get_item(item.id)
+                self.assertIsNotNone(before)
+                before_payload = before.serialize()
+                before_bytes = {
+                    path.name: path.read_bytes()
+                    for path in committed.iterdir()
+                    if path.is_file()
+                }
+
+                protected_changes = {
+                    "original_url": "https://example.test/replacement",
+                    "resolved_url": "https://example.test/replacement?p=2",
+                    "bvid": "BV1replacement",
+                    "aid": 99,
+                    "cid": 100,
+                    "page": 2,
+                    "selected_pages": [2],
+                    "selected_cids": [100],
+                    "selected_durations": [999],
+                    "selected_parts": ["replacement"],
+                    "available_pages": [2],
+                    "available_cids": [100],
+                    "available_durations": [999],
+                    "available_parts": ["replacement"],
+                    "video_page": 2,
+                    "manual_selection": True,
+                    "audio_variants": [],
+                    "selected_audio_variant_id": "replacement",
+                    "cache_status": "pending",
+                    "cache_progress": 0.0,
+                    "cache_message": "replacement",
+                    "video_relative_path": "replacement/video.mp4",
+                    "video_media_url": "/media/replacement/video.mp4",
+                    "item_incarnation_id": "i-replacement",
+                    "artifact_set_id": "a-replacement",
+                    "artifact_relative_directory": "artifacts/replacement",
+                }
+                with self.assertRaisesRegex(ValueError, "metadata fields"):
+                    self.store.update_item(item.id, **protected_changes)
+
+                after = self.store.get_item(item.id)
+                self.assertIsNotNone(after)
+                for field in protected_changes:
+                    self.assertEqual(
+                        after.serialize()[field],
+                        before_payload[field],
+                        field,
+                    )
+                self.assertEqual(
+                    {
+                        path.name: path.read_bytes()
+                        for path in committed.iterdir()
+                        if path.is_file()
+                    },
+                    before_bytes,
+                )
+            finally:
+                manager.shutdown()
+
+    def test_partial_or_colliding_refresh_never_modifies_old_committed_bytes(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                item = self._add_item("song-failure")
+                first_token = begin_cache_attempt(self.store, item.id)
+                first_reservation, first_result, first_staging, first_committed = (
+                    self._publication_fixture(manager, item.id, first_token, b"old")
+                )
+                manager._publish_validated_cache_result(
+                    item.id,
+                    first_token,
+                    first_reservation,
+                    first_staging,
+                    first_result,
+                    self.log_path,
+                )
+                self._apply_ready_result(item.id, first_token, first_result)
+                old_identity = self.store.get_item(item.id).artifact_set_id
+
+                partial_token = begin_cache_attempt(self.store, item.id)
+                partial_reservation, partial_result, partial_staging, partial_committed = (
+                    self._publication_fixture(
+                        manager, item.id, partial_token, b"partial"
+                    )
+                )
+                Path(
+                    partial_result["validation_files"][1]["path"]
+                ).unlink()
+                with self.assertRaisesRegex(DownloadCommandError, "临时文件不可用"):
+                    manager._publish_validated_cache_result(
+                        item.id,
+                        partial_token,
+                        partial_reservation,
+                        partial_staging,
+                        partial_result,
+                        self.log_path,
+                    )
+                self.assertFalse(partial_committed.exists())
+                self.store.apply_cache_event(
+                    item.id,
+                    cache_attempt_token=partial_token,
+                    event={"kind": "failed", "message": "partial failed"},
+                )
+                self.assertEqual(self.store.get_item(item.id).artifact_set_id, old_identity)
+
+                collision_token = begin_cache_attempt(self.store, item.id)
+                collision_reservation, collision_result, collision_staging, collision_committed = (
+                    self._publication_fixture(
+                        manager, item.id, collision_token, b"collision"
+                    )
+                )
+                collision_committed.mkdir(parents=True)
+                (collision_committed / "marker").write_bytes(b"existing")
+                with self.assertRaisesRegex(DownloadCommandError, "目标已存在"):
+                    manager._publish_validated_cache_result(
+                        item.id,
+                        collision_token,
+                        collision_reservation,
+                        collision_staging,
+                        collision_result,
+                        self.log_path,
+                    )
+                self.assertEqual(
+                    (collision_committed / "marker").read_bytes(), b"existing"
+                )
+                self.assertFalse((collision_committed / "video-p1.mp4").exists())
+                self.assertEqual(
+                    (first_committed / "video-p1.mp4").read_bytes(), b"video-old"
+                )
+                self.assertEqual(self.store.get_item(item.id).artifact_set_id, old_identity)
             finally:
                 manager.shutdown()
 
@@ -5316,7 +6083,7 @@ class CacheManagerBBDownRegressionTest(unittest.TestCase):
                     embed_url="https://player.bilibili.com/player.html?aid=123",
                 )
                 self.store.add_item(item, requester_name="cache-test-user")
-                cache_attempt_token = self.store.begin_cache_attempt(item.id)
+                cache_attempt_token = begin_cache_attempt(self.store, item.id)
 
                 with patch.object(manager, "_cache_item", side_effect=RuntimeError("unexpected crash")):
                     with manager.lock:
@@ -5531,6 +6298,8 @@ class CacheManagerDownkyiRegressionTest(unittest.TestCase):
     def test_downkyi_without_cookie_fails_before_tool_preparation_or_track_work(self):
         item = self._single_downkyi_item("downkyi-no-cookie")
         self.store.add_item(item, requester_name="cache-test-user")
+        item = self.store.get_item(item.id)
+        self.assertIsNotNone(item)
         with patch.object(CacheManager, "_worker_loop", lambda self: None), patch(
             "bilikara.cache.effective_bilibili_cookie", return_value=""
         ):

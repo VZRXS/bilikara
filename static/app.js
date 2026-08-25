@@ -6572,7 +6572,7 @@ function renderPlaybackRepairControls(currentItem) {
     return;
   }
   const hasCurrentItem = Boolean(currentItem?.id);
-  button.disabled = !hasCurrentItem;
+  button.disabled = !hasCurrentItem || button.getAttribute("aria-busy") === "true";
   button.title = hasCurrentItem
     ? t("service.retryCurrentTitle")
     : t("service.noCurrentSong");
@@ -9886,22 +9886,41 @@ function createSplitPlayerStartupSynchronizer(video, audio, maybeRestorePlayback
   };
 }
 
-function renderPlayer(currentItem, playbackMode) {
-  handleRatingCurrentItemChange(currentItem);
-  const selectedVideoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
-  const selectedAudioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
-  const hasSplitPlayback = Boolean(selectedVideoUrl && selectedAudioUrl);
-  const playerCacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
-
-  const signature = [
+function playerRenderDescriptor(currentItem, playbackMode) {
+  const videoUrl = currentItem ? selectedVideoUrlForItem(currentItem) : "";
+  const audioUrl = currentItem ? selectedAudioUrlForItem(currentItem) : "";
+  const hasSplitPlayback = Boolean(videoUrl && audioUrl);
+  const cacheDetailText = currentItem ? hostCacheDetailTextForItem(currentItem) : "";
+  const signatureParts = [
     currentItem ? currentItem.id : "none",
     playbackMode,
-    selectedVideoUrl,
-    selectedAudioUrl,
-    currentItem ? currentItem.cache_status : "",
-    playerCacheDetailText,
-    state.language,
-  ].join("|");
+    videoUrl,
+    audioUrl,
+  ];
+  if (!hasSplitPlayback) {
+    signatureParts.push(
+      currentItem ? currentItem.cache_status : "",
+      cacheDetailText,
+      state.language,
+    );
+  }
+  return {
+    videoUrl,
+    audioUrl,
+    hasSplitPlayback,
+    cacheDetailText,
+    signature: signatureParts.join("|"),
+  };
+}
+
+function renderPlayer(currentItem, playbackMode) {
+  handleRatingCurrentItemChange(currentItem);
+  const descriptor = playerRenderDescriptor(currentItem, playbackMode);
+  const selectedVideoUrl = descriptor.videoUrl;
+  const selectedAudioUrl = descriptor.audioUrl;
+  const hasSplitPlayback = descriptor.hasSplitPlayback;
+  const playerCacheDetailText = descriptor.cacheDetailText;
+  const signature = descriptor.signature;
 
   if (signature === state.playerSignature) {
     if (!hasSplitPlayback) {
@@ -12600,7 +12619,10 @@ async function advanceLocalPlayerNow({ showTransition = true } = {}) {
   state.localAdvanceInFlight = true;
   try {
     const previousData = state.data;
-    state.data = await apiPost("/api/player/next");
+    const nextData = await apiPost("/api/player/next");
+    if (!applyFreshStateSnapshot(nextData)) {
+      return false;
+    }
     if (showTransition && transitionGeneration) {
       maybeShowSongTransitionOverlay(previousData, state.data, {
         force: true,
@@ -12901,13 +12923,23 @@ async function handlePlaylistAction(button) {
   if (!target) {
     return;
   }
+  if (
+    action === "play-now"
+    && manualTransitionOverlaySeconds(state.data) > 0
+    && state.localAdvanceInFlight
+  ) {
+    return;
+  }
+  if (button.getAttribute("aria-busy") === "true") {
+    return;
+  }
+  const originallyDisabled = button.disabled;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
 
   const shouldResumeOnFailure = state.localShouldBePlaying;
   let transitionGeneration = 0;
   if (action === "play-now" && manualTransitionOverlaySeconds(state.data) > 0) {
-    if (state.localAdvanceInFlight) {
-      return;
-    }
     clearLocalAdvanceDelay();
     state.pendingSongTransitionOverlayData = null;
     state.pendingSongTransitionGeneration = 0;
@@ -12916,7 +12948,10 @@ async function handlePlaylistAction(button) {
   }
   try {
     const previousData = state.data;
-    state.data = await apiPost(target[0], target[1]);
+    const nextData = await apiPost(target[0], target[1]);
+    if (!applyFreshStateSnapshot(nextData)) {
+      return;
+    }
     if (action === "play-now") {
       maybeShowSongTransitionOverlay(previousData, state.data, {
         force: true,
@@ -12938,6 +12973,8 @@ async function handlePlaylistAction(button) {
     }
     setAppMessage(error.message, true);
   } finally {
+    button.disabled = originallyDisabled;
+    button.removeAttribute("aria-busy");
     if (!shouldHoldCurrentItemForTransition(state.data?.current_item)) {
       state.localAdvanceInFlight = false;
     }
@@ -13826,12 +13863,23 @@ elements.queueCurrentRetry.addEventListener("click", async () => {
   if (!itemId) {
     return;
   }
+  const button = elements.queueCurrentRetry;
+  if (button.getAttribute("aria-busy") === "true") {
+    return;
+  }
+  const originallyDisabled = button.disabled;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   try {
-    state.data = await apiPost("/api/cache/retry", { item_id: itemId, force: true });
+    const nextData = await apiPost("/api/cache/retry", { item_id: itemId, force: true });
+    applyFreshStateSnapshot(nextData);
     setAppMessage(t("cache.retryStarted"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
+  } finally {
+    button.disabled = originallyDisabled;
+    button.removeAttribute("aria-busy");
   }
 });
 
@@ -13886,21 +13934,32 @@ elements.dataResetButton?.addEventListener("click", (event) => {
 
 elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
   event.stopPropagation();
+  const button = elements.currentCacheRetryButton;
+  if (button.getAttribute("aria-busy") === "true") {
+    return;
+  }
   const currentItem = state.data?.current_item;
   if (!currentItem?.id) {
     setAppMessage(t("service.noCurrentSong"), true);
     return;
   }
+  const originallyDisabled = button.disabled;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
   try {
-    elements.currentCacheRetryButton.disabled = true;
-    state.data = await apiPost("/api/cache/retry", {
+    const nextData = await apiPost("/api/cache/retry", {
       item_id: currentItem.id,
       force: true,
     });
+    applyFreshStateSnapshot(nextData);
     setAppMessage(t("service.retryCurrentStarted"));
     render();
   } catch (error) {
     setAppMessage(error.message, true);
+    renderPlaybackRepairControls(state.data?.current_item);
+  } finally {
+    button.disabled = originallyDisabled;
+    button.removeAttribute("aria-busy");
     renderPlaybackRepairControls(state.data?.current_item);
   }
 });

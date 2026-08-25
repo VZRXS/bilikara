@@ -72,7 +72,7 @@ class SplitPlayerSyncTest(unittest.TestCase):
         )
         cls.renderer_fast_path_source = (
             cls._slice(
-                "function renderPlayer(currentItem, playbackMode)",
+                "function playerRenderDescriptor(currentItem, playbackMode)",
                 "  const previousPlayerContext",
             )
             + "}\n"
@@ -837,6 +837,52 @@ console.log(JSON.stringify({{ syncCalls, videoSeekWrites, audioSeekWrites }}));
         self.assertEqual(
             result,
             {"syncCalls": 0, "videoSeekWrites": 0, "audioSeekWrites": 0},
+        )
+
+    def test_refresh_progress_preserves_mounted_pair_and_new_artifact_changes_identity_once(self):
+        result = self.run_node_script(
+            f"""
+const state = {{ language: "en", playerSignature: "" }};
+let selectedVideo = "/media/artifacts/item/set-a1/video-p1.mp4";
+let selectedAudio = "/media/artifacts/item/set-a1/audio-p1.m4a";
+let frameQueries = 0;
+const elements = {{ playerFrame: {{ querySelector() {{ frameQueries += 1; return {{}}; }} }} }};
+function handleRatingCurrentItemChange() {{}}
+function selectedVideoUrlForItem() {{ return selectedVideo; }}
+function selectedAudioUrlForItem() {{ return selectedAudio; }}
+function hostCacheDetailTextForItem(item) {{ return item.cache_message || ""; }}
+function syncPlayerFrameCacheHint() {{}}
+{self.renderer_fast_path_source}
+const current = {{ id: "song-a", cache_status: "ready", cache_progress: 100 }};
+const initial = playerRenderDescriptor(current, "local");
+state.playerSignature = initial.signature;
+const refreshing = {{ ...current, cache_progress: 61, cache_message: "refreshing" }};
+renderPlayer(refreshing, "local");
+const refreshSignature = playerRenderDescriptor(refreshing, "local").signature;
+state.language = "ja";
+const languageSignature = playerRenderDescriptor(refreshing, "local").signature;
+selectedVideo = "/media/artifacts/item/set-a2/video-p1.mp4";
+selectedAudio = "/media/artifacts/item/set-a2/audio-p1.m4a";
+const replacementSignature = playerRenderDescriptor(refreshing, "local").signature;
+const repeatedReplacementSignature = playerRenderDescriptor(refreshing, "local").signature;
+console.log(JSON.stringify({{
+  frameQueries,
+  sameDuringRefresh: initial.signature === refreshSignature,
+  sameAfterLanguageChange: refreshSignature === languageSignature,
+  replacementChanged: replacementSignature !== refreshSignature,
+  replacementStable: replacementSignature === repeatedReplacementSignature,
+}}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "frameQueries": 0,
+                "sameDuringRefresh": True,
+                "sameAfterLanguageChange": True,
+                "replacementChanged": True,
+                "replacementStable": True,
+            },
         )
 
     def test_key_shift_action_writes_neither_media_timeline(self):

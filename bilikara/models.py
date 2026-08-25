@@ -42,6 +42,9 @@ class PlaylistItem:
     cache_message: str = "等待缓存"
     video_relative_path: str = ""
     video_media_url: str = ""
+    item_incarnation_id: str = ""
+    artifact_set_id: str = ""
+    artifact_relative_directory: str = ""
 
     def serialize(self) -> dict[str, Any]:
         return asdict(self)

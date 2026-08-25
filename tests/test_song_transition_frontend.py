@@ -23,7 +23,12 @@ class SongTransitionFrontendTest(unittest.TestCase):
             [
                 "node",
                 "-e",
-                f"(async () => {{\n{script}\n}})().catch((error) => {{ console.error(error); process.exit(1); }});",
+                (
+                    "(async () => {\n"
+                    "function applyFreshStateSnapshot(snapshot) { state.data = snapshot; return true; }\n"
+                    f"{script}\n"
+                    "})().catch((error) => { console.error(error); process.exit(1); });"
+                ),
             ],
             capture_output=True,
             text=True,
@@ -154,6 +159,64 @@ console.log(JSON.stringify({{
         self.assertEqual(
             result,
             {"apiCalls": 1, "inFlight": False, "generation": 0, "shouldPlay": True},
+        )
+
+    def test_inverse_play_now_responses_cannot_restore_an_older_current_item(self):
+        freshness = self.source_slice(
+            "function hostStateRevision", "function syncCachePanelVisibility"
+        )
+        playlist_action = self.source_slice(
+            "async function handlePlaylistAction", "elements.addForm.addEventListener"
+        )
+        result = self.run_node(
+            f"""
+const state = {{
+  data: {{ state_revision: 1, current_item: {{ id: "song-a" }} }},
+  localShouldBePlaying: true,
+  localAdvanceInFlight: false,
+}};
+class Button {{
+  constructor(id) {{
+    this.dataset = {{ id, action: "play-now" }};
+    this.disabled = false;
+    this.attributes = new Map();
+  }}
+  getAttribute(name) {{ return this.attributes.get(name) || null; }}
+  setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+  removeAttribute(name) {{ this.attributes.delete(name); }}
+}}
+const pending = new Map();
+function apiPost(_url, payload) {{
+  return new Promise((resolve) => pending.set(payload.item_id, resolve));
+}}
+function manualTransitionOverlaySeconds() {{ return 0; }}
+function shouldHoldCurrentItemForTransition() {{ return false; }}
+function closeOpenMenus() {{}}
+function setAppMessage(message) {{ throw new Error(message); }}
+const rendered = [];
+function render() {{ rendered.push(state.data.current_item.id); }}
+function clearLocalAdvanceDelay() {{}}
+function registerManualTransitionHold() {{ return 0; }}
+function maybeShowSongTransitionOverlay() {{}}
+function syncMountedLocalPlayer() {{}}
+{freshness}
+{playlist_action}
+const playB = handlePlaylistAction(new Button("song-b"));
+const playC = handlePlaylistAction(new Button("song-c"));
+pending.get("song-c")({{ state_revision: 3, current_item: {{ id: "song-c" }} }});
+await Promise.resolve();
+pending.get("song-b")({{ state_revision: 2, current_item: {{ id: "song-b" }} }});
+await Promise.all([playB, playC]);
+console.log(JSON.stringify({{
+  current: state.data.current_item.id,
+  revision: state.data.state_revision,
+  rendered,
+}}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {"current": "song-c", "revision": 3, "rendered": ["song-c"]},
         )
 
     def test_polling_same_transition_does_not_register_again(self):
