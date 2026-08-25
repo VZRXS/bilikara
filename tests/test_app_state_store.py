@@ -40,6 +40,13 @@ def begin_cache_attempt(store: PlaylistStore, item_id: str) -> int:
     return store.begin_cache_attempt(item_id, observed.item_incarnation_id)
 
 
+def advance_to_next(store: PlaylistStore, *, reset_av_delay: bool = False) -> bool:
+    return store.advance_to_next(
+        expected_playback_generation=store.playback_generation,
+        reset_av_delay=reset_av_delay,
+    )
+
+
 class RustAppStateStoreTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()
@@ -67,7 +74,7 @@ class RustAppStateStoreTest(unittest.TestCase):
         store.add_item(item("b"), requester_name="Bob")
         store.add_item(item("c"), requester_name="Alice")
         self.assertTrue(store.mark_item_playback_started("a"))
-        self.assertTrue(store.advance_to_next())
+        self.assertTrue(advance_to_next(store))
 
         restarted = self.store()
         before_restore = restarted.snapshot()
@@ -376,12 +383,35 @@ class RustAppStateStoreTest(unittest.TestCase):
         self.assertEqual(store.playback_generation, after_first)
         store.add_item(item("b"), requester_name="Alice")
         self.assertEqual(store.playback_generation, after_first)
-        store.advance_to_next()
+        advance_to_next(store)
         self.assertEqual(store.playback_generation, after_first + 1)
 
         self.assertTrue(store.discard_backup())
         self.assertEqual(store.session_generation, initial_session + 1)
         self.assertEqual(store.playback_generation, after_first + 2)
+
+    def test_stale_next_generation_is_forwarded_and_rejected_without_side_effects(self):
+        changes: list[str] = []
+        store = self.store(on_change=lambda: changes.append("changed"))
+        store.add_session_user("Alice")
+        for item_id in ("a", "b", "c"):
+            store.add_item(item(item_id), requester_name="Alice")
+        generation_a = store.playback_generation
+        self.assertTrue(store.move_to_front("b"))
+        generation_b = store.playback_generation
+        before_stale = store.authoritative_snapshot()
+        changes.clear()
+
+        with self.assertRaises(PlaylistStoreCommandError) as raised:
+            store.advance_to_next(expected_playback_generation=generation_a)
+
+        self.assertEqual(raised.exception.kind, "playback_generation_mismatch")
+        self.assertEqual(store.authoritative_snapshot(), before_stale)
+        self.assertEqual(changes, [])
+        self.assertTrue(
+            store.advance_to_next(expected_playback_generation=generation_b)
+        )
+        self.assertEqual(store.snapshot()["current_item"]["id"], "c")
 
     def test_playback_program_projection_is_preserved_validated_and_not_persisted(self):
         store = self.store()

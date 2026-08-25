@@ -172,7 +172,8 @@ function setSplitPlaybackIntent(_video, _audio, playing, options) {{
 function isActiveSplitPlayer() {{ return true; }}
 function beginSplitPlayerSeek(_video, _audio, options) {{
   actions.push(["seek", options.targetTime, options.diagnosticAction]);
-  options.onSettled();
+  options.onSettled(true);
+  return true;
 }}
 function reportPlayerStatus() {{ actions.push(["status"]); }}
 async function requestNextTrack() {{ actions.push(["next"]); return true; }}
@@ -238,6 +239,178 @@ const envelope = (sequence, command) => ({{
         self.assertIn(["next"], result["actions"])
         self.assertIn(["volume", 0.35, True, False], result["actions"])
         self.assertEqual(result["messages"], ["snapshot failed"])
+
+    def test_retired_seek_is_consumed_once_and_releases_native_like_fifo(self):
+        functions = self.source_slice(
+            "function normalizeControllerCommandEnvelope",
+            "function presentationPlaybackStateModel",
+        )
+        script = f"""
+const acknowledgements = [];
+const emitted = [1];
+const results = [];
+const errors = [];
+let pendingSeek = null;
+let statusReports = 0;
+let playbackPublishes = 0;
+let deactivations = 0;
+let pauseEffects = 0;
+const programA = {{ item_id: "song-a" }};
+const programB = {{ item_id: "song-b" }};
+const state = {{
+  presentationSession: {{
+    mode: "localDualScreen", phase: "active", generation: 7,
+    playbackAuthority: "host", lastAcceptedCommandSequence: 2,
+  }},
+  presentationLastAppliedCommandSequence: 0,
+  presentationCommandApplyPromise: Promise.resolve(),
+  localShouldBePlaying: true,
+  data: {{ playback_generation: 10, playback_program: programA }},
+}};
+const videoA = {{ currentTime: 20, duration: 200, dataset: {{ playerItemId: "song-a" }} }};
+const audioA = {{ currentTime: 20, duration: 200 }};
+const videoB = {{ currentTime: 0, duration: 200, dataset: {{ playerItemId: "song-b" }} }};
+const audioB = {{ currentTime: 0, duration: 200 }};
+const sessionA = {{
+  cleanupState: "active", playbackGeneration: 10, playbackProgram: programA,
+  video: videoA, audio: audioA,
+}};
+const sessionB = {{
+  cleanupState: "active", playbackGeneration: 11, playbackProgram: programB,
+  video: videoB, audio: audioB,
+}};
+state.hostPlaybackSession = sessionA;
+function isCurrentHostPlaybackSession(session, video, audio) {{
+  return session === state.hostPlaybackSession
+    && session?.cleanupState === "active"
+    && session.playbackGeneration === state.data.playback_generation
+    && session.playbackProgram === state.data.playback_program
+    && session.video === video
+    && session.audio === audio;
+}}
+function activeLocalPlayerElements() {{
+  return {{
+    video: state.hostPlaybackSession?.video || null,
+    audio: state.hostPlaybackSession?.audio || null,
+  }};
+}}
+function isActiveSplitPlayer(video, audio) {{
+  return isCurrentHostPlaybackSession(state.hostPlaybackSession, video, audio);
+}}
+function beginSplitPlayerSeek(_video, _audio, options) {{
+  pendingSeek = options.onSettled;
+  return true;
+}}
+function reportPlayerStatus() {{ statusReports += 1; }}
+function setSplitPlaybackIntent(video, audio, playing) {{
+  if (video === videoB && audio === audioB && !playing) pauseEffects += 1;
+  return true;
+}}
+const nativeQueue = [
+  {{ generation: 7, sequence: 1, target: "host", command: {{ type: "seekAbsolute", targetSeconds: 75 }} }},
+  {{ generation: 7, sequence: 2, target: "host", command: {{ type: "pause" }} }},
+];
+let nativeInFlight = 1;
+function dispatchHostCommand(command) {{
+  const commandGeneration = command.generation;
+  const pending = state.presentationCommandApplyPromise
+    .catch(() => {{}})
+    .then(() => applyControllerCommand(command));
+  state.presentationCommandApplyPromise = pending;
+  pending.then(
+    (applied) => results.push([command.sequence, applied]),
+    async (error) => {{
+      errors.push([command.sequence, error.name, error.message]);
+      if (
+        Number.isSafeInteger(commandGeneration)
+        && state.presentationSession.phase === "active"
+        && state.presentationSession.generation === commandGeneration
+      ) {{
+        await tauriInvoke()("deactivate_local_presentation", {{ generation: commandGeneration }});
+      }}
+    }},
+  );
+  return pending;
+}}
+function tauriInvoke() {{
+  return async (name, payload) => {{
+    if (name === "deactivate_local_presentation") {{
+      deactivations += 1;
+      nativeQueue.length = 0;
+      nativeInFlight = null;
+      state.presentationSession.phase = "inactive";
+      return state.presentationSession;
+    }}
+    if (name !== "acknowledge_presentation_command") throw new Error(name);
+    if (nativeQueue[0]?.sequence !== payload.sequence || nativeInFlight !== payload.sequence) {{
+      throw new Error("native acknowledgement is out of order");
+    }}
+    acknowledgements.push([name, payload.sequence]);
+    nativeQueue.shift();
+    nativeInFlight = nativeQueue[0]?.sequence || null;
+    const session = {{ ...state.presentationSession, lastAppliedCommandSequence: payload.sequence }};
+    if (nativeQueue[0]) {{
+      const next = nativeQueue[0];
+      Promise.resolve().then(() => {{
+        emitted.push(next.sequence);
+        dispatchHostCommand(next);
+      }});
+    }}
+    return session;
+  }};
+}}
+async function handlePresentationSession(session) {{ state.presentationSession = session; }}
+async function publishPresentationPlaybackState() {{ playbackPublishes += 1; }}
+function setAppMessage() {{}}
+{functions}
+(async () => {{
+  const first = dispatchHostCommand(nativeQueue[0]);
+  await Promise.resolve();
+  await Promise.resolve();
+  sessionA.cleanupState = "retired";
+  state.data = {{ playback_generation: 11, playback_program: programB }};
+  state.hostPlaybackSession = sessionB;
+  pendingSeek(false);
+  pendingSeek(false);
+  await first.catch(() => {{}});
+  await Promise.resolve();
+  await state.presentationCommandApplyPromise.catch(() => {{}});
+  await Promise.resolve();
+  process.stdout.write(JSON.stringify({{
+    results,
+    errors,
+    emitted,
+    acknowledgements,
+    statusReports,
+    playbackPublishes,
+    deactivations,
+    pauseEffects,
+    nativeQueue: nativeQueue.map((command) => command.sequence),
+    nativeInFlight,
+    applied: state.presentationLastAppliedCommandSequence,
+  }}));
+}})();
+"""
+        result = self.run_node(script)
+        self.assertEqual(
+            result,
+            {
+                "results": [[1, False], [2, True]],
+                "errors": [],
+                "emitted": [1, 2],
+                "acknowledgements": [
+                    ["acknowledge_presentation_command", 1],
+                    ["acknowledge_presentation_command", 2],
+                ],
+                "statusReports": 0,
+                "playbackPublishes": 1,
+                "deactivations": 0,
+                "pauseEffects": 1,
+                "nativeQueue": [],
+                "nativeInFlight": None,
+                "applied": 2,
+            },
+        )
 
     def test_failed_next_track_is_not_acknowledged(self):
         functions = self.source_slice(
@@ -341,6 +514,89 @@ function tauriInvoke() {{
         self.assertEqual(snapshot["volumePercent"], 42)
         self.assertTrue(snapshot["muted"])
         self.assertEqual(result["calls"][1][1]["playbackState"]["revision"], 2)
+
+    def test_retired_presentation_publication_is_suppressed_before_send(self):
+        functions = self.source_slice(
+            "function presentationPlaybackStateModel",
+            "function tauriEventListen",
+        )
+        script = f"""
+const calls = [];
+let releasePrevious;
+const previous = new Promise((resolve) => {{ releasePrevious = resolve; }});
+const programA = {{ item_id: "A" }};
+const programB = {{ item_id: "B" }};
+const videoA = {{ currentTime: 12, duration: 100, paused: false, volume: 1, muted: false }};
+const audioA = {{ volume: 0.5, muted: false }};
+const videoB = {{ currentTime: 30, duration: 200, paused: false, volume: 1, muted: false }};
+const audioB = {{ volume: 0.7, muted: true }};
+const sessionA = {{
+  playbackGeneration: 10, playbackProgram: programA, cleanupState: "active",
+  video: videoA, audio: audioA,
+}};
+const sessionB = {{
+  playbackGeneration: 11, playbackProgram: programB, cleanupState: "active",
+  video: videoB, audio: audioB,
+}};
+const state = {{
+  data: {{
+    playback_generation: 10,
+    playback_program: programA,
+    current_item: {{ id: "A", title: "A" }},
+  }},
+  hostPlaybackSession: sessionA,
+  localShouldBePlaying: true,
+  localPlayerVolume: 1,
+  localPlayerMuted: false,
+  localAdvanceInFlight: false,
+  presentationSession: {{ phase: "active", generation: 9 }},
+  presentationPlaybackRevision: 0,
+  presentationPlaybackPublishSignature: "",
+  presentationPlaybackPublishPromise: previous,
+}};
+function isCurrentHostPlaybackSession(session, video, audio) {{
+  return session === state.hostPlaybackSession
+    && session?.cleanupState === "active"
+    && session.playbackGeneration === state.data.playback_generation
+    && session.playbackProgram === state.data.playback_program
+    && session.video === video
+    && session.audio === audio;
+}}
+function activeLocalPlayerElements() {{
+  return {{
+    video: state.hostPlaybackSession?.video || null,
+    audio: state.hostPlaybackSession?.audio || null,
+  }};
+}}
+function activePrimaryVideoElement() {{ return state.hostPlaybackSession?.video || null; }}
+function t(key) {{ return key; }}
+function tauriInvoke() {{
+  return async (name, payload) => {{ calls.push([name, payload]); return payload; }};
+}}
+{functions}
+(async () => {{
+  const stale = publishPresentationPlaybackState(sessionA);
+  sessionA.cleanupState = "retired";
+  state.data = {{
+    playback_generation: 11,
+    playback_program: programB,
+    current_item: {{ id: "B", title: "B" }},
+  }};
+  state.hostPlaybackSession = sessionB;
+  const current = publishPresentationPlaybackState(sessionB);
+  releasePrevious();
+  await Promise.all([stale, current]);
+  process.stdout.write(JSON.stringify({{
+    callCount: calls.length,
+    item: calls[0]?.[1]?.playbackState?.itemIdentity || "",
+    signature: state.presentationPlaybackPublishSignature,
+  }}));
+}})();
+"""
+        result = self.run_node(script)
+        self.assertEqual(result["callCount"], 1)
+        self.assertEqual(result["item"], "B")
+        self.assertTrue(result["signature"])
 
     def test_host_listener_serializes_commands_and_presentation_toggle_has_busy_finally(self):
         listener = self.source_slice(

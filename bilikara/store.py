@@ -670,10 +670,17 @@ class PlaylistStore:
     def remove_history_entry(self, key: str) -> bool:
         return self._changed(self._request("remove_history_entry", key=str(key or "")))
 
-    def advance_to_next(self, *, reset_av_delay: bool = False) -> bool:
+    def advance_to_next(
+        self,
+        *,
+        expected_playback_generation: int,
+        reset_av_delay: bool = False,
+    ) -> bool:
         return self._changed(
             self._request(
-                "advance_to_next", reset_av_delay=bool(reset_av_delay)
+                "advance_to_next",
+                expected_playback_generation=expected_playback_generation,
+                reset_av_delay=bool(reset_av_delay),
             )
         )
 

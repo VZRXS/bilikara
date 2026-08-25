@@ -142,6 +142,7 @@ const elements = {{
 function addMountedPlayerListener(_media, _name, _callback) {{}}
 function clearWebKitAudioStarvationTimer() {{}}
 function clearLocalPlayerSyncTimer() {{}}
+function clearPlayerFrameClickTimer() {{}}
 function clearLocalPlayerControlsHideTimer() {{}}
 function clearLocalPlayerSeekState() {{}}
 function clearLocalPlayerEventListeners() {{ state.localPlayerEventCleanups = []; }}
@@ -305,6 +306,106 @@ console.log(JSON.stringify({{
                 "processorCleared": True,
             },
         )
+
+    def test_retired_element_graph_cleanup_preserves_current_graph_and_shared_context(self):
+        result = self.run_node(
+            f"""
+const disconnected = [];
+const disposed = [];
+function graphAudio(name) {{
+  return {{
+    name,
+    paused: false,
+    jungle: {{ dispose() {{ disposed.push(name); }} }},
+    bilikaraPitchSource: {{ disconnect() {{ disconnected.push(name); }} }},
+    bilikaraPitchRoute: "processor",
+    pause() {{ this.paused = true; }},
+    removeAttribute() {{}},
+    load() {{}},
+  }};
+}}
+function media(name) {{
+  return {{
+    name,
+    paused: false,
+    pause() {{ this.paused = true; }},
+    removeAttribute() {{}},
+    load() {{}},
+  }};
+}}
+const audioA = graphAudio("A");
+const audioB = graphAudio("B");
+const sessionA = {{ cleanupState: "active", video: media("video-A"), audio: audioA, eventCleanups: [] }};
+const sessionB = {{ cleanupState: "active", video: media("video-B"), audio: audioB, eventCleanups: [] }};
+const sharedContext = {{ state: "running" }};
+const state = {{
+  hostPlaybackSession: sessionB,
+  audioContext: sharedContext,
+  localWebKitStartRetryDone: false,
+  localPlayerSyncLastSeekAt: 0,
+  localPlayerSyncLastAction: "",
+  localPlayerSyncLastDiagnosticAt: 0,
+  localVideoHeldForAudio: false,
+  localVideoDeferredRecovery: false,
+  localAudioPlaybackBlocked: false,
+  localVideoPlaybackBlocked: false,
+  localPlaybackStartState: "established",
+  localPlaybackStartGeneration: 1,
+  localPlaybackStartPromisesSettled: true,
+  localPlaybackEndHandled: false,
+  pendingSongTransitionOverlayData: null,
+  pendingSongTransitionGeneration: 0,
+  lastReportedPlayerStatusSignature: "B|playing|0|0",
+  lastPlayerStatusHeartbeatAt: 10,
+}};
+function clearLocalPlayerEventListeners() {{}}
+function clearWebKitAudioStarvationTimer() {{}}
+function clearLocalPlayerSyncTimer() {{}}
+function clearPlayerFrameClickTimer() {{}}
+function clearLocalPlayerSeekState() {{}}
+function clearLocalPlayerControlsHideTimer() {{}}
+function clearTauriMediaSessionState() {{}}
+function clearLocalAdvanceDelay() {{}}
+{self.pitch_source}
+{self.teardown_source}
+const retiredOld = retireHostPlaybackSession(sessionA);
+const afterOld = {{
+  retiredOld,
+  currentPreserved: state.hostPlaybackSession === sessionB,
+  currentSourcePreserved: Boolean(audioB.bilikaraPitchSource),
+  currentProcessorPreserved: Boolean(audioB.jungle),
+  contextPreserved: state.audioContext === sharedContext,
+  disposed: [...disposed],
+  disconnected: [...disconnected],
+}};
+const retiredCurrent = retireHostPlaybackSession(sessionB);
+console.log(JSON.stringify({{
+  afterOld,
+  retiredCurrent,
+  pointerCleared: state.hostPlaybackSession === null,
+  contextPreserved: state.audioContext === sharedContext,
+  disposed,
+  disconnected,
+}}));
+"""
+        )
+        self.assertEqual(
+            result["afterOld"],
+            {
+                "retiredOld": True,
+                "currentPreserved": True,
+                "currentSourcePreserved": True,
+                "currentProcessorPreserved": True,
+                "contextPreserved": True,
+                "disposed": ["A"],
+                "disconnected": ["A"],
+            },
+        )
+        self.assertTrue(result["retiredCurrent"])
+        self.assertTrue(result["pointerCleared"])
+        self.assertTrue(result["contextPreserved"])
+        self.assertEqual(result["disposed"], ["A", "B"])
+        self.assertEqual(result["disconnected"], ["A", "B"])
 
     def test_already_playing_snapshot_activation_resumes_suspended_context_once(self):
         result = self.run_node(

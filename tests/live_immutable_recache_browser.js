@@ -6,6 +6,7 @@ const [baseUrl, scenario, executablePath, screenshotPath] = process.argv.slice(2
 const observations = [];
 const consoleErrors = [];
 const pageErrors = [];
+const mediaPublications = [];
 let pageIdentity = null;
 
 function assert(condition, message, detail = undefined) {
@@ -613,6 +614,243 @@ async function normalSwitch(page) {
   observations.push({ boundary: "normal-switch-stable", currentItem: after.current_item?.id, media: afterMedia });
 }
 
+async function staleNextRecache(page) {
+  const started = await startPlayback(page, "A");
+  await page.evaluate(() => setAdvanceDelay(2));
+  const before = await state(page);
+  assert(
+    before.player_settings?.song_advance_delay_seconds === 2,
+    "stale Next fixture did not enable a nonzero transition delay",
+    before.player_settings,
+  );
+  const oldDescriptor = descriptor(before.current_item);
+  await installReplacementObserver(page);
+  await page.evaluate(() => {
+    window.__acceptanceStaleNextVideo = document.querySelector('video[data-player-role="video"]');
+    window.__acceptanceStaleNextAudio = document.querySelector('audio[data-player-role="audio"]');
+  });
+
+  const frozenResponse = await page.request.get(`${baseUrl}/api/state`);
+  assert(frozenResponse.ok(), "failed to capture the pre-race Host snapshot");
+  const frozenPayload = await frozenResponse.json();
+  await page.route("**/api/state", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(frozenPayload),
+    });
+  });
+
+  let releaseNext;
+  const nextGate = new Promise((resolve) => { releaseNext = resolve; });
+  let nextCapturedResolve;
+  const nextCaptured = new Promise((resolve) => { nextCapturedResolve = resolve; });
+  let nextRequestCount = 0;
+  let serverNextStatus = 0;
+  let serverNextPayload = null;
+  await page.route("**/api/player/next", async (route) => {
+    nextRequestCount += 1;
+    nextCapturedResolve();
+    await nextGate;
+    const response = await route.fetch();
+    serverNextStatus = response.status();
+    serverNextPayload = await response.json();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(serverNextPayload),
+    });
+  });
+
+  const nextResponsePromise = page.waitForResponse(
+    (response) => response.url() === `${baseUrl}/api/player/next`
+      && response.request().method() === "POST",
+  );
+  await page.locator("#next-button").click();
+  await nextCaptured;
+  const optimistic = await page.evaluate(() => ({
+    holdItem: state.manualTransitionHoldItemId,
+    holdGeneration: state.manualTransitionHoldGeneration,
+    pendingItem: state.pendingSongTransitionOverlayData?.current_item?.id || "",
+    inFlight: state.localAdvanceInFlight,
+  }));
+  assert(
+    optimistic.holdItem === "B"
+      && optimistic.holdGeneration > 0
+      && !optimistic.pendingItem
+      && optimistic.inFlight,
+    "delayed Next did not establish the expected optimistic hold-only state",
+    optimistic,
+  );
+
+  await clickCurrentRecache(page);
+  const authoritativeReplacement = await waitFor(async () => {
+    const snapshot = await state(page);
+    return snapshot.current_item?.id === "A"
+      && snapshot.playback_generation === before.playback_generation + 1
+      && snapshot.current_item?.artifact_set_id
+      && snapshot.current_item.artifact_set_id !== oldDescriptor.artifactSetId
+      ? snapshot
+      : null;
+  }, "recache did not create one authoritative replacement program", 20000);
+
+  const carriedReplacement = await page.evaluate(async () => {
+    await setLocalPlayerKeyShift(1);
+    const session = state.hostPlaybackSession;
+    return {
+      stateGeneration: state.data?.playback_generation,
+      stateArtifactSetId: state.data?.playback_program?.artifact_set_id || "",
+      sessionGeneration: session?.playbackGeneration || 0,
+      sessionCurrent: isCurrentHostPlaybackSession(
+        session,
+        session?.video,
+        session?.audio,
+      ),
+      holdItem: state.manualTransitionHoldItemId,
+      inFlight: state.localAdvanceInFlight,
+    };
+  });
+  assert(
+    carriedReplacement.stateGeneration === authoritativeReplacement.playback_generation
+      && carriedReplacement.stateArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
+      && carriedReplacement.sessionGeneration === before.playback_generation
+      && !carriedReplacement.sessionCurrent
+      && carriedReplacement.holdItem === "B"
+      && carriedReplacement.inFlight,
+    "the real replacement snapshot did not reach the stale-session Next boundary",
+    { carriedReplacement, authoritativeReplacement },
+  );
+
+  releaseNext();
+  const nextResponse = await nextResponsePromise;
+  const nextPayload = await nextResponse.json();
+  assert(
+    nextResponse.ok()
+      && nextPayload?.ok === false
+      && serverNextStatus === 400
+      && String(nextPayload?.error || "").includes("playback program changed before Next was applied"),
+    "delayed Next was not rejected by the exact Rust generation precondition",
+    {
+      browserStatus: nextResponse.status(),
+      serverStatus: serverNextStatus,
+      browserPayload: nextPayload,
+      serverPayload: serverNextPayload,
+    },
+  );
+  const released = await waitFor(async () => {
+    const value = await page.evaluate(() => ({
+      holdItem: state.manualTransitionHoldItemId,
+      holdGeneration: state.manualTransitionHoldGeneration,
+      pendingItem: state.pendingSongTransitionOverlayData?.current_item?.id || "",
+      pendingGeneration: state.pendingSongTransitionGeneration,
+      delayItem: state.localAdvanceDelayItemId,
+      delayDeadline: state.localAdvanceDelayDeadline,
+      delayTimer: Boolean(state.localAdvanceDelayTimer),
+      countdownTimer: Boolean(state.localAdvanceCountdownTimer),
+      inFlight: state.localAdvanceInFlight,
+    }));
+    return !value.holdItem
+      && value.holdGeneration === 0
+      && !value.pendingItem
+      && value.pendingGeneration === 0
+      && !value.delayItem
+      && value.delayDeadline === 0
+      && !value.delayTimer
+      && !value.countdownTimer
+      && !value.inFlight
+      ? value
+      : null;
+  }, "stale Next cleanup did not settle");
+  assert(
+    !released.holdItem
+      && released.holdGeneration === 0
+      && !released.pendingItem
+      && released.pendingGeneration === 0
+      && !released.delayItem
+      && released.delayDeadline === 0
+      && !released.delayTimer
+      && !released.countdownTimer
+      && !released.inFlight,
+    "stale Next left an orphaned local transition",
+    released,
+  );
+  assert(nextRequestCount === 1, "stale Next sent a retry or duplicate request", nextRequestCount);
+
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const untouchedMedia = await media(page);
+  const untouchedIdentity = await page.evaluate(() => ({
+    sameVideo: document.querySelector('video[data-player-role="video"]')
+      === window.__acceptanceStaleNextVideo,
+    sameAudio: document.querySelector('audio[data-player-role="audio"]')
+      === window.__acceptanceStaleNextAudio,
+  }));
+  assert(
+    untouchedIdentity.sameVideo
+      && untouchedIdentity.sameAudio
+      && untouchedMedia.videoCount === 1
+      && untouchedMedia.audioCount === 1
+      && !untouchedMedia.paused
+      && untouchedMedia.currentTime > started.currentTime + 0.2,
+    "stale Next cleanup modified or stopped the existing real media pair",
+    { started, untouchedIdentity, untouchedMedia },
+  );
+
+  await page.unroute("**/api/state");
+  await page.unroute("**/api/player/next");
+  await page.evaluate(() => setAdvanceDelay(0));
+  const replacementMedia = await waitForMedia(page, "A");
+  const automatic = await observeAutomaticPlayback(page, "A", 0.15);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  const after = await state(page);
+  const settled = await media(page);
+  const identity = await page.evaluate(() => ({
+    oldVideoConnected: Boolean(window.__acceptanceStaleNextVideo?.isConnected),
+    oldAudioConnected: Boolean(window.__acceptanceStaleNextAudio?.isConnected),
+    holdItem: state.manualTransitionHoldItemId,
+    holdGeneration: state.manualTransitionHoldGeneration,
+    pendingItem: state.pendingSongTransitionOverlayData?.current_item?.id || "",
+    delayDeadline: state.localAdvanceDelayDeadline,
+    inFlight: state.localAdvanceInFlight,
+    shouldPlay: state.localShouldBePlaying,
+  }));
+  assert(
+    after.current_item?.id === "A"
+      && after.playlist?.[0]?.id === "B"
+      && after.playback_generation === before.playback_generation + 1,
+    "stale Next skipped or changed the authoritative queue",
+    { before, after },
+  );
+  assert(
+    settled.itemId === "A"
+      && settled.videoCount === 1
+      && settled.audioCount === 1
+      && settled.replacementCount === 1
+      && !settled.paused
+      && settled.currentTime > automatic.currentTime + 0.1
+      && !identity.oldVideoConnected
+      && !identity.oldAudioConnected
+      && !identity.holdItem
+      && identity.holdGeneration === 0
+      && !identity.pendingItem
+      && identity.delayDeadline === 0
+      && !identity.inFlight
+      && identity.shouldPlay,
+    "stale Next did not settle as one playable unheld recache replacement pair",
+    { started, replacementMedia, automatic, settled, identity },
+  );
+  observations.push({
+    boundary: "stale-next-recache-generation-rejection",
+    beforeGeneration: before.playback_generation,
+    replacementGeneration: authoritativeReplacement.playback_generation,
+    optimistic,
+    carriedReplacement,
+    released,
+    untouchedMedia,
+    nextRequestCount,
+    media: settled,
+  });
+}
+
 function documentTextIncludes(text, expected) {
   return String(text || "").includes(expected);
 }
@@ -688,6 +926,133 @@ async function naturalEnded(page) {
   assert(!afterMedia.preparing, "natural advance left Host stuck preparing", afterMedia);
   assert(!afterMedia.paused && afterMedia.currentTime > bPlaying.currentTime + 0.1, "natural advance reached B without stable real playback", { bPlaying, afterMedia });
   observations.push({ boundary: "natural-ended-advanced-once", currentItem: bState.current_item?.id, naturalEndedCount: naturalCount, media: afterMedia });
+}
+
+async function rapidSessionSwitch(page) {
+  await waitFor(async () => {
+    const probe = await page.evaluate(() => ({
+      overrideInstalled: Boolean(window.__acceptancePlayOverrideInstalled),
+      pendingCount: (window.__acceptancePendingOldPlays || []).length,
+      playCalls: window.__acceptanceMediaPlayCalls || [],
+      startState: state.localPlaybackStartState,
+      shouldPlay: state.localShouldBePlaying,
+      videoReadyState: Number(state.hostPlaybackSession?.video?.readyState || 0),
+      audioReadyState: Number(state.hostPlaybackSession?.audio?.readyState || 0),
+    }));
+    if (probe.pendingCount < 2) {
+      throw new Error(JSON.stringify(probe));
+    }
+    return probe;
+  }, "A did not leave two media play promises pending");
+  await page.evaluate(() => {
+    window.__acceptanceRapidOldVideo = document.querySelector(
+      'video[data-player-role="video"]',
+    );
+    window.__acceptanceRapidOldAudio = document.querySelector(
+      'audio[data-player-role="audio"]',
+    );
+  });
+
+  await page.locator("#next-button").click();
+  await waitFor(
+    async () => (await state(page)).current_item?.id === "B",
+    "rapid switch did not make B authoritative",
+  );
+  const bPlaying = await observeAutomaticPlayback(page, "B", 0.15);
+  const beforeSettlement = await page.evaluate(() => {
+    const session = state.hostPlaybackSession;
+    window.__acceptanceRapidBVideo = session?.video || null;
+    window.__acceptanceRapidBAudio = session?.audio || null;
+    return {
+      startState: state.localPlaybackStartState,
+      shouldPlay: state.localShouldBePlaying,
+      sessionCurrent: isCurrentHostPlaybackSession(
+        session,
+        session?.video,
+        session?.audio,
+      ),
+      playbackGeneration: session?.playbackGeneration || 0,
+      authoritativeGeneration: state.data?.playback_generation || 0,
+    };
+  });
+  assert(
+    beforeSettlement.startState === "established"
+      && beforeSettlement.shouldPlay
+      && beforeSettlement.sessionCurrent
+      && beforeSettlement.playbackGeneration === beforeSettlement.authoritativeGeneration,
+    "B was not established as the exact current session before A settled",
+    beforeSettlement,
+  );
+
+  const publicationBoundary = mediaPublications.length;
+  await page.evaluate(() => {
+    const pending = window.__acceptancePendingOldPlays || [];
+    const videoPlay = pending.find((entry) => entry.role === "video");
+    const audioPlay = pending.find((entry) => entry.role === "audio");
+    videoPlay?.resolve();
+    audioPlay?.reject(new DOMException("retired autoplay rejection", "NotAllowedError"));
+  });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  const afterSettlement = await page.evaluate(() => {
+    const session = state.hostPlaybackSession;
+    return {
+      startState: state.localPlaybackStartState,
+      shouldPlay: state.localShouldBePlaying,
+      sameVideo: session?.video === window.__acceptanceRapidBVideo,
+      sameAudio: session?.audio === window.__acceptanceRapidBAudio,
+      sessionCurrent: isCurrentHostPlaybackSession(
+        session,
+        session?.video,
+        session?.audio,
+      ),
+      oldVideoPaused: Boolean(window.__acceptanceRapidOldVideo?.paused),
+      oldAudioPaused: Boolean(window.__acceptanceRapidOldAudio?.paused),
+      oldVideoSrc: window.__acceptanceRapidOldVideo?.getAttribute("src") || "",
+      oldAudioSrc: window.__acceptanceRapidOldAudio?.getAttribute("src") || "",
+    };
+  });
+  const afterMedia = await media(page);
+  const stalePublications = mediaPublications.slice(publicationBoundary).filter(
+    (entry) => entry?.payload?.item_id === "A",
+  );
+  assert(
+    afterSettlement.startState === "established"
+      && afterSettlement.shouldPlay
+      && afterSettlement.sameVideo
+      && afterSettlement.sameAudio
+      && afterSettlement.sessionCurrent,
+    "late A play settlement changed B's session or start state",
+    afterSettlement,
+  );
+  assert(
+    afterMedia.itemId === "B"
+      && afterMedia.videoCount === 1
+      && afterMedia.audioCount === 1
+      && !afterMedia.paused
+      && afterMedia.currentTime > bPlaying.currentTime + 0.1,
+    "late A play settlement disturbed B's real playback",
+    { bPlaying, afterMedia },
+  );
+  assert(
+    afterSettlement.oldVideoPaused
+      && afterSettlement.oldAudioPaused
+      && !afterSettlement.oldVideoSrc
+      && !afterSettlement.oldAudioSrc,
+    "A's exact retired elements were not reset",
+    afterSettlement,
+  );
+  assert(
+    stalePublications.length === 0,
+    "retired A published player status or diagnostics after settlement",
+    stalePublications,
+  );
+  observations.push({
+    boundary: "rapid-session-switch-rejected-late-play-settlement",
+    beforeSettlement,
+    afterSettlement,
+    media: afterMedia,
+  });
 }
 
 async function sessionRerender(page) {
@@ -999,14 +1364,63 @@ async function run() {
       "--no-sandbox",
     ],
   });
-  const context = await browser.newContext();
+  const context = await browser.newContext(
+    scenario === "rapid-session-switch"
+      ? {
+          userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+        }
+      : {},
+  );
   const page = await context.newPage();
+  if (scenario === "rapid-session-switch") {
+    await page.addInitScript(() => {
+      const nativePlay = HTMLMediaElement.prototype.play;
+      window.__acceptancePlayOverrideInstalled = true;
+      window.__acceptancePendingOldPlays = [];
+      window.__acceptanceMediaPlayCalls = [];
+      HTMLMediaElement.prototype.play = function acceptancePlay() {
+        const itemId = this.dataset?.playerItemId
+          || document.querySelector('video[data-player-role="video"]')?.dataset?.playerItemId
+          || "";
+        window.__acceptanceMediaPlayCalls.push({
+          itemId,
+          role: this.dataset?.playerRole || "",
+        });
+        if (itemId !== "A") {
+          return nativePlay.call(this);
+        }
+        const media = this;
+        return new Promise((resolve, reject) => {
+          window.__acceptancePendingOldPlays.push({
+            role: media.dataset?.playerRole || "",
+            resolve,
+            reject,
+          });
+        });
+      };
+    });
+  }
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push({ text: message.text(), location: message.location() });
     }
   });
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST"
+      && (pathname === "/api/player/status" || pathname === "/api/player/diagnostic")
+    ) {
+      let payload = null;
+      try {
+        payload = request.postDataJSON();
+      } catch (_error) {
+        payload = null;
+      }
+      mediaPublications.push({ pathname, payload });
+    }
+  });
   try {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     pageIdentity = await page.evaluate(() => ({
@@ -1048,6 +1462,10 @@ async function run() {
       await inverseSnapshot(page);
     } else if (scenario === "page-restore") {
       await pageRestore(page);
+    } else if (scenario === "rapid-session-switch") {
+      await rapidSessionSwitch(page);
+    } else if (scenario === "stale-next-recache") {
+      await staleNextRecache(page);
     } else {
       throw new Error(`unknown scenario: ${scenario}`);
     }

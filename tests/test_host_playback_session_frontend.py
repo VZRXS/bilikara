@@ -28,6 +28,14 @@ class HostPlaybackSessionFrontendTest(unittest.TestCase):
             "function playbackProgramDescriptorsEqual",
             "function isValidHostMediaLocator",
         )
+        listener_lifecycle = self.source_slice(
+            "function clearLocalPlayerEventListeners",
+            "function clearLocalPlayerSeekState",
+        )
+        seek_cleanup = self.source_slice(
+            "function takeLocalPlayerSeekCompletion",
+            "function playerDelayOverlay",
+        )
         foundation = self.source_slice(
             "function hostPlaybackMountData",
             "function renderPlayer",
@@ -55,6 +63,7 @@ class FakeNode {{
     this.paused = true;
     this.src = "";
     this.controls = false;
+    this.listeners = new Map();
   }}
   append(...nodes) {{ nodes.forEach((node) => {{ node.parentElement = this; this.children.push(node); }}); }}
   appendChild(node) {{ this.append(node); return node; }}
@@ -73,8 +82,21 @@ class FakeNode {{
   removeAttribute(name) {{ delete this.attributes[name]; if (name === "src") this.src = ""; }}
   pause() {{ this.paused = true; }}
   load() {{}}
-  addEventListener() {{}}
-  removeEventListener() {{}}
+  addEventListener(name, listener) {{
+    const listeners = this.listeners.get(name) || [];
+    listeners.push(listener);
+    this.listeners.set(name, listeners);
+  }}
+  removeEventListener(name, listener) {{
+    this.listeners.set(
+      name,
+      (this.listeners.get(name) || []).filter((entry) => entry !== listener),
+    );
+  }}
+  queuedListeners(name) {{ return [...(this.listeners.get(name) || [])]; }}
+  dispatchEventName(name) {{
+    this.queuedListeners(name).forEach((listener) => listener({{ type: name, target: this }}));
+  }}
   querySelector(selector) {{
     if (selector === ".empty-state .empty-hint") {{
       return this.children.flatMap((node) => node.children || []).find((node) => node.className === "empty-hint") || null;
@@ -137,7 +159,7 @@ function playerDelayOverlay() {{ return null; }}
 function clearWebKitAudioStarvationTimer() {{}}
 function clearLocalPlayerSyncTimer() {{}}
 function clearLocalPlayerControlsHideTimer() {{}}
-function clearLocalPlayerSeekState() {{}}
+function clearPlayerFrameClickTimer() {{}}
 function clearTauriMediaSessionState() {{}}
 function clearLocalAdvanceDelay() {{}}
 function disposeAudioPitchShifter() {{}}
@@ -149,9 +171,6 @@ function persistLocalVolumePreferences() {{
 function shouldHoldCurrentItemForTransition() {{ return false; }}
 function hasPendingSongTransitionOverlayForItem() {{ return false; }}
 function hasLocalAdvanceDelayOverlay() {{ return false; }}
-function clearLocalPlayerEventListeners(session) {{
-  (session?.eventCleanups || []).splice(0).forEach((cleanup) => cleanup());
-}}
 function teardownMountedPlayer() {{
   return retireHostPlaybackSession(state.hostPlaybackSession);
 }}
@@ -176,6 +195,8 @@ async function apiPostStateSnapshot(...args) {{
 }}
 let renderImpl = () => {{}};
 function render() {{ renderImpl(); }}
+{listener_lifecycle}
+{seek_cleanup}
 {equality}
 {foundation}
 {recovery}
@@ -413,6 +434,109 @@ process.stdout.write(JSON.stringify(checks));
                 "wrongVideo": False,
                 "retiring": False,
                 "wrongGeneration": False,
+            },
+        )
+
+    def test_queued_media_listener_rechecks_exact_session_before_effects(self):
+        result = self.run_foundation(
+            """
+const firstItem = item();
+installSnapshot(7, firstItem);
+const first = reconcileHostPlaybackSession(firstItem);
+let oldEndedEffects = 0;
+addMountedPlayerListener(first.video, "ended", () => {
+  oldEndedEffects += 1;
+  state.hostPlaybackSession.video.pause();
+});
+const queuedOldEnded = first.video.queuedListeners("ended");
+
+const secondItem = item({ itemId: "song-b", incarnation: "i-b", artifactId: "a-b" });
+installSnapshot(8, secondItem);
+const second = reconcileHostPlaybackSession(secondItem);
+second.video.paused = false;
+queuedOldEnded.forEach((listener) => listener({ type: "ended", target: first.video }));
+const afterRetiredEvent = {
+  oldEndedEffects,
+  secondPaused: second.video.paused,
+  currentSession: state.hostPlaybackSession === second.session,
+};
+
+let currentEndedEffects = 0;
+addMountedPlayerListener(second.video, "ended", () => {
+  currentEndedEffects += 1;
+  second.video.pause();
+});
+second.video.dispatchEventName("ended");
+process.stdout.write(JSON.stringify({
+  afterRetiredEvent,
+  current: { currentEndedEffects, secondPaused: second.video.paused },
+}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "afterRetiredEvent": {
+                    "oldEndedEffects": 0,
+                    "secondPaused": False,
+                    "currentSession": True,
+                },
+                "current": {"currentEndedEffects": 1, "secondPaused": True},
+            },
+        )
+
+    def test_retirement_settles_owned_seek_once_without_clearing_new_session(self):
+        result = self.run_foundation(
+            """
+const firstItem = item();
+installSnapshot(7, firstItem);
+const first = reconcileHostPlaybackSession(firstItem);
+const firstSettlements = [];
+first.session.seekSettling = true;
+first.session.seekSettleTimer = 41;
+first.session.seekSettleCallback = (applied) => firstSettlements.push(applied);
+const firstRetire = retireHostPlaybackSession(first.session);
+const duplicateRetire = retireHostPlaybackSession(first.session);
+
+const secondItem = item({ itemId: "song-b", incarnation: "i-b", artifactId: "a-b" });
+installSnapshot(8, secondItem);
+const second = reconcileHostPlaybackSession(secondItem);
+const secondSettlements = [];
+second.session.seekSettling = true;
+second.session.seekSettleTimer = 42;
+second.session.seekSettleCallback = (applied) => secondSettlements.push(applied);
+const staleCleanup = retireHostPlaybackSession(first.session);
+const beforeSecondRetire = {
+  currentPreserved: state.hostPlaybackSession === second.session,
+  secondSettlements: [...secondSettlements],
+  secondSeekTimer: second.session.seekSettleTimer,
+};
+const secondRetire = retireHostPlaybackSession(second.session);
+process.stdout.write(JSON.stringify({
+  firstRetire,
+  duplicateRetire,
+  staleCleanup,
+  firstSettlements,
+  beforeSecondRetire,
+  secondRetire,
+  secondSettlements,
+}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "firstRetire": True,
+                "duplicateRetire": False,
+                "staleCleanup": False,
+                "firstSettlements": [False],
+                "beforeSecondRetire": {
+                    "currentPreserved": True,
+                    "secondSettlements": [],
+                    "secondSeekTimer": 42,
+                },
+                "secondRetire": True,
+                "secondSettlements": [False],
             },
         )
 

@@ -41,6 +41,18 @@ class PlaylistStoreTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def advance_to_next(
+        self,
+        store: PlaylistStore | None = None,
+        *,
+        reset_av_delay: bool = False,
+    ) -> bool:
+        target = store or self.store
+        return target.advance_to_next(
+            expected_playback_generation=target.playback_generation,
+            reset_av_delay=reset_av_delay,
+        )
+
     def test_default_mode_is_local(self):
         self.assertEqual(self.store.playback_mode, "local")
 
@@ -183,7 +195,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.set_av_offset_ms(200)
         self.store.apply_av_delay_action({"type": "adjust", "delta_ms": 50})
 
-        self.store.advance_to_next(reset_av_delay=False)
+        self.advance_to_next(reset_av_delay=False)
         self.assertEqual(self.store.av_offset_ms, 250)
         self.store.apply_av_delay_action({"type": "adjust", "delta_ms": -30})
         self.store.add_item(self.make_item("c"), requester_name="C")
@@ -248,7 +260,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.set_key_shift(4)
         self.assertEqual(self.store.key_shift, 4)
 
-        self.store.advance_to_next()
+        self.advance_to_next()
         self.assertEqual(self.store.key_shift, 0)
 
     def test_reset_player_state_keeps_queue_and_runtime_data(self):
@@ -404,7 +416,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_advance(self):
         self.add_item("a", requester_name="A")
         self.add_item("b", requester_name="B")
-        self.store.advance_to_next()
+        self.advance_to_next()
         self.assertEqual(self.store.current_item.id, "b")
         self.assertEqual([item.id for item in self.store.playlist], [])
 
@@ -461,7 +473,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(snapshot["current_item"]["requester_name"], "A")
 
         self.mark_started("a")
-        self.store.advance_to_next()
+        self.advance_to_next()
         snapshot = self.store.snapshot()
         self.assertEqual(snapshot["history"][0]["display_title"], "Song Name")
 
@@ -471,7 +483,7 @@ class PlaylistStoreTest(unittest.TestCase):
 
         self.assertEqual(self.store.history, [])
 
-        self.store.advance_to_next()
+        self.advance_to_next()
 
         self.assertEqual(self.store.history, [])
 
@@ -486,7 +498,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
         self.mark_started("a")
-        self.store.advance_to_next()
+        self.advance_to_next()
 
         self.assertEqual(len(self.store.history), 1)
         self.assertEqual(self.store.history[0].display_title, "title-a - P1")
@@ -497,11 +509,11 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("b", requester_name="B", song_key="song-b")
         self.add_item("c", requester_name="C", song_key="song-a")
         self.mark_started("a")
-        self.store.advance_to_next()
+        self.advance_to_next()
         self.mark_started("b")
         self.store.move_to_front("c")
         self.mark_started("c")
-        self.store.advance_to_next()
+        self.advance_to_next()
         self.assertEqual(len(self.store.history), 2)
         self.assertEqual(self.store.history[0].display_title, "title-c - P1")
         self.assertEqual(self.store.history[0].request_count, 2)
@@ -531,7 +543,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
 
-        self.store.advance_to_next()
+        self.advance_to_next()
 
         self.assertEqual(self.store.session_history, [])
         self.assertIsNone(self.store.session_request_for_item(self.make_item("retry", song_key="song-b")))
@@ -563,7 +575,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertEqual(payload["items"][0]["cover_url"], "https://example.com/a.jpg")
         self.assertIsNone(payload["items"][0]["ended_at"])
 
-        self.store.advance_to_next()
+        self.advance_to_next()
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
         self.assertIsInstance(payload["items"][0]["ended_at"], float)
@@ -581,7 +593,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.mark_started("a")
 
         with patch("bilikara.store.time.time", return_value=1012.75):
-            self.store.advance_to_next()
+            self.advance_to_next()
 
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertEqual(payload["items"][0]["played_at"], 1000.25)
@@ -594,7 +606,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A", song_key="song-a")
 
         with patch("bilikara.store.time.time", return_value=2025.5):
-            self.store.advance_to_next()
+            self.advance_to_next()
 
         payload = json.loads(self.store.session_played_file.read_text(encoding="utf-8"))
         self.assertEqual(payload["items"][0]["ended_at"], 2025.5)
@@ -649,7 +661,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.mark_started("a")
         original_played_file = self.store.session_played_file
-        self.assertTrue(self.store.advance_to_next())
+        self.assertTrue(self.advance_to_next())
         self.assertFalse(self.backup_file.exists())
 
         restored_store = PlaylistStore(
@@ -684,7 +696,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_previous_session_cannot_be_continued_after_new_queue_starts(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.mark_started("a")
-        self.assertTrue(self.store.advance_to_next())
+        self.assertTrue(self.advance_to_next())
 
         restored_store = PlaylistStore(
             state_file=self.state_file,
@@ -707,10 +719,10 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
         self.mark_started("a")
-        self.assertTrue(self.store.advance_to_next())
+        self.assertTrue(self.advance_to_next())
         self.mark_started("b")
         original_played_file = self.store.session_played_file
-        self.assertTrue(self.store.advance_to_next())
+        self.assertTrue(self.advance_to_next())
 
         restored_store = PlaylistStore(
             state_file=self.state_file,
@@ -773,7 +785,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.mark_started("a")
         original_played_file = self.store.session_played_file
-        self.assertTrue(self.store.advance_to_next())
+        self.assertTrue(self.advance_to_next())
         valid_payload = original_played_file.read_text(encoding="utf-8")
         empty_payload = json.loads(valid_payload)
         empty_payload["items"] = []
@@ -825,7 +837,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.assertFalse(restored_store.snapshot()["previous_session"]["available"])
 
         restored_store.mark_item_playback_started("a")
-        restored_store.advance_to_next()
+        self.advance_to_next(restored_store)
 
         payload = json.loads(original_played_file.read_text(encoding="utf-8"))
         self.assertEqual([entry["item_id"] for entry in payload["items"]], ["a", "b"])
@@ -929,7 +941,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.store.add_item(item, requester_name="A")
         self.store.add_item(self.make_item("b", song_key="song-b"), requester_name="B")
         self.mark_started("a")
-        self.store.advance_to_next()
+        self.advance_to_next()
 
         changed = self.store.update_owner_info_for_url(
             item.resolved_url,
@@ -958,7 +970,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_history_restores_from_history_state_file(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.mark_started("a")
-        self.store.advance_to_next()
+        self.advance_to_next()
         restored_store = PlaylistStore(
             state_file=self.state_file,
             backup_file=self.backup_file,
@@ -972,7 +984,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_clear_history_removes_persisted_entries(self):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.mark_started("a")
-        self.store.advance_to_next()
+        self.advance_to_next()
         self.assertEqual(len(self.store.history), 1)
 
         self.store.clear_history()
@@ -989,7 +1001,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a", requester_name="A", song_key="song-a")
         self.add_item("b", requester_name="B", song_key="song-b")
         self.mark_started("a")
-        self.store.advance_to_next()
+        self.advance_to_next()
         key = self.store.history[0].key
         self.assertEqual([entry.item_id for entry in self.store.session_played], ["a", "b"])
         self.assertEqual(len(self.store.session_history), 1)
@@ -1116,7 +1128,7 @@ class PlaylistStoreTest(unittest.TestCase):
     def test_rename_session_user_updates_current_queue_and_session_records(self):
         self.add_item("a1", requester_name="A")
         self.add_item("b1", requester_name="B")
-        self.store.advance_to_next()
+        self.advance_to_next()
 
         renamed = self.store.rename_session_user("A", "Singer A")
 
@@ -1152,7 +1164,7 @@ class PlaylistStoreTest(unittest.TestCase):
         self.add_item("a2", requester_name="A")
         self.store.move_to_next("c1")
 
-        self.store.advance_to_next()
+        self.advance_to_next()
 
         self.assertEqual(self.store.current_item.id, "c1")
         self.assertEqual([item.id for item in self.store.playlist], ["a2", "b1"])

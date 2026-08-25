@@ -144,7 +144,12 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
         self.assertIn("if (!audio.ended)", handler)
         self.assertIn('"defer-video-recovery"', handler)
         self.assertIn("state.localPlaybackEndHandled", handler)
-        self.assertEqual(handler.count('handleLocalPlaybackEnded("media-ended")'), 1)
+        self.assertEqual(
+            handler.count(
+                'handleLocalPlaybackEnded("media-ended", state.hostPlaybackSession)'
+            ),
+            1,
+        )
         self.assertNotIn("audio.pause()", handler)
         self.assertNotIn("cache/retry", handler)
         self.assertNotIn("render()", handler)

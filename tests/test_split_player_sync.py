@@ -27,7 +27,7 @@ class SplitPlayerSyncTest(unittest.TestCase):
             "function syncSplitSeekAudioTarget", "function mediaUrlBasename"
         )
         cls.clear_seek_source = cls._slice(
-            "function clearLocalPlayerSeekState", "function playerDelayOverlay"
+            "function takeLocalPlayerSeekCompletion", "function playerDelayOverlay"
         )
         cls.offset_resync_source = cls._slice(
             "function syncMountedLocalPlayer", "function applyStoredVolumeToSinglePlayer"
@@ -78,6 +78,22 @@ class SplitPlayerSyncTest(unittest.TestCase):
             "function renderPlayer(currentItem, playbackMode)",
             "function applyRemotePlayerControl",
         )
+        cls.renderer_tail_source = cls._slice(
+            '  addMountedPlayerListener(audio, "waiting",',
+            "function applyRemotePlayerControl",
+        )
+        cls.pause_event_source = cls._slice(
+            '  addMountedPlayerListener(video, "pause",',
+            '  addMountedPlayerListener(video, "seeking",',
+        )
+        cls.frame_click_source = cls._slice(
+            "function clearPlayerFrameClickTimer",
+            "function readLocalNumber",
+        )
+        cls.diagnostic_source = cls._slice(
+            "function mediaUrlBasename",
+            "async function handleSplitVideoEnded",
+        )
         cls.program_equality_source = cls._slice(
             "function playbackProgramDescriptorsEqual",
             "function isValidHostMediaLocator",
@@ -85,6 +101,10 @@ class SplitPlayerSyncTest(unittest.TestCase):
         cls.webkit_helpers_source = cls._slice(
             "function isWebKitPlaybackRuntime",
             "function canTogglePlayerFullscreen",
+        )
+        cls.webkit_timer_source = cls._slice(
+            "function clearWebKitAudioStarvationTimer",
+            "function isPlayerPanelFullscreen",
         )
 
     @classmethod
@@ -109,19 +129,22 @@ const state = {{
   localWebKitStartRetryDone: false,
   localShouldBePlaying: true,
   localPlaybackEndHandled: false,
-  localSeekResumePending: false,
-  localSeekSettling: false,
-  localSeekResumeAfterSettle: false,
-  localSeekSettleStartedAt: 0,
-  localSeekSettleTimer: null,
-  localSeekSettleCallback: null,
-  localPlayerSyncTimer: null,
-  localPlayerStartupTimer: null,
   localPlayerControlsHideTimer: null,
   localPlayerControlsHideGeneration: 0,
-  localPlaybackStartupWatchdogTimer: null,
   localPlayerEventCleanups: [],
-  hostPlaybackSession: {{ eventCleanups: [] }},
+  hostPlaybackSession: {{
+    eventCleanups: [],
+    syncTimer: null,
+    startupTimer: null,
+    startupWatchdogTimer: null,
+    webkitRetryTimer: null,
+    seekSettling: false,
+    seekResumeAfterSettle: false,
+    seekSettleStartedAt: 0,
+    seekSettleTimer: null,
+    seekSettleCallback: null,
+    seekResumePending: false,
+  }},
   tauriMediaSessionOwner: null,
   lastTauriMediaSessionPositionAt: 0,
 }};
@@ -130,6 +153,7 @@ const localPlayerDriftToleranceSeconds = 0.045;
 const localPlayerModerateSyncThresholdSeconds = 0.14;
 const localPlayerHardSyncThresholdSeconds = 0.5;
 const localPlayerSyncSeekCooldownMs = 750;
+const localPlayerSyncDiagnosticThrottleMs = 2000;
 const localPlayerSeekSettlePollMs = 50;
 const localPlayerSeekSettleMaxMs = 1400;
 const splitPlaybackStartupWatchdogMs = 3000;
@@ -140,6 +164,8 @@ Date.now = () => nowMs;
 const actions = [];
 const playRejections = [];
 const startupDiagnostics = [];
+const diagnosticPosts = [];
+console.info = () => {{}};
 let heldItemId = "";
 let mountedVideo = null;
 let mountedAudio = null;
@@ -156,18 +182,20 @@ const elements = {{
 function t(key) {{ return key; }}
 function activeLocalPlayerElements() {{ return {{ video: mountedVideo, audio: mountedAudio }}; }}
 function clearSplitPlaybackStartupWatchdog() {{
-  if (!state.localPlaybackStartupWatchdogTimer) return;
-  window.clearTimeout(state.localPlaybackStartupWatchdogTimer);
-  state.localPlaybackStartupWatchdogTimer = null;
+  const session = state.hostPlaybackSession;
+  if (!session?.startupWatchdogTimer) return;
+  window.clearTimeout(session.startupWatchdogTimer);
+  session.startupWatchdogTimer = null;
 }}
 function syncSplitPlayerVolumeFromVideo() {{}}
 function isSplitPlayerSeekSettling(video, audio) {{
-  return state.localSeekSettling && isActiveSplitPlayer(video, audio);
+  return state.hostPlaybackSession?.seekSettling && isActiveSplitPlayer(video, audio);
 }}
 function shouldHoldCurrentItemForTransition(item) {{
   const itemId = String(item?.id || item || "");
   return Boolean(itemId && itemId === heldItemId);
 }}
+function currentItemIdFromData(data) {{ return String(data?.current_item?.id || ""); }}
 function reportSplitSyncDiagnostic(itemId, video, audio, action) {{ actions.push(action); }}
 function reportSplitStartupDiagnostic(itemId, video, audio, eventName) {{
   startupDiagnostics.push({{
@@ -184,6 +212,7 @@ function reportMediaDiagnostic(itemId, mediaKind, media, eventName, video, audio
     errorMessage: String(error?.message || ""),
   }});
 }}
+function apiPost(url, payload) {{ diagnosticPosts.push({{ url, payload }}); return Promise.resolve(); }}
 function clampMediaTime(media, value) {{
   const lower = Math.max(0, Number(value || 0));
   return Number.isFinite(media.duration) ? Math.min(lower, media.duration) : lower;
@@ -392,7 +421,7 @@ video.paused = false; audio.paused = false;
 mountedVideo = video; mountedAudio = audio;
 effectiveOffsetSeconds = 0.2;
 const changed = resyncMountedLocalPlayerForOffsetChange();
-console.log(JSON.stringify({ changed, settling: state.localSeekSettling,
+console.log(JSON.stringify({ changed, settling: state.hostPlaybackSession.seekSettling,
   videoTime: video.currentTime, audioTime: audio.currentTime,
   videoPaused: video.paused, audioPaused: audio.paused,
   videoSeekWrites: video.seekWrites, audioSeekWrites: audio.seekWrites }));
@@ -794,13 +823,15 @@ console.log(JSON.stringify({ afterVideo, advances }));
             """
 let intervalClears = 0; let timeoutClears = 0; let listenerCleanups = 0;
 global.window = { clearInterval() { intervalClears += 1; }, clearTimeout() { timeoutClears += 1; } };
-state.localPlayerSyncTimer = 1; state.localPlayerStartupTimer = 2;
-state.localPlaybackStartupWatchdogTimer = 3;
+state.hostPlaybackSession.syncTimer = 1;
+state.hostPlaybackSession.startupTimer = 2;
+state.hostPlaybackSession.startupWatchdogTimer = 3;
 state.hostPlaybackSession.eventCleanups.push(() => { listenerCleanups += 1; });
 clearLocalPlayerSyncTimer(); clearLocalPlayerEventListeners();
 console.log(JSON.stringify({ intervalClears, timeoutClears, listenerCleanups,
-  syncTimer: state.localPlayerSyncTimer, startupTimer: state.localPlayerStartupTimer,
-  watchdogTimer: state.localPlaybackStartupWatchdogTimer,
+  syncTimer: state.hostPlaybackSession.syncTimer,
+  startupTimer: state.hostPlaybackSession.startupTimer,
+  watchdogTimer: state.hostPlaybackSession.startupWatchdogTimer,
   cleanupCount: state.hostPlaybackSession.eventCleanups.length }));
 """,
             self.lifecycle_source,
@@ -1384,6 +1415,7 @@ function mountPair(playing) {
   video = new FakeMedia(20); audio = new FakeMedia(19.8);
   video.paused = !playing; audio.paused = !playing;
   mountedVideo = video; mountedAudio = audio;
+  session.video = video; session.audio = audio;
   state.localPlaybackStartState = "established";
   state.localShouldBePlaying = playing;
   return { video, audio };
@@ -1425,6 +1457,7 @@ global.document = { hidden: false };
 const currentItem = { id: "item" };
 let synchronizeStartupPlayer = () => false;
 let video = new FakeMedia(20); let audio = new FakeMedia(19.8);
+const session = state.hostPlaybackSession;
 let videoPlayListener = null;
 let videoPauseListener = null;
 function addMountedPlayerListener(media, eventName, listener) {
@@ -2051,7 +2084,7 @@ console.log(JSON.stringify({
   afterSyncPause,
   afterSeekPause: {
     shouldPlay: state.localShouldBePlaying,
-    seekResumePending: state.localSeekResumePending,
+    seekResumePending: state.hostPlaybackSession.seekResumePending,
     videoPaused: video.paused,
     audioPaused: audio.paused,
   },
@@ -2959,6 +2992,86 @@ console.log(JSON.stringify({
         self.assertEqual(result["activeWatchdogsAfterStaleCallback"], 1)
         self.assertNotIn("startup-failed", result["startupEvents"])
 
+    def test_retired_webkit_retry_and_watchdog_cannot_start_or_fail_current_pair(self):
+        result = self.run_node(
+            """
+const nativeSetTimeout = window.setTimeout;
+const nativeClearTimeout = window.clearTimeout;
+const scheduled = [];
+window.setTimeout = (callback, delay) => {
+  const timer = { callback, delay, id: scheduled.length + 1 };
+  scheduled.push(timer);
+  return timer;
+};
+window.clearTimeout = () => {};
+let currentVideo = null;
+let currentAudio = null;
+isActiveSplitPlayer = (video, audio) => video === currentVideo && audio === currentAudio;
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15",
+}, configurable: true, writable: true });
+
+const oldVideo = new FakeMedia(0); const oldAudio = new FakeMedia(0);
+oldVideo.readyState = 2; oldAudio.readyState = 2;
+currentVideo = oldVideo; currentAudio = oldAudio;
+mountedVideo = oldVideo; mountedAudio = oldAudio;
+const oldSession = { eventCleanups: [] };
+state.hostPlaybackSession = oldSession;
+state.localShouldBePlaying = true;
+state.localPlaybackStartState = "pending";
+scheduleSplitPlaybackStartupWatchdog(oldVideo, oldAudio);
+scheduleWebKitSplitPlaybackRetry(oldVideo, oldAudio, { userGesture: false, prefix: "old" });
+const oldWatchdog = oldSession.startupWatchdogTimer;
+const oldRetry = oldSession.webkitRetryTimer;
+
+const video = new FakeMedia(0); const audio = new FakeMedia(0);
+video.readyState = 2; audio.readyState = 2;
+currentVideo = video; currentAudio = audio;
+mountedVideo = video; mountedAudio = audio;
+const currentSession = { eventCleanups: [] };
+state.hostPlaybackSession = currentSession;
+oldSession.startupWatchdogTimer = null;
+oldSession.webkitRetryTimer = null;
+state.localPlaybackStartState = "pending";
+state.localShouldBePlaying = true;
+scheduleSplitPlaybackStartupWatchdog(video, audio);
+scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture: false, prefix: "current" });
+const currentWatchdog = currentSession.startupWatchdogTimer;
+const currentRetry = currentSession.webkitRetryTimer;
+
+oldWatchdog.callback();
+oldRetry.callback();
+const afterRetired = {
+  state: state.localPlaybackStartState,
+  playCalls: [video.playCalls, audio.playCalls],
+  watchdogPreserved: currentSession.startupWatchdogTimer === currentWatchdog,
+  retryPreserved: currentSession.webkitRetryTimer === currentRetry,
+};
+currentRetry.callback();
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+window.setTimeout = nativeSetTimeout;
+window.clearTimeout = nativeClearTimeout;
+console.log(JSON.stringify({
+  afterRetired,
+  current: {
+    state: state.localPlaybackStartState,
+    playCalls: [video.playCalls, audio.playCalls],
+  },
+}));
+""",
+            self.sync_source,
+        )
+        self.assertEqual(
+            result["afterRetired"],
+            {
+                "state": "pending",
+                "playCalls": [0, 0],
+                "watchdogPreserved": True,
+                "retryPreserved": True,
+            },
+        )
+        self.assertEqual(result["current"], {"state": "established", "playCalls": [1, 1]})
+
     def test_superseded_startup_promises_cannot_establish_newer_attempt(self):
         result = self.run_node(
             """
@@ -3014,6 +3127,73 @@ console.log(JSON.stringify({
         self.assertEqual(result["finalState"], "established")
         self.assertEqual(result["videoPlayCalls"], 2)
         self.assertEqual(result["audioPlayCalls"], 2)
+
+    def test_retired_play_promise_completion_is_silent_and_current_attempt_still_settles(self):
+        result = self.run_node(
+            """
+Object.defineProperty(globalThis, "navigator", { value: {
+  userAgent: "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15",
+}, configurable: true, writable: true });
+let currentVideo = null;
+let currentAudio = null;
+isActiveSplitPlayer = (video, audio) => video === currentVideo && audio === currentAudio;
+
+const oldVideo = new FakeMedia(0); const oldAudio = new FakeMedia(0);
+const oldSettlers = [];
+oldVideo.play = function() {
+  this.playCalls += 1;
+  return new Promise((resolve) => oldSettlers.push(() => resolve()));
+};
+oldAudio.play = function() {
+  this.playCalls += 1;
+  return new Promise((_resolve, reject) => oldSettlers.push(() => {
+    const error = new Error("old policy rejection");
+    error.name = "NotAllowedError";
+    reject(error);
+  }));
+};
+currentVideo = oldVideo; currentAudio = oldAudio;
+mountedVideo = oldVideo; mountedAudio = oldAudio;
+state.localPlaybackStartState = "pending";
+startSplitPlaybackPair(oldVideo, oldAudio);
+
+const newVideo = new FakeMedia(0); const newAudio = new FakeMedia(0);
+currentVideo = newVideo; currentAudio = newAudio;
+mountedVideo = newVideo; mountedAudio = newAudio;
+effectiveOffsetSeconds = 0;
+state.localPlaybackStartState = "pending";
+state.localShouldBePlaying = true;
+startSplitPlaybackPair(newVideo, newAudio);
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+const currentStateBeforeOld = state.localPlaybackStartState;
+const postsBeforeOld = diagnosticPosts.length;
+
+oldSettlers.forEach((settle) => settle());
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+const stalePosts = diagnosticPosts.slice(postsBeforeOld).filter(
+  (entry) => entry.payload?.item_id === "item",
+).length;
+console.log(JSON.stringify({
+  currentStateBeforeOld,
+  currentStateAfterOld: state.localPlaybackStartState,
+  currentVideoPaused: newVideo.paused,
+  currentAudioPaused: newAudio.paused,
+  stalePosts,
+}));
+""",
+            self.diagnostic_source,
+            self.sync_source,
+        )
+        self.assertEqual(
+            result,
+            {
+                "currentStateBeforeOld": "established",
+                "currentStateAfterOld": "established",
+                "currentVideoPaused": False,
+                "currentAudioPaused": False,
+                "stalePosts": 0,
+            },
+        )
 
     def test_native_controls_are_unavailable_until_split_start_is_established(self):
         controls_source = self._slice(
@@ -3187,6 +3367,263 @@ const playerControlsAutoHideMs = 5000;
             },
         )
 
+    def test_retired_sync_start_and_starvation_callbacks_preserve_current_timers(self):
+        result = self.run_node_script(
+            f"""
+const effects = [];
+const timeouts = [];
+const intervals = [];
+const window = {{
+  setTimeout(callback, delay) {{
+    const timer = {{ type: "timeout", id: timeouts.length + 1, callback, delay }};
+    timeouts.push(timer);
+    return timer;
+  }},
+  clearTimeout() {{}},
+  setInterval(callback, delay) {{
+    const timer = {{ type: "interval", id: intervals.length + 1, callback, delay }};
+    intervals.push(timer);
+    return timer;
+  }},
+  clearInterval() {{}},
+}};
+const programA = {{ item_id: "A" }};
+const programB = {{ item_id: "B" }};
+const state = {{
+  data: {{ playback_generation: 1, playback_program: programA }},
+  hostPlaybackSession: null,
+  localAudioPlaybackBlocked: false,
+  localVideoDeferredRecovery: false,
+  localPlayerSyncTimer: null,
+  localPlayerStartupTimer: null,
+  webKitAudioStarvationTimer: null,
+}};
+function makeSession(generation, program, video, audio) {{
+  return {{
+    playbackGeneration: generation,
+    playbackProgram: program,
+    cleanupState: "active",
+    video,
+    audio,
+    syncTimer: null,
+    startupTimer: null,
+    audioStarvationTimer: null,
+  }};
+}}
+class Media {{
+  constructor(itemId) {{
+    this.dataset = {{ playerItemId: itemId }};
+    this.listeners = new Map();
+  }}
+  addEventListener(name, listener) {{ this.listeners.set(name, listener); }}
+  dispatch(name) {{ this.listeners.get(name)?.(); }}
+}}
+function isCurrentHostPlaybackSession(session, video, audio) {{
+  return session === state.hostPlaybackSession
+    && session?.cleanupState === "active"
+    && session.playbackGeneration === state.data.playback_generation
+    && session.playbackProgram === state.data.playback_program
+    && session.video === video
+    && session.audio === audio;
+}}
+function isActiveSplitPlayer(video, audio) {{
+  return isCurrentHostPlaybackSession(state.hostPlaybackSession, video, audio);
+}}
+function addMountedPlayerListener(media, name, listener) {{ media.addEventListener(name, listener); }}
+function isWebKitPlaybackRuntime() {{ return true; }}
+function isSplitPlayerSeekSettling() {{ return false; }}
+function settleSplitPlayerSeek() {{ effects.push("settle"); }}
+function syncSplitPlayer(video) {{ effects.push(`sync:${{video.dataset.playerItemId}}`); }}
+function maybeShowRatingPromptForProgress(item) {{ effects.push(`rating:${{item.id}}`); }}
+async function handleSplitAudioEnded() {{ effects.push("ended"); }}
+function currentAvOffsetSeconds() {{ return 0; }}
+const localPlayerSyncIntervalMs = 120;
+{self.webkit_timer_source}
+function registerRendererTail(session, currentItem, video, audio) {{
+  const reportCurrentVideoStatus = () => effects.push(`status:${{currentItem.id}}`);
+  const synchronizeStartupPlayer = () => {{ effects.push(`start:${{currentItem.id}}`); return true; }};
+{self.renderer_tail_source}
+
+const videoA = new Media("A"); const audioA = new Media("A");
+const sessionA = makeSession(1, programA, videoA, audioA);
+state.hostPlaybackSession = sessionA;
+registerRendererTail(sessionA, {{ id: "A" }}, videoA, audioA);
+const aStartup = timeouts.find((timer) => timer.delay === 0);
+const aSync = intervals[0];
+audioA.dispatch("waiting");
+const aStarvation = timeouts.find((timer) => timer.delay === 200);
+
+const videoB = new Media("B"); const audioB = new Media("B");
+const sessionB = makeSession(2, programB, videoB, audioB);
+sessionA.cleanupState = "retired";
+sessionA.startupTimer = null;
+sessionA.syncTimer = null;
+sessionA.audioStarvationTimer = null;
+state.data = {{ playback_generation: 2, playback_program: programB }};
+state.hostPlaybackSession = sessionB;
+registerRendererTail(sessionB, {{ id: "B" }}, videoB, audioB);
+const bStartup = [...timeouts].reverse().find((timer) => timer.delay === 0);
+const bSync = intervals[1];
+audioB.dispatch("waiting");
+const bStarvation = [...timeouts].reverse().find((timer) => timer.delay === 200);
+const activeStartup = () => sessionB.startupTimer;
+const activeStarvation = () => sessionB.audioStarvationTimer;
+
+aStartup.callback();
+aSync.callback();
+aStarvation.callback();
+const afterRetired = {{
+  effects: [...effects],
+  startupPreserved: activeStartup() === bStartup,
+  starvationPreserved: activeStarvation() === bStarvation,
+}};
+
+bStartup.callback();
+bSync.callback();
+bStarvation.callback();
+console.log(JSON.stringify({{
+  afterRetired,
+  currentEffects: effects,
+  currentStartupCleared: !activeStartup(),
+  currentStarvationCleared: !activeStarvation(),
+}}));
+"""
+        )
+        self.assertEqual(
+            result["afterRetired"],
+            {"effects": [], "startupPreserved": True, "starvationPreserved": True},
+        )
+        self.assertNotIn("start:A", result["currentEffects"])
+        self.assertNotIn("sync:A", result["currentEffects"])
+        self.assertIn("start:B", result["currentEffects"])
+        self.assertGreaterEqual(result["currentEffects"].count("sync:B"), 2)
+        self.assertTrue(result["currentStartupCleared"])
+        self.assertTrue(result["currentStarvationCleared"])
+
+    def test_retired_hidden_pause_and_delayed_click_callbacks_do_not_touch_current_pair(self):
+        result = self.run_node_script(
+            f"""
+const effects = [];
+const timers = [];
+const window = {{
+  setTimeout(callback, delay) {{
+    const timer = {{ id: timers.length + 1, callback, delay }};
+    timers.push(timer);
+    return timer;
+  }},
+  clearTimeout() {{}},
+}};
+const document = {{ hidden: true }};
+const programA = {{ item_id: "A" }};
+const programB = {{ item_id: "B" }};
+const state = {{
+  data: {{ playback_generation: 1, playback_program: programA, current_item: {{ id: "A" }} }},
+  hostPlaybackSession: null,
+  localShouldBePlaying: true,
+  localSeekResumePending: false,
+  playerFrameClickTimer: null,
+}};
+function media(itemId) {{
+  return {{
+    dataset: {{ playerItemId: itemId }},
+    ended: false,
+    paused: true,
+    listeners: new Map(),
+    addEventListener(name, listener) {{ this.listeners.set(name, listener); }},
+    dispatch(name) {{ this.listeners.get(name)?.(); }},
+  }};
+}}
+function makeSession(generation, program, video, audio) {{
+  return {{
+    playbackGeneration: generation,
+    playbackProgram: program,
+    cleanupState: "active",
+    video,
+    audio,
+    hiddenPauseTimer: null,
+    frameClickTimer: null,
+  }};
+}}
+function isCurrentHostPlaybackSession(session, video, audio) {{
+  return session === state.hostPlaybackSession
+    && session?.cleanupState === "active"
+    && session.playbackGeneration === state.data.playback_generation
+    && session.playbackProgram === state.data.playback_program
+    && session.video === video
+    && session.audio === audio;
+}}
+function addMountedPlayerListener(target, name, listener) {{ target.addEventListener(name, listener); }}
+function shouldHoldCurrentItemForTransition() {{ return false; }}
+function syncSplitPlayer(video) {{ effects.push(`hidden-sync:${{video.dataset.playerItemId}}`); }}
+function currentAvOffsetSeconds() {{ return 0; }}
+function setSplitPlaybackIntent() {{ effects.push("intent"); }}
+function registerPause(session, currentItem, video, audio) {{
+  const reportCurrentVideoStatus = () => effects.push(`status:${{currentItem.id}}`);
+{self.pause_event_source}
+}}
+function presentationCompositionActive() {{ return false; }}
+function frontendPlaybackMode() {{ return "local"; }}
+function isLocalAdvanceHoldingItem() {{ return false; }}
+function activePrimaryVideoElement() {{ return state.hostPlaybackSession?.video || null; }}
+function activeLocalPlayerElements() {{
+  const current = state.hostPlaybackSession;
+  return {{ video: current?.video || null, audio: current?.audio || null }};
+}}
+function requestSplitPlaybackStartFromUserGesture() {{ return false; }}
+function setSplitPlaybackIntent() {{ return true; }}
+function currentAvOffsetSeconds() {{ return 0; }}
+function canTogglePlayerFullscreen() {{ return false; }}
+function togglePlayerFullscreen() {{ return Promise.resolve(); }}
+function renderPlayerFullscreenButton() {{}}
+const playerClickDelayMs = 220;
+{self.frame_click_source}
+toggleMountedLocalPlayback = () => {{
+  effects.push(`click:${{state.hostPlaybackSession?.video?.dataset?.playerItemId || ""}}`);
+  return true;
+}};
+
+const videoA = media("A"); const audioA = media("A");
+const sessionA = makeSession(1, programA, videoA, audioA);
+state.hostPlaybackSession = sessionA;
+registerPause(sessionA, {{ id: "A" }}, videoA, audioA);
+videoA.dispatch("pause");
+const aPauseTimer = timers[timers.length - 1];
+queuePlayerFrameSingleClick();
+const aClickTimer = timers[timers.length - 1];
+
+const videoB = media("B"); const audioB = media("B");
+const sessionB = makeSession(2, programB, videoB, audioB);
+sessionA.cleanupState = "retired";
+sessionA.hiddenPauseTimer = null;
+sessionA.frameClickTimer = null;
+state.data = {{ playback_generation: 2, playback_program: programB, current_item: {{ id: "B" }} }};
+state.hostPlaybackSession = sessionB;
+registerPause(sessionB, {{ id: "B" }}, videoB, audioB);
+videoB.dispatch("pause");
+const bPauseTimer = timers[timers.length - 1];
+queuePlayerFrameSingleClick();
+const bClickTimer = timers[timers.length - 1];
+const activePause = () => sessionB.hiddenPauseTimer;
+const activeClick = () => sessionB.frameClickTimer;
+
+aPauseTimer.callback();
+aClickTimer.callback();
+const afterRetired = {{
+  effects: [...effects],
+  pausePreserved: activePause() === bPauseTimer,
+  clickPreserved: activeClick() === bClickTimer,
+}};
+bPauseTimer.callback();
+bClickTimer.callback();
+console.log(JSON.stringify({{ afterRetired, effects }}));
+"""
+        )
+        self.assertEqual(
+            result["afterRetired"],
+            {"effects": [], "pausePreserved": True, "clickPreserved": True},
+        )
+        self.assertEqual(result["effects"], ["hidden-sync:B", "click:B"])
+
     def test_automatic_player_lifecycle_never_requests_native_control_visibility(self):
         renderer = self._slice("function renderPlayer(currentItem, playbackMode)", "function applyRemotePlayerControl")
         automatic_renderer = renderer[: renderer.index('  ["pointerenter", "pointermove", "pointerdown", "touchstart", "focus"].forEach')]
@@ -3348,7 +3785,7 @@ console.log(JSON.stringify({
     def test_only_one_player_renderer_and_one_sync_interval_remain(self):
         self.assertEqual(self.source.count("function renderPlayer(currentItem, playbackMode)"), 1)
         renderer = self._slice("function renderPlayer(currentItem, playbackMode)", "function applyRemotePlayerControl")
-        self.assertEqual(renderer.count("state.localPlayerSyncTimer = window.setInterval"), 1)
+        self.assertEqual(renderer.count("session.syncTimer = syncTimer"), 1)
         self.assertIn("clearLocalPlayerEventListeners(session)", self.source)
 
     def test_frontend_has_no_duplicate_active_function_declarations(self):

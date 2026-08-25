@@ -2313,6 +2313,58 @@ class PlayerResetRouteTest(unittest.TestCase):
             )
 
 
+class PlayerNextRouteTest(unittest.TestCase):
+    @staticmethod
+    def run_request(expected_generation: int, authoritative_generation: int) -> tuple[list, dict]:
+        program = {"current": "song-b", "queue": ["song-c"]}
+        calls: list[int | None] = []
+
+        def advance_to_next(playback_generation=None):
+            calls.append(playback_generation)
+            if playback_generation is not None and playback_generation != authoritative_generation:
+                raise ValueError("playback generation changed before Next was applied")
+            program["current"] = program["queue"].pop(0)
+
+        context = SimpleNamespace(
+            touch_client=lambda _client_id, is_host=True: None,
+            advance_to_next=advance_to_next,
+            snapshot=lambda: {
+                "state_revision": 99,
+                "playback_generation": authoritative_generation + 1,
+                "current_item": {"id": program["current"]},
+            },
+        )
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = "/api/player/next"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "playback_generation": expected_generation,
+            "state_revision": 1,
+        }
+        writes = []
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        return calls, {"program": program, "writes": writes}
+
+    def test_stale_generation_next_rejects_without_skipping_authoritative_current(self):
+        calls, result = self.run_request(7, 8)
+
+        self.assertEqual(calls, [7])
+        self.assertEqual(result["program"], {"current": "song-b", "queue": ["song-c"]})
+        self.assertEqual(result["writes"][0][1], server_module.HTTPStatus.BAD_REQUEST)
+
+    def test_exact_generation_ignores_python_state_revision_and_advances_once(self):
+        calls, result = self.run_request(8, 8)
+
+        self.assertEqual(calls, [8])
+        self.assertEqual(result["program"], {"current": "song-c", "queue": []})
+        self.assertIsNone(result["writes"][0][1])
+        self.assertEqual(result["writes"][0][0]["data"]["state_revision"], 99)
+
+
 class PlayerRestartProgramRouteTest(unittest.TestCase):
     def test_local_host_restart_returns_one_settings_preserving_lifetime(self):
         before = {

@@ -394,6 +394,7 @@ pub enum AppStateRequest {
     },
     AdvanceToNext {
         schema_version: u32,
+        expected_playback_generation: u64,
         #[serde(default)]
         reset_av_delay: bool,
         now: f64,
@@ -2711,10 +2712,21 @@ fn apply_mutation(
             Ok(MutationResult::changed(mutation_value(true), true))
         }
         AppStateRequest::AdvanceToNext {
+            expected_playback_generation,
             reset_av_delay,
             now,
             ..
         } => {
+            if expected_playback_generation != data.playback_generation {
+                return Err(rejected_with_details(
+                    "playback_generation_mismatch",
+                    "playback program changed before Next was applied",
+                    json!({
+                        "expected_playback_generation": expected_playback_generation,
+                        "actual_playback_generation": data.playback_generation,
+                    }),
+                ));
+            }
             if data.current_item.is_none() && data.playlist.is_empty() {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
             }
@@ -5115,6 +5127,7 @@ mod tests {
         }));
         let advanced = success(state.execute(AppStateRequest::AdvanceToNext {
             schema_version: 1,
+            expected_playback_generation: snapshot.playback_generation,
             reset_av_delay: false,
             now: 14.0,
         }))
@@ -5130,6 +5143,85 @@ mod tests {
         assert_eq!(advanced.history[0].requester_name, "Alice");
         assert_eq!(advanced.session_history[0].requester_name, "Alice");
         assert_eq!(advanced.session_played[0].ended_at, Some(14.0));
+    }
+
+    #[test]
+    fn advance_requires_the_exact_playback_generation_and_rejects_atomically() {
+        let mut state = AppState::default();
+        initialize(&mut state, seed());
+        for (id, bvid) in [("a", "BV-a"), ("b", "BV-b"), ("c", "BV-c")] {
+            success(state.execute(AppStateRequest::AddItem {
+                schema_version: 1,
+                item: item(id, bvid, ""),
+                position: "tail".to_owned(),
+                requester_name: "Alice".to_owned(),
+                reset_av_delay: false,
+                allow_repeat: false,
+                now: 11.0,
+            }));
+        }
+        let program_a = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+            .snapshot
+            .expect("program A snapshot");
+        let program_b = success(state.execute(AppStateRequest::MoveToFront {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            reset_av_delay: false,
+            now: 12.0,
+        }))
+        .snapshot
+        .expect("program B snapshot");
+        assert_eq!(
+            program_b.current_item.as_ref().map(|item| item.id.as_str()),
+            Some("b")
+        );
+
+        let metadata_only = success(state.execute(AppStateRequest::SetVolume {
+            schema_version: 1,
+            volume_percent: 37,
+            now: 13.0,
+        }))
+        .snapshot
+        .expect("metadata-only snapshot");
+        assert!(metadata_only.revision > program_b.revision);
+        assert_eq!(
+            metadata_only.playback_generation,
+            program_b.playback_generation
+        );
+
+        let before_stale = state.data.clone();
+        let stale = failure(state.execute(AppStateRequest::AdvanceToNext {
+            schema_version: 1,
+            expected_playback_generation: program_a.playback_generation,
+            reset_av_delay: false,
+            now: 14.0,
+        }));
+        assert_eq!(stale.error.kind, "playback_generation_mismatch");
+        assert_eq!(
+            stale.error.details,
+            Some(json!({
+                "expected_playback_generation": program_a.playback_generation,
+                "actual_playback_generation": program_b.playback_generation,
+            }))
+        );
+        assert_eq!(state.data, before_stale);
+
+        let advanced = success(state.execute(AppStateRequest::AdvanceToNext {
+            schema_version: 1,
+            expected_playback_generation: program_b.playback_generation,
+            reset_av_delay: false,
+            now: 15.0,
+        }))
+        .snapshot
+        .expect("exact-generation advance snapshot");
+        assert_eq!(
+            advanced.current_item.as_ref().map(|item| item.id.as_str()),
+            Some("c")
+        );
+        assert_eq!(
+            advanced.playback_generation,
+            program_b.playback_generation + 1
+        );
     }
 
     #[test]

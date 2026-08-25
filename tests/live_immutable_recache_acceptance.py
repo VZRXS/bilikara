@@ -40,6 +40,8 @@ SCENARIOS = (
     "session-rerender",
     "inverse-snapshot",
     "page-restore",
+    "rapid-session-switch",
+    "stale-next-recache",
 )
 
 
@@ -302,6 +304,16 @@ def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[s
         }, ["A", "B", "C"]
     if scenario == "page-restore":
         return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
+    if scenario == "rapid-session-switch":
+        return ["A", "B"], 2, {
+            "A": [{"fixture": "a1"}],
+            "B": [{"fixture": "b1"}],
+        }, ["A", "B"]
+    if scenario == "stale-next-recache":
+        return ["A", "B"], 2, {
+            "A": [{"fixture": "a1"}, {"fixture": "a2", "delay": 0.5}],
+            "B": [{"fixture": "b1"}],
+        }, ["A", "B"]
     raise ValueError(f"unknown scenario: {scenario}")
 
 
@@ -575,11 +587,11 @@ def _worker(args: argparse.Namespace) -> int:
     original_advance = context.advance_to_next
     advance_count = 0
 
-    def counted_advance() -> None:
+    def counted_advance(expected_playback_generation: int) -> None:
         nonlocal advance_count
         advance_count += 1
         events.append({"event": "advance_mutation", "count": advance_count})
-        original_advance()
+        original_advance(expected_playback_generation)
 
     context.advance_to_next = counted_advance  # type: ignore[method-assign]
 
@@ -642,7 +654,7 @@ def _worker(args: argparse.Namespace) -> int:
     )
     expected_current = (
         "B"
-        if args.scenario in {"normal-switch", "natural-ended"}
+        if args.scenario in {"normal-switch", "natural-ended", "rapid-session-switch"}
         else "C"
         if args.scenario in {"play-now-ready", "play-now-uncached", "inverse-snapshot"}
         else "A"
@@ -652,7 +664,13 @@ def _worker(args: argparse.Namespace) -> int:
         and published_directories_exist
         and (
             advance_count == 1
-            if args.scenario in {"normal-switch", "natural-ended"}
+            if args.scenario
+            in {
+                "normal-switch",
+                "natural-ended",
+                "rapid-session-switch",
+                "stale-next-recache",
+            }
             else advance_count == 0
         )
         and (
@@ -749,13 +767,17 @@ def _main(args: argparse.Namespace) -> int:
                 "--ffprobe",
                 str(ffprobe),
             ]
-            if scenario == "player-reset":
+            if scenario in {
+                "player-reset",
+                "rapid-session-switch",
+                "stale-next-recache",
+            }:
                 command.extend(
                     [
                         "--screenshot",
                         str(
                             evidence_path.with_name(
-                                f"{evidence_path.stem}-player-reset.png"
+                                f"{evidence_path.stem}-{scenario}.png"
                             )
                         ),
                     ]
@@ -820,6 +842,8 @@ def _main(args: argparse.Namespace) -> int:
                     "unchanged-program Host rerenders preserve one advancing media pair",
                     "inverse full-snapshot delivery cannot roll back the accepted program",
                     "page restore and Host reload each advance Rust generation before one fresh media lifetime",
+                    "rapid switch rejects late A play resolution/rejection without disturbing B",
+                    "stale delayed Next releases only its hold after immutable recache changes the program",
                 ],
                 "automated_coverage": [
                     "stale filesystem publication leaves an orphan",

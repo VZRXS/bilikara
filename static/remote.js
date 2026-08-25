@@ -6698,10 +6698,16 @@ async function sendPlayerNext() {
   if (!state.data?.current_item) {
     return;
   }
+  const expectedPlaybackGeneration = state.data.playback_generation;
+  if (!Number.isSafeInteger(expectedPlaybackGeneration) || expectedPlaybackGeneration < 1) {
+    return;
+  }
   try {
     state.playerControlPendingAction = "next-track";
     renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
-    applyStateSnapshot(await apiPost("/api/player/next"));
+    applyStateSnapshot(await apiPost("/api/player/next", {
+      playback_generation: expectedPlaybackGeneration,
+    }));
     setFormMessage(t("remote.nextSent"));
   } catch (error) {
     setFormMessage(error.message, true);

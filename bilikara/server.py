@@ -90,7 +90,7 @@ from .playlist_export import (
     prewarm_playlist_export_fonts,
 )
 from .remote_identity import RemoteIdentityStore
-from .store import PlaylistStore, PlaylistStoreCommandError
+from .store import MAX_SAFE_JSON_INTEGER, PlaylistStore, PlaylistStoreCommandError
 from .updater import AppUpdateManager, check_for_update
 
 mimetypes.add_type("video/mp4", ".mp4")
@@ -540,8 +540,9 @@ class AppContext:
                 self._rating_submission_keys.discard(old_key)
             return True
 
-    def advance_to_next(self) -> None:
+    def advance_to_next(self, expected_playback_generation: int) -> None:
         self.store.advance_to_next(
+            expected_playback_generation=expected_playback_generation,
             reset_av_delay=self.cache_manager.reset_offset_on_next
         )
         self.cache_manager.sync_with_playlist()
@@ -1560,7 +1561,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._handle_add(body)
                 return
             if route == "/api/player/next":
-                CONTEXT.advance_to_next()
+                expected_playback_generation = body.get("playback_generation")
+                if (
+                    isinstance(expected_playback_generation, bool)
+                    or not isinstance(expected_playback_generation, int)
+                    or expected_playback_generation < 1
+                    or expected_playback_generation > MAX_SAFE_JSON_INTEGER
+                ):
+                    raise ValueError("invalid playback_generation")
+                CONTEXT.advance_to_next(expected_playback_generation)
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/remove":
