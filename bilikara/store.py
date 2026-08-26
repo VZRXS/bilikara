@@ -1089,6 +1089,35 @@ class PlaylistStore:
             self._request("mark_current_item_started", item_id=str(item_id or ""))
         )
 
+    def apply_player_status_observation(
+        self,
+        *,
+        expected_playback_generation: int,
+        item_id: str,
+        is_paused: bool,
+        current_time: float,
+        duration: float,
+    ) -> dict[str, bool]:
+        result = self._request(
+            "apply_player_status_observation",
+            expected_playback_generation=expected_playback_generation,
+            item_id=str(item_id or ""),
+            is_paused=is_paused,
+            current_time=current_time,
+            duration=duration,
+        )
+        required = {"changed", "started_changed", "threshold_changed"}
+        if set(result) != required or any(
+            not isinstance(result.get(key), bool) for key in required
+        ):
+            raise rust_runtime.RustAppStateError(
+                "internal_error",
+                "invalid_player_status_observation_result",
+                "Rust AppState returned an invalid player-status observation result",
+                response={"result": copy.deepcopy(result)},
+            )
+        return {key: result[key] for key in required}
+
     def mark_session_played_threshold_reached(self, item_id: str) -> bool:
         return self._changed(
             self._request(

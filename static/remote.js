@@ -2417,6 +2417,13 @@ function applyStateSnapshot(snapshot, { forceRender = false } = {}) {
     || !state.data
     || nextRenderSignature !== state.dataRenderSignature;
   state.data = snapshot;
+  const programChanged = Boolean(
+    previousSnapshot
+    && previousSnapshot.playback_generation !== snapshot.playback_generation
+  );
+  if (programChanged || !currentPlayerStatus(snapshot.current_item, snapshot)) {
+    clearCurrentPlaybackClock();
+  }
   syncRemoteIdentityWithSnapshot(snapshot);
   scheduleFavlistBrowseReloadFromState(previousSnapshot, snapshot);
 
@@ -5809,9 +5816,19 @@ function canRemoteControlPlayer(currentItem, playbackMode) {
   return Boolean(currentItem && playbackMode === "local" && hasLocalSplitMedia(currentItem));
 }
 
-function currentPlayerStatus(currentItem) {
-  const playerStatus = state.data?.player_status;
+function currentPlayerStatus(currentItem, snapshot = state.data) {
+  const playerStatus = snapshot?.player_status;
   if (!currentItem || !playerStatus) {
+    return null;
+  }
+  const snapshotGeneration = Number(snapshot?.playback_generation);
+  const statusGeneration = Number(playerStatus.playback_generation);
+  if (
+    !Number.isSafeInteger(snapshotGeneration)
+    || snapshotGeneration < 1
+    || !Number.isSafeInteger(statusGeneration)
+    || statusGeneration !== snapshotGeneration
+  ) {
     return null;
   }
   if (String(playerStatus.item_id || "") !== String(currentItem.id || "")) {
@@ -5868,7 +5885,11 @@ function playerControlStatusSyncPending(currentItem, playerStatus = currentPlaye
   if (!sync) {
     return false;
   }
-  if (!currentItem || String(currentItem.id || "") !== sync.itemId) {
+  if (
+    !currentItem
+    || String(currentItem.id || "") !== sync.itemId
+    || state.data?.playback_generation !== sync.playbackGeneration
+  ) {
     clearPlayerControlStatusSync();
     return false;
   }
@@ -5914,6 +5935,7 @@ function beginPlayerControlStatusSync(currentItem) {
   }
   state.playerControlStatusSync = {
     itemId,
+    playbackGeneration: state.data?.playback_generation,
     updatedAfter: playerStatusUpdatedAt(currentPlayerStatus(currentItem)),
     expiresAt: Date.now() + playerControlStatusSyncTimeoutMs,
   };
@@ -5933,7 +5955,7 @@ function renderPlayerControls(currentItem, playbackMode) {
 
   const canControl = canRemoteControlPlayer(currentItem, playbackMode);
   const playerStatus = currentPlayerStatus(currentItem);
-  const isPaused = Boolean(playerStatus?.is_paused);
+  const isPaused = playerStatus ? Boolean(playerStatus.is_paused) : true;
   const controlSignature = JSON.stringify({
     itemId: currentItem.id || "",
     playbackMode,
@@ -6376,7 +6398,7 @@ function renderCurrentPlaybackState(current) {
   const reportedDurationSeconds = Number(playerStatus?.duration || 0);
   const durationSeconds = itemDurationSeconds > 0 ? itemDurationSeconds : reportedDurationSeconds;
   const currentSeconds = Math.max(0, Number(playerStatus?.current_time || 0));
-  const isPaused = Boolean(playerStatus?.is_paused);
+  const isPaused = playerStatus ? Boolean(playerStatus.is_paused) : true;
   const waitingForHostStatus = playerControlStatusSyncPending(current, playerStatus);
   if (!(durationSeconds > 0) || (!currentSeconds && isPaused)) {
     clearCurrentPlaybackClock();
@@ -6385,6 +6407,7 @@ function renderCurrentPlaybackState(current) {
   }
 
   const signature = [
+    state.data?.playback_generation || 0,
     current.id || "",
     Math.round(currentSeconds),
     Math.round(durationSeconds),

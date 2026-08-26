@@ -109,6 +109,51 @@ class RustAppStateStoreTest(unittest.TestCase):
         self.assertEqual(snapshot["revision"], before_rejection)
         self.assertEqual(store.revision, before_rejection)
 
+    def test_player_status_observation_adapter_preserves_exact_generation_rejection(self):
+        changes: list[str] = []
+        store = self.store(on_change=lambda: changes.append("changed"))
+        store.add_session_user("Alice")
+        store.add_item(item("a"), requester_name="Alice")
+        generation = store.playback_generation
+        changes.clear()
+
+        result = store.apply_player_status_observation(
+            expected_playback_generation=generation,
+            item_id="a",
+            is_paused=True,
+            current_time=50.0,
+            duration=100.0,
+        )
+        self.assertEqual(
+            result,
+            {
+                "changed": True,
+                "started_changed": True,
+                "threshold_changed": True,
+            },
+        )
+        self.assertTrue(store.current_item_started)
+        self.assertTrue(store.session_played[0].threshold_reached)
+        self.assertEqual(store.playback_generation, generation)
+        self.assertEqual(changes, ["changed"])
+
+        store.reset_player_state()
+        reset_generation = store.playback_generation
+        self.assertGreater(reset_generation, generation)
+        changes.clear()
+        before = store.authoritative_snapshot()
+        with self.assertRaises(PlaylistStoreCommandError) as rejected:
+            store.apply_player_status_observation(
+                expected_playback_generation=generation,
+                item_id="a",
+                is_paused=False,
+                current_time=75.0,
+                duration=100.0,
+            )
+        self.assertEqual(rejected.exception.kind, "playback_generation_mismatch")
+        self.assertEqual(store.authoritative_snapshot(), before)
+        self.assertEqual(changes, [])
+
     def test_cache_attempt_reservation_is_opaque_and_operational_only(self):
         changes: list[str] = []
         store = self.store(on_change=lambda: changes.append("changed"))

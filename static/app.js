@@ -12,6 +12,7 @@ const localPlayerSeekSettlePollMs = 50;
 const localPlayerSeekSettleMaxMs = 1400;
 const splitPlaybackStartupWatchdogMs = 3000;
 const tauriMediaSessionPositionUpdateMs = 1000;
+const playerStatusMaxSeconds = 7 * 24 * 60 * 60;
 const mediaPlayPromisesInFlight = new WeakSet();
 const audioVariantSwitchDebounceMs = 350;
 const playerSettingsEchoSuppressMs = 1800;
@@ -193,8 +194,6 @@ const state = {
   localPlayerMuted: false,
   pendingPlaybackRestore: null,
   lastAppliedPlayerControlSeq: 0,
-  lastReportedPlayerStatusSignature: "",
-  lastPlayerStatusHeartbeatAt: 0,
   tauriMediaSessionOwner: null,
   lastTauriMediaSessionPositionAt: 0,
   dragItemId: "",
@@ -1957,7 +1956,11 @@ function seekHostPlayer(video, audio, targetTime) {
           rejectCancelledSeek();
           return;
         }
-        reportPlayerStatus(video.dataset.playerItemId || "", video);
+        reportPlayerStatus(
+          video.dataset.playerItemId || "",
+          video,
+          playbackSession,
+        );
         resolve(true);
       },
     });
@@ -9267,6 +9270,7 @@ function handleTauriMediaSessionAction(action, details = {}) {
     return false;
   }
   const { video, audio } = activeLocalPlayerElements();
+  const playbackSession = state.hostPlaybackSession;
   if (!video || !audio) {
     clearTauriMediaSessionState();
     return false;
@@ -9305,7 +9309,11 @@ function handleTauriMediaSessionAction(action, details = {}) {
       diagnosticAction: eventName,
       onSettled: (applied) => {
         if (applied) {
-          reportPlayerStatus(video.dataset.playerItemId || "", video);
+          reportPlayerStatus(
+            video.dataset.playerItemId || "",
+            video,
+            playbackSession,
+          );
         }
       },
     });
@@ -10581,6 +10589,9 @@ function createHostPlaybackSession(playbackGeneration, playbackProgram) {
     loadingStarted: false,
     readyCommitted: false,
     readyCommitCount: 0,
+    statusSequence: 0,
+    lastReportedStatusSignature: "",
+    lastStatusHeartbeatAt: 0,
     logicalPlayIntent: true,
     initialIntentApplied: false,
     restoreStarted: false,
@@ -10660,8 +10671,6 @@ function retireHostPlaybackSession(
     state.localPlaybackStartGeneration = 0;
     state.localPlaybackStartPromisesSettled = false;
     state.localPlaybackEndHandled = false;
-    state.lastReportedPlayerStatusSignature = "";
-    state.lastPlayerStatusHeartbeatAt = 0;
     clearTauriMediaSessionState();
     if (!preserveAdvanceDelayOverlay) {
       state.pendingSongTransitionOverlayData = null;
@@ -11149,7 +11158,7 @@ function renderPlayer(currentItem, playbackMode) {
   });
 
   addMountedPlayerListener(video, "timeupdate", () => {
-    reportPlayerStatusHeartbeat(currentItem.id, video);
+    reportPlayerStatusHeartbeat(currentItem.id, video, session);
   });
 
   addMountedPlayerListener(video, "ratechange", () => {
@@ -11285,6 +11294,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
     } else {
       const video = elements.playerFrame.querySelector("video");
       const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
+      const playbackSession = state.hostPlaybackSession;
       if (video) {
         // WebKit can keep a successful active pair in "starting" until its
         // initial play promises settle. Remote controls must treat that pair
@@ -11350,7 +11360,7 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
                 diagnosticAction: "manual-video-seek",
                 onSettled: (applied) => {
                   if (applied) {
-                    reportPlayerStatus(currentItem.id, video);
+                    reportPlayerStatus(currentItem.id, video, playbackSession);
                   }
                 },
               });
@@ -11386,41 +11396,111 @@ async function ackRemotePlayerControl(seq) {
   }
 }
 
-function reportPlayerStatus(itemId, video, session = state.hostPlaybackSession) {
+function observedHostPlayerStatus(itemId, session, video, audio = session?.audio) {
   const normalizedItemId = String(itemId || "").trim();
   if (
     !normalizedItemId
     || !video
-    || !isCurrentHostPlaybackSession(session, video, session?.audio)
+    || !audio
+    || !isCurrentHostPlaybackSession(session, video, audio)
     || !session.readyCommitted
+  ) {
+    return null;
+  }
+
+  const rawCurrentTime = Number(video.currentTime || 0);
+  const rawDuration = Number(video.duration);
+  if (
+    !Number.isFinite(rawCurrentTime)
+    || rawCurrentTime < 0
+    || rawCurrentTime > playerStatusMaxSeconds
+    || (Number.isFinite(rawDuration) && (rawDuration < 0 || rawDuration > playerStatusMaxSeconds))
+  ) {
+    return null;
+  }
+  let observedPhase = "paused";
+  if (audio.ended) {
+    observedPhase = "ended";
+  } else if (hostPlaybackSessionObservedPlaying(session, video, audio)) {
+    observedPhase = "playing";
+  } else if (session.phase === "ready-paused") {
+    observedPhase = "ready-paused";
+  } else if (session.phase === "starting" || session.phase === "start-retry-wait") {
+    observedPhase = "starting";
+  } else if (session.phase === "needs-user-gesture") {
+    observedPhase = "needs-user-gesture";
+  } else if (session.phase === "failed") {
+    observedPhase = "failed";
+  }
+  return {
+    observed_phase: observedPhase,
+    is_paused: observedPhase !== "playing",
+    current_time: rawCurrentTime,
+    duration: Number.isFinite(rawDuration) ? rawDuration : 0,
+  };
+}
+
+function nextHostPlayerStatusSequence(session) {
+  const currentSequence = Number(session?.statusSequence);
+  if (
+    !session
+    || !Number.isSafeInteger(currentSequence)
+    || currentSequence < 0
+    || currentSequence >= Number.MAX_SAFE_INTEGER
+  ) {
+    return null;
+  }
+  const nextSequence = currentSequence + 1;
+  if (!Number.isSafeInteger(nextSequence) || nextSequence < 1) {
+    return null;
+  }
+  session.statusSequence = nextSequence;
+  return nextSequence;
+}
+
+function reportPlayerStatus(itemId, video, session) {
+  const observed = observedHostPlayerStatus(itemId, session, video, session?.audio);
+  const playbackGeneration = Number(session?.playbackGeneration);
+  if (
+    !observed
+    || !Number.isSafeInteger(playbackGeneration)
+    || playbackGeneration < 1
   ) {
     return false;
   }
 
-  const currentTime = Number(video.currentTime || 0);
-  const duration = Number.isFinite(video.duration) ? Number(video.duration) : 0;
+  const normalizedItemId = String(itemId || "").trim();
   syncTauriMediaSessionState(video);
   publishPresentationPlaybackState(session).catch(() => {});
   const currentItem = state.data?.current_item;
   if (currentItem && String(currentItem.id || "") === normalizedItemId) {
-    maybeShowRatingPromptForProgress(currentItem, currentTime, duration);
+    maybeShowRatingPromptForProgress(
+      currentItem,
+      observed.current_time,
+      observed.duration,
+    );
   }
   const signature = [
     normalizedItemId,
-    video.paused ? "paused" : "playing",
-    Math.round(currentTime),
-    Math.round(duration),
+    observed.observed_phase,
+    observed.is_paused ? "paused" : "playing",
+    Math.round(observed.current_time),
+    Math.round(observed.duration),
   ].join("|");
-  if (signature === state.lastReportedPlayerStatusSignature) {
+  if (signature === session.lastReportedStatusSignature) {
     return false;
   }
-  state.lastReportedPlayerStatusSignature = signature;
+  const statusSequence = nextHostPlayerStatusSequence(session);
+  if (statusSequence === null) {
+    return false;
+  }
+  session.lastReportedStatusSignature = signature;
 
   apiPost("/api/player/status", {
+    playback_generation: playbackGeneration,
+    status_sequence: statusSequence,
     item_id: normalizedItemId,
-    is_paused: video.paused,
-    current_time: currentTime,
-    duration,
+    ...observed,
     client_info: {
       user_agent: String(window.navigator?.userAgent || ""),
       platform: String(window.navigator?.platform || ""),
@@ -11431,8 +11511,7 @@ function reportPlayerStatus(itemId, video, session = state.hostPlaybackSession) 
   return true;
 }
 
-function reportPlayerStatusHeartbeat(itemId, video) {
-  const session = state.hostPlaybackSession;
+function reportPlayerStatusHeartbeat(itemId, video, session) {
   if (
     !video
     || video.paused
@@ -11442,10 +11521,10 @@ function reportPlayerStatusHeartbeat(itemId, video) {
     return;
   }
   const now = Date.now();
-  if (now - Number(state.lastPlayerStatusHeartbeatAt || 0) < 5000) {
+  if (now - Number(session.lastStatusHeartbeatAt || 0) < 5000) {
     return;
   }
-  state.lastPlayerStatusHeartbeatAt = now;
+  session.lastStatusHeartbeatAt = now;
   reportPlayerStatus(itemId, video, session);
 }
 

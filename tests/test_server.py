@@ -819,28 +819,325 @@ class AppContextPlayerStatusTest(unittest.TestCase):
         context._player_status = None
         context._state_change_condition = threading.Condition()
         context._state_revision = 0
-        context.store = SimpleNamespace(mark_item_playback_started=lambda item_id: None)
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+        context.store = PlaylistStore(
+            root / "state.json",
+            root / "backup.json",
+            root / "played",
+            on_change=context._notify_state_changed,
+        )
+        context.store.add_session_user("Alice")
+        context.store.add_item(
+            PlaylistItem(
+                id="song-1",
+                original_url="https://example.test/song-1",
+                resolved_url="https://example.test/song-1?p=1",
+                bvid="BV0000000001",
+                aid=1,
+                cid=2,
+                page=1,
+                title="Song 1",
+                part_title="P1",
+                display_title="Song 1 - P1",
+                cover_url="",
+                embed_url="",
+            ),
+            requester_name="Alice",
+        )
+        context._state_revision = 0
         return context
 
-    def test_player_status_preserves_reported_duration(self):
+    @staticmethod
+    def report(
+        context: AppContext,
+        *,
+        generation: int,
+        sequence: int,
+        current_time: float,
+        duration: float = 100.0,
+        phase: str = "playing",
+        is_paused: bool = False,
+    ) -> dict[str, object]:
+        return context.update_player_status(
+            playback_generation=generation,
+            status_sequence=sequence,
+            item_id="song-1",
+            observed_phase=phase,
+            is_paused=is_paused,
+            current_time=current_time,
+            duration=duration,
+            client_info={"platform": "test"},
+        )
+
+    def test_ordering_duplicate_and_inverse_arrival_change_revision_only_when_visible(self):
         context = self.make_context()
+        generation = context.store.playback_generation
 
-        context.update_player_status(
-            item_id="song-1",
-            is_paused=False,
-            current_time=12.0,
-            duration=123.4,
+        first = self.report(
+            context,
+            generation=generation,
+            sequence=1,
+            current_time=50.0,
         )
-        context.update_player_status(
-            item_id="song-1",
-            is_paused=True,
-            current_time=13.0,
-        )
+        self.assertTrue(first["accepted"])
+        self.assertTrue(first["changed"])
+        self.assertTrue(context.store.current_item_started)
+        self.assertTrue(context.store.session_played[0].threshold_reached)
+        self.assertEqual(context._state_revision, 1)
 
-        snapshot = context.player_status_snapshot({"id": "song-1"})
+        higher = self.report(
+            context,
+            generation=generation,
+            sequence=2,
+            current_time=51.0,
+        )
+        self.assertTrue(higher["accepted"])
+        self.assertTrue(higher["changed"])
+        self.assertEqual(context._state_revision, 2)
+
+        duplicate = self.report(
+            context,
+            generation=generation,
+            sequence=2,
+            current_time=51.0,
+        )
+        self.assertTrue(duplicate["accepted"])
+        self.assertTrue(duplicate["duplicate"])
+        self.assertFalse(duplicate["changed"])
+        self.assertEqual(context._state_revision, 2)
+
+        with self.assertRaises(server_module.PlayerStatusAdmissionError) as conflict:
+            self.report(
+                context,
+                generation=generation,
+                sequence=2,
+                current_time=52.0,
+            )
+        self.assertEqual(conflict.exception.kind, "player_status_sequence_conflict")
+        self.assertEqual(context._state_revision, 2)
+
+        newest = self.report(
+            context,
+            generation=generation,
+            sequence=4,
+            current_time=54.0,
+        )
+        self.assertTrue(newest["changed"])
+        self.assertEqual(context._state_revision, 3)
+        with self.assertRaises(server_module.PlayerStatusAdmissionError) as stale:
+            self.report(
+                context,
+                generation=generation,
+                sequence=3,
+                current_time=53.0,
+            )
+        self.assertEqual(stale.exception.kind, "player_status_sequence_stale")
+        self.assertEqual(context._state_revision, 3)
+
+        ordering_only = self.report(
+            context,
+            generation=generation,
+            sequence=5,
+            current_time=54.0,
+        )
+        self.assertTrue(ordering_only["accepted"])
+        self.assertFalse(ordering_only["changed"])
+        self.assertEqual(context._state_revision, 3)
+
+        snapshot = context.player_status_snapshot(context.store.snapshot())
         self.assertIsNotNone(snapshot)
-        self.assertEqual(snapshot["duration"], 123.4)
-        self.assertEqual(snapshot["current_time"], 13.0)
+        self.assertEqual(snapshot["playback_generation"], generation)
+        self.assertEqual(snapshot["current_time"], 54.0)
+        self.assertNotIn("status_sequence", snapshot)
+
+    def test_program_change_hides_status_and_stale_generation_has_no_side_effect(self):
+        context = self.make_context()
+        generation = context.store.playback_generation
+        self.report(
+            context,
+            generation=generation,
+            sequence=1,
+            current_time=0.0,
+            phase="ready-paused",
+            is_paused=True,
+        )
+        self.assertFalse(context.store.current_item_started)
+        self.assertIsNotNone(
+            context.player_status_snapshot(context.store.snapshot())
+        )
+
+        context._notify_state_changed()
+        same_program = context.store.snapshot()
+        self.assertEqual(same_program["playback_generation"], generation)
+        self.assertIsNotNone(context.player_status_snapshot(same_program))
+
+        context.store.restart_playback_program()
+        replacement = context.store.snapshot()
+        self.assertGreater(replacement["playback_generation"], generation)
+        self.assertIsNone(context.player_status_snapshot(replacement))
+        revision_after_replacement = context._state_revision
+        before_rust = context.store.authoritative_snapshot()
+        with self.assertRaises(server_module.PlayerStatusAdmissionError) as stale:
+            self.report(
+                context,
+                generation=generation,
+                sequence=2,
+                current_time=75.0,
+            )
+        self.assertEqual(stale.exception.kind, "playback_generation_mismatch")
+        self.assertEqual(context.store.authoritative_snapshot(), before_rust)
+        self.assertEqual(context._state_revision, revision_after_replacement)
+        self.assertFalse(context.store.current_item_started)
+        self.assertFalse(context.store.session_played[0].threshold_reached)
+
+        current = self.report(
+            context,
+            generation=replacement["playback_generation"],
+            sequence=1,
+            current_time=0.0,
+            phase="ready-paused",
+            is_paused=True,
+        )
+        self.assertTrue(current["accepted"])
+        projected = context.player_status_snapshot(context.store.snapshot())
+        self.assertEqual(
+            projected["playback_generation"],
+            replacement["playback_generation"],
+        )
+
+
+class PlayerStatusRouteTest(unittest.TestCase):
+    @staticmethod
+    def run_request(
+        body: dict[str, object],
+        *,
+        rejection: server_module.PlayerStatusAdmissionError | None = None,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = "/api/player/status"
+        handler.headers = {}
+        handler._read_json_body = lambda: body
+        writes: list[dict[str, object]] = []
+        calls: list[dict[str, object]] = []
+        handler._write_json = lambda payload, status=None: writes.append(
+            {"payload": payload, "status": status}
+        )
+        def update_player_status(**kwargs):
+            calls.append(kwargs)
+            if rejection is not None:
+                raise rejection
+            return {"accepted": True, "duplicate": False, "changed": True}
+
+        context = SimpleNamespace(
+            touch_client=lambda _client_id, is_host=True: None,
+            update_player_status=update_player_status,
+        )
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+        return calls, writes
+
+    @staticmethod
+    def valid_body() -> dict[str, object]:
+        return {
+            "playback_generation": 7,
+            "status_sequence": 3,
+            "item_id": "song-1",
+            "observed_phase": "playing",
+            "is_paused": False,
+            "current_time": 12.5,
+            "duration": 100.0,
+            "client_info": {"platform": "test"},
+        }
+
+    def test_route_forwards_one_normalized_bounded_observation(self):
+        calls, writes = self.run_request(self.valid_body())
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["playback_generation"], 7)
+        self.assertEqual(calls[0]["status_sequence"], 3)
+        self.assertEqual(calls[0]["observed_phase"], "playing")
+        self.assertEqual(calls[0]["current_time"], 12.5)
+        self.assertEqual(
+            writes,
+            [
+                {
+                    "payload": {
+                        "ok": True,
+                        "data": {
+                            "accepted": True,
+                            "duplicate": False,
+                            "changed": True,
+                        },
+                    },
+                    "status": None,
+                }
+            ],
+        )
+
+    def test_route_rejects_invalid_identity_phase_and_numeric_bounds(self):
+        invalid_cases = [
+            ("playback_generation", None),
+            ("playback_generation", True),
+            ("playback_generation", 0),
+            ("playback_generation", 9_007_199_254_740_992),
+            ("status_sequence", None),
+            ("status_sequence", 0),
+            ("status_sequence", 9_007_199_254_740_992),
+            ("item_id", 1),
+            ("item_id", ""),
+            ("item_id", "x" * (server_module.PLAYER_STATUS_ITEM_ID_MAX_BYTES + 1)),
+            ("observed_phase", "binding"),
+            ("observed_phase", 1),
+            ("current_time", -1.0),
+            ("current_time", float("nan")),
+            ("current_time", float("inf")),
+            ("duration", -1.0),
+            ("duration", server_module.PLAYER_STATUS_MAX_SECONDS + 1),
+        ]
+        for field, value in invalid_cases:
+            with self.subTest(field=field, value=value):
+                body = self.valid_body()
+                body[field] = value
+                calls, writes = self.run_request(body)
+                self.assertEqual(calls, [])
+                self.assertEqual(writes[0]["status"], server_module.HTTPStatus.BAD_REQUEST)
+                self.assertFalse(writes[0]["payload"]["ok"])
+
+        conflicting = self.valid_body()
+        conflicting["is_paused"] = True
+        calls, writes = self.run_request(conflicting)
+        self.assertEqual(calls, [])
+        self.assertEqual(writes[0]["status"], server_module.HTTPStatus.BAD_REQUEST)
+
+    def test_route_maps_typed_stale_status_rejection_to_noop_envelope(self):
+        calls, writes = self.run_request(
+            self.valid_body(),
+            rejection=server_module.PlayerStatusAdmissionError(
+                "playback_generation_mismatch",
+                "playback program changed",
+            ),
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            writes,
+            [
+                {
+                    "payload": {
+                        "ok": True,
+                        "data": {
+                            "accepted": False,
+                            "duplicate": False,
+                            "changed": False,
+                            "reason": "playback_generation_mismatch",
+                        },
+                    },
+                    "status": None,
+                }
+            ],
+        )
 
 
 class AppContextPlayerDiagnosticTest(unittest.TestCase):

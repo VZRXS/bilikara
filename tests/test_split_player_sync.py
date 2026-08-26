@@ -194,6 +194,7 @@ const localPlayerSeekSettlePollMs = 50;
 const localPlayerSeekSettleMaxMs = 1400;
 const splitPlaybackStartupWatchdogMs = 3000;
 const tauriMediaSessionPositionUpdateMs = 1000;
+const playerStatusMaxSeconds = 7 * 24 * 60 * 60;
 const mediaPlayPromisesInFlight = new WeakSet();
 let nowMs = 1000;
 Date.now = () => nowMs;
@@ -1617,9 +1618,9 @@ console.log(JSON.stringify({ beforeCommit, advances, handled: state.localPlaybac
         self.assertEqual(result["advances"], 1)
         self.assertTrue(result["handled"])
 
-    def test_uncommitted_candidate_cannot_publish_player_status(self):
+    def test_program_scoped_player_status_is_observed_ordered_and_session_owned(self):
         status_source = self._slice(
-            "function reportPlayerStatus",
+            "function observedHostPlayerStatus",
             "function renderPlaylist",
         )
         result = self.run_node(
@@ -1627,21 +1628,34 @@ console.log(JSON.stringify({ beforeCommit, advances, handled: state.localPlaybac
 const video = new FakeMedia(18); const audio = new FakeMedia(17.8);
 video.paused = false; audio.paused = false;
 mountedVideo = video; mountedAudio = audio;
+const programA = {
+  item_id: "item",
+  item_incarnation_id: "i-a",
+  selected_audio_variant_id: "instrumental",
+  artifact_set_id: "a-a",
+};
 Object.assign(state.hostPlaybackSession, {
   phase: "binding",
   video,
   audio,
   readyCommitted: false,
+  playbackGeneration: 7,
+  playbackProgram: programA,
+  statusSequence: 0,
+  lastReportedStatusSignature: "",
+  lastStatusHeartbeatAt: 0,
 });
-state.data = { current_item: { id: "item" } };
-state.lastReportedPlayerStatusSignature = "";
-state.lastPlayerStatusHeartbeatAt = -10000;
+state.data = {
+  playback_generation: 7,
+  playback_program: programA,
+  current_item: { id: "item" },
+};
 let mediaSessionPublishes = 0;
 let presentationPublishes = 0;
 syncTauriMediaSessionState = () => { mediaSessionPublishes += 1; return true; };
 publishPresentationPlaybackState = () => { presentationPublishes += 1; return Promise.resolve(); };
 const beforeCommit = reportPlayerStatus("item", video, state.hostPlaybackSession);
-reportPlayerStatusHeartbeat("item", video);
+reportPlayerStatusHeartbeat("item", video, state.hostPlaybackSession);
 const beforeCounts = {
   diagnosticPosts: diagnosticPosts.length,
   mediaSessionPublishes,
@@ -1650,11 +1664,59 @@ const beforeCounts = {
 state.hostPlaybackSession.readyCommitted = true;
 state.hostPlaybackSession.phase = "playing";
 const afterCommit = reportPlayerStatus("item", video, state.hostPlaybackSession);
+const duplicate = reportPlayerStatus("item", video, state.hostPlaybackSession);
+reportPlayerStatusHeartbeat("item", video, state.hostPlaybackSession);
+nowMs = 6001;
+video.currentTime = 24;
+reportPlayerStatusHeartbeat("item", video, state.hostPlaybackSession);
+
+for (const phase of ["ready-paused", "starting", "needs-user-gesture", "failed"]) {
+  state.hostPlaybackSession.phase = phase;
+  video.currentTime += 1;
+  reportPlayerStatus("item", video, state.hostPlaybackSession);
+}
+state.hostPlaybackSession.phase = "playing";
+video.currentTime += 1;
+reportPlayerStatus("item", video, state.hostPlaybackSession);
+
+const retiredSession = state.hostPlaybackSession;
+const videoB = new FakeMedia(3); const audioB = new FakeMedia(2.8);
+videoB.paused = false; audioB.paused = false;
+mountedVideo = videoB; mountedAudio = audioB;
+const programB = { ...programA, artifact_set_id: "a-b" };
+state.hostPlaybackSession = {
+  ...retiredSession,
+  phase: "playing",
+  video: videoB,
+  audio: audioB,
+  playbackGeneration: 8,
+  playbackProgram: programB,
+  statusSequence: 0,
+  lastReportedStatusSignature: "",
+  lastStatusHeartbeatAt: 0,
+};
+state.data = {
+  playback_generation: 8,
+  playback_program: programB,
+  current_item: { id: "item" },
+};
+const lateOldSession = reportPlayerStatus("item", video, retiredSession);
+const newSessionFirst = reportPlayerStatus("item", videoB, state.hostPlaybackSession);
+state.hostPlaybackSession.statusSequence = Number.MAX_SAFE_INTEGER;
+videoB.currentTime += 1;
+const exhausted = reportPlayerStatus("item", videoB, state.hostPlaybackSession);
 await Promise.resolve();
 console.log(JSON.stringify({
   beforeCommit,
   beforeCounts,
   afterCommit,
+  duplicate,
+  lateOldSession,
+  newSessionFirst,
+  exhausted,
+  statusPosts: diagnosticPosts
+    .filter((entry) => entry.url === "/api/player/status")
+    .map((entry) => entry.payload),
   afterCounts: {
     diagnosticPosts: diagnosticPosts.length,
     mediaSessionPublishes,
@@ -1686,14 +1748,28 @@ function maybeShowRatingPromptForProgress() {}
             },
         )
         self.assertTrue(result["afterCommit"])
+        self.assertFalse(result["duplicate"])
+        self.assertFalse(result["lateOldSession"])
+        self.assertTrue(result["newSessionFirst"])
+        self.assertFalse(result["exhausted"])
+        posts = result["statusPosts"]
+        generation_seven = [post for post in posts if post["playback_generation"] == 7]
+        generation_eight = [post for post in posts if post["playback_generation"] == 8]
         self.assertEqual(
-            result["afterCounts"],
-            {
-                "diagnosticPosts": 1,
-                "mediaSessionPublishes": 1,
-                "presentationPublishes": 1,
-            },
+            [post["status_sequence"] for post in generation_seven],
+            list(range(1, len(generation_seven) + 1)),
         )
+        self.assertEqual([post["status_sequence"] for post in generation_eight], [1])
+        self.assertEqual(generation_seven[0]["observed_phase"], "playing")
+        self.assertFalse(generation_seven[0]["is_paused"])
+        normalized_phases = {
+            post["observed_phase"]: post["is_paused"] for post in generation_seven
+        }
+        for phase in ("ready-paused", "starting", "needs-user-gesture", "failed"):
+            self.assertTrue(normalized_phases[phase])
+        self.assertFalse(normalized_phases["playing"])
+        self.assertGreaterEqual(result["afterCounts"]["mediaSessionPublishes"], len(posts))
+        self.assertGreaterEqual(result["afterCounts"]["presentationPublishes"], len(posts))
 
     def test_packaged_tauri_webkit_fresh_start_resolves_without_user_gesture(self):
         result = self.run_node(

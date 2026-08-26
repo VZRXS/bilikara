@@ -358,8 +358,6 @@ const state = {{
   localPlaybackEndHandled: false,
   pendingSongTransitionOverlayData: null,
   pendingSongTransitionGeneration: 0,
-  lastReportedPlayerStatusSignature: "B|playing|0|0",
-  lastPlayerStatusHeartbeatAt: 10,
 }};
 function clearLocalPlayerEventListeners() {{}}
 function clearWebKitAudioStarvationTimer() {{}}

@@ -22,6 +22,8 @@ const MAX_SONG_ADVANCE_DELAY_SECONDS: i32 = 30;
 const MIN_KEY_SHIFT: i32 = -6;
 const MAX_KEY_SHIFT: i32 = 6;
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+const PLAYER_STATUS_MAX_SECONDS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
+const PLAYER_STATUS_THRESHOLD_RATIO: f64 = 0.5;
 const IDENTITY_NAMESPACE_BYTES: usize = 16;
 const ARTIFACT_ROOT_COMPONENT: &str = "artifacts";
 
@@ -532,6 +534,15 @@ pub enum AppStateRequest {
     RestartPlaybackProgram {
         schema_version: u32,
     },
+    ApplyPlayerStatusObservation {
+        schema_version: u32,
+        expected_playback_generation: u64,
+        item_id: String,
+        is_paused: bool,
+        current_time: f64,
+        duration: f64,
+        now: f64,
+    },
     MarkCurrentItemStarted {
         schema_version: u32,
         item_id: String,
@@ -626,6 +637,7 @@ impl AppStateRequest {
             | Self::ResetRuntime { schema_version, .. }
             | Self::ResetPlayer { schema_version, .. }
             | Self::RestartPlaybackProgram { schema_version }
+            | Self::ApplyPlayerStatusObservation { schema_version, .. }
             | Self::MarkCurrentItemStarted { schema_version, .. }
             | Self::MarkSessionPlayedThreshold { schema_version, .. }
             | Self::AppendHistory { schema_version, .. }
@@ -672,6 +684,7 @@ impl AppStateRequest {
             | Self::BeginSession { now, .. }
             | Self::ResetRuntime { now, .. }
             | Self::ResetPlayer { now, .. }
+            | Self::ApplyPlayerStatusObservation { now, .. }
             | Self::MarkCurrentItemStarted { now, .. }
             | Self::MarkSessionPlayedThreshold { now, .. }
             | Self::AppendHistory { now, .. }
@@ -3231,6 +3244,79 @@ fn apply_mutation(
             result.effects = PersistenceEffects::default();
             Ok(result)
         }
+        AppStateRequest::ApplyPlayerStatusObservation {
+            expected_playback_generation,
+            item_id,
+            is_paused,
+            current_time,
+            duration,
+            ..
+        } => {
+            if expected_playback_generation != data.playback_generation {
+                return Err(rejected_with_details(
+                    "playback_generation_mismatch",
+                    "playback program changed before player status was applied",
+                    json!({
+                        "expected_playback_generation": expected_playback_generation,
+                        "actual_playback_generation": data.playback_generation,
+                    }),
+                ));
+            }
+            let Some(program) = data.playback_program()? else {
+                return Err(rejected(
+                    "no_current_playback_program",
+                    "player status requires a current playback program",
+                ));
+            };
+            let normalized_item_id = item_id.trim();
+            if !valid_string(normalized_item_id, MAX_ITEM_ID_BYTES, false)
+                || program.item_id != normalized_item_id
+            {
+                return Err(rejected_with_details(
+                    "playback_program_mismatch",
+                    "player status item does not match the current playback program",
+                    json!({
+                        "expected_item_id": normalized_item_id,
+                        "actual_item_id": program.item_id,
+                    }),
+                ));
+            }
+            validate_time(current_time, "current_time")?;
+            validate_time(duration, "duration")?;
+            if current_time > PLAYER_STATUS_MAX_SECONDS || duration > PLAYER_STATUS_MAX_SECONDS {
+                return Err(rejected(
+                    "invalid_player_status_time",
+                    "player status time exceeds the supported bound",
+                ));
+            }
+
+            let started_changed = (!is_paused || current_time > 0.0) && !data.current_item_started;
+            if started_changed {
+                data.current_item_started = true;
+            }
+            let threshold_reached =
+                duration > 0.0 && current_time / duration >= PLAYER_STATUS_THRESHOLD_RATIO;
+            let mut threshold_changed = false;
+            if threshold_reached {
+                for entry in &mut data.session_played {
+                    if entry.item_id == normalized_item_id && !entry.threshold_reached {
+                        entry.threshold_reached = true;
+                        threshold_changed = true;
+                    }
+                }
+            }
+            let changed = started_changed || threshold_changed;
+            let result = json!({
+                "changed": changed,
+                "started_changed": started_changed,
+                "threshold_changed": threshold_changed,
+            });
+            if changed {
+                Ok(MutationResult::changed(result, threshold_changed))
+            } else {
+                Ok(MutationResult::unchanged(result))
+            }
+        }
         AppStateRequest::MarkCurrentItemStarted { item_id, .. } => {
             if data.current_identity() != Some(item_id.trim()) {
                 return Ok(MutationResult::unchanged(mutation_value(false)));
@@ -3990,6 +4076,26 @@ mod tests {
             item_id: item_id.to_owned(),
             cache_attempt_token,
             event,
+            now,
+        })
+    }
+
+    fn apply_player_status_observation(
+        state: &mut AppState,
+        expected_playback_generation: u64,
+        item_id: &str,
+        is_paused: bool,
+        current_time: f64,
+        duration: f64,
+        now: f64,
+    ) -> AppStateResponse {
+        state.execute(AppStateRequest::ApplyPlayerStatusObservation {
+            schema_version: 1,
+            expected_playback_generation,
+            item_id: item_id.to_owned(),
+            is_paused,
+            current_time,
+            duration,
             now,
         })
     }
@@ -5221,6 +5327,175 @@ mod tests {
         assert_eq!(
             advanced.playback_generation,
             program_b.playback_generation + 1
+        );
+    }
+
+    #[test]
+    fn exact_generation_player_status_applies_both_marks_without_program_bump() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.session_played = vec![played("a", "Alice")];
+        let mounted = initialize(&mut state, initial);
+
+        let applied = success(apply_player_status_observation(
+            &mut state,
+            mounted.playback_generation,
+            "a",
+            true,
+            50.0,
+            100.0,
+            11.0,
+        ));
+        assert!(applied.committed);
+        assert_eq!(
+            applied.result,
+            json!({
+                "changed": true,
+                "started_changed": true,
+                "threshold_changed": true,
+            })
+        );
+        let applied_snapshot = applied.snapshot.expect("applied status snapshot");
+        assert!(applied_snapshot.current_item_started);
+        assert!(applied_snapshot.session_played[0].threshold_reached);
+        assert_eq!(
+            applied_snapshot.playback_generation,
+            mounted.playback_generation
+        );
+
+        let replay = success(apply_player_status_observation(
+            &mut state,
+            mounted.playback_generation,
+            "a",
+            true,
+            50.0,
+            100.0,
+            12.0,
+        ));
+        assert!(!replay.committed);
+        assert_eq!(
+            replay.result,
+            json!({
+                "changed": false,
+                "started_changed": false,
+                "threshold_changed": false,
+            })
+        );
+        let replay_snapshot = replay.snapshot.expect("replayed status snapshot");
+        assert_eq!(replay_snapshot.revision, applied_snapshot.revision);
+        assert_eq!(
+            replay_snapshot.playback_generation,
+            mounted.playback_generation
+        );
+    }
+
+    #[test]
+    fn reset_player_rejects_old_generation_status_atomically() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.current_item_started = true;
+        initial.session_played = vec![played("a", "Alice")];
+        let mounted = initialize(&mut state, initial);
+        let reset = success(state.execute(AppStateRequest::ResetPlayer {
+            schema_version: 1,
+            now: 11.0,
+        }))
+        .snapshot
+        .expect("reset snapshot");
+        assert_eq!(reset.playback_generation, mounted.playback_generation + 1);
+        assert!(!reset.current_item_started);
+
+        let before_stale = state.data.clone();
+        let stale = failure(apply_player_status_observation(
+            &mut state,
+            mounted.playback_generation,
+            "a",
+            false,
+            75.0,
+            100.0,
+            12.0,
+        ));
+        assert_eq!(stale.error.kind, "playback_generation_mismatch");
+        assert_eq!(state.data, before_stale);
+
+        let current = success(apply_player_status_observation(
+            &mut state,
+            reset.playback_generation,
+            "a",
+            false,
+            0.0,
+            100.0,
+            13.0,
+        ));
+        let current_snapshot = current.snapshot.expect("current status snapshot");
+        assert!(current_snapshot.current_item_started);
+        assert!(!current_snapshot.session_played[0].threshold_reached);
+        assert_eq!(
+            current_snapshot.playback_generation,
+            reset.playback_generation
+        );
+    }
+
+    #[test]
+    fn same_id_new_incarnation_cannot_receive_old_generation_status_marks() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-old", "Alice"));
+        initial.session_played = vec![played("a", "Alice")];
+        let old = initialize(&mut state, initial);
+        let old_incarnation = old
+            .current_item
+            .expect("old current item")
+            .item_incarnation_id;
+
+        success(state.execute(AppStateRequest::RemoveItem {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            now: 11.0,
+        }));
+        let replacement = success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("a", "BV-new", ""),
+            position: "tail".to_owned(),
+            requester_name: "Alice".to_owned(),
+            reset_av_delay: false,
+            allow_repeat: true,
+            now: 12.0,
+        }))
+        .snapshot
+        .expect("replacement snapshot");
+        assert_ne!(
+            replacement
+                .current_item
+                .as_ref()
+                .expect("replacement current item")
+                .item_incarnation_id,
+            old_incarnation
+        );
+
+        let before_stale = state.data.clone();
+        let stale = failure(apply_player_status_observation(
+            &mut state,
+            old.playback_generation,
+            "a",
+            false,
+            75.0,
+            100.0,
+            13.0,
+        ));
+        assert_eq!(stale.error.kind, "playback_generation_mismatch");
+        assert_eq!(state.data, before_stale);
+        let after = success(state.execute(AppStateRequest::Snapshot { schema_version: 1 }))
+            .snapshot
+            .expect("post-stale snapshot");
+        assert!(!after.current_item_started);
+        assert!(
+            after
+                .session_played
+                .iter()
+                .all(|entry| !entry.threshold_reached)
         );
     }
 

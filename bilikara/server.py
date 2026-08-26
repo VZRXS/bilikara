@@ -103,11 +103,122 @@ RATING_SUBMISSION_KEY_LIMIT = 2000
 PLAYER_DIAGNOSTIC_LIMIT = 128
 PLAYER_DIAGNOSTIC_URL_RE = re.compile(r"(?i)\b(?:https?|file)://[^\s<>\"']+")
 MISSING_BILIBILI_VIDEO_MESSAGE = "啥都木有"
-RATING_PROMPT_THRESHOLD = 0.5
+PLAYER_STATUS_MAX_SECONDS = 7 * 24 * 60 * 60
+PLAYER_STATUS_ITEM_ID_MAX_BYTES = 512
+PLAYER_STATUS_PHASES = frozenset(
+    {
+        "ready-paused",
+        "starting",
+        "playing",
+        "paused",
+        "needs-user-gesture",
+        "failed",
+        "ended",
+    }
+)
 REMOTE_IDENTITY_COOKIE = "bilikara_remote_token"
 REMOTE_IDENTITY_COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 CONTAINER_RUNTIME_MARKERS = ("docker", "containerd", "kubepods", "lxc")
 LOCAL_EXPORT_SHUTDOWN_GRACE_SECONDS = 10.0
+
+
+def _positive_safe_player_status_integer(value: object, field: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 1
+        or value > MAX_SAFE_JSON_INTEGER
+    ):
+        raise ValueError(f"{field} must be a positive safe integer")
+    return value
+
+
+def _bounded_player_status_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    number = float(value)
+    if not math.isfinite(number) or number < 0 or number > PLAYER_STATUS_MAX_SECONDS:
+        raise ValueError(f"{field} must be finite and within the supported range")
+    return number
+
+
+def _normalize_player_status_observation(
+    *,
+    playback_generation: object,
+    status_sequence: object,
+    item_id: object,
+    observed_phase: object,
+    is_paused: object,
+    current_time: object,
+    duration: object,
+    client_info: object | None = None,
+) -> dict[str, object]:
+    generation = _positive_safe_player_status_integer(
+        playback_generation, "playback_generation"
+    )
+    sequence = _positive_safe_player_status_integer(status_sequence, "status_sequence")
+    if not isinstance(item_id, str):
+        raise ValueError("item_id must be a bounded non-empty string")
+    normalized_item_id = item_id.strip()
+    if (
+        not normalized_item_id
+        or "\0" in normalized_item_id
+        or len(normalized_item_id.encode("utf-8")) > PLAYER_STATUS_ITEM_ID_MAX_BYTES
+    ):
+        raise ValueError("item_id must be a bounded non-empty string")
+    if not isinstance(observed_phase, str):
+        raise ValueError("observed_phase is invalid")
+    phase = observed_phase.strip()
+    if phase not in PLAYER_STATUS_PHASES:
+        raise ValueError("observed_phase is invalid")
+    if not isinstance(is_paused, bool):
+        raise ValueError("is_paused must be boolean")
+    expected_paused = phase != "playing"
+    if is_paused is not expected_paused:
+        raise ValueError("is_paused conflicts with observed_phase")
+
+    normalized: dict[str, object] = {
+        "playback_generation": generation,
+        "status_sequence": sequence,
+        "item_id": normalized_item_id,
+        "observed_phase": phase,
+        "is_paused": is_paused,
+        "current_time": _bounded_player_status_number(current_time, "current_time"),
+        "duration": _bounded_player_status_number(duration, "duration"),
+    }
+    if isinstance(client_info, dict):
+        normalized["client_info"] = {
+            "user_agent": str(client_info.get("user_agent") or "")[:500],
+            "platform": str(client_info.get("platform") or "")[:120],
+            "language": str(client_info.get("language") or "")[:80],
+            "vendor": str(client_info.get("vendor") or "")[:120],
+        }
+    return normalized
+
+
+def _projected_player_status(status: dict[str, object]) -> dict[str, object]:
+    projection = {
+        key: status[key]
+        for key in (
+            "playback_generation",
+            "item_id",
+            "observed_phase",
+            "is_paused",
+            "current_time",
+            "duration",
+            "updated_at",
+        )
+        if key in status
+    }
+    if isinstance(status.get("client_info"), dict):
+        projection["client_info"] = dict(status["client_info"])
+    return projection
+
+
+def _comparable_player_status(status: dict[str, object]) -> dict[str, object]:
+    comparable = _projected_player_status(status)
+    comparable.pop("updated_at", None)
+    return comparable
 
 
 def _player_diagnostic_number(value: object) -> float | None:
@@ -284,6 +395,12 @@ class SessionUserAlreadyExistsError(ValueError):
         super().__init__("该用户已存在")
 
 
+class PlayerStatusAdmissionError(ValueError):
+    def __init__(self, kind: str, message: str) -> None:
+        self.kind = str(kind or "player_status_rejected")
+        super().__init__(message)
+
+
 class AppContext:
     def __init__(self) -> None:
         ensure_directories()
@@ -374,7 +491,7 @@ class AppContext:
         payload["gatcha_pool_config"] = gatcha_pool_config_snapshot()
         payload["gatcha_favlist_updated_at"] = gatcha_favlist_updated_at()
         payload["player_control_command"] = self.player_control_command_snapshot()
-        payload["player_status"] = self.player_status_snapshot(payload.get("current_item"))
+        payload["player_status"] = self.player_status_snapshot(payload)
         payload["app"] = {
             "version": APP_VERSION,
             "releases_url": APP_RELEASES_URL,
@@ -765,69 +882,142 @@ class AppContext:
     def update_player_status(
         self,
         *,
+        playback_generation: int,
+        status_sequence: int,
         item_id: str,
+        observed_phase: str,
         is_paused: bool,
         current_time: float = 0.0,
-        duration: float | None = None,
+        duration: float = 0.0,
         client_info: object | None = None,
-    ) -> None:
-        normalized_item_id = str(item_id or "").strip()
-        if not normalized_item_id:
-            return
-        normalized_duration = 0.0
-        if duration is not None:
-            try:
-                normalized_duration = max(0.0, float(duration or 0.0))
-            except (TypeError, ValueError):
-                normalized_duration = 0.0
-        with self._player_status_lock:
-            previous_duration = 0.0
-            if (
-                isinstance(self._player_status, dict)
-                and str(self._player_status.get("item_id") or "").strip() == normalized_item_id
-            ):
-                try:
-                    previous_duration = max(0.0, float(self._player_status.get("duration") or 0.0))
-                except (TypeError, ValueError):
-                    previous_duration = 0.0
-            next_status = {
-                "item_id": normalized_item_id,
-                "is_paused": bool(is_paused),
-                "current_time": max(0.0, float(current_time or 0.0)),
-                "duration": normalized_duration or previous_duration,
-                "updated_at": time.time(),
-            }
-            if isinstance(client_info, dict):
-                next_status["client_info"] = {
-                    "user_agent": str(client_info.get("user_agent") or "")[:500],
-                    "platform": str(client_info.get("platform") or "")[:120],
-                    "language": str(client_info.get("language") or "")[:80],
-                    "vendor": str(client_info.get("vendor") or "")[:120],
+    ) -> dict[str, object]:
+        normalized = _normalize_player_status_observation(
+            playback_generation=playback_generation,
+            status_sequence=status_sequence,
+            item_id=item_id,
+            observed_phase=observed_phase,
+            is_paused=is_paused,
+            current_time=current_time,
+            duration=duration,
+            client_info=client_info,
+        )
+        generation = int(normalized["playback_generation"])
+        sequence = int(normalized["status_sequence"])
+        normalized_item_id = str(normalized["item_id"])
+
+        # AppContext.snapshot() observes the store before the status slot. Keep
+        # the same order here so a ThreadingHTTPServer status request cannot
+        # deadlock with or cross an AppState program mutation.
+        with self.store.lock:
+            with self._player_status_lock:
+                previous = (
+                    dict(self._player_status)
+                    if isinstance(self._player_status, dict)
+                    else None
+                )
+                same_status_lifetime = bool(
+                    previous
+                    and previous.get("playback_generation") == generation
+                    and previous.get("item_id") == normalized_item_id
+                )
+                if same_status_lifetime and not normalized["duration"]:
+                    normalized["duration"] = previous.get("duration", 0.0)
+                candidate = {
+                    key: value
+                    for key, value in normalized.items()
+                    if key != "status_sequence"
                 }
-            self._player_status = next_status
-        if (not is_paused) or float(current_time or 0.0) > 0:
-            self.store.mark_item_playback_started(normalized_item_id)
+                previous_sequence = (
+                    int(previous.get("status_sequence") or 0)
+                    if same_status_lifetime and previous
+                    else 0
+                )
+                if sequence < previous_sequence:
+                    raise PlayerStatusAdmissionError(
+                        "player_status_sequence_stale",
+                        "player status sequence is older than the accepted observation",
+                    )
+                duplicate = sequence == previous_sequence and previous_sequence > 0
+                if duplicate and _comparable_player_status(candidate) != _comparable_player_status(
+                    previous
+                ):
+                    raise PlayerStatusAdmissionError(
+                        "player_status_sequence_conflict",
+                        "player status sequence was replayed with a conflicting observation",
+                    )
 
-        reported_duration = next_status.get("duration")
-        if isinstance(reported_duration, (int, float)) and reported_duration > 0:
-            ratio = float(current_time or 0.0) / float(reported_duration)
-            if ratio >= RATING_PROMPT_THRESHOLD:
-                self.store.mark_session_played_threshold_reached(normalized_item_id)
+            try:
+                semantic_result = self.store.apply_player_status_observation(
+                    expected_playback_generation=generation,
+                    item_id=normalized_item_id,
+                    is_paused=bool(normalized["is_paused"]),
+                    current_time=float(normalized["current_time"]),
+                    duration=float(normalized["duration"]),
+                )
+            except PlaylistStoreCommandError as exc:
+                raise PlayerStatusAdmissionError(exc.kind, str(exc)) from exc
 
-        self._notify_state_changed()
+            if duplicate:
+                return {"accepted": True, "duplicate": True, "changed": False}
 
-    def player_status_snapshot(self, current_item_payload: object) -> dict[str, object] | None:
-        current_item_id = ""
-        if isinstance(current_item_payload, dict):
-            current_item_id = str(current_item_payload.get("id") or "").strip()
-        if not current_item_id:
+            with self._player_status_lock:
+                previous = (
+                    dict(self._player_status)
+                    if isinstance(self._player_status, dict)
+                    else None
+                )
+                visible_changed = (
+                    previous is None
+                    or _comparable_player_status(candidate)
+                    != _comparable_player_status(previous)
+                )
+                if visible_changed:
+                    self._player_status = {
+                        **candidate,
+                        "status_sequence": sequence,
+                        "updated_at": time.time(),
+                    }
+                else:
+                    self._player_status = {
+                        **previous,
+                        "status_sequence": sequence,
+                    }
+
+            if visible_changed and not semantic_result["changed"]:
+                self._notify_state_changed()
+            return {
+                "accepted": True,
+                "duplicate": False,
+                "changed": visible_changed,
+            }
+
+    def player_status_snapshot(self, authoritative_snapshot: object) -> dict[str, object] | None:
+        if not isinstance(authoritative_snapshot, dict):
+            return None
+        current_item = authoritative_snapshot.get("current_item")
+        playback_program = authoritative_snapshot.get("playback_program")
+        playback_generation = authoritative_snapshot.get("playback_generation")
+        if not isinstance(current_item, dict) or not isinstance(playback_program, dict):
+            return None
+        current_item_id = str(current_item.get("id") or "").strip()
+        program_item_id = str(playback_program.get("item_id") or "").strip()
+        if (
+            not current_item_id
+            or current_item_id != program_item_id
+            or isinstance(playback_generation, bool)
+            or not isinstance(playback_generation, int)
+        ):
             return None
         with self._player_status_lock:
             if not self._player_status:
                 return None
-            if str(self._player_status.get("item_id") or "").strip() != current_item_id:
+            if (
+                self._player_status.get("playback_generation") != playback_generation
+                or str(self._player_status.get("item_id") or "").strip()
+                != current_item_id
+            ):
                 return None
-            return dict(self._player_status)
+            return _projected_player_status(self._player_status)
 
     def restore_backup(self) -> bool:
         restored = self.store.restore_backup(
@@ -1992,24 +2182,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 self._write_json({"ok": True})
                 return
             if route == "/api/player/status":
-                item_id = str(body.get("item_id") or "").strip()
-                if not item_id:
-                    raise ValueError("missing item_id")
-                is_paused = body.get("is_paused")
-                if not isinstance(is_paused, bool):
-                    raise ValueError("is_paused must be boolean")
-                current_time = float(body.get("current_time") or 0.0)
-                duration = None
-                if "duration" in body:
-                    duration = float(body.get("duration") or 0.0)
-                CONTEXT.update_player_status(
-                    item_id=item_id,
-                    is_paused=is_paused,
-                    current_time=current_time,
-                    duration=duration,
+                observation = _normalize_player_status_observation(
+                    playback_generation=body.get("playback_generation"),
+                    status_sequence=body.get("status_sequence"),
+                    item_id=body.get("item_id"),
+                    observed_phase=body.get("observed_phase"),
+                    is_paused=body.get("is_paused"),
+                    current_time=body.get("current_time"),
+                    duration=body.get("duration"),
                     client_info=body.get("client_info"),
                 )
-                self._write_json({"ok": True})
+                result = CONTEXT.update_player_status(**observation)
+                self._write_json({"ok": True, "data": result})
                 return
             if route == "/api/player/diagnostic":
                 event = CONTEXT.record_player_diagnostic(_normalize_player_diagnostic(body))
@@ -2232,6 +2416,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "name": exc.name,
                 },
                 status=HTTPStatus.CONFLICT,
+            )
+        except PlayerStatusAdmissionError as exc:
+            self._write_json(
+                {
+                    "ok": True,
+                    "data": {
+                        "accepted": False,
+                        "duplicate": False,
+                        "changed": False,
+                        "reason": exc.kind,
+                    },
+                }
             )
         except ValueError as exc:
             self._write_json({"ok": False, "error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
