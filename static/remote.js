@@ -6,6 +6,7 @@ const viewportScaleResetDelaysMs = [0, 120, 360];
 const eventStreamInitialRetryMs = 1000;
 const eventStreamMaxRetryMs = 15000;
 const eventStreamRetryJitterRatio = 0.2;
+const stateFallbackRefreshMs = 1000;
 const larkSearchTableCount = 5;
 const expandedSearchEagerCoverCount = 6;
 const d1BrowseItemLimit = 450;
@@ -162,7 +163,6 @@ const categoryBrowseImageUrls = [
   "/pic/cat_39.webp",
   "/pic/cat_40.png",
 ];
-const playerControlStatusRefreshDelaysMs = [180, 520, 1100, 1800];
 const playerControlStatusSyncTimeoutMs = 3200;
 const remoteRatingPromptThreshold = 0.5;
 const storageKeys = {
@@ -194,6 +194,8 @@ const state = {
   playerControlPendingAction: "",
   playerControlStatusSync: null,
   playerControlStatusRefreshTimers: [],
+  autoRefreshTimer: null,
+  stateFallbackFetchInFlight: false,
   audioVariantSwitchInFlight: false,
   audioVariantSwitchUnlockAt: 0,
   audioVariantSwitchTimer: null,
@@ -223,6 +225,7 @@ const state = {
     audio: false,
   },
   eventSource: null,
+  eventStreamHealthy: false,
   eventStreamReconnectTimer: null,
   eventStreamRetryMs: eventStreamInitialRetryMs,
   gatchaCandidate: null,
@@ -2302,25 +2305,49 @@ async function fetchState(options = {}) {
   applyStateSnapshot(payload.data, { forceRender: force || !state.data });
 }
 
-async function refreshCacheStatusOnly() {
-  try {
-    const response = await fetch("/api/state", { headers: clientHeaders() });
-    const payload = await response.json();
-    if (response.ok && payload.ok && payload.data) {
-      applyStateSnapshot(payload.data);
-      const current = state.data.current_item;
-      if (current) {
-        if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
-          state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
-          return;
-        }
-      }
-    }
-  } catch (e) {
-    // 静默失败
+function clearStateFallbackTimer() {
+  if (!state.autoRefreshTimer) {
+    return;
   }
+  window.clearTimeout(state.autoRefreshTimer);
   state.autoRefreshTimer = null;
 }
+
+function scheduleStateFallbackRefresh(delayMs = stateFallbackRefreshMs) {
+  if (
+    state.eventStreamHealthy
+    || state.autoRefreshTimer
+    || state.stateFallbackFetchInFlight
+  ) {
+    return;
+  }
+  const boundedDelayMs = Math.max(
+    stateFallbackRefreshMs,
+    Number(delayMs) || stateFallbackRefreshMs,
+  );
+  state.autoRefreshTimer = window.setTimeout(() => {
+    state.autoRefreshTimer = null;
+    return refreshCacheStatusOnly();
+  }, boundedDelayMs);
+}
+
+async function refreshCacheStatusOnly() {
+  if (state.eventStreamHealthy || state.stateFallbackFetchInFlight) {
+    return;
+  }
+  state.stateFallbackFetchInFlight = true;
+  try {
+    await fetchState({ force: false });
+  } catch (e) {
+    // Keep the last successful state rendered until the next bounded fallback.
+  } finally {
+    state.stateFallbackFetchInFlight = false;
+    if (!state.eventStreamHealthy) {
+      scheduleStateFallbackRefresh();
+    }
+  }
+}
+
 function currentStateRevision(snapshot = state.data) {
   const revision = Number(snapshot?.state_revision || 0);
   return Number.isFinite(revision) && revision >= 0 ? revision : 0;
@@ -2460,6 +2487,7 @@ function clearEventStreamReconnectTimer() {
 
 function closeEventStream() {
   clearEventStreamReconnectTimer();
+  state.eventStreamHealthy = false;
   if (!state.eventSource) {
     return;
   }
@@ -2492,41 +2520,62 @@ function scheduleEventStreamReconnect() {
     connectStateStream();
   }, delayMs);
   state.eventStreamRetryMs = Math.min(eventStreamMaxRetryMs, baseDelayMs * 2);
+  return delayMs;
+}
+
+function eventStreamStateIsCurrent(snapshot) {
+  if (
+    !snapshot
+    || typeof snapshot !== "object"
+    || Array.isArray(snapshot)
+    || !Object.prototype.hasOwnProperty.call(snapshot, "state_revision")
+  ) {
+    return false;
+  }
+  const nextRevision = Number(snapshot.state_revision);
+  if (!Number.isFinite(nextRevision) || nextRevision < 0) {
+    return false;
+  }
+  return !state.data || nextRevision >= currentStateRevision();
 }
 
 function connectStateStream() {
   if (typeof window.EventSource !== "function") {
+    state.eventStreamHealthy = false;
+    scheduleStateFallbackRefresh();
     return;
   }
   closeEventStream();
   const source = new window.EventSource(`/api/events?client_id=${encodeURIComponent(state.clientId)}`);
   state.eventSource = source;
-
-  source.addEventListener("open", () => {
-    state.eventStreamRetryMs = eventStreamInitialRetryMs;
-  });
+  scheduleStateFallbackRefresh();
 
   source.addEventListener("state", (event) => {
+    if (state.eventSource !== source) {
+      return;
+    }
     try {
       const snapshot = JSON.parse(event.data);
+      const confirmsCurrentState = eventStreamStateIsCurrent(snapshot);
       applyStateSnapshot(snapshot);
+      if (!confirmsCurrentState) {
+        return;
+      }
+      state.eventStreamHealthy = true;
       state.eventStreamRetryMs = eventStreamInitialRetryMs;
+      clearStateFallbackTimer();
     } catch {
       // Ignore malformed events and wait for the next valid snapshot.
     }
   });
 
-  source.addEventListener("error", async () => {
+  source.addEventListener("error", () => {
     if (state.eventSource !== source) {
       return;
     }
     closeEventStream();
-    try {
-      await fetchState();
-    } catch {
-      // Keep the last successful state on screen while reconnecting.
-    }
-    scheduleEventStreamReconnect();
+    const reconnectDelayMs = scheduleEventStreamReconnect();
+    scheduleStateFallbackRefresh(reconnectDelayMs + stateFallbackRefreshMs);
   });
 }
 
@@ -4696,15 +4745,6 @@ function renderCurrentItem(current, playbackMode) {
     }
     syncCurrentCacheState(current);
 
-    if (current.cache_status === "downloading" || current.cache_status === "queued" || current.cache_status === "waiting") {
-      if (!state.autoRefreshTimer) {
-        state.autoRefreshTimer = setTimeout(refreshCacheStatusOnly, 1000);
-      }
-    } else if (state.autoRefreshTimer) {
-      clearTimeout(state.autoRefreshTimer);
-      state.autoRefreshTimer = null;
-    }
-
     elements.currentMeta.textContent = ""; // 不显示 log 避免高度抖动
     return;
   }
@@ -5881,9 +5921,13 @@ function clearPlayerControlStatusRefreshTimers() {
   state.playerControlStatusRefreshTimers = [];
 }
 
-function clearPlayerControlStatusSync() {
+function clearPlayerControlStatusSync(expectedSync = null) {
+  if (expectedSync && state.playerControlStatusSync !== expectedSync) {
+    return false;
+  }
   state.playerControlStatusSync = null;
   clearPlayerControlStatusRefreshTimers();
+  return true;
 }
 
 function renderAfterPlayerControlStatusSync() {
@@ -5918,25 +5962,18 @@ function playerControlStatusSyncPending(currentItem, playerStatus = currentPlaye
 
 function schedulePlayerControlStatusRefresh() {
   clearPlayerControlStatusRefreshTimers();
-  const timers = playerControlStatusRefreshDelaysMs.map((delayMs) => (
-    window.setTimeout(async () => {
-      if (!state.playerControlStatusSync) {
-        return;
-      }
-      await fetchState({ force: true }).catch(() => {});
-      const currentItem = state.data?.current_item;
-      playerControlStatusSyncPending(currentItem);
-      renderAfterPlayerControlStatusSync();
-    }, delayMs)
-  ));
-  timers.push(window.setTimeout(() => {
-    if (!state.playerControlStatusSync) {
+  const sync = state.playerControlStatusSync;
+  if (!sync) {
+    return;
+  }
+  const timeoutId = window.setTimeout(() => {
+    if (state.playerControlStatusSync !== sync) {
       return;
     }
-    clearPlayerControlStatusSync();
+    clearPlayerControlStatusSync(sync);
     renderAfterPlayerControlStatusSync();
-  }, playerControlStatusSyncTimeoutMs));
-  state.playerControlStatusRefreshTimers = timers;
+  }, Math.max(0, sync.expiresAt - Date.now()));
+  state.playerControlStatusRefreshTimers = [timeoutId];
 }
 
 function beginPlayerControlStatusSync(currentItem) {
@@ -5945,13 +5982,15 @@ function beginPlayerControlStatusSync(currentItem) {
     clearPlayerControlStatusSync();
     return;
   }
-  state.playerControlStatusSync = {
+  const sync = {
     itemId,
     playbackGeneration: state.data?.playback_generation,
     updatedAfter: playerStatusUpdatedAt(currentPlayerStatus(currentItem)),
     expiresAt: Date.now() + playerControlStatusSyncTimeoutMs,
   };
+  state.playerControlStatusSync = sync;
   schedulePlayerControlStatusRefresh();
+  return sync;
 }
 
 function renderPlayerControls(currentItem, playbackMode) {
@@ -6721,22 +6760,27 @@ async function sendPlayerControl(action, deltaSeconds = 0) {
       ? t("remote.controlSentForward")
       : t("remote.controlSentBack");
 
+  let controlSync = null;
   try {
     state.playerControlPendingAction = action;
-    beginPlayerControlStatusSync(currentItem);
+    controlSync = beginPlayerControlStatusSync(currentItem);
     renderCurrentPlaybackState(currentItem);
     renderPlayerControls(currentItem, playbackMode);
-    applyStateSnapshot(await apiPost("/api/player/control", {
+    const outcome = await apiPostExactStateCommand("/api/player/control", {
       action,
       item_id: currentItem.id,
       delta_seconds: deltaSeconds,
       playback_generation: expectedPlaybackGeneration,
-    }));
-    setFormMessage(message);
+    });
+    if (outcome.commandApplied) {
+      setFormMessage(message);
+    } else {
+      clearPlayerControlStatusSync(controlSync);
+      renderAfterPlayerControlStatusSync();
+    }
   } catch (error) {
-    clearPlayerControlStatusSync();
+    clearPlayerControlStatusSync(controlSync);
     setFormMessage(error.message, true);
-    await fetchState().catch(() => {});
   }
   state.playerControlPendingAction = "";
   renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
@@ -6761,7 +6805,6 @@ async function sendPlayerNext() {
     }
   } catch (error) {
     setFormMessage(error.message, true);
-    await fetchState().catch(() => {});
   }
   state.playerControlPendingAction = "";
   renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
@@ -6776,6 +6819,7 @@ function disconnectClient() {
   } catch (error) {
     console.warn("Failed to flush pending auto-ratings on disconnect:", error);
   }
+  clearStateFallbackTimer();
   closeEventStream();
   if (state.disconnectSent) {
     return;

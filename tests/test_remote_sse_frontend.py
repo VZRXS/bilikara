@@ -36,6 +36,15 @@ class RemoteSseFrontendTest(unittest.TestCase):
         start = source.index("function applyStateSnapshot")
         end = source.index("function clearEventStreamReconnectTimer", start)
         cls.apply_snapshot_source = source[start:end]
+        start = source.index("async function fetchState")
+        end = source.index("async function searchGatchaCache", start)
+        cls.state_transport_source = source[start:end]
+        start = source.index("function renderCurrentItem")
+        end = source.index("function renderCurrentRatingButton", start)
+        cls.current_item_render_source = source[start:end]
+        start = source.index("function currentPlayerStatus")
+        end = source.index("function renderPlayerControls", start)
+        cls.player_status_sync_source = source[start:end]
         start = source.index("async function sendPlayerControl")
         end = source.index("function disconnectClient", start)
         cls.player_control_source = source[start:end]
@@ -169,8 +178,340 @@ console.log(JSON.stringify({
         end = self.source.index("function currentStateRevision", start)
         polling_source = self.source[start:end]
 
-        self.assertIn("applyStateSnapshot(payload.data);", polling_source)
+        self.assertIn("await fetchState({ force: false });", polling_source)
         self.assertNotIn("state.data = payload.data", polling_source)
+
+    def run_state_transport_node(
+        self,
+        body: str,
+        *,
+        event_source_supported: bool = True,
+    ) -> dict:
+        event_source_value = "FakeEventSource" if event_source_supported else "undefined"
+        script = f"""
+const eventStreamInitialRetryMs = 1000;
+const eventStreamMaxRetryMs = 15000;
+const eventStreamRetryJitterRatio = 0.2;
+const stateFallbackRefreshMs = 1000;
+let nowMs = 0;
+Date.now = () => nowMs;
+Math.random = () => 0;
+let nextTimerId = 1;
+const timers = new Map();
+const requests = [];
+const stateGetSnapshots = [];
+const renderedCacheStatuses = [];
+const renderedCacheProgress = [];
+const renderedQueueLengths = [];
+
+async function advanceTime(deltaMs) {{
+  const target = nowMs + deltaMs;
+  while (true) {{
+    const due = [...timers.entries()]
+      .filter(([, task]) => task.due <= target)
+      .sort((left, right) => left[1].due - right[1].due || left[0] - right[0])[0];
+    if (!due) break;
+    const [timerId, task] = due;
+    timers.delete(timerId);
+    nowMs = task.due;
+    await task.callback();
+    await Promise.resolve();
+  }}
+  nowMs = target;
+  await Promise.resolve();
+}}
+
+class FakeClassList {{
+  add() {{}}
+  remove() {{}}
+  toggle() {{}}
+}}
+class FakeEventSource {{
+  static instances = [];
+  constructor(url) {{
+    this.url = url;
+    this.listeners = {{}};
+    this.closeCalls = 0;
+    FakeEventSource.instances.push(this);
+  }}
+  addEventListener(name, listener) {{
+    (this.listeners[name] ||= []).push(listener);
+  }}
+  async emit(name, data = "") {{
+    const event = {{ data: typeof data === "string" ? data : JSON.stringify(data) }};
+    await Promise.all((this.listeners[name] || []).map((listener) => listener(event)));
+  }}
+  close() {{ this.closeCalls += 1; }}
+}}
+
+const window = {{
+  EventSource: {event_source_value},
+  setTimeout(callback, delayMs) {{
+    const timerId = nextTimerId++;
+    timers.set(timerId, {{ callback, due: nowMs + Number(delayMs || 0) }});
+    return timerId;
+  }},
+  clearTimeout(timerId) {{ timers.delete(timerId); }},
+}};
+globalThis.setTimeout = window.setTimeout;
+globalThis.clearTimeout = window.clearTimeout;
+
+const state = {{
+  clientId: "remote-test",
+  data: null,
+  dataRenderSignature: "",
+  renderDebounceTimer: null,
+  autoRefreshTimer: null,
+  stateFallbackFetchInFlight: false,
+  eventSource: null,
+  eventStreamHealthy: false,
+  eventStreamReconnectTimer: null,
+  eventStreamRetryMs: eventStreamInitialRetryMs,
+  currentNowPlayingSignature: "",
+  playerControlStatusSync: null,
+}};
+const elements = {{
+  currentTitle: {{ textContent: "" }},
+  currentRequester: {{ textContent: "", classList: new FakeClassList() }},
+  currentOwner: {{ textContent: "", classList: new FakeClassList() }},
+  openRatingButton: {{ classList: new FakeClassList() }},
+  currentMeta: {{ textContent: "" }},
+}};
+function clientHeaders() {{ return {{}}; }}
+function localizedApiMessage(value) {{ return String(value || ""); }}
+function t(key) {{ return key; }}
+function requesterBadgeText() {{ return ""; }}
+function ownerLineText() {{ return ""; }}
+function renderOwnerBadgeLabel() {{}}
+function maybeUpdateRemoteRatingPrompt() {{}}
+function syncCurrentCacheState(current) {{
+  renderedCacheStatuses.push(current?.cache_status || "empty");
+  renderedCacheProgress.push(Number(current?.cache_progress || 0));
+}}
+function renderCurrentPlaybackState(current) {{ syncCurrentCacheState(current); }}
+function renderPlayerControls() {{}}
+function renderQueueCacheStatus() {{}}
+function frontendPlaybackMode() {{ return "local"; }}
+function currentPlayerStatus() {{ return null; }}
+function clearCurrentPlaybackClock() {{}}
+function syncRemoteIdentityWithSnapshot() {{}}
+function scheduleFavlistBrowseReloadFromState() {{}}
+function render() {{
+  renderedQueueLengths.push(Array.isArray(state.data?.playlist) ? state.data.playlist.length : 0);
+  renderCurrentItem(state.data?.current_item, "local");
+}}
+async function fetch(url) {{
+  requests.push({{ url, at: nowMs }});
+  const snapshot = stateGetSnapshots.length
+    ? stateGetSnapshots.shift()
+    : state.data;
+  return {{
+    ok: true,
+    async json() {{ return {{ ok: true, data: snapshot }}; }},
+  }};
+}}
+{self.state_transport_source}
+{self.current_item_render_source}
+function snapshot(revision, cacheStatus, progress = 0, queueSize = 0) {{
+  return {{
+    state_revision: revision,
+    playback_generation: 1,
+    playback_mode: "local",
+    current_item: {{
+      id: "song-a",
+      display_title: "Song A",
+      cache_status: cacheStatus,
+      cache_progress: progress,
+    }},
+    playlist: Array.from({{ length: queueSize }}, (_, index) => ({{ id: `queued-${{index}}` }})),
+  }};
+}}
+{body}
+"""
+        completed = subprocess.run(
+            [self.node, "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_healthy_sse_is_the_only_continuous_cache_state_feed(self):
+        result = self.run_state_transport_node(
+            """
+(async () => {
+  stateGetSnapshots.push(snapshot(1, "downloading", 0));
+  await fetchState();
+  await advanceTime(50);
+  const bootstrapGets = requests.length;
+
+  connectStateStream();
+  const source = FakeEventSource.instances[0];
+  await source.emit("open");
+  const healthyAfterOpenOnly = state.eventStreamHealthy;
+  await source.emit("state", snapshot(1, "downloading", 0));
+  for (let second = 1; second <= 10; second += 1) {
+    await source.emit("state", snapshot(second + 1, "downloading", second * 9));
+    await advanceTime(1000);
+  }
+  const cacheGetsAfterBootstrap = requests.length - bootstrapGets;
+  await source.emit("state", snapshot(12, "ready", 100, 1));
+  await advanceTime(50);
+  await source.emit("state", snapshot(13, "failed", 100));
+  await advanceTime(50);
+  process.stdout.write(JSON.stringify({
+    bootstrapGets,
+    cacheGetsAfterBootstrap,
+    healthyAfterOpenOnly,
+    healthy: state.eventStreamHealthy,
+    autoRefreshTimer: state.autoRefreshTimer,
+    renderedCacheStatuses,
+    renderedCacheProgress,
+    renderedQueueLengths,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(result["bootstrapGets"], 1)
+        self.assertEqual(result["cacheGetsAfterBootstrap"], 0)
+        self.assertFalse(result["healthyAfterOpenOnly"])
+        self.assertTrue(result["healthy"])
+        self.assertIsNone(result["autoRefreshTimer"])
+        self.assertIn("downloading", result["renderedCacheStatuses"])
+        self.assertIn("ready", result["renderedCacheStatuses"])
+        self.assertIn("failed", result["renderedCacheStatuses"])
+        self.assertIn(90, result["renderedCacheProgress"])
+        self.assertIn(1, result["renderedQueueLengths"])
+
+    def test_event_source_unsupported_uses_one_bounded_fallback_timer(self):
+        result = self.run_state_transport_node(
+            """
+(async () => {
+  stateGetSnapshots.push(snapshot(1, "ready", 100));
+  await fetchState();
+  await advanceTime(50);
+  const bootstrapGets = requests.length;
+  stateGetSnapshots.push(
+    snapshot(2, "downloading", 20),
+    snapshot(1, "queued", 0),
+    snapshot(3, "ready", 100),
+  );
+  connectStateStream();
+  await advanceTime(3000);
+  process.stdout.write(JSON.stringify({
+    fallbackGets: requests.length - bootstrapGets,
+    activeFallbackTimers: state.autoRefreshTimer === null ? 0 : 1,
+    fallbackFetchInFlight: state.stateFallbackFetchInFlight,
+    finalRevision: state.data?.state_revision,
+    finalStatus: state.data?.current_item?.cache_status,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+""",
+            event_source_supported=False,
+        )
+        self.assertEqual(result["fallbackGets"], 3)
+        self.assertEqual(result["activeFallbackTimers"], 1)
+        self.assertFalse(result["fallbackFetchInFlight"])
+        self.assertEqual(result["finalRevision"], 3)
+        self.assertEqual(result["finalStatus"], "ready")
+
+    def test_event_source_without_valid_state_uses_then_cancels_fallback(self):
+        result = self.run_state_transport_node(
+            """
+(async () => {
+  stateGetSnapshots.push(snapshot(1, "ready", 100));
+  await fetchState();
+  await advanceTime(50);
+  const bootstrapGets = requests.length;
+  stateGetSnapshots.push(snapshot(2, "downloading", 40));
+  connectStateStream();
+  const source = FakeEventSource.instances[0];
+  await source.emit("open");
+  await advanceTime(1000);
+  const getsWithoutValidState = requests.length - bootstrapGets;
+  await source.emit("state", snapshot(3, "ready", 100));
+  await advanceTime(5000);
+  process.stdout.write(JSON.stringify({
+    getsWithoutValidState,
+    getsAfterRecovery: requests.length - bootstrapGets,
+    healthy: state.eventStreamHealthy,
+    fallbackTimer: state.autoRefreshTimer,
+    finalRevision: state.data?.state_revision,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(result["getsWithoutValidState"], 1)
+        self.assertEqual(result["getsAfterRecovery"], 1)
+        self.assertTrue(result["healthy"])
+        self.assertIsNone(result["fallbackTimer"])
+        self.assertEqual(result["finalRevision"], 3)
+
+    def test_transient_sse_reconnect_has_no_parallel_full_state_get(self):
+        result = self.run_state_transport_node(
+            """
+(async () => {
+  stateGetSnapshots.push(snapshot(1, "ready", 100));
+  await fetchState();
+  await advanceTime(50);
+  const bootstrapGets = requests.length;
+  connectStateStream();
+  const first = FakeEventSource.instances[0];
+  await first.emit("state", snapshot(1, "ready", 100));
+  await first.emit("error");
+  const getsImmediatelyAfterError = requests.length - bootstrapGets;
+  const timersAfterFirstError = timers.size;
+  await first.emit("error");
+  const timersAfterRepeatedError = timers.size;
+
+  await advanceTime(1000);
+  const second = FakeEventSource.instances[1];
+  await first.emit("error");
+  const newerSourceCloseCallsAfterOldError = second.closeCalls;
+  await second.emit("state", snapshot(2, "downloading", 50));
+  await advanceTime(5000);
+  process.stdout.write(JSON.stringify({
+    getsImmediatelyAfterError,
+    getsAfterRecovery: requests.length - bootstrapGets,
+    timersAfterFirstError,
+    timersAfterRepeatedError,
+    sourceCount: FakeEventSource.instances.length,
+    firstCloseCalls: first.closeCalls,
+    newerSourceCloseCallsAfterOldError,
+    healthy: state.eventStreamHealthy,
+    fallbackTimer: state.autoRefreshTimer,
+    reconnectTimer: state.eventStreamReconnectTimer,
+    finalRevision: state.data?.state_revision,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(result["getsImmediatelyAfterError"], 0)
+        self.assertEqual(result["getsAfterRecovery"], 0)
+        self.assertLessEqual(result["timersAfterFirstError"], 2)
+        self.assertEqual(
+            result["timersAfterRepeatedError"], result["timersAfterFirstError"]
+        )
+        self.assertEqual(result["sourceCount"], 2)
+        self.assertEqual(result["firstCloseCalls"], 1)
+        self.assertEqual(result["newerSourceCloseCallsAfterOldError"], 0)
+        self.assertTrue(result["healthy"])
+        self.assertIsNone(result["fallbackTimer"])
+        self.assertIsNone(result["reconnectTimer"])
+        self.assertEqual(result["finalRevision"], 2)
+
+    def test_startup_retains_initial_get_before_connecting_sse(self):
+        start = self.source.index("async function startRemoteSession")
+        end = self.source.index("startRemoteSession();", start)
+        startup_source = self.source[start:end]
+        self.assertLess(
+            startup_source.index("await fetchState();"),
+            startup_source.index("connectStateStream();"),
+        )
 
     def test_player_status_and_clock_fail_closed_by_playback_generation(self):
         script = f"""
@@ -283,6 +624,7 @@ const replacementResult = {{
   base: state.currentPlaybackClockBaseSeconds,
 }};
 
+const duplicateAccepted = applyStateSnapshot(snapshot(4, 2, status(2, 90)));
 const inverseAccepted = applyStateSnapshot(snapshot(3, 1, status(1, 90)));
 console.log(JSON.stringify({{
   acceptedFirst,
@@ -293,7 +635,9 @@ console.log(JSON.stringify({{
   mismatchResult,
   acceptedReplacement,
   replacementResult,
+  duplicateAccepted,
   inverseAccepted,
+  finalCurrentTime: state.data.player_status.current_time,
   finalGeneration: state.data.playback_generation,
 }}));
 """
@@ -322,8 +666,249 @@ console.log(JSON.stringify({{
         self.assertIsNotNone(result["replacementResult"]["timer"])
         self.assertFalse(result["replacementResult"]["paused"])
         self.assertEqual(result["replacementResult"]["base"], 3)
+        self.assertFalse(result["duplicateAccepted"])
         self.assertFalse(result["inverseAccepted"])
+        self.assertEqual(result["finalCurrentTime"], 3)
         self.assertEqual(result["finalGeneration"], 2)
+
+    def run_player_control_sync_node(self, body: str) -> dict:
+        script = f"""
+const playerControlStatusRefreshDelaysMs = [180, 520, 1100, 1800];
+const playerControlStatusSyncTimeoutMs = 3200;
+let nowMs = 1000;
+Date.now = () => nowMs;
+let nextTimerId = 1;
+const timers = new Map();
+const intervals = new Map();
+const commandRequests = [];
+const messages = [];
+const fallbackSnapshots = [];
+let fetchStateCalls = 0;
+let commandApplied = true;
+
+async function advanceTime(deltaMs) {{
+  const target = nowMs + deltaMs;
+  while (true) {{
+    const due = [...timers.entries()]
+      .filter(([, task]) => task.due <= target)
+      .sort((left, right) => left[1].due - right[1].due || left[0] - right[0])[0];
+    if (!due) break;
+    const [timerId, task] = due;
+    timers.delete(timerId);
+    nowMs = task.due;
+    await task.callback();
+    await Promise.resolve();
+  }}
+  nowMs = target;
+  await Promise.resolve();
+}}
+
+const window = {{
+  setTimeout(callback, delayMs) {{
+    const timerId = nextTimerId++;
+    timers.set(timerId, {{ callback, due: nowMs + Number(delayMs || 0) }});
+    return timerId;
+  }},
+  clearTimeout(timerId) {{ timers.delete(timerId); }},
+  setInterval(callback, delayMs) {{
+    const timerId = nextTimerId++;
+    intervals.set(timerId, {{ callback, delayMs }});
+    return timerId;
+  }},
+  clearInterval(timerId) {{ intervals.delete(timerId); }},
+}};
+
+const state = {{
+  data: null,
+  eventStreamHealthy: true,
+  playerControlPendingAction: "",
+  playerControlStatusSync: null,
+  playerControlStatusRefreshTimers: [],
+  currentPlaybackClockSignature: "",
+  currentPlaybackClockBaseSeconds: 0,
+  currentPlaybackClockDurationSeconds: 0,
+  currentPlaybackClockStartedAt: 0,
+  currentPlaybackClockPaused: true,
+  currentPlaybackClockTimer: null,
+}};
+const clockText = {{ textContent: "" }};
+const elements = {{
+  currentCacheState: {{
+    textContent: "",
+    querySelector() {{ return clockText; }},
+  }},
+}};
+function frontendPlaybackMode() {{ return "local"; }}
+function canRemoteControlPlayer() {{ return true; }}
+function renderPlayerControls() {{}}
+function syncCurrentCacheState() {{}}
+function maybeUpdateRemoteRatingPrompt() {{}}
+function setFormMessage(message, isError = false) {{ messages.push({{ message, isError }}); }}
+function t(key) {{ return key; }}
+console.warn = () => {{}};
+function applyStateSnapshot(snapshot) {{
+  if (
+    state.data
+    && Number(snapshot?.state_revision || 0) <= Number(state.data?.state_revision || 0)
+  ) return false;
+  const previousGeneration = state.data?.playback_generation;
+  state.data = snapshot;
+  if (
+    previousGeneration !== undefined
+    && previousGeneration !== snapshot.playback_generation
+  ) clearCurrentPlaybackClock();
+  renderCurrentPlaybackState(snapshot.current_item);
+  renderPlayerControls(snapshot.current_item, "local");
+  return true;
+}}
+async function fetchState() {{
+  fetchStateCalls += 1;
+  if (fallbackSnapshots.length) applyStateSnapshot(fallbackSnapshots.shift());
+}}
+async function apiPost(path, payload) {{
+  commandRequests.push({{ path, payload: {{ ...payload }} }});
+  return {{
+    ...state.data,
+    state_revision: Number(state.data?.state_revision || 0) + 1,
+  }};
+}}
+async function apiPostExactStateCommand(path, payload) {{
+  const snapshot = await apiPost(path, payload);
+  return {{
+    snapshotAccepted: applyStateSnapshot(snapshot),
+    commandApplied,
+  }};
+}}
+function playerSnapshot(revision, generation, itemId, updatedAt, currentTime, isPaused = false) {{
+  return {{
+    state_revision: revision,
+    playback_generation: generation,
+    playback_mode: "local",
+    current_item: {{
+      id: itemId,
+      cache_status: "ready",
+      duration: 120,
+      video_url: "/media/video.mp4",
+      audio_url: "/media/audio.m4a",
+    }},
+    player_status: updatedAt === null ? null : {{
+      playback_generation: generation,
+      item_id: itemId,
+      observed_phase: isPaused ? "paused" : "playing",
+      is_paused: isPaused,
+      current_time: currentTime,
+      duration: 120,
+      updated_at: updatedAt,
+    }},
+  }};
+}}
+{self.clock_value_source}
+{self.player_status_sync_source}
+{self.clock_render_source}
+{self.player_control_source}
+{body}
+"""
+        completed = subprocess.run(
+            [self.node, "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def test_healthy_sse_settles_player_control_without_refresh_burst(self):
+        result = self.run_player_control_sync_node(
+            """
+(async () => {
+  applyStateSnapshot(playerSnapshot(1, 7, "song-a", 100, 10));
+  await sendPlayerControl("seek-relative", 15);
+  const timersAfterCommand = state.playerControlStatusRefreshTimers.length;
+  await advanceTime(2000);
+  const getsBeforeMatchingStatus = fetchStateCalls;
+
+  applyStateSnapshot(playerSnapshot(3, 7, "song-a", 200, 30));
+  const matchingStatus = {
+    pending: state.playerControlStatusSync,
+    clockBase: state.currentPlaybackClockBaseSeconds,
+    clockPaused: state.currentPlaybackClockPaused,
+    clockTimerActive: state.currentPlaybackClockTimer !== null,
+  };
+  await advanceTime(2000);
+
+  commandApplied = false;
+  await sendPlayerControl("toggle-play", 0);
+  const staleOutcome = {
+    pending: state.playerControlStatusSync,
+    messageCount: messages.length,
+    pendingAction: state.playerControlPendingAction,
+  };
+
+  commandApplied = true;
+  beginPlayerControlStatusSync(state.data.current_item);
+  applyStateSnapshot(playerSnapshot(5, 8, "song-b", null, 0, true));
+  process.stdout.write(JSON.stringify({
+    commandRequests,
+    timersAfterCommand,
+    getsBeforeMatchingStatus,
+    finalFetchStateCalls: fetchStateCalls,
+    matchingStatus,
+    staleOutcome,
+    messages,
+    pendingAfterProgramChange: state.playerControlStatusSync,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(len(result["commandRequests"]), 2)
+        self.assertEqual(result["timersAfterCommand"], 1)
+        self.assertEqual(result["getsBeforeMatchingStatus"], 0)
+        self.assertEqual(result["finalFetchStateCalls"], 0)
+        self.assertEqual(
+            result["matchingStatus"],
+            {
+                "pending": None,
+                "clockBase": 30,
+                "clockPaused": False,
+                "clockTimerActive": True,
+            },
+        )
+        self.assertEqual(
+            result["staleOutcome"],
+            {"pending": None, "messageCount": 1, "pendingAction": ""},
+        )
+        self.assertEqual(
+            result["messages"],
+            [{"message": "remote.controlSentForward", "isError": False}],
+        )
+        self.assertIsNone(result["pendingAfterProgramChange"])
+
+    def test_player_control_without_usable_sse_has_no_refresh_burst_or_retry(self):
+        result = self.run_player_control_sync_node(
+            """
+(async () => {
+  state.eventStreamHealthy = false;
+  applyStateSnapshot(playerSnapshot(1, 7, "song-a", 100, 10));
+  await sendPlayerControl("toggle-play", 0);
+  await advanceTime(3300);
+  process.stdout.write(JSON.stringify({
+    commandRequestCount: commandRequests.length,
+    fetchStateCalls,
+    pending: state.playerControlStatusSync,
+    pendingAction: state.playerControlPendingAction,
+    activeStatusTimers: state.playerControlStatusRefreshTimers.length,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(result["commandRequestCount"], 1)
+        self.assertLessEqual(result["fetchStateCalls"], 1)
+        self.assertIsNone(result["pending"])
+        self.assertEqual(result["pendingAction"], "")
+        self.assertEqual(result["activeStatusTimers"], 0)
 
     def test_remote_program_relative_controls_capture_the_observed_rust_generation(self):
         script = f"""
