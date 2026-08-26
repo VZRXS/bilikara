@@ -159,6 +159,11 @@ DOWNLOAD_SOURCE_CHOICES = (
     DOWNLOAD_SOURCE_NATIVE,
 )
 DEFAULT_DOWNLOAD_SOURCE = DOWNLOAD_SOURCE_BBDOWN
+AUTHORITATIVE_ARTIFACT_ID_RE = re.compile(
+    r"^(?P<prefix>[ia])-(?P<namespace>[0-9A-Fa-f]{32})-"
+    r"(?P<counter>[0-9A-Fa-f]{16})$"
+)
+ARTIFACT_ROOT_COMPONENT = "artifacts"
 
 
 class CacheCancelledError(RuntimeError):
@@ -192,6 +197,31 @@ class CachePlan:
     pending_order: tuple[str, ...]
     retained_ids: tuple[str, ...]
     preempt_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ArtifactIdentity:
+    item_incarnation_id: str
+    artifact_set_id: str
+    relative_directory: str
+
+
+@dataclass(frozen=True)
+class _HostPlaybackProgramIdentity:
+    playback_generation: int
+    item_incarnation_id: str
+    artifact_set_id: str
+
+
+@dataclass(frozen=True)
+class _HostPlaybackArtifactOwner:
+    host_client_id: str
+    program: _HostPlaybackProgramIdentity
+
+
+@dataclass(frozen=True, eq=False)
+class _ArtifactReaderLease:
+    artifact: _ArtifactIdentity
 
 
 def _py_plan_cache_window(request: CachePlanRequest) -> CachePlan:
@@ -319,6 +349,16 @@ class CacheManager:
         self.ordered_desired_ids: list[str] = []
         self.stop_event = threading.Event()
         self.lock = threading.RLock()
+        self.artifact_retirement_lock = threading.RLock()
+        self.artifact_collection_lock = threading.Lock()
+        self.known_committed_artifacts: set[_ArtifactIdentity] = set()
+        self.active_artifact_attempts: dict[int, _ArtifactIdentity] = {}
+        self.host_playback_artifacts: dict[
+            _HostPlaybackArtifactOwner, _ArtifactIdentity
+        ] = {}
+        self.retired_host_playback_generations: dict[str, int] = {}
+        self.active_artifact_reader_leases: set[_ArtifactReaderLease] = set()
+        self.artifact_reader_counts: dict[_ArtifactIdentity, int] = {}
         self.binary_state = "idle"
         self.binary_version = ""
         self.binary_message = "等待任务"
@@ -395,11 +435,17 @@ class CacheManager:
         **fields: Any,
     ) -> bool:
         token = self._require_cache_attempt_token(cache_attempt_token)
-        return self.store.apply_cache_event(
-            item_id,
-            cache_attempt_token=token,
-            event={"kind": str(kind), **fields},
-        )
+        terminal = str(kind) in {"ready", "failed", "cancelled", "evicted", "reset"}
+        try:
+            return self.store.apply_cache_event(
+                item_id,
+                cache_attempt_token=token,
+                event={"kind": str(kind), **fields},
+            )
+        finally:
+            if terminal:
+                self._settle_artifact_attempt(token)
+                self.collect_retired_artifacts()
 
     @staticmethod
     def _require_cache_attempt_token(token: object) -> int:
@@ -415,17 +461,399 @@ class CacheManager:
             return False
         return True
 
+    @staticmethod
+    def _valid_authoritative_identity(value: object, prefix: str) -> bool:
+        if not isinstance(value, str):
+            return False
+        match = AUTHORITATIVE_ARTIFACT_ID_RE.fullmatch(value)
+        return bool(
+            match
+            and match.group("prefix") == prefix
+            and int(match.group("counter"), 16) > 0
+        )
+
+    @classmethod
+    def _artifact_identity(
+        cls,
+        item_incarnation_id: object,
+        artifact_set_id: object,
+        relative_directory: object,
+    ) -> _ArtifactIdentity | None:
+        if (
+            not cls._valid_authoritative_identity(item_incarnation_id, "i")
+            or not cls._valid_authoritative_identity(artifact_set_id, "a")
+            or not isinstance(relative_directory, str)
+        ):
+            return None
+        expected = (
+            f"{ARTIFACT_ROOT_COMPONENT}/{item_incarnation_id}/{artifact_set_id}"
+        )
+        if relative_directory != expected:
+            return None
+        return _ArtifactIdentity(
+            item_incarnation_id=item_incarnation_id,
+            artifact_set_id=artifact_set_id,
+            relative_directory=relative_directory,
+        )
+
+    @classmethod
+    def _artifact_identity_from_mapping(
+        cls, payload: object
+    ) -> _ArtifactIdentity | None:
+        if not isinstance(payload, dict):
+            return None
+        return cls._artifact_identity(
+            payload.get("item_incarnation_id"),
+            payload.get("artifact_set_id"),
+            payload.get("artifact_relative_directory"),
+        )
+
+    @classmethod
+    def _artifact_identity_from_media_relative_path(
+        cls, relative_path: object
+    ) -> _ArtifactIdentity | None:
+        if not isinstance(relative_path, str):
+            return None
+        normalized = relative_path.strip().replace("\\", "/")
+        path = PurePosixPath(normalized)
+        if (
+            not normalized
+            or path.is_absolute()
+            or len(path.parts) < 4
+            or path.parts[0] != ARTIFACT_ROOT_COMPONENT
+            or any(part in {"", ".", ".."} or part.startswith(".") for part in path.parts)
+        ):
+            return None
+        return cls._artifact_identity(
+            path.parts[1],
+            path.parts[2],
+            "/".join(path.parts[:3]),
+        )
+
+    def _track_active_artifact_attempt(
+        self, cache_attempt_token: int, payload: object
+    ) -> _ArtifactIdentity:
+        token = self._require_cache_attempt_token(cache_attempt_token)
+        artifact = self._artifact_identity_from_mapping(payload)
+        if artifact is None:
+            raise ValueError("Rust artifact reservation identity is invalid")
+        with self.artifact_retirement_lock:
+            previous = self.active_artifact_attempts.get(token)
+            if previous is not None and previous != artifact:
+                raise ValueError("cache attempt artifact identity changed")
+            if previous is None:
+                self.active_artifact_attempts[token] = artifact
+        return artifact
+
+    def _settle_artifact_attempt(self, cache_attempt_token: int) -> bool:
+        token = self._require_cache_attempt_token(cache_attempt_token)
+        with self.artifact_retirement_lock:
+            if self.active_artifact_attempts.pop(token, None) is None:
+                return False
+            return True
+
+    def _record_committed_artifact(self, payload: object) -> _ArtifactIdentity:
+        artifact = self._artifact_identity_from_mapping(payload)
+        if artifact is None:
+            raise ValueError("committed Rust artifact identity is invalid")
+        with self.artifact_retirement_lock:
+            if artifact not in self.known_committed_artifacts:
+                self.known_committed_artifacts.add(artifact)
+        return artifact
+
+    @classmethod
+    def _artifact_snapshot_references(
+        cls, snapshot: object
+    ) -> tuple[
+        set[_ArtifactIdentity],
+        tuple[_HostPlaybackProgramIdentity, _ArtifactIdentity] | None,
+    ] | None:
+        if not isinstance(snapshot, dict):
+            return None
+        current = snapshot.get("current_item")
+        playlist = snapshot.get("playlist")
+        if current is not None and not isinstance(current, dict):
+            return None
+        if not isinstance(playlist, list) or any(
+            not isinstance(item, dict) for item in playlist
+        ):
+            return None
+
+        live: set[_ArtifactIdentity] = set()
+        current_artifact: _ArtifactIdentity | None = None
+        for item in ([current] if isinstance(current, dict) else []) + playlist:
+            artifact_set_id = item.get("artifact_set_id")
+            relative_directory = item.get("artifact_relative_directory")
+            if not artifact_set_id and not relative_directory:
+                continue
+            artifact = cls._artifact_identity(
+                item.get("item_incarnation_id"),
+                artifact_set_id,
+                relative_directory,
+            )
+            if artifact is None:
+                return None
+            live.add(artifact)
+            if item is current:
+                current_artifact = artifact
+
+        program = snapshot.get("playback_program")
+        if program is None:
+            return (live, None)
+        if not isinstance(program, dict) or not isinstance(current, dict):
+            return None
+        program_artifact_set_id = program.get("artifact_set_id")
+        if program_artifact_set_id is None:
+            if current_artifact is not None:
+                return None
+            return (live, None)
+        generation = snapshot.get("playback_generation")
+        if (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+            or current_artifact is None
+            or program.get("item_id") != current.get("id")
+            or program.get("item_incarnation_id")
+            != current_artifact.item_incarnation_id
+            or program_artifact_set_id != current_artifact.artifact_set_id
+        ):
+            return None
+        owner = _HostPlaybackProgramIdentity(
+            playback_generation=generation,
+            item_incarnation_id=current_artifact.item_incarnation_id,
+            artifact_set_id=current_artifact.artifact_set_id,
+        )
+        return (live, (owner, current_artifact))
+
+    @staticmethod
+    def _host_client_identity(host_client_id: object) -> str:
+        if not isinstance(host_client_id, str):
+            raise ValueError("invalid Host client identity")
+        client_id = host_client_id.strip()
+        if (
+            not client_id
+            or len(client_id) > 128
+            or any(character.isspace() or ord(character) < 32 for character in client_id)
+        ):
+            raise ValueError("invalid Host client identity")
+        return client_id
+
+    @classmethod
+    def _host_playback_program_identity(
+        cls,
+        *,
+        playback_generation: object,
+        item_incarnation_id: object,
+        artifact_set_id: object,
+    ) -> _HostPlaybackProgramIdentity:
+        if (
+            isinstance(playback_generation, bool)
+            or not isinstance(playback_generation, int)
+            or playback_generation < 1
+            or not cls._valid_authoritative_identity(item_incarnation_id, "i")
+            or not cls._valid_authoritative_identity(artifact_set_id, "a")
+        ):
+            raise ValueError("invalid Host playback artifact identity")
+        return _HostPlaybackProgramIdentity(
+            playback_generation=playback_generation,
+            item_incarnation_id=item_incarnation_id,
+            artifact_set_id=artifact_set_id,
+        )
+
+    def claim_host_playback_program(
+        self,
+        *,
+        host_client_id: object,
+        playback_generation: object,
+        item_incarnation_id: object,
+        artifact_set_id: object,
+    ) -> bool:
+        client_id = self._host_client_identity(host_client_id)
+        program = self._host_playback_program_identity(
+            playback_generation=playback_generation,
+            item_incarnation_id=item_incarnation_id,
+            artifact_set_id=artifact_set_id,
+        )
+        owner = _HostPlaybackArtifactOwner(client_id, program)
+        with self.artifact_retirement_lock:
+            if (
+                program.playback_generation
+                <= self.retired_host_playback_generations.get(client_id, 0)
+            ):
+                return False
+            previous = self.host_playback_artifacts.get(owner)
+            if previous is not None:
+                return True
+            artifact = next(
+                (
+                    candidate
+                    for candidate in self.known_committed_artifacts
+                    if candidate.item_incarnation_id == program.item_incarnation_id
+                    and candidate.artifact_set_id == program.artifact_set_id
+                ),
+                None,
+            )
+            if artifact is None:
+                return False
+            self.host_playback_artifacts[owner] = artifact
+            return True
+
+    def retire_host_playback_program(
+        self,
+        *,
+        host_client_id: object,
+        playback_generation: object,
+        item_incarnation_id: object,
+        artifact_set_id: object,
+    ) -> bool:
+        client_id = self._host_client_identity(host_client_id)
+        program = self._host_playback_program_identity(
+            playback_generation=playback_generation,
+            item_incarnation_id=item_incarnation_id,
+            artifact_set_id=artifact_set_id,
+        )
+        owner = _HostPlaybackArtifactOwner(client_id, program)
+        with self.artifact_retirement_lock:
+            self.retired_host_playback_generations[client_id] = max(
+                program.playback_generation,
+                self.retired_host_playback_generations.get(client_id, 0),
+            )
+            released = self.host_playback_artifacts.pop(owner, None) is not None
+        if released:
+            self.collect_retired_artifacts()
+        return released
+
+    def acquire_media_reader(
+        self, relative_path: object
+    ) -> _ArtifactReaderLease | None:
+        artifact = self._artifact_identity_from_media_relative_path(relative_path)
+        if artifact is None:
+            return None
+        with self.artifact_retirement_lock:
+            if artifact not in self.known_committed_artifacts:
+                return None
+            lease = _ArtifactReaderLease(artifact)
+            self.active_artifact_reader_leases.add(lease)
+            self.artifact_reader_counts[artifact] = (
+                self.artifact_reader_counts.get(artifact, 0) + 1
+            )
+            return lease
+
+    def release_media_reader(self, lease: object) -> bool:
+        if not isinstance(lease, _ArtifactReaderLease):
+            return False
+        with self.artifact_retirement_lock:
+            if lease not in self.active_artifact_reader_leases:
+                return False
+            self.active_artifact_reader_leases.remove(lease)
+            artifact = lease.artifact
+            remaining = self.artifact_reader_counts.get(artifact, 0) - 1
+            if remaining > 0:
+                self.artifact_reader_counts[artifact] = remaining
+            else:
+                self.artifact_reader_counts.pop(artifact, None)
+        self.collect_retired_artifacts()
+        return True
+
+    def _committed_artifact_path(
+        self, artifact: _ArtifactIdentity
+    ) -> Path | None:
+        if (
+            self._artifact_identity(
+                artifact.item_incarnation_id,
+                artifact.artifact_set_id,
+                artifact.relative_directory,
+            )
+            != artifact
+        ):
+            return None
+        cache_root = CACHE_DIR.resolve()
+        lexical_path = CACHE_DIR / Path(artifact.relative_directory)
+        artifact_root = CACHE_DIR / ARTIFACT_ROOT_COMPONENT
+        incarnation_path = artifact_root / artifact.item_incarnation_id
+        resolved_path = lexical_path.resolve()
+        if (
+            artifact_root.is_symlink()
+            or incarnation_path.is_symlink()
+            or lexical_path.is_symlink()
+            or not self._path_is_within(resolved_path, cache_root)
+            or resolved_path == cache_root
+            or resolved_path.parent == cache_root
+        ):
+            return None
+        return lexical_path
+
+    def _collect_retired_artifacts_locked(
+        self, live_artifacts: set[_ArtifactIdentity]
+    ) -> int:
+        active_artifacts = set(self.active_artifact_attempts.values())
+        host_artifacts = set(self.host_playback_artifacts.values())
+        deleted = 0
+        for artifact in tuple(self.known_committed_artifacts):
+            if (
+                artifact in live_artifacts
+                or artifact in active_artifacts
+                or artifact in host_artifacts
+                or self.artifact_reader_counts.get(artifact, 0) > 0
+            ):
+                continue
+            artifact_path = self._committed_artifact_path(artifact)
+            if artifact_path is None:
+                continue
+            if artifact_path.exists() and not artifact_path.is_dir():
+                continue
+            if artifact_path.exists():
+                try:
+                    shutil.rmtree(artifact_path)
+                except OSError:
+                    continue
+            if artifact_path.exists():
+                continue
+            self.known_committed_artifacts.remove(artifact)
+            deleted += 1
+        return deleted
+
+    def collect_retired_artifacts(self) -> int:
+        # Store mutations already serialize on PlaylistStore.lock.  Taking that
+        # lock first gives one coherent Rust projection while the retirement
+        # lock closes reader admission and exact-owner changes around deletion.
+        # Every reducing owner transition invokes this method, so concurrent
+        # triggers queue for one bounded collection pass instead of recursing.
+        with self.artifact_collection_lock:
+            with self.store.lock:
+                snapshot = self.store.snapshot()
+                parsed = self._artifact_snapshot_references(snapshot)
+                if parsed is None:
+                    return 0
+                live_artifacts, _host_program = parsed
+                with self.artifact_retirement_lock:
+                    return self._collect_retired_artifacts_locked(live_artifacts)
+
+    def _reset_artifact_retirement_state(self) -> None:
+        with self.artifact_retirement_lock:
+            self.known_committed_artifacts.clear()
+            self.active_artifact_attempts.clear()
+            self.host_playback_artifacts.clear()
+            self.retired_host_playback_generations.clear()
+            self.active_artifact_reader_leases.clear()
+            self.artifact_reader_counts.clear()
+
     def _begin_cache_attempt(
         self,
         item_id: str,
         expected_item_incarnation_id: str,
     ) -> int:
-        return self._require_cache_attempt_token(
+        token = self._require_cache_attempt_token(
             self.store.begin_cache_attempt(
                 str(item_id),
                 expected_item_incarnation_id,
             )
         )
+        self._track_active_artifact_attempt(
+            token, self.store.cache_attempt_reservation(token)
+        )
+        return token
 
     def _begin_cache_attempt_for_item(self, item: PlaylistItem) -> int:
         return self._begin_cache_attempt(item.id, item.item_incarnation_id)
@@ -653,8 +1081,21 @@ class CacheManager:
                 self.urgent_cache_ids.discard(item_id)
                 if self.active_item_id == item_id:
                     self.active_item_id = None
+        if kind == "ready":
+            try:
+                self._track_active_artifact_attempt(
+                    cache_attempt_token, payload
+                )
+                self._record_committed_artifact(payload)
+            except ValueError:
+                self._settle_artifact_attempt(cache_attempt_token)
+                self.collect_retired_artifacts()
+                return
         item = self.store.get_item(item_id)
         if not item:
+            if terminal:
+                self._settle_artifact_attempt(cache_attempt_token)
+                self.collect_retired_artifacts()
             return
 
         if kind == "queued":
@@ -1649,6 +2090,7 @@ class CacheManager:
             self._clear_log_root()
         else:
             self._clear_cache_root()
+        self._reset_artifact_retirement_state()
         with self.lock:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
@@ -1716,6 +2158,7 @@ class CacheManager:
             self._clear_log_root()
         else:
             self._clear_cache_root()
+        self._reset_artifact_retirement_state()
         with self.lock:
             self.item_activity_at.clear()
             self.item_stage_progress_signatures.clear()
@@ -2160,11 +2603,11 @@ class CacheManager:
             self.desired_ids = set(desired_ids)
             self.ordered_desired_ids = list(plan.pending_order)
 
+        self._cleanup_orphan_cache_dirs(current_ids)
         if self._current_download_source() == DOWNLOAD_SOURCE_NATIVE:
             self._sync_native_with_playlist(items, plan)
             return
 
-        self._cleanup_orphan_cache_dirs(current_ids)
         self._stop_active_if_not_desired(desired_ids)
 
         for item in items:
@@ -5801,6 +6244,10 @@ class CacheManager:
             os.rename(complete_dir, committed_dir)
         except OSError as exc:
             raise DownloadCommandError(f"缓存发布失败: 无法原子发布完整集合: {exc}") from exc
+        try:
+            self._record_committed_artifact(reservation)
+        except ValueError as exc:
+            raise DownloadCommandError(f"缓存发布失败: {exc}") from exc
 
         published = {
             source: committed_dir / complete_path.name
@@ -8580,11 +9027,8 @@ class CacheManager:
             return
 
     def _cleanup_orphan_cache_dirs(self, valid_ids: set[str]) -> None:
-        # Committed artifact sets are deliberately retained for the lifetime of
-        # this process because a Host media element or HTTP Range reader may
-        # still hold an older immutable URL. Session preparation/shutdown owns
-        # the safe physical-retirement boundary.
         del valid_ids
+        self.collect_retired_artifacts()
 
     def _clear_cache_root(self) -> None:
         for child in CACHE_DIR.iterdir():

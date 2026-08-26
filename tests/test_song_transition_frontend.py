@@ -1096,6 +1096,7 @@ function clearLocalPlayerControlsHideTimer() {{}}
 function clearTauriMediaSessionState() {{}}
 function disposeAudioPitchShifter() {{}}
 function t(key) {{ return key; }}
+function apiPost() {{ return Promise.resolve({{ ok: true }}); }}
 {equality}
 {resume}
 {hold}

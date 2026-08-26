@@ -86,6 +86,10 @@ class SplitPlayerSyncTest(unittest.TestCase):
             '  addMountedPlayerListener(audio, "waiting",',
             "function applyRemotePlayerControl",
         )
+        cls.watchdog_schedule_source = cls._slice(
+            "function scheduleSplitPlaybackStartupWatchdog",
+            "function setSplitPlaybackStartState",
+        )
         cls.pause_event_source = cls._slice(
             '  addMountedPlayerListener(video, "pause",',
             '  addMountedPlayerListener(video, "seeking",',
@@ -141,6 +145,8 @@ const state = {{
     phase: "playing",
     readyCommitted: true,
     readyCommitCount: 1,
+    loadingStarted: true,
+    ownershipClaimed: true,
     logicalPlayIntent: true,
     initialIntentApplied: true,
     eventCleanups: [],
@@ -948,6 +954,238 @@ console.log(JSON.stringify({{
                 "sameAudio": True,
                 "currentTime": 23.5,
             },
+        )
+
+    def test_ownership_claim_latency_does_not_consume_media_readiness_watchdog(self):
+        renderer = self.renderer_source
+        request_start = self._slice(
+            "function requestSplitPlaybackStart(",
+            "function requestSplitPlaybackStartFromUserGesture",
+        )
+        start_state = self._slice(
+            "function setSplitPlaybackStartState",
+            "function isPlaybackPolicyRejection",
+        )
+        self.assertLess(
+            renderer.index('addMountedPlayerListener(video, "loadedmetadata"'),
+            renderer.index("beginHostPlaybackSessionOwnershipClaim(session)"),
+        )
+        self.assertIn('setSplitPlaybackStartState("pending", video, audio)', request_start)
+        self.assertIn("scheduleSplitPlaybackStartupWatchdog(video, audio)", start_state)
+        result = self.run_node_script(
+            f"""
+(async () => {{
+  const splitPlaybackStartupWatchdogMs = 3000;
+  const localPlayerSyncIntervalMs = 120;
+  const timers = [];
+  const intervals = [];
+  const window = {{
+    setTimeout(callback, delay) {{
+      const timer = {{ callback, delay, cancelled: false }};
+      timers.push(timer);
+      return timer;
+    }},
+    clearTimeout(timer) {{ if (timer) timer.cancelled = true; }},
+    setInterval(callback, delay) {{
+      const timer = {{ callback, delay, cancelled: false }};
+      intervals.push(timer);
+      return timer;
+    }},
+    clearInterval(timer) {{ if (timer) timer.cancelled = true; }},
+  }};
+  class Media {{
+    constructor(role) {{
+      this.role = role;
+      this.dataset = {{ playerItemId: "song-a" }};
+      this.listeners = new Map();
+      this.paused = true;
+      this.currentTime = 0;
+      this.readyState = 0;
+      this._src = "";
+      this.loadCalls = 0;
+      this.listenerCountAtSourceAssignment = 0;
+    }}
+    get src() {{ return this._src; }}
+    set src(value) {{
+      this._src = String(value || "");
+      if (this._src) this.listenerCountAtSourceAssignment = this.listeners.size;
+    }}
+    addEventListener(name, listener) {{
+      const listeners = this.listeners.get(name) || [];
+      listeners.push(listener);
+      this.listeners.set(name, listeners);
+    }}
+    load() {{ this.loadCalls += 1; }}
+  }}
+  const video = new Media("video");
+  const audio = new Media("audio");
+  const program = {{
+    item_id: "song-a",
+    item_incarnation_id: "i-a",
+    selected_audio_variant_id: "instrumental",
+    artifact_set_id: "a-1",
+  }};
+  const session = {{
+    playbackGeneration: 7,
+    playbackProgram: program,
+    phase: "binding",
+    video,
+    audio,
+    mountData: {{
+      videoUrl: "/media/a-1/video.mp4",
+      audioUrl: "/media/a-1/instrumental.m4a",
+    }},
+    loadingStarted: false,
+    readyCommitted: false,
+    ownershipClaimStarted: false,
+    ownershipClaimed: false,
+    ownershipClaimFailed: false,
+    ownershipClaimRequest: null,
+    retirementReleaseSent: false,
+    startupWatchdogTimer: null,
+    startupTimer: null,
+    syncTimer: null,
+    eventCleanups: [],
+  }};
+  const state = {{
+    data: {{ playback_generation: 7, playback_program: program }},
+    hostPlaybackSession: session,
+    localPlaybackStartGeneration: 0,
+    localPlaybackStartPromisesSettled: false,
+    localAudioPlaybackBlocked: false,
+    localVideoDeferredRecovery: false,
+  }};
+  const elements = {{ playerFrame: {{ querySelector() {{ return null; }} }} }};
+  let resolveClaim;
+  let claimRequests = 0;
+  let readinessFailures = 0;
+  function apiPost(path) {{
+    if (path !== "/api/player/claim-program") throw new Error(`unexpected ${{path}}`);
+    claimRequests += 1;
+    return new Promise((resolve) => {{ resolveClaim = resolve; }});
+  }}
+  function addMountedPlayerListener(media, name, listener) {{
+    media.addEventListener(name, listener);
+    session.eventCleanups.push(() => {{}});
+    return true;
+  }}
+  function isActiveSplitPlayer(candidateVideo, candidateAudio) {{
+    return candidateVideo === video
+      && candidateAudio === audio
+      && state.hostPlaybackSession === session
+      && session.phase !== "retired";
+  }}
+  function clearSplitPlaybackStartupWatchdog(candidate = state.hostPlaybackSession) {{
+    if (!candidate?.startupWatchdogTimer) return;
+    window.clearTimeout(candidate.startupWatchdogTimer);
+    candidate.startupWatchdogTimer = null;
+  }}
+  function failHostPlaybackCandidate(candidate, candidateVideo, candidateAudio) {{
+    if (
+      candidate !== state.hostPlaybackSession
+      || candidateVideo !== video
+      || candidateAudio !== audio
+      || candidate.phase !== "binding"
+    ) return false;
+    readinessFailures += 1;
+    candidate.phase = "failed";
+    return true;
+  }}
+  function playbackProgramDescriptorsEqual(left, right) {{
+    return JSON.stringify(left) === JSON.stringify(right);
+  }}
+  function clearWebKitAudioStarvationTimer() {{}}
+  function isWebKitPlaybackRuntime() {{ return false; }}
+  function syncSplitPlayer() {{}}
+  function currentAvOffsetSeconds() {{ return 0; }}
+  function maybeShowRatingPromptForProgress() {{}}
+  async function handleSplitAudioEnded() {{}}
+  function reportCurrentVideoStatus() {{}}
+  function synchronizeStartupPlayer() {{ return false; }}
+  {self.watchdog_schedule_source}
+  {self.session_foundation_source}
+  function registerRendererTail() {{
+  {self.renderer_tail_source}
+
+  registerRendererTail();
+  await Promise.resolve();
+  await Promise.resolve();
+  const preclaimScheduleAccepted = scheduleSplitPlaybackStartupWatchdog(video, audio);
+  const pendingWatchdogs = timers.filter(
+    (timer) => timer.delay === splitPlaybackStartupWatchdogMs && !timer.cancelled
+  );
+  pendingWatchdogs.forEach((timer) => timer.callback());
+  const whileClaimPending = {{
+    pairCount: Number(Boolean(video)) + Number(Boolean(audio)),
+    videoSrc: video.src,
+    audioSrc: audio.src,
+    loadingStarted: session.loadingStarted,
+    readinessFailures,
+    claimRequests,
+    preclaimScheduleAccepted,
+    activeWatchdogs: session.startupWatchdogTimer ? 1 : 0,
+  }};
+
+  resolveClaim({{ claimed: true }});
+  await session.ownershipClaimRequest;
+  const afterClaim = {{
+    ownershipClaimed: session.ownershipClaimed,
+    videoSrc: video.src,
+    audioSrc: audio.src,
+    videoLoadCalls: video.loadCalls,
+    audioLoadCalls: audio.loadCalls,
+    listenersBeforeVideoSource: video.listenerCountAtSourceAssignment,
+    listenersBeforeAudioSource: audio.listenerCountAtSourceAssignment,
+    loadingStarted: session.loadingStarted,
+    readinessFailures,
+    claimRequests,
+    activeWatchdogs: session.startupWatchdogTimer ? 1 : 0,
+  }};
+
+  timers
+    .filter((timer) => timer.delay === splitPlaybackStartupWatchdogMs && !timer.cancelled)
+    .forEach((timer) => timer.callback());
+  const afterUnreadyTimeout = {{
+    phase: session.phase,
+    readinessFailures,
+    activeWatchdogs: session.startupWatchdogTimer ? 1 : 0,
+  }};
+  console.log(JSON.stringify({{ whileClaimPending, afterClaim, afterUnreadyTimeout }}));
+}})().catch((error) => {{ console.error(error); process.exit(1); }});
+"""
+        )
+        self.assertEqual(
+            result["whileClaimPending"],
+            {
+                "pairCount": 2,
+                "videoSrc": "",
+                "audioSrc": "",
+                "loadingStarted": False,
+                "readinessFailures": 0,
+                "claimRequests": 1,
+                "preclaimScheduleAccepted": False,
+                "activeWatchdogs": 0,
+            },
+        )
+        self.assertEqual(
+            result["afterClaim"],
+            {
+                "ownershipClaimed": True,
+                "videoSrc": "/media/a-1/video.mp4",
+                "audioSrc": "/media/a-1/instrumental.m4a",
+                "videoLoadCalls": 1,
+                "audioLoadCalls": 1,
+                "listenersBeforeVideoSource": 0,
+                "listenersBeforeAudioSource": 5,
+                "loadingStarted": True,
+                "readinessFailures": 0,
+                "claimRequests": 1,
+                "activeWatchdogs": 1,
+            },
+        )
+        self.assertEqual(
+            result["afterUnreadyTimeout"],
+            {"phase": "failed", "readinessFailures": 1, "activeWatchdogs": 0},
         )
 
     def test_refresh_progress_preserves_mounted_pair_and_new_artifact_changes_identity_once(self):
@@ -3838,6 +4076,7 @@ currentVideo = oldVideo; currentAudio = oldAudio;
 mountedVideo = oldVideo; mountedAudio = oldAudio;
 const oldSession = {
   eventCleanups: [], phase: "binding", readyCommitted: true,
+  loadingStarted: true, ownershipClaimed: true,
   logicalPlayIntent: true, initialIntentApplied: true,
 };
 state.hostPlaybackSession = oldSession;
@@ -3855,6 +4094,7 @@ currentVideo = video; currentAudio = audio;
 mountedVideo = video; mountedAudio = audio;
 const currentSession = {
   eventCleanups: [], phase: "binding", readyCommitted: true,
+  loadingStarted: true, ownershipClaimed: true,
   logicalPlayIntent: true, initialIntentApplied: true,
 };
 state.hostPlaybackSession = currentSession;
@@ -4269,6 +4509,9 @@ async function handleSplitAudioEnded() {{ effects.push("ended"); }}
 function currentAvOffsetSeconds() {{ return 0; }}
 function scheduleSplitPlaybackStartupWatchdog() {{}}
 function beginHostPlaybackSessionElementLoading() {{ return true; }}
+function beginHostPlaybackSessionOwnershipClaim() {{
+  return beginHostPlaybackSessionElementLoading();
+}}
 function failHostPlaybackCandidate() {{ return false; }}
 const localPlayerSyncIntervalMs = 120;
 {self.webkit_timer_source}
@@ -4618,7 +4861,14 @@ console.log(JSON.stringify({
         self.assertNotIn('state.localPlaybackStartState = "idle"', teardown)
         self.assertIn('setHostPlaybackSessionPhase(session, "binding")', self.source)
         self.assertIn("commitHostPlaybackSessionReadyPaused", renderer)
-        self.assertIn("beginHostPlaybackSessionElementLoading(session)", renderer)
+        self.assertIn("beginHostPlaybackSessionOwnershipClaim(session)", renderer)
+        ownership_claim = self._slice(
+            "function beginHostPlaybackSessionOwnershipClaim",
+            "function replaceHostPlayerView",
+        )
+        self.assertIn(
+            "beginHostPlaybackSessionElementLoading(session)", ownership_claim
+        )
 
     def test_only_one_player_renderer_and_one_sync_interval_remain(self):
         self.assertEqual(self.source.count("function renderPlayer(currentItem, playbackMode)"), 1)

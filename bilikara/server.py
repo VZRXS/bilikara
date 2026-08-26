@@ -1088,6 +1088,36 @@ class AppContext:
     def restart_playback_program(self) -> bool:
         return self.store.restart_playback_program()
 
+    def retire_host_playback_program(
+        self,
+        *,
+        host_client_id: str,
+        playback_generation: int,
+        item_incarnation_id: str,
+        artifact_set_id: str,
+    ) -> bool:
+        return self.cache_manager.retire_host_playback_program(
+            host_client_id=host_client_id,
+            playback_generation=playback_generation,
+            item_incarnation_id=item_incarnation_id,
+            artifact_set_id=artifact_set_id,
+        )
+
+    def claim_host_playback_program(
+        self,
+        *,
+        host_client_id: str,
+        playback_generation: int,
+        item_incarnation_id: str,
+        artifact_set_id: str,
+    ) -> bool:
+        return self.cache_manager.claim_host_playback_program(
+            host_client_id=host_client_id,
+            playback_generation=playback_generation,
+            item_incarnation_id=item_incarnation_id,
+            artifact_set_id=artifact_set_id,
+        )
+
     def bind_server(self, server: ThreadingHTTPServer, *, shutdown_on_last_client: bool) -> None:
         with self._client_lock:
             self._server = server
@@ -2266,6 +2296,41 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 CONTEXT.ack_player_control(seq)
                 self._write_json({"ok": True})
                 return
+            if route in {
+                "/api/player/claim-program",
+                "/api/player/retire-program",
+            }:
+                if not self._is_local_client():
+                    self._write_json(
+                        {"ok": False, "error": "forbidden"},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                    return
+                playback_generation = _positive_safe_player_status_integer(
+                    body.get("playback_generation"), "playback_generation"
+                )
+                item_incarnation_id = body.get("item_incarnation_id")
+                artifact_set_id = body.get("artifact_set_id")
+                if (
+                    not isinstance(item_incarnation_id, str)
+                    or not item_incarnation_id
+                    or not isinstance(artifact_set_id, str)
+                    or not artifact_set_id
+                ):
+                    raise ValueError("invalid Host playback artifact identity")
+                identity = {
+                    "host_client_id": client_id,
+                    "playback_generation": playback_generation,
+                    "item_incarnation_id": item_incarnation_id,
+                    "artifact_set_id": artifact_set_id,
+                }
+                if route == "/api/player/claim-program":
+                    claimed = CONTEXT.claim_host_playback_program(**identity)
+                    self._write_json({"ok": True, "data": {"claimed": claimed}})
+                else:
+                    released = CONTEXT.retire_host_playback_program(**identity)
+                    self._write_json({"ok": True, "data": {"released": released}})
+                return
             if route == "/api/player/status":
                 observation = _normalize_player_status_observation(
                     playback_generation=body.get("playback_generation"),
@@ -2659,16 +2724,34 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             or not decoded_path.parts
             or any(part in {".", ".."} or part.startswith(".") for part in decoded_path.parts)
             or not _is_path_within(media_path, CACHE_DIR.resolve())
-            or not media_path.is_file()
         ):
             self._write_json({"ok": False, "error": "媒体文件不存在"}, status=HTTPStatus.NOT_FOUND)
             return
-        self._stream_file(
-            media_path,
-            content_type=self._guess_type(media_path),
-            allow_ranges=True,
-            head_only=head_only,
-        )
+        reader_lease = None
+        if decoded_path.parts[0] == "artifacts":
+            reader_lease = CONTEXT.cache_manager.acquire_media_reader(decoded)
+            if reader_lease is None:
+                self._write_json(
+                    {"ok": False, "error": "媒体文件不存在"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+        try:
+            if not media_path.is_file():
+                self._write_json(
+                    {"ok": False, "error": "媒体文件不存在"},
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                return
+            self._stream_file(
+                media_path,
+                content_type=self._guess_type(media_path),
+                allow_ranges=True,
+                head_only=head_only,
+            )
+        finally:
+            if reader_lease is not None:
+                CONTEXT.cache_manager.release_media_reader(reader_lease)
 
     def _read_json_body(self) -> dict:
         raw_length = self.headers.get("Content-Length", "0")

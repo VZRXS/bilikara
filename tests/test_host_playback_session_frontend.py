@@ -452,6 +452,26 @@ async function apiPostStateSnapshot(...args) {{
   }}
   return accepted;
 }}
+const retirementRequests = [];
+const ownershipClaimRequests = [];
+const startupWatchdogRequests = [];
+let ownershipClaimRequestImpl = async () => ({{ claimed: true }});
+let retirementRequestImpl = async () => ({{ ok: true }});
+function scheduleSplitPlaybackStartupWatchdog(video, audio) {{
+  startupWatchdogRequests.push({{ video, audio }});
+  return true;
+}}
+function apiPost(path, payload) {{
+  if (path === "/api/player/claim-program") {{
+    ownershipClaimRequests.push({{ path, payload }});
+    return ownershipClaimRequestImpl(path, payload);
+  }}
+  if (path === "/api/player/retire-program") {{
+    retirementRequests.push({{ path, payload }});
+    return retirementRequestImpl(path, payload);
+  }}
+  throw new Error(`unexpected API path: ${{path}}`);
+}}
 let renderImpl = () => {{}};
 function render() {{ renderImpl(); }}
 {listener_lifecycle}
@@ -661,6 +681,166 @@ process.stdout.write(JSON.stringify(observations));
             {"first": True, "second": False, "state": "retired"},
         )
 
+    def test_exact_retirement_acknowledges_once_after_media_detachment(self):
+        result = self.run_foundation(
+            """
+(async () => {
+  const incarnationA = "i-0123456789abcdef0123456789abcdef-0000000000000001";
+  const artifactA = "a-0123456789abcdef0123456789abcdef-0000000000000001";
+  const incarnationB = "i-0123456789abcdef0123456789abcdef-0000000000000002";
+  const artifactB = "a-0123456789abcdef0123456789abcdef-0000000000000002";
+  const firstItem = item({ incarnation: incarnationA, artifactId: artifactA });
+  installSnapshot(7, firstItem);
+  const first = reconcileHostPlaybackSession(firstItem);
+  first.session.ownershipClaimStarted = true;
+  const oldVideo = first.video;
+  const oldAudio = first.audio;
+  let detachedAtAcknowledgement = null;
+  retirementRequestImpl = async (path, payload) => {
+    detachedAtAcknowledgement = {
+      path,
+      payload,
+      phase: first.session.phase,
+      sessionVideoCleared: first.session.video === null,
+      sessionAudioCleared: first.session.audio === null,
+      videoSource: oldVideo.src,
+      audioSource: oldAudio.src,
+    };
+    throw new Error("acknowledgement lost");
+  };
+
+  const secondItem = item({
+    itemId: "song-b",
+    incarnation: incarnationB,
+    artifactId: artifactB,
+  });
+  installSnapshot(8, secondItem);
+  const second = reconcileHostPlaybackSession(secondItem);
+  await Promise.resolve();
+  await Promise.resolve();
+  const duplicateRetirement = retireHostPlaybackSession(first.session);
+  const afterFailedAcknowledgement = {
+    requests: retirementRequests.length,
+    duplicateRetirement,
+    currentIsSecond: state.hostPlaybackSession === second.session,
+    secondPhase: second.session.phase,
+    counts: counts(),
+  };
+
+  const pending = item({
+    itemId: "song-pending",
+    incarnation: "i-pending",
+    artifactId: "",
+    mountable: false,
+  });
+  retirementRequestImpl = async () => ({ ok: true });
+  installSnapshot(9, pending);
+  reconcileHostPlaybackSession(pending);
+  const requestsAfterSecondRetirement = retirementRequests.length;
+  const third = item({
+    itemId: "song-c",
+    incarnation: "i-c",
+    artifactId: "a-c",
+  });
+  installSnapshot(10, third);
+  reconcileHostPlaybackSession(third);
+  const pendingSentInvalidAcknowledgement = (
+    retirementRequests.length !== requestsAfterSecondRetirement
+  );
+
+  process.stdout.write(JSON.stringify({
+    detachedAtAcknowledgement,
+    firstRequest: retirementRequests[0],
+    afterFailedAcknowledgement,
+    pendingSentInvalidAcknowledgement,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        expected_identity = {
+            "playback_generation": 7,
+            "item_incarnation_id": (
+                "i-0123456789abcdef0123456789abcdef-0000000000000001"
+            ),
+            "artifact_set_id": (
+                "a-0123456789abcdef0123456789abcdef-0000000000000001"
+            ),
+        }
+        self.assertEqual(
+            result["detachedAtAcknowledgement"],
+            {
+                "path": "/api/player/retire-program",
+                "payload": expected_identity,
+                "phase": "retired",
+                "sessionVideoCleared": True,
+                "sessionAudioCleared": True,
+                "videoSource": "",
+                "audioSource": "",
+            },
+        )
+        self.assertEqual(
+            result["firstRequest"],
+            {"path": "/api/player/retire-program", "payload": expected_identity},
+        )
+        self.assertEqual(
+            result["afterFailedAcknowledgement"],
+            {
+                "requests": 1,
+                "duplicateRetirement": False,
+                "currentIsSecond": True,
+                "secondPhase": "binding",
+                "counts": {"video": 1, "audio": 1},
+            },
+        )
+        self.assertFalse(result["pendingSentInvalidAcknowledgement"])
+
+    def test_pagehide_uses_the_same_exact_idempotent_retirement_boundary(self):
+        result = self.run_foundation(
+            """
+const current = item({
+  incarnation: "i-0123456789abcdef0123456789abcdef-0000000000000001",
+  artifactId: "a-0123456789abcdef0123456789abcdef-0000000000000001",
+});
+installSnapshot(11, current);
+const mounted = reconcileHostPlaybackSession(current);
+mounted.session.ownershipClaimStarted = true;
+windowListeners.pagehide();
+windowListeners.pagehide();
+process.stdout.write(JSON.stringify({
+  requests: retirementRequests,
+  phase: mounted.session.phase,
+  videoCleared: mounted.session.video === null,
+  audioCleared: mounted.session.audio === null,
+  counts: counts(),
+}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "requests": [
+                    {
+                        "path": "/api/player/retire-program",
+                        "payload": {
+                            "playback_generation": 11,
+                            "item_incarnation_id": (
+                                "i-0123456789abcdef0123456789abcdef-"
+                                "0000000000000001"
+                            ),
+                            "artifact_set_id": (
+                                "a-0123456789abcdef0123456789abcdef-"
+                                "0000000000000001"
+                            ),
+                        },
+                    }
+                ],
+                "phase": "retired",
+                "videoCleared": True,
+                "audioCleared": True,
+                "counts": {"video": 1, "audio": 1},
+            },
+        )
+
     def test_candidate_creation_prepares_one_pair_without_starting_media_load(self):
         result = self.run_foundation(
             """
@@ -684,6 +864,237 @@ process.stdout.write(JSON.stringify({
                 "videoSrc": "",
                 "audioSrc": "",
                 "sourceAssignments": [],
+            },
+        )
+
+    def test_exact_claim_precedes_loading_and_failure_or_supersession_never_retries(self):
+        render_player = self.source_slice(
+            "function renderPlayer", "function applyRemotePlayerControl"
+        )
+        self.assertIn(
+            "beginHostPlaybackSessionOwnershipClaim(session);", render_player
+        )
+        result = self.run_foundation(
+            """
+(async () => {
+  const firstItem = item();
+  installSnapshot(7, firstItem);
+  const first = reconcileHostPlaybackSession(firstItem);
+  let resolveFirstClaim;
+  ownershipClaimRequestImpl = () => new Promise((resolve) => {
+    resolveFirstClaim = resolve;
+  });
+  const firstStarted = beginHostPlaybackSessionOwnershipClaim(first.session);
+  const duplicateStart = beginHostPlaybackSessionOwnershipClaim(first.session);
+  await Promise.resolve();
+  const beforeFirstClaim = {
+    videoSrc: first.video.src,
+    audioSrc: first.audio.src,
+    loadingStarted: first.session.loadingStarted,
+    claimRequests: ownershipClaimRequests.length,
+  };
+  resolveFirstClaim({ claimed: true });
+  await first.session.ownershipClaimRequest;
+  const afterFirstClaim = {
+    videoSrc: first.video.src,
+    audioSrc: first.audio.src,
+    loadingStarted: first.session.loadingStarted,
+    ownershipClaimed: first.session.ownershipClaimed,
+    sourceAssignments: sourceAssignments.length,
+  };
+
+  let resolveDelayedClaim;
+  const secondItem = item({ itemId: "song-b", incarnation: "i-b", artifactId: "a-b" });
+  installSnapshot(8, secondItem);
+  const second = reconcileHostPlaybackSession(secondItem);
+  ownershipClaimRequestImpl = () => new Promise((resolve) => {
+    resolveDelayedClaim = resolve;
+  });
+  beginHostPlaybackSessionOwnershipClaim(second.session);
+  await Promise.resolve();
+  const thirdItem = item({ itemId: "song-c", incarnation: "i-c", artifactId: "a-c" });
+  installSnapshot(9, thirdItem);
+  const third = reconcileHostPlaybackSession(thirdItem);
+  resolveDelayedClaim({ claimed: true });
+  await second.session.ownershipClaimRequest;
+  const superseded = {
+    phase: second.session.phase,
+    videoSrc: second.video?.src || "",
+    audioSrc: second.audio?.src || "",
+    currentIsThird: state.hostPlaybackSession === third.session,
+    claimRequests: ownershipClaimRequests.length,
+  };
+
+  ownershipClaimRequestImpl = async () => { throw new Error("claim failed"); };
+  beginHostPlaybackSessionOwnershipClaim(third.session);
+  await third.session.ownershipClaimRequest;
+  const failed = {
+    phase: third.session.phase,
+    currentSessionRetained: state.hostPlaybackSession === third.session,
+    videoSrc: third.video?.src || "",
+    audioSrc: third.audio?.src || "",
+    ownershipClaimFailed: third.session.ownershipClaimFailed,
+    claimRequests: ownershipClaimRequests.length,
+    retirementRequests: retirementRequests.length,
+    counts: counts(),
+  };
+
+  process.stdout.write(JSON.stringify({
+    firstStarted,
+    duplicateStart,
+    beforeFirstClaim,
+    afterFirstClaim,
+    superseded,
+    failed,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertTrue(result["firstStarted"])
+        self.assertFalse(result["duplicateStart"])
+        self.assertEqual(
+            result["beforeFirstClaim"],
+            {
+                "videoSrc": "",
+                "audioSrc": "",
+                "loadingStarted": False,
+                "claimRequests": 1,
+            },
+        )
+        self.assertEqual(
+            result["afterFirstClaim"],
+            {
+                "videoSrc": "/media/a-1/video.mp4",
+                "audioSrc": "/media/a-1/instrumental.m4a",
+                "loadingStarted": True,
+                "ownershipClaimed": True,
+                "sourceAssignments": 2,
+            },
+        )
+        self.assertEqual(
+            result["superseded"],
+            {
+                "phase": "retired",
+                "videoSrc": "",
+                "audioSrc": "",
+                "currentIsThird": True,
+                "claimRequests": 2,
+            },
+        )
+        self.assertEqual(
+            result["failed"],
+            {
+                "phase": "retired",
+                "currentSessionRetained": True,
+                "videoSrc": "",
+                "audioSrc": "",
+                "ownershipClaimFailed": True,
+                "claimRequests": 3,
+                "retirementRequests": 3,
+                "counts": {"video": 0, "audio": 0},
+            },
+        )
+
+    def test_claim_failure_is_terminal_for_the_same_accepted_program(self):
+        result = self.run_foundation(
+            """
+(async () => {
+  const failedItem = item();
+  installSnapshot(7, failedItem, { state_revision: 40, cache_progress: 10 });
+  const first = reconcileHostPlaybackSession(failedItem);
+  ownershipClaimRequestImpl = async () => { throw new Error("claim failed"); };
+  beginHostPlaybackSessionOwnershipClaim(first.session);
+  await first.session.ownershipClaimRequest;
+  const afterFailure = {
+    phase: first.session.phase,
+    retained: state.hostPlaybackSession === first.session,
+    ownershipClaimFailed: first.session.ownershipClaimFailed,
+    claimRequests: ownershipClaimRequests.length,
+    retirementRequests: retirementRequests.length,
+    counts: counts(),
+  };
+
+  installSnapshot(7, failedItem, { state_revision: 41, cache_progress: 75 });
+  const sameProgram = reconcileHostPlaybackSession(failedItem);
+  if (sameProgram.kind === "mounted") {
+    beginHostPlaybackSessionOwnershipClaim(sameProgram.session);
+    await sameProgram.session.ownershipClaimRequest;
+  }
+  const afterPythonOnlyRevision = {
+    kind: sameProgram.kind,
+    sameSentinel: state.hostPlaybackSession === first.session,
+    claimRequests: ownershipClaimRequests.length,
+    retirementRequests: retirementRequests.length,
+    counts: counts(),
+  };
+
+  const recoveredItem = item({
+    itemId: "song-b",
+    incarnation: "i-b",
+    artifactId: "a-b",
+  });
+  installSnapshot(8, recoveredItem, { state_revision: 42 });
+  const recovered = reconcileHostPlaybackSession(recoveredItem);
+  ownershipClaimRequestImpl = async () => ({ claimed: true });
+  beginHostPlaybackSessionOwnershipClaim(recovered.session);
+  await recovered.session.ownershipClaimRequest;
+  const afterHigherGeneration = {
+    kind: recovered.kind,
+    generation: recovered.session.playbackGeneration,
+    current: state.hostPlaybackSession === recovered.session,
+    loadingStarted: recovered.session.loadingStarted,
+    ownershipClaimed: recovered.session.ownershipClaimed,
+    videoSrc: recovered.video.src,
+    audioSrc: recovered.audio.src,
+    claimRequests: ownershipClaimRequests.length,
+    retirementRequests: retirementRequests.length,
+    watchdogRequests: startupWatchdogRequests.length,
+    counts: counts(),
+  };
+
+  process.stdout.write(JSON.stringify({
+    afterFailure,
+    afterPythonOnlyRevision,
+    afterHigherGeneration,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(
+            result["afterFailure"],
+            {
+                "phase": "retired",
+                "retained": True,
+                "ownershipClaimFailed": True,
+                "claimRequests": 1,
+                "retirementRequests": 1,
+                "counts": {"video": 0, "audio": 0},
+            },
+        )
+        self.assertEqual(
+            result["afterPythonOnlyRevision"],
+            {
+                "kind": "retired",
+                "sameSentinel": True,
+                "claimRequests": 1,
+                "retirementRequests": 1,
+                "counts": {"video": 0, "audio": 0},
+            },
+        )
+        self.assertEqual(
+            result["afterHigherGeneration"],
+            {
+                "kind": "mounted",
+                "generation": 8,
+                "current": True,
+                "loadingStarted": True,
+                "ownershipClaimed": True,
+                "videoSrc": "/media/a-b/video.mp4",
+                "audioSrc": "/media/a-b/instrumental.m4a",
+                "claimRequests": 2,
+                "retirementRequests": 1,
+                "watchdogRequests": 1,
+                "counts": {"video": 1, "audio": 1},
             },
         )
 

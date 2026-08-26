@@ -6000,6 +6000,519 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+class CacheManagerArtifactRetirementTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.cache_dir = root / "cache"
+        self.cache_dir.mkdir()
+        self.log_path = root / "cache.log"
+        self.store = PlaylistStore(root / "state.json", root / "backup.json")
+        self.store.add_session_user("retirement-user")
+        self.cache_patch = patch("bilikara.cache.CACHE_DIR", self.cache_dir)
+        self.worker_patch = patch.object(
+            CacheManager, "_worker_loop", lambda _self: None
+        )
+        self.cache_patch.start()
+        self.worker_patch.start()
+        self.manager = CacheManager(self.store, max_cache_items=2)
+
+    def tearDown(self) -> None:
+        self.manager.shutdown()
+        self.worker_patch.stop()
+        self.cache_patch.stop()
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _item(item_id: str) -> PlaylistItem:
+        return PlaylistItem(
+            id=item_id,
+            original_url=f"https://example.test/{item_id}",
+            resolved_url=f"https://example.test/{item_id}?p=1",
+            bvid="BV1xx411c7mD",
+            aid=1,
+            cid=2,
+            page=1,
+            title=item_id,
+            part_title="P1",
+            display_title=f"{item_id} - P1",
+            cover_url="",
+            embed_url="",
+        )
+
+    def _publish_without_ready(
+        self, item_id: str, marker: bytes
+    ) -> dict[str, object]:
+        observed = self.store.get_item(item_id)
+        self.assertIsNotNone(observed)
+        token = self.manager._begin_cache_attempt_for_item(observed)
+        reservation, staging, committed = self.manager._cache_attempt_paths(token)
+        staging.mkdir(parents=True)
+        video = staging / "downloaded-video.mp4"
+        audio = staging / "downloaded-audio.m4a"
+        video.write_bytes(b"video-" + marker)
+        audio.write_bytes(b"audio-" + marker)
+        result: dict[str, object] = {
+            "video_file": video,
+            "video_relative_path": str(video.relative_to(self.cache_dir)),
+            "video_media_url": f"/media/{video.relative_to(self.cache_dir)}",
+            "audio_variants": [
+                {
+                    "id": "p1",
+                    "label": "P1",
+                    "page": 1,
+                    "audio_url": f"/media/{audio.relative_to(self.cache_dir)}",
+                }
+            ],
+            "selected_audio_variant_id": "p1",
+            "validation_files": [
+                {"path": video, "stream_kind": "video", "page": 1},
+                {"path": audio, "stream_kind": "audio", "page": 1},
+            ],
+            "validation_metadata": [{"path": str(video)}, {"path": str(audio)}],
+        }
+        self.manager._publish_validated_cache_result(
+            item_id,
+            token,
+            reservation,
+            staging,
+            result,
+            self.log_path,
+        )
+        return {
+            "token": token,
+            "reservation": reservation,
+            "result": result,
+            "generation": self.store.snapshot()["playback_generation"],
+            "item_incarnation_id": reservation["item_incarnation_id"],
+            "artifact_set_id": reservation["artifact_set_id"],
+            "artifact_relative_directory": reservation[
+                "artifact_relative_directory"
+            ],
+            "directory": committed,
+        }
+
+    def _publish(self, item_id: str, marker: bytes) -> dict[str, object]:
+        published = self._publish_without_ready(item_id, marker)
+        result = published["result"]
+        self.assertIsInstance(result, dict)
+        self.assertTrue(
+            self.manager._project_cache_event(
+                item_id,
+                "ready",
+                cache_attempt_token=published["token"],
+                progress=100.0,
+                message="ready",
+                video_relative_path=result["video_relative_path"],
+                video_media_url=result["video_media_url"],
+                audio_variants=result["audio_variants"],
+                selected_audio_variant_id=result["selected_audio_variant_id"],
+                item_incarnation_id=result["item_incarnation_id"],
+                artifact_set_id=result["artifact_set_id"],
+                artifact_relative_directory=result["artifact_relative_directory"],
+            )
+        )
+        published["generation"] = self.store.snapshot()["playback_generation"]
+        return published
+
+    def _evict(self, item_id: str) -> None:
+        observed = self.store.get_item(item_id)
+        self.assertIsNotNone(observed)
+        token = self.manager._begin_cache_attempt_for_item(observed)
+        self.assertTrue(
+            self.manager._project_cache_event(
+                item_id,
+                "evicted",
+                cache_attempt_token=token,
+                message="test eviction",
+            )
+        )
+
+    def _claim(
+        self, snapshot: dict[str, object], host_client_id: str = "host-client"
+    ) -> bool:
+        program = snapshot["playback_program"]
+        self.assertIsInstance(program, dict)
+        return self.manager.claim_host_playback_program(
+            host_client_id=host_client_id,
+            playback_generation=snapshot["playback_generation"],
+            item_incarnation_id=program["item_incarnation_id"],
+            artifact_set_id=program["artifact_set_id"],
+        )
+
+    def test_host_retirement_waits_for_exact_range_reader_then_collects(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        old = self._publish("song-a", b"old")
+        self.assertTrue(self._claim(self.store.snapshot()))
+        reader = self.manager.acquire_media_reader(
+            f"{old['artifact_relative_directory']}/video-p1.mp4"
+        )
+        self.assertIsNotNone(reader)
+
+        new = self._publish("song-a", b"new")
+        self.assertTrue(old["directory"].is_dir())
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=old["generation"],
+                item_incarnation_id=old["item_incarnation_id"],
+                artifact_set_id=old["artifact_set_id"],
+            )
+        )
+        self.assertTrue(old["directory"].is_dir())
+
+        self.manager.release_media_reader(reader)
+
+        self.assertFalse(old["directory"].exists())
+        self.assertTrue(new["directory"].is_dir())
+        self.assertFalse(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=old["generation"],
+                item_incarnation_id=old["item_incarnation_id"],
+                artifact_set_id=old["artifact_set_id"],
+            )
+        )
+        self.manager.collect_retired_artifacts()
+        self.assertFalse(old["directory"].exists())
+        self.assertEqual(self.manager.cache_metrics()["retained_bytes"], 0)
+
+    def test_live_projection_and_active_publication_pin_exact_artifacts(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        current = self._publish("song-a", b"current")
+        self.manager.collect_retired_artifacts()
+        self.assertTrue(current["directory"].is_dir())
+
+        publishing = self._publish_without_ready("song-a", b"publishing")
+        self.manager.collect_retired_artifacts()
+        self.assertTrue(publishing["directory"].is_dir())
+
+        self.assertTrue(
+            self.manager._project_cache_event(
+                "song-a",
+                "failed",
+                cache_attempt_token=publishing["token"],
+                message="publication rejected",
+            )
+        )
+        self.assertFalse(publishing["directory"].exists())
+        self.assertTrue(current["directory"].is_dir())
+
+    def test_rust_native_ready_joins_the_same_committed_retirement_authority(self):
+        self.store.add_item(
+            self._item("song-native"), requester_name="retirement-user"
+        )
+        item = self.store.get_item("song-native")
+        self.assertIsNotNone(item)
+        token = self.manager._begin_cache_attempt_for_item(item)
+        reservation = self.store.cache_attempt_reservation(token)
+        relative_directory = reservation["artifact_relative_directory"]
+        committed = self.cache_dir / relative_directory
+        committed.mkdir(parents=True)
+        (committed / "video.mp4").write_bytes(b"video")
+        (committed / "audio.m4a").write_bytes(b"audio")
+        payload = {
+            "video_relative_path": f"{relative_directory}/video.mp4",
+            "video_media_url": f"/media/{relative_directory}/video.mp4",
+            "audio_variants": [
+                {
+                    "id": "p1",
+                    "label": "P1",
+                    "page": 1,
+                    "audio_url": f"/media/{relative_directory}/audio.m4a",
+                }
+            ],
+            "selected_audio_variant_id": "p1",
+            "item_incarnation_id": reservation["item_incarnation_id"],
+            "artifact_set_id": reservation["artifact_set_id"],
+            "artifact_relative_directory": relative_directory,
+        }
+        ready_event = {
+            "sequence": 1,
+            "generation": 1,
+            "cache_attempt_token": token,
+            "item_id": "song-native",
+            "kind": "ready",
+            "payload": payload,
+        }
+        self.manager._apply_native_cache_event(ready_event)
+        self.manager._apply_native_cache_event(ready_event)
+        self.assertNotIn(token, self.manager.active_artifact_attempts)
+        snapshot = self.store.snapshot()
+        self.assertEqual(
+            snapshot["current_item"]["artifact_set_id"],
+            reservation["artifact_set_id"],
+        )
+        self.assertTrue(self._claim(snapshot))
+
+        self._evict("song-native")
+        self.assertTrue(committed.is_dir())
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=snapshot["playback_generation"],
+                item_incarnation_id=reservation["item_incarnation_id"],
+                artifact_set_id=reservation["artifact_set_id"],
+            )
+        )
+        self.assertFalse(committed.exists())
+
+    def test_native_ready_for_removed_item_retires_only_its_exact_set(self):
+        self.store.add_item(
+            self._item("song-removed"), requester_name="retirement-user"
+        )
+        published = self._publish_without_ready("song-removed", b"removed")
+        self.assertTrue(self.store.remove_item("song-removed"))
+
+        self.manager._apply_native_cache_event(
+            {
+                "sequence": 1,
+                "generation": 1,
+                "cache_attempt_token": published["token"],
+                "item_id": "song-removed",
+                "kind": "ready",
+                "payload": published["result"],
+            }
+        )
+
+        self.assertFalse(published["directory"].exists())
+
+    def test_two_reader_leases_release_independently_and_exactly_once(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        artifact = self._publish("song-a", b"parallel")
+        video_reader = self.manager.acquire_media_reader(
+            f"{artifact['artifact_relative_directory']}/video-p1.mp4"
+        )
+        audio_reader = self.manager.acquire_media_reader(
+            f"{artifact['artifact_relative_directory']}/p1.m4a"
+        )
+        self.assertIsNotNone(video_reader)
+        self.assertIsNotNone(audio_reader)
+
+        self._evict("song-a")
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertTrue(self.manager.release_media_reader(video_reader))
+        self.assertFalse(self.manager.release_media_reader(video_reader))
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertTrue(self.manager.release_media_reader(audio_reader))
+        self.assertFalse(artifact["directory"].exists())
+
+    def test_explicit_clear_is_logical_until_host_program_retires(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        artifact = self._publish("song-a", b"clear")
+        snapshot = self.store.snapshot()
+        self.assertTrue(self._claim(snapshot))
+
+        self.manager.clear_runtime_cache()
+
+        cleared = self.store.get_item("song-a")
+        self.assertIsNotNone(cleared)
+        self.assertNotEqual(cleared.cache_status, "ready")
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertFalse(artifact["directory"].exists())
+
+    def test_host_claim_is_idempotent_and_cannot_resurrect_after_retirement(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        artifact = self._publish("song-a", b"claim-ordering")
+        snapshot = self.store.snapshot()
+        self.assertTrue(self._claim(snapshot))
+        self.assertTrue(self._claim(snapshot))
+        self.assertEqual(len(self.manager.host_playback_artifacts), 1)
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertFalse(self._claim(snapshot))
+
+        self._evict("song-a")
+
+        self.assertFalse(artifact["directory"].exists())
+
+    def test_invalid_host_release_cannot_drop_an_exact_owner(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        artifact = self._publish("song-a", b"invalid-release")
+        snapshot = self.store.snapshot()
+        self.assertTrue(self._claim(snapshot))
+        self._evict("song-a")
+
+        with self.assertRaisesRegex(
+            ValueError, "invalid Host playback artifact identity"
+        ):
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id="not-rust-issued",
+            )
+
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertFalse(artifact["directory"].exists())
+
+    def test_newer_same_artifact_program_survives_old_generation_retirement(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        artifact = self._publish("song-a", b"same-artifact")
+        first_snapshot = self.store.snapshot()
+        self.assertTrue(self._claim(first_snapshot))
+
+        self.assertTrue(self.store.restart_playback_program())
+        second_snapshot = self.store.snapshot()
+        self.assertGreater(
+            second_snapshot["playback_generation"],
+            first_snapshot["playback_generation"],
+        )
+        self.assertEqual(
+            second_snapshot["playback_program"]["artifact_set_id"],
+            artifact["artifact_set_id"],
+        )
+        self.assertTrue(self._claim(second_snapshot))
+        self._evict("song-a")
+
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=first_snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=second_snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertFalse(artifact["directory"].exists())
+
+    def test_same_item_id_replacement_has_independent_exact_identity(self):
+        self.store.add_item(
+            self._item("same-id"), requester_name="retirement-user"
+        )
+        old = self._publish("same-id", b"old-incarnation")
+        self.assertTrue(self._claim(self.store.snapshot()))
+        self.assertTrue(self.store.remove_item("same-id"))
+        self.store.add_item(
+            self._item("same-id"),
+            requester_name="retirement-user",
+            allow_repeat=True,
+        )
+        replacement = self._publish("same-id", b"new-incarnation")
+        self.assertNotEqual(
+            replacement["item_incarnation_id"], old["item_incarnation_id"]
+        )
+        self.assertNotEqual(replacement["artifact_set_id"], old["artifact_set_id"])
+
+        self.assertTrue(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=old["generation"],
+                item_incarnation_id=old["item_incarnation_id"],
+                artifact_set_id=old["artifact_set_id"],
+            )
+        )
+        self.assertFalse(old["directory"].exists())
+        self.assertTrue(replacement["directory"].is_dir())
+        self.assertFalse(
+            self.manager.retire_host_playback_program(
+                host_client_id="host-client",
+                playback_generation=old["generation"],
+                item_incarnation_id=old["item_incarnation_id"],
+                artifact_set_id=old["artifact_set_id"],
+            )
+        )
+        self.assertTrue(replacement["directory"].is_dir())
+
+    def test_unknown_and_mismatched_directories_fail_closed(self):
+        unknown_incarnation = "i-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0000000000000001"
+        unknown_artifact = "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001"
+        unknown = (
+            self.cache_dir
+            / "artifacts"
+            / unknown_incarnation
+            / unknown_artifact
+        )
+        malformed = self.cache_dir / "artifacts" / "item" / "set-old"
+        unknown.mkdir(parents=True)
+        malformed.mkdir(parents=True)
+
+        self.manager.collect_retired_artifacts()
+        with self.assertRaisesRegex(ValueError, "identity is invalid"):
+            self.manager._record_committed_artifact(
+                {
+                    "item_incarnation_id": unknown_incarnation,
+                    "artifact_set_id": unknown_artifact,
+                    "artifact_relative_directory": (
+                        f"artifacts/{unknown_incarnation}/wrong-artifact"
+                    ),
+                }
+            )
+
+        self.assertTrue(unknown.is_dir())
+        self.assertTrue(malformed.is_dir())
+
+    def test_deletion_failure_remains_pending_for_one_later_trigger(self):
+        self.store.add_item(
+            self._item("song-a"), requester_name="retirement-user"
+        )
+        old = self._publish("song-a", b"old")
+        self.assertTrue(self._claim(self.store.snapshot()))
+        replacement = self._publish("song-a", b"replacement")
+
+        with patch(
+            "bilikara.cache.shutil.rmtree", side_effect=PermissionError
+        ) as remove_tree:
+            self.assertTrue(
+                self.manager.retire_host_playback_program(
+                    host_client_id="host-client",
+                    playback_generation=old["generation"],
+                    item_incarnation_id=old["item_incarnation_id"],
+                    artifact_set_id=old["artifact_set_id"],
+                )
+            )
+            self.assertEqual(remove_tree.call_count, 1)
+        self.assertTrue(old["directory"].is_dir())
+
+        self.manager.collect_retired_artifacts()
+        self.assertFalse(old["directory"].exists())
+        self.assertTrue(replacement["directory"].is_dir())
+
+
 class CacheManagerBBDownRegressionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()

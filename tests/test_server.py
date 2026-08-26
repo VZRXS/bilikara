@@ -169,20 +169,34 @@ class FileServingPathSecurityTest(unittest.TestCase):
     def test_old_and_new_immutable_artifact_urls_remain_distinct_and_servable(self):
         with TemporaryDirectory() as tmpdir:
             cache_dir = Path(tmpdir) / "cache"
-            old_file = cache_dir / "artifacts" / "item" / "set-old" / "video-p1.mp4"
-            new_file = cache_dir / "artifacts" / "item" / "set-new" / "video-p1.mp4"
+            incarnation = "i-0123456789abcdef0123456789abcdef-0000000000000001"
+            old_set = "a-0123456789abcdef0123456789abcdef-0000000000000001"
+            new_set = "a-0123456789abcdef0123456789abcdef-0000000000000002"
+            old_relative = f"artifacts/{incarnation}/{old_set}/video-p1.mp4"
+            new_relative = f"artifacts/{incarnation}/{new_set}/video-p1.mp4"
+            old_file = cache_dir / old_relative
+            new_file = cache_dir / new_relative
             old_file.parent.mkdir(parents=True)
             new_file.parent.mkdir(parents=True)
             old_file.write_bytes(b"old-version")
             new_file.write_bytes(b"new-version")
             handler, writes, streams = self.make_handler()
+            leases = []
+            manager = SimpleNamespace(
+                acquire_media_reader=lambda relative: leases.append(relative) or object(),
+                release_media_reader=lambda _lease: True,
+            )
 
-            with patch("bilikara.server.CACHE_DIR", cache_dir):
-                handler._serve_media("/media/artifacts/item/set-old/video-p1.mp4")
-                handler._serve_media("/media/artifacts/item/set-new/video-p1.mp4")
+            with (
+                patch("bilikara.server.CACHE_DIR", cache_dir),
+                patch.object(server_module.CONTEXT, "cache_manager", manager),
+            ):
+                handler._serve_media(f"/media/{old_relative}")
+                handler._serve_media(f"/media/{new_relative}")
 
         self.assertEqual(writes, [])
         self.assertEqual(streams, [old_file, new_file])
+        self.assertEqual(leases, [old_relative, new_relative])
 
 
 class AppContextRemoteAccessTest(unittest.TestCase):
@@ -442,6 +456,303 @@ class AppContextStateRevisionTest(unittest.TestCase):
         self.assertEqual(context._player_control_ack_seq, 7)
         self.assertIsNone(context._player_control_command)
         self.assertIsNone(context._player_status)
+
+
+class AppContextArtifactOwnershipBoundaryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.cache_dir = root / "cache"
+        self.cache_dir.mkdir()
+        self.store = PlaylistStore(root / "state.json", root / "backup.json")
+        self.store.add_session_user("ownership-user")
+        self.cache_patch = patch("bilikara.cache.CACHE_DIR", self.cache_dir)
+        self.worker_patch = patch.object(
+            server_module.CacheManager, "_worker_loop", lambda _self: None
+        )
+        self.cache_patch.start()
+        self.worker_patch.start()
+        self.manager = server_module.CacheManager(self.store, max_cache_items=2)
+
+    def tearDown(self) -> None:
+        self.manager.shutdown()
+        self.worker_patch.stop()
+        self.cache_patch.stop()
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _item() -> PlaylistItem:
+        return PlaylistItem(
+            id="song-a",
+            original_url="https://example.test/song-a",
+            resolved_url="https://example.test/song-a?p=1",
+            bvid="BV1xx411c7mD",
+            aid=1,
+            cid=2,
+            page=1,
+            title="song-a",
+            part_title="P1",
+            display_title="song-a - P1",
+            cover_url="",
+            embed_url="",
+        )
+
+    def _publish(self) -> dict[str, object]:
+        self.store.add_item(self._item(), requester_name="ownership-user")
+        item = self.store.get_item("song-a")
+        self.assertIsNotNone(item)
+        token = self.manager._begin_cache_attempt_for_item(item)
+        reservation = self.store.cache_attempt_reservation(token)
+        relative_directory = str(reservation["artifact_relative_directory"])
+        committed = self.cache_dir / relative_directory
+        committed.mkdir(parents=True)
+        video_relative_path = f"{relative_directory}/video.mp4"
+        audio_relative_path = f"{relative_directory}/audio.m4a"
+        (self.cache_dir / video_relative_path).write_bytes(b"video")
+        (self.cache_dir / audio_relative_path).write_bytes(b"audio")
+        self.manager._record_committed_artifact(reservation)
+        self.assertTrue(
+            self.manager._project_cache_event(
+                "song-a",
+                "ready",
+                cache_attempt_token=token,
+                progress=100.0,
+                message="ready",
+                video_relative_path=video_relative_path,
+                video_media_url=f"/media/{video_relative_path}",
+                audio_variants=[
+                    {
+                        "id": "p1",
+                        "label": "P1",
+                        "page": 1,
+                        "audio_url": f"/media/{audio_relative_path}",
+                    }
+                ],
+                selected_audio_variant_id="p1",
+                item_incarnation_id=reservation["item_incarnation_id"],
+                artifact_set_id=reservation["artifact_set_id"],
+                artifact_relative_directory=relative_directory,
+            )
+        )
+        return {**reservation, "directory": committed}
+
+    def _context(self) -> AppContext:
+        context = AppContext.__new__(AppContext)
+        context.store = self.store
+        context.cache_manager = self.manager
+        context._state_change_condition = threading.Condition()
+        context._state_revision = 1
+        context._client_lock = threading.RLock()
+        context._host_client_last_seen = {"host-client": 1.0}
+        context.auto_restored_backup = False
+        context.remote_identities = SimpleNamespace(
+            snapshot_session_id=lambda: "remote-session"
+        )
+        context.remote_access_snapshot = lambda: {}
+        context.player_control_command_snapshot = lambda: None
+        context.player_status_snapshot = lambda _snapshot: None
+        context.app_update_snapshot = lambda: {}
+        return context
+
+    def test_unmounted_intermediate_snapshot_does_not_pin_after_real_sessions_retire(self):
+        artifact = self._publish()
+        context = self._context()
+        with (
+            patch.object(self.manager, "reconcile_cache_state"),
+            patch.object(server_module, "gatcha_task_snapshot", return_value={}),
+            patch.object(server_module, "gatcha_pool_config_snapshot", return_value={}),
+            patch.object(server_module, "gatcha_favlist_updated_at", return_value=None),
+        ):
+            mounted_g1 = context.snapshot()
+            self.assertTrue(
+                context.claim_host_playback_program(
+                    host_client_id="host-client",
+                    playback_generation=mounted_g1["playback_generation"],
+                    item_incarnation_id=artifact["item_incarnation_id"],
+                    artifact_set_id=artifact["artifact_set_id"],
+                )
+            )
+            self.assertTrue(context.restart_playback_program())
+            unmounted_g2 = context.snapshot()
+            self.assertTrue(context.restart_playback_program())
+            mounted_g3 = context.snapshot()
+            self.assertTrue(
+                context.claim_host_playback_program(
+                    host_client_id="host-client",
+                    playback_generation=mounted_g3["playback_generation"],
+                    item_incarnation_id=artifact["item_incarnation_id"],
+                    artifact_set_id=artifact["artifact_set_id"],
+                )
+            )
+
+        generations = {
+            mounted_g1["playback_generation"],
+            unmounted_g2["playback_generation"],
+            mounted_g3["playback_generation"],
+        }
+        self.assertEqual(len(generations), 3)
+
+        item = self.store.get_item("song-a")
+        self.assertIsNotNone(item)
+        token = self.manager._begin_cache_attempt_for_item(item)
+        self.assertTrue(
+            self.manager._project_cache_event(
+                "song-a",
+                "evicted",
+                cache_attempt_token=token,
+                message="test eviction",
+            )
+        )
+        for snapshot in (mounted_g1, mounted_g3):
+            self.assertTrue(
+                context.retire_host_playback_program(
+                    host_client_id="host-client",
+                    playback_generation=snapshot["playback_generation"],
+                    item_incarnation_id=artifact["item_incarnation_id"],
+                    artifact_set_id=artifact["artifact_set_id"],
+                )
+            )
+
+        self.assertFalse(artifact["directory"].exists())
+
+    def test_one_host_retirement_does_not_release_another_host_owner(self):
+        artifact = self._publish()
+        context = self._context()
+        context._host_client_last_seen = {
+            "host-client-1": 1.0,
+            "host-client-2": 1.0,
+        }
+        with (
+            patch.object(self.manager, "reconcile_cache_state"),
+            patch.object(server_module, "gatcha_task_snapshot", return_value={}),
+            patch.object(server_module, "gatcha_pool_config_snapshot", return_value={}),
+            patch.object(server_module, "gatcha_favlist_updated_at", return_value=None),
+        ):
+            host_1_snapshot = context.snapshot()
+            host_2_snapshot = context.snapshot()
+
+        for host_client_id, snapshot in (
+            ("host-client-1", host_1_snapshot),
+            ("host-client-2", host_2_snapshot),
+        ):
+            self.assertTrue(
+                context.claim_host_playback_program(
+                    host_client_id=host_client_id,
+                    playback_generation=snapshot["playback_generation"],
+                    item_incarnation_id=artifact["item_incarnation_id"],
+                    artifact_set_id=artifact["artifact_set_id"],
+                )
+            )
+
+        self.assertEqual(
+            host_1_snapshot["playback_generation"],
+            host_2_snapshot["playback_generation"],
+        )
+        reader = self.manager.acquire_media_reader(
+            f"{artifact['artifact_relative_directory']}/video.mp4"
+        )
+        self.assertIsNotNone(reader)
+        item = self.store.get_item("song-a")
+        self.assertIsNotNone(item)
+        token = self.manager._begin_cache_attempt_for_item(item)
+        self.assertTrue(
+            self.manager._project_cache_event(
+                "song-a",
+                "evicted",
+                cache_attempt_token=token,
+                message="test eviction",
+            )
+        )
+        self.assertTrue(
+            context.retire_host_playback_program(
+                host_client_id="host-client-1",
+                playback_generation=host_1_snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertFalse(
+            context.retire_host_playback_program(
+                host_client_id="host-client-1",
+                playback_generation=host_1_snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertTrue(
+            context.retire_host_playback_program(
+                host_client_id="host-client-2",
+                playback_generation=host_2_snapshot["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertTrue(self.manager.release_media_reader(reader))
+        self.assertFalse(artifact["directory"].exists())
+
+    def test_stale_host_release_cannot_affect_another_hosts_newer_owner(self):
+        artifact = self._publish()
+        context = self._context()
+        first = self.store.snapshot()
+        self.assertTrue(
+            context.claim_host_playback_program(
+                host_client_id="host-client-1",
+                playback_generation=first["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertTrue(context.restart_playback_program())
+        second = self.store.snapshot()
+        self.assertTrue(
+            context.claim_host_playback_program(
+                host_client_id="host-client-2",
+                playback_generation=second["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+
+        item = self.store.get_item("song-a")
+        self.assertIsNotNone(item)
+        token = self.manager._begin_cache_attempt_for_item(item)
+        self.assertTrue(
+            self.manager._project_cache_event(
+                "song-a",
+                "evicted",
+                cache_attempt_token=token,
+                message="test eviction",
+            )
+        )
+        self.assertTrue(
+            context.retire_host_playback_program(
+                host_client_id="host-client-1",
+                playback_generation=first["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertFalse(
+            context.retire_host_playback_program(
+                host_client_id="host-client-1",
+                playback_generation=second["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertTrue(artifact["directory"].is_dir())
+        self.assertTrue(
+            context.retire_host_playback_program(
+                host_client_id="host-client-2",
+                playback_generation=second["playback_generation"],
+                item_incarnation_id=artifact["item_incarnation_id"],
+                artifact_set_id=artifact["artifact_set_id"],
+            )
+        )
+        self.assertFalse(artifact["directory"].exists())
 
 
 class AppContextSsePayloadCacheTest(unittest.TestCase):
@@ -2093,6 +2404,94 @@ class MediaRangeEvidenceTest(unittest.TestCase):
         self.assertEqual(headers["Content-Range"], "bytes */10")
         self.assertEqual(body, b"")
 
+    def test_artifact_reader_lease_wraps_full_range_head_and_disconnect(self):
+        incarnation = "i-0123456789abcdef0123456789abcdef-0000000000000001"
+        artifact = "a-0123456789abcdef0123456789abcdef-0000000000000001"
+        relative = f"artifacts/{incarnation}/{artifact}/video-p1.mp4"
+
+        class DisconnectingWriter:
+            def write(self, _payload):
+                raise BrokenPipeError
+
+        cases = (
+            ("full", {}, False, io.BytesIO()),
+            ("range", {"Range": "bytes=1-3"}, False, io.BytesIO()),
+            ("head", {"Range": "bytes=1-3"}, True, io.BytesIO()),
+            ("disconnect", {"Range": "bytes=1-3"}, False, DisconnectingWriter()),
+        )
+        for name, headers, head_only, writer in cases:
+            with self.subTest(name=name), TemporaryDirectory() as tmpdir:
+                cache_dir = Path(tmpdir) / "cache"
+                media = cache_dir / relative
+                media.parent.mkdir(parents=True)
+                media.write_bytes(b"0123456789")
+                lifecycle = []
+                lease = object()
+                manager = SimpleNamespace(
+                    acquire_media_reader=lambda observed: lifecycle.append(
+                        ("acquire", observed)
+                    )
+                    or lease,
+                    release_media_reader=lambda observed: lifecycle.append(
+                        ("release", observed)
+                    )
+                    or True,
+                )
+                handler = BilikaraHandler.__new__(BilikaraHandler)
+                handler.headers = headers
+                handler.wfile = writer
+                handler.send_response = lambda _status: None
+                handler.send_header = lambda _name, _value: None
+                handler.end_headers = lambda: None
+
+                with (
+                    patch("bilikara.server.CACHE_DIR", cache_dir),
+                    patch(
+                        "bilikara.server.CONTEXT",
+                        SimpleNamespace(cache_manager=manager),
+                    ),
+                ):
+                    handler._serve_media(f"/media/{relative}", head_only=head_only)
+
+                self.assertEqual(
+                    lifecycle,
+                    [("acquire", relative), ("release", lease)],
+                )
+
+    def test_artifact_reader_lease_releases_after_stream_exception(self):
+        incarnation = "i-0123456789abcdef0123456789abcdef-0000000000000001"
+        artifact = "a-0123456789abcdef0123456789abcdef-0000000000000001"
+        relative = f"artifacts/{incarnation}/{artifact}/video-p1.mp4"
+        with TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "cache"
+            media = cache_dir / relative
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"content")
+            lease = object()
+            released = []
+            manager = SimpleNamespace(
+                acquire_media_reader=lambda _relative: lease,
+                release_media_reader=lambda observed: released.append(observed),
+            )
+            handler = BilikaraHandler.__new__(BilikaraHandler)
+
+            def fail_stream(*_args, **_kwargs):
+                raise OSError("stream failed")
+
+            handler._stream_file = fail_stream
+
+            with (
+                patch("bilikara.server.CACHE_DIR", cache_dir),
+                patch(
+                    "bilikara.server.CONTEXT",
+                    SimpleNamespace(cache_manager=manager),
+                ),
+                self.assertRaisesRegex(OSError, "stream failed"),
+            ):
+                handler._serve_media(f"/media/{relative}")
+
+        self.assertEqual(released, [lease])
+
 class UpdateRouteTest(unittest.TestCase):
     def test_bilikara_secret_verify_uses_local_bilikara_secret_when_set(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -2752,6 +3151,192 @@ class PlayerRestartProgramRouteTest(unittest.TestCase):
         )
         self.assertNotIn("/api/player/restart-program", controller)
         self.assertNotIn("/api/player/restart-program", remote)
+
+
+class PlayerRetireProgramRouteTest(unittest.TestCase):
+    INCARNATION = "i-0123456789abcdef0123456789abcdef-0000000000000001"
+    ARTIFACT = "a-0123456789abcdef0123456789abcdef-0000000000000001"
+
+    @classmethod
+    def body(cls) -> dict[str, object]:
+        return {
+            "playback_generation": 7,
+            "item_incarnation_id": cls.INCARNATION,
+            "artifact_set_id": cls.ARTIFACT,
+        }
+
+    @staticmethod
+    def run_request(
+        context: object,
+        body: dict[str, object],
+        *,
+        local: bool,
+        route: str = "/api/player/retire-program",
+    ) -> list[tuple[dict, object]]:
+        writes: list[tuple[dict, object]] = []
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        handler.path = route
+        handler.headers = {"X-Bilikara-Client": "host-client"}
+        handler._is_local_client = lambda: local
+        handler._read_json_body = lambda: body
+        handler._write_json = lambda payload, status=None: writes.append(
+            (payload, status)
+        )
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+        return writes
+
+    def test_exact_local_retirement_is_small_and_replay_is_idempotent(self):
+        calls: list[dict[str, object]] = []
+
+        def retire(**identity):
+            calls.append(identity)
+            return len(calls) == 1
+
+        context = SimpleNamespace(
+            touch_client=lambda _client_id, is_host=True: None,
+            retire_host_playback_program=retire,
+            snapshot=lambda: self.fail("retirement must not return a snapshot"),
+        )
+        first = self.run_request(context, self.body(), local=True)
+        replay = self.run_request(context, self.body(), local=True)
+
+        expected = {"host_client_id": "host-client", **self.body()}
+        self.assertEqual(calls, [expected, expected])
+        self.assertEqual(first, [({"ok": True, "data": {"released": True}}, None)])
+        self.assertEqual(
+            replay,
+            [({"ok": True, "data": {"released": False}}, None)],
+        )
+
+    def test_exact_local_claim_is_small_and_does_not_return_a_snapshot(self):
+        calls: list[dict[str, object]] = []
+        context = SimpleNamespace(
+            touch_client=lambda _client_id, is_host=True: None,
+            claim_host_playback_program=lambda **identity: calls.append(identity)
+            or True,
+            snapshot=lambda: self.fail("claim must not return a snapshot"),
+        )
+
+        writes = self.run_request(
+            context,
+            self.body(),
+            local=True,
+            route="/api/player/claim-program",
+        )
+
+        self.assertEqual(
+            calls,
+            [{"host_client_id": "host-client", **self.body()}],
+        )
+        self.assertEqual(
+            writes,
+            [({"ok": True, "data": {"claimed": True}}, None)],
+        )
+
+    def test_nonlocal_client_cannot_retire_host_program(self):
+        context = SimpleNamespace(
+            touch_client=lambda _client_id, is_host=True: None,
+            claim_host_playback_program=lambda **_identity: self.fail(
+                "remote claim must be rejected"
+            ),
+            retire_host_playback_program=lambda **_identity: self.fail(
+                "remote retirement must be rejected"
+            ),
+        )
+        for route in (
+            "/api/player/claim-program",
+            "/api/player/retire-program",
+        ):
+            with self.subTest(route=route):
+                writes = self.run_request(
+                    context, self.body(), local=False, route=route
+                )
+                self.assertEqual(
+                    writes,
+                    [
+                        (
+                            {"ok": False, "error": "forbidden"},
+                            server_module.HTTPStatus.FORBIDDEN,
+                        )
+                    ],
+                )
+
+    def test_invalid_identity_is_rejected_without_retirement(self):
+        generation_context = SimpleNamespace(
+            touch_client=lambda _client_id, is_host=True: None,
+            retire_host_playback_program=lambda **_identity: self.fail(
+                "invalid retirement must not be forwarded"
+            ),
+        )
+        body = {**self.body(), "playback_generation": 0}
+        generation_writes = self.run_request(
+            generation_context, body, local=True
+        )
+        self.assertEqual(
+            generation_writes[0][1], server_module.HTTPStatus.BAD_REQUEST
+        )
+        self.assertFalse(generation_writes[0][0]["ok"])
+
+        def reject_invalid_identity(**_identity):
+            raise ValueError("invalid Host playback artifact identity")
+
+        identity_context = SimpleNamespace(
+            touch_client=lambda _client_id, is_host=True: None,
+            retire_host_playback_program=reject_invalid_identity,
+        )
+        malformed = {**self.body(), "artifact_set_id": "not-rust-issued"}
+        identity_writes = self.run_request(
+            identity_context, malformed, local=True
+        )
+        self.assertEqual(
+            identity_writes[0][1], server_module.HTTPStatus.BAD_REQUEST
+        )
+        self.assertFalse(identity_writes[0][0]["ok"])
+
+    def test_app_context_retirement_does_not_notify_or_advance_revision(self):
+        calls = []
+        context = AppContext.__new__(AppContext)
+        context._state_revision = 41
+        context.cache_manager = SimpleNamespace(
+            claim_host_playback_program=lambda **identity: calls.append(
+                {"operation": "claim", **identity}
+            )
+            or True,
+            retire_host_playback_program=lambda **identity: calls.append(identity)
+            or True
+        )
+        context._notify_state_changed = lambda: self.fail(
+            "operational retirement must not notify SSE"
+        )
+
+        identity = {"host_client_id": "host-client", **self.body()}
+        claimed = context.claim_host_playback_program(**identity)
+        released = context.retire_host_playback_program(**identity)
+
+        self.assertTrue(claimed)
+        self.assertTrue(released)
+        self.assertEqual(calls, [{"operation": "claim", **identity}, identity])
+        self.assertEqual(context._state_revision, 41)
+
+    def test_controller_and_remote_do_not_own_host_retirement(self):
+        root = Path(__file__).resolve().parents[1] / "static"
+        self.assertNotIn(
+            "/api/player/retire-program",
+            (root / "controller.js").read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "/api/player/claim-program",
+            (root / "controller.js").read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "/api/player/retire-program",
+            (root / "remote.js").read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "/api/player/claim-program",
+            (root / "remote.js").read_text(encoding="utf-8"),
+        )
 
 
 class CacheRetryRouteTest(unittest.TestCase):

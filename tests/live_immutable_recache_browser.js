@@ -90,6 +90,8 @@ async function media(page) {
       initialIntentApplied: Boolean(session?.initialIntentApplied),
       playbackGeneration: Number(session?.playbackGeneration || 0),
       sessionArtifactSetId: session?.playbackProgram?.artifact_set_id || "",
+      ownershipClaimed: Boolean(session?.ownershipClaimed),
+      ownershipClaimFailed: Boolean(session?.ownershipClaimFailed),
     };
   });
 }
@@ -347,11 +349,9 @@ async function waitForReplacement(page, old) {
       ? value
       : null;
   }, "Host did not mount the newly committed immutable URLs");
-  const oldVideoRange = await rangeRead(page, old.videoUrl);
-  const oldAudioRange = await rangeRead(page, old.audioUrl);
   const newVideoRange = await rangeRead(page, nextState.next.videoUrl);
   const newAudioRange = await rangeRead(page, nextState.next.audioUrl);
-  for (const [label, value] of Object.entries({ oldVideoRange, oldAudioRange, newVideoRange, newAudioRange })) {
+  for (const [label, value] of Object.entries({ newVideoRange, newAudioRange })) {
     assert(value.status === 206 && value.length > 0, `${label} failed across publication`, value);
   }
   assert(nextState.next.directory !== old.directory, "replacement reused committed directory", { old, next: nextState.next });
@@ -360,7 +360,7 @@ async function waitForReplacement(page, old) {
     boundary: "refresh-committed",
     descriptor: nextState.next,
     media: nextMedia,
-    ranges: { oldVideoRange, oldAudioRange, newVideoRange, newAudioRange },
+    ranges: { newVideoRange, newAudioRange },
   });
   return { ...nextState, media: nextMedia };
 }
@@ -380,6 +380,64 @@ async function recachePlaying(page) {
   const replacement = settled.replacements[0];
   assert(Math.abs(settled.currentTime - replacement.oldTime) <= 1.25, "playing refresh time was not restored within 1.25s", { settled, replacement });
   observations.push({ boundary: "playing-refresh-restored", media: settled, replacement, descriptor: replaced.next });
+}
+
+async function retireHeldRange(page) {
+  const started = await startPlayback(page, "A");
+  const { old } = await oldDescriptorAndRange(page);
+  await installReplacementObserver(page);
+  const heldResponse = await page.evaluate(async (url) => {
+    const response = await fetch(url, {
+      headers: {
+        Range: "bytes=0-255",
+        "X-Bilikara-Acceptance-Hold-Range": "1",
+      },
+    });
+    window.__acceptanceHeldRangeBody = response.arrayBuffer().then((body) => ({
+      length: body.byteLength,
+    }));
+    return {
+      status: response.status,
+      contentRange: response.headers.get("content-range") || "",
+    };
+  }, old.videoUrl);
+  assert(heldResponse.status === 206, "held old-artifact Range did not open", heldResponse);
+
+  await clickCurrentRecache(page);
+  await assertRefreshStillCommitted(page, old, started.currentTime, true);
+  const replaced = await waitForReplacement(page, old);
+  const heldBody = await page.evaluate(() => window.__acceptanceHeldRangeBody);
+  assert(heldBody?.length > 0, "held old-artifact Range did not finish", heldBody);
+  const retiredOldRange = await waitFor(async () => {
+    const value = await rangeRead(page, old.videoUrl, 0, 31);
+    return value.status === 404 ? value : null;
+  }, "old artifact remained servable after held Range release", 12000);
+  const stable = await waitFor(async () => {
+    const value = await media(page);
+    return value.itemId === "A"
+      && value.videoCount === 1
+      && value.audioCount === 1
+      && !value.paused
+      && value.currentTime > 0.1
+      ? value
+      : null;
+  }, "replacement playback did not remain stable after old reader release");
+  const replacementRange = await rangeRead(page, replaced.next.videoUrl, 0, 31);
+  assert(
+    replacementRange.status === 206 && replacementRange.length > 0,
+    "replacement artifact stopped serving after old retirement",
+    replacementRange,
+  );
+  observations.push({
+    boundary: "held-range-retirement-settled",
+    old,
+    replacement: replaced.next,
+    heldResponse,
+    heldBody,
+    retiredOldRange,
+    replacementRange,
+    media: stable,
+  });
 }
 
 async function playerReset(page) {
@@ -596,7 +654,6 @@ async function recacheCancelled(page) {
     const value = await media(page);
     return value.replacementCount === 1 && !value.paused ? value : null;
   }, "superseding refresh did not settle exactly once");
-  assert((await rangeRead(page, old.videoUrl)).status === 206, "old URL unreadable after cancellation/supersession");
   observations.push({ boundary: "cancelled-refresh-retained-then-newest-committed", descriptor: replaced.next, media: settled });
 }
 
@@ -619,7 +676,6 @@ async function normalSwitch(page) {
   assert(after.current_item?.id === "B" && afterMedia.itemId === "B", "late A ended callback changed B", { after: after.current_item, afterMedia });
   assert(!afterMedia.paused && afterMedia.currentTime > bPlaying.currentTime + 0.1, "normal Next reached B without stable real playback", { bPlaying, afterMedia });
   assert(documentTextIncludes(await page.textContent("body"), "Fixture Song B"), "Host title did not correspond to B");
-  assert((await rangeRead(page, old.videoUrl)).status === 206, "A old URL unreadable after normal switch");
   observations.push({ boundary: "normal-switch-stable", currentItem: after.current_item?.id, media: afterMedia });
 }
 
@@ -1274,6 +1330,125 @@ async function settingsProgramReconciliation(page) {
   });
 }
 
+async function skippedIntermediateProgram(page) {
+  const started = await startPlayback(page, "A");
+  const before = await state(page);
+  const old = descriptor(before.current_item);
+  await installReplacementObserver(page);
+  await page.evaluate(() => {
+    window.__acceptanceSkippedOldVideo = state.hostPlaybackSession?.video || null;
+    window.__acceptanceSkippedOldAudio = state.hostPlaybackSession?.audio || null;
+  });
+
+  const frozenResponse = await page.request.get(`${baseUrl}/api/state`);
+  assert(frozenResponse.ok(), "failed to capture the pre-intermediate Host snapshot");
+  const frozenPayload = await frozenResponse.json();
+  await page.route("**/api/state", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(frozenPayload),
+    });
+  });
+
+  const serializedPrograms = await page.evaluate(async () => {
+    const g2 = await apiPost("/api/player/restart-program");
+    const g3 = await apiPost("/api/player/restart-program");
+    return {
+      g2Generation: Number(g2?.playback_generation || 0),
+      g2ArtifactSetId: g2?.playback_program?.artifact_set_id || "",
+      g3Generation: Number(g3?.playback_generation || 0),
+      g3ArtifactSetId: g3?.playback_program?.artifact_set_id || "",
+      acceptedGeneration: Number(state.data?.playback_generation || 0),
+      sessionGeneration: Number(state.hostPlaybackSession?.playbackGeneration || 0),
+      claimRequestsStarted: Boolean(state.hostPlaybackSession?.ownershipClaimStarted),
+    };
+  });
+  assert(
+    serializedPrograms.g2Generation === before.playback_generation + 1
+      && serializedPrograms.g3Generation === before.playback_generation + 2
+      && serializedPrograms.g2ArtifactSetId === old.artifactSetId
+      && serializedPrograms.g3ArtifactSetId === old.artifactSetId
+      && serializedPrograms.acceptedGeneration === before.playback_generation
+      && serializedPrograms.sessionGeneration === before.playback_generation
+      && serializedPrograms.claimRequestsStarted,
+    "intermediate restart responses changed the central Host without acceptance",
+    { before, old, serializedPrograms },
+  );
+
+  await page.unroute("**/api/state");
+  const mountedG3 = await waitFor(async () => page.evaluate((expectedGeneration) => {
+    const session = state.hostPlaybackSession;
+    if (
+      Number(state.data?.playback_generation || 0)
+        !== Number(session?.playbackGeneration || 0)
+      || Number(session?.playbackGeneration || 0) !== expectedGeneration
+      || !session?.ownershipClaimed
+      || !isCurrentHostPlaybackSession(session, session.video, session.audio)
+    ) {
+      return null;
+    }
+    return {
+      generation: session.playbackGeneration,
+      artifactSetId: session.playbackProgram?.artifact_set_id || "",
+      videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
+      audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
+    };
+  }, serializedPrograms.g3Generation), "Host did not accept and claim only the final serialized program");
+  assert(
+    mountedG3.generation === serializedPrograms.g3Generation
+      && mountedG3.artifactSetId === old.artifactSetId
+      && mountedG3.videoCount === 1
+      && mountedG3.audioCount === 1,
+    "Host mounted an unexpected serialized program",
+    { mountedG3, serializedPrograms },
+  );
+  const g3Playing = await observeAutomaticPlayback(page, "A", 0.15);
+
+  await clickCurrentRecache(page);
+  const replacement = await waitForReplacement(page, old);
+  const finalPlaying = await observeAutomaticPlayback(page, "A", 0.15);
+  const settled = await waitFor(async () => {
+    const value = await media(page);
+    return !value.paused && value.currentTime > finalPlaying.currentTime + 0.1
+      ? value
+      : null;
+  }, "replacement playback did not continue after skipped intermediate programs");
+  const identity = await page.evaluate(() => ({
+    oldVideoConnected: Boolean(window.__acceptanceSkippedOldVideo?.isConnected),
+    oldAudioConnected: Boolean(window.__acceptanceSkippedOldAudio?.isConnected),
+    currentSession: isCurrentHostPlaybackSession(
+      state.hostPlaybackSession,
+      state.hostPlaybackSession?.video,
+      state.hostPlaybackSession?.audio,
+    ),
+  }));
+  assert(
+    replacement.next.artifactSetId !== old.artifactSetId
+      && settled.ownershipClaimed
+      && !settled.ownershipClaimFailed
+      && settled.videoCount === 1
+      && settled.audioCount === 1
+      && settled.replacementCount === 2
+      && !settled.paused
+      && settled.currentTime > finalPlaying.currentTime + 0.1
+      && identity.currentSession
+      && !identity.oldVideoConnected
+      && !identity.oldAudioConnected,
+    "skipped intermediate ownership did not settle to one protected replacement pair",
+    { started, g3Playing, replacement, finalPlaying, settled, identity },
+  );
+  observations.push({
+    boundary: "serialized-intermediate-program-was-never-owned",
+    beforeGeneration: before.playback_generation,
+    serializedPrograms,
+    mountedG3,
+    oldArtifactSetId: old.artifactSetId,
+    finalArtifactSetId: replacement.next.artifactSetId,
+    media: settled,
+  });
+}
+
 function documentTextIncludes(text, expected) {
   return String(text || "").includes(expected);
 }
@@ -1320,7 +1495,6 @@ async function playNow(page, uncached) {
   assert(after.current_item?.id === "C" && afterMedia.itemId === "C", "late A completion/event pulled Host away from C", { after: after.current_item, afterMedia });
   assert(!afterMedia.paused && afterMedia.currentTime >= playing.currentTime, "late A event altered C play intent/time", { playing, afterMedia });
   assert(documentTextIncludes(await page.textContent("body"), "Fixture Song C"), "Host title did not correspond to C");
-  assert((await rangeRead(page, old.videoUrl)).status === 206, "A old URL unreadable after Play Now");
   observations.push({ boundary: uncached ? "play-now-uncached-stable" : "play-now-ready-stable", currentItem: after.current_item?.id, media: playing });
 }
 
@@ -1954,6 +2128,8 @@ async function run() {
       await failedPlayerReset(page);
     } else if (scenario === "recache-playing") {
       await recachePlaying(page);
+    } else if (scenario === "retire-held-range") {
+      await retireHeldRange(page);
     } else if (scenario === "recache-paused") {
       await recachePaused(page);
     } else if (scenario === "recache-failed") {
@@ -1986,6 +2162,8 @@ async function run() {
       await rapidUnreadySwitch(page);
     } else if (scenario === "settings-program-reconciliation") {
       await settingsProgramReconciliation(page);
+    } else if (scenario === "skipped-intermediate-program") {
+      await skippedIntermediateProgram(page);
     } else {
       throw new Error(`unknown scenario: ${scenario}`);
     }

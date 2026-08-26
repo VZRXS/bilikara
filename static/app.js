@@ -8952,6 +8952,8 @@ function scheduleSplitPlaybackStartupWatchdog(video, audio) {
     !video
     || !audio
     || !isActiveSplitPlayer(video, audio)
+    || !session.ownershipClaimed
+    || !session.loadingStarted
     || !["binding", "starting", "start-retry-wait"].includes(session.phase)
   ) {
     return false;
@@ -10663,6 +10665,11 @@ function createHostPlaybackSession(playbackGeneration, playbackProgram) {
     seekResumePending: false,
     seekUpdatesLogicalIntent: true,
     playbackRestore: null,
+    ownershipClaimStarted: false,
+    ownershipClaimed: false,
+    ownershipClaimFailed: false,
+    ownershipClaimRequest: null,
+    retirementReleaseSent: false,
   };
 }
 
@@ -10730,7 +10737,8 @@ function retireHostPlaybackSession(
     }
   }
 
-  [session.video, session.audio].filter(Boolean).forEach((media) => {
+  const retiredMedia = [session.video, session.audio].filter(Boolean);
+  retiredMedia.forEach((media) => {
     disposeAudioPitchShifter(media);
     try {
       media.pause();
@@ -10744,10 +10752,113 @@ function retireHostPlaybackSession(
       // Detached media can finish retiring without further cleanup.
     }
   });
+  session.video = null;
+  session.audio = null;
+  session.mountData = null;
   setHostPlaybackSessionPhase(session, "retired");
   if (state.hostPlaybackSession === session) {
     state.hostPlaybackSession = null;
   }
+  acknowledgeRetiredHostPlaybackSession(session);
+  return true;
+}
+
+function acknowledgeRetiredHostPlaybackSession(session) {
+  const identity = exactHostPlaybackOwnershipIdentity(session);
+  if (
+    !identity
+    || !session.ownershipClaimStarted
+    || session.retirementReleaseSent
+  ) {
+    return false;
+  }
+  session.retirementReleaseSent = true;
+  apiPost("/api/player/retire-program", identity).catch(() => {
+    // A lost retirement acknowledgement fails closed on the Host server.
+  });
+  return true;
+}
+
+function exactHostPlaybackOwnershipIdentity(session) {
+  const playbackGeneration = Number(session?.playbackGeneration);
+  const itemIncarnationId = String(
+    session?.playbackProgram?.item_incarnation_id || "",
+  );
+  const artifactSetId = String(
+    session?.playbackProgram?.artifact_set_id || "",
+  );
+  if (
+    !session
+    || !Number.isSafeInteger(playbackGeneration)
+    || playbackGeneration < 1
+    || !itemIncarnationId
+    || !artifactSetId
+  ) {
+    return null;
+  }
+  return {
+    playback_generation: playbackGeneration,
+    item_incarnation_id: itemIncarnationId,
+    artifact_set_id: artifactSetId,
+  };
+}
+
+function failHostPlaybackOwnershipClaim(session) {
+  if (
+    !isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+    || session.phase !== "binding"
+    || session.loadingStarted
+  ) {
+    return false;
+  }
+  session.ownershipClaimFailed = true;
+  session.failureStage = "artifact-ownership";
+  retireHostPlaybackSession(session);
+  state.hostPlaybackSession = session;
+  renderPreparingHostPlaybackState(state.data?.current_item ?? null);
+  return true;
+}
+
+function beginHostPlaybackSessionOwnershipClaim(session) {
+  if (
+    !isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+    || session.phase !== "binding"
+    || session.loadingStarted
+    || session.ownershipClaimStarted
+  ) {
+    return false;
+  }
+  const identity = exactHostPlaybackOwnershipIdentity(session);
+  if (!identity) {
+    failHostPlaybackOwnershipClaim(session);
+    return false;
+  }
+  session.ownershipClaimStarted = true;
+  session.ownershipClaimRequest = Promise.resolve()
+    .then(() => apiPost("/api/player/claim-program", identity))
+    .then(
+      (result) => {
+        if (result?.claimed !== true) {
+          failHostPlaybackOwnershipClaim(session);
+          return;
+        }
+        session.ownershipClaimed = true;
+        if (!isCurrentHostPlaybackSession(session, session.video, session.audio)) {
+          return;
+        }
+        if (!beginHostPlaybackSessionElementLoading(session)) {
+          failHostPlaybackCandidate(
+            session,
+            session.video,
+            session.audio,
+            "media-loading-could-not-start",
+          );
+        }
+      },
+      () => {
+        failHostPlaybackOwnershipClaim(session);
+      },
+    );
   return true;
 }
 
@@ -10868,6 +10979,7 @@ function beginHostPlaybackSessionElementLoading(session) {
   session.audio.src = session.mountData.audioUrl;
   session.video.load();
   session.audio.load();
+  scheduleSplitPlaybackStartupWatchdog(session.video, session.audio);
   return true;
 }
 
@@ -11310,8 +11422,6 @@ function renderPlayer(currentItem, playbackMode) {
   }, localPlayerSyncIntervalMs);
   session.syncTimer = syncTimer;
 
-  scheduleSplitPlaybackStartupWatchdog(video, audio);
-
   let startupTimer = null;
   startupTimer = window.setTimeout(() => {
     if (
@@ -11325,14 +11435,7 @@ function renderPlayer(currentItem, playbackMode) {
     reportCurrentVideoStatus();
   }, 0);
   session.startupTimer = startupTimer;
-  if (!beginHostPlaybackSessionElementLoading(session)) {
-    failHostPlaybackCandidate(
-      session,
-      video,
-      audio,
-      "media-loading-could-not-start",
-    );
-  }
+  beginHostPlaybackSessionOwnershipClaim(session);
 }
 
 

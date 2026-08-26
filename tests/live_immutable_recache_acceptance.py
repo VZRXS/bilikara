@@ -30,6 +30,7 @@ SCENARIOS = (
     "player-reset",
     "failed-reset",
     "recache-playing",
+    "retire-held-range",
     "recache-paused",
     "recache-failed",
     "recache-cancelled",
@@ -46,6 +47,7 @@ SCENARIOS = (
     "staggered-readiness",
     "rapid-unready-switch",
     "settings-program-reconciliation",
+    "skipped-intermediate-program",
 )
 
 
@@ -257,7 +259,7 @@ def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[s
         return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
     if scenario == "failed-reset":
         return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
-    if scenario == "recache-playing":
+    if scenario in {"recache-playing", "retire-held-range"}:
         return ["A"], 1, {"A": [{"fixture": "a1"}, delayed_a2]}, ["A"]
     if scenario == "recache-paused":
         return ["A"], 1, {"A": [{"fixture": "a1"}, delayed_a2]}, ["A"]
@@ -327,6 +329,10 @@ def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[s
             "C": [{"fixture": "c1"}],
         }, ["A", "B", "C"]
     if scenario == "settings-program-reconciliation":
+        return ["A"], 1, {
+            "A": [{"fixture": "a1"}, {"fixture": "a2", "delay": 0.5}],
+        }, ["A"]
+    if scenario == "skipped-intermediate-program":
         return ["A"], 1, {
             "A": [{"fixture": "a1"}, {"fixture": "a2", "delay": 0.5}],
         }, ["A"]
@@ -623,6 +629,168 @@ def _worker(args: argparse.Namespace) -> int:
     manager.sync_with_playlist()
     _wait_ready(context, initially_ready)
 
+    held_range_started = threading.Event()
+    held_range_release = threading.Event()
+    held_range_stream_finished = threading.Event()
+    held_host_retired = threading.Event()
+    held_range_evidence: dict[str, Any] = {}
+    held_monitor: threading.Thread | None = None
+    initial_current = context.store.snapshot().get("current_item") or {}
+    initial_artifact_set_id = str(initial_current.get("artifact_set_id") or "")
+    initial_artifact_relative_directory = str(
+        initial_current.get("artifact_relative_directory") or ""
+    )
+
+    original_retire = manager.retire_host_playback_program
+
+    def traced_retire(
+        self: CacheManager,
+        *,
+        host_client_id: object,
+        playback_generation: object,
+        item_incarnation_id: object,
+        artifact_set_id: object,
+    ) -> bool:
+        released = original_retire(
+            host_client_id=host_client_id,
+            playback_generation=playback_generation,
+            item_incarnation_id=item_incarnation_id,
+            artifact_set_id=artifact_set_id,
+        )
+        events.append(
+            {
+                "event": "host_program_retired",
+                "host_client_id": host_client_id,
+                "playback_generation": playback_generation,
+                "item_incarnation_id": item_incarnation_id,
+                "artifact_set_id": artifact_set_id,
+                "released": released,
+            }
+        )
+        if (
+            args.scenario == "retire-held-range"
+            and held_range_started.is_set()
+            and artifact_set_id == initial_artifact_set_id
+            and released
+        ):
+            held_host_retired.set()
+        return released
+
+    manager.retire_host_playback_program = types.MethodType(  # type: ignore[method-assign]
+        traced_retire, manager
+    )
+
+    if args.scenario == "retire-held-range":
+        if not initial_artifact_set_id or not initial_artifact_relative_directory:
+            raise RuntimeError("held-Range scenario has no initial immutable artifact")
+        original_stream_file = server.BilikaraHandler._stream_file
+
+        class HeldRangeBodyWriter:
+            def __init__(self, wrapped: Any) -> None:
+                self.wrapped = wrapped
+                self.write_count = 0
+                self.body_released = False
+
+            def write(self, payload: bytes) -> Any:
+                self.write_count += 1
+                if self.write_count > 1 and not self.body_released:
+                    self.body_released = True
+                    held_range_started.set()
+                    if not held_range_release.wait(timeout=30.0):
+                        raise TimeoutError("held media Range was not released")
+                return self.wrapped.write(payload)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self.wrapped, name)
+
+        def held_stream_file(handler: Any, *stream_args: Any, **stream_kwargs: Any) -> None:
+            if handler.headers.get("X-Bilikara-Acceptance-Hold-Range", "") != "1":
+                original_stream_file(handler, *stream_args, **stream_kwargs)
+                return
+            original_writer = handler.wfile
+            handler.wfile = HeldRangeBodyWriter(original_writer)
+            try:
+                original_stream_file(handler, *stream_args, **stream_kwargs)
+            finally:
+                handler.wfile = original_writer
+                held_range_stream_finished.set()
+
+        server.BilikaraHandler._stream_file = held_stream_file
+
+        def monitor_held_range() -> None:
+            old_directory = (
+                manager_cache_root() / initial_artifact_relative_directory
+            )
+            try:
+                if not held_range_started.wait(timeout=30.0):
+                    raise RuntimeError("held Range body did not start")
+                if not held_host_retired.wait(timeout=30.0):
+                    raise RuntimeError("Host did not retire the held artifact program")
+                deadline = time.monotonic() + 20.0
+                replacement_directory = ""
+                replacement_artifact = ""
+                while time.monotonic() < deadline:
+                    current = context.store.snapshot().get("current_item") or {}
+                    replacement_artifact = str(current.get("artifact_set_id") or "")
+                    replacement_directory = str(
+                        current.get("artifact_relative_directory") or ""
+                    )
+                    if (
+                        replacement_artifact
+                        and replacement_artifact != initial_artifact_set_id
+                        and replacement_directory
+                    ):
+                        break
+                    time.sleep(0.025)
+                else:
+                    raise RuntimeError("replacement artifact was not Ready")
+                replacement_path = manager_cache_root() / replacement_directory
+                with manager.artifact_retirement_lock:
+                    active_readers = sum(
+                        count
+                        for artifact, count in manager.artifact_reader_counts.items()
+                        if artifact.relative_directory
+                        == initial_artifact_relative_directory
+                    )
+                held_range_evidence.update(
+                    {
+                        "old_artifact_set_id": initial_artifact_set_id,
+                        "replacement_artifact_set_id": replacement_artifact,
+                        "old_exists_while_reader_held": old_directory.is_dir(),
+                        "replacement_exists_while_reader_held": (
+                            replacement_path.is_dir()
+                        ),
+                        "active_readers_while_held": active_readers,
+                    }
+                )
+                held_range_release.set()
+                if not held_range_stream_finished.wait(timeout=10.0):
+                    raise RuntimeError("held Range stream did not finish")
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline and old_directory.exists():
+                    time.sleep(0.025)
+                held_range_evidence.update(
+                    {
+                        "old_absent_after_reader_release": (
+                            not old_directory.exists()
+                        ),
+                        "replacement_exists_after_reader_release": (
+                            replacement_path.is_dir()
+                        ),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                held_range_evidence["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                held_range_release.set()
+
+        held_monitor = threading.Thread(
+            target=monitor_held_range,
+            daemon=True,
+            name="bilikara-held-range-acceptance",
+        )
+        held_monitor.start()
+
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.BilikaraHandler)
     context.bind_server(httpd, shutdown_on_last_client=False)
     server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -649,6 +817,12 @@ def _worker(args: argparse.Namespace) -> int:
         check=False,
         timeout=90,
     )
+    if held_monitor is not None:
+        held_monitor.join(timeout=12.0)
+        if held_monitor.is_alive():
+            held_range_evidence["error"] = "held Range monitor did not settle"
+            held_range_release.set()
+            held_monitor.join(timeout=2.0)
     try:
         browser_result = json.loads(completed.stdout.strip().splitlines()[-1])
     except (IndexError, json.JSONDecodeError) as exc:
@@ -661,12 +835,46 @@ def _worker(args: argparse.Namespace) -> int:
     published_events = [
         event for event in events if event.get("event") == "directory_published"
     ]
-    published_directories_exist = all(
-        (
+    live_artifact_directories = {
+        str(item.get("artifact_relative_directory") or "")
+        for item in [
+            final_snapshot.get("current_item"),
+            *(final_snapshot.get("playlist") or []),
+        ]
+        if isinstance(item, dict)
+        and item.get("artifact_set_id")
+        and item.get("artifact_relative_directory")
+    }
+    published_directory_states = {
+        str(event.get("artifact_relative_directory") or ""): (
             manager_cache_root()
             / str(event.get("artifact_relative_directory") or "")
         ).is_dir()
         for event in published_events
+        if event.get("artifact_relative_directory")
+    }
+    with manager.artifact_retirement_lock:
+        operationally_pinned_directories = {
+            artifact.relative_directory
+            for artifact in [
+                *manager.active_artifact_attempts.values(),
+                *manager.host_playback_artifacts.values(),
+                *manager.artifact_reader_counts.keys(),
+            ]
+        }
+    live_directories_exist = all(
+        published_directory_states.get(relative_directory, False)
+        for relative_directory in live_artifact_directories
+    )
+    superseded_directories_absent = all(
+        relative_directory in live_artifact_directories or not exists
+        for relative_directory, exists in published_directory_states.items()
+    )
+    eligible_superseded_directories_absent = all(
+        relative_directory in live_artifact_directories
+        or relative_directory in operationally_pinned_directories
+        or not exists
+        for relative_directory, exists in published_directory_states.items()
     )
     expected_current = (
         "B"
@@ -683,7 +891,8 @@ def _worker(args: argparse.Namespace) -> int:
     )
     server_acceptance = bool(
         current_payload.get("id") == expected_current
-        and published_directories_exist
+        and live_directories_exist
+        and eligible_superseded_directories_absent
         and (
             advance_count == 1
             if args.scenario
@@ -723,6 +932,31 @@ def _worker(args: argparse.Namespace) -> int:
                 )
             )
         )
+        and (
+            args.scenario != "retire-held-range"
+            or (
+                held_range_evidence.get("old_exists_while_reader_held") is True
+                and held_range_evidence.get(
+                    "replacement_exists_while_reader_held"
+                )
+                is True
+                and int(
+                    held_range_evidence.get("active_readers_while_held") or 0
+                )
+                >= 1
+                and held_range_evidence.get("old_absent_after_reader_release")
+                is True
+                and held_range_evidence.get(
+                    "replacement_exists_after_reader_release"
+                )
+                is True
+                and not held_range_evidence.get("error")
+            )
+        )
+        and (
+            args.scenario != "skipped-intermediate-program"
+            or superseded_directories_absent
+        )
     )
     result = {
         "scenario": args.scenario,
@@ -740,7 +974,19 @@ def _worker(args: argparse.Namespace) -> int:
         "final_revision": final_snapshot.get("revision"),
         "session_played_count": len(final_snapshot.get("session_played") or []),
         "history_count": len(final_snapshot.get("history") or []),
-        "published_directories_exist_before_shutdown": published_directories_exist,
+        "live_artifact_directories": sorted(live_artifact_directories),
+        "published_directory_states_before_shutdown": published_directory_states,
+        "operationally_pinned_directories_before_shutdown": sorted(
+            operationally_pinned_directories
+        ),
+        "live_directories_exist_before_shutdown": live_directories_exist,
+        "superseded_directories_absent_before_shutdown": (
+            superseded_directories_absent
+        ),
+        "eligible_superseded_directories_absent_before_shutdown": (
+            eligible_superseded_directories_absent
+        ),
+        "held_range_retirement": held_range_evidence,
         "browser_stderr": completed.stderr.strip(),
     }
     print(f"LIVE_RESULT_JSON={json.dumps(result, ensure_ascii=False)}", flush=True)
@@ -792,6 +1038,7 @@ def _main(args: argparse.Namespace) -> int:
             ]
             if scenario in {
                 "player-reset",
+                "retire-held-range",
                 "rapid-session-switch",
                 "stale-next-recache",
                 "stale-next-first-carrier",
@@ -835,7 +1082,7 @@ def _main(args: argparse.Namespace) -> int:
                 break
 
         evidence = {
-            "contract": "host-playback-readiness-commit-v1",
+            "contract": "safe-immutable-artifact-retirement-v1",
             "platform": sys.platform,
             "python": sys.version.split()[0],
             "browser_engine": "Playwright Chromium",
@@ -858,6 +1105,7 @@ def _main(args: argparse.Namespace) -> int:
                     "same item and logical filenames publish different URLs",
                     "old/new Range reads overlap authoritative publication",
                     "multiple concurrent readers access the old committed set",
+                    "a held old-artifact Range reader delays live retirement until its exact release",
                     "playing and paused recache preserve time and intent",
                     "player reset retires one media pair and mounts one fresh lifetime",
                     "normal next rejects a late old-element ended callback",
@@ -872,6 +1120,7 @@ def _main(args: argparse.Namespace) -> int:
                     "staggered video/audio readiness commits and starts only after both streams are ready",
                     "rapid A to unready B to C retires B before only C commits and plays",
                     "a settings response carrying a newer Rust program reconciles without polling",
+                    "two serialized but unaccepted intermediate programs create no artifact owner",
                 ],
                 "automated_coverage": [
                     "stale filesystem publication leaves an orphan",
@@ -920,8 +1169,8 @@ def _main(args: argparse.Namespace) -> int:
                         "is covered by Rust/Python automated tests"
                     ),
                     "windows_open_file_semantics": (
-                        "acceptance host is Linux; production never overwrites or live-deletes a "
-                        "committed directory, so it does not rely on Unix unlink behavior"
+                        "acceptance host is Linux; application reader ownership and deletion-failure "
+                        "retention were exercised, but physical Windows open-handle behavior was not"
                     ),
                     "physical_dual_display": (
                         "headless Chromium has no physical second display; presentation regressions "
@@ -933,8 +1182,8 @@ def _main(args: argparse.Namespace) -> int:
             and all(result.get("passed") for result in results),
             "platform_skips": {
                 "windows_open_file_semantics": (
-                    "not run: acceptance host is Linux; Windows correctness relies on "
-                    "never overwriting/deleting live committed directories"
+                    "not run: acceptance host is Linux; physical Windows open-file deletion "
+                    "behavior remains a platform acceptance item"
                 ),
                 "physical_dual_display": (
                     "not run: headless Chromium has no physical second display"
