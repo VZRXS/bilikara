@@ -244,7 +244,7 @@ function sameProgram(left, right) {{
 }}
 function isCurrentHostPlaybackSession(session, video, audio) {{
   return session === state.hostPlaybackSession
-    && session?.cleanupState === "active"
+    && session?.phase === "playing"
     && session.playbackGeneration === state.data.playback_generation
     && sameProgram(session.playbackProgram, state.data.playback_program)
     && session.video === video && session.audio === audio;
@@ -294,7 +294,7 @@ async function runReplacement(selectedVariant, artifactSetId) {{
   }});
   apiCalls = 0; syncCalls = 0; replacementPairEffects = 0;
   const oldSession = {{
-    cleanupState: "active", playbackGeneration: 9, playbackProgram: programA,
+    phase: "playing", playbackGeneration: 9, playbackProgram: programA,
     video: {{}}, audio: {{}},
   }};
   state.hostPlaybackSession = oldSession;
@@ -312,9 +312,9 @@ async function runReplacement(selectedVariant, artifactSetId) {{
     current_item: oldItem, playlist: [nextItem],
     player_settings: {{ song_advance_delay_seconds: 3 }},
   }};
-  oldSession.cleanupState = "retired";
+  oldSession.phase = "retired";
   state.hostPlaybackSession = {{
-    cleanupState: "active", playbackGeneration: 10,
+    phase: "playing", playbackGeneration: 10,
     playbackProgram: replacementProgram, video: {{}}, audio: {{}},
   }};
   rejectNext(new Error("playback_generation_mismatch"));
@@ -350,7 +350,7 @@ async function runNetworkFailure() {{
   }});
   apiCalls = 0; syncCalls = 0; replacementPairEffects = 0;
   state.hostPlaybackSession = {{
-    cleanupState: "active", playbackGeneration: 9, playbackProgram: programA,
+    phase: "playing", playbackGeneration: 9, playbackProgram: programA,
     video: {{}}, audio: {{}},
   }};
   const pending = requestNextTrack();
@@ -384,7 +384,7 @@ async function runNewerTransition() {{
   }});
   apiCalls = 0; syncCalls = 0; replacementPairEffects = 0;
   const oldSession = {{
-    cleanupState: "active", playbackGeneration: 9, playbackProgram: programA,
+    phase: "playing", playbackGeneration: 9, playbackProgram: programA,
     video: {{}}, audio: {{}},
   }};
   state.hostPlaybackSession = oldSession;
@@ -402,9 +402,9 @@ async function runNewerTransition() {{
     player_settings: {{ song_advance_delay_seconds: 3 }},
   }};
   maybeShowSongTransitionOverlay(previousData, state.data);
-  oldSession.cleanupState = "retired";
+  oldSession.phase = "retired";
   state.hostPlaybackSession = {{
-    cleanupState: "active", playbackGeneration: 10,
+    phase: "playing", playbackGeneration: 10,
     playbackProgram: newerProgram, video: {{}}, audio: {{}},
   }};
   rejectNext(new Error("playback_generation_mismatch"));
@@ -439,7 +439,7 @@ async function runAcceptedInverseResponse() {{
   }});
   apiCalls = 0; syncCalls = 0; replacementPairEffects = 0;
   state.hostPlaybackSession = {{
-    cleanupState: "active", playbackGeneration: 9, playbackProgram: programA,
+    phase: "playing", playbackGeneration: 9, playbackProgram: programA,
     video: {{}}, audio: {{}},
   }};
   const originalApply = applyFreshStateSnapshot;
@@ -594,7 +594,10 @@ function shouldHoldCurrentItemForTransition() {{ return false; }}
 function closeOpenMenus() {{}}
 function setAppMessage(message) {{ throw new Error(message); }}
 const rendered = [];
+const playerReconciled = [];
 function render() {{ rendered.push(state.data.current_item.id); }}
+function renderPlayer() {{ playerReconciled.push(state.data.current_item.id); }}
+function frontendPlaybackMode(mode) {{ return mode || "local"; }}
 function clearLocalAdvanceDelay() {{}}
 function registerManualTransitionHold() {{ return 0; }}
 function maybeShowSongTransitionOverlay() {{}}
@@ -611,12 +614,18 @@ console.log(JSON.stringify({{
   current: state.data.current_item.id,
   revision: state.data.state_revision,
   rendered,
+  playerReconciled,
 }}));
 """
         )
         self.assertEqual(
             result,
-            {"current": "song-c", "revision": 3, "rendered": ["song-c"]},
+            {
+                "current": "song-c",
+                "revision": 3,
+                "rendered": ["song-c"],
+                "playerReconciled": ["song-c"],
+            },
         )
 
     def test_polling_same_transition_does_not_register_again(self):
@@ -674,12 +683,12 @@ const program = {{
   selected_audio_variant_id: "v", artifact_set_id: "a",
 }};
 const oldSession = {{
-  playbackGeneration: 1, playbackProgram: program, cleanupState: "retired",
+  playbackGeneration: 1, playbackProgram: program, phase: "retired",
   video: oldVideo, audio: oldAudio,
 }};
 const currentSession = {{
-  playbackGeneration: 2, playbackProgram: program, cleanupState: "active",
-  video, audio,
+  playbackGeneration: 2, playbackProgram: program, phase: "paused",
+  readyCommitted: true, initialIntentApplied: true, video, audio,
 }};
 const state = {{
   data: {{
@@ -695,7 +704,8 @@ function currentItemIdFromData(data) {{ return String(data?.current_item?.id || 
 function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
 function isCurrentHostPlaybackSession(session, exactVideo, exactAudio) {{
   return session === state.hostPlaybackSession
-    && session?.cleanupState === "active"
+    && session?.phase !== "retiring"
+    && session?.phase !== "retired"
     && session.playbackGeneration === state.data.playback_generation
     && session.playbackProgram === state.data.playback_program
     && (exactVideo === undefined || session.video === exactVideo)
@@ -707,7 +717,10 @@ function clearLocalAdvanceDelay() {{
   clears += 1; state.manualTransitionHoldItemId = "";
   state.manualTransitionHoldGeneration = 0;
 }}
-function syncSplitPlayer() {{ syncs += 1; }}
+function setSplitPlaybackIntent() {{ syncs += 1; return true; }}
+function startSplitPlaybackPair() {{ syncs += 1; return true; }}
+function applyInitialHostPlaybackIntent() {{ syncs += 1; return true; }}
+function updateSplitPlaybackStartOverlay() {{}}
 function currentAvOffsetSeconds() {{ return 0; }}
 {resume_function}
 resumeMountedPlayerAfterOverlay("new", 2, oldSession);
@@ -738,6 +751,10 @@ console.log(JSON.stringify({{ stale, syncs, clears, shouldPlay: state.localShoul
             "function hasLocalAdvanceDelayOverlay",
             "function startLocalAdvanceDelay",
         )
+        hold = self.source_slice(
+            "function shouldHoldCurrentItemForTransition",
+            "function stopMountedPlayerForAdvanceDelay",
+        )
         clear_delay = self.source_slice(
             "function clearLocalAdvanceDelay",
             "async function finishLocalAdvanceDelay",
@@ -745,6 +762,10 @@ console.log(JSON.stringify({{ stale, syncs, clears, shouldPlay: state.localShoul
         sessions = self.source_slice(
             "function hostPlaybackMountData",
             "function renderPlayer",
+        )
+        phase_helper = self.source_slice(
+            "function setHostPlaybackSessionPhase",
+            "Object.defineProperty",
         )
         result = self.run_node(
             f"""
@@ -847,9 +868,11 @@ function disposeAudioPitchShifter() {{}}
 function t(key) {{ return key; }}
 {equality}
 {resume}
+{hold}
 {show}
 {has_overlay}
 {clear_delay}
+{phase_helper}
 {sessions}
 
 function item(artifact, variant) {{
@@ -936,7 +959,7 @@ function runReplacement(nextArtifact, nextVariant) {{
   reboundTimer.callback();
   return {{
     kind: reconciliation.kind,
-    oldRetired: firstSession.cleanupState,
+    oldRetired: firstSession.phase,
     rebound: reboundTimer !== oldTimer,
     remainingDelay: reboundTimer.delay,
     deadlinePreserved: originalDeadline === 4500,
@@ -983,7 +1006,7 @@ console.log(JSON.stringify({{
                     "deadline": 0,
                     "shouldPlay": True,
                     "resumes": 1,
-                    "syncs": 1,
+                    "syncs": 0,
                     "media": ["VIDEO", "AUDIO"],
                 },
             )
@@ -998,7 +1021,7 @@ console.log(JSON.stringify({{
 const item = {{ id: "next", title: "Next song" }};
 const video = {{ dataset: {{ playerItemId: "next" }} }};
 const audio = {{}};
-const session = {{ cleanupState: "active", video, audio }};
+const session = {{ phase: "playing", video, audio }};
 const state = {{
   data: {{ current_item: item }}, hostPlaybackSession: session,
   localAdvanceDelayToken: 4, localAdvanceInFlight: false,
@@ -1017,7 +1040,7 @@ Date.now = () => 1000;
 function manualTransitionOverlaySeconds() {{ return 3; }}
 function isCurrentHostPlaybackSession(candidate, exactVideo, exactAudio) {{
   return candidate === state.hostPlaybackSession
-    && candidate?.cleanupState === "active"
+    && candidate?.phase === "playing"
     && (exactVideo === undefined || candidate.video === exactVideo)
     && (exactAudio === undefined || candidate.audio === exactAudio);
 }}
@@ -1065,8 +1088,14 @@ console.log(JSON.stringify({{
             "function renderPlayer(currentItem, playbackMode)",
             "function applyRemotePlayerControl",
         )
+        initial_intent = self.source_slice(
+            "function applyInitialHostPlaybackIntent",
+            "function commitHostPlaybackSessionReadyPaused",
+        )
         sync = self.source_slice("function syncSplitPlayer", "function syncMountedLocalPlayer")
-        self.assertIn("const shouldAutoplay = !shouldHoldCurrentItemForTransition(currentItem)", renderer)
+        self.assertIn("session.logicalPlayIntent", initial_intent)
+        self.assertIn("session.initialIntentApplied", initial_intent)
+        self.assertIn("shouldHoldCurrentItemForTransition(video.dataset.playerItemId)", initial_intent)
         self.assertIn("shouldHoldCurrentItemForTransition(currentItem)", renderer)
         self.assertIn("shouldHoldCurrentItemForTransition(video.dataset.playerItemId)", sync)
         self.assertIn('return reportAction("transition-hold")', sync)

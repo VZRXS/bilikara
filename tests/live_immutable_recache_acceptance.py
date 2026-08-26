@@ -42,6 +42,9 @@ SCENARIOS = (
     "page-restore",
     "rapid-session-switch",
     "stale-next-recache",
+    "staggered-readiness",
+    "rapid-unready-switch",
+    "settings-program-reconciliation",
 )
 
 
@@ -314,6 +317,18 @@ def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[s
             "A": [{"fixture": "a1"}, {"fixture": "a2", "delay": 0.5}],
             "B": [{"fixture": "b1"}],
         }, ["A", "B"]
+    if scenario == "staggered-readiness":
+        return ["A"], 1, {"A": [{"fixture": "a1"}]}, ["A"]
+    if scenario == "rapid-unready-switch":
+        return ["A", "B", "C"], 3, {
+            "A": [{"fixture": "a1"}],
+            "B": [{"fixture": "b1"}],
+            "C": [{"fixture": "c1"}],
+        }, ["A", "B", "C"]
+    if scenario == "settings-program-reconciliation":
+        return ["A"], 1, {
+            "A": [{"fixture": "a1"}, {"fixture": "a2", "delay": 0.5}],
+        }, ["A"]
     raise ValueError(f"unknown scenario: {scenario}")
 
 
@@ -656,7 +671,13 @@ def _worker(args: argparse.Namespace) -> int:
         "B"
         if args.scenario in {"normal-switch", "natural-ended", "rapid-session-switch"}
         else "C"
-        if args.scenario in {"play-now-ready", "play-now-uncached", "inverse-snapshot"}
+        if args.scenario
+        in {
+            "play-now-ready",
+            "play-now-uncached",
+            "inverse-snapshot",
+            "rapid-unready-switch",
+        }
         else "A"
     )
     server_acceptance = bool(
@@ -811,7 +832,7 @@ def _main(args: argparse.Namespace) -> int:
                 break
 
         evidence = {
-            "contract": "host-playback-session-lifetime-v1",
+            "contract": "host-playback-readiness-commit-v1",
             "platform": sys.platform,
             "python": sys.version.split()[0],
             "browser_engine": "Playwright Chromium",
@@ -844,6 +865,9 @@ def _main(args: argparse.Namespace) -> int:
                     "page restore and Host reload each advance Rust generation before one fresh media lifetime",
                     "rapid switch rejects late A play resolution/rejection without disturbing B",
                     "stale delayed Next releases only its hold after immutable recache changes the program",
+                    "staggered video/audio readiness commits and starts only after both streams are ready",
+                    "rapid A to unready B to C retires B before only C commits and plays",
+                    "a settings response carrying a newer Rust program reconciles without polling",
                 ],
                 "automated_coverage": [
                     "stale filesystem publication leaves an orphan",

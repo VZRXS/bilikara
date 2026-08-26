@@ -50,6 +50,7 @@ class HostPlaybackSessionFrontendTest(unittest.TestCase):
         )
         script = f"""
 const windowListeners = {{}};
+const sourceAssignments = [];
 class FakeNode {{
   constructor(tagName) {{
     this.tagName = String(tagName).toUpperCase();
@@ -61,9 +62,19 @@ class FakeNode {{
     this.attributes = {{}};
     this.currentTime = 0;
     this.paused = true;
-    this.src = "";
+    this._src = "";
     this.controls = false;
     this.listeners = new Map();
+  }}
+  get src() {{ return this._src; }}
+  set src(value) {{
+    this._src = String(value || "");
+    if (this._src && ["VIDEO", "AUDIO"].includes(this.tagName)) {{
+      sourceAssignments.push({{
+        tagName: this.tagName,
+        listenerNames: [...this.listeners.keys()].sort(),
+      }});
+    }}
   }}
   append(...nodes) {{ nodes.forEach((node) => {{ node.parentElement = this; this.children.push(node); }}); }}
   appendChild(node) {{ this.append(node); return node; }}
@@ -164,6 +175,11 @@ function clearTauriMediaSessionState() {{}}
 function clearLocalAdvanceDelay() {{}}
 function disposeAudioPitchShifter() {{}}
 function captureLocalPlayerPreferences() {{}}
+function setHostPlaybackSessionPhase(session, phase) {{
+  if (!session) return false;
+  session.phase = phase;
+  return true;
+}}
 const preferenceWrites = [];
 function persistLocalVolumePreferences() {{
   preferenceWrites.push([state.localPlayerVolume, state.localPlayerMuted]);
@@ -265,7 +281,7 @@ installSnapshot(2, pending);
 const pendingResult = reconcileHostPlaybackSession(pending);
 observations.pending = {
   kind: pendingResult.kind,
-  state: state.hostPlaybackSession.cleanupState,
+  state: state.hostPlaybackSession.phase,
   counts: counts(),
 };
 
@@ -352,14 +368,14 @@ observations.oldRetirement = {
 observations.retirement = {
   first: retireHostPlaybackSession(currentSession),
   second: retireHostPlaybackSession(currentSession),
-  state: currentSession.cleanupState,
+  state: currentSession.phase,
 };
 process.stdout.write(JSON.stringify(observations));
 """
         )
         self.assertEqual(result["empty"], {"kind": "empty", "counts": {"video": 0, "audio": 0}})
         self.assertEqual(result["pending"]["kind"], "pending")
-        self.assertEqual(result["pending"]["state"], "active")
+        self.assertEqual(result["pending"]["state"], "requested")
         self.assertEqual(result["pending"]["counts"], {"video": 0, "audio": 0})
         self.assertEqual(result["first"], {"kind": "mounted", "counts": {"video": 1, "audio": 1}})
         for rerender in result["rerenders"]:
@@ -402,6 +418,171 @@ process.stdout.write(JSON.stringify(observations));
             {"first": True, "second": False, "state": "retired"},
         )
 
+    def test_candidate_creation_prepares_one_pair_without_starting_media_load(self):
+        result = self.run_foundation(
+            """
+const current = item();
+installSnapshot(7, current);
+const candidate = reconcileHostPlaybackSession(current);
+process.stdout.write(JSON.stringify({
+  kind: candidate.kind,
+  counts: counts(),
+  videoSrc: candidate.video?.src || "",
+  audioSrc: candidate.audio?.src || "",
+  sourceAssignments,
+}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "kind": "mounted",
+                "counts": {"video": 1, "audio": 1},
+                "videoSrc": "",
+                "audioSrc": "",
+                "sourceAssignments": [],
+            },
+        )
+
+    def test_recache_and_variant_replacements_capture_only_exact_ready_session_restore(self):
+        result = self.run_foundation(
+            """
+function exercise(firstItem, replacementItem, logicalPlayIntent, currentTime) {
+  retireHostPlaybackSession(state.hostPlaybackSession);
+  state.hostPlaybackSession = null;
+  state.pendingPlaybackRestore = null;
+  installSnapshot(20, firstItem);
+  const first = reconcileHostPlaybackSession(firstItem);
+  first.session.readyCommitted = true;
+  first.session.initialIntentApplied = true;
+  first.session.logicalPlayIntent = logicalPlayIntent;
+  first.session.phase = logicalPlayIntent ? "playing" : "paused";
+  first.video.currentTime = currentTime;
+  first.video.paused = !logicalPlayIntent;
+  first.audio.paused = !logicalPlayIntent;
+
+  installSnapshot(21, replacementItem);
+  const replacement = reconcileHostPlaybackSession(replacementItem);
+  return {
+    oldPhase: first.session.phase,
+    replacementPhase: replacement.session.phase,
+    restore: replacement.session.playbackRestore,
+    logicalPlayIntent: replacement.session.logicalPlayIntent,
+    counts: counts(),
+  };
+}
+
+const recache = exercise(
+  item({ artifactId: "artifact-1" }),
+  item({ artifactId: "artifact-2" }),
+  true,
+  41.25,
+);
+const variant = exercise(
+  item({ artifactId: "artifact-2", variantId: "instrumental" }),
+  item({ artifactId: "artifact-2", variantId: "vocal" }),
+  false,
+  27.5,
+);
+const differentIncarnation = exercise(
+  item({ incarnation: "i-a", artifactId: "artifact-3" }),
+  item({ incarnation: "i-b", artifactId: "artifact-4" }),
+  true,
+  63,
+);
+process.stdout.write(JSON.stringify({ recache, variant, differentIncarnation }));
+"""
+        )
+        self.assertEqual(
+            result["recache"],
+            {
+                "oldPhase": "retired",
+                "replacementPhase": "binding",
+                "restore": {
+                    "itemId": "song-a",
+                    "variantId": "instrumental",
+                    "currentTime": 41.25,
+                    "wasPlaying": True,
+                },
+                "logicalPlayIntent": True,
+                "counts": {"video": 1, "audio": 1},
+            },
+        )
+        self.assertEqual(
+            result["variant"],
+            {
+                "oldPhase": "retired",
+                "replacementPhase": "binding",
+                "restore": {
+                    "itemId": "song-a",
+                    "variantId": "vocal",
+                    "currentTime": 27.5,
+                    "wasPlaying": False,
+                },
+                "logicalPlayIntent": False,
+                "counts": {"video": 1, "audio": 1},
+            },
+        )
+        self.assertEqual(
+            result["differentIncarnation"],
+            {
+                "oldPhase": "retired",
+                "replacementPhase": "binding",
+                "restore": None,
+                "logicalPlayIntent": True,
+                "counts": {"video": 1, "audio": 1},
+            },
+        )
+
+    def test_same_item_program_reconciliation_preserves_an_exact_inflight_next_hold(self):
+        result = self.run_foundation(
+            """
+const current = item({ artifactId: "artifact-1" });
+installSnapshot(30, current);
+const first = reconcileHostPlaybackSession(current);
+first.session.readyCommitted = true;
+first.session.phase = "playing";
+first.session.logicalPlayIntent = true;
+state.localAdvanceInFlight = true;
+state.localAdvanceDelayToken = 9;
+state.manualTransitionHoldItemId = "song-b";
+state.manualTransitionHoldGeneration = 4;
+let clearCalls = 0;
+clearLocalAdvanceDelay = () => {
+  clearCalls += 1;
+  state.localAdvanceInFlight = false;
+  state.manualTransitionHoldItemId = "";
+  state.manualTransitionHoldGeneration = 0;
+};
+
+const recached = item({ artifactId: "artifact-2" });
+installSnapshot(31, recached);
+const replacement = reconcileHostPlaybackSession(recached);
+process.stdout.write(JSON.stringify({
+  kind: replacement.kind,
+  oldPhase: first.session.phase,
+  clearCalls,
+  inFlight: state.localAdvanceInFlight,
+  holdItem: state.manualTransitionHoldItemId,
+  holdGeneration: state.manualTransitionHoldGeneration,
+  delayToken: state.localAdvanceDelayToken,
+  counts: counts(),
+}));
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "kind": "mounted",
+                "oldPhase": "retired",
+                "clearCalls": 0,
+                "inFlight": True,
+                "holdItem": "song-b",
+                "holdGeneration": 4,
+                "delayToken": 9,
+                "counts": {"video": 1, "audio": 1},
+            },
+        )
     def test_current_session_predicate_requires_authority_and_exact_elements(self):
         result = self.run_foundation(
             """
@@ -417,9 +598,9 @@ const checks = {
   wrongObject: isCurrentHostPlaybackSession(impostor),
   wrongVideo: isCurrentHostPlaybackSession(session, otherVideo, mounted.audio),
 };
-session.cleanupState = "retiring";
+session.phase = "retiring";
 checks.retiring = isCurrentHostPlaybackSession(session, mounted.video, mounted.audio);
-session.cleanupState = "active";
+session.phase = "binding";
 state.data.playback_generation = 8;
 checks.wrongGeneration = isCurrentHostPlaybackSession(session, mounted.video, mounted.audio);
 process.stdout.write(JSON.stringify(checks));
@@ -570,7 +751,7 @@ process.stdout.write(JSON.stringify({
   const mounted = state.hostPlaybackSession;
   const mountedObservation = {
     generation: mounted.playbackGeneration,
-    cleanupState: mounted.cleanupState,
+    phase: mounted.phase,
     freshPair: Boolean(mounted.video && mounted.audio),
     counts: counts(),
   };
@@ -609,7 +790,7 @@ process.stdout.write(JSON.stringify({
                 "renderCalls": 1,
                 "mounted": {
                     "generation": 8,
-                    "cleanupState": "active",
+                    "phase": "binding",
                     "freshPair": True,
                     "counts": {"video": 1, "audio": 1},
                 },
@@ -634,16 +815,15 @@ process.stdout.write(JSON.stringify({
   apiPostStateSnapshotImpl = async (url) => {
     if (url !== "/api/player/restart-program") throw new Error("unexpected route");
     restartCalls += 1;
-    retiredBeforeRestart = oldSession.cleanupState === "retired";
+    retiredBeforeRestart = oldSession.phase === "retired";
     installSnapshot(8, current);
     render();
-    preRestartRenderSuppressed = state.hostPlaybackSession.cleanupState === "retired"
+    preRestartRenderSuppressed = state.hostPlaybackSession.phase === "retired"
       && state.hostPlaybackSession.playbackGeneration === 8
       && state.hostPlaybackSession.video === null
       && state.hostPlaybackSession.audio === null
       && elements.playerFrame.querySelector("video") === mounted.video
       && elements.playerFrame.querySelector("audio") === mounted.audio;
-    installSnapshot(9, current);
     return true;
   };
   renderImpl = () => {
@@ -654,7 +834,7 @@ process.stdout.write(JSON.stringify({
 
   windowListeners.pagehide();
   const afterHide = {
-    cleanupState: oldSession.cleanupState,
+    phase: oldSession.phase,
     restartRequired: state.pageHidePlaybackRestartRequired,
     counts: counts(),
   };
@@ -670,6 +850,8 @@ process.stdout.write(JSON.stringify({
     preRestartRenderSuppressed,
     generationSeenByRender,
     generation: newSession.playbackGeneration,
+    phase: newSession.phase,
+    mounted: Boolean(newSession.video && newSession.audio),
     freshVideo: newSession.video !== mounted.video,
     freshAudio: newSession.audio !== mounted.audio,
     counts: counts(),
@@ -688,7 +870,7 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(
             result["afterHide"],
             {
-                "cleanupState": "retired",
+                "phase": "retired",
                 "restartRequired": True,
                 "counts": {"video": 1, "audio": 1},
             },
@@ -700,8 +882,10 @@ process.stdout.write(JSON.stringify({
                 "renderCalls": 2,
                 "retiredBeforeRestart": True,
                 "preRestartRenderSuppressed": True,
-                "generationSeenByRender": 9,
-                "generation": 9,
+                "generationSeenByRender": 8,
+                "generation": 8,
+                "phase": "binding",
+                "mounted": True,
                 "freshVideo": True,
                 "freshAudio": True,
                 "counts": {"video": 1, "audio": 1},
@@ -751,7 +935,7 @@ process.stdout.write(JSON.stringify({
     restartCalls,
     renderCalls,
     generation: newerSession.playbackGeneration,
-    active: newerSession.cleanupState === "active",
+    active: newerSession.phase === "binding",
     freshVideo: newerSession.video !== oldVideo,
     freshAudio: newerSession.audio !== oldAudio,
     counts: counts(),
@@ -776,7 +960,7 @@ process.stdout.write(JSON.stringify({
     failedCalls,
     renderCalls,
     generation: state.hostPlaybackSession.playbackGeneration,
-    cleanupState: state.hostPlaybackSession.cleanupState,
+    phase: state.hostPlaybackSession.phase,
     videoSrc: state.hostPlaybackSession.video?.src || "",
     audioSrc: state.hostPlaybackSession.audio?.src || "",
     counts: counts(),
@@ -806,7 +990,7 @@ process.stdout.write(JSON.stringify({
                 "failedCalls": 1,
                 "renderCalls": 3,
                 "generation": 20,
-                "cleanupState": "retired",
+                "phase": "retired",
                 "videoSrc": "",
                 "audioSrc": "",
                 "counts": {"video": 1, "audio": 1},
@@ -833,7 +1017,7 @@ process.stdout.write(JSON.stringify({
     sameSession: state.hostPlaybackSession === mounted.session,
     sameVideo: state.hostPlaybackSession.video === oldVideo,
     sameAudio: state.hostPlaybackSession.audio === oldAudio,
-    cleanupState: mounted.session.cleanupState,
+    phase: mounted.session.phase,
     videoPaused: oldVideo.paused,
     audioPaused: oldAudio.paused,
     currentTime: oldVideo.currentTime,
@@ -849,7 +1033,7 @@ process.stdout.write(JSON.stringify({
   await resetRuntimeData();
   const failedDataReset = {
     sameSession: state.hostPlaybackSession === mounted.session,
-    cleanupState: mounted.session.cleanupState,
+    phase: mounted.session.phase,
     videoPaused: oldVideo.paused,
     audioPaused: oldAudio.paused,
     generation: state.data.playback_generation,
@@ -866,7 +1050,7 @@ process.stdout.write(JSON.stringify({
     generation: resetSession.playbackGeneration,
     freshVideo: resetSession.video !== oldVideo,
     freshAudio: resetSession.audio !== oldAudio,
-    oldRetired: mounted.session.cleanupState,
+    oldRetired: mounted.session.phase,
     volume: state.localPlayerVolume,
     muted: state.localPlayerMuted,
     preferenceWrites: preferenceWrites.length,
@@ -885,7 +1069,7 @@ process.stdout.write(JSON.stringify({
   const stalePlayerReset = {
     generation: newerSession.playbackGeneration,
     itemId: newerSession.playbackProgram.item_id,
-    cleanupState: newerSession.cleanupState,
+    phase: newerSession.phase,
     counts: counts(),
     disposals: sharedAudioContextDisposals,
   };
@@ -898,7 +1082,7 @@ process.stdout.write(JSON.stringify({
   const acceptedDataReset = {
     generation: state.data.playback_generation,
     currentItem: state.data.current_item,
-    cleanupState: newerSession.cleanupState,
+    phase: newerSession.phase,
     disposals: sharedAudioContextDisposals,
     counts: counts(),
   };
@@ -918,7 +1102,7 @@ process.stdout.write(JSON.stringify({
                 "sameSession": True,
                 "sameVideo": True,
                 "sameAudio": True,
-                "cleanupState": "active",
+                "phase": "binding",
                 "videoPaused": False,
                 "audioPaused": False,
                 "currentTime": 18.25,
@@ -934,7 +1118,7 @@ process.stdout.write(JSON.stringify({
             result["failedDataReset"],
             {
                 "sameSession": True,
-                "cleanupState": "active",
+                "phase": "binding",
                 "videoPaused": False,
                 "audioPaused": False,
                 "generation": 7,
@@ -960,7 +1144,7 @@ process.stdout.write(JSON.stringify({
             {
                 "generation": 9,
                 "itemId": "song-b",
-                "cleanupState": "active",
+                "phase": "binding",
                 "counts": {"video": 1, "audio": 1},
                 "disposals": 1,
             },
@@ -970,7 +1154,7 @@ process.stdout.write(JSON.stringify({
             {
                 "generation": 10,
                 "currentItem": None,
-                "cleanupState": "retired",
+                "phase": "retired",
                 "disposals": 2,
                 "counts": {"video": 0, "audio": 0},
             },

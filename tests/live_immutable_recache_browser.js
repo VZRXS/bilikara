@@ -8,6 +8,8 @@ const consoleErrors = [];
 const pageErrors = [];
 const mediaPublications = [];
 let pageIdentity = null;
+let releaseStaggeredVideo = null;
+let staggeredReadinessEvidence = null;
 
 function assert(condition, message, detail = undefined) {
   if (!condition) {
@@ -61,6 +63,7 @@ async function media(page) {
   return page.evaluate(() => {
     const video = document.querySelector('video[data-player-role="video"]');
     const audio = document.querySelector('audio[data-player-role="audio"]');
+    const session = state.hostPlaybackSession;
     return {
       present: Boolean(video && audio),
       itemId: video?.dataset.playerItemId || "",
@@ -81,6 +84,12 @@ async function media(page) {
       naturalEndedCount: Number(window.__acceptanceNaturalEndedCount || 0),
       videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
       audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
+      sessionPhase: session?.phase || "",
+      readyCommitted: Boolean(session?.readyCommitted),
+      readyCommitCount: Number(session?.readyCommitCount || 0),
+      initialIntentApplied: Boolean(session?.initialIntentApplied),
+      playbackGeneration: Number(session?.playbackGeneration || 0),
+      sessionArtifactSetId: session?.playbackProgram?.artifact_set_id || "",
     };
   });
 }
@@ -697,15 +706,24 @@ async function staleNextRecache(page) {
   const carriedReplacement = await page.evaluate(async () => {
     await setLocalPlayerKeyShift(1);
     const session = state.hostPlaybackSession;
+    window.__acceptanceSettingsVideo = session?.video || null;
+    window.__acceptanceSettingsAudio = session?.audio || null;
     return {
       stateGeneration: state.data?.playback_generation,
       stateArtifactSetId: state.data?.playback_program?.artifact_set_id || "",
       sessionGeneration: session?.playbackGeneration || 0,
+      sessionArtifactSetId: session?.playbackProgram?.artifact_set_id || "",
       sessionCurrent: isCurrentHostPlaybackSession(
         session,
         session?.video,
         session?.audio,
       ),
+      sessionPhase: session?.phase || "",
+      readyCommitted: Boolean(session?.readyCommitted),
+      videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
+      audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
+      oldVideoConnected: Boolean(window.__acceptanceStaleNextVideo?.isConnected),
+      oldAudioConnected: Boolean(window.__acceptanceStaleNextAudio?.isConnected),
       holdItem: state.manualTransitionHoldItemId,
       inFlight: state.localAdvanceInFlight,
     };
@@ -713,13 +731,19 @@ async function staleNextRecache(page) {
   assert(
     carriedReplacement.stateGeneration === authoritativeReplacement.playback_generation
       && carriedReplacement.stateArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
-      && carriedReplacement.sessionGeneration === before.playback_generation
-      && !carriedReplacement.sessionCurrent
+      && carriedReplacement.sessionGeneration === authoritativeReplacement.playback_generation
+      && carriedReplacement.sessionArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
+      && carriedReplacement.sessionCurrent
+      && carriedReplacement.videoCount === 1
+      && carriedReplacement.audioCount === 1
+      && !carriedReplacement.oldVideoConnected
+      && !carriedReplacement.oldAudioConnected
       && carriedReplacement.holdItem === "B"
       && carriedReplacement.inFlight,
-    "the real replacement snapshot did not reach the stale-session Next boundary",
+    "the settings-carried replacement did not reconcile at the stale Next boundary",
     { carriedReplacement, authoritativeReplacement },
   );
+  const reconciledPlaying = await observeAutomaticPlayback(page, "A", 0.15);
 
   releaseNext();
   const nextResponse = await nextResponsePromise;
@@ -777,22 +801,27 @@ async function staleNextRecache(page) {
   assert(nextRequestCount === 1, "stale Next sent a retry or duplicate request", nextRequestCount);
 
   await new Promise((resolve) => setTimeout(resolve, 350));
-  const untouchedMedia = await media(page);
-  const untouchedIdentity = await page.evaluate(() => ({
+  const reconciledMedia = await media(page);
+  const reconciledIdentity = await page.evaluate(() => ({
     sameVideo: document.querySelector('video[data-player-role="video"]')
-      === window.__acceptanceStaleNextVideo,
+      === window.__acceptanceSettingsVideo,
     sameAudio: document.querySelector('audio[data-player-role="audio"]')
-      === window.__acceptanceStaleNextAudio,
+      === window.__acceptanceSettingsAudio,
+    oldVideoConnected: Boolean(window.__acceptanceStaleNextVideo?.isConnected),
+    oldAudioConnected: Boolean(window.__acceptanceStaleNextAudio?.isConnected),
   }));
   assert(
-    untouchedIdentity.sameVideo
-      && untouchedIdentity.sameAudio
-      && untouchedMedia.videoCount === 1
-      && untouchedMedia.audioCount === 1
-      && !untouchedMedia.paused
-      && untouchedMedia.currentTime > started.currentTime + 0.2,
-    "stale Next cleanup modified or stopped the existing real media pair",
-    { started, untouchedIdentity, untouchedMedia },
+    reconciledIdentity.sameVideo
+      && reconciledIdentity.sameAudio
+      && !reconciledIdentity.oldVideoConnected
+      && !reconciledIdentity.oldAudioConnected
+      && reconciledMedia.videoCount === 1
+      && reconciledMedia.audioCount === 1
+      && reconciledMedia.readyCommitted
+      && !reconciledMedia.paused
+      && reconciledMedia.currentTime > reconciledPlaying.currentTime + 0.1,
+    "stale Next cleanup modified or stopped the reconciled replacement pair",
+    { reconciledPlaying, reconciledIdentity, reconciledMedia },
   );
 
   await page.unroute("**/api/state");
@@ -845,8 +874,338 @@ async function staleNextRecache(page) {
     optimistic,
     carriedReplacement,
     released,
-    untouchedMedia,
+    reconciledMedia,
     nextRequestCount,
+    media: settled,
+  });
+}
+
+async function staggeredReadiness(page) {
+  await waitFor(
+    async () => staggeredReadinessEvidence?.videoGateInterceptCount > 0
+      ? staggeredReadinessEvidence
+      : null,
+    "exact staggered video request did not engage the gate",
+  );
+  const audioReadyOnly = await waitFor(async () => {
+    const value = await media(page);
+    return value.present
+      && value.itemId === "A"
+      && value.readyState < 2
+      && value.audioReadyState >= 2
+      ? value
+      : null;
+  }, "audio did not become ready while the video request remained gated");
+  staggeredReadinessEvidence.audioReadyBeforeRelease = true;
+  const beforeReleasePlayCalls = await page.evaluate(
+    () => (window.__acceptanceReadinessPlayCalls || []).slice(),
+  );
+  const prematureStatus = mediaPublications.filter(
+    (entry) => entry.pathname === "/api/player/status",
+  );
+  assert(
+    audioReadyOnly.sessionPhase === "binding"
+      && !audioReadyOnly.readyCommitted
+      && audioReadyOnly.readyCommitCount === 0
+      && audioReadyOnly.videoCount === 1
+      && audioReadyOnly.audioCount === 1
+      && audioReadyOnly.paused
+      && staggeredReadinessEvidence.videoGateInterceptCount > 0
+      && staggeredReadinessEvidence.audioRequestedBeforeRelease
+      && staggeredReadinessEvidence.audioResponseReceivedBeforeRelease
+      && staggeredReadinessEvidence.audioResponseStatus > 0
+      && !staggeredReadinessEvidence.videoResponseReceivedBeforeRelease
+      && staggeredReadinessEvidence.videoResponseStatus === null
+      && beforeReleasePlayCalls.length === 0
+      && prematureStatus.length === 0,
+    "one ready stream committed, started, or published the candidate early",
+    {
+      audioReadyOnly,
+      staggeredReadinessEvidence,
+      beforeReleasePlayCalls,
+      prematureStatus,
+    },
+  );
+
+  assert(typeof releaseStaggeredVideo === "function", "staggered video gate was unavailable");
+  releaseStaggeredVideo();
+  const playing = await observeAutomaticPlayback(page, "A", 0.15);
+  await waitFor(
+    async () => staggeredReadinessEvidence?.videoResponseStatus
+      ? staggeredReadinessEvidence
+      : null,
+    "released staggered video request produced no response",
+  );
+  const settled = await media(page);
+  const playCalls = await page.evaluate(
+    () => (window.__acceptanceReadinessPlayCalls || []).slice(),
+  );
+  const roleCounts = Object.fromEntries(
+    ["video", "audio"].map((role) => [
+      role,
+      playCalls.filter((entry) => entry.role === role && entry.itemId === "A").length,
+    ]),
+  );
+  assert(
+    settled.readyCommitted
+      && settled.readyCommitCount === 1
+      && settled.initialIntentApplied
+      && settled.sessionPhase === "playing"
+      && settled.videoCount === 1
+      && settled.audioCount === 1
+      && !settled.paused
+      && settled.currentTime >= playing.currentTime
+      && roleCounts.video === 1
+      && roleCounts.audio === 1,
+    "both ready streams did not commit once and start one exact pair",
+    { playing, settled, playCalls, roleCounts },
+  );
+  observations.push({
+    boundary: "staggered-readiness-single-commit",
+    gate: { ...staggeredReadinessEvidence },
+    audioReadyOnly,
+    playCalls,
+    media: settled,
+  });
+}
+
+async function rapidUnreadySwitch(page) {
+  await startPlayback(page, "A");
+  await installReplacementObserver(page);
+  const initial = await state(page);
+  const itemB = initial.playlist?.find((item) => item.id === "B");
+  const descriptorB = descriptor(itemB);
+  assert(
+    descriptorB.videoUrl && descriptorB.audioUrl,
+    "rapid unready switch fixture did not expose B media",
+    descriptorB,
+  );
+
+  let releaseB;
+  const bGate = new Promise((resolve) => { releaseB = resolve; });
+  await page.route("**/media/**", async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === descriptorB.videoUrl || pathname === descriptorB.audioUrl) {
+      await bGate;
+    }
+    try {
+      await route.continue();
+    } catch (_error) {
+      // Retiring B aborts its gated requests before this test releases them.
+    }
+  });
+
+  await clickPlayNow(page, "B");
+  await waitFor(
+    async () => (await state(page)).current_item?.id === "B",
+    "rapid switch did not make B authoritative",
+  );
+  const unreadyB = await waitFor(async () => page.evaluate(() => {
+    const session = state.hostPlaybackSession;
+    if (
+      state.data?.current_item?.id !== "B"
+      || session?.video?.dataset?.playerItemId !== "B"
+      || session?.phase !== "binding"
+    ) {
+      return null;
+    }
+    window.__acceptanceUnreadyBVideo = session.video;
+    window.__acceptanceUnreadyBAudio = session.audio;
+    return {
+      readyCommitted: Boolean(session.readyCommitted),
+      readyCommitCount: Number(session.readyCommitCount || 0),
+      phase: session.phase,
+      videoReadyState: Number(session.video.readyState || 0),
+      audioReadyState: Number(session.audio.readyState || 0),
+      videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
+      audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
+    };
+  }), "B did not remain one uncommitted candidate");
+  const bPlayCallsBeforeC = await page.evaluate(() => (
+    window.__acceptanceReadinessPlayCalls || []
+  ).filter((entry) => entry.itemId === "B"));
+  assert(
+    !unreadyB.readyCommitted
+      && unreadyB.readyCommitCount === 0
+      && unreadyB.videoCount === 1
+      && unreadyB.audioCount === 1
+      && bPlayCallsBeforeC.length === 0,
+    "unready B committed or started before C superseded it",
+    { unreadyB, bPlayCallsBeforeC },
+  );
+
+  await clickPlayNow(page, "C");
+  await waitFor(
+    async () => (await state(page)).current_item?.id === "C",
+    "rapid switch did not make C authoritative",
+  );
+  const cPlaying = await observeAutomaticPlayback(page, "C", 0.15);
+  await page.evaluate(() => {
+    window.__acceptanceCommittedCVideo = state.hostPlaybackSession?.video || null;
+    window.__acceptanceCommittedCAudio = state.hostPlaybackSession?.audio || null;
+  });
+  releaseB();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+
+  const finalMedia = await media(page);
+  const identity = await page.evaluate(() => {
+    const session = state.hostPlaybackSession;
+    return {
+      currentSession: isCurrentHostPlaybackSession(
+        session,
+        session?.video,
+        session?.audio,
+      ),
+      sameCVideo: session?.video === window.__acceptanceCommittedCVideo,
+      sameCAudio: session?.audio === window.__acceptanceCommittedCAudio,
+      bVideoConnected: Boolean(window.__acceptanceUnreadyBVideo?.isConnected),
+      bAudioConnected: Boolean(window.__acceptanceUnreadyBAudio?.isConnected),
+      bVideoSrc: window.__acceptanceUnreadyBVideo?.getAttribute("src") || "",
+      bAudioSrc: window.__acceptanceUnreadyBAudio?.getAttribute("src") || "",
+      bVideoPaused: Boolean(window.__acceptanceUnreadyBVideo?.paused),
+      bAudioPaused: Boolean(window.__acceptanceUnreadyBAudio?.paused),
+    };
+  });
+  const playCalls = await page.evaluate(
+    () => (window.__acceptanceReadinessPlayCalls || []).slice(),
+  );
+  const staleBStatus = mediaPublications.filter(
+    (entry) => entry.pathname === "/api/player/status" && entry.payload?.item_id === "B",
+  );
+  assert(
+    finalMedia.itemId === "C"
+      && finalMedia.readyCommitted
+      && finalMedia.readyCommitCount === 1
+      && finalMedia.sessionPhase === "playing"
+      && finalMedia.videoCount === 1
+      && finalMedia.audioCount === 1
+      && finalMedia.replacementCount === 2
+      && !finalMedia.paused
+      && finalMedia.currentTime > cPlaying.currentTime + 0.1
+      && identity.currentSession
+      && identity.sameCVideo
+      && identity.sameCAudio
+      && !identity.bVideoConnected
+      && !identity.bAudioConnected
+      && !identity.bVideoSrc
+      && !identity.bAudioSrc
+      && identity.bVideoPaused
+      && identity.bAudioPaused
+      && playCalls.filter((entry) => entry.itemId === "B").length === 0
+      && staleBStatus.length === 0,
+    "retired unready B affected the exact committed C pair",
+    { cPlaying, finalMedia, identity, playCalls, staleBStatus },
+  );
+  await page.unroute("**/media/**");
+  observations.push({
+    boundary: "rapid-unready-candidate-supersession",
+    unreadyB,
+    identity,
+    playCalls,
+    media: finalMedia,
+  });
+}
+
+async function settingsProgramReconciliation(page) {
+  const started = await startPlayback(page, "A");
+  const before = await state(page);
+  const old = descriptor(before.current_item);
+  await installReplacementObserver(page);
+  await page.evaluate(() => {
+    window.__acceptanceSettingsOldVideo = state.hostPlaybackSession?.video || null;
+    window.__acceptanceSettingsOldAudio = state.hostPlaybackSession?.audio || null;
+  });
+
+  const frozenResponse = await page.request.get(`${baseUrl}/api/state`);
+  const frozenPayload = await frozenResponse.json();
+  await page.route("**/api/state", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(frozenPayload),
+    });
+  });
+
+  await clickCurrentRecache(page);
+  const authoritative = await waitFor(async () => {
+    const snapshot = await state(page);
+    return snapshot.playback_generation === before.playback_generation + 1
+      && snapshot.current_item?.artifact_set_id
+      && snapshot.current_item.artifact_set_id !== old.artifactSetId
+      ? snapshot
+      : null;
+  }, "settings reconciliation recache did not publish a newer Rust program", 20000);
+
+  const carried = await page.evaluate(async () => {
+    await setLocalPlayerKeyShift(2);
+    const session = state.hostPlaybackSession;
+    window.__acceptanceSettingsCurrentVideo = session?.video || null;
+    window.__acceptanceSettingsCurrentAudio = session?.audio || null;
+    return {
+      stateGeneration: Number(state.data?.playback_generation || 0),
+      sessionGeneration: Number(session?.playbackGeneration || 0),
+      stateArtifactSetId: state.data?.playback_program?.artifact_set_id || "",
+      sessionArtifactSetId: session?.playbackProgram?.artifact_set_id || "",
+      currentSession: isCurrentHostPlaybackSession(
+        session,
+        session?.video,
+        session?.audio,
+      ),
+      phase: session?.phase || "",
+      videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
+      audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
+      oldVideoConnected: Boolean(window.__acceptanceSettingsOldVideo?.isConnected),
+      oldAudioConnected: Boolean(window.__acceptanceSettingsOldAudio?.isConnected),
+    };
+  });
+  assert(
+    carried.stateGeneration === authoritative.playback_generation
+      && carried.sessionGeneration === authoritative.playback_generation
+      && carried.stateArtifactSetId === authoritative.playback_program.artifact_set_id
+      && carried.sessionArtifactSetId === authoritative.playback_program.artifact_set_id
+      && carried.currentSession
+      && carried.videoCount === 1
+      && carried.audioCount === 1
+      && !carried.oldVideoConnected
+      && !carried.oldAudioConnected,
+    "nominal settings response left accepted state ahead of the Host session",
+    { authoritative, carried },
+  );
+
+  const playing = await observeAutomaticPlayback(page, "A", 0.15);
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const frozenPollProof = await page.evaluate(() => {
+    const session = state.hostPlaybackSession;
+    return {
+      sameVideo: session?.video === window.__acceptanceSettingsCurrentVideo,
+      sameAudio: session?.audio === window.__acceptanceSettingsCurrentAudio,
+      stateGeneration: Number(state.data?.playback_generation || 0),
+      sessionGeneration: Number(session?.playbackGeneration || 0),
+      replacementCount: Number(window.__acceptanceReplacementCount || 0),
+    };
+  });
+  const settled = await media(page);
+  assert(
+    frozenPollProof.sameVideo
+      && frozenPollProof.sameAudio
+      && frozenPollProof.stateGeneration === authoritative.playback_generation
+      && frozenPollProof.sessionGeneration === authoritative.playback_generation
+      && frozenPollProof.replacementCount === 1
+      && settled.readyCommitted
+      && settled.readyCommitCount === 1
+      && settled.videoCount === 1
+      && settled.audioCount === 1
+      && !settled.paused
+      && settled.currentTime > playing.currentTime + 0.1,
+    "settings-carried reconciliation waited for polling or remounted twice",
+    { started, playing, frozenPollProof, settled },
+  );
+  await page.unroute("**/api/state");
+  observations.push({
+    boundary: "settings-response-program-reconciliation",
+    beforeGeneration: before.playback_generation,
+    carried,
+    frozenPollProof,
     media: settled,
   });
 }
@@ -1400,6 +1759,93 @@ async function run() {
       };
     });
   }
+  if (scenario === "staggered-readiness" || scenario === "rapid-unready-switch") {
+    await page.addInitScript(() => {
+      const nativePlay = HTMLMediaElement.prototype.play;
+      window.__acceptanceReadinessPlayCalls = [];
+      HTMLMediaElement.prototype.play = function acceptanceReadinessPlay() {
+        const itemId = this.dataset?.playerItemId
+          || document.querySelector('video[data-player-role="video"]')?.dataset?.playerItemId
+          || "";
+        window.__acceptanceReadinessPlayCalls.push({
+          itemId,
+          role: this.dataset?.playerRole || "",
+        });
+        return nativePlay.call(this);
+      };
+    });
+  }
+  if (scenario === "staggered-readiness") {
+    const initialSnapshot = await state(page);
+    const candidate = descriptor(initialSnapshot.current_item);
+    assert(
+      initialSnapshot.current_item?.id === "A"
+        && candidate.videoUrl
+        && candidate.audioUrl,
+      "staggered readiness fixture did not expose one exact candidate pair",
+      { currentItem: initialSnapshot.current_item?.id || "", candidate },
+    );
+    const candidateVideoUrl = new URL(candidate.videoUrl, baseUrl);
+    const candidateAudioUrl = new URL(candidate.audioUrl, baseUrl);
+    staggeredReadinessEvidence = {
+      candidateVideoUrl: candidateVideoUrl.href,
+      candidateVideoPathname: candidateVideoUrl.pathname,
+      candidateAudioUrl: candidateAudioUrl.href,
+      candidateAudioPathname: candidateAudioUrl.pathname,
+      videoGateInterceptCount: 0,
+      interceptedVideoUrl: "",
+      interceptedVideoPathname: "",
+      audioRequestedBeforeRelease: false,
+      audioResponseReceivedBeforeRelease: false,
+      audioResponseStatus: null,
+      audioReadyBeforeRelease: false,
+      videoResponseReceivedBeforeRelease: false,
+      videoResponseStatus: null,
+      released: false,
+    };
+    let releaseVideo;
+    const videoGate = new Promise((resolve) => { releaseVideo = resolve; });
+    releaseStaggeredVideo = () => {
+      if (staggeredReadinessEvidence.released) {
+        return;
+      }
+      staggeredReadinessEvidence.released = true;
+      releaseVideo();
+    };
+    await page.route((url) => url.href === candidateVideoUrl.href, async (route) => {
+      const request = route.request();
+      staggeredReadinessEvidence.videoGateInterceptCount += 1;
+      staggeredReadinessEvidence.interceptedVideoUrl = request.url();
+      staggeredReadinessEvidence.interceptedVideoPathname = new URL(request.url()).pathname;
+      await videoGate;
+      try {
+        await route.continue();
+      } catch (_error) {
+        // The exact candidate can retire while a gated request is pending.
+      }
+    });
+    page.on("request", (request) => {
+      if (
+        request.url() === candidateAudioUrl.href
+        && !staggeredReadinessEvidence.released
+      ) {
+        staggeredReadinessEvidence.audioRequestedBeforeRelease = true;
+      }
+    });
+    page.on("response", (response) => {
+      if (response.url() === candidateAudioUrl.href) {
+        staggeredReadinessEvidence.audioResponseStatus = response.status();
+        if (!staggeredReadinessEvidence.released) {
+          staggeredReadinessEvidence.audioResponseReceivedBeforeRelease = true;
+        }
+      } else if (response.url() === candidateVideoUrl.href) {
+        staggeredReadinessEvidence.videoResponseStatus = response.status();
+        if (!staggeredReadinessEvidence.released) {
+          staggeredReadinessEvidence.videoResponseReceivedBeforeRelease = true;
+        }
+      }
+    });
+  }
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push({ text: message.text(), location: message.location() });
@@ -1435,7 +1881,9 @@ async function run() {
     assert(pageIdentity.title && pageIdentity.bodyTextLength > 0, "Host page was blank", pageIdentity);
     assert(!pageIdentity.frameworkOverlay, "Host page showed a framework error overlay", pageIdentity);
     await waitFor(async () => (await state(page)).current_item?.cache_status === "ready", "initial current item was not Ready");
-    await waitForMedia(page, "A");
+    if (scenario !== "staggered-readiness") {
+      await waitForMedia(page, "A");
+    }
     if (scenario === "player-reset") {
       await playerReset(page);
     } else if (scenario === "failed-reset") {
@@ -1466,6 +1914,12 @@ async function run() {
       await rapidSessionSwitch(page);
     } else if (scenario === "stale-next-recache") {
       await staleNextRecache(page);
+    } else if (scenario === "staggered-readiness") {
+      await staggeredReadiness(page);
+    } else if (scenario === "rapid-unready-switch") {
+      await rapidUnreadySwitch(page);
+    } else if (scenario === "settings-program-reconciliation") {
+      await settingsProgramReconciliation(page);
     } else {
       throw new Error(`unknown scenario: ${scenario}`);
     }
@@ -1494,6 +1948,7 @@ run().then(
       detail: error.detail,
       stack: error.stack,
       pageIdentity,
+      staggeredReadinessEvidence,
       observations,
       consoleErrors,
       pageErrors,

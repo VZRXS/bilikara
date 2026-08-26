@@ -30,10 +30,20 @@ class HostStateSnapshotFrontendTest(unittest.TestCase):
             "function syncCachePanelVisibility",
         )
         script = f"""
-const state = {{ data: null }};
+const state = {{
+  data: null,
+  hostPlaybackSession: null,
+  pendingHostPlaybackProgramReconciliation: null,
+}};
 const window = {{ location: {{ href: "http://127.0.0.1:8080/" }} }};
 let apiPostImpl = async () => {{ throw new Error("apiPost was not configured"); }};
 async function apiPost(...args) {{ return apiPostImpl(...args); }}
+let renderPlayerImpl = () => {{}};
+function renderPlayer(...args) {{ return renderPlayerImpl(...args); }}
+let transitionImpl = () => {{}};
+function maybeShowSongTransitionOverlay(...args) {{ return transitionImpl(...args); }}
+function frontendPlaybackMode(mode) {{ return mode || "local"; }}
+function isCurrentHostPlaybackSession() {{ return false; }}
 {functions}
 
 function currentItem({{
@@ -326,6 +336,145 @@ process.stdout.write(JSON.stringify(cases));
                     {"first": True, "stale": False, "preserved": True},
                 )
 
+    def test_accepted_program_change_schedules_one_narrow_player_reconciliation(self):
+        result = self.run_node(
+            """
+(async () => {
+  const reconciliations = [];
+  const transitions = [];
+  renderPlayerImpl = (item, mode) => {
+    reconciliations.push({
+      generation: state.data.playback_generation,
+      artifactId: state.data.playback_program?.artifact_set_id || null,
+      itemId: item?.id || null,
+      mode,
+    });
+  };
+  transitionImpl = (previous, next) => {
+    if (previous?.current_item?.id === next?.current_item?.id) {
+      return;
+    }
+    transitions.push([
+      previous?.current_item?.id || null,
+      next?.current_item?.id || null,
+    ]);
+  };
+
+  const initial = snapshot({ marker: "initial" });
+  state.data = initial;
+  let candidate = null;
+  apiPostImpl = async () => candidate;
+
+  const recached = currentItem({
+    itemId: "song-b",
+    incarnation: "i-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001",
+    artifactId: "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001",
+  });
+  candidate = snapshot({
+    stateRevision: 11,
+    revision: 11,
+    generation: 11,
+    item: recached,
+    marker: "settings-carried-program",
+  });
+  const acceptedSettings = await apiPostStateSnapshot("/api/player/key-shift", {
+    key_shift: 1,
+  });
+  const beforeScheduledWork = reconciliations.length;
+  await Promise.resolve();
+  const afterSettings = reconciliations.slice();
+
+  candidate = snapshot({
+    stateRevision: 12,
+    revision: 11,
+    generation: 11,
+    item: recached,
+    marker: "same-program-settings",
+    settings: { volume_percent: 73 },
+  });
+  const acceptedSameProgram = await apiPostStateSnapshot("/api/player/volume");
+  await Promise.resolve();
+
+  const duplicate = await apiPostStateSnapshot("/api/player/volume");
+  candidate = initial;
+  const rejected = await apiPostStateSnapshot("/api/state");
+  await Promise.resolve();
+
+  const nextArtifact = currentItem({
+    itemId: "song-b",
+    incarnation: "i-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001",
+    artifactId: "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000002",
+  });
+  candidate = snapshot({
+    stateRevision: 13,
+    revision: 12,
+    generation: 12,
+    item: nextArtifact,
+    marker: "first-path",
+  });
+  const acceptedFirstPath = await apiPostStateSnapshot("/api/cache/retry");
+  candidate = snapshot({
+    stateRevision: 14,
+    revision: 12,
+    generation: 12,
+    item: nextArtifact,
+    marker: "second-path-same-program",
+  });
+  const acceptedSecondPath = await apiPostStateSnapshot("/api/state");
+  await Promise.resolve();
+
+  process.stdout.write(JSON.stringify({
+    acceptedSettings,
+    beforeScheduledWork,
+    afterSettings,
+    acceptedSameProgram,
+    duplicate,
+    rejected,
+    acceptedFirstPath,
+    acceptedSecondPath,
+    reconciliations,
+    transitions,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertTrue(result["acceptedSettings"])
+        self.assertEqual(result["beforeScheduledWork"], 1)
+        self.assertEqual(
+            result["afterSettings"],
+            [
+                {
+                    "generation": 11,
+                    "artifactId": "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001",
+                    "itemId": "song-b",
+                    "mode": "local",
+                }
+            ],
+        )
+        self.assertTrue(result["acceptedSameProgram"])
+        self.assertFalse(result["duplicate"])
+        self.assertFalse(result["rejected"])
+        self.assertTrue(result["acceptedFirstPath"])
+        self.assertTrue(result["acceptedSecondPath"])
+        self.assertEqual(
+            result["reconciliations"],
+            [
+                {
+                    "generation": 11,
+                    "artifactId": "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001",
+                    "itemId": "song-b",
+                    "mode": "local",
+                },
+                {
+                    "generation": 12,
+                    "artifactId": "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000002",
+                    "itemId": "song-b",
+                    "mode": "local",
+                },
+            ],
+        )
+        self.assertEqual(result["transitions"], [["song-a", "song-b"]])
+
     def test_polling_rejects_before_any_snapshot_side_effect(self):
         guard = self.source_slice(
             "function isSafeHostSnapshotInteger",
@@ -360,6 +509,7 @@ process.stdout.write(JSON.stringify(cases));
   const state = {{
     data: make(42, 42, 42, "current"), hasValidStateResponse: false,
     localPreferencesHydrated: true, lastPollRenderSignature: "",
+    hostPlaybackSession: null, pendingHostPlaybackProgramReconciliation: null,
   }};
   let candidate = make(41, 41, 41, "stale");
   let sideEffects = 0;
@@ -375,6 +525,9 @@ process.stdout.write(JSON.stringify(cases));
   function scheduleFavlistBrowseReloadFromState() {{ sideEffects += 1; }}
   function renderSignatureForData(data) {{ return JSON.stringify(data); }}
   function render() {{ sideEffects += 1; }}
+  function renderPlayer() {{ sideEffects += 1; }}
+  function frontendPlaybackMode(mode) {{ return mode || "local"; }}
+  function isCurrentHostPlaybackSession() {{ return false; }}
   function hasDownloadingItems() {{ return false; }}
   function refreshRetryButtons() {{ sideEffects += 1; }}
   function resyncMountedLocalPlayerIfOffsetChanged() {{ sideEffects += 1; }}

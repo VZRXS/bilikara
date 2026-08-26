@@ -33,6 +33,7 @@ class StartupStateFrontendTest(unittest.TestCase):
 const responseSpecs = {json.dumps(responses)};
 let responseIndex = 0;
 let jsonCalls = 0;
+let renderPlayerCalls = 0;
 const messages = [];
 const window = {{ location: {{ href: "http://tauri.localhost/" }} }};
 const state = {{
@@ -40,6 +41,8 @@ const state = {{
   hasValidStateResponse: false,
   localPreferencesHydrated: true,
   lastPollRenderSignature: "",
+  pendingHostPlaybackProgramReconciliation: null,
+  hostPlaybackSession: null,
 }};
 
 function makeResponse(spec) {{
@@ -67,6 +70,7 @@ function clientHeaders() {{ return {{}}; }}
 function localizedApiMessage(message) {{ return String(message || ""); }}
 function t() {{ return "State request failed"; }}
 function currentAvOffsetMs() {{ return 0; }}
+function frontendPlaybackMode() {{ return "local"; }}
 function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay() {{}}
 function syncLocalPlayerSettingsFromSnapshot() {{}}
@@ -76,6 +80,7 @@ async function apiPost() {{ throw new Error("apiPost must not run"); }}
 function scheduleFavlistBrowseReloadFromState() {{}}
 function renderSignatureForData(data) {{ return JSON.stringify(data); }}
 function render() {{}}
+function renderPlayer() {{ renderPlayerCalls += 1; }}
 function hasDownloadingItems() {{ return false; }}
 function refreshRetryButtons() {{}}
 function resyncMountedLocalPlayerIfOffsetChanged() {{}}
@@ -122,6 +127,7 @@ async function pollOnce() {{
     finalReady: state.hasValidStateResponse,
     messages,
     jsonCalls,
+    renderPlayerCalls,
   }}));
 }})().catch((error) => {{
   console.error(error);
@@ -185,6 +191,7 @@ async function pollOnce() {{
         self.assertEqual(result["finalData"]["state_revision"], 1)
         self.assertEqual(result["messages"], [])
         self.assertEqual(result["jsonCalls"], 1)
+        self.assertEqual(result["renderPlayerCalls"], 1)
 
     def test_post_ready_non_json_state_response_remains_observable(self):
         result = self.run_state_sequence(
@@ -225,6 +232,7 @@ async function pollOnce() {{
         self.assertNotIn("Unexpected token", result["messages"][0]["message"])
         self.assertNotIn("DOCTYPE", result["messages"][0]["message"])
         self.assertEqual(result["jsonCalls"], 1)
+        self.assertEqual(result["renderPlayerCalls"], 1)
 
 
 if __name__ == "__main__":

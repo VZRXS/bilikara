@@ -25,7 +25,10 @@ class AudioPitchLifecycleTest(unittest.TestCase):
             "function syncLocalPlayerSettingsFromSnapshot", "function markLocalVolumeWrite"
         )
         cls.teardown_source = (
-            cls._slice("function retireHostPlaybackSession", "function replaceHostPlayerView")
+            cls._slice(
+                "function setHostPlaybackSessionPhase", "Object.defineProperty"
+            )
+            + cls._slice("function retireHostPlaybackSession", "function replaceHostPlayerView")
             + cls._slice("function teardownMountedPlayer", "function activeLocalPlayerElements")
         )
         cls.reset_source = cls._slice(
@@ -200,7 +203,7 @@ const nonZeroAgain = {{
 }};
 
 mountedMedia = [audio];
-state.hostPlaybackSession = {{ cleanupState: "active", video: null, audio, eventCleanups: [] }};
+state.hostPlaybackSession = {{ phase: "playing", video: null, audio, eventCleanups: [] }};
 teardownMountedPlayer();
 const afterTeardown = {{
   activeProcessors,
@@ -214,7 +217,7 @@ state.data.player_settings.key_shift = 2;
 for (let index = 0; index < 5; index += 1) {{
   const transitionAudio = new MockAudio();
   mountedMedia = [transitionAudio];
-  state.hostPlaybackSession = {{ cleanupState: "active", video: null, audio: transitionAudio, eventCleanups: [] }};
+  state.hostPlaybackSession = {{ phase: "playing", video: null, audio: transitionAudio, eventCleanups: [] }};
   setupAudioPitchShifter(transitionAudio);
   teardownMountedPlayer();
 }}
@@ -222,7 +225,7 @@ const afterTransitions = {{ activeProcessors, processorCreates, processorDisposa
 
 const resetAudio = new MockAudio();
 mountedMedia = [resetAudio];
-state.hostPlaybackSession = {{ cleanupState: "active", video: null, audio: resetAudio, eventCleanups: [] }};
+state.hostPlaybackSession = {{ phase: "playing", video: null, audio: resetAudio, eventCleanups: [] }};
 setupAudioPitchShifter(resetAudio);
 await resetPlayerState();
 const afterReset = {{
@@ -335,8 +338,8 @@ function media(name) {{
 }}
 const audioA = graphAudio("A");
 const audioB = graphAudio("B");
-const sessionA = {{ cleanupState: "active", video: media("video-A"), audio: audioA, eventCleanups: [] }};
-const sessionB = {{ cleanupState: "active", video: media("video-B"), audio: audioB, eventCleanups: [] }};
+const sessionA = {{ phase: "playing", video: media("video-A"), audio: audioA, eventCleanups: [] }};
+const sessionB = {{ phase: "playing", video: media("video-B"), audio: audioB, eventCleanups: [] }};
 const sharedContext = {{ state: "running" }};
 const state = {{
   hostPlaybackSession: sessionB,

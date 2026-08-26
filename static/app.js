@@ -116,6 +116,7 @@ const state = {
   queueCurrentRenderSignature: "",
   audioVariantBarRenderSignature: "",
   hostPlaybackSession: null,
+  pendingHostPlaybackProgramReconciliation: null,
   hostPlaybackBootstrapRestartPending: true,
   pageHidePlaybackRestartRequired: false,
   pageHiddenPlaybackGeneration: null,
@@ -129,7 +130,6 @@ const state = {
   localVideoDeferredRecovery: false,
   localAudioPlaybackBlocked: false,
   localVideoPlaybackBlocked: false,
-  localPlaybackStartState: "idle",
   localPlaybackStartGeneration: 0,
   localPlaybackStartPromisesSettled: false,
   localPlaybackEndHandled: false,
@@ -327,6 +327,47 @@ const state = {
   translationsLoaded: false,
   theme: "light",
 };
+
+function legacyPlaybackStartStateForSession(session = state.hostPlaybackSession) {
+  const phase = String(session?.phase || "");
+  if (phase === "starting") {
+    return "starting";
+  }
+  if (phase === "playing" || phase === "paused") {
+    return "established";
+  }
+  if (phase === "needs-user-gesture") {
+    return "needs-user-gesture";
+  }
+  if (phase === "failed") {
+    return "startup-failed";
+  }
+  if (
+    phase === "requested"
+    || phase === "binding"
+    || phase === "ready-paused"
+    || phase === "start-retry-wait"
+  ) {
+    return "pending";
+  }
+  return "idle";
+}
+
+function setHostPlaybackSessionPhase(session, phase) {
+  if (!session) {
+    return false;
+  }
+  session.phase = phase;
+  return true;
+}
+
+Object.defineProperty(state, "localPlaybackStartState", {
+  configurable: false,
+  enumerable: true,
+  get() {
+    return legacyPlaybackStartStateForSession();
+  },
+});
 
 const elements = {
   appShell: document.getElementById("app-shell"),
@@ -1889,6 +1930,11 @@ function seekHostPlayer(video, audio, targetTime) {
     return Promise.reject(new Error("The Host player is not ready for seeking"));
   }
   const playbackSession = state.hostPlaybackSession;
+  if (!playbackSession.readyCommitted) {
+    const error = new Error("The Host playback session is not ready for seeking");
+    error.name = "AbortError";
+    return Promise.reject(error);
+  }
   return new Promise((resolve, reject) => {
     const rejectCancelledSeek = () => {
       const retired = !isCurrentHostPlaybackSession(playbackSession, video, audio);
@@ -2023,7 +2069,25 @@ async function applyControllerCommand(candidate) {
   return true;
 }
 
-function presentationPlaybackStateModel() {
+function hostPlaybackSessionObservedPlaying(
+  session = state.hostPlaybackSession,
+  video = session?.video,
+  audio = session?.audio,
+) {
+  return Boolean(
+    session
+    && session === state.hostPlaybackSession
+    && session.readyCommitted
+    && session.phase === "playing"
+    && session.video === video
+    && session.audio === audio
+    && isActiveSplitPlayer(video, audio)
+    && !video.paused
+    && !audio.paused
+  );
+}
+
+function presentationPlaybackStateModel(session = state.hostPlaybackSession) {
   const currentItem = state.data?.current_item || null;
   const { video, audio } = activeLocalPlayerElements();
   const media = video || activePrimaryVideoElement();
@@ -2033,7 +2097,9 @@ function presentationPlaybackStateModel() {
   return {
     itemIdentity: currentItem?.id ? String(currentItem.id) : null,
     title: String(currentItem?.display_title || currentItem?.title || t("player.noSong")),
-    paused: audio ? !state.localShouldBePlaying : !media || Boolean(media.paused),
+    paused: audio
+      ? !hostPlaybackSessionObservedPlaying(session, video, audio)
+      : !media || Boolean(media.paused),
     currentTimeSeconds: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : 0,
     durationSeconds: Number.isFinite(duration) && duration >= 0 ? duration : null,
     volumePercent: Math.round(
@@ -2051,6 +2117,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
   if (
     typeof invoke !== "function"
     || !["activating", "active"].includes(state.presentationSession.phase)
+    || (session && !session.readyCommitted)
     || (
       session
       && !isCurrentHostPlaybackSession(session, capturedVideo, capturedAudio)
@@ -2058,7 +2125,7 @@ function publishPresentationPlaybackState(session = state.hostPlaybackSession) {
   ) {
     return Promise.resolve(null);
   }
-  const playbackState = presentationPlaybackStateModel();
+  const playbackState = presentationPlaybackStateModel(session);
   const signature = JSON.stringify({
     generation: state.presentationSession.generation,
     playbackGeneration: session?.playbackGeneration ?? null,
@@ -7077,12 +7144,15 @@ function acceptHostStateSnapshot(snapshot) {
   if (!next) {
     return false;
   }
+  const previousSnapshot = state.data;
   const current = state.data ? validatedHostSnapshotIdentity(state.data) : null;
   if (state.data && !current) {
     return false;
   }
+  const sameProgram = current
+    ? playbackProgramDescriptorsEqual(current.program, next.program)
+    : false;
   if (current) {
-    const sameProgram = playbackProgramDescriptorsEqual(current.program, next.program);
     if (next.stateRevision < current.stateRevision) {
       return false;
     }
@@ -7109,6 +7179,61 @@ function acceptHostStateSnapshot(snapshot) {
     }
   }
   state.data = snapshot;
+  if (
+    !current
+    || next.playbackGeneration !== current.playbackGeneration
+    || !sameProgram
+  ) {
+    maybeShowSongTransitionOverlay(previousSnapshot, snapshot);
+    scheduleAcceptedHostPlaybackProgramReconciliation(
+      next.playbackGeneration,
+      next.program,
+    );
+  }
+  return true;
+}
+
+function scheduleAcceptedHostPlaybackProgramReconciliation(
+  playbackGeneration,
+  playbackProgram,
+) {
+  const pending = state.pendingHostPlaybackProgramReconciliation;
+  if (
+    pending
+    && pending.playbackGeneration === playbackGeneration
+    && playbackProgramDescriptorsEqual(pending.playbackProgram, playbackProgram)
+  ) {
+    return false;
+  }
+  const reconciliation = { playbackGeneration, playbackProgram };
+  state.pendingHostPlaybackProgramReconciliation = reconciliation;
+  queueMicrotask(() => {
+    if (state.pendingHostPlaybackProgramReconciliation !== reconciliation) {
+      return;
+    }
+    state.pendingHostPlaybackProgramReconciliation = null;
+    const accepted = validatedHostSnapshotIdentity(state.data);
+    if (
+      !accepted
+      || accepted.playbackGeneration !== playbackGeneration
+      || !playbackProgramDescriptorsEqual(accepted.program, playbackProgram)
+    ) {
+      return;
+    }
+    const session = state.hostPlaybackSession;
+    if (
+      session
+      && session.playbackGeneration === playbackGeneration
+      && playbackProgramDescriptorsEqual(session.playbackProgram, playbackProgram)
+      && isCurrentHostPlaybackSession(session)
+    ) {
+      return;
+    }
+    renderPlayer(
+      state.data?.current_item ?? null,
+      frontendPlaybackMode(state.data?.playback_mode),
+    );
+  });
   return true;
 }
 
@@ -7668,6 +7793,7 @@ function takeLocalPlayerSeekCompletion(session) {
   session.seekResumeAfterSettle = false;
   session.seekSettleStartedAt = 0;
   session.seekResumePending = false;
+  session.seekUpdatesLogicalIntent = true;
   return completion;
 }
 
@@ -7721,23 +7847,30 @@ function resumeMountedPlayerAfterOverlay(itemId, generation, session) {
   }
   clearLocalAdvanceDelay({ resetInFlight: true, hideOverlay: true });
   const { video, audio } = activeLocalPlayerElements();
-  if (!video || String(video.dataset.playerItemId || "") !== itemId) {
+  if (
+    !video
+    || !audio
+    || String(video.dataset.playerItemId || "") !== itemId
+  ) {
     return false;
   }
+  session.logicalPlayIntent = true;
   state.localShouldBePlaying = true;
-  if (audio) {
-    if (state.localPlaybackStartState === "established") {
-      syncSplitPlayer(video, audio, currentAvOffsetSeconds(), true);
-    } else if (
-      state.localPlaybackStartState !== "needs-user-gesture"
-      && state.localPlaybackStartState !== "startup-failed"
-    ) {
-      startSplitPlaybackPair(video, audio);
-    } else {
-      updateSplitPlaybackStartOverlay(video, audio);
-    }
+  if (!session.readyCommitted) {
+    return true;
+  }
+  if (!session.initialIntentApplied) {
+    return applyInitialHostPlaybackIntent(session, video, audio);
+  }
+  if (state.localPlaybackStartState === "established") {
+    setSplitPlaybackIntent(video, audio, true);
+  } else if (
+    state.localPlaybackStartState !== "needs-user-gesture"
+    && state.localPlaybackStartState !== "startup-failed"
+  ) {
+    startSplitPlaybackPair(video, audio);
   } else {
-    video.play().catch(() => {});
+    updateSplitPlaybackStartOverlay(video, audio);
   }
   return true;
 }
@@ -8315,7 +8448,12 @@ function scheduleSplitPlayerSeekSettle(video, audio) {
 
 function beginSplitPlayerSeek(video, audio, options = {}) {
   const session = state.hostPlaybackSession;
-  if (!video || !audio || !isActiveSplitPlayer(video, audio)) {
+  if (
+    !video
+    || !audio
+    || !isActiveSplitPlayer(video, audio)
+    || (!session.readyCommitted && !options.allowUncommitted)
+  ) {
     return false;
   }
 
@@ -8329,7 +8467,11 @@ function beginSplitPlayerSeek(video, audio, options = {}) {
   session.seekResumeAfterSettle = resumeAfterSeek;
   session.seekSettleStartedAt = Date.now();
   session.seekResumePending = resumeAfterSeek;
-  state.localShouldBePlaying = resumeAfterSeek;
+  session.seekUpdatesLogicalIntent = options.updateIntent !== false;
+  if (session.seekUpdatesLogicalIntent) {
+    session.logicalPlayIntent = resumeAfterSeek;
+    state.localShouldBePlaying = resumeAfterSeek;
+  }
   if (typeof options.onSettled === "function") {
     session.seekSettleCallback = options.onSettled;
   }
@@ -8388,19 +8530,24 @@ function settleSplitPlayerSeek(video, audio, force = false) {
     syncSplitSeekAudioTarget(video, audio);
   }
   const resumeAfterSettle = session.seekResumeAfterSettle;
+  const updateIntent = session.seekUpdatesLogicalIntent;
   const onSettled = takeLocalPlayerSeekCompletion(session);
 
   if (
+    updateIntent
+    &&
     resumeAfterSettle
     && !shouldHoldCurrentItemForTransition(video.dataset.playerItemId)
   ) {
+    session.logicalPlayIntent = true;
     state.localShouldBePlaying = true;
     if (state.localPlaybackStartState === "pending") {
       startSplitPlaybackPair(video, audio);
     } else {
       syncSplitPlayer(video, audio, currentAvOffsetSeconds(), !isWebKit);
     }
-  } else {
+  } else if (updateIntent) {
+    session.logicalPlayIntent = false;
     state.localShouldBePlaying = false;
     if (!audio.paused) {
       audio.pause();
@@ -8578,7 +8725,10 @@ function attachSplitPlayerDiagnostics(itemId, video, audio) {
 }
 
 async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
-  if (!isActiveSplitPlayer(video, audio)) {
+  if (
+    !isActiveSplitPlayer(video, audio)
+    || !state.hostPlaybackSession?.readyCommitted
+  ) {
     return false;
   }
   reportStatus();
@@ -8591,7 +8741,11 @@ async function handleSplitVideoEnded(currentItem, video, audio, reportStatus) {
 }
 
 async function handleSplitAudioEnded(currentItem, video, audio, reportStatus) {
-  if (state.localPlaybackEndHandled || !isActiveSplitPlayer(video, audio)) {
+  if (
+    state.localPlaybackEndHandled
+    || !isActiveSplitPlayer(video, audio)
+    || !state.hostPlaybackSession?.readyCommitted
+  ) {
     return;
   }
   state.localPlaybackEndHandled = true;
@@ -8624,6 +8778,80 @@ function splitPlaybackPairCanStartAutomatically(video, audio) {
   }
   const minimumReadyState = isWebKitPlaybackRuntime() ? 1 : 2;
   return video.readyState >= minimumReadyState && audio.readyState >= minimumReadyState;
+}
+
+function applyInitialHostPlaybackIntent(session, video, audio) {
+  if (
+    state.hostPlaybackSession !== session
+    || !isActiveSplitPlayer(video, audio)
+    || !session.readyCommitted
+    || session.phase !== "ready-paused"
+    || session.initialIntentApplied
+    || shouldHoldCurrentItemForTransition(video.dataset.playerItemId)
+  ) {
+    return false;
+  }
+  session.initialIntentApplied = true;
+  state.localShouldBePlaying = Boolean(session.logicalPlayIntent);
+  if (session.logicalPlayIntent) {
+    return startSplitPlaybackPair(video, audio);
+  }
+  reportSplitStartupDiagnostic(
+    video.dataset.playerItemId || "",
+    video,
+    audio,
+    "startup-ready-no-play-intent",
+  );
+  setHostPlaybackSessionPhase(session, "paused");
+  syncTauriMediaSessionState(video, { forcePosition: true });
+  publishPresentationPlaybackState(session).catch(() => {});
+  return true;
+}
+
+function commitHostPlaybackSessionReadyPaused(session, video, audio) {
+  if (
+    state.hostPlaybackSession !== session
+    || !isActiveSplitPlayer(video, audio)
+    || session.readyCommitted
+    || session.phase !== "binding"
+    || session.seekSettling
+    || !splitPlaybackPairCanStartAutomatically(video, audio)
+  ) {
+    return false;
+  }
+  if (!audio.paused) {
+    audio.pause();
+  }
+  if (!video.paused) {
+    video.dataset.bilikaraInternalPause = "true";
+    video.pause();
+  }
+  session.readyCommitted = true;
+  session.readyCommitCount += 1;
+  setHostPlaybackSessionPhase(session, "ready-paused");
+  clearSplitPlaybackStartupWatchdog(session);
+  syncTauriMediaSessionState(video, { forcePosition: true });
+  publishPresentationPlaybackState(session).catch(() => {});
+  applyInitialHostPlaybackIntent(session, video, audio);
+  return true;
+}
+
+function failHostPlaybackCandidate(session, video, audio, diagnosticAction) {
+  if (
+    state.hostPlaybackSession !== session
+    || !isActiveSplitPlayer(video, audio)
+    || session.readyCommitted
+    || session.phase !== "binding"
+  ) {
+    return false;
+  }
+  session.failureStage = "media-readiness";
+  session.playbackRestore = null;
+  clearLocalPlayerSeekState(session);
+  clearLocalPlayerSyncTimer(session);
+  return failSplitPlaybackStartup(video, audio, "media-readiness", {
+    diagnosticAction,
+  });
 }
 
 function isRecoverableSplitPlaybackStartState(startState = state.localPlaybackStartState) {
@@ -8670,10 +8898,7 @@ function scheduleSplitPlaybackStartupWatchdog(video, audio) {
     !video
     || !audio
     || !isActiveSplitPlayer(video, audio)
-    || (
-      state.localPlaybackStartState !== "pending"
-      && state.localPlaybackStartState !== "starting"
-    )
+    || !["binding", "starting", "start-retry-wait"].includes(session.phase)
   ) {
     return false;
   }
@@ -8690,17 +8915,13 @@ function scheduleSplitPlaybackStartupWatchdog(video, audio) {
       !isActiveSplitPlayer(video, audio)
       || state.localPlaybackStartGeneration !== watchdogGeneration
       || String(video.dataset.playerItemId || "") !== watchdogItemId
-      || !state.localShouldBePlaying
-      || (
-        state.localPlaybackStartState !== "pending"
-        && state.localPlaybackStartState !== "starting"
-      )
+      || !["binding", "starting", "start-retry-wait"].includes(session.phase)
     ) {
       return;
     }
 
     let diagnosticAction = "startup-timeout-before-play-attempt";
-    if (state.localPlaybackStartState === "starting") {
+    if (session.phase === "starting" || session.phase === "start-retry-wait") {
       if (!state.localPlaybackStartPromisesSettled) {
         diagnosticAction = "startup-play-promise-timeout";
       } else if (video.paused || audio.paused) {
@@ -8709,7 +8930,11 @@ function scheduleSplitPlaybackStartupWatchdog(video, audio) {
         diagnosticAction = "startup-timeout-after-play-resolution";
       }
     }
-    failSplitPlaybackStartup(video, audio, "startup-timeout", { diagnosticAction });
+    if (session.phase === "binding") {
+      failHostPlaybackCandidate(session, video, audio, diagnosticAction);
+    } else {
+      failSplitPlaybackStartup(video, audio, "startup-timeout", { diagnosticAction });
+    }
   }, splitPlaybackStartupWatchdogMs);
   session.startupWatchdogTimer = watchdogTimer;
   return true;
@@ -8720,7 +8945,25 @@ function setSplitPlaybackStartState(nextState, video, audio) {
   if (!isActiveSplitPlayer(video, audio)) {
     return false;
   }
-  state.localPlaybackStartState = nextState;
+  if (nextState === "pending") {
+    setHostPlaybackSessionPhase(
+      session,
+      session.readyCommitted ? "ready-paused" : "binding",
+    );
+  } else if (nextState === "starting") {
+    setHostPlaybackSessionPhase(session, "starting");
+  } else if (nextState === "established") {
+    setHostPlaybackSessionPhase(
+      session,
+      video.paused || audio.paused ? "paused" : "playing",
+    );
+  } else if (nextState === "needs-user-gesture") {
+    setHostPlaybackSessionPhase(session, "needs-user-gesture");
+  } else if (nextState === "startup-failed") {
+    setHostPlaybackSessionPhase(session, "failed");
+  } else {
+    return false;
+  }
   if (nextState === "pending" || nextState === "starting") {
     state.localPlaybackStartPromisesSettled = false;
     scheduleSplitPlaybackStartupWatchdog(video, audio);
@@ -8753,12 +8996,14 @@ function requestSplitPlaybackStart(
   }
 
   if (state.localPlaybackStartState === "needs-user-gesture" && !userGesture) {
+    state.hostPlaybackSession.logicalPlayIntent = true;
     state.localShouldBePlaying = false;
     updateSplitPlaybackStartOverlay(video, audio);
     syncTauriMediaSessionState(video, { forcePosition: true });
     return true;
   }
 
+  state.hostPlaybackSession.logicalPlayIntent = true;
   state.localShouldBePlaying = true;
   if (state.localPlaybackStartState === "starting" && !userGesture) {
     syncTauriMediaSessionState(video, { forcePosition: true });
@@ -8830,6 +9075,25 @@ function setSplitPlaybackIntent(
 
   const itemId = video.dataset.playerItemId || "";
   const nextIntent = Boolean(shouldPlay);
+  session.logicalPlayIntent = nextIntent;
+  if (!session.readyCommitted) {
+    state.localShouldBePlaying = shouldHoldCurrentItemForTransition(itemId)
+      ? false
+      : nextIntent;
+    session.seekResumeAfterSettle = false;
+    session.seekResumePending = false;
+    if (!audio.paused) {
+      audio.pause();
+    }
+    if (!video.paused) {
+      video.dataset.bilikaraInternalPause = "true";
+      video.pause();
+    }
+    if (source) {
+      reportSplitStartupDiagnostic(itemId, video, audio, source);
+    }
+    return true;
+  }
   if (shouldHoldCurrentItemForTransition(itemId)) {
     state.localShouldBePlaying = false;
     session.seekResumeAfterSettle = false;
@@ -8863,6 +9127,8 @@ function setSplitPlaybackIntent(
       video.dataset.bilikaraInternalPause = "true";
       video.pause();
     }
+    setHostPlaybackSessionPhase(session, "paused");
+    clearSplitPlaybackStartupWatchdog(session);
     syncTauriMediaSessionState(video, { forcePosition: true });
     return true;
   }
@@ -8886,7 +9152,10 @@ function setSplitPlaybackIntent(
     return true;
   }
 
-  if (state.localPlaybackStartState !== "established") {
+  if (session.phase === "paused" || session.phase === "ready-paused") {
+    setHostPlaybackSessionPhase(session, "ready-paused");
+    startSplitPlaybackPair(video, audio, { userGesture });
+  } else if (state.localPlaybackStartState !== "established") {
     if (state.localPlaybackStartState !== "starting") {
       if (typeof synchronizeStartupPlayer === "function") {
         synchronizeStartupPlayer();
@@ -8937,9 +9206,17 @@ function syncTauriMediaSessionState(video, { forcePosition = false } = {}) {
   if (!mediaSession || !video || video !== activeVideo || !audio) {
     return false;
   }
+  if (!state.hostPlaybackSession?.readyCommitted) {
+    clearTauriMediaSessionState();
+    return false;
+  }
 
   try {
-    mediaSession.playbackState = state.localShouldBePlaying ? "playing" : "paused";
+    mediaSession.playbackState = hostPlaybackSessionObservedPlaying(
+      state.hostPlaybackSession,
+      video,
+      audio,
+    ) ? "playing" : "paused";
   } catch {
     // Ignore incomplete Media Session implementations.
   }
@@ -9123,7 +9400,9 @@ function scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture, prefix })
     return false;
   }
   pauseSplitPlaybackForStartupRecovery(video, audio);
-  setSplitPlaybackStartState("pending", video, audio);
+  setHostPlaybackSessionPhase(session, "start-retry-wait");
+  state.localPlaybackStartPromisesSettled = false;
+  scheduleSplitPlaybackStartupWatchdog(video, audio);
   reportSplitStartupDiagnostic(
     video.dataset.playerItemId || "",
     video,
@@ -9136,7 +9415,7 @@ function scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture, prefix })
     if (
       retryStarted
       || !isActiveSplitPlayer(video, audio)
-      || state.localPlaybackStartState !== "pending"
+      || session.phase !== "start-retry-wait"
       || !state.localShouldBePlaying
       || isSplitPlayerSeekSettling(video, audio)
       || video.seeking
@@ -9179,10 +9458,19 @@ function scheduleWebKitSplitPlaybackRetry(video, audio, { userGesture, prefix })
 }
 
 function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
+  const session = state.hostPlaybackSession;
   if (
     !video
     || !audio
     || !isActiveSplitPlayer(video, audio)
+    || !session?.readyCommitted
+    || ![
+      "ready-paused",
+      "start-retry-wait",
+      "needs-user-gesture",
+      "failed",
+    ].includes(session.phase)
+    || (session.phase === "failed" && !userGesture)
     || shouldHoldCurrentItemForTransition(video.dataset.playerItemId)
     || isSplitPlayerSeekSettling(video, audio)
     || video.seeking
@@ -9202,6 +9490,7 @@ function startSplitPlaybackPair(video, audio, { userGesture = false } = {}) {
   }
 
   state.localShouldBePlaying = true;
+  session.logicalPlayIntent = true;
   state.localAudioPlaybackBlocked = false;
   state.localVideoPlaybackBlocked = false;
   state.localPlaybackStartGeneration = Number(state.localPlaybackStartGeneration || 0) + 1;
@@ -10249,35 +10538,27 @@ function renderAvSyncControls(playbackMode, playerSettings) {
 }
 
 function createSplitPlayerStartupSynchronizer(video, audio, maybeRestorePlayback) {
-  let synchronizationStarted = false;
   return () => {
-    if (!synchronizationStarted && maybeRestorePlayback()) {
-      synchronizationStarted = true;
+    const session = state.hostPlaybackSession;
+    if (state.hostPlaybackSession !== session || !isActiveSplitPlayer(video, audio)) {
+      return false;
     }
     if (isSplitPlayerSeekSettling(video, audio)) {
       settleSplitPlayerSeek(video, audio);
       return true;
     }
-    if (synchronizationStarted) {
+    if (session.readyCommitted || session.phase !== "binding") {
       return false;
     }
     if (!splitPlaybackPairCanStartAutomatically(video, audio)) {
       updateSplitPlaybackStartOverlay(video, audio);
       return true;
     }
-    synchronizationStarted = true;
-    if (state.localShouldBePlaying) {
-      startSplitPlaybackPair(video, audio);
-    } else {
-      reportSplitStartupDiagnostic(
-        video.dataset.playerItemId || "",
-        video,
-        audio,
-        "startup-ready-no-play-intent",
-      );
-      updateSplitPlaybackStartOverlay(video, audio);
+    if (!session.restoreStarted && maybeRestorePlayback()) {
+      session.restoreStarted = true;
+      return true;
     }
-    return true;
+    return commitHostPlaybackSessionReadyPaused(session, video, audio);
   };
 }
 
@@ -10293,9 +10574,17 @@ function createHostPlaybackSession(playbackGeneration, playbackProgram) {
   return {
     playbackGeneration,
     playbackProgram,
-    cleanupState: "active",
+    phase: "requested",
     video: null,
     audio: null,
+    mountData: null,
+    loadingStarted: false,
+    readyCommitted: false,
+    readyCommitCount: 0,
+    logicalPlayIntent: true,
+    initialIntentApplied: false,
+    restoreStarted: false,
+    failureStage: "",
     eventCleanups: [],
     syncTimer: null,
     startupTimer: null,
@@ -10310,6 +10599,7 @@ function createHostPlaybackSession(playbackGeneration, playbackProgram) {
     seekSettleTimer: null,
     seekSettleCallback: null,
     seekResumePending: false,
+    seekUpdatesLogicalIntent: true,
     playbackRestore: null,
   };
 }
@@ -10318,7 +10608,8 @@ function isCurrentHostPlaybackSession(session, video, audio) {
   if (
     !session
     || state.hostPlaybackSession !== session
-    || session.cleanupState !== "active"
+    || session.phase === "retiring"
+    || session.phase === "retired"
     || state.data?.playback_generation !== session.playbackGeneration
     || !playbackProgramDescriptorsEqual(
       state.data?.playback_program ?? null,
@@ -10340,11 +10631,15 @@ function retireHostPlaybackSession(
   session,
   { preserveAdvanceDelayOverlay = false } = {},
 ) {
-  if (!session || session.cleanupState !== "active") {
+  if (
+    !session
+    || session.phase === "retiring"
+    || session.phase === "retired"
+  ) {
     return false;
   }
   const ownsCurrentSession = state.hostPlaybackSession === session;
-  session.cleanupState = "retiring";
+  setHostPlaybackSessionPhase(session, "retiring");
   clearLocalPlayerEventListeners(session);
   clearWebKitAudioStarvationTimer(session);
   clearLocalPlayerSyncTimer(session);
@@ -10362,7 +10657,6 @@ function retireHostPlaybackSession(
     state.localVideoDeferredRecovery = false;
     state.localAudioPlaybackBlocked = false;
     state.localVideoPlaybackBlocked = false;
-    state.localPlaybackStartState = "idle";
     state.localPlaybackStartGeneration = 0;
     state.localPlaybackStartPromisesSettled = false;
     state.localPlaybackEndHandled = false;
@@ -10390,7 +10684,7 @@ function retireHostPlaybackSession(
       // Detached media can finish retiring without further cleanup.
     }
   });
-  session.cleanupState = "retired";
+  setHostPlaybackSessionPhase(session, "retired");
   if (state.hostPlaybackSession === session) {
     state.hostPlaybackSession = null;
   }
@@ -10430,7 +10724,9 @@ function captureHostPlaybackRestoreForReplacement(session, nextProgram, currentI
   if (
     state.pendingPlaybackRestore
     || !session
-    || session.cleanupState !== "active"
+    || !session.readyCommitted
+    || session.phase === "retiring"
+    || session.phase === "retired"
     || state.hostPlaybackSession !== session
     || !session.video
     || !session.audio
@@ -10447,7 +10743,7 @@ function captureHostPlaybackRestoreForReplacement(session, nextProgram, currentI
     itemId: currentItem.id,
     variantId: nextProgram.selected_audio_variant_id,
     currentTime: Number(session.video.currentTime || 0),
-    wasPlaying: state.localShouldBePlaying || !session.video.paused,
+    wasPlaying: Boolean(session.logicalPlayIntent),
   };
 }
 
@@ -10476,16 +10772,33 @@ function mountHostPlaybackSessionElements(session, currentItem, mountData) {
   video.playsInline = true;
   video.tabIndex = 0;
   video.preload = "metadata";
-  video.src = mountData.videoUrl;
   const audio = document.createElement("audio");
   audio.dataset.playerRole = "audio";
   audio.preload = "auto";
-  audio.src = mountData.audioUrl;
   video.dataset.playerItemId = currentItem.id;
   session.video = video;
   session.audio = audio;
+  session.mountData = mountData;
   replaceHostPlayerView(video, audio);
   return { video, audio };
+}
+
+function beginHostPlaybackSessionElementLoading(session) {
+  if (
+    !isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+    || session.phase !== "binding"
+    || session.loadingStarted
+    || !session.mountData?.videoUrl
+    || !session.mountData?.audioUrl
+  ) {
+    return false;
+  }
+  session.loadingStarted = true;
+  session.video.src = session.mountData.videoUrl;
+  session.audio.src = session.mountData.audioUrl;
+  session.video.load();
+  session.audio.load();
+  return true;
 }
 
 function reconcileHostPlaybackSession(currentItem) {
@@ -10514,7 +10827,7 @@ function reconcileHostPlaybackSession(currentItem) {
         playbackGeneration,
         playbackProgram,
       );
-      retiredSession.cleanupState = "retired";
+      setHostPlaybackSessionPhase(retiredSession, "retired");
       state.hostPlaybackSession = retiredSession;
       return {
         kind: "retired",
@@ -10533,7 +10846,7 @@ function reconcileHostPlaybackSession(currentItem) {
     && playbackProgramDescriptorsEqual(existing.playbackProgram, playbackProgram)
   );
   if (sameAcceptedProgram) {
-    if (existing.cleanupState !== "active") {
+    if (existing.phase === "retiring" || existing.phase === "retired") {
       return { kind: "retired", session: existing, video: null, audio: null };
     }
     if (existing.video || existing.audio) {
@@ -10569,6 +10882,11 @@ function reconcileHostPlaybackSession(currentItem) {
   const preserveAdvanceDelayOverlay = Boolean(
     hasPendingSongTransitionOverlayForItem(currentItem)
     || hasLocalAdvanceDelayOverlay()
+    || (
+      state.localAdvanceInFlight
+      && state.manualTransitionHoldGeneration > 0
+      && state.manualTransitionHoldItemId
+    )
   );
   const preservedTransitionGeneration = (
     existing
@@ -10577,16 +10895,26 @@ function reconcileHostPlaybackSession(currentItem) {
     && state.manualTransitionHoldItemId === currentItem.id
     && state.manualTransitionHoldGeneration > 0
   ) ? state.manualTransitionHoldGeneration : 0;
+  const mountData = hostPlaybackMountData(currentItem, playbackProgram);
   retireHostPlaybackSession(existing, { preserveAdvanceDelayOverlay });
 
   const session = createHostPlaybackSession(playbackGeneration, playbackProgram);
   state.hostPlaybackSession = session;
-  const mountData = hostPlaybackMountData(currentItem, playbackProgram);
+  session.playbackRestore = mountData.mountable
+    ? claimPendingHostPlaybackRestore(session, currentItem)
+    : null;
+  session.logicalPlayIntent = session.playbackRestore
+    ? Boolean(session.playbackRestore.wasPlaying)
+    : true;
+  state.localShouldBePlaying = shouldHoldCurrentItemForTransition(currentItem)
+    ? false
+    : session.logicalPlayIntent;
   if (!mountData.mountable) {
+    setHostPlaybackSessionPhase(session, "requested");
     renderPreparingHostPlaybackState(currentItem);
     return { kind: "pending", session, video: null, audio: null };
   }
-  session.playbackRestore = claimPendingHostPlaybackRestore(session, currentItem);
+  setHostPlaybackSessionPhase(session, "binding");
   const pair = mountHostPlaybackSessionElements(session, currentItem, mountData);
   if (preservedTransitionGeneration) {
     showSongTransitionOverlayForData(state.data, preservedTransitionGeneration, {
@@ -10603,10 +10931,7 @@ function renderPlayer(currentItem, playbackMode) {
     return;
   }
   const { session, video, audio } = reconciliation;
-  const shouldAutoplay = !shouldHoldCurrentItemForTransition(currentItem);
 
-  state.localShouldBePlaying = shouldAutoplay;
-  setSplitPlaybackStartState("pending", video, audio);
   state.localPlayerRequestedRate = Number(video.playbackRate || 1) || 1;
   applyStoredVolumeToSplitPlayer(video, audio);
   setupAudioPitchShifter(audio);
@@ -10632,27 +10957,34 @@ function renderPlayer(currentItem, playbackMode) {
       || !pendingRestore
       || pendingRestore.itemId !== currentItem.id
       || pendingRestore.variantId !== selectedAudioVariantForItem(currentItem)?.id
-      || video.readyState < 1
-      || audio.readyState < 1
     ) {
       return false;
     }
 
     restoreApplied = true;
     session.playbackRestore = null;
-    beginSplitPlayerSeek(video, audio, {
-      resumeAfterSeek: Boolean(
-        pendingRestore.wasPlaying
-        && !shouldHoldCurrentItemForTransition(currentItem),
-      ),
+    const started = beginSplitPlayerSeek(video, audio, {
+      resumeAfterSeek: false,
+      allowUncommitted: true,
+      updateIntent: false,
       targetTime: pendingRestore.currentTime,
       diagnosticAction: "restore-video-seek",
       onSettled: (applied) => {
-        if (applied) {
-          reportCurrentVideoStatus();
+        if (!applied) {
+          return;
         }
+        reportCurrentVideoStatus();
+        commitHostPlaybackSessionReadyPaused(session, video, audio);
       },
     });
+    if (!started) {
+      failHostPlaybackCandidate(
+        session,
+        video,
+        audio,
+        "restore-seek-could-not-start",
+      );
+    }
     return true;
   };
 
@@ -10669,6 +11001,14 @@ function renderPlayer(currentItem, playbackMode) {
 
   addMountedPlayerListener(audio, "loadedmetadata", () => {
     synchronizeStartupPlayer();
+  });
+
+  addMountedPlayerListener(video, "error", () => {
+    failHostPlaybackCandidate(session, video, audio, "video-error-before-readiness");
+  });
+
+  addMountedPlayerListener(audio, "error", () => {
+    failHostPlaybackCandidate(session, video, audio, "audio-error-before-readiness");
   });
 
   addMountedPlayerListener(video, "play", () => {
@@ -10779,6 +11119,9 @@ function renderPlayer(currentItem, playbackMode) {
 
   addMountedPlayerListener(video, "playing", () => {
     state.localVideoPlaybackBlocked = false;
+    if (session.readyCommitted && !video.paused && !audio.paused) {
+      setHostPlaybackSessionPhase(session, "playing");
+    }
     if (!synchronizeStartupPlayer()) {
       syncSplitPlayer(
         video,
@@ -10865,6 +11208,9 @@ function renderPlayer(currentItem, playbackMode) {
   addMountedPlayerListener(audio, "playing", () => {
     clearWebKitAudioStarvationTimer(session);
     state.localAudioPlaybackBlocked = false;
+    if (session.readyCommitted && !video.paused && !audio.paused) {
+      setHostPlaybackSessionPhase(session, "playing");
+    }
   });
 
   addMountedPlayerListener(audio, "ended", async () => {
@@ -10894,6 +11240,8 @@ function renderPlayer(currentItem, playbackMode) {
   }, localPlayerSyncIntervalMs);
   session.syncTimer = syncTimer;
 
+  scheduleSplitPlaybackStartupWatchdog(video, audio);
+
   let startupTimer = null;
   startupTimer = window.setTimeout(() => {
     if (
@@ -10907,6 +11255,14 @@ function renderPlayer(currentItem, playbackMode) {
     reportCurrentVideoStatus();
   }, 0);
   session.startupTimer = startupTimer;
+  if (!beginHostPlaybackSessionElementLoading(session)) {
+    failHostPlaybackCandidate(
+      session,
+      video,
+      audio,
+      "media-loading-could-not-start",
+    );
+  }
 }
 
 
@@ -11036,6 +11392,7 @@ function reportPlayerStatus(itemId, video, session = state.hostPlaybackSession) 
     !normalizedItemId
     || !video
     || !isCurrentHostPlaybackSession(session, video, session?.audio)
+    || !session.readyCommitted
   ) {
     return false;
   }
@@ -11080,6 +11437,7 @@ function reportPlayerStatusHeartbeat(itemId, video) {
     !video
     || video.paused
     || !isCurrentHostPlaybackSession(session, video, session?.audio)
+    || !session.readyCommitted
   ) {
     return;
   }
@@ -16100,17 +16458,17 @@ async function restartHostPlaybackAfterPageRestore() {
     state.pageHiddenPlaybackGeneration = null;
     state.pageRestoreRestartInFlight = false;
   }
-  if (accepted) {
-    render();
-  } else if (
-    Number.isSafeInteger(pageHiddenPlaybackGeneration)
+  const acceptedNewerProgramWhileRestartWasPending = Boolean(
+    !accepted
+    && Number.isSafeInteger(pageHiddenPlaybackGeneration)
     && Number.isSafeInteger(state.data?.playback_generation)
     && state.data.playback_generation > pageHiddenPlaybackGeneration
     && state.data?.playback_program
-  ) {
+  );
+  if (accepted || acceptedNewerProgramWhileRestartWasPending) {
     const session = state.hostPlaybackSession;
     if (
-      session?.cleanupState === "retired"
+      session?.phase === "retired"
       && session.playbackGeneration === state.data.playback_generation
       && playbackProgramDescriptorsEqual(
         session.playbackProgram,

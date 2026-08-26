@@ -96,6 +96,10 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "function createSplitPlayerStartupSynchronizer",
             "function renderPlayer",
         )
+        initial_intent = self.function_source(
+            "function applyInitialHostPlaybackIntent",
+            "function commitHostPlaybackSessionReadyPaused",
+        )
 
         self.assertIn('reportMediaDiagnostic(itemId, "split"', direct_reporter)
         for event_name in (
@@ -105,7 +109,7 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
             "user-start-success",
         ):
             self.assertIn(event_name, startup)
-        self.assertIn("startup-ready-no-play-intent", synchronizer)
+        self.assertIn("startup-ready-no-play-intent", initial_intent)
         self.assertNotIn("localPlayerSyncDiagnosticThrottleMs", direct_reporter)
 
     def test_health_events_have_no_control_side_effects(self):
