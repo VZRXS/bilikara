@@ -623,7 +623,7 @@ async function normalSwitch(page) {
   observations.push({ boundary: "normal-switch-stable", currentItem: after.current_item?.id, media: afterMedia });
 }
 
-async function staleNextRecache(page) {
+async function staleNextRecache(page, { firstCarrier = false } = {}) {
   const started = await startPlayback(page, "A");
   await page.evaluate(() => setAdvanceDelay(2));
   const before = await state(page);
@@ -703,57 +703,68 @@ async function staleNextRecache(page) {
       : null;
   }, "recache did not create one authoritative replacement program", 20000);
 
-  const carriedReplacement = await page.evaluate(async () => {
-    await setLocalPlayerKeyShift(1);
-    const session = state.hostPlaybackSession;
-    window.__acceptanceSettingsVideo = session?.video || null;
-    window.__acceptanceSettingsAudio = session?.audio || null;
-    return {
-      stateGeneration: state.data?.playback_generation,
-      stateArtifactSetId: state.data?.playback_program?.artifact_set_id || "",
-      sessionGeneration: session?.playbackGeneration || 0,
-      sessionArtifactSetId: session?.playbackProgram?.artifact_set_id || "",
-      sessionCurrent: isCurrentHostPlaybackSession(
-        session,
-        session?.video,
-        session?.audio,
-      ),
-      sessionPhase: session?.phase || "",
-      readyCommitted: Boolean(session?.readyCommitted),
-      videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
-      audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
-      oldVideoConnected: Boolean(window.__acceptanceStaleNextVideo?.isConnected),
-      oldAudioConnected: Boolean(window.__acceptanceStaleNextAudio?.isConnected),
-      holdItem: state.manualTransitionHoldItemId,
-      inFlight: state.localAdvanceInFlight,
-    };
-  });
-  assert(
-    carriedReplacement.stateGeneration === authoritativeReplacement.playback_generation
-      && carriedReplacement.stateArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
-      && carriedReplacement.sessionGeneration === authoritativeReplacement.playback_generation
-      && carriedReplacement.sessionArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
-      && carriedReplacement.sessionCurrent
-      && carriedReplacement.videoCount === 1
-      && carriedReplacement.audioCount === 1
-      && !carriedReplacement.oldVideoConnected
-      && !carriedReplacement.oldAudioConnected
-      && carriedReplacement.holdItem === "B"
-      && carriedReplacement.inFlight,
-    "the settings-carried replacement did not reconcile at the stale Next boundary",
-    { carriedReplacement, authoritativeReplacement },
-  );
-  const reconciledPlaying = await observeAutomaticPlayback(page, "A", 0.15);
+  let carriedReplacement = null;
+  let reconciledPlaying = null;
+  if (!firstCarrier) {
+    carriedReplacement = await page.evaluate(async () => {
+      await setLocalPlayerKeyShift(1);
+      const session = state.hostPlaybackSession;
+      window.__acceptanceSettingsVideo = session?.video || null;
+      window.__acceptanceSettingsAudio = session?.audio || null;
+      return {
+        stateGeneration: state.data?.playback_generation,
+        stateArtifactSetId: state.data?.playback_program?.artifact_set_id || "",
+        sessionGeneration: session?.playbackGeneration || 0,
+        sessionArtifactSetId: session?.playbackProgram?.artifact_set_id || "",
+        sessionCurrent: isCurrentHostPlaybackSession(
+          session,
+          session?.video,
+          session?.audio,
+        ),
+        sessionPhase: session?.phase || "",
+        readyCommitted: Boolean(session?.readyCommitted),
+        videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
+        audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
+        oldVideoConnected: Boolean(window.__acceptanceStaleNextVideo?.isConnected),
+        oldAudioConnected: Boolean(window.__acceptanceStaleNextAudio?.isConnected),
+        holdItem: state.manualTransitionHoldItemId,
+        inFlight: state.localAdvanceInFlight,
+      };
+    });
+    assert(
+      carriedReplacement.stateGeneration === authoritativeReplacement.playback_generation
+        && carriedReplacement.stateArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
+        && carriedReplacement.sessionGeneration === authoritativeReplacement.playback_generation
+        && carriedReplacement.sessionArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
+        && carriedReplacement.sessionCurrent
+        && carriedReplacement.videoCount === 1
+        && carriedReplacement.audioCount === 1
+        && !carriedReplacement.oldVideoConnected
+        && !carriedReplacement.oldAudioConnected
+        && carriedReplacement.holdItem === "B"
+        && carriedReplacement.inFlight,
+      "the settings-carried replacement did not reconcile at the stale Next boundary",
+      { carriedReplacement, authoritativeReplacement },
+    );
+    reconciledPlaying = await observeAutomaticPlayback(page, "A", 0.15);
+  }
 
   releaseNext();
   const nextResponse = await nextResponsePromise;
   const nextPayload = await nextResponse.json();
   assert(
     nextResponse.ok()
-      && nextPayload?.ok === false
-      && serverNextStatus === 400
-      && String(nextPayload?.error || "").includes("playback program changed before Next was applied"),
-    "delayed Next was not rejected by the exact Rust generation precondition",
+      && nextPayload?.ok === true
+      && nextPayload?.stale === true
+      && serverNextStatus === 200
+      && serverNextPayload?.ok === true
+      && serverNextPayload?.stale === true
+      && nextPayload?.data?.current_item?.id === "A"
+      && nextPayload?.data?.playlist?.[0]?.id === "B"
+      && nextPayload?.data?.playback_generation === authoritativeReplacement.playback_generation
+      && nextPayload?.data?.playback_program?.artifact_set_id
+        === authoritativeReplacement.playback_program.artifact_set_id,
+    "delayed Next was not consumed as an exact-generation no-effect settlement",
     {
       browserStatus: nextResponse.status(),
       serverStatus: serverNextStatus,
@@ -761,6 +772,56 @@ async function staleNextRecache(page) {
       serverPayload: serverNextPayload,
     },
   );
+  if (firstCarrier) {
+    carriedReplacement = await waitFor(async () => page.evaluate(() => {
+      const session = state.hostPlaybackSession;
+      if (
+        state.data?.playback_generation !== session?.playbackGeneration
+        || state.data?.playback_program?.artifact_set_id
+          !== session?.playbackProgram?.artifact_set_id
+        || !isCurrentHostPlaybackSession(session, session?.video, session?.audio)
+      ) {
+        return null;
+      }
+      window.__acceptanceSettingsVideo = session?.video || null;
+      window.__acceptanceSettingsAudio = session?.audio || null;
+      return {
+        stateGeneration: state.data?.playback_generation,
+        stateArtifactSetId: state.data?.playback_program?.artifact_set_id || "",
+        sessionGeneration: session?.playbackGeneration || 0,
+        sessionArtifactSetId: session?.playbackProgram?.artifact_set_id || "",
+        sessionCurrent: true,
+        sessionPhase: session?.phase || "",
+        readyCommitted: Boolean(session?.readyCommitted),
+        videoCount: document.querySelectorAll('video[data-player-role="video"]').length,
+        audioCount: document.querySelectorAll('audio[data-player-role="audio"]').length,
+        oldVideoConnected: Boolean(window.__acceptanceStaleNextVideo?.isConnected),
+        oldAudioConnected: Boolean(window.__acceptanceStaleNextAudio?.isConnected),
+        holdItem: state.manualTransitionHoldItemId,
+        holdGeneration: state.manualTransitionHoldGeneration,
+        pendingItem: state.pendingSongTransitionOverlayData?.current_item?.id || "",
+        inFlight: state.localAdvanceInFlight,
+      };
+    }), "the stale Next response did not carry and reconcile the first replacement snapshot");
+    assert(
+      carriedReplacement.stateGeneration === authoritativeReplacement.playback_generation
+        && carriedReplacement.stateArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
+        && carriedReplacement.sessionGeneration === authoritativeReplacement.playback_generation
+        && carriedReplacement.sessionArtifactSetId === authoritativeReplacement.playback_program.artifact_set_id
+        && carriedReplacement.sessionCurrent
+        && carriedReplacement.videoCount === 1
+        && carriedReplacement.audioCount === 1
+        && !carriedReplacement.oldVideoConnected
+        && !carriedReplacement.oldAudioConnected
+        && !carriedReplacement.holdItem
+        && carriedReplacement.holdGeneration === 0
+        && !carriedReplacement.pendingItem
+        && !carriedReplacement.inFlight,
+      "the first-carrier stale Next did not reconcile authority and settle its own hold",
+      { carriedReplacement, authoritativeReplacement },
+    );
+    reconciledPlaying = await observeAutomaticPlayback(page, "A", 0.15);
+  }
   const released = await waitFor(async () => {
     const value = await page.evaluate(() => ({
       holdItem: state.manualTransitionHoldItemId,
@@ -868,7 +929,10 @@ async function staleNextRecache(page) {
     { started, replacementMedia, automatic, settled, identity },
   );
   observations.push({
-    boundary: "stale-next-recache-generation-rejection",
+    boundary: firstCarrier
+      ? "stale-next-first-carrier-generation-settlement"
+      : "stale-next-recache-generation-settlement",
+    carrier: firstCarrier ? "stale-next-response" : "settings-response",
     beforeGeneration: before.playback_generation,
     replacementGeneration: authoritativeReplacement.playback_generation,
     optimistic,
@@ -1914,6 +1978,8 @@ async function run() {
       await rapidSessionSwitch(page);
     } else if (scenario === "stale-next-recache") {
       await staleNextRecache(page);
+    } else if (scenario === "stale-next-first-carrier") {
+      await staleNextRecache(page, { firstCarrier: true });
     } else if (scenario === "staggered-readiness") {
       await staggeredReadiness(page);
     } else if (scenario === "rapid-unready-switch") {

@@ -770,17 +770,26 @@ class PlaylistStore:
         )
         return int(result["value"])
 
-    def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
-        try:
-            result = self._request(
-                "set_audio_variant",
-                item_id=str(item_id),
-                variant_id=str(variant_id or ""),
+    def set_audio_variant(
+        self,
+        item_id: str,
+        variant_id: str,
+        *,
+        expected_item_incarnation_id: str,
+    ) -> bool:
+        if (
+            not isinstance(expected_item_incarnation_id, str)
+            or not expected_item_incarnation_id
+        ):
+            raise ValueError(
+                "expected item incarnation must be a non-empty Rust identity"
             )
-        except PlaylistStoreCommandError as exc:
-            if exc.kind == "item_not_found":
-                return False
-            raise
+        result = self._request(
+            "set_audio_variant",
+            item_id=str(item_id),
+            variant_id=str(variant_id or ""),
+            expected_item_incarnation_id=expected_item_incarnation_id,
+        )
         return self._changed_or_found(result)
 
     def update_item(

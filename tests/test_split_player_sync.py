@@ -119,6 +119,7 @@ class SplitPlayerSyncTest(unittest.TestCase):
     def run_node(self, body: str, *sources: str) -> dict:
         script = f"""
 const state = {{
+  data: {{ playback_generation: 1 }},
   localPlayerRequestedRate: 1,
   localPlayerSyncLastSeekAt: 0,
   localPlayerSyncLastAction: "",
@@ -136,6 +137,7 @@ const state = {{
   localPlayerControlsHideGeneration: 0,
   localPlayerEventCleanups: [],
   hostPlaybackSession: {{
+    playbackGeneration: 1,
     phase: "playing",
     readyCommitted: true,
     readyCommitCount: 1,
@@ -218,6 +220,15 @@ const elements = {{
 }};
 function t(key) {{ return key; }}
 function activeLocalPlayerElements() {{ return {{ video: mountedVideo, audio: mountedAudio }}; }}
+function isCurrentHostPlaybackSession(session, video, audio) {{
+  return Boolean(
+    session
+    && session === state.hostPlaybackSession
+    && session.playbackGeneration === state.data?.playback_generation
+    && (video === undefined || video === mountedVideo)
+    && (audio === undefined || audio === mountedAudio)
+  );
+}}
 function clearSplitPlaybackStartupWatchdog() {{
   const session = state.hostPlaybackSession;
   if (!session?.startupWatchdogTimer) return;
@@ -2388,7 +2399,7 @@ state.lastAppliedPlayerControlSeq = 0;
 state.localShouldBePlaying = true;
 state.localPlaybackStartState = "pending";
 applyRemotePlayerControl(
-  { seq: 1, action: "toggle-play", item_id: "item" },
+  { seq: 1, action: "toggle-play", item_id: "item", playback_generation: 1 },
   { id: "item" },
   "local",
 );
@@ -2412,6 +2423,97 @@ function ackRemotePlayerControl() {}
         self.assertEqual(result["playCalls"], [1, 1])
         self.assertEqual(result["appliedSeq"], 1)
         self.assertIn("remote-play-intent", result["startupEvents"])
+
+    def test_remote_program_relative_commands_reject_stale_same_id_programs_once(self):
+        remote_control_source = self._slice(
+            "function applyRemotePlayerControl",
+            "async function ackRemotePlayerControl",
+        )
+        result = self.run_node(
+            """
+const video = new FakeMedia(20); const audio = new FakeMedia(20);
+mountedVideo = video; mountedAudio = audio;
+elements.playerFrame.querySelector = (selector) => {
+  if (selector === "video") return video;
+  if (selector === 'audio[data-player-role="audio"]') return audio;
+  return null;
+};
+state.lastAppliedPlayerControlSeq = 0;
+state.data = { playback_generation: 12, state_revision: 1 };
+state.hostPlaybackSession.playbackGeneration = 12;
+const currentItem = { id: "same-song" };
+
+applyRemotePlayerControl(
+  { seq: 1, action: "seek-relative", item_id: "same-song", delta_seconds: 15,
+    playback_generation: 11 },
+  currentItem,
+  "local",
+);
+applyRemotePlayerControl(
+  { seq: 2, action: "seek-relative", item_id: "same-song", delta_seconds: 15,
+    playback_generation: 12 },
+  currentItem,
+  "local",
+);
+state.data.state_revision = 99;
+applyRemotePlayerControl(
+  { seq: 3, action: "seek-absolute", item_id: "same-song", target_seconds: 80,
+    playback_generation: 12 },
+  currentItem,
+  "local",
+);
+state.data = { playback_generation: 13, state_revision: 100 };
+state.hostPlaybackSession.playbackGeneration = 13;
+applyRemotePlayerControl(
+  { seq: 4, action: "toggle-play", item_id: "same-song", playback_generation: 12 },
+  currentItem,
+  "local",
+);
+applyRemotePlayerControl(
+  { seq: 5, action: "next-track", item_id: "same-song", playback_generation: 12 },
+  currentItem,
+  "local",
+);
+applyRemotePlayerControl(
+  { seq: 6, action: "next-track", item_id: "same-song", playback_generation: 13 },
+  currentItem,
+  "local",
+);
+await Promise.resolve(); await Promise.resolve();
+console.log(JSON.stringify({
+  acknowledgements,
+  seekTargets,
+  nextGenerations,
+  intentCalls,
+  appliedSeq: state.lastAppliedPlayerControlSeq,
+}));
+""",
+            """
+const acknowledgements = [];
+const seekTargets = [];
+const nextGenerations = [];
+let intentCalls = 0;
+function ackRemotePlayerControl(seq) { acknowledgements.push(seq); }
+function isTauriWebKitRuntime() { return false; }
+function requestSplitPlaybackStart() { return false; }
+function setSplitPlaybackIntent() { intentCalls += 1; return true; }
+function beginSplitPlayerSeek(_video, _audio, options) {
+  seekTargets.push(options.targetTime);
+  options.onSettled(true);
+  return true;
+}
+async function requestNextTrack(expectedPlaybackGeneration) {
+  nextGenerations.push(expectedPlaybackGeneration);
+  return true;
+}
+""",
+            remote_control_source,
+        )
+        self.assertEqual(result["acknowledgements"], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(result["seekTargets"], [35, 80])
+        self.assertEqual(result["nextGenerations"], [13])
+        self.assertEqual(result["intentCalls"], 0)
+        self.assertEqual(result["appliedSeq"], 6)
 
     def test_tauri_webkit_host_manual_play_then_remote_toggle_uses_session_intent(self):
         remote_control_source = self._slice(
@@ -2456,7 +2558,7 @@ const afterHostManualPlay = {
 };
 
 applyRemotePlayerControl(
-  { seq: 1, action: "toggle-play", item_id: "item" },
+  { seq: 1, action: "toggle-play", item_id: "item", playback_generation: 1 },
   { id: "item" },
   "local",
 );
@@ -2466,7 +2568,7 @@ const afterPause = {
   audioPaused: audio.paused,
 };
 applyRemotePlayerControl(
-  { seq: 2, action: "toggle-play", item_id: "item" },
+  { seq: 2, action: "toggle-play", item_id: "item", playback_generation: 1 },
   { id: "item" },
   "local",
 );
@@ -2543,7 +2645,7 @@ state.localPlaybackStartState = "starting";
 state.localShouldBePlaying = true;
 
 applyRemotePlayerControl(
-  { seq: 1, action: "toggle-play", item_id: "item" },
+  { seq: 1, action: "toggle-play", item_id: "item", playback_generation: 1 },
   { id: "item" },
   "local",
 );
@@ -2554,7 +2656,7 @@ const afterPause = {
   audioPaused: audio.paused,
 };
 applyRemotePlayerControl(
-  { seq: 2, action: "toggle-play", item_id: "item" },
+  { seq: 2, action: "toggle-play", item_id: "item", playback_generation: 1 },
   { id: "item" },
   "local",
 );
@@ -2631,7 +2733,8 @@ function mountPair({ intent, videoPaused, audioPaused, startState }) {
 }
 async function seek(pair, seq) {
   applyRemotePlayerControl(
-    { seq, action: "seek-relative", item_id: "item", delta_seconds: 15 },
+    { seq, action: "seek-relative", item_id: "item", delta_seconds: 15,
+      playback_generation: 1 },
     { id: "item" },
     "local",
   );
@@ -2850,7 +2953,7 @@ state.lastAppliedPlayerControlSeq = 0;
 state.localPlaybackStartState = "established";
 state.localShouldBePlaying = false;
 applyRemotePlayerControl(
-  { seq: 1, action: "toggle-play", item_id: "item" },
+  { seq: 1, action: "toggle-play", item_id: "item", playback_generation: 1 },
   { id: "item" },
   "local",
 );

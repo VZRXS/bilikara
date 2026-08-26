@@ -470,6 +470,7 @@ pub enum AppStateRequest {
     SetAudioVariant {
         schema_version: u32,
         item_id: String,
+        expected_item_incarnation_id: String,
         variant_id: String,
         now: f64,
     },
@@ -2946,16 +2947,33 @@ fn apply_mutation(
         }
         AppStateRequest::SetAudioVariant {
             item_id,
+            expected_item_incarnation_id,
             variant_id,
             ..
         } => {
-            let normalized = variant_id.trim();
-            if normalized.is_empty() {
-                return Ok(MutationResult::unchanged(mutation_value(false)));
+            if !valid_authoritative_identity(&expected_item_incarnation_id, 'i') {
+                return Err(rejected(
+                    "invalid_item_incarnation_id",
+                    "audio variant selection requires a valid item incarnation",
+                ));
             }
             let item = data
                 .find_item_mut(&item_id)
                 .ok_or_else(|| rejected("item_not_found", "playlist item does not exist"))?;
+            if item.item_incarnation_id != expected_item_incarnation_id {
+                return Err(rejected_with_details(
+                    "item_incarnation_mismatch",
+                    "playlist item changed before audio variant selection",
+                    json!({
+                        "expected_item_incarnation_id": expected_item_incarnation_id,
+                        "actual_item_incarnation_id": item.item_incarnation_id,
+                    }),
+                ));
+            }
+            let normalized = variant_id.trim();
+            if normalized.is_empty() {
+                return Ok(MutationResult::unchanged(mutation_value(false)));
+            }
             let mut allowed: HashSet<String> = item
                 .audio_variants
                 .iter()
@@ -4060,6 +4078,15 @@ mod tests {
         (token, response)
     }
 
+    fn item_incarnation(state: &AppState, item_id: &str) -> String {
+        state
+            .data
+            .as_ref()
+            .and_then(|data| data.find_item(item_id))
+            .map(|item| item.item_incarnation_id.clone())
+            .expect("live item incarnation")
+    }
+
     fn cache_reservation(response: &AppStateSuccess) -> CacheAttemptReservation {
         serde_json::from_value(response.result.clone()).expect("cache reservation")
     }
@@ -4405,9 +4432,11 @@ mod tests {
             .expect("first Ready snapshot");
         assert_eq!(mounted.playback_generation, pending.playback_generation + 1);
 
+        let a_incarnation = item_incarnation(&state, "a");
         let selected = success(state.execute(AppStateRequest::SetAudioVariant {
             schema_version: 1,
             item_id: "a".to_owned(),
+            expected_item_incarnation_id: a_incarnation.clone(),
             variant_id: "instrumental".to_owned(),
             now: 12.5,
         }))
@@ -4420,6 +4449,7 @@ mod tests {
         let no_op_selection = success(state.execute(AppStateRequest::SetAudioVariant {
             schema_version: 1,
             item_id: "a".to_owned(),
+            expected_item_incarnation_id: a_incarnation,
             variant_id: "instrumental".to_owned(),
             now: 12.6,
         }));
@@ -4706,9 +4736,11 @@ mod tests {
                 .playback_generation,
             generation
         );
+        let b_incarnation = item_incarnation(&state, "b");
         assert_no_program_bump!(AppStateRequest::SetAudioVariant {
             schema_version: 1,
             item_id: "b".to_owned(),
+            expected_item_incarnation_id: b_incarnation,
             variant_id: "instrumental".to_owned(),
             now: 12.5,
         });
@@ -5130,9 +5162,11 @@ mod tests {
             11.0,
         ));
         let invalid_before = invalid_state.data.clone();
+        let invalid_incarnation = item_incarnation(&invalid_state, "spaced");
         let rejected = failure(invalid_state.execute(AppStateRequest::SetAudioVariant {
             schema_version: 1,
             item_id: "spaced".to_owned(),
+            expected_item_incarnation_id: invalid_incarnation,
             variant_id: "original".to_owned(),
             now: 12.0,
         }));
@@ -5150,9 +5184,11 @@ mod tests {
             .playback_generation = MAX_SAFE_JSON_INTEGER;
         let overflow_before = overflow_state.data.clone();
         let incarnation_counter_before = overflow_state.next_item_incarnation_id;
+        let overflow_incarnation = item_incarnation(&overflow_state, "overflow");
         let overflow = failure(overflow_state.execute(AppStateRequest::SetAudioVariant {
             schema_version: 1,
             item_id: "overflow".to_owned(),
+            expected_item_incarnation_id: overflow_incarnation,
             variant_id: "p1_p1".to_owned(),
             now: 13.0,
         }));
@@ -5664,6 +5700,109 @@ mod tests {
         assert_eq!(state.next_cache_attempt_token, token_before);
         assert_eq!(state.next_artifact_set_id, artifact_before);
         assert_eq!(state.data, data_before);
+    }
+
+    #[test]
+    fn audio_variant_selection_rejects_reused_item_id_before_any_mutation() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-old", "Alice"));
+        let old = initialize(&mut state, initial);
+        let stale_incarnation = old
+            .current_item
+            .expect("old current item")
+            .item_incarnation_id;
+
+        success(state.execute(AppStateRequest::RemoveItem {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            now: 11.0,
+        }));
+        success(state.execute(AppStateRequest::AddItem {
+            schema_version: 1,
+            item: item("a", "BV-new", ""),
+            position: "tail".to_owned(),
+            requester_name: "Alice".to_owned(),
+            reset_av_delay: false,
+            allow_repeat: true,
+            now: 12.0,
+        }));
+        let live_incarnation = item_incarnation(&state, "a");
+        assert_ne!(live_incarnation, stale_incarnation);
+
+        let data_before = state.data.clone();
+        let persistence_before = state
+            .data
+            .as_ref()
+            .expect("state data")
+            .persistence_snapshot();
+        let item_counter_before = state.next_item_incarnation_id;
+        let artifact_counter_before = state.next_artifact_set_id;
+        let attempt_counter_before = state.next_cache_attempt_token;
+        let stale = failure(state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            expected_item_incarnation_id: stale_incarnation,
+            variant_id: "p1_p1".to_owned(),
+            now: 13.0,
+        }));
+
+        assert_eq!(stale.error.kind, "item_incarnation_mismatch");
+        assert_eq!(state.data, data_before);
+        assert_eq!(
+            state
+                .data
+                .as_ref()
+                .expect("state data")
+                .persistence_snapshot(),
+            persistence_before
+        );
+        assert_eq!(state.next_item_incarnation_id, item_counter_before);
+        assert_eq!(state.next_artifact_set_id, artifact_counter_before);
+        assert_eq!(state.next_cache_attempt_token, attempt_counter_before);
+
+        let valid = success(state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "a".to_owned(),
+            expected_item_incarnation_id: live_incarnation,
+            variant_id: "p1_p1".to_owned(),
+            now: 14.0,
+        }));
+        assert!(valid.committed);
+        assert_eq!(
+            valid
+                .snapshot
+                .expect("valid selection snapshot")
+                .current_item
+                .expect("current item")
+                .selected_audio_variant_id,
+            "p1_p1"
+        );
+    }
+
+    #[test]
+    fn queued_audio_variant_preselection_uses_the_exact_item_incarnation() {
+        let mut state = AppState::default();
+        let mut initial = seed();
+        initial.current_item = Some(item("a", "BV-a", "Alice"));
+        initial.playlist = vec![item("b", "BV-b", "Bob")];
+        let initialized = initialize(&mut state, initial);
+        let generation = initialized.playback_generation;
+        let b_incarnation = item_incarnation(&state, "b");
+
+        let selected = success(state.execute(AppStateRequest::SetAudioVariant {
+            schema_version: 1,
+            item_id: "b".to_owned(),
+            expected_item_incarnation_id: b_incarnation,
+            variant_id: "p1_p1".to_owned(),
+            now: 11.0,
+        }));
+        let snapshot = selected.snapshot.expect("queued selection snapshot");
+        assert!(selected.committed);
+        assert_eq!(snapshot.playback_generation, generation);
+        assert_eq!(snapshot.current_item.expect("current").id, "a");
+        assert_eq!(snapshot.playlist[0].id, "b");
+        assert_eq!(snapshot.playlist[0].selected_audio_variant_id, "p1_p1");
     }
 
     #[test]
@@ -6258,9 +6397,11 @@ mod tests {
             initial_ready,
             10.5,
         ));
+        let a_incarnation = item_incarnation(&state, "a");
         success(state.execute(AppStateRequest::SetAudioVariant {
             schema_version: 1,
             item_id: "a".to_owned(),
+            expected_item_incarnation_id: a_incarnation,
             variant_id: "accompaniment".to_owned(),
             now: 11.0,
         }));

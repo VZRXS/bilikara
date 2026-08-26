@@ -155,6 +155,7 @@ const acknowledgements = [];
 const messages = [];
 let publishShouldFail = false;
 const state = {{
+  data: {{ playback_generation: 41 }},
   presentationSession: {{
     mode: "localDualScreen", phase: "active", generation: 7,
     playbackAuthority: "host", lastAcceptedCommandSequence: 6,
@@ -164,7 +165,11 @@ const state = {{
 }};
 const video = {{ currentTime: 20, duration: 200, dataset: {{ playerItemId: "song" }} }};
 const audio = {{ currentTime: 20, duration: 200 }};
-state.hostPlaybackSession = {{ readyCommitted: true }};
+state.hostPlaybackSession = {{ readyCommitted: true, playbackGeneration: 41 }};
+function isCurrentHostPlaybackSession(session) {{
+  return session === state.hostPlaybackSession
+    && session.playbackGeneration === state.data.playback_generation;
+}}
 function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
 function setSplitPlaybackIntent(_video, _audio, playing, options) {{
   actions.push(["playback", playing, options.source]);
@@ -177,7 +182,10 @@ function beginSplitPlayerSeek(_video, _audio, options) {{
   return true;
 }}
 function reportPlayerStatus() {{ actions.push(["status"]); }}
-async function requestNextTrack() {{ actions.push(["next"]); return true; }}
+async function requestNextTrack(expectedPlaybackGeneration) {{
+  actions.push(["next", expectedPlaybackGeneration]);
+  return true;
+}}
 async function setLocalPlayerVolumeAndMuted(volume, muted, options) {{
   actions.push(["volume", volume, muted, options.reportError]);
 }}
@@ -209,9 +217,15 @@ const envelope = (sequence, command) => ({{
   const results = [];
   results.push(await applyControllerCommand(envelope(1, {{ type: "play" }})));
   results.push(await applyControllerCommand(envelope(2, {{ type: "pause" }})));
-  results.push(await applyControllerCommand(envelope(3, {{ type: "seekRelative", deltaSeconds: -10 }})));
-  results.push(await applyControllerCommand(envelope(4, {{ type: "seekAbsolute", targetSeconds: 75 }})));
-  results.push(await applyControllerCommand(envelope(5, {{ type: "nextTrack" }})));
+  results.push(await applyControllerCommand(envelope(3, {{
+    type: "seekRelative", deltaSeconds: -10, expectedPlaybackGeneration: 41,
+  }})));
+  results.push(await applyControllerCommand(envelope(4, {{
+    type: "seekAbsolute", targetSeconds: 75, expectedPlaybackGeneration: 41,
+  }})));
+  results.push(await applyControllerCommand(envelope(5, {{
+    type: "nextTrack", expectedPlaybackGeneration: 41,
+  }})));
   publishShouldFail = true;
   results.push(await applyControllerCommand(envelope(6, {{
     type: "setVolume", volumePercent: 35, muted: true,
@@ -237,9 +251,127 @@ const envelope = (sequence, command) => ({{
         self.assertIn(["playback", False, "presentation-controller-pause"], result["actions"])
         self.assertIn(["seek", 10, "presentation-controller-seek"], result["actions"])
         self.assertIn(["seek", 75, "presentation-controller-seek"], result["actions"])
-        self.assertIn(["next"], result["actions"])
+        self.assertIn(["next", 41], result["actions"])
         self.assertIn(["volume", 0.35, True, False], result["actions"])
         self.assertEqual(result["messages"], ["snapshot failed"])
+
+    def test_program_relative_controller_commands_consume_stale_targets_and_release_fifo(self):
+        functions = self.source_slice(
+            "function normalizeControllerCommandEnvelope",
+            "function presentationPlaybackStateModel",
+        )
+        script = f"""
+const acknowledgements = [];
+const effects = [];
+let supersedeNext = false;
+const state = {{
+  data: {{ playback_generation: 22 }},
+  presentationSession: {{
+    mode: "localDualScreen", phase: "active", generation: 7,
+    playbackAuthority: "host", lastAcceptedCommandSequence: 9,
+  }},
+  presentationLastAppliedCommandSequence: 0,
+  localShouldBePlaying: true,
+  hostPlaybackSession: {{ readyCommitted: true, playbackGeneration: 22 }},
+}};
+const video = {{ currentTime: 20, duration: 200, dataset: {{ playerItemId: "same-song" }} }};
+const audio = {{ currentTime: 20, duration: 200 }};
+function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
+function isCurrentHostPlaybackSession(session) {{
+  return session === state.hostPlaybackSession
+    && session.playbackGeneration === state.data.playback_generation;
+}}
+function isActiveSplitPlayer() {{ return true; }}
+function setSplitPlaybackIntent(_video, _audio, playing, options) {{
+  effects.push(["intent", playing, options.source]);
+  return true;
+}}
+function beginSplitPlayerSeek(_video, _audio, options) {{
+  effects.push(["seek", options.targetTime]);
+  options.onSettled(true);
+  return true;
+}}
+function reportPlayerStatus() {{ effects.push(["status"]); }}
+async function requestNextTrack(expectedPlaybackGeneration) {{
+  effects.push(["next", expectedPlaybackGeneration]);
+  if (supersedeNext) {{
+    supersedeNext = false;
+    state.data = {{ playback_generation: expectedPlaybackGeneration + 1 }};
+    state.hostPlaybackSession.playbackGeneration = expectedPlaybackGeneration + 1;
+    return false;
+  }}
+  return true;
+}}
+async function setLocalPlayerVolumeAndMuted(volume, muted) {{
+  effects.push(["volume", volume, muted]);
+}}
+function tauriInvoke() {{
+  return async (name, payload) => {{
+    if (name !== "acknowledge_presentation_command") throw new Error(name);
+    acknowledgements.push(payload.sequence);
+    return {{
+      ...state.presentationSession,
+      lastAppliedCommandSequence: payload.sequence,
+    }};
+  }};
+}}
+async function handlePresentationSession() {{}}
+async function publishPresentationPlaybackState() {{ effects.push(["publish"]); }}
+function setAppMessage() {{}}
+{functions}
+const envelope = (sequence, command) => ({{
+  generation: 7, sequence, target: "host", command,
+}});
+(async () => {{
+  const results = [];
+  results.push(await applyControllerCommand(envelope(1, {{
+    type: "seekRelative", deltaSeconds: 15, expectedPlaybackGeneration: 21,
+  }})));
+  results.push(await applyControllerCommand(envelope(2, {{
+    type: "nextTrack", expectedPlaybackGeneration: 21,
+  }})));
+  results.push(await applyControllerCommand(envelope(3, {{ type: "play" }})));
+  results.push(await applyControllerCommand(envelope(4, {{ type: "pause" }})));
+  results.push(await applyControllerCommand(envelope(5, {{
+    type: "setVolume", volumePercent: 35, muted: true,
+  }})));
+  results.push(await applyControllerCommand(envelope(6, {{
+    type: "seekAbsolute", targetSeconds: 75, expectedPlaybackGeneration: 22,
+  }})));
+  results.push(await applyControllerCommand(envelope(7, {{
+    type: "nextTrack", expectedPlaybackGeneration: 22,
+  }})));
+  state.data = {{ playback_generation: 23 }};
+  state.hostPlaybackSession.playbackGeneration = 23;
+  supersedeNext = true;
+  results.push(await applyControllerCommand(envelope(8, {{
+    type: "nextTrack", expectedPlaybackGeneration: 23,
+  }})));
+  results.push(await applyControllerCommand(envelope(9, {{ type: "pause" }})));
+  await Promise.resolve();
+  process.stdout.write(JSON.stringify({{
+    results,
+    acknowledgements,
+    effects,
+    applied: state.presentationLastAppliedCommandSequence,
+  }}));
+}})();
+"""
+        result = self.run_node(script)
+        self.assertEqual(
+            result["results"],
+            [False, False, True, True, True, True, True, False, True],
+        )
+        self.assertEqual(result["acknowledgements"], list(range(1, 10)))
+        self.assertEqual(result["applied"], 9)
+        self.assertNotIn(["seek", 35], result["effects"])
+        self.assertNotIn(["next", 21], result["effects"])
+        self.assertIn(["intent", True, "presentation-controller-play"], result["effects"])
+        self.assertIn(["intent", False, "presentation-controller-pause"], result["effects"])
+        self.assertIn(["volume", 0.35, True], result["effects"])
+        self.assertIn(["seek", 75], result["effects"])
+        self.assertIn(["next", 22], result["effects"])
+        self.assertEqual(result["effects"].count(["next", 23]), 1)
 
     def test_uncommitted_seek_is_cancelled_promptly_and_releases_controller_fifo(self):
         functions = self.source_slice(
@@ -252,6 +384,7 @@ const effects = [];
 let seekBegins = 0;
 let playbackPublishes = 0;
 const state = {{
+  data: {{ playback_generation: 41 }},
   presentationSession: {{
     mode: "localDualScreen", phase: "active", generation: 7,
     playbackAuthority: "host", lastAcceptedCommandSequence: 2,
@@ -260,11 +393,16 @@ const state = {{
   localShouldBePlaying: true,
   hostPlaybackSession: {{
     phase: "binding", readyCommitted: false, logicalPlayIntent: true,
+    playbackGeneration: 41,
   }},
 }};
 const video = {{ currentTime: 20, duration: 200, dataset: {{ playerItemId: "song" }} }};
 const audio = {{ currentTime: 20, duration: 200 }};
 function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
+function isCurrentHostPlaybackSession(session) {{
+  return session === state.hostPlaybackSession
+    && session.playbackGeneration === state.data.playback_generation;
+}}
 function isActiveSplitPlayer() {{ return true; }}
 function beginSplitPlayerSeek() {{ seekBegins += 1; return true; }}
 function setSplitPlaybackIntent(_video, _audio, playing, options) {{
@@ -294,7 +432,7 @@ const envelope = (sequence, command) => ({{
 }});
 (async () => {{
   const seek = await applyControllerCommand(envelope(1, {{
-    type: "seekAbsolute", targetSeconds: 75,
+    type: "seekAbsolute", targetSeconds: 75, expectedPlaybackGeneration: 41,
   }}));
   const pause = await applyControllerCommand(envelope(2, {{ type: "pause" }}));
   await Promise.resolve();
@@ -370,8 +508,8 @@ function isCurrentHostPlaybackSession(session, video, audio) {{
     && session?.phase === "playing"
     && session.playbackGeneration === state.data.playback_generation
     && session.playbackProgram === state.data.playback_program
-    && session.video === video
-    && session.audio === audio;
+    && (video === undefined || session.video === video)
+    && (audio === undefined || session.audio === audio);
 }}
 function activeLocalPlayerElements() {{
   return {{
@@ -392,7 +530,9 @@ function setSplitPlaybackIntent(video, audio, playing) {{
   return true;
 }}
 const nativeQueue = [
-  {{ generation: 7, sequence: 1, target: "host", command: {{ type: "seekAbsolute", targetSeconds: 75 }} }},
+  {{ generation: 7, sequence: 1, target: "host", command: {{
+    type: "seekAbsolute", targetSeconds: 75, expectedPlaybackGeneration: 10,
+  }} }},
   {{ generation: 7, sequence: 2, target: "host", command: {{ type: "pause" }} }},
 ];
 let nativeInFlight = 1;
@@ -505,16 +645,22 @@ function setAppMessage() {{}}
         script = f"""
 const acknowledgements = [];
 const state = {{
+  data: {{ playback_generation: 41 }},
   presentationSession: {{
     mode: "localDualScreen", phase: "active", generation: 7,
     playbackAuthority: "host", lastAcceptedCommandSequence: 1,
   }},
   presentationLastAppliedCommandSequence: 0,
   localShouldBePlaying: true,
+  hostPlaybackSession: {{ playbackGeneration: 41 }},
 }};
 const video = {{ currentTime: 20, duration: 200, dataset: {{ playerItemId: "song" }} }};
 const audio = {{ currentTime: 20, duration: 200 }};
 function activeLocalPlayerElements() {{ return {{ video, audio }}; }}
+function isCurrentHostPlaybackSession(session) {{
+  return session === state.hostPlaybackSession
+    && session.playbackGeneration === state.data.playback_generation;
+}}
 async function requestNextTrack() {{ return false; }}
 function tauriInvoke() {{
   return async (name, payload) => {{ acknowledgements.push([name, payload]); }};
@@ -527,7 +673,9 @@ function setAppMessage() {{}}
   let error = "";
   try {{
     await applyControllerCommand({{
-      generation: 7, sequence: 1, target: "host", command: {{ type: "nextTrack" }},
+      generation: 7, sequence: 1, target: "host", command: {{
+        type: "nextTrack", expectedPlaybackGeneration: 41,
+      }},
     }});
   }} catch (caught) {{
     error = caught.message;
@@ -602,6 +750,7 @@ function tauriInvoke() {{
             set(snapshot),
             {
                 "revision",
+                "playbackGeneration",
                 "itemIdentity",
                 "title",
                 "paused",
@@ -613,6 +762,7 @@ function tauriInvoke() {{
             },
         )
         self.assertEqual(snapshot["revision"], 1)
+        self.assertEqual(snapshot["playbackGeneration"], 3)
         self.assertFalse(snapshot["paused"])
         self.assertEqual(snapshot["volumePercent"], 42)
         self.assertTrue(snapshot["muted"])

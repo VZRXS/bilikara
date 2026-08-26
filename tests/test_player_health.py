@@ -167,11 +167,19 @@ class PlayerDiagnosticsOnlyTest(unittest.TestCase):
 
     def test_manual_current_cache_retry_remains_forced(self):
         self.assertIn(
-            'apiPostStateSnapshot("/api/cache/retry", { item_id: itemId, force: true })',
+            '"retry-cache": [\n      "/api/cache/retry",',
             self.app_source,
         )
         self.assertIn(
-            'item_id: currentItem.id,\n      force: true,',
+            "expected_item_incarnation_id: button.dataset.itemIncarnationId",
+            self.app_source,
+        )
+        self.assertIn(
+            "expected_item_incarnation_id: currentItem.item_incarnation_id,\n      force: true,",
+            self.app_source,
+        )
+        self.assertIn(
+            "button.dataset.itemIncarnationId = item.item_incarnation_id",
             self.app_source,
         )
 

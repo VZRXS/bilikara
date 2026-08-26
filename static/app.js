@@ -1995,6 +1995,29 @@ async function applyControllerCommand(candidate) {
   ) {
     return false;
   }
+  const programRelativeCommand = ["seekRelative", "seekAbsolute", "nextTrack"].includes(
+    envelope.command.type,
+  );
+  if (programRelativeCommand) {
+    const expectedPlaybackGeneration = Number(
+      envelope.command.expectedPlaybackGeneration,
+    );
+    if (
+      !Number.isSafeInteger(expectedPlaybackGeneration)
+      || expectedPlaybackGeneration < 1
+    ) {
+      throw new Error("Invalid Controller playback target");
+    }
+    const playbackSession = state.hostPlaybackSession;
+    if (
+      expectedPlaybackGeneration !== state.data?.playback_generation
+      || playbackSession?.playbackGeneration !== expectedPlaybackGeneration
+      || !isCurrentHostPlaybackSession(playbackSession)
+    ) {
+      await acknowledgeControllerCommand(envelope.generation, envelope.sequence);
+      return false;
+    }
+  }
   const { video, audio } = activeLocalPlayerElements();
   let cancelledByPlaybackProgramChange = false;
   try {
@@ -2030,11 +2053,21 @@ async function applyControllerCommand(candidate) {
         await seekHostPlayer(video, audio, targetSeconds);
         break;
       }
-      case "nextTrack":
-        if (!await requestNextTrack()) {
-          throw new Error("The Host could not advance to the next track");
+      case "nextTrack": {
+        const expectedPlaybackGeneration = envelope.command.expectedPlaybackGeneration;
+        const advanced = await requestNextTrack(expectedPlaybackGeneration);
+        if (!advanced) {
+          if (
+            state.data?.playback_generation === expectedPlaybackGeneration
+            && state.hostPlaybackSession?.playbackGeneration === expectedPlaybackGeneration
+            && isCurrentHostPlaybackSession(state.hostPlaybackSession)
+          ) {
+            throw new Error("The Host could not advance to the next track");
+          }
+          cancelledByPlaybackProgramChange = true;
         }
         break;
+      }
       case "setVolume": {
         const volumePercent = Number(envelope.command.volumePercent);
         if (
@@ -2098,6 +2131,7 @@ function presentationPlaybackStateModel(session = state.hostPlaybackSession) {
   const currentTime = Number(media?.currentTime);
   const volumeSource = audio || media;
   return {
+    playbackGeneration: session?.playbackGeneration ?? null,
     itemIdentity: currentItem?.id ? String(currentItem.id) : null,
     title: String(currentItem?.display_title || currentItem?.title || t("player.noSong")),
     paused: audio
@@ -2735,6 +2769,7 @@ function shouldReportStateFetchError(error) {
 
 async function apiPost(url, payload = {}, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
+  const returnEnvelope = options.returnEnvelope === true;
   const controller = timeoutMs > 0 && typeof AbortController === "function"
     ? new AbortController()
     : null;
@@ -2756,7 +2791,7 @@ async function apiPost(url, payload = {}, options = {}) {
       error.payload = data;
       throw error;
     }
-    return data.data;
+    return returnEnvelope ? data : data.data;
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(t("error.requestTimeout"));
@@ -7249,6 +7284,22 @@ async function apiPostStateSnapshot(url, payload = {}, options = {}) {
   return accepted;
 }
 
+async function apiPostExactStateCommand(url, payload = {}, options = {}) {
+  const { onAccepted, ...requestOptions } = options;
+  const envelope = await apiPost(url, payload, {
+    ...requestOptions,
+    returnEnvelope: true,
+  });
+  const snapshotAccepted = acceptHostStateSnapshot(envelope.data);
+  if (snapshotAccepted && typeof onAccepted === "function") {
+    onAccepted();
+  }
+  return {
+    snapshotAccepted,
+    commandApplied: envelope.stale !== true,
+  };
+}
+
 function syncCachePanelVisibility(options = {}) {
   const expanded = String(state.cacheSettingsOpen);
   if (elements.cacheSettingsToggle.getAttribute("aria-expanded") !== expanded) {
@@ -10750,6 +10801,7 @@ function captureHostPlaybackRestoreForReplacement(session, nextProgram, currentI
   captureLocalPlayerPreferences();
   state.pendingPlaybackRestore = {
     itemId: currentItem.id,
+    itemIncarnationId: nextProgram.item_incarnation_id,
     variantId: nextProgram.selected_audio_variant_id,
     currentTime: Number(session.video.currentTime || 0),
     wasPlaying: Boolean(session.logicalPlayIntent),
@@ -10758,9 +10810,18 @@ function captureHostPlaybackRestoreForReplacement(session, nextProgram, currentI
 
 function claimPendingHostPlaybackRestore(session, currentItem) {
   const pendingRestore = state.pendingPlaybackRestore;
+  if (!pendingRestore) {
+    return null;
+  }
   if (
-    !pendingRestore
-    || pendingRestore.itemId !== currentItem.id
+    pendingRestore.itemIncarnationId !== currentItem.item_incarnation_id
+    || pendingRestore.itemIncarnationId !== session.playbackProgram?.item_incarnation_id
+  ) {
+    state.pendingPlaybackRestore = null;
+    return null;
+  }
+  if (
+    pendingRestore.itemId !== currentItem.id
     || pendingRestore.variantId !== session.playbackProgram?.selected_audio_variant_id
   ) {
     return null;
@@ -11283,19 +11344,28 @@ function applyRemotePlayerControl(command, currentItem, playbackMode) {
 
   const action = String(command?.action || "");
   const commandItemId = String(command?.item_id || "");
+  const expectedPlaybackGeneration = Number(command?.playback_generation);
+  const exactPlaybackProgram = Boolean(
+    Number.isSafeInteger(expectedPlaybackGeneration)
+    && expectedPlaybackGeneration >= 1
+    && expectedPlaybackGeneration === state.data?.playback_generation
+    && state.hostPlaybackSession?.playbackGeneration === expectedPlaybackGeneration
+    && isCurrentHostPlaybackSession(state.hostPlaybackSession)
+  );
 
   if (
-    playbackMode === "local"
+    exactPlaybackProgram
+    && playbackMode === "local"
     && currentItem
     && (!commandItemId || commandItemId === currentItem.id)
   ) {
     if (action === "next-track") {
-      requestNextTrack().catch(() => {});
+      requestNextTrack(expectedPlaybackGeneration).catch(() => {});
     } else {
       const video = elements.playerFrame.querySelector("video");
       const audio = elements.playerFrame.querySelector('audio[data-player-role="audio"]');
       const playbackSession = state.hostPlaybackSession;
-      if (video) {
+      if (video && isCurrentHostPlaybackSession(playbackSession, video, audio)) {
         // WebKit can keep a successful active pair in "starting" until its
         // initial play promises settle. Remote controls must treat that pair
         // as an established session instead of re-entering startup policy.
@@ -11718,6 +11788,9 @@ function syncRetryButton(button, item) {
     if (button.hasAttribute("data-id")) {
       button.removeAttribute("data-id");
     }
+    if (button.hasAttribute("data-item-incarnation-id")) {
+      button.removeAttribute("data-item-incarnation-id");
+    }
     if (button.hasAttribute("title")) {
       button.removeAttribute("title");
     }
@@ -11729,6 +11802,9 @@ function syncRetryButton(button, item) {
   const tooltip = t("cache.retryClick");
   if (button.dataset.id !== item.id) {
     button.dataset.id = item.id;
+  }
+  if (button.dataset.itemIncarnationId !== item.item_incarnation_id) {
+    button.dataset.itemIncarnationId = item.item_incarnation_id;
   }
   setElementTitle(button, tooltip);
   setElementAttribute(button, "aria-label", tooltip);
@@ -13653,7 +13729,11 @@ async function removeSessionUser(name) {
   }
 }
 
-async function advanceLocalPlayerNow({ showTransition = true, session = null } = {}) {
+async function advanceLocalPlayerNow({
+  showTransition = true,
+  session = null,
+  expectedPlaybackGeneration: issuedPlaybackGeneration = null,
+} = {}) {
   if (
     session
     && !isCurrentHostPlaybackSession(session, session.video, session.audio)
@@ -13663,9 +13743,16 @@ async function advanceLocalPlayerNow({ showTransition = true, session = null } =
   if (state.localAdvanceInFlight) {
     return false;
   }
-  const expectedPlaybackGeneration = session?.playbackGeneration
+  const expectedPlaybackGeneration = issuedPlaybackGeneration
+    ?? session?.playbackGeneration
     ?? state.data?.playback_generation;
-  if (!isSafeHostSnapshotInteger(expectedPlaybackGeneration, 1)) {
+  if (
+    !isSafeHostSnapshotInteger(expectedPlaybackGeneration, 1)
+    || (
+      issuedPlaybackGeneration !== null
+      && state.data?.playback_generation !== expectedPlaybackGeneration
+    )
+  ) {
     return false;
   }
   const shouldResumeOnFailure = state.localShouldBePlaying;
@@ -13710,9 +13797,14 @@ async function advanceLocalPlayerNow({ showTransition = true, session = null } =
   state.localAdvanceInFlight = true;
   try {
     const previousData = state.data;
-    if (!await apiPostStateSnapshot("/api/player/next", {
+    const outcome = await apiPostExactStateCommand("/api/player/next", {
       playback_generation: expectedPlaybackGeneration,
-    })) {
+    });
+    if (!outcome.commandApplied) {
+      releaseOwnedLocalAdvance();
+      return false;
+    }
+    if (!outcome.snapshotAccepted) {
       if (
         nextItemId
         && currentItemIdFromData(state.data) === nextItemId
@@ -13749,17 +13841,34 @@ async function advanceLocalPlayerNow({ showTransition = true, session = null } =
   }
 }
 
-async function requestNextTrack() {
+async function requestNextTrack(expectedPlaybackGeneration = null) {
+  if (
+    expectedPlaybackGeneration !== null
+    && (
+      !isSafeHostSnapshotInteger(expectedPlaybackGeneration, 1)
+      || state.data?.playback_generation !== expectedPlaybackGeneration
+    )
+  ) {
+    return false;
+  }
   const session = state.hostPlaybackSession;
   const capturedSession = isCurrentHostPlaybackSession(
     session,
     session?.video,
     session?.audio,
   ) ? session : null;
-  return handleLocalPlaybackEnded("manual-next", capturedSession);
+  return handleLocalPlaybackEnded(
+    "manual-next",
+    capturedSession,
+    expectedPlaybackGeneration,
+  );
 }
 
-async function handleLocalPlaybackEnded(reason = "media-ended", session = null) {
+async function handleLocalPlaybackEnded(
+  reason = "media-ended",
+  session = null,
+  expectedPlaybackGeneration = null,
+) {
   if (
     session
     && !isCurrentHostPlaybackSession(session, session.video, session.audio)
@@ -13771,9 +13880,17 @@ async function handleLocalPlaybackEnded(reason = "media-ended", session = null) 
   }
   const delaySeconds = currentSongAdvanceDelaySeconds();
   if (delaySeconds <= 0 || !queuedNextItem()) {
-    return advanceLocalPlayerNow({ showTransition: false, session });
+    return advanceLocalPlayerNow({
+      showTransition: false,
+      session,
+      expectedPlaybackGeneration,
+    });
   }
-  return advanceLocalPlayerNow({ showTransition: true, session });
+  return advanceLocalPlayerNow({
+    showTransition: true,
+    session,
+    expectedPlaybackGeneration,
+  });
 }
 
 async function reorderPlaylist(itemId, index) {
@@ -14028,7 +14145,13 @@ async function handlePlaylistAction(button) {
     remove: ["/api/playlist/remove", { item_id: itemId }],
     "move-next": ["/api/playlist/move-next", { item_id: itemId }],
     "play-now": ["/api/playlist/play-now", { item_id: itemId }],
-    "retry-cache": ["/api/cache/retry", { item_id: itemId }],
+    "retry-cache": [
+      "/api/cache/retry",
+      {
+        item_id: itemId,
+        expected_item_incarnation_id: button.dataset.itemIncarnationId,
+      },
+    ],
   };
 
   const target = actionMap[action];
@@ -14060,7 +14183,19 @@ async function handlePlaylistAction(button) {
   }
   try {
     const previousData = state.data;
-    if (!await apiPostStateSnapshot(target[0], target[1])) {
+    const outcome = action === "retry-cache"
+      ? await apiPostExactStateCommand(target[0], target[1])
+      : {
+        snapshotAccepted: await apiPostStateSnapshot(target[0], target[1]),
+        commandApplied: true,
+      };
+    if (!outcome.commandApplied) {
+      if (outcome.snapshotAccepted) {
+        render();
+      }
+      return;
+    }
+    if (!outcome.snapshotAccepted) {
       return;
     }
     if (action === "play-now") {
@@ -14971,7 +15106,8 @@ elements.nextButton.addEventListener("click", async () => {
 
 elements.queueCurrentRetry.addEventListener("click", async () => {
   const itemId = elements.queueCurrentRetry.dataset.id;
-  if (!itemId) {
+  const itemIncarnationId = elements.queueCurrentRetry.dataset.itemIncarnationId;
+  if (!itemId || !itemIncarnationId) {
     return;
   }
   const button = elements.queueCurrentRetry;
@@ -14982,9 +15118,15 @@ elements.queueCurrentRetry.addEventListener("click", async () => {
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   try {
-    await apiPostStateSnapshot("/api/cache/retry", { item_id: itemId, force: true });
-    setAppMessage(t("cache.retryStarted"));
+    const outcome = await apiPostExactStateCommand("/api/cache/retry", {
+      item_id: itemId,
+      expected_item_incarnation_id: itemIncarnationId,
+      force: true,
+    });
     render();
+    if (outcome.commandApplied) {
+      setAppMessage(t("cache.retryStarted"));
+    }
   } catch (error) {
     setAppMessage(error.message, true);
   } finally {
@@ -15057,12 +15199,15 @@ elements.currentCacheRetryButton?.addEventListener("click", async (event) => {
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   try {
-    await apiPostStateSnapshot("/api/cache/retry", {
+    const outcome = await apiPostExactStateCommand("/api/cache/retry", {
       item_id: currentItem.id,
+      expected_item_incarnation_id: currentItem.item_incarnation_id,
       force: true,
     });
-    setAppMessage(t("service.retryCurrentStarted"));
     render();
+    if (outcome.commandApplied) {
+      setAppMessage(t("service.retryCurrentStarted"));
+    }
   } catch (error) {
     setAppMessage(error.message, true);
     renderPlaybackRepairControls(state.data?.current_item);
@@ -15177,16 +15322,24 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
   renderAudioVariantBar(currentItem, frontendPlaybackMode(state.data?.playback_mode));
   const pendingRestore = {
     itemId: currentItem.id,
+    itemIncarnationId: currentItem.item_incarnation_id,
     variantId: nextVariantId,
     currentTime: video ? Number(video.currentTime || 0) : 0,
     wasPlaying: video ? !video.paused : true,
   };
   state.pendingPlaybackRestore = pendingRestore;
   try {
-    await apiPostStateSnapshot("/api/player/audio-variant", {
+    const outcome = await apiPostExactStateCommand("/api/player/audio-variant", {
       item_id: currentItem.id,
       variant_id: nextVariantId,
+      expected_item_incarnation_id: currentItem.item_incarnation_id,
     });
+    if (!outcome.commandApplied) {
+      if (state.pendingPlaybackRestore === pendingRestore) {
+        state.pendingPlaybackRestore = null;
+      }
+      state.audioVariantSwitchUnlockAt = 0;
+    }
     render();
   } catch (error) {
     if (state.pendingPlaybackRestore === pendingRestore) {

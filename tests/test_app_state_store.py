@@ -295,6 +295,60 @@ class RustAppStateStoreTest(unittest.TestCase):
             persisted_before,
         )
 
+    def test_audio_variant_selection_uses_exact_item_incarnation(self):
+        changes: list[str] = []
+        store = self.store(on_change=lambda: changes.append("changed"))
+        store.add_session_user("Alice")
+        old = item("a", song="old")
+        old.selected_pages = [1, 2]
+        old.selected_parts = ["on vocal", "off vocal"]
+        store.add_item(old, requester_name="Alice")
+        stale_incarnation = store.get_item("a").item_incarnation_id
+        self.assertTrue(store.remove_item("a"))
+        replacement = item("a", song="new")
+        replacement.selected_pages = [1, 2]
+        replacement.selected_parts = ["on vocal", "off vocal"]
+        store.add_item(replacement, requester_name="Alice")
+        live_incarnation = store.get_item("a").item_incarnation_id
+        self.assertNotEqual(stale_incarnation, live_incarnation)
+
+        changes.clear()
+        snapshot_before = store.authoritative_snapshot()
+        persisted_before = {
+            path.relative_to(self.root): path.read_bytes()
+            for path in self.root.rglob("*")
+            if path.is_file()
+        }
+        with self.assertRaises(PlaylistStoreCommandError) as rejected:
+            store.set_audio_variant(
+                "a",
+                "p2_off_vocal",
+                expected_item_incarnation_id=stale_incarnation,
+            )
+
+        self.assertEqual(rejected.exception.kind, "item_incarnation_mismatch")
+        self.assertEqual(store.authoritative_snapshot(), snapshot_before)
+        self.assertEqual(changes, [])
+        self.assertEqual(
+            {
+                path.relative_to(self.root): path.read_bytes()
+                for path in self.root.rglob("*")
+                if path.is_file()
+            },
+            persisted_before,
+        )
+        self.assertTrue(
+            store.set_audio_variant(
+                "a",
+                "p2_off_vocal",
+                expected_item_incarnation_id=live_incarnation,
+            )
+        )
+        self.assertEqual(
+            store.get_item("a").selected_audio_variant_id,
+            "p2_off_vocal",
+        )
+
     def test_concurrent_cache_attempts_retain_only_the_newest_rust_reservation(self):
         store = self.store()
         store.add_session_user("Alice")

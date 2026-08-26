@@ -962,7 +962,13 @@ class PlaylistStoreTest(unittest.TestCase):
         item.available_parts = ["on vocal", "off vocal"]
         self.store.add_item(item, requester_name="A")
 
-        changed = self.store.set_audio_variant("a", "p2_off_vocal")
+        current = self.store.get_item("a")
+        self.assertIsNotNone(current)
+        changed = self.store.set_audio_variant(
+            "a",
+            "p2_off_vocal",
+            expected_item_incarnation_id=current.item_incarnation_id,
+        )
 
         self.assertTrue(changed)
         self.assertEqual(self.store.current_item.selected_audio_variant_id, "p2_off_vocal")

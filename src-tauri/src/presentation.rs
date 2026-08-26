@@ -232,10 +232,21 @@ pub enum HostComposition {
 pub enum ControllerCommand {
     Play,
     Pause,
-    SeekRelative { delta_seconds: f64 },
-    SeekAbsolute { target_seconds: f64 },
-    NextTrack,
-    SetVolume { volume_percent: u8, muted: bool },
+    SeekRelative {
+        delta_seconds: f64,
+        expected_playback_generation: u64,
+    },
+    SeekAbsolute {
+        target_seconds: f64,
+        expected_playback_generation: u64,
+    },
+    NextTrack {
+        expected_playback_generation: u64,
+    },
+    SetVolume {
+        volume_percent: u8,
+        muted: bool,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -266,6 +277,7 @@ pub struct ControllerCommandAccepted {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ControllerPlaybackState {
     pub revision: u64,
+    pub playback_generation: Option<u64>,
     pub item_identity: Option<String>,
     pub title: String,
     pub paused: bool,
@@ -960,18 +972,33 @@ fn reset_runtime_to_inactive(
 
 fn validate_controller_command(command: &ControllerCommand) -> Result<(), String> {
     match command {
-        ControllerCommand::SeekRelative { delta_seconds }
-            if !delta_seconds.is_finite()
-                || *delta_seconds == 0.0
-                || delta_seconds.abs() > 600.0 =>
+        ControllerCommand::SeekRelative {
+            delta_seconds,
+            expected_playback_generation,
+        } if !delta_seconds.is_finite()
+            || *delta_seconds == 0.0
+            || delta_seconds.abs() > 600.0
+            || *expected_playback_generation == 0
+            || *expected_playback_generation > MAX_SAFE_JS_INTEGER =>
         {
             Err("controller relative seek is out of bounds".to_string())
         }
-        ControllerCommand::SeekAbsolute { target_seconds }
-            if !target_seconds.is_finite()
-                || !(0.0..=MAX_MEDIA_SECONDS).contains(target_seconds) =>
+        ControllerCommand::SeekAbsolute {
+            target_seconds,
+            expected_playback_generation,
+        } if !target_seconds.is_finite()
+            || !(0.0..=MAX_MEDIA_SECONDS).contains(target_seconds)
+            || *expected_playback_generation == 0
+            || *expected_playback_generation > MAX_SAFE_JS_INTEGER =>
         {
             Err("controller seek position is out of bounds".to_string())
+        }
+        ControllerCommand::NextTrack {
+            expected_playback_generation,
+        } if *expected_playback_generation == 0
+            || *expected_playback_generation > MAX_SAFE_JS_INTEGER =>
+        {
+            Err("controller Next playback target is invalid".to_string())
         }
         ControllerCommand::SetVolume { volume_percent, .. } if *volume_percent > 100 => {
             Err("controller volume is out of bounds".to_string())
@@ -982,6 +1009,9 @@ fn validate_controller_command(command: &ControllerCommand) -> Result<(), String
 
 fn validate_playback_state(candidate: &ControllerPlaybackState) -> Result<(), String> {
     if candidate.revision == 0
+        || candidate
+            .playback_generation
+            .is_some_and(|generation| generation == 0 || generation > MAX_SAFE_JS_INTEGER)
         || candidate
             .item_identity
             .as_ref()
@@ -3256,7 +3286,9 @@ mod tests {
                 .enqueue_command(ControllerCommandRequest {
                     generation,
                     sequence: 2,
-                    command: ControllerCommand::NextTrack,
+                    command: ControllerCommand::NextTrack {
+                        expected_playback_generation: 41,
+                    },
                 })
                 .is_err()
         );
@@ -3271,9 +3303,53 @@ mod tests {
                 .enqueue_command(ControllerCommandRequest {
                     generation: generation + 1,
                     sequence: 3,
-                    command: ControllerCommand::NextTrack,
+                    command: ControllerCommand::NextTrack {
+                        expected_playback_generation: 41,
+                    },
                 })
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn fifo_preserves_each_program_relative_command_target() {
+        let (state, generation) = active_state();
+        let (_, first_emit) = state
+            .enqueue_command(ControllerCommandRequest {
+                generation,
+                sequence: 1,
+                command: ControllerCommand::SeekRelative {
+                    delta_seconds: 15.0,
+                    expected_playback_generation: 41,
+                },
+            })
+            .expect("first exact command should enqueue");
+        let (_, second_emit) = state
+            .enqueue_command(ControllerCommandRequest {
+                generation,
+                sequence: 2,
+                command: ControllerCommand::NextTrack {
+                    expected_playback_generation: 42,
+                },
+            })
+            .expect("second exact command should enqueue");
+        assert_eq!(
+            first_emit.expect("first command should emit").command,
+            ControllerCommand::SeekRelative {
+                delta_seconds: 15.0,
+                expected_playback_generation: 41,
+            }
+        );
+        assert!(second_emit.is_none());
+
+        let (_, released) = state
+            .acknowledge_command(generation, 1)
+            .expect("acknowledgement should release the next FIFO entry");
+        assert_eq!(
+            released.expect("second command should release").command,
+            ControllerCommand::NextTrack {
+                expected_playback_generation: 42,
+            }
         );
     }
 
@@ -3306,18 +3382,21 @@ mod tests {
         assert!(
             validate_controller_command(&ControllerCommand::SeekAbsolute {
                 target_seconds: 12.5,
+                expected_playback_generation: 41,
             })
             .is_ok()
         );
         assert!(
             validate_controller_command(&ControllerCommand::SeekAbsolute {
                 target_seconds: f64::NAN,
+                expected_playback_generation: 41,
             })
             .is_err()
         );
         assert!(
             validate_controller_command(&ControllerCommand::SeekRelative {
                 delta_seconds: 601.0,
+                expected_playback_generation: 41,
             })
             .is_err()
         );
@@ -3334,15 +3413,34 @@ mod tests {
     fn controller_command_json_uses_camel_case_fields() {
         let cases = [
             (
-                serde_json::json!({"type": "seekRelative", "deltaSeconds": -15.0}),
+                serde_json::json!({
+                    "type": "seekRelative",
+                    "deltaSeconds": -15.0,
+                    "expectedPlaybackGeneration": 41
+                }),
                 ControllerCommand::SeekRelative {
                     delta_seconds: -15.0,
+                    expected_playback_generation: 41,
                 },
             ),
             (
-                serde_json::json!({"type": "seekAbsolute", "targetSeconds": 55.0}),
+                serde_json::json!({
+                    "type": "seekAbsolute",
+                    "targetSeconds": 55.0,
+                    "expectedPlaybackGeneration": 41
+                }),
                 ControllerCommand::SeekAbsolute {
                     target_seconds: 55.0,
+                    expected_playback_generation: 41,
+                },
+            ),
+            (
+                serde_json::json!({
+                    "type": "nextTrack",
+                    "expectedPlaybackGeneration": 41
+                }),
+                ControllerCommand::NextTrack {
+                    expected_playback_generation: 41,
                 },
             ),
             (
@@ -3379,6 +3477,12 @@ mod tests {
             }))
             .is_err()
         );
+        assert!(
+            serde_json::from_value::<ControllerCommand>(serde_json::json!({
+                "type": "nextTrack"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -3386,6 +3490,7 @@ mod tests {
         let (state, generation) = begin_state();
         let candidate = ControllerPlaybackState {
             revision: 1,
+            playback_generation: Some(41),
             item_identity: Some("song-1".to_string()),
             title: "Song".to_string(),
             paused: false,
@@ -3407,6 +3512,7 @@ mod tests {
         let (state, generation) = begin_state();
         let candidate = ControllerPlaybackState {
             revision: 1,
+            playback_generation: Some(41),
             item_identity: Some("song-1".to_string()),
             title: "Song".to_string(),
             paused: true,

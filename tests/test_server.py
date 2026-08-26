@@ -2615,19 +2615,37 @@ class PlayerNextRouteTest(unittest.TestCase):
     def run_request(expected_generation: int, authoritative_generation: int) -> tuple[list, dict]:
         program = {"current": "song-b", "queue": ["song-c"]}
         calls: list[int | None] = []
+        current_generation = authoritative_generation
 
         def advance_to_next(playback_generation=None):
+            nonlocal current_generation
             calls.append(playback_generation)
             if playback_generation is not None and playback_generation != authoritative_generation:
-                raise ValueError("playback generation changed before Next was applied")
+                response = {
+                    "schema_version": 1,
+                    "status": "rejected",
+                    "error": {
+                        "kind": "playback_generation_mismatch",
+                        "message": "playback generation changed before Next was applied",
+                    },
+                }
+                raise PlaylistStoreCommandError(
+                    rust_runtime.RustAppStateRejectedError(
+                        "rejected",
+                        "playback_generation_mismatch",
+                        "playback generation changed before Next was applied",
+                        response=response,
+                    )
+                )
             program["current"] = program["queue"].pop(0)
+            current_generation += 1
 
         context = SimpleNamespace(
             touch_client=lambda _client_id, is_host=True: None,
             advance_to_next=advance_to_next,
             snapshot=lambda: {
                 "state_revision": 99,
-                "playback_generation": authoritative_generation + 1,
+                "playback_generation": current_generation,
                 "current_item": {"id": program["current"]},
             },
         )
@@ -2651,7 +2669,9 @@ class PlayerNextRouteTest(unittest.TestCase):
 
         self.assertEqual(calls, [7])
         self.assertEqual(result["program"], {"current": "song-b", "queue": ["song-c"]})
-        self.assertEqual(result["writes"][0][1], server_module.HTTPStatus.BAD_REQUEST)
+        self.assertIsNone(result["writes"][0][1])
+        self.assertTrue(result["writes"][0][0]["ok"])
+        self.assertTrue(result["writes"][0][0]["stale"])
 
     def test_exact_generation_ignores_python_state_revision_and_advances_once(self):
         calls, result = self.run_request(8, 8)
@@ -2742,21 +2762,34 @@ class CacheRetryRouteTest(unittest.TestCase):
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
             is_current_item=lambda item_id: item_id == "current-song",
-            retry_cache_item=lambda item_id, force=False: retries.append(
-                {"item_id": item_id, "force": force}
+            retry_cache_item=lambda item_id, force=False, **kwargs: retries.append(
+                {"item_id": item_id, "force": force, **kwargs}
             ),
             snapshot=lambda: {"current_item": {"id": "current-song"}},
         )
 
         handler.path = "/api/cache/retry"
         handler.headers = {}
-        handler._read_json_body = lambda: {"item_id": "current-song", "force": True}
+        handler._read_json_body = lambda: {
+            "item_id": "current-song",
+            "expected_item_incarnation_id": "i-current",
+            "force": True,
+        }
         handler._write_json = lambda payload, status=None: writes.append(payload)
 
         with patch("bilikara.server.CONTEXT", context):
             handler.do_POST()
 
-        self.assertEqual(retries, [{"item_id": "current-song", "force": True}])
+        self.assertEqual(
+            retries,
+            [
+                {
+                    "item_id": "current-song",
+                    "expected_item_incarnation_id": "i-current",
+                    "force": True,
+                }
+            ],
+        )
         self.assertEqual(writes[0], {"ok": True, "data": {"current_item": {"id": "current-song"}}})
 
     def test_current_item_is_not_silently_forced(self):
@@ -2764,21 +2797,33 @@ class CacheRetryRouteTest(unittest.TestCase):
         retries: list[dict] = []
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
-            retry_cache_item=lambda item_id, force=False: retries.append(
-                {"item_id": item_id, "force": force}
+            retry_cache_item=lambda item_id, force=False, **kwargs: retries.append(
+                {"item_id": item_id, "force": force, **kwargs}
             ),
             snapshot=lambda: {"current_item": {"id": "current-song"}},
         )
 
         handler.path = "/api/cache/retry"
         handler.headers = {}
-        handler._read_json_body = lambda: {"item_id": "current-song"}
+        handler._read_json_body = lambda: {
+            "item_id": "current-song",
+            "expected_item_incarnation_id": "i-current",
+        }
         handler._write_json = lambda payload, status=None: None
 
         with patch("bilikara.server.CONTEXT", context):
             handler.do_POST()
 
-        self.assertEqual(retries, [{"item_id": "current-song", "force": False}])
+        self.assertEqual(
+            retries,
+            [
+                {
+                    "item_id": "current-song",
+                    "expected_item_incarnation_id": "i-current",
+                    "force": False,
+                }
+            ],
+        )
 
     def test_retry_playlist_item_keeps_requested_force_flag(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
@@ -2786,21 +2831,123 @@ class CacheRetryRouteTest(unittest.TestCase):
         context = SimpleNamespace(
             touch_client=lambda client_id, is_host=True: None,
             is_current_item=lambda item_id: False,
-            retry_cache_item=lambda item_id, force=False: retries.append(
-                {"item_id": item_id, "force": force}
+            retry_cache_item=lambda item_id, force=False, **kwargs: retries.append(
+                {"item_id": item_id, "force": force, **kwargs}
             ),
             snapshot=lambda: {"playlist": [{"id": "queued-song"}]},
         )
 
         handler.path = "/api/cache/retry"
         handler.headers = {}
-        handler._read_json_body = lambda: {"item_id": "queued-song"}
+        handler._read_json_body = lambda: {
+            "item_id": "queued-song",
+            "expected_item_incarnation_id": "i-queued",
+        }
         handler._write_json = lambda payload, status=None: None
 
         with patch("bilikara.server.CONTEXT", context):
             handler.do_POST()
 
-        self.assertEqual(retries, [{"item_id": "queued-song", "force": False}])
+        self.assertEqual(
+            retries,
+            [
+                {
+                    "item_id": "queued-song",
+                    "expected_item_incarnation_id": "i-queued",
+                    "force": False,
+                }
+            ],
+        )
+
+    def test_stale_retry_is_consumed_once_without_retargeting_the_replacement(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[tuple[dict, object]] = []
+        retries: list[dict] = []
+
+        def reject_stale(item_id, force=False, **kwargs):
+            retries.append({"item_id": item_id, "force": force, **kwargs})
+            response = {
+                "schema_version": 1,
+                "status": "rejected",
+                "error": {
+                    "kind": "item_incarnation_mismatch",
+                    "message": "cache item changed before retry",
+                },
+            }
+            raise PlaylistStoreCommandError(
+                rust_runtime.RustAppStateRejectedError(
+                    "rejected",
+                    "item_incarnation_mismatch",
+                    "cache item changed before retry",
+                    response=response,
+                )
+            )
+
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            retry_cache_item=reject_stale,
+            snapshot=lambda: {
+                "revision": 9,
+                "current_item": {
+                    "id": "same-song",
+                    "item_incarnation_id": "i-new",
+                },
+            },
+        )
+        handler.path = "/api/cache/retry"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "item_id": "same-song",
+            "expected_item_incarnation_id": "i-old",
+            "force": True,
+        }
+        handler._write_json = lambda payload, status=None: writes.append(
+            (payload, status)
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(
+            retries,
+            [
+                {
+                    "item_id": "same-song",
+                    "expected_item_incarnation_id": "i-old",
+                    "force": True,
+                }
+            ],
+        )
+        self.assertEqual(len(writes), 1)
+        self.assertIsNone(writes[0][1])
+        self.assertTrue(writes[0][0]["ok"])
+        self.assertTrue(writes[0][0]["stale"])
+        self.assertEqual(
+            writes[0][0]["data"]["current_item"]["item_incarnation_id"],
+            "i-new",
+        )
+
+    def test_retry_requires_an_exact_item_incarnation(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[tuple[dict, object]] = []
+        retries: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            retry_cache_item=lambda *args, **kwargs: retries.append(kwargs),
+            snapshot=lambda: {},
+        )
+        handler.path = "/api/cache/retry"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"item_id": "same-song", "force": True}
+        handler._write_json = lambda payload, status=None: writes.append(
+            (payload, status)
+        )
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(retries, [])
+        self.assertEqual(writes[0][1], server_module.HTTPStatus.BAD_REQUEST)
 
 
 class PlayerControlRouteTest(unittest.TestCase):
@@ -2819,6 +2966,7 @@ class PlayerControlRouteTest(unittest.TestCase):
         handler._read_json_body = lambda: {
             "action": "next-track",
             "item_id": "song-1",
+            "playback_generation": 17,
         }
         handler._write_json = lambda payload, status=None: writes.append(payload)
 
@@ -2827,6 +2975,7 @@ class PlayerControlRouteTest(unittest.TestCase):
 
         self.assertEqual(issued[0]["action"], "next-track")
         self.assertEqual(issued[0]["item_id"], "song-1")
+        self.assertEqual(issued[0]["playback_generation"], 17)
         self.assertEqual(writes[0]["data"]["player_control_command"]["action"], "next-track")
 
     def test_absolute_seek_route_forwards_target_seconds(self):
@@ -2845,6 +2994,7 @@ class PlayerControlRouteTest(unittest.TestCase):
             "action": "seek-absolute",
             "item_id": "song-1",
             "target_seconds": 262.5,
+            "playback_generation": 23,
         }
         handler._write_json = lambda payload, status=None: writes.append(payload)
 
@@ -2854,7 +3004,156 @@ class PlayerControlRouteTest(unittest.TestCase):
         self.assertEqual(issued[0]["action"], "seek-absolute")
         self.assertEqual(issued[0]["item_id"], "song-1")
         self.assertEqual(issued[0]["target_seconds"], 262.5)
+        self.assertEqual(issued[0]["playback_generation"], 23)
         self.assertEqual(writes[0]["data"]["player_control_command"]["target_seconds"], 262.5)
+
+    def test_program_relative_control_requires_an_exact_playback_generation(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[tuple[dict, object]] = []
+        issued: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            issue_player_control=lambda **kwargs: issued.append(kwargs),
+            snapshot=lambda: {},
+        )
+
+        handler.path = "/api/player/control"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "action": "seek-relative",
+            "item_id": "song-1",
+            "delta_seconds": 15,
+        }
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(issued, [])
+        self.assertEqual(writes[0][1], server_module.HTTPStatus.BAD_REQUEST)
+
+
+class PlayerAudioVariantRouteTest(unittest.TestCase):
+    @staticmethod
+    def rejection(kind: str) -> PlaylistStoreCommandError:
+        response = {
+            "schema_version": 1,
+            "status": "rejected",
+            "error": {"kind": kind, "message": "stale audio target"},
+        }
+        return PlaylistStoreCommandError(
+            rust_runtime.RustAppStateRejectedError(
+                "rejected",
+                kind,
+                "stale audio target",
+                response=response,
+            )
+        )
+
+    def test_audio_variant_forwards_the_exact_item_incarnation(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        calls: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            set_audio_variant=lambda item_id, variant_id, **kwargs: calls.append(
+                {
+                    "item_id": item_id,
+                    "variant_id": variant_id,
+                    **kwargs,
+                }
+            )
+            or True,
+            snapshot=lambda: {"revision": 4},
+        )
+
+        handler.path = "/api/player/audio-variant"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "item_id": "song-1",
+            "variant_id": "instrumental",
+            "expected_item_incarnation_id": "i-exact",
+        }
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "item_id": "song-1",
+                    "variant_id": "instrumental",
+                    "expected_item_incarnation_id": "i-exact",
+                }
+            ],
+        )
+        self.assertEqual(writes, [{"ok": True, "data": {"revision": 4}}])
+
+    def test_stale_audio_variant_is_consumed_without_retry_or_user_error(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[tuple[dict, object]] = []
+        calls: list[dict] = []
+
+        def reject_stale(item_id, variant_id, **kwargs):
+            calls.append({"item_id": item_id, "variant_id": variant_id, **kwargs})
+            raise self.rejection("item_incarnation_mismatch")
+
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            set_audio_variant=reject_stale,
+            snapshot=lambda: {"revision": 9, "current_item": {"id": "song-1"}},
+        )
+        handler.path = "/api/player/audio-variant"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "item_id": "song-1",
+            "variant_id": "instrumental",
+            "expected_item_incarnation_id": "i-old",
+        }
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            writes,
+            [
+                (
+                    {
+                        "ok": True,
+                        "data": {"revision": 9, "current_item": {"id": "song-1"}},
+                        "stale": True,
+                    },
+                    None,
+                )
+            ],
+        )
+
+    def test_audio_variant_requires_an_item_incarnation(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[tuple[dict, object]] = []
+        calls: list[dict] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            set_audio_variant=lambda *args, **kwargs: calls.append(kwargs),
+            snapshot=lambda: {},
+        )
+        handler.path = "/api/player/audio-variant"
+        handler.headers = {}
+        handler._read_json_body = lambda: {
+            "item_id": "song-1",
+            "variant_id": "instrumental",
+        }
+        handler._write_json = lambda payload, status=None: writes.append((payload, status))
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(calls, [])
+        self.assertEqual(writes[0][1], server_module.HTTPStatus.BAD_REQUEST)
 
 
 class PlaylistResortRouteTest(unittest.TestCase):

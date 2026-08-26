@@ -147,6 +147,10 @@
     const generation = Number(candidate.generation);
     const sequence = Number(candidate.sequence);
     const revision = Number(candidate.state.revision);
+    const playbackGenerationValue = candidate.state.playbackGeneration;
+    const playbackGeneration = playbackGenerationValue == null
+      ? null
+      : Number(playbackGenerationValue);
     const currentTimeSeconds = Number(candidate.state.currentTimeSeconds);
     const durationValue = candidate.state.durationSeconds;
     const durationSeconds = durationValue == null ? null : Number(durationValue);
@@ -157,6 +161,13 @@
       || sequence < 1
       || !Number.isSafeInteger(revision)
       || revision < 1
+      || (
+        playbackGeneration != null
+        && (
+          !Number.isSafeInteger(playbackGeneration)
+          || playbackGeneration < 1
+        )
+      )
       || !Number.isFinite(currentTimeSeconds)
       || currentTimeSeconds < 0
       || (durationSeconds != null && (!Number.isFinite(durationSeconds) || durationSeconds < 0))
@@ -171,6 +182,7 @@
       generation,
       sequence,
       revision,
+      playbackGeneration,
       itemIdentity: candidate.state.itemIdentity == null
         ? null
         : String(candidate.state.itemIdentity),
@@ -206,6 +218,7 @@
     const duration = playback?.durationSeconds ?? 0;
     const hasPlayableMedia = available
       && playback?.itemIdentity != null
+      && Number.isSafeInteger(playback?.playbackGeneration)
       && Number.isFinite(duration)
       && duration > 0;
     const statusKey = session?.phase === "active"
@@ -242,6 +255,9 @@
     elements.back.disabled = !hasPlayableMedia;
     elements.forward.disabled = !hasPlayableMedia;
     elements.next.disabled = !available || !playback?.canSkip;
+    if (!Number.isSafeInteger(playback?.playbackGeneration)) {
+      elements.next.disabled = true;
+    }
     elements.seek.disabled = !hasPlayableMedia;
     elements.exit.disabled = state.commandBusy
       || !session
@@ -382,13 +398,24 @@
       sendCommand(elements.play, { type: state.playback?.paused ? "play" : "pause" });
     });
     elements.back.addEventListener("click", () => {
-      sendCommand(elements.back, { type: "seekRelative", deltaSeconds: -15 });
+      sendCommand(elements.back, {
+        type: "seekRelative",
+        deltaSeconds: -15,
+        expectedPlaybackGeneration: state.playback?.playbackGeneration,
+      });
     });
     elements.forward.addEventListener("click", () => {
-      sendCommand(elements.forward, { type: "seekRelative", deltaSeconds: 15 });
+      sendCommand(elements.forward, {
+        type: "seekRelative",
+        deltaSeconds: 15,
+        expectedPlaybackGeneration: state.playback?.playbackGeneration,
+      });
     });
     elements.next.addEventListener("click", () => {
-      sendCommand(elements.next, { type: "nextTrack" });
+      sendCommand(elements.next, {
+        type: "nextTrack",
+        expectedPlaybackGeneration: state.playback?.playbackGeneration,
+      });
     });
     elements.seek.addEventListener("input", () => {
       elements.time.textContent = `${formatTime(elements.seek.value)} / ${formatTime(elements.seek.max)}`;
@@ -397,6 +424,7 @@
       sendCommand(elements.seek, {
         type: "seekAbsolute",
         targetSeconds: Number(elements.seek.value),
+        expectedPlaybackGeneration: state.playback?.playbackGeneration,
       });
     });
     elements.volume.addEventListener("input", () => {

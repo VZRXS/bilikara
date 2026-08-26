@@ -27,6 +27,7 @@ class SongTransitionFrontendTest(unittest.TestCase):
                     "(async () => {\n"
                     "function applyFreshStateSnapshot(snapshot) { state.data = snapshot; return true; }\n"
                     "async function apiPostStateSnapshot(url, payload) { return applyFreshStateSnapshot(await apiPost(url, payload)); }\n"
+                    "async function apiPostExactStateCommand(url, payload) { const snapshot = await apiPost(url, payload); return { snapshotAccepted: applyFreshStateSnapshot(snapshot), commandApplied: true }; }\n"
                     f"{script}\n"
                     "})().catch((error) => { console.error(error); process.exit(1); });"
                 ),
@@ -534,6 +535,235 @@ console.log(JSON.stringify({{
                 "replacementPairEffects": 0,
                 "syncCalls": 0,
                 "apiCalls": 1,
+            },
+        )
+
+    def test_stale_next_first_carrier_accepts_new_program_but_reports_no_effect(self):
+        api_functions = self.source_slice(
+            "async function parseApiResponse", "function submitSongRating"
+        )
+        snapshot_functions = self.source_slice(
+            "function isSafeHostSnapshotInteger", "function syncCachePanelVisibility"
+        )
+        hold_functions = self.source_slice(
+            "function shouldHoldCurrentItemForTransition",
+            "function stopMountedPlayerForAdvanceDelay",
+        )
+        maybe_transition = self.source_slice(
+            "function maybeShowSongTransitionOverlay",
+            "function hasPendingSongTransitionOverlayForItem",
+        )
+        clear_delay = self.source_slice(
+            "function clearLocalAdvanceDelay", "async function finishLocalAdvanceDelay"
+        )
+        advance_functions = self.source_slice(
+            "async function advanceLocalPlayerNow", "async function reorderPlaylist"
+        )
+        script = f"""
+const window = {{
+  location: {{ href: "http://127.0.0.1:8080/" }},
+  setTimeout,
+  clearTimeout,
+  clearInterval,
+}};
+const oldItem = item("A", "i-a", "a-1");
+const nextItem = item("B", "i-b", "b-1");
+const replacementItem = item("A", "i-a", "a-2");
+const initial = snapshot(9, 9, 9, oldItem, [nextItem]);
+const replacement = snapshot(10, 10, 10, replacementItem, [nextItem]);
+const state = {{
+  data: null,
+  hostPlaybackSession: null,
+  pendingHostPlaybackProgramReconciliation: null,
+  localShouldBePlaying: true,
+  localAdvanceInFlight: false,
+  pendingSongTransitionOverlayData: null,
+  pendingSongTransitionGeneration: 0,
+  localAdvanceDelayTimer: null,
+  localAdvanceCountdownTimer: null,
+  localAdvanceDelayStartAt: 0,
+  localAdvanceDelayDeadline: 0,
+  localAdvanceOverlayDurationMs: 0,
+  localAdvanceOverlayPrimaryItem: null,
+  localAdvanceOverlayFollowItems: null,
+  localAdvanceOverlayTotalCount: null,
+  localAdvanceDelayItemId: "",
+  localAdvanceDelayToken: 0,
+  songTransitionGeneration: 0,
+  manualTransitionHoldItemId: "",
+  manualTransitionHoldGeneration: 0,
+  lastSongTransitionOverlayKey: "",
+}};
+let responseSnapshotAccepted = false;
+let reconciliationCount = 0;
+let nextRequests = 0;
+let heldBeforeResponse = false;
+let renderCount = 0;
+let syncCalls = 0;
+
+function item(id, incarnation, artifact) {{
+  return {{
+    id,
+    item_incarnation_id: incarnation,
+    selected_audio_variant_id: "instrumental",
+    artifact_set_id: artifact,
+    video_media_url: `/media/${{artifact}}/video.mp4`,
+    audio_variants: [{{
+      id: "instrumental",
+      audio_url: `/media/${{artifact}}/instrumental.m4a`,
+    }}],
+  }};
+}}
+function snapshot(stateRevision, revision, generation, currentItem, playlist) {{
+  return {{
+    state_revision: stateRevision,
+    revision,
+    playback_generation: generation,
+    playback_program: {{
+      item_id: currentItem.id,
+      item_incarnation_id: currentItem.item_incarnation_id,
+      selected_audio_variant_id: currentItem.selected_audio_variant_id,
+      artifact_set_id: currentItem.artifact_set_id,
+    }},
+    current_item: currentItem,
+    playlist,
+    playback_mode: "local",
+    player_settings: {{ song_advance_delay_seconds: 3 }},
+  }};
+}}
+function currentItemIdFromData(data) {{ return String(data?.current_item?.id || ""); }}
+function queuedNextItem() {{ return state.data?.playlist?.[0] || null; }}
+function manualTransitionOverlaySeconds() {{ return 3; }}
+function currentSongAdvanceDelaySeconds() {{ return 3; }}
+function hasLocalAdvanceDelayOverlay() {{
+  return Boolean(
+    state.localAdvanceDelayDeadline
+    || state.localAdvanceDelayStartAt
+    || state.localAdvanceDelayTimer
+    || state.localAdvanceCountdownTimer
+  );
+}}
+function hidePlayerDelayOverlay() {{}}
+function clientHeaders(headers) {{ return headers; }}
+function localizedApiMessage(message) {{ return String(message || ""); }}
+function t(key) {{ return key; }}
+function frontendPlaybackMode(mode) {{ return mode || "local"; }}
+function setAppMessage() {{}}
+function render() {{ renderCount += 1; }}
+function syncMountedLocalPlayer() {{ syncCalls += 1; }}
+function isCurrentHostPlaybackSession(session) {{
+  return Boolean(
+    session
+    && state.hostPlaybackSession === session
+    && session.playbackGeneration === state.data?.playback_generation
+    && playbackProgramDescriptorsEqual(session.playbackProgram, state.data?.playback_program)
+  );
+}}
+function renderPlayer(currentItem) {{
+  reconciliationCount += 1;
+  state.hostPlaybackSession = {{
+    phase: "playing",
+    playbackGeneration: state.data.playback_generation,
+    playbackProgram: state.data.playback_program,
+    video: {{ paused: false }},
+    audio: {{ paused: false }},
+    readyCommitted: true,
+  }};
+  state.localShouldBePlaying = !shouldHoldCurrentItemForTransition(currentItem);
+}}
+async function fetch(url, options) {{
+  nextRequests += 1;
+  heldBeforeResponse = Boolean(
+    url === "/api/player/next"
+    && JSON.parse(options.body).playback_generation === 9
+    && state.localAdvanceInFlight
+    && state.manualTransitionHoldItemId === "B"
+  );
+  return {{
+    status: 200,
+    ok: true,
+    url: `http://127.0.0.1:8080${{url}}`,
+    headers: {{ get: () => "application/json" }},
+    json: async () => ({{ ok: true, stale: true, data: replacement }}),
+  }};
+}}
+{api_functions}
+{snapshot_functions}
+{hold_functions}
+{maybe_transition}
+{clear_delay}
+{advance_functions}
+
+(async () => {{
+  if (!acceptHostStateSnapshot(initial)) throw new Error("initial snapshot rejected");
+  await Promise.resolve();
+  reconciliationCount = 0;
+  responseSnapshotAccepted = state.data === initial;
+  const applied = await requestNextTrack();
+  await Promise.resolve();
+  responseSnapshotAccepted = responseSnapshotAccepted && state.data === replacement;
+  process.stdout.write(JSON.stringify({{
+    applied,
+    responseSnapshotAccepted,
+    reconciledGeneration: state.hostPlaybackSession?.playbackGeneration || 0,
+    reconciledItem: state.hostPlaybackSession?.playbackProgram?.item_id || "",
+    playable: Boolean(
+      state.hostPlaybackSession?.readyCommitted
+      && state.hostPlaybackSession?.video?.paused === false
+      && state.hostPlaybackSession?.audio?.paused === false
+    ),
+    heldBeforeResponse,
+    holdItem: state.manualTransitionHoldItemId,
+    holdGeneration: state.manualTransitionHoldGeneration,
+    pendingItem: state.pendingSongTransitionOverlayData?.current_item?.id || "",
+    pendingGeneration: state.pendingSongTransitionGeneration,
+    delayItem: state.localAdvanceDelayItemId,
+    deadline: state.localAdvanceDelayDeadline,
+    delayTimer: state.localAdvanceDelayTimer,
+    countdownTimer: state.localAdvanceCountdownTimer,
+    inFlight: state.localAdvanceInFlight,
+    shouldPlay: state.localShouldBePlaying,
+    reconciliationCount,
+    nextRequests,
+    renderCount,
+    syncCalls,
+  }}));
+}})().catch((error) => {{ process.stderr.write(String(error)); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            ["node", "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result,
+            {
+                "applied": False,
+                "responseSnapshotAccepted": True,
+                "reconciledGeneration": 10,
+                "reconciledItem": "A",
+                "playable": True,
+                "heldBeforeResponse": True,
+                "holdItem": "",
+                "holdGeneration": 0,
+                "pendingItem": "",
+                "pendingGeneration": 0,
+                "delayItem": "",
+                "deadline": 0,
+                "delayTimer": None,
+                "countdownTimer": None,
+                "inFlight": False,
+                "shouldPlay": True,
+                "reconciliationCount": 1,
+                "nextRequests": 1,
+                "renderCount": 0,
+                "syncCalls": 0,
             },
         )
 
@@ -1142,14 +1372,20 @@ console.log(JSON.stringify({{
 
         self.assertIn("session?.playbackGeneration", advance)
         self.assertIn("playback_generation: expectedPlaybackGeneration", advance)
-        self.assertIn('apiPostStateSnapshot("/api/player/next", {', advance)
+        self.assertIn('apiPostExactStateCommand("/api/player/next", {', advance)
         self.assertIn('handleLocalPlaybackEnded("media-ended", state.hostPlaybackSession)', ended)
         self.assertIn("advanceLocalPlayerNow({ showTransition: false, session })", overlay_completion)
         self.assertIn('requestNextTrack().catch(() => {})', media_session)
         self.assertIn('case "nextTrack"', controller)
-        self.assertIn("await requestNextTrack()", controller)
+        self.assertIn(
+            "await requestNextTrack(expectedPlaybackGeneration)",
+            controller,
+        )
         self.assertIn('action === "next-track"', remote_control)
-        self.assertIn('requestNextTrack().catch(() => {})', remote_control)
+        self.assertIn(
+            'requestNextTrack(expectedPlaybackGeneration).catch(() => {})',
+            remote_control,
+        )
         self.assertIn("state.data.playback_generation", remote_next)
         self.assertIn("playback_generation: expectedPlaybackGeneration", remote_next)
 

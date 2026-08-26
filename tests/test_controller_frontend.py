@@ -261,7 +261,7 @@ async function flush() {{
   playbackEvent({ payload: {
     generation: 7, sequence: 1,
     state: {
-      revision: 1, itemIdentity: "song-1", title: "First",
+      revision: 1, playbackGeneration: 41, itemIdentity: "song-1", title: "First",
       paused: true, currentTimeSeconds: 12, durationSeconds: 120,
       volumePercent: 75, muted: false, canSkip: true,
     },
@@ -289,10 +289,18 @@ async function flush() {{
   elements["controller-seek"].dispatch("change");
   await flush();
 
+  elements["controller-play-toggle"].dispatch("click");
+  await flush();
+  elements["controller-next"].dispatch("click");
+  await flush();
+  elements["controller-volume"].value = "35";
+  elements["controller-volume"].dispatch("change");
+  await flush();
+
   playbackEvent({ payload: {
     generation: 7, sequence: 1,
     state: {
-      revision: 2, itemIdentity: "song-1", title: "Stale",
+      revision: 2, playbackGeneration: 41, itemIdentity: "song-1", title: "Stale",
       paused: false, currentTimeSeconds: 20, durationSeconds: 120,
       volumePercent: 75, muted: false, canSkip: true,
     },
@@ -301,7 +309,7 @@ async function flush() {{
   playbackEvent({ payload: {
     generation: 7, sequence: 2,
     state: {
-      revision: 3, itemIdentity: "song-1", title: "Fresh",
+      revision: 3, playbackGeneration: 41, itemIdentity: "song-1", title: "Fresh",
       paused: false, currentTimeSeconds: 21, durationSeconds: 120,
       volumePercent: 75, muted: false, canSkip: true,
     },
@@ -309,7 +317,7 @@ async function flush() {{
   playbackEvent({ payload: {
     generation: 99, sequence: 99,
     state: {
-      revision: 99, itemIdentity: "bad", title: "Wrong generation",
+      revision: 99, playbackGeneration: 99, itemIdentity: "bad", title: "Wrong generation",
       paused: false, currentTimeSeconds: 0, durationSeconds: 1,
       volumePercent: 10, muted: false, canSkip: true,
     },
@@ -352,12 +360,42 @@ async function flush() {{
         self.assertEqual(result["sent"][0], {
             "generation": 7,
             "sequence": 1,
-            "command": {"type": "seekRelative", "deltaSeconds": -15},
+            "command": {
+                "type": "seekRelative",
+                "deltaSeconds": -15,
+                "expectedPlaybackGeneration": 41,
+            },
         })
         self.assertEqual(result["sent"][1], {
             "generation": 7,
             "sequence": 2,
-            "command": {"type": "seekAbsolute", "targetSeconds": 55},
+            "command": {
+                "type": "seekAbsolute",
+                "targetSeconds": 55,
+                "expectedPlaybackGeneration": 41,
+            },
+        })
+        self.assertEqual(result["sent"][2], {
+            "generation": 7,
+            "sequence": 3,
+            "command": {"type": "play"},
+        })
+        self.assertEqual(result["sent"][3], {
+            "generation": 7,
+            "sequence": 4,
+            "command": {
+                "type": "nextTrack",
+                "expectedPlaybackGeneration": 41,
+            },
+        })
+        self.assertEqual(result["sent"][4], {
+            "generation": 7,
+            "sequence": 5,
+            "command": {
+                "type": "setVolume",
+                "volumePercent": 35,
+                "muted": False,
+            },
         })
         self.assertEqual(result["titleAfterStale"], "First")
         self.assertEqual(result["titleAfterFresh"], "Fresh")
@@ -392,7 +430,7 @@ async function flush() {{
   playbackEvent({ payload: {
     generation: 7, sequence: 2,
     state: {
-      revision: 2, itemIdentity: "song-1", title: "Song", paused: false,
+      revision: 2, playbackGeneration: 41, itemIdentity: "song-1", title: "Song", paused: false,
       currentTimeSeconds: 5, durationSeconds: 120,
       volumePercent: 75, muted: false, canSkip: true,
     },

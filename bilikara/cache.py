@@ -1809,10 +1809,32 @@ class CacheManager:
             )
             self._record_item_activity(item.id)
 
-    def retry_item(self, item_id: str, *, force: bool = False) -> None:
+    def retry_item(
+        self,
+        item_id: str,
+        *,
+        expected_item_incarnation_id: str,
+        force: bool = False,
+    ) -> None:
+        if (
+            not isinstance(expected_item_incarnation_id, str)
+            or not expected_item_incarnation_id
+        ):
+            raise ValueError(
+                "expected item incarnation must be a non-empty Rust identity"
+            )
         item = self.store.get_item(item_id)
-        if not item:
-            raise ValueError("没有找到要重新下载的歌曲")
+        if (
+            not item
+            or item.item_incarnation_id != expected_item_incarnation_id
+        ):
+            self._begin_cache_attempt(
+                item_id,
+                expected_item_incarnation_id,
+            )
+            raise RuntimeError(
+                "Rust AppState accepted an inconsistent cache retry target"
+            )
         if item.cache_status == "ready" and not force:
             raise ValueError("这首歌已经缓存完成，无需重新下载")
         if item.cache_status not in {"downloading", "failed", "ready", "pending", "queued"}:
@@ -1827,7 +1849,6 @@ class CacheManager:
         ):
             raise ValueError(DOWNKYI_AUTH_REQUIRED_MESSAGE)
         log_path = self._item_log_path(item_id, download_source)
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] manual retry requested")
 
         if download_source == DOWNLOAD_SOURCE_NATIVE:
             snapshot = dict(self.native_cache_snapshot)
@@ -1840,10 +1861,12 @@ class CacheManager:
                 and primary_active_item_id
                 and primary_active_item_id != item_id
             )
+            job = self._native_cache_job(item)
+            job["item_incarnation_id"] = expected_item_incarnation_id
             try:
                 self._ensure_native_cache_runtime()
                 result = self._native_cache_request(
-                    "retry", job=self._native_cache_job(item), urgent=urgent
+                    "retry", job=job, urgent=urgent
                 )
                 generation = int(result.get("generation") or 0)
                 cache_attempt_token = self._require_cache_attempt_token(
@@ -1857,16 +1880,33 @@ class CacheManager:
                     )
                 self._drain_native_cache_events()
             except Exception as exc:  # noqa: BLE001
-                if not self._cache_incarnation_mismatch(exc):
-                    self._mark_native_cache_failed(
-                        item_id,
-                        str(exc),
-                        expected_item_incarnation_id=item.item_incarnation_id,
-                    )
+                if self._cache_incarnation_mismatch(exc):
+                    raise
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] manual retry requested",
+                )
+                self._mark_native_cache_failed(
+                    item_id,
+                    str(exc),
+                    expected_item_incarnation_id=expected_item_incarnation_id,
+                )
+                return
+            self._append_log_line(
+                log_path,
+                f"[{self._log_timestamp()}] manual retry requested",
+            )
             return
 
         is_current_item = self.store.is_current_item(item_id)
-        refresh_token = self._begin_cache_attempt_for_item(item)
+        refresh_token = self._begin_cache_attempt(
+            item_id,
+            expected_item_incarnation_id,
+        )
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] manual retry requested",
+        )
         with self.lock:
             active_processes = self._active_processes_locked(item_id)
             target_is_primary_active = self.active_item_id == item_id

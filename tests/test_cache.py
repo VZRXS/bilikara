@@ -32,7 +32,7 @@ from bilikara.cache import (
     VIDEO_QUALITY_CHOICES,
 )
 from bilikara.models import PlaylistItem
-from bilikara.store import PlaylistStore
+from bilikara.store import PlaylistStore, PlaylistStoreCommandError
 
 
 def begin_cache_attempt(store: PlaylistStore, item_id: str) -> int:
@@ -40,6 +40,23 @@ def begin_cache_attempt(store: PlaylistStore, item_id: str) -> int:
     if observed is None:
         raise AssertionError(f"missing cache item fixture: {item_id}")
     return store.begin_cache_attempt(item_id, observed.item_incarnation_id)
+
+
+def retry_cache_item(
+    manager: CacheManager,
+    store: PlaylistStore,
+    item_id: str,
+    *,
+    force: bool = False,
+) -> None:
+    observed = store.get_item(item_id)
+    if observed is None:
+        raise AssertionError(f"missing cache retry fixture: {item_id}")
+    manager.retry_item(
+        item_id,
+        expected_item_incarnation_id=observed.item_incarnation_id,
+        force=force,
+    )
 
 
 class CacheManagerOutputTest(unittest.TestCase):
@@ -1383,7 +1400,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                             if action == "submit":
                                 manager.enqueue(old.id)
                             else:
-                                manager.retry_item(old.id)
+                                retry_cache_item(manager, self.store, old.id)
 
                         live = self.store.get_item(old.id)
                         self.assertEqual(live.bvid, replacement.bvid)
@@ -1470,7 +1487,13 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.download_source = DOWNLOAD_SOURCE_NATIVE
                 manager._apply_native_cache_snapshot(snapshot)
                 self.assertTrue(
-                    self.store.set_audio_variant(item.id, "p1-off-vocal")
+                    self.store.set_audio_variant(
+                        item.id,
+                        "p1-off-vocal",
+                        expected_item_incarnation_id=reservation[
+                            "item_incarnation_id"
+                        ],
+                    )
                 )
                 manager._apply_native_cache_snapshot(snapshot)
                 cached = self.store.get_item(item.id)
@@ -3038,12 +3061,79 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                 with patch.object(manager, "enqueue") as enqueue_mock:
-                    manager.retry_item("song-a")
+                    retry_cache_item(manager, self.store, "song-a")
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
                     self.assertEqual(retried.cache_status, "queued")
                     self.assertEqual(retried.cache_message, "准备重新下载")
                     enqueue_mock.assert_called_once_with("song-a")
+            finally:
+                manager.shutdown()
+
+    def test_retry_item_rejects_same_id_replacement_before_manager_mutation(self):
+        with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
+            CacheManager,
+            "_worker_loop",
+            lambda self: None,
+        ):
+            manager = CacheManager(self.store, max_cache_items=3)
+            try:
+                old = self.make_item("same-song")
+                self.store.add_item(old, requester_name="cache-test-user")
+                stale_incarnation = self.store.get_item(
+                    "same-song"
+                ).item_incarnation_id
+                self.assertTrue(self.store.remove_item("same-song"))
+                replacement = self.make_item("same-song")
+                replacement.bvid = "BV1replacement"
+                self.store.add_item(
+                    replacement,
+                    requester_name="cache-test-user",
+                )
+                self.project_cache_failed("same-song", message="缓存失败")
+                live_incarnation = self.store.get_item(
+                    "same-song"
+                ).item_incarnation_id
+                self.assertNotEqual(stale_incarnation, live_incarnation)
+                with manager.lock:
+                    manager.desired_ids = {"same-song"}
+
+                snapshot_before = self.store.authoritative_snapshot()
+                manager_state_before = {
+                    "pending_ids": set(manager.pending_ids),
+                    "retry_requested_ids": set(manager.retry_requested_ids),
+                    "worker_sources": dict(manager.python_worker_download_sources),
+                    "attempt_tokens": dict(manager.python_cache_attempt_tokens),
+                }
+                with patch.object(manager, "enqueue") as enqueue_mock, patch.object(
+                    manager,
+                    "_append_log_line",
+                ) as append_log:
+                    with self.assertRaises(PlaylistStoreCommandError) as rejected:
+                        manager.retry_item(
+                            "same-song",
+                            expected_item_incarnation_id=stale_incarnation,
+                        )
+
+                self.assertEqual(
+                    rejected.exception.kind,
+                    "item_incarnation_mismatch",
+                )
+                self.assertEqual(
+                    self.store.authoritative_snapshot(),
+                    snapshot_before,
+                )
+                self.assertEqual(
+                    {
+                        "pending_ids": set(manager.pending_ids),
+                        "retry_requested_ids": set(manager.retry_requested_ids),
+                        "worker_sources": dict(manager.python_worker_download_sources),
+                        "attempt_tokens": dict(manager.python_cache_attempt_tokens),
+                    },
+                    manager_state_before,
+                )
+                enqueue_mock.assert_not_called()
+                append_log.assert_not_called()
             finally:
                 manager.shutdown()
 
@@ -3109,7 +3199,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with manager.lock:
                     manager.desired_ids = {"song-a"}
                 with patch.object(manager, "enqueue") as enqueue_mock:
-                    manager.retry_item("song-a", force=True)
+                    retry_cache_item(
+                        manager, self.store, "song-a", force=True
+                    )
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
                     self.assertEqual(retried.cache_status, "ready")
@@ -3141,7 +3233,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with patch.object(manager, "enqueue") as enqueue_mock, patch.object(
                     manager, "_terminate_process"
                 ) as terminate_mock:
-                    manager.retry_item("song-a")
+                    retry_cache_item(manager, self.store, "song-a")
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
                     self.assertEqual(retried.cache_status, "queued")
@@ -3174,7 +3266,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with patch.object(manager, "_start_urgent_cache") as urgent_cache_mock, patch.object(
                     manager, "_terminate_process"
                 ) as terminate_mock:
-                    manager.retry_item("song-a", force=True)
+                    retry_cache_item(
+                        manager, self.store, "song-a", force=True
+                    )
                     retried = self.store.get_item("song-a")
                     self.assertIsNotNone(retried)
                     self.assertEqual(retried.cache_status, "queued")
@@ -3225,7 +3319,9 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 with patch.object(manager, "_cache_item", side_effect=fake_cache_item), patch.object(
                     manager, "_terminate_process"
                 ) as terminate_mock:
-                    manager.retry_item("song-a", force=True)
+                    retry_cache_item(
+                        manager, self.store, "song-a", force=True
+                    )
                     self.assertTrue(urgent_started.wait(2))
                     with manager.lock:
                         self.assertEqual(manager.active_item_id, "song-b")

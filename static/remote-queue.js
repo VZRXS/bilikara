@@ -69,6 +69,9 @@
       }
       node.querySelectorAll("button[data-action]").forEach((button) => {
         button.dataset.id = item.id;
+        if (button.dataset.action === "retry-cache") {
+          button.dataset.itemIncarnationId = item.item_incarnation_id;
+        }
       });
       if (state.openQueueMenuId === item.id) {
         const menu = node.querySelector(".menu-content");
@@ -180,8 +183,11 @@
     render();
   }
 
-  async function handleQueueAction(action, itemId) {
+  async function handleQueueAction(action, itemId, itemIncarnationId, button = null) {
     if (!itemId) {
+      return;
+    }
+    if (action === "retry-cache" && !itemIncarnationId) {
       return;
     }
 
@@ -203,7 +209,11 @@
       },
       "retry-cache": {
         url: "/api/cache/retry",
-        payload: { item_id: itemId, force: true },
+        payload: {
+          item_id: itemId,
+          expected_item_incarnation_id: itemIncarnationId,
+          force: true,
+        },
         message: typeof t === "function" ? t("cache.retryStarted") : "cache.retryStarted",
       },
     };
@@ -218,18 +228,39 @@
     }
 
     if (action === "retry-cache") {
+      if (button?.getAttribute("aria-busy") === "true") {
+        return;
+      }
       const confirmText = typeof t === "function" ? t("cache.retryConfirm") : "确定要重新缓存吗？";
       if (!window.confirm(confirmText)) {
         return;
       }
     }
 
+    const originallyDisabled = button?.disabled;
+    if (action === "retry-cache" && button) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    }
     try {
+      if (action === "retry-cache") {
+        const outcome = await apiPostExactStateCommand(target.url, target.payload);
+        render();
+        if (outcome.commandApplied) {
+          setFormMessage(target.message);
+        }
+        return;
+      }
       state.data = await apiPost(target.url, target.payload);
       setFormMessage(target.message);
       render();
     } catch (error) {
       setFormMessage(error.message, true);
+    } finally {
+      if (action === "retry-cache" && button) {
+        button.disabled = originallyDisabled;
+        button.removeAttribute("aria-busy");
+      }
     }
   }
 
@@ -328,7 +359,12 @@
         state.openQueueMenuId = null;
       }
     }
-    await handleQueueAction(button.dataset.action, button.dataset.id);
+    await handleQueueAction(
+      button.dataset.action,
+      button.dataset.id,
+      button.dataset.itemIncarnationId,
+      button,
+    );
   });
 
   elements.queueList.addEventListener("pointerdown", (event) => {

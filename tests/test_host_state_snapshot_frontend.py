@@ -336,6 +336,91 @@ process.stdout.write(JSON.stringify(cases));
                     {"first": True, "stale": False, "preserved": True},
                 )
 
+    def test_exact_command_keeps_snapshot_acceptance_separate_from_application(self):
+        result = self.run_node(
+            """
+(async () => {
+  const initial = snapshot({
+    stateRevision: 10, revision: 10, generation: 10, marker: "initial",
+  });
+  if (!acceptHostStateSnapshot(initial)) throw new Error("initial rejected");
+  await Promise.resolve();
+
+  let envelope = null;
+  apiPostImpl = async () => envelope;
+  const firstCarrierItem = currentItem({
+    artifactId: "a-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0000000000000002",
+  });
+  const firstCarrierSnapshot = snapshot({
+    stateRevision: 11,
+    revision: 11,
+    generation: 11,
+    item: firstCarrierItem,
+    marker: "first-carrier",
+  });
+  envelope = { ok: true, stale: true, data: firstCarrierSnapshot };
+  const firstCarrier = await apiPostExactStateCommand("/api/player/next");
+  await Promise.resolve();
+
+  envelope = { ok: true, stale: true, data: firstCarrierSnapshot };
+  const duplicateCarrier = await apiPostExactStateCommand("/api/player/next");
+
+  envelope = { ok: true, stale: true, data: initial };
+  const olderCarrier = await apiPostExactStateCommand("/api/player/next");
+
+  const nextItem = currentItem({
+    itemId: "song-b",
+    incarnation: "i-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001",
+    artifactId: "a-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-0000000000000001",
+  });
+  const appliedSnapshot = snapshot({
+    stateRevision: 12,
+    revision: 12,
+    generation: 12,
+    item: nextItem,
+    marker: "applied",
+  });
+  envelope = { ok: true, data: appliedSnapshot };
+  const applied = await apiPostExactStateCommand("/api/player/next");
+  await Promise.resolve();
+
+  process.stdout.write(JSON.stringify({
+    firstCarrier,
+    duplicateCarrier,
+    olderCarrier,
+    applied,
+    finalMarker: state.data.marker,
+    finalItem: state.data.current_item.id,
+    finalGeneration: state.data.playback_generation,
+  }));
+})().catch((error) => { process.stderr.write(String(error)); process.exit(1); });
+"""
+        )
+        self.assertEqual(
+            result,
+            {
+                "firstCarrier": {
+                    "snapshotAccepted": True,
+                    "commandApplied": False,
+                },
+                "duplicateCarrier": {
+                    "snapshotAccepted": False,
+                    "commandApplied": False,
+                },
+                "olderCarrier": {
+                    "snapshotAccepted": False,
+                    "commandApplied": False,
+                },
+                "applied": {
+                    "snapshotAccepted": True,
+                    "commandApplied": True,
+                },
+                "finalMarker": "applied",
+                "finalItem": "song-b",
+                "finalGeneration": 12,
+            },
+        )
+
     def test_accepted_program_change_schedules_one_narrow_player_reconciliation(self):
         result = self.run_node(
             """

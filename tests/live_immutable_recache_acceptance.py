@@ -42,6 +42,7 @@ SCENARIOS = (
     "page-restore",
     "rapid-session-switch",
     "stale-next-recache",
+    "stale-next-first-carrier",
     "staggered-readiness",
     "rapid-unready-switch",
     "settings-program-reconciliation",
@@ -312,7 +313,7 @@ def _scenario_plan(scenario: str) -> tuple[list[str], int, dict[str, list[dict[s
             "A": [{"fixture": "a1"}],
             "B": [{"fixture": "b1"}],
         }, ["A", "B"]
-    if scenario == "stale-next-recache":
+    if scenario in {"stale-next-recache", "stale-next-first-carrier"}:
         return ["A", "B"], 2, {
             "A": [{"fixture": "a1"}, {"fixture": "a2", "delay": 0.5}],
             "B": [{"fixture": "b1"}],
@@ -691,6 +692,7 @@ def _worker(args: argparse.Namespace) -> int:
                 "natural-ended",
                 "rapid-session-switch",
                 "stale-next-recache",
+                "stale-next-first-carrier",
             }
             else advance_count == 0
         )
@@ -792,6 +794,7 @@ def _main(args: argparse.Namespace) -> int:
                 "player-reset",
                 "rapid-session-switch",
                 "stale-next-recache",
+                "stale-next-first-carrier",
             }:
                 command.extend(
                     [
@@ -864,7 +867,8 @@ def _main(args: argparse.Namespace) -> int:
                     "inverse full-snapshot delivery cannot roll back the accepted program",
                     "page restore and Host reload each advance Rust generation before one fresh media lifetime",
                     "rapid switch rejects late A play resolution/rejection without disturbing B",
-                    "stale delayed Next releases only its hold after immutable recache changes the program",
+                    "stale delayed Next releases only its hold when a duplicate carrier follows immutable recache",
+                    "stale delayed Next accepts and reconciles a first-carrier immutable recache snapshot without reporting command success",
                     "staggered video/audio readiness commits and starts only after both streams are ready",
                     "rapid A to unready B to C retires B before only C commits and plays",
                     "a settings response carrying a newer Rust program reconciles without polling",

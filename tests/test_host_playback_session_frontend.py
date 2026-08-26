@@ -23,6 +23,249 @@ class HostPlaybackSessionFrontendTest(unittest.TestCase):
         start_index = cls.source.index(start)
         return cls.source[start_index : cls.source.index(end, start_index)]
 
+    def test_audio_variant_request_uses_only_the_observed_item_incarnation(self):
+        listener = self.source_slice(
+            'elements.audioVariantBar.addEventListener("click"',
+            'elements.playlist.addEventListener("click"',
+        )
+        self.assertIn(
+            "expected_item_incarnation_id: currentItem.item_incarnation_id",
+            listener,
+        )
+        self.assertNotIn("playback_generation", listener)
+
+    def test_stale_variant_and_retry_accept_authority_without_success_ownership(self):
+        snapshot_functions = self.source_slice(
+            "function isSafeHostSnapshotInteger", "async function apiPostStateSnapshot"
+        )
+        audio_listener = self.source_slice(
+            'elements.audioVariantBar.addEventListener("click"',
+            'elements.playlist.addEventListener("click"',
+        )
+        retry_listener = self.source_slice(
+            'elements.queueCurrentRetry.addEventListener("click"',
+            "// LEGACY: the online embed mode endpoint",
+        )
+        script = f"""
+class FakeElement {{
+  constructor(dataset = {{}}) {{
+    this.dataset = {{ ...dataset }};
+    this.listeners = {{}};
+    this.attributes = {{}};
+    this.disabled = false;
+  }}
+  addEventListener(name, listener) {{ this.listeners[name] = listener; }}
+  getAttribute(name) {{ return this.attributes[name] ?? null; }}
+  setAttribute(name, value) {{ this.attributes[name] = String(value); }}
+  removeAttribute(name) {{ delete this.attributes[name]; }}
+}}
+const audioVariantBar = new FakeElement();
+const queueCurrentRetry = new FakeElement();
+const elements = {{ audioVariantBar, queueCurrentRetry }};
+const window = {{
+  location: {{ href: "http://127.0.0.1:8080/" }},
+  setTimeout,
+  clearTimeout,
+}};
+const audioVariantSwitchDebounceMs = 350;
+const state = {{
+  data: null,
+  hostPlaybackSession: null,
+  pendingHostPlaybackProgramReconciliation: null,
+  pendingPlaybackRestore: null,
+  audioVariantSwitchInFlight: false,
+  audioVariantSwitchUnlockAt: 0,
+  audioVariantBarExpanded: false,
+}};
+const messages = [];
+const requests = [];
+const responses = [];
+let reconciliations = 0;
+let renders = 0;
+let retryBusyObservations = 0;
+function item(incarnation, artifact, selectedVariant = "instrumental", cacheStatus = "failed") {{
+  return {{
+    id: "song-a",
+    item_incarnation_id: incarnation,
+    selected_audio_variant_id: selectedVariant,
+    artifact_set_id: artifact,
+    video_media_url: `/media/${{artifact}}/video.mp4`,
+    cache_status: cacheStatus,
+    audio_variants: [
+      {{ id: "instrumental", label: "Instrumental", audio_url: `/media/${{artifact}}/i.m4a` }},
+      {{ id: "vocal", label: "Vocal", audio_url: `/media/${{artifact}}/v.m4a` }},
+    ],
+  }};
+}}
+function snapshot(revision, currentItem) {{
+  return {{
+    state_revision: revision,
+    revision,
+    playback_generation: revision,
+    playback_mode: "local",
+    playback_program: {{
+      item_id: currentItem.id,
+      item_incarnation_id: currentItem.item_incarnation_id,
+      selected_audio_variant_id: currentItem.selected_audio_variant_id,
+      artifact_set_id: currentItem.artifact_set_id,
+    }},
+    current_item: currentItem,
+    playlist: [],
+  }};
+}}
+function maybeShowSongTransitionOverlay() {{}}
+function frontendPlaybackMode() {{ return "local"; }}
+function renderPlayer() {{
+  reconciliations += 1;
+  state.hostPlaybackSession = {{
+    playbackGeneration: state.data.playback_generation,
+    playbackProgram: state.data.playback_program,
+    video: {{ currentTime: 12, paused: false }},
+    audio: {{ paused: false }},
+    readyCommitted: true,
+  }};
+}}
+function isCurrentHostPlaybackSession(session) {{
+  return Boolean(
+    session
+    && session === state.hostPlaybackSession
+    && session.playbackGeneration === state.data?.playback_generation
+    && playbackProgramDescriptorsEqual(session.playbackProgram, state.data?.playback_program)
+  );
+}}
+function audioVariantSwitchLocked() {{
+  return state.audioVariantSwitchInFlight || Date.now() < state.audioVariantSwitchUnlockAt;
+}}
+function renderAudioVariantBar() {{}}
+function selectedAudioVariantForItem(currentItem) {{
+  return currentItem.audio_variants.find(
+    (variant) => variant.id === currentItem.selected_audio_variant_id
+  );
+}}
+function scheduleAudioVariantSwitchUnlock() {{}}
+function render() {{ renders += 1; }}
+function setAppMessage(message, isError = false) {{ messages.push({{ message, isError }}); }}
+function t(key) {{ return key; }}
+async function apiPostExactStateCommand(path, payload) {{
+  requests.push({{ path, payload }});
+  if (
+    path === "/api/cache/retry"
+    && queueCurrentRetry.disabled
+    && queueCurrentRetry.getAttribute("aria-busy") === "true"
+  ) {{
+    retryBusyObservations += 1;
+  }}
+  const response = responses.shift();
+  return {{
+    snapshotAccepted: acceptHostStateSnapshot(response.snapshot),
+    commandApplied: response.applied,
+  }};
+}}
+{snapshot_functions}
+{audio_listener}
+{retry_listener}
+function audioEventButton(currentItem) {{
+  const button = new FakeElement({{
+    itemId: currentItem.id,
+    bound: "true",
+    variantId: "vocal",
+  }});
+  return {{ closest: (selector) => selector === "button[data-variant-id]" ? button : null }};
+}}
+
+(async () => {{
+  if (!acceptHostStateSnapshot(snapshot(1, item("i-1", "a-1")))) {{
+    throw new Error("initial rejected");
+  }}
+  await Promise.resolve();
+  reconciliations = 0;
+  responses.push({{ snapshot: snapshot(2, item("i-2", "a-2")), applied: false }});
+  await audioVariantBar.listeners.click({{ target: audioEventButton(state.data.current_item) }});
+  await Promise.resolve();
+  const staleAudio = {{
+    messages: messages.splice(0),
+    pendingRestore: state.pendingPlaybackRestore,
+    inFlight: state.audioVariantSwitchInFlight,
+    unlockAt: state.audioVariantSwitchUnlockAt,
+    incarnation: state.data.current_item.item_incarnation_id,
+    sessionGeneration: state.hostPlaybackSession.playbackGeneration,
+    playable: state.hostPlaybackSession.video.paused === false
+      && state.hostPlaybackSession.audio.paused === false,
+  }};
+
+  queueCurrentRetry.dataset = {{ id: "song-a", itemIncarnationId: "i-2" }};
+  responses.push({{ snapshot: snapshot(3, item("i-3", "a-3")), applied: false }});
+  await queueCurrentRetry.listeners.click();
+  await Promise.resolve();
+  const staleRetry = {{
+    messages: messages.splice(0),
+    disabled: queueCurrentRetry.disabled,
+    busy: queueCurrentRetry.getAttribute("aria-busy"),
+    incarnation: state.data.current_item.item_incarnation_id,
+  }};
+
+  queueCurrentRetry.dataset = {{ id: "song-a", itemIncarnationId: "i-3" }};
+  responses.push({{
+    snapshot: snapshot(4, item("i-3", "a-3", "instrumental", "downloading")),
+    applied: true,
+  }});
+  await queueCurrentRetry.listeners.click();
+  const validRetry = {{
+    messages: messages.splice(0),
+    disabled: queueCurrentRetry.disabled,
+    busy: queueCurrentRetry.getAttribute("aria-busy"),
+  }};
+  process.stdout.write(JSON.stringify({{
+    staleAudio,
+    staleRetry,
+    validRetry,
+    requests,
+    reconciliations,
+    renders,
+    retryBusyObservations,
+  }}));
+}})().catch((error) => {{ process.stderr.write(String(error)); process.exit(1); }});
+"""
+        completed = subprocess.run(
+            [self.node, "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(
+            result["staleAudio"],
+            {
+                "messages": [],
+                "pendingRestore": None,
+                "inFlight": False,
+                "unlockAt": 0,
+                "incarnation": "i-2",
+                "sessionGeneration": 2,
+                "playable": True,
+            },
+        )
+        self.assertEqual(
+            result["staleRetry"],
+            {"messages": [], "disabled": False, "busy": None, "incarnation": "i-3"},
+        )
+        self.assertEqual(
+            result["validRetry"],
+            {
+                "messages": [{"message": "cache.retryStarted", "isError": False}],
+                "disabled": False,
+                "busy": None,
+            },
+        )
+        self.assertEqual(len(result["requests"]), 3)
+        self.assertEqual(result["reconciliations"], 3)
+        self.assertEqual(result["renders"], 3)
+        self.assertEqual(result["retryBusyObservations"], 2)
+
     def run_foundation(self, body: str) -> dict:
         equality = self.source_slice(
             "function playbackProgramDescriptorsEqual",
@@ -490,7 +733,28 @@ const differentIncarnation = exercise(
   true,
   63,
 );
-process.stdout.write(JSON.stringify({ recache, variant, differentIncarnation }));
+retireHostPlaybackSession(state.hostPlaybackSession);
+state.hostPlaybackSession = null;
+state.pendingPlaybackRestore = {
+  itemId: "song-a",
+  itemIncarnationId: "i-old",
+  variantId: "instrumental",
+  currentTime: 88,
+  wasPlaying: false,
+};
+const replacement = item({
+  incarnation: "i-new", variantId: "instrumental", artifactId: "artifact-5",
+});
+installSnapshot(30, replacement);
+const staleRestoreReplacement = reconcileHostPlaybackSession(replacement);
+const staleVariantRestore = {
+  restore: staleRestoreReplacement.session.playbackRestore,
+  pendingRestore: state.pendingPlaybackRestore,
+  logicalPlayIntent: staleRestoreReplacement.session.logicalPlayIntent,
+};
+process.stdout.write(JSON.stringify({
+  recache, variant, differentIncarnation, staleVariantRestore,
+}));
 """
         )
         self.assertEqual(
@@ -500,6 +764,7 @@ process.stdout.write(JSON.stringify({ recache, variant, differentIncarnation }))
                 "replacementPhase": "binding",
                 "restore": {
                     "itemId": "song-a",
+                    "itemIncarnationId": "i-a",
                     "variantId": "instrumental",
                     "currentTime": 41.25,
                     "wasPlaying": True,
@@ -515,6 +780,7 @@ process.stdout.write(JSON.stringify({ recache, variant, differentIncarnation }))
                 "replacementPhase": "binding",
                 "restore": {
                     "itemId": "song-a",
+                    "itemIncarnationId": "i-a",
                     "variantId": "vocal",
                     "currentTime": 27.5,
                     "wasPlaying": False,
@@ -531,6 +797,14 @@ process.stdout.write(JSON.stringify({ recache, variant, differentIncarnation }))
                 "restore": None,
                 "logicalPlayIntent": True,
                 "counts": {"video": 1, "audio": 1},
+            },
+        )
+        self.assertEqual(
+            result["staleVariantRestore"],
+            {
+                "restore": None,
+                "pendingRestore": None,
+                "logicalPlayIntent": True,
             },
         )
 

@@ -1379,6 +1379,7 @@ function duplicateConfirmMessage(duplicateItem, sessionEntry, activeItem) {
 
 async function apiPost(url, payload = {}, options = {}) {
   const timeoutMs = Math.max(0, Number(options.timeoutMs || 0));
+  const returnEnvelope = options.returnEnvelope === true;
   const controller = timeoutMs > 0 && typeof AbortController === "function"
     ? new AbortController()
     : null;
@@ -1401,7 +1402,7 @@ async function apiPost(url, payload = {}, options = {}) {
       error.payload = data;
       throw error;
     }
-    return data.data;
+    return returnEnvelope ? data : data.data;
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(t("error.requestTimeout"));
@@ -1412,6 +1413,17 @@ async function apiPost(url, payload = {}, options = {}) {
       window.clearTimeout(timeoutId);
     }
   }
+}
+
+async function apiPostExactStateCommand(url, payload = {}, options = {}) {
+  const envelope = await apiPost(url, payload, {
+    ...options,
+    returnEnvelope: true,
+  });
+  return {
+    snapshotAccepted: applyStateSnapshot(envelope.data),
+    commandApplied: envelope.stale !== true,
+  };
 }
 
 function normalizedRemoteIdentity(payload) {
@@ -6234,7 +6246,11 @@ function syncCurrentCacheState(current) {
     if (textNode) textNode.textContent = "";
     else elements.currentCacheState.textContent = "";
     const retryBtn = elements.currentCacheState.querySelector("#current-cache-retry");
-    if (retryBtn) retryBtn.classList.add("hidden");
+    if (retryBtn) {
+      retryBtn.classList.add("hidden");
+      delete retryBtn.dataset.id;
+      delete retryBtn.dataset.itemIncarnationId;
+    }
     elements.currentCacheState.classList.add("hidden");
     elements.currentCacheState.classList.remove("ready", "failed");
     return;
@@ -6260,8 +6276,10 @@ function syncCurrentCacheState(current) {
     retryBtn.classList.toggle("hidden", !showRetry);
     if (showRetry) {
       retryBtn.dataset.id = current.id;
+      retryBtn.dataset.itemIncarnationId = current.item_incarnation_id;
     } else {
       delete retryBtn.dataset.id;
+      delete retryBtn.dataset.itemIncarnationId;
     }
   }
 }
@@ -6687,7 +6705,13 @@ async function confirmGatchaCandidate() {
 async function sendPlayerControl(action, deltaSeconds = 0) {
   const currentItem = state.data?.current_item;
   const playbackMode = frontendPlaybackMode(state.data?.playback_mode);
-  if (!currentItem || !canRemoteControlPlayer(currentItem, playbackMode)) {
+  const expectedPlaybackGeneration = state.data?.playback_generation;
+  if (
+    !currentItem
+    || !canRemoteControlPlayer(currentItem, playbackMode)
+    || !Number.isSafeInteger(expectedPlaybackGeneration)
+    || expectedPlaybackGeneration < 1
+  ) {
     return;
   }
 
@@ -6706,6 +6730,7 @@ async function sendPlayerControl(action, deltaSeconds = 0) {
       action,
       item_id: currentItem.id,
       delta_seconds: deltaSeconds,
+      playback_generation: expectedPlaybackGeneration,
     }));
     setFormMessage(message);
   } catch (error) {
@@ -6728,10 +6753,12 @@ async function sendPlayerNext() {
   try {
     state.playerControlPendingAction = "next-track";
     renderPlayerControls(state.data?.current_item, frontendPlaybackMode(state.data?.playback_mode));
-    applyStateSnapshot(await apiPost("/api/player/next", {
+    const outcome = await apiPostExactStateCommand("/api/player/next", {
       playback_generation: expectedPlaybackGeneration,
-    }));
-    setFormMessage(t("remote.nextSent"));
+    });
+    if (outcome.commandApplied) {
+      setFormMessage(t("remote.nextSent"));
+    }
   } catch (error) {
     setFormMessage(error.message, true);
     await fetchState().catch(() => {});
@@ -7720,13 +7747,18 @@ elements.audioVariantBar.addEventListener("click", async (event) => {
     state.audioVariantSwitchInFlight = true;
     state.audioVariantSwitchUnlockAt = Date.now() + audioVariantSwitchDebounceMs;
     renderAudioVariantBar(currentItem, frontendPlaybackMode(state.data?.playback_mode));
-    applyStateSnapshot(await apiPost("/api/player/audio-variant", {
+    const outcome = await apiPostExactStateCommand("/api/player/audio-variant", {
       item_id: currentItem.id,
       variant_id: nextVariantId,
-    }));
-    const activeItem = state.data?.current_item;
-    const activeVariant = activeItem ? selectedAudioVariantForItem(activeItem) : null;
-    setFormMessage(t("player.switchedPart", { part: activeVariant?.label || nextVariantId }));
+      expected_item_incarnation_id: currentItem.item_incarnation_id,
+    });
+    if (outcome.commandApplied) {
+      const activeItem = state.data?.current_item;
+      const activeVariant = activeItem ? selectedAudioVariantForItem(activeItem) : null;
+      setFormMessage(t("player.switchedPart", { part: activeVariant?.label || nextVariantId }));
+    } else {
+      state.audioVariantSwitchUnlockAt = 0;
+    }
   } catch (error) {
     setFormMessage(error.message, true);
   } finally {
@@ -7782,19 +7814,35 @@ elements.currentCacheState?.addEventListener("click", async (event) => {
   }
   event.stopPropagation();
   const itemId = retryBtn.dataset.id;
-  if (!itemId) {
+  const itemIncarnationId = retryBtn.dataset.itemIncarnationId;
+  if (!itemId || !itemIncarnationId) {
+    return;
+  }
+  if (retryBtn.getAttribute("aria-busy") === "true") {
     return;
   }
   const confirmed = window.confirm(t("cache.retryConfirm") || "确定要重新缓存吗？");
   if (!confirmed) {
     return;
   }
+  const originallyDisabled = retryBtn.disabled;
+  retryBtn.disabled = true;
+  retryBtn.setAttribute("aria-busy", "true");
   try {
-    state.data = await apiPost("/api/cache/retry", { item_id: itemId, force: true });
-    setFormMessage(t("cache.retryStarted"));
+    const outcome = await apiPostExactStateCommand("/api/cache/retry", {
+      item_id: itemId,
+      expected_item_incarnation_id: itemIncarnationId,
+      force: true,
+    });
     render();
+    if (outcome.commandApplied) {
+      setFormMessage(t("cache.retryStarted"));
+    }
   } catch (error) {
     setFormMessage(error.message, true);
+  } finally {
+    retryBtn.disabled = originallyDisabled;
+    retryBtn.removeAttribute("aria-busy");
   }
 });
 

@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import rust_runtime
 from .bilibili import (
     BilibiliError,
     ManualBindingRequiredError,
@@ -728,8 +729,18 @@ class AppContext:
     def set_key_shift(self, key_shift: int) -> int:
         return self.store.set_key_shift(key_shift)
 
-    def set_audio_variant(self, item_id: str, variant_id: str) -> bool:
-        return self.store.set_audio_variant(item_id, variant_id)
+    def set_audio_variant(
+        self,
+        item_id: str,
+        variant_id: str,
+        *,
+        expected_item_incarnation_id: str,
+    ) -> bool:
+        return self.store.set_audio_variant(
+            item_id,
+            variant_id,
+            expected_item_incarnation_id=expected_item_incarnation_id,
+        )
 
     def add_session_user(self, name: str) -> None:
         self.store.add_session_user(name)
@@ -838,8 +849,18 @@ class AppContext:
         self._notify_state_changed()
         return result
 
-    def retry_cache_item(self, item_id: str, *, force: bool = False) -> None:
-        self.cache_manager.retry_item(item_id, force=force)
+    def retry_cache_item(
+        self,
+        item_id: str,
+        *,
+        expected_item_incarnation_id: str,
+        force: bool = False,
+    ) -> None:
+        self.cache_manager.retry_item(
+            item_id,
+            expected_item_incarnation_id=expected_item_incarnation_id,
+            force=force,
+        )
 
     def is_current_item(self, item_id: str) -> bool:
         return self.store.is_current_item(item_id)
@@ -848,6 +869,7 @@ class AppContext:
         self,
         *,
         action: str,
+        playback_generation: int,
         item_id: str = "",
         delta_seconds: int = 0,
         target_seconds: float | None = None,
@@ -857,6 +879,7 @@ class AppContext:
             self._player_control_command = {
                 "seq": self._player_control_seq,
                 "action": action,
+                "playback_generation": playback_generation,
                 "item_id": item_id,
                 "delta_seconds": delta_seconds,
                 "target_seconds": target_seconds,
@@ -1759,7 +1782,15 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     or expected_playback_generation > MAX_SAFE_JSON_INTEGER
                 ):
                     raise ValueError("invalid playback_generation")
-                CONTEXT.advance_to_next(expected_playback_generation)
+                try:
+                    CONTEXT.advance_to_next(expected_playback_generation)
+                except PlaylistStoreCommandError as exc:
+                    if exc.kind != "playback_generation_mismatch":
+                        raise
+                    self._write_json(
+                        {"ok": True, "data": CONTEXT.snapshot(), "stale": True}
+                    )
+                    return
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/playlist/remove":
@@ -2089,8 +2120,34 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/cache/retry":
                 self._require_id(body)
+                expected_item_incarnation_id = body.get(
+                    "expected_item_incarnation_id"
+                )
+                if (
+                    not isinstance(expected_item_incarnation_id, str)
+                    or not expected_item_incarnation_id
+                ):
+                    raise ValueError("missing expected_item_incarnation_id")
                 force = bool(body.get("force"))
-                CONTEXT.retry_cache_item(body["item_id"], force=force)
+                try:
+                    CONTEXT.retry_cache_item(
+                        body["item_id"],
+                        expected_item_incarnation_id=expected_item_incarnation_id,
+                        force=force,
+                    )
+                except (
+                    PlaylistStoreCommandError,
+                    rust_runtime.RustRuntimeServiceError,
+                ) as exc:
+                    if getattr(exc, "kind", "") not in {
+                        "item_not_found",
+                        "item_incarnation_mismatch",
+                    }:
+                        raise
+                    self._write_json(
+                        {"ok": True, "data": CONTEXT.snapshot(), "stale": True}
+                    )
+                    return
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
             if route == "/api/gatcha/pool-config":
@@ -2147,7 +2204,31 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                 variant_id = str(body.get("variant_id") or "").strip()
                 if not variant_id:
                     raise ValueError("missing variant_id")
-                if not CONTEXT.set_audio_variant(body["item_id"], variant_id):
+                expected_item_incarnation_id = body.get(
+                    "expected_item_incarnation_id"
+                )
+                if (
+                    not isinstance(expected_item_incarnation_id, str)
+                    or not expected_item_incarnation_id
+                ):
+                    raise ValueError("missing expected_item_incarnation_id")
+                try:
+                    changed = CONTEXT.set_audio_variant(
+                        body["item_id"],
+                        variant_id,
+                        expected_item_incarnation_id=expected_item_incarnation_id,
+                    )
+                except PlaylistStoreCommandError as exc:
+                    if exc.kind not in {
+                        "item_not_found",
+                        "item_incarnation_mismatch",
+                    }:
+                        raise
+                    self._write_json(
+                        {"ok": True, "data": CONTEXT.snapshot(), "stale": True}
+                    )
+                    return
+                if not changed:
                     raise ValueError("invalid audio variant")
                 self._write_json({"ok": True, "data": CONTEXT.snapshot()})
                 return
@@ -2166,8 +2247,12 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     target_seconds = float(body.get("target_seconds") or 0.0)
                     if target_seconds < 0:
                         raise ValueError("target_seconds must be non-negative")
+                expected_playback_generation = _positive_safe_player_status_integer(
+                    body.get("playback_generation"), "playback_generation"
+                )
                 CONTEXT.issue_player_control(
                     action=action,
+                    playback_generation=expected_playback_generation,
                     item_id=item_id,
                     delta_seconds=delta_seconds,
                     target_seconds=target_seconds,
