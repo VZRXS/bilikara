@@ -111,6 +111,11 @@ const state = {
   cacheSliderRenderSignature: "",
   advanceDelaySliderRenderSignature: "",
   advanceDelaySaving: false,
+  advanceDelayDraftValue: null,
+  advanceDelayQueuedValue: null,
+  advanceDelaySubmittedValue: null,
+  advanceDelayRequestSequence: 0,
+  advanceDelayActiveRequestSequence: 0,
   cachePolicyControlRenderSignature: "",
   playerFullscreenButtonRenderSignature: "",
   volumeControlsRenderSignature: "",
@@ -149,6 +154,11 @@ const state = {
   displaySettingsOpen: false,
   presentationSettingsOpen: false,
   cacheLimitSaving: false,
+  cacheLimitDraftValue: null,
+  cacheLimitQueuedValue: null,
+  cacheLimitSubmittedValue: null,
+  cacheLimitRequestSequence: 0,
+  cacheLimitActiveRequestSequence: 0,
   cachePolicySaving: false,
   diagnosticsBusy: false,
   diagnosticsCopyController: null,
@@ -6969,7 +6979,8 @@ function renderCacheSlider(cachePolicy) {
     : [1, 2, 3, 4, 5];
   const minValue = Number(choices[0] || 1);
   const maxValue = Number(choices[choices.length - 1] || 5);
-  const currentValue = Number(cachePolicy?.max_cache_items || minValue);
+  const confirmedValue = Number(cachePolicy?.max_cache_items || minValue);
+  const currentValue = state.cacheLimitDraftValue ?? confirmedValue;
   const signature = JSON.stringify({
     choices,
     currentValue,
@@ -6985,7 +6996,12 @@ function renderCacheSlider(cachePolicy) {
   elements.cacheLimitSlider.max = String(maxValue);
   elements.cacheLimitSlider.step = "1";
   elements.cacheLimitSlider.value = String(currentValue);
-  elements.cacheLimitSlider.disabled = state.cacheLimitSaving;
+  elements.cacheLimitSlider.disabled = false;
+  if (state.cacheLimitSaving) {
+    elements.cacheLimitSlider.setAttribute("aria-busy", "true");
+  } else {
+    elements.cacheLimitSlider.removeAttribute("aria-busy");
+  }
   updateCacheSliderFill(currentValue, minValue, maxValue);
 
   elements.cacheLimitScale.innerHTML = "";
@@ -7001,7 +7017,8 @@ function renderAdvanceDelaySlider(playerSettings) {
   if (!elements.advanceDelaySlider) {
     return;
   }
-  const currentValue = currentSongAdvanceDelaySeconds(playerSettings);
+  const confirmedValue = currentSongAdvanceDelaySeconds(playerSettings);
+  const currentValue = state.advanceDelayDraftValue ?? confirmedValue;
   const signature = JSON.stringify({
     currentValue,
     saving: state.advanceDelaySaving,
@@ -7016,7 +7033,12 @@ function renderAdvanceDelaySlider(playerSettings) {
   elements.advanceDelaySlider.max = "5";
   elements.advanceDelaySlider.step = "1";
   elements.advanceDelaySlider.value = String(currentValue);
-  elements.advanceDelaySlider.disabled = state.advanceDelaySaving;
+  elements.advanceDelaySlider.disabled = false;
+  if (state.advanceDelaySaving) {
+    elements.advanceDelaySlider.setAttribute("aria-busy", "true");
+  } else {
+    elements.advanceDelaySlider.removeAttribute("aria-busy");
+  }
   updateAdvanceDelaySliderFill(currentValue);
 
   elements.advanceDelayScale.querySelectorAll("span").forEach((mark) => {
@@ -14094,26 +14116,77 @@ async function resortPlaylistByCycle() {
 }
 
 async function setCacheLimit(maxCacheItems) {
+  state.cacheLimitDraftValue = maxCacheItems;
+  state.cacheLimitQueuedValue = maxCacheItems;
+  renderCacheSlider(state.data?.cache_policy);
   if (state.cacheLimitSaving) {
     return;
   }
 
   const currentValue = Number(state.data?.cache_policy?.max_cache_items || 0);
   if (maxCacheItems === currentValue) {
+    state.cacheLimitDraftValue = null;
+    state.cacheLimitQueuedValue = null;
+    renderCacheSlider(state.data?.cache_policy);
     return;
   }
 
   state.cacheLimitSaving = true;
   renderCacheSlider(state.data?.cache_policy);
   try {
-    await apiPostStateSnapshot("/api/cache-policy", { max_cache_items: maxCacheItems });
-    setAppMessage(t("service.cacheLimitUpdated", { count: maxCacheItems }));
-    render();
-  } catch (error) {
-    setAppMessage(error.message, true);
-    render();
+    while (state.cacheLimitQueuedValue !== null) {
+      const submittedValue = state.cacheLimitQueuedValue;
+      state.cacheLimitQueuedValue = null;
+      if (submittedValue === Number(state.data?.cache_policy?.max_cache_items || 0)) {
+        if (state.cacheLimitDraftValue === submittedValue) {
+          state.cacheLimitDraftValue = null;
+        }
+        continue;
+      }
+
+      const requestSequence = state.cacheLimitRequestSequence + 1;
+      state.cacheLimitRequestSequence = requestSequence;
+      state.cacheLimitActiveRequestSequence = requestSequence;
+      state.cacheLimitSubmittedValue = submittedValue;
+      let acknowledged = false;
+      let requestError = null;
+      try {
+        await apiPostStateSnapshot(
+          "/api/cache-policy",
+          { max_cache_items: submittedValue },
+          {
+            onAccepted() {
+              acknowledged = Number(
+                state.data?.cache_policy?.max_cache_items || 0,
+              ) === submittedValue;
+            },
+          },
+        );
+      } catch (error) {
+        requestError = error;
+      }
+      if (state.cacheLimitActiveRequestSequence !== requestSequence) {
+        continue;
+      }
+      if (state.cacheLimitDraftValue === submittedValue) {
+        state.cacheLimitDraftValue = null;
+      }
+      if (state.cacheLimitQueuedValue === submittedValue) {
+        state.cacheLimitQueuedValue = null;
+      }
+      state.cacheLimitSubmittedValue = null;
+      state.cacheLimitActiveRequestSequence = 0;
+      if (requestError) {
+        setAppMessage(requestError.message, true);
+      } else if (acknowledged) {
+        setAppMessage(t("service.cacheLimitUpdated", { count: submittedValue }));
+      }
+      render();
+    }
   } finally {
     state.cacheLimitSaving = false;
+    state.cacheLimitSubmittedValue = null;
+    state.cacheLimitActiveRequestSequence = 0;
     if (state.data) {
       renderCacheSlider(state.data.cache_policy);
     }
@@ -14121,26 +14194,75 @@ async function setCacheLimit(maxCacheItems) {
 }
 
 async function setAdvanceDelay(delaySeconds) {
+  state.advanceDelayDraftValue = delaySeconds;
+  state.advanceDelayQueuedValue = delaySeconds;
+  renderAdvanceDelaySlider(state.data?.player_settings);
   if (state.advanceDelaySaving) {
     return;
   }
 
   const currentValue = currentSongAdvanceDelaySeconds();
   if (delaySeconds === currentValue) {
+    state.advanceDelayDraftValue = null;
+    state.advanceDelayQueuedValue = null;
+    renderAdvanceDelaySlider(state.data?.player_settings);
     return;
   }
 
   state.advanceDelaySaving = true;
   renderAdvanceDelaySlider(state.data?.player_settings);
   try {
-    await apiPostStateSnapshot("/api/player/advance-delay", { delay_seconds: delaySeconds });
-    setAppMessage(t("service.advanceDelayUpdated", { seconds: delaySeconds }));
-    render();
-  } catch (error) {
-    setAppMessage(error.message, true);
-    render();
+    while (state.advanceDelayQueuedValue !== null) {
+      const submittedValue = state.advanceDelayQueuedValue;
+      state.advanceDelayQueuedValue = null;
+      if (submittedValue === currentSongAdvanceDelaySeconds()) {
+        if (state.advanceDelayDraftValue === submittedValue) {
+          state.advanceDelayDraftValue = null;
+        }
+        continue;
+      }
+
+      const requestSequence = state.advanceDelayRequestSequence + 1;
+      state.advanceDelayRequestSequence = requestSequence;
+      state.advanceDelayActiveRequestSequence = requestSequence;
+      state.advanceDelaySubmittedValue = submittedValue;
+      let acknowledged = false;
+      let requestError = null;
+      try {
+        await apiPostStateSnapshot(
+          "/api/player/advance-delay",
+          { delay_seconds: submittedValue },
+          {
+            onAccepted() {
+              acknowledged = currentSongAdvanceDelaySeconds() === submittedValue;
+            },
+          },
+        );
+      } catch (error) {
+        requestError = error;
+      }
+      if (state.advanceDelayActiveRequestSequence !== requestSequence) {
+        continue;
+      }
+      if (state.advanceDelayDraftValue === submittedValue) {
+        state.advanceDelayDraftValue = null;
+      }
+      if (state.advanceDelayQueuedValue === submittedValue) {
+        state.advanceDelayQueuedValue = null;
+      }
+      state.advanceDelaySubmittedValue = null;
+      state.advanceDelayActiveRequestSequence = 0;
+      if (requestError) {
+        setAppMessage(requestError.message, true);
+      } else if (acknowledged) {
+        setAppMessage(t("service.advanceDelayUpdated", { seconds: submittedValue }));
+      }
+      render();
+    }
   } finally {
     state.advanceDelaySaving = false;
+    state.advanceDelaySubmittedValue = null;
+    state.advanceDelayActiveRequestSequence = 0;
     if (state.data) {
       renderAdvanceDelaySlider(state.data.player_settings);
     }
@@ -15143,6 +15265,7 @@ elements.bbdownLoginRefresh?.addEventListener("click", async () => {
 
 elements.cacheLimitSlider.addEventListener("input", (event) => {
   const currentValue = Number(event.target.value || "1");
+  state.cacheLimitDraftValue = currentValue;
   const minValue = Number(elements.cacheLimitSlider.min || "1");
   const maxValue = Number(elements.cacheLimitSlider.max || "5");
   updateCacheSliderFill(currentValue, minValue, maxValue);
@@ -15157,6 +15280,7 @@ elements.cacheLimitSlider.addEventListener("change", async (event) => {
 
 elements.advanceDelaySlider?.addEventListener("input", (event) => {
   const currentValue = Number(event.target.value || "1");
+  state.advanceDelayDraftValue = currentValue;
   updateAdvanceDelaySliderFill(currentValue);
   elements.advanceDelayScale.querySelectorAll("span").forEach((mark) => {
     mark.classList.toggle("active", Number(mark.textContent || "0") === currentValue);

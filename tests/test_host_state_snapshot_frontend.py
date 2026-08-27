@@ -104,6 +104,390 @@ function snapshot({{
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
+    def run_slider_contract(self, control: str) -> dict:
+        configs = {
+            "cache": {
+                "slider": "cacheLimitSlider",
+                "scale": "cacheLimitScale",
+                "endpoint": "/api/cache-policy",
+                "payloadKey": "max_cache_items",
+            },
+            "advance": {
+                "slider": "advanceDelaySlider",
+                "scale": "advanceDelayScale",
+                "endpoint": "/api/player/advance-delay",
+                "payloadKey": "delay_seconds",
+            },
+        }
+        acceptance = self.source_slice(
+            "function isSafeHostSnapshotInteger",
+            "function syncCachePanelVisibility",
+        )
+        renderers = self.source_slice(
+            "function renderCacheSlider",
+            "function renderCachePolicyControls",
+        )
+        cache_fill = self.source_slice(
+            "function updateCacheSliderFill",
+            "async function handlePlaylistAction",
+        )
+        setters = self.source_slice(
+            "async function setCacheLimit",
+            "function isDownkyiDownloadSource",
+        )
+        listeners = self.source_slice(
+            'elements.cacheLimitSlider.addEventListener("input"',
+            'elements.cacheQualitySelect?.addEventListener("change"',
+        )
+        script = r"""
+class ClassList {
+  constructor() { this.values = new Set(); }
+  toggle(name, force) {
+    if (force) this.values.add(name); else this.values.delete(name);
+    return this.values.has(name);
+  }
+  contains(name) { return this.values.has(name); }
+}
+class Scale {
+  constructor(values = []) {
+    this.marks = values.map((value) => ({
+      textContent: String(value), classList: new ClassList(),
+    }));
+  }
+  set innerHTML(value) { if (value === "") this.marks = []; }
+  appendChild(mark) { this.marks.push(mark); }
+  querySelectorAll() { return this.marks; }
+}
+class Slider {
+  constructor() {
+    this.value = "";
+    this.min = "";
+    this.max = "";
+    this.step = "";
+    this.disabled = false;
+    this.attributes = new Map();
+    this.listeners = new Map();
+    this.style = {
+      values: new Map(),
+      setProperty(name, value) { this.values.set(name, String(value)); },
+      getPropertyValue(name) { return this.values.get(name) || ""; },
+    };
+  }
+  addEventListener(name, listener) { this.listeners.set(name, listener); }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  dispatch(name, value = undefined) {
+    if (value !== undefined) this.value = String(value);
+    return this.listeners.get(name)({ target: this });
+  }
+}
+
+const config = __CONFIG__;
+const window = { location: { href: "http://127.0.0.1:8080/" } };
+const document = {
+  createElement() { return { textContent: "", classList: new ClassList() }; },
+};
+const elements = {
+  cacheLimitSlider: new Slider(),
+  cacheLimitScale: new Scale(),
+  advanceDelaySlider: new Slider(),
+  advanceDelayScale: new Scale([1, 2, 3, 4, 5]),
+};
+function makeSnapshot(value, stateRevision) {
+  return {
+    state_revision: stateRevision,
+    revision: stateRevision,
+    playback_generation: 1,
+    playback_program: null,
+    current_item: null,
+    cache_policy: {
+      choices: [1, 2, 3, 4, 5],
+      max_cache_items: config.slider === "cacheLimitSlider" ? value : 2,
+    },
+    player_settings: {
+      song_advance_delay_seconds: config.slider === "advanceDelaySlider" ? value : 2,
+    },
+  };
+}
+const state = {
+  data: makeSnapshot(2, 1),
+  hostPlaybackSession: null,
+  pendingHostPlaybackProgramReconciliation: null,
+  cacheSettingsOpen: true,
+  cacheSliderRenderSignature: "",
+  advanceDelaySliderRenderSignature: "",
+  cacheLimitSaving: false,
+  cacheLimitDraftValue: null,
+  cacheLimitQueuedValue: null,
+  cacheLimitSubmittedValue: null,
+  cacheLimitRequestSequence: 0,
+  cacheLimitActiveRequestSequence: 0,
+  advanceDelaySaving: false,
+  advanceDelayDraftValue: null,
+  advanceDelayQueuedValue: null,
+  advanceDelaySubmittedValue: null,
+  advanceDelayRequestSequence: 0,
+  advanceDelayActiveRequestSequence: 0,
+};
+function currentSongAdvanceDelaySeconds(settings = state.data?.player_settings) {
+  return Number(settings?.song_advance_delay_seconds ?? 3);
+}
+function frontendPlaybackMode(mode) { return mode || "local"; }
+function maybeShowSongTransitionOverlay() {}
+function renderPlayer() {}
+function isCurrentHostPlaybackSession() { return false; }
+const messages = [];
+function setAppMessage(message, isError = false) {
+  messages.push({ message: String(message), isError: Boolean(isError) });
+}
+function t(key, values = {}) {
+  const value = values.count ?? values.seconds;
+  return value === undefined ? key : `${key}:${value}`;
+}
+let renders = 0;
+function render() {
+  renders += 1;
+  renderCacheSlider(state.data.cache_policy);
+  renderAdvanceDelaySlider(state.data.player_settings);
+}
+const requests = [];
+function deferredRequest(url, payload) {
+  let resolve;
+  let reject;
+  const promise = new Promise((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  requests.push({ url, payload, resolve, reject });
+  return promise;
+}
+async function apiPost(url, payload) { return deferredRequest(url, payload); }
+
+__ACCEPTANCE__
+__RENDERERS__
+__CACHE_FILL__
+__SETTERS__
+__LISTENERS__
+
+const slider = elements[config.slider];
+const scale = elements[config.scale];
+function observed() {
+  return {
+    value: Number(slider.value),
+    fill: slider.style.getPropertyValue("--slider-progress"),
+    active: Number(scale.marks.find((mark) => mark.classList.contains("active"))?.textContent || 0),
+    disabled: slider.disabled,
+    busy: slider.getAttribute("aria-busy"),
+  };
+}
+async function waitForRequestCount(count) {
+  for (let index = 0; index < 20 && requests.length < count; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+(async () => {
+  render();
+  await slider.dispatch("input", 4);
+  const immediate = observed();
+  const firstWrite = slider.dispatch("change");
+  const requestStarted = { observation: observed(), requests: requests.length };
+  const unrelatedAccepted = acceptHostStateSnapshot(makeSnapshot(2, 2));
+  render();
+  const afterUnrelated = observed();
+  render();
+  const afterRepeatedRender = observed();
+  requests[0].resolve(makeSnapshot(4, 3));
+  await firstWrite;
+  const afterAcknowledgement = observed();
+
+  const externalAccepted = acceptHostStateSnapshot(makeSnapshot(1, 4));
+  render();
+  const afterExternal = observed();
+
+  await slider.dispatch("input", 2);
+  const mismatchWrite = slider.dispatch("change");
+  requests[1].resolve(makeSnapshot(3, 5));
+  await mismatchWrite;
+  const afterMismatch = observed();
+  const messagesAfterMismatch = [...messages];
+
+  await slider.dispatch("input", 4);
+  const failedWrite = slider.dispatch("change");
+  const failureExternalAccepted = acceptHostStateSnapshot(makeSnapshot(1, 6));
+  render();
+  const duringFailure = observed();
+  requests[2].reject(new Error("write failed"));
+  await failedWrite;
+  const afterFailure = observed();
+
+  await slider.dispatch("input", 2);
+  const rapidFirst = slider.dispatch("change");
+  await slider.dispatch("input", 5);
+  const rapidSecond = slider.dispatch("change");
+  const rapidBeforeFirstCompletion = observed();
+  const rapidOldAccepted = acceptHostStateSnapshot(makeSnapshot(1, 7));
+  render();
+  const rapidAfterOldSnapshot = observed();
+  requests[3].resolve(makeSnapshot(2, 8));
+  await rapidSecond;
+  await waitForRequestCount(5);
+  const rapidAfterFirstCompletion = observed();
+  const queuedRequestCount = requests.length;
+  if (requests[4]) requests[4].resolve(makeSnapshot(5, 9));
+  await rapidFirst;
+  const rapidFinal = observed();
+
+  const inverseAccepted = acceptHostStateSnapshot(makeSnapshot(2, 8));
+  render();
+  const afterInverse = observed();
+  const finalExternalAccepted = acceptHostStateSnapshot(makeSnapshot(3, 10));
+  render();
+  const finalExternal = observed();
+
+  process.stdout.write(JSON.stringify({
+    immediate,
+    requestStarted,
+    unrelatedAccepted,
+    afterUnrelated,
+    afterRepeatedRender,
+    afterAcknowledgement,
+    externalAccepted,
+    afterExternal,
+    afterMismatch,
+    messagesAfterMismatch,
+    failureExternalAccepted,
+    duringFailure,
+    afterFailure,
+    rapidBeforeFirstCompletion,
+    rapidOldAccepted,
+    rapidAfterOldSnapshot,
+    rapidAfterFirstCompletion,
+    queuedRequestCount,
+    rapidFinal,
+    inverseAccepted,
+    afterInverse,
+    finalExternalAccepted,
+    finalExternal,
+    requests: requests.map((request) => ({ url: request.url, value: request.payload[config.payloadKey] })),
+    messages,
+    panelOpen: state.cacheSettingsOpen,
+    renders,
+  }));
+})().catch((error) => {
+  process.stderr.write(String(error.stack || error));
+  process.exit(1);
+});
+"""
+        replacements = {
+            "__CONFIG__": json.dumps(configs[control]),
+            "__ACCEPTANCE__": acceptance,
+            "__RENDERERS__": renderers,
+            "__CACHE_FILL__": cache_fill,
+            "__SETTERS__": setters,
+            "__LISTENERS__": listeners,
+        }
+        for marker, value in replacements.items():
+            script = script.replace(marker, value)
+        completed = subprocess.run(
+            [self.node, "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(completed.stdout)
+
+    def assert_slider_draft_contract(self, control: str) -> None:
+        result = self.run_slider_contract(control)
+        effective = {
+            "immediate": 4,
+            "requestStarted": 4,
+            "afterUnrelated": 4,
+            "afterRepeatedRender": 4,
+            "afterAcknowledgement": 4,
+            "afterExternal": 1,
+            "afterMismatch": 3,
+            "duringFailure": 4,
+            "afterFailure": 1,
+            "rapidBeforeFirstCompletion": 5,
+            "rapidAfterOldSnapshot": 5,
+            "rapidAfterFirstCompletion": 5,
+            "rapidFinal": 5,
+            "afterInverse": 5,
+            "finalExternal": 3,
+        }
+        for key, value in effective.items():
+            with self.subTest(control=control, observation=key):
+                observation = (
+                    result[key]["observation"]
+                    if key == "requestStarted"
+                    else result[key]
+                )
+                self.assertEqual(observation["value"], value)
+                self.assertEqual(observation["active"], value)
+                self.assertEqual(
+                    observation["fill"], f"{(value - 1) * 25}%"
+                )
+                self.assertFalse(observation["disabled"])
+        self.assertEqual(result["requestStarted"]["requests"], 1)
+        self.assertEqual(result["requestStarted"]["observation"]["busy"], "true")
+        self.assertEqual(result["rapidBeforeFirstCompletion"]["busy"], "true")
+        self.assertEqual(result["rapidAfterFirstCompletion"]["busy"], "true")
+        self.assertIsNone(result["afterAcknowledgement"]["busy"])
+        self.assertIsNone(result["afterFailure"]["busy"])
+        self.assertIsNone(result["rapidFinal"]["busy"])
+        self.assertTrue(result["unrelatedAccepted"])
+        self.assertTrue(result["externalAccepted"])
+        self.assertTrue(result["failureExternalAccepted"])
+        self.assertTrue(result["rapidOldAccepted"])
+        self.assertFalse(result["inverseAccepted"])
+        self.assertTrue(result["finalExternalAccepted"])
+        self.assertEqual(result["queuedRequestCount"], 5)
+        config = {
+            "cache": ("/api/cache-policy", "service.cacheLimitUpdated"),
+            "advance": (
+                "/api/player/advance-delay",
+                "service.advanceDelayUpdated",
+            ),
+        }[control]
+        self.assertEqual(
+            result["requests"],
+            [
+                {"url": config[0], "value": 4},
+                {"url": config[0], "value": 2},
+                {"url": config[0], "value": 4},
+                {"url": config[0], "value": 2},
+                {"url": config[0], "value": 5},
+            ],
+        )
+        self.assertEqual(
+            result["messagesAfterMismatch"],
+            [{"message": f"{config[1]}:4", "isError": False}],
+        )
+        self.assertEqual(
+            result["messages"],
+            [
+                {"message": f"{config[1]}:4", "isError": False},
+                {"message": "write failed", "isError": True},
+                {"message": f"{config[1]}:2", "isError": False},
+                {"message": f"{config[1]}:5", "isError": False},
+            ],
+        )
+        self.assertTrue(result["panelOpen"])
+
+    def test_cache_limit_slider_preserves_draft_until_authoritative_acknowledgement(self):
+        self.assert_slider_draft_contract("cache")
+
+    def test_advance_delay_slider_preserves_draft_until_authoritative_acknowledgement(
+        self,
+    ):
+        self.assert_slider_draft_contract("advance")
+
     def test_acceptance_matrix_is_fail_closed_and_structural(self):
         result = self.run_node(
             """
