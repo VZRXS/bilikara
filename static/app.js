@@ -145,6 +145,7 @@ const state = {
   listFlipTransitionCleanup: null,
   cacheSettingsOpen: false,
   cacheAdvancedOpen: false,
+  remoteQrPinned: false,
   displaySettingsOpen: false,
   presentationSettingsOpen: false,
   cacheLimitSaving: false,
@@ -531,6 +532,10 @@ const elements = {
   remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
+  remoteMiniControl: document.getElementById("remote-mini-control"),
+  remoteMiniTrigger: document.getElementById("remote-mini-trigger"),
+  remoteMiniPopover: document.getElementById("remote-mini-popover"),
+  remoteMiniPopoverClose: document.getElementById("remote-mini-popover-close"),
   searchPanel: document.getElementById("search-panel"),
   searchExpandButton: document.getElementById("search-expand-button"),
   searchCardContent: document.getElementById("search-card-content"),
@@ -6501,6 +6506,84 @@ function renderSessionUsers(sessionUsers) {
 }
 
 
+function setRemoteQrPinned(pinned, { dismissTransient = false } = {}) {
+  state.remoteQrPinned = Boolean(pinned);
+  elements.remoteMiniControl?.classList.toggle("is-qr-pinned", state.remoteQrPinned);
+  elements.remoteMiniControl?.classList.toggle(
+    "is-qr-dismissed",
+    !state.remoteQrPinned && Boolean(dismissTransient),
+  );
+  elements.remoteMiniTrigger?.setAttribute("aria-expanded", String(state.remoteQrPinned));
+  if (!state.remoteQrPinned && dismissTransient) {
+    const activeElement = document.activeElement;
+    if (activeElement && elements.remoteMiniControl?.contains(activeElement)) {
+      activeElement.blur();
+    }
+  }
+}
+
+const cacheAdvancedInfoHoverDelayMs = 160;
+const cacheAdvancedInfoLeaveDelayMs = 90;
+let cacheAdvancedInfoHoverTimer = null;
+let cacheAdvancedInfoLeaveTimer = null;
+
+function setCacheAdvancedInfoVisible(info, { pinned = false } = {}) {
+  if (!info) {
+    return false;
+  }
+  document.querySelectorAll(".cache-advanced-info.is-visible").forEach((candidate) => {
+    if (candidate === info) {
+      return;
+    }
+    candidate.classList.remove("is-visible", "is-pinned");
+    candidate.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+  });
+  info.classList.add("is-visible");
+  info.classList.toggle("is-pinned", pinned);
+  info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "true");
+  return true;
+}
+
+function closeCacheAdvancedInfo({ includePinned = true } = {}) {
+  if (cacheAdvancedInfoHoverTimer) {
+    window.clearTimeout(cacheAdvancedInfoHoverTimer);
+    cacheAdvancedInfoHoverTimer = null;
+  }
+  if (cacheAdvancedInfoLeaveTimer) {
+    window.clearTimeout(cacheAdvancedInfoLeaveTimer);
+    cacheAdvancedInfoLeaveTimer = null;
+  }
+  let closed = false;
+  document.querySelectorAll(".cache-advanced-info.is-visible").forEach((info) => {
+    if (!includePinned && info.classList.contains("is-pinned")) {
+      return;
+    }
+    closed = true;
+    info.classList.remove("is-visible", "is-pinned");
+    info.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+  });
+  return closed;
+}
+
+function showCacheAdvancedInfoTransient(info, source) {
+  if (info?.classList.contains("is-pinned")) {
+    return true;
+  }
+  const pinned = document.querySelector(".cache-advanced-info.is-pinned");
+  if (source === "pointer" && pinned && pinned !== info) {
+    return false;
+  }
+  return setCacheAdvancedInfoVisible(info);
+}
+
+function cacheAdvancedInfoSupportsHover(event) {
+  if (event.pointerType === "touch") {
+    return false;
+  }
+  return window.matchMedia?.("(any-hover: hover) and (any-pointer: fine)").matches !== false;
+}
+
+
 function renderRemoteAccess(remoteAccess) {
   const preferredUrl = String(remoteAccess?.preferred_url || "");
   const lanUrls = Array.isArray(remoteAccess?.lan_urls) ? remoteAccess.lan_urls : [];
@@ -7308,6 +7391,9 @@ function syncCachePanelVisibility(options = {}) {
   setClassToggle(elements.cachePanel, "hidden", !state.cacheSettingsOpen);
   if (!state.cacheSettingsOpen) {
     state.cacheAdvancedOpen = false;
+  }
+  if (!state.cacheAdvancedOpen) {
+    closeCacheAdvancedInfo();
   }
   setClassToggle(elements.cacheAdvancedInlineView, "hidden", !state.cacheAdvancedOpen);
   if (elements.cachePanelAdvancedTrigger) {
@@ -14902,6 +14988,105 @@ elements.cachePanelAdvancedTrigger?.addEventListener("click", () => {
   syncCachePanelVisibility();
 });
 
+elements.cacheAdvancedInlineView?.addEventListener("click", (event) => {
+  const button = event.target.closest(".cache-advanced-info-button");
+  if (!button) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const info = button.closest(".cache-advanced-info");
+  if (info?.classList.contains("is-pinned")) {
+    closeCacheAdvancedInfo();
+    return;
+  }
+  closeCacheAdvancedInfo();
+  setCacheAdvancedInfoVisible(info, { pinned: true });
+});
+
+elements.cacheAdvancedInlineView?.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
+  const info = region.querySelector(".cache-advanced-info");
+  region.addEventListener("pointerenter", (event) => {
+    if (!info || !cacheAdvancedInfoSupportsHover(event) || info.classList.contains("is-visible")) {
+      return;
+    }
+    if (cacheAdvancedInfoLeaveTimer) {
+      window.clearTimeout(cacheAdvancedInfoLeaveTimer);
+      cacheAdvancedInfoLeaveTimer = null;
+    }
+    if (cacheAdvancedInfoHoverTimer) {
+      window.clearTimeout(cacheAdvancedInfoHoverTimer);
+    }
+    cacheAdvancedInfoHoverTimer = window.setTimeout(() => {
+      cacheAdvancedInfoHoverTimer = null;
+      if (region.matches(":hover")) {
+        showCacheAdvancedInfoTransient(info, "pointer");
+      }
+    }, cacheAdvancedInfoHoverDelayMs);
+  });
+  region.addEventListener("pointerleave", () => {
+    if (cacheAdvancedInfoHoverTimer) {
+      window.clearTimeout(cacheAdvancedInfoHoverTimer);
+      cacheAdvancedInfoHoverTimer = null;
+    }
+    if (cacheAdvancedInfoLeaveTimer) {
+      window.clearTimeout(cacheAdvancedInfoLeaveTimer);
+    }
+    cacheAdvancedInfoLeaveTimer = window.setTimeout(() => {
+      cacheAdvancedInfoLeaveTimer = null;
+      if (
+        !info?.classList.contains("is-pinned")
+        && !region.matches(":hover")
+        && !info?.contains(document.activeElement)
+      ) {
+        info?.classList.remove("is-visible");
+        info?.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+      }
+    }, cacheAdvancedInfoLeaveDelayMs);
+  });
+  region.addEventListener("focusin", (event) => {
+    if (!event.target.closest(".cache-advanced-info-button")) {
+      return;
+    }
+    showCacheAdvancedInfoTransient(info, "keyboard");
+  });
+  region.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (
+        !info?.classList.contains("is-pinned")
+        && !region.contains(document.activeElement)
+        && !region.matches(":hover")
+      ) {
+        info?.classList.remove("is-visible");
+        info?.querySelector(".cache-advanced-info-button")?.setAttribute("aria-expanded", "false");
+      }
+    }, 0);
+  });
+});
+
+elements.remoteMiniTrigger?.addEventListener("focus", () => {
+  elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
+});
+
+elements.remoteMiniControl?.addEventListener("mouseenter", () => {
+  elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
+});
+
+elements.remoteMiniControl?.addEventListener("mouseleave", () => {
+  if (!state.remoteQrPinned) {
+    elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
+  }
+});
+
+elements.remoteMiniTrigger?.addEventListener("click", () => {
+  const wasPinned = state.remoteQrPinned;
+  setRemoteQrPinned(!wasPinned, { dismissTransient: wasPinned });
+});
+
+elements.remoteMiniPopoverClose?.addEventListener("click", () => {
+  setRemoteQrPinned(false, { dismissTransient: true });
+});
+
 elements.displaySettingsToggle?.addEventListener("click", () => {
   state.displaySettingsOpen = !state.displaySettingsOpen;
   if (state.displaySettingsOpen) {
@@ -15780,9 +15965,11 @@ elements.confirmOk.addEventListener("click", async () => {
 });
 
 document.addEventListener("click", (event) => {
+  if (event.target.closest("#confirm-popover")) {
+    return;
+  }
   if (state.confirmIntent) {
     if (
-      event.target.closest("#confirm-popover") ||
       event.target.closest("#clear-playlist-button") ||
       event.target.closest("#history-export-button") ||
       event.target.closest("#clear-history-button") ||
@@ -15804,7 +15991,20 @@ document.addEventListener("click", (event) => {
     closeConfirm();
   }
 
-  if (state.cacheSettingsOpen && !event.target.closest("#cache-settings")) {
+  if (!event.target.closest(".cache-contextual-info-region")) {
+    closeCacheAdvancedInfo();
+  }
+
+  const clickedInsideRemoteQr = Boolean(event.target.closest("#remote-mini-control"));
+  if (state.remoteQrPinned && !clickedInsideRemoteQr) {
+    setRemoteQrPinned(false);
+  }
+
+  if (
+    state.cacheSettingsOpen
+    && !event.target.closest("#cache-settings")
+    && !clickedInsideRemoteQr
+  ) {
     state.cacheSettingsOpen = false;
     syncCachePanelVisibility();
   }
@@ -15862,6 +16062,14 @@ document.addEventListener("keydown", (event) => {
   }
   if (state.confirmIntent) {
     closeConfirm();
+    return;
+  }
+  if (closeCacheAdvancedInfo()) {
+    return;
+  }
+  if (state.remoteQrPinned) {
+    setRemoteQrPinned(false, { dismissTransient: true });
+    return;
   }
   if (state.cacheSettingsOpen) {
     state.cacheSettingsOpen = false;

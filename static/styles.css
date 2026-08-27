@@ -832,6 +832,7 @@ h2 {
 
 .remote-mini-control {
   position: relative;
+  z-index: 70;
   width: var(--remote-mini-control-width);
   min-width: var(--remote-mini-control-width);
   flex: 0 0 var(--remote-mini-control-width);
@@ -842,6 +843,12 @@ h2 {
   align-items: center;
   justify-content: center;
   flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .remote-mini-qr-wrap {
@@ -883,14 +890,16 @@ h2 {
   z-index: 130;
 }
 
-.remote-mini-control:hover .remote-mini-popover,
-.remote-mini-control:focus-within .remote-mini-popover {
+.remote-mini-control:not(.is-qr-dismissed):hover .remote-mini-popover,
+.remote-mini-control:not(.is-qr-dismissed):focus-within .remote-mini-popover,
+.remote-mini-control.is-qr-pinned .remote-mini-popover {
   visibility: visible;
   transform: translateY(0);
   pointer-events: auto;
 }
 
 .remote-mini-popover-card {
+  position: relative;
   background: rgb(255, 250, 244);
   box-shadow: var(--shadow);
 }
@@ -902,6 +911,13 @@ h2 {
 .remote-mini-popover-qr-wrap {
   width: 160px;
   height: 160px;
+}
+
+.remote-mini-popover-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
 }
 
 .status-chip {
@@ -1098,6 +1114,113 @@ h2 {
 
 .cache-advanced-inline-view.hidden {
   display: none !important;
+}
+
+.cache-advanced-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cache-contextual-info-region {
+  position: relative;
+}
+
+.cache-advanced-info {
+  display: inline-flex;
+  align-items: center;
+}
+
+.cache-advanced-info-button {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  margin: -7px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  opacity: 0.78;
+}
+
+.contextual-info-glyph {
+  width: 18px;
+  height: 18px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  font: italic 700 11px/1 Georgia, serif;
+}
+
+.cache-advanced-info-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cache-contextual-info-region:hover .cache-advanced-info-button,
+.cache-advanced-info-button:focus-visible,
+.cache-advanced-info.is-visible .cache-advanced-info-button {
+  color: var(--accent-deep);
+  opacity: 1;
+}
+
+.cache-advanced-tooltip {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 180;
+  width: min(240px, calc(100vw - 48px));
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(3px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 0s linear 120ms;
+}
+
+.cache-advanced-info.is-visible .cache-advanced-tooltip {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.cache-data-cleanup-scope {
+  max-width: 190px;
+  margin: 5px 0 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cache-advanced-info-button {
+    opacity: 0.42;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .cache-advanced-info-button {
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    margin: -11px;
+    opacity: 1;
+  }
 }
 
 .cache-panel-row {
@@ -2898,8 +3021,9 @@ select:disabled {
 }
 
 .session-user-stage {
+  --session-user-row-height: 36px;
   position: relative;
-  min-height: 36px;
+  min-height: var(--session-user-row-height);
   margin-top: 10px;
 }
 
@@ -2916,8 +3040,18 @@ select:disabled {
   overscroll-behavior: contain;
 }
 
-.session-user-empty {
-  padding: 18px;
+.session-user-list .session-user-empty {
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--session-user-row-height);
+  min-height: var(--session-user-row-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-user-badge {
@@ -2926,8 +3060,8 @@ select:disabled {
   align-items: center;
   justify-content: center;
   width: fit-content;
-  height: 36px;
-  min-height: 36px;
+  height: var(--session-user-row-height);
+  min-height: var(--session-user-row-height);
   padding: 0 16px;
   border-radius: 999px;
   background: var(--session-user-badge-bg);

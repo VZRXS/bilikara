@@ -38,17 +38,21 @@
       <div class="top-controls">
         <div class="mode-control remote-mini-control" id="remote-mini-control">
           <span class="control-label" data-i18n="top.mobileRemote">手机点歌</span>
-          <div class="remote-mini-trigger">
-            <div class="remote-mini-qr-wrap">
+          <button type="button" class="remote-mini-trigger" id="remote-mini-trigger" aria-expanded="false"
+            aria-haspopup="dialog" aria-controls="remote-mini-popover">
+            <span class="remote-mini-qr-wrap">
               <img id="remote-mini-qr-image" class="remote-mini-qr-image hidden" alt="手机访问二维码缩略图"
                 data-i18n-alt="remote.miniQrAlt" />
-              <div id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder" data-i18n="remote.miniQrLoading">
+              <span id="remote-mini-qr-placeholder" class="remote-mini-qr-placeholder" data-i18n="remote.miniQrLoading">
                 生成中
-              </div>
-            </div>
-          </div>
-          <div class="remote-mini-popover">
+              </span>
+            </span>
+          </button>
+          <div class="remote-mini-popover" id="remote-mini-popover" role="dialog"
+            data-i18n-aria-label="remote.openInBrowser" aria-label="手机浏览器打开">
             <div class="remote-card remote-mini-popover-card">
+              <button type="button" class="banner-close remote-mini-popover-close" id="remote-mini-popover-close"
+                data-i18n-aria-label="common.close" aria-label="关闭">×</button>
               <div class="remote-qr-wrap remote-mini-popover-qr-wrap">
                 <img id="remote-popover-qr-image" class="remote-qr-image hidden" alt="手机访问二维码"
                   data-i18n-alt="remote.qrAlt" />
@@ -311,7 +315,6 @@
               <div class="cache-panel-row cache-panel-update-row">
                 <div>
                   <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
-                  <p class="cache-panel-hint" data-i18n="service.releaseOnlyHint">默认检查正式版</p>
                 </div>
                 <div class="cache-update-control">
                   <label class="cache-preview-field" for="update-preview-checkbox" title="同时检查预览版 Release"
@@ -330,8 +333,16 @@
               </div>
               <div class="cache-panel-row cache-panel-danger-row">
                 <div>
-                  <p class="cache-panel-label" data-i18n="service.playbackRepair">播放异常处理</p>
-                  <p class="cache-panel-hint" data-i18n="service.playbackRepairHint">本地播放出错时重新缓存或重置播放器</p>
+                  <div class="cache-advanced-label-row cache-contextual-info-region">
+                    <p class="cache-panel-label" data-i18n="service.playbackRepair">播放异常处理</p>
+                    <span class="cache-advanced-info">
+                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                        aria-describedby="cache-advanced-repair-info" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                      <span class="cache-advanced-tooltip" id="cache-advanced-repair-info" role="tooltip"
+                        data-i18n="service.playbackRepairHint">本地播放出错时重新缓存或重置播放器</span>
+                    </span>
+                  </div>
                 </div>
                 <div class="cache-panel-actions">
                   <button type="button" class="toolbar-button cache-retry-current-button"
@@ -347,8 +358,12 @@
               </div>
               <div class="cache-panel-row cache-panel-danger-row">
                 <div>
-                  <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
-                  <p class="cache-panel-hint" data-i18n="service.dataCleanupHint">保留已唱归档和抽卡缓存</p>
+                  <div class="cache-advanced-label-row">
+                    <p class="cache-panel-label" data-i18n="service.dataCleanup">数据清理</p>
+                  </div>
+                  <p class="cache-panel-hint cache-data-cleanup-scope" data-i18n="service.dataCleanupScope">
+                    清空当前点歌列表、用户、历史记录和缓存；保留已唱归档与抽卡缓存
+                  </p>
                 </div>
                 <button type="button" class="toolbar-button cache-data-reset-button" id="data-reset-button"
                   title="清空 data" data-i18n-title="service.clearDataTitle">
@@ -357,8 +372,16 @@
               </div>
               <div class="cache-panel-row diagnostic-panel-row">
                 <div>
-                  <p class="cache-panel-label" data-i18n="service.diagnostics">诊断信息</p>
-                  <p class="cache-panel-hint" data-i18n="service.diagnosticsHint">不含个人信息</p>
+                  <div class="cache-advanced-label-row cache-contextual-info-region">
+                    <p class="cache-panel-label" data-i18n="service.diagnostics">诊断信息</p>
+                    <span class="cache-advanced-info">
+                      <button type="button" class="cache-advanced-info-button" aria-expanded="false"
+                        aria-describedby="cache-advanced-diagnostics-info" data-i18n-aria-label="common.moreInfo"
+                        aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                      <span class="cache-advanced-tooltip" id="cache-advanced-diagnostics-info" role="tooltip"
+                        data-i18n="service.diagnosticsHint">不含个人信息</span>
+                    </span>
+                  </div>
                 </div>
                 <div class="cache-panel-actions diagnostic-panel-actions">
                   <button type="button" class="toolbar-button cache-retry-current-button" id="diagnostic-copy-button">

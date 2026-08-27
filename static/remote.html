@@ -718,11 +718,14 @@
           </div>
           <section id="remote-av-sync-panel" class="remote-setting-panel">
             <div class="remote-setting-copy">
-              <div class="remote-setting-header">
+              <div class="remote-setting-header remote-contextual-info-region">
                 <p class="panel-tag" data-i18n="player.avSyncTag">音画延迟</p>
                 <div class="info-trigger-wrap">
-                  <button type="button" class="remote-info-button" aria-label="说明">i</button>
-                  <div class="remote-tooltip-bubble" data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</div>
+                  <button type="button" class="remote-info-button" aria-expanded="false"
+                    aria-describedby="remote-av-sync-info" data-i18n-aria-label="common.moreInfo"
+                    aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <div class="remote-tooltip-bubble" id="remote-av-sync-info" role="tooltip"
+                    data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</div>
                 </div>
               </div>
             </div>
@@ -741,11 +744,14 @@
           </section>
           <section id="remote-volume-panel" class="remote-setting-panel">
             <div class="remote-setting-copy">
-              <div class="remote-setting-header">
+              <div class="remote-setting-header remote-contextual-info-region">
                 <p class="panel-tag" data-i18n="player.volumeTag">播放音量</p>
                 <div class="info-trigger-wrap">
-                  <button type="button" class="remote-info-button" aria-label="说明">i</button>
-                  <div class="remote-tooltip-bubble" data-i18n="player.volumeHint">直接遥控服务端当前本地播放的音量。</div>
+                  <button type="button" class="remote-info-button" aria-expanded="false"
+                    aria-describedby="remote-volume-info" data-i18n-aria-label="common.moreInfo"
+                    aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <div class="remote-tooltip-bubble" id="remote-volume-info" role="tooltip"
+                    data-i18n="player.volumeHint">直接遥控服务端当前本地播放的音量。</div>
                 </div>
               </div>
             </div>
@@ -765,11 +771,14 @@
           </section>
           <section id="remote-key-shift-panel" class="remote-setting-panel">
             <div class="remote-setting-copy">
-              <div class="remote-setting-header">
+              <div class="remote-setting-header remote-contextual-info-region">
                 <p class="panel-tag" data-i18n="player.keyShiftTag">音调调整</p>
                 <div class="info-trigger-wrap">
-                  <button type="button" class="remote-info-button" aria-label="说明">i</button>
-                  <div class="remote-tooltip-bubble" data-i18n="player.keyShiftHint">调整当前播放歌曲的音调，切歌时会自动复位。</div>
+                  <button type="button" class="remote-info-button" aria-expanded="false"
+                    aria-describedby="remote-key-shift-info" data-i18n-aria-label="common.moreInfo"
+                    aria-label="更多说明"><span class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <div class="remote-tooltip-bubble" id="remote-key-shift-info" role="tooltip"
+                    data-i18n="player.keyShiftHint">调整当前播放歌曲的音调，切歌时会自动复位。</div>
                 </div>
               </div>
             </div>

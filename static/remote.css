@@ -3784,53 +3784,61 @@ body.remote-identity-modal-open {
   width: 100%;
 }
 
-.info-trigger-wrap {
+.remote-contextual-info-region {
   position: relative;
+}
+
+.info-trigger-wrap {
   display: inline-flex;
   align-items: center;
 }
 
 .remote-info-button {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 1px solid var(--muted);
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  margin: -7px;
+  border-radius: 999px;
+  border: 0;
   background: transparent;
   color: var(--muted);
-  font-family: "Georgia", serif;
-  font-style: italic;
-  font-size: 11px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-grid;
+  place-items: center;
   cursor: pointer;
   padding: 0;
-  line-height: 1;
-  transition: all 0.2s ease;
+  opacity: 0.78;
+  transition: color 0.2s ease, opacity 0.2s ease;
   user-select: none;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .remote-info-button:hover {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-    color: var(--accent);
-  }
+.contextual-info-glyph {
+  width: 18px;
+  height: 18px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  font: italic 700 11px/1 Georgia, serif;
 }
 
-.info-trigger-wrap.show-tooltip .remote-info-button {
-  background: var(--accent-soft);
-  border-color: var(--accent);
+.remote-info-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.remote-contextual-info-region:hover .remote-info-button,
+.remote-info-button:focus-visible,
+.info-trigger-wrap.is-visible .remote-info-button {
   color: var(--accent);
+  opacity: 1;
 }
 
 .remote-tooltip-bubble {
   position: absolute;
   bottom: calc(100% + 10px);
-  right: -10px;
+  right: 0;
   z-index: 20;
-  width: 240px;
+  width: min(240px, calc(100vw - 48px));
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -3842,16 +3850,20 @@ body.remote-identity-modal-open {
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
   transform: scale(0.9) translateY(4px);
   transform-origin: bottom right;
-  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.18s;
 }
 
-.info-trigger-wrap.show-tooltip .remote-tooltip-bubble {
+.info-trigger-wrap.is-visible .remote-tooltip-bubble {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
   transform: scale(1) translateY(0);
+  transition-delay: 0s;
 }
 
 /* Arrow */
@@ -3874,6 +3886,22 @@ body.remote-identity-modal-open {
   border-style: solid;
   border-color: var(--line) transparent transparent transparent;
   z-index: -1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .remote-info-button {
+    opacity: 0.42;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .remote-info-button {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    margin: -13px;
+    opacity: 1;
+  }
 }
 
 /* Floating Control Console */

@@ -52,6 +52,48 @@ class AvDelayFrontendTest(unittest.TestCase):
             self.remote_css,
         )
 
+    def test_host_and_remote_contextual_info_markup_is_accessible_and_audited(self):
+        advanced = self.host_html[
+            self.host_html.index('id="cache-advanced-inline-view"') :
+            self.host_html.index('class="cache-panel-footer"')
+        ]
+        self.assertEqual(advanced.count('class="cache-advanced-info-button"'), 2)
+        self.assertEqual(advanced.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 2)
+        self.assertNotIn('aria-hidden="true">?</span>', advanced)
+        self.assertNotIn("service.releaseOnlyHint", advanced)
+        self.assertNotIn("service.dataCleanupHint", advanced)
+        self.assertIn('class="cache-panel-hint cache-data-cleanup-scope"', advanced)
+        self.assertIn('data-i18n="service.dataCleanupScope"', advanced)
+
+        floating_controls = self.remote_html[
+            self.remote_html.index('id="floating-control-overlay"') :
+            self.remote_html.index('id="remote-identity-modal"')
+        ]
+        self.assertEqual(floating_controls.count('class="remote-info-button"'), 3)
+        self.assertEqual(floating_controls.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 3)
+        self.assertEqual(floating_controls.count('data-i18n-aria-label="common.moreInfo"'), 3)
+        self.assertEqual(floating_controls.count('aria-describedby="remote-'), 3)
+        self.assertEqual(floating_controls.count('role="tooltip"'), 3)
+
+    def test_contextual_info_styles_cover_fine_and_coarse_pointers(self):
+        self.assertIn("@media (hover: hover) and (pointer: fine)", self.host_css)
+        self.assertIn("@media (hover: none), (pointer: coarse)", self.host_css)
+        self.assertIn(".cache-contextual-info-region:hover .cache-advanced-info-button", self.host_css)
+        self.assertIn(".cache-advanced-info.is-visible .cache-advanced-tooltip", self.host_css)
+        self.assertIn("@media (hover: hover) and (pointer: fine)", self.remote_css)
+        self.assertIn("@media (hover: none), (pointer: coarse)", self.remote_css)
+        self.assertIn(".remote-contextual-info-region:hover .remote-info-button", self.remote_css)
+        self.assertIn(".info-trigger-wrap.is-visible .remote-tooltip-bubble", self.remote_css)
+        self.assertNotIn(".info-trigger-wrap.show-tooltip", self.remote_css)
+
+    def test_contextual_info_scripts_separate_transient_and_pinned_state(self):
+        self.assertIn("const cacheAdvancedInfoHoverDelayMs = 160;", self.host_js)
+        self.assertIn("function showCacheAdvancedInfoTransient", self.host_js)
+        self.assertIn('classList.contains("is-pinned")', self.host_js)
+        self.assertIn("const remoteContextualInfoHoverDelayMs = 160;", self.remote_js)
+        self.assertIn("function showRemoteContextualInfoTransient", self.remote_js)
+        self.assertNotIn('classList.contains("show-tooltip")', self.remote_js)
+
     def test_frontends_dispatch_actions_and_render_rust_snapshot_fields(self):
         for source in (self.host_js, self.remote_js):
             self.assertIn('/api/player/av-delay-action', source)

@@ -7385,28 +7385,141 @@ elements.displayPopoverClose?.addEventListener("click", () => {
   setDisplaySettingsOpen(false);
 });
 
+const remoteContextualInfoHoverDelayMs = 160;
+const remoteContextualInfoLeaveDelayMs = 90;
+let remoteContextualInfoHoverTimer = null;
+let remoteContextualInfoLeaveTimer = null;
+
+function setRemoteContextualInfoVisible(wrap, { pinned = false } = {}) {
+  if (!wrap) {
+    return false;
+  }
+  document.querySelectorAll(".info-trigger-wrap.is-visible").forEach((candidate) => {
+    if (candidate === wrap) {
+      return;
+    }
+    candidate.classList.remove("is-visible", "is-pinned");
+    candidate.querySelector(".remote-info-button")?.setAttribute("aria-expanded", "false");
+  });
+  wrap.classList.add("is-visible");
+  wrap.classList.toggle("is-pinned", pinned);
+  wrap.querySelector(".remote-info-button")?.setAttribute("aria-expanded", "true");
+  return true;
+}
+
+function closeRemoteContextualInfo({ includePinned = true } = {}) {
+  if (remoteContextualInfoHoverTimer) {
+    window.clearTimeout(remoteContextualInfoHoverTimer);
+    remoteContextualInfoHoverTimer = null;
+  }
+  if (remoteContextualInfoLeaveTimer) {
+    window.clearTimeout(remoteContextualInfoLeaveTimer);
+    remoteContextualInfoLeaveTimer = null;
+  }
+  let closed = false;
+  document.querySelectorAll(".info-trigger-wrap.is-visible").forEach((wrap) => {
+    if (!includePinned && wrap.classList.contains("is-pinned")) {
+      return;
+    }
+    closed = true;
+    wrap.classList.remove("is-visible", "is-pinned");
+    wrap.querySelector(".remote-info-button")?.setAttribute("aria-expanded", "false");
+  });
+  return closed;
+}
+
+function showRemoteContextualInfoTransient(wrap, source) {
+  if (wrap?.classList.contains("is-pinned")) {
+    return true;
+  }
+  const pinned = document.querySelector(".info-trigger-wrap.is-pinned");
+  if (source === "pointer" && pinned && pinned !== wrap) {
+    return false;
+  }
+  return setRemoteContextualInfoVisible(wrap);
+}
+
+function remoteContextualInfoSupportsHover(event) {
+  if (event.pointerType === "touch") {
+    return false;
+  }
+  return window.matchMedia?.("(any-hover: hover) and (any-pointer: fine)").matches !== false;
+}
+
+document.querySelectorAll(".remote-contextual-info-region").forEach((region) => {
+  const wrap = region.querySelector(".info-trigger-wrap");
+  region.addEventListener("pointerenter", (event) => {
+    if (!wrap || !remoteContextualInfoSupportsHover(event) || wrap.classList.contains("is-visible")) {
+      return;
+    }
+    if (remoteContextualInfoLeaveTimer) {
+      window.clearTimeout(remoteContextualInfoLeaveTimer);
+      remoteContextualInfoLeaveTimer = null;
+    }
+    if (remoteContextualInfoHoverTimer) {
+      window.clearTimeout(remoteContextualInfoHoverTimer);
+    }
+    remoteContextualInfoHoverTimer = window.setTimeout(() => {
+      remoteContextualInfoHoverTimer = null;
+      if (region.matches(":hover")) {
+        showRemoteContextualInfoTransient(wrap, "pointer");
+      }
+    }, remoteContextualInfoHoverDelayMs);
+  });
+  region.addEventListener("pointerleave", () => {
+    if (remoteContextualInfoHoverTimer) {
+      window.clearTimeout(remoteContextualInfoHoverTimer);
+      remoteContextualInfoHoverTimer = null;
+    }
+    if (remoteContextualInfoLeaveTimer) {
+      window.clearTimeout(remoteContextualInfoLeaveTimer);
+    }
+    remoteContextualInfoLeaveTimer = window.setTimeout(() => {
+      remoteContextualInfoLeaveTimer = null;
+      if (
+        !wrap?.classList.contains("is-pinned")
+        && !region.matches(":hover")
+        && !wrap?.contains(document.activeElement)
+      ) {
+        wrap?.classList.remove("is-visible");
+        wrap?.querySelector(".remote-info-button")?.setAttribute("aria-expanded", "false");
+      }
+    }, remoteContextualInfoLeaveDelayMs);
+  });
+  region.addEventListener("focusin", (event) => {
+    if (!event.target.closest(".remote-info-button")) {
+      return;
+    }
+    showRemoteContextualInfoTransient(wrap, "keyboard");
+  });
+  region.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (
+        !wrap?.classList.contains("is-pinned")
+        && !region.contains(document.activeElement)
+        && !region.matches(":hover")
+      ) {
+        wrap?.classList.remove("is-visible");
+        wrap?.querySelector(".remote-info-button")?.setAttribute("aria-expanded", "false");
+      }
+    }, 0);
+  });
+});
+
 document.addEventListener("click", (event) => {
-  // Toggle info tooltip popovers
   const infoBtn = event.target.closest(".remote-info-button");
   if (infoBtn) {
     const wrap = infoBtn.closest(".info-trigger-wrap");
-    if (wrap) {
-      const isShown = wrap.classList.contains("show-tooltip");
-      // Close all tooltips first
-      document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
-        el.classList.remove("show-tooltip");
-      });
-      // Toggle current
-      if (!isShown) {
-        wrap.classList.add("show-tooltip");
-      }
-      event.stopPropagation();
+    event.preventDefault();
+    event.stopPropagation();
+    if (wrap?.classList.contains("is-pinned")) {
+      closeRemoteContextualInfo();
+    } else {
+      closeRemoteContextualInfo();
+      setRemoteContextualInfoVisible(wrap, { pinned: true });
     }
-  } else {
-    // Clicked outside, close all tooltips
-    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
-      el.classList.remove("show-tooltip");
-    });
+  } else if (!event.target.closest(".remote-contextual-info-region")) {
+    closeRemoteContextualInfo();
   }
 
   if (state.remoteQrPopoverOpen && !event.target.closest("#remote-qr-control")) {
@@ -7420,14 +7533,16 @@ document.addEventListener("click", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (closeRemoteContextualInfo()) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     if (state.searchModalOpen) {
       setSearchModalOpen(false);
     }
     setRemoteQrPopoverOpen(false);
     setDisplaySettingsOpen(false);
-    document.querySelectorAll(".info-trigger-wrap.show-tooltip").forEach((el) => {
-      el.classList.remove("show-tooltip");
-    });
   }
 });
 
@@ -8195,6 +8310,7 @@ function hideFloatingControlOverlay() {
   if (!elements.floatingControlOverlay) return;
   if (elements.floatingControlOverlay.classList.contains("hidden")) return;
 
+  closeRemoteContextualInfo();
   elements.floatingControlOverlay.classList.add("closing");
 
   setTimeout(() => {
