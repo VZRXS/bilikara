@@ -361,6 +361,11 @@
     }
 
     elements.close.addEventListener("click", () => close());
+    root.addEventListener("click", (event) => {
+      if (!event.target.closest(".song-detail-card")) {
+        close();
+      }
+    });
     elements.bilibiliLink.addEventListener("click", (event) => {
       if (!activeBilibiliUrl) {
         event.preventDefault();

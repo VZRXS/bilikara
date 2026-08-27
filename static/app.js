@@ -14411,6 +14411,8 @@ function openSearchResultDetail(event, container, source) {
     state.followBrowseData?.owners,
   );
   event.preventDefault();
+  card.tabIndex = -1;
+  card.focus({ preventScroll: true });
   searchDetailController.open({
     ...item,
     avatar_url: avatarUrl,
@@ -16124,6 +16126,7 @@ function openExpandedSearchModal() {
     searchModalCloseTimer = 0;
     elements.searchModalPlaceholder.appendChild(elements.searchCardContent);
     elements.searchModal.classList.remove("hidden", "closing");
+    document.body.classList.add("search-modal-open");
     elements.searchModalPlaceholder.classList.remove("hidden");
     elements.favlistBrowserView?.classList.add("hidden");
     elements.searchModalOtherView?.classList.add("hidden");
@@ -16154,6 +16157,7 @@ function closeExpandedSearchModal() {
     elements.searchOriginalContainer.appendChild(elements.searchCardContent);
     elements.searchModal.classList.add("hidden");
     elements.searchModal.classList.remove("closing");
+    document.body.classList.remove("search-modal-open");
     setSearchCardDetailMode(false);
     if (elements.searchExpandButton) {
       elements.searchExpandButton.style.display = "";

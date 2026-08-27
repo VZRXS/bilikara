@@ -340,6 +340,10 @@ p {
   display: none;
 }
 
+body.search-modal-open {
+  overflow: hidden;
+}
+
 #binding-modal,
 #gatcha-favlist-modal,
 #gatcha-pool-config-modal {
