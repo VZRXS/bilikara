@@ -1,6 +1,7 @@
 fn main() {
     let app_manifest = tauri_build::AppManifest::new().commands(&[
         "set_window_fullscreen",
+        "restart_application",
         "get_presentation_displays",
         "get_presentation_session",
         "activate_local_presentation",

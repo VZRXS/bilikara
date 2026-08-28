@@ -895,12 +895,17 @@ class CacheManager:
             or ".." in relative_path.parts
         ):
             raise ValueError("Rust artifact directory is invalid")
+        # Resolve only for containment checks. Returning canonical paths here
+        # breaks later relative_to(CACHE_DIR) calls when the configured root is
+        # an equivalent alias such as macOS /var or a Windows 8.3 short path.
+        committed_dir = CACHE_DIR / relative_path
+        staging_dir = CACHE_DIR / ".staging" / f"attempt-{token}"
         cache_root = CACHE_DIR.resolve()
-        committed_dir = (CACHE_DIR / relative_path).resolve()
-        staging_dir = (CACHE_DIR / ".staging" / f"attempt-{token}").resolve()
+        resolved_committed_dir = committed_dir.resolve()
+        resolved_staging_dir = staging_dir.resolve()
         if (
-            not self._path_is_within(committed_dir, cache_root)
-            or not self._path_is_within(staging_dir, cache_root)
+            not self._path_is_within(resolved_committed_dir, cache_root)
+            or not self._path_is_within(resolved_staging_dir, cache_root)
         ):
             raise ValueError("Rust artifact directory escapes the cache root")
         return reservation, staging_dir, committed_dir
@@ -6273,21 +6278,27 @@ class CacheManager:
         video_source = cache_result.get("video_file")
         if isinstance(video_source, Path) and str(video_source) in published:
             video_file = published[str(video_source)]
+            video_relative_path = video_file.relative_to(CACHE_DIR).as_posix()
             cache_result["video_file"] = video_file
-            cache_result["video_relative_path"] = str(video_file.relative_to(CACHE_DIR))
-            cache_result["video_media_url"] = self._build_media_url(str(video_file.relative_to(CACHE_DIR)))
+            cache_result["video_relative_path"] = video_relative_path
+            cache_result["video_media_url"] = self._build_media_url(
+                video_relative_path
+            )
 
         variants = cache_result.get("audio_variants")
         if isinstance(variants, list):
             url_map = {
-                self._build_media_url(str(Path(source).relative_to(CACHE_DIR))):
-                self._build_media_url(str(final.relative_to(CACHE_DIR)))
+                self._build_media_url(
+                    Path(source).relative_to(CACHE_DIR).as_posix()
+                ): self._build_media_url(final.relative_to(CACHE_DIR).as_posix())
                 for source, final in published.items()
             }
             for variant in variants:
                 if not isinstance(variant, dict):
                     continue
-                current_url = str(variant.get("audio_url") or "")
+                current_url = str(variant.get("audio_url") or "").replace(
+                    "\\", "/"
+                )
                 if current_url in url_map:
                     variant["audio_url"] = url_map[current_url]
 
@@ -6655,7 +6666,12 @@ class CacheManager:
                     f"{self._compact_probe_error(str(exc))}"
                 ) from exc
             else:
-                metadata = self._normalized_rust_media_probe(probe)
+                # Rust receives a canonical path across the FFI boundary. Keep
+                # cache metadata in the caller's path namespace so downstream
+                # publication can still derive paths relative to CACHE_DIR.
+                metadata = self._normalized_rust_media_probe(
+                    probe, media_path=media_path
+                )
                 self._append_log_line(
                     log_path,
                     f"[{self._log_timestamp()}] media probe {label}: Rust ok "
@@ -6691,13 +6707,13 @@ class CacheManager:
 
     @classmethod
     def _normalized_rust_media_probe(
-        cls, probe: dict[str, object]
+        cls, probe: dict[str, object], *, media_path: Path
     ) -> dict[str, object]:
         duration = cls._optional_probe_float(probe.get("duration_seconds"))
         kind = str(probe.get("kind") or "")
         return {
             "backend": "rust",
-            "path": str(probe.get("path") or ""),
+            "path": str(media_path),
             "size": int(probe.get("file_bytes") or 0),
             "container": "mp4",
             "duration_seconds": duration,

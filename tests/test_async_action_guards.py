@@ -199,6 +199,158 @@ class AsyncActionGuardsTest(unittest.TestCase):
         self.assertIsNone(res["finalOkAriaBusy"])
         self.assertEqual(res["finalOkText"], "Clear")
 
+    def test_application_restart_is_hidden_without_tauri_and_cancel_keeps_settings_open(self):
+        res = self.run_node_app_test(
+            """
+            const row = global.elements.applicationRestartRow;
+            const button = global.elements.applicationRestartButton;
+            delete global.__TAURI__;
+            button.click();
+            const browser = {
+              hidden: row.classList.contains("hidden"),
+              ariaHidden: row.attributes["aria-hidden"],
+              disabled: button.disabled,
+              confirmIntent: global.state.confirmIntent,
+            };
+
+            global.__TAURI__ = { core: { invoke() { throw new Error("must not invoke before confirm"); } } };
+            global.state.cacheSettingsOpen = true;
+            global.state.cacheAdvancedOpen = true;
+            button.click();
+            const native = {
+              hidden: row.classList.contains("hidden"),
+              ariaHidden: row.attributes["aria-hidden"],
+              disabled: button.disabled,
+              confirmType: global.state.confirmIntent?.type,
+              confirmMessage: global.state.confirmIntent?.message,
+            };
+            global.elements.confirmCancel.click();
+
+            process.stdout.write(JSON.stringify({
+              browser,
+              native,
+              afterCancel: {
+                confirmIntent: global.state.confirmIntent,
+                cacheSettingsOpen: global.state.cacheSettingsOpen,
+                cacheAdvancedOpen: global.state.cacheAdvancedOpen,
+              },
+            }));
+            """
+        )
+        self.assertTrue(res["browser"]["hidden"])
+        self.assertEqual(res["browser"]["ariaHidden"], "true")
+        self.assertTrue(res["browser"]["disabled"])
+        self.assertIsNone(res["browser"]["confirmIntent"])
+        self.assertFalse(res["native"]["hidden"])
+        self.assertEqual(res["native"]["ariaHidden"], "false")
+        self.assertFalse(res["native"]["disabled"])
+        self.assertEqual(res["native"]["confirmType"], "restart-application")
+        self.assertIn("restartApplicationConfirm", res["native"]["confirmMessage"])
+        self.assertIsNone(res["afterCancel"]["confirmIntent"])
+        self.assertTrue(res["afterCancel"]["cacheSettingsOpen"])
+        self.assertTrue(res["afterCancel"]["cacheAdvancedOpen"])
+
+    def test_application_restart_double_activation_invokes_once_and_stays_busy(self):
+        res = self.run_node_app_test(
+            """
+            let invokeCalls = [];
+            let resolveInvoke;
+            const httpCalls = [];
+            global.fetch = (...args) => {
+              httpCalls.push(args);
+              return new Promise(() => {});
+            };
+            global.__TAURI__ = { core: { invoke(command, payload) {
+              invokeCalls.push({ command, payload: payload ?? null });
+              return new Promise(resolve => { resolveInvoke = resolve; });
+            } } };
+
+            const sourceButton = global.elements.applicationRestartButton;
+            const okButton = global.elements.confirmOk;
+            sourceButton.click();
+            okButton.click();
+            const during = {
+              sourceDisabled: sourceButton.disabled,
+              sourceAriaBusy: sourceButton.attributes["aria-busy"],
+              confirmDisabled: okButton.disabled,
+              confirmAriaBusy: okButton.attributes["aria-busy"],
+              invokeCount: invokeCalls.length,
+            };
+            okButton.click();
+            sourceButton.click();
+            const callsAfterRepeatedActivation = invokeCalls.length;
+            resolveInvoke();
+
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                during,
+                callsAfterRepeatedActivation,
+                invokeCalls,
+                httpCalls: httpCalls.length,
+                final: {
+                  sourceDisabled: sourceButton.disabled,
+                  sourceAriaBusy: sourceButton.attributes["aria-busy"],
+                  confirmDisabled: okButton.disabled,
+                  confirmAriaBusy: okButton.attributes["aria-busy"],
+                  inFlight: global.state.applicationRestartInFlight,
+                },
+              }));
+            }, 10);
+            """
+        )
+        self.assertEqual(res["during"]["invokeCount"], 1)
+        self.assertEqual(res["callsAfterRepeatedActivation"], 1)
+        self.assertEqual(
+            res["invokeCalls"],
+            [{"command": "restart_application", "payload": None}],
+        )
+        self.assertEqual(res["httpCalls"], 0)
+        for state in (res["during"], res["final"]):
+            self.assertTrue(state["sourceDisabled"])
+            self.assertEqual(state["sourceAriaBusy"], "true")
+            self.assertTrue(state["confirmDisabled"])
+            self.assertEqual(state["confirmAriaBusy"], "true")
+        self.assertTrue(res["final"]["inFlight"])
+
+    def test_application_restart_invoke_failure_restores_controls_with_bounded_error(self):
+        res = self.run_node_app_test(
+            """
+            let invokeCalls = 0;
+            global.__TAURI__ = { core: { invoke() {
+              invokeCalls += 1;
+              return Promise.reject(new Error("sensitive native failure details"));
+            } } };
+            global.state.translations = {
+              zh: { "service.restartApplicationFailed": "无法重启桌面应用。" },
+            };
+
+            const sourceButton = global.elements.applicationRestartButton;
+            const okButton = global.elements.confirmOk;
+            sourceButton.click();
+            okButton.click();
+
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                invokeCalls,
+                sourceDisabled: sourceButton.disabled,
+                sourceAriaBusy: sourceButton.attributes["aria-busy"] || null,
+                confirmDisabled: okButton.disabled,
+                confirmAriaBusy: okButton.attributes["aria-busy"] || null,
+                inFlight: global.state.applicationRestartInFlight,
+                message: global.elements.appToast.textContent,
+              }));
+            }, 10);
+            """
+        )
+        self.assertEqual(res["invokeCalls"], 1)
+        self.assertFalse(res["sourceDisabled"])
+        self.assertIsNone(res["sourceAriaBusy"])
+        self.assertFalse(res["confirmDisabled"])
+        self.assertIsNone(res["confirmAriaBusy"])
+        self.assertFalse(res["inFlight"])
+        self.assertEqual(res["message"], "无法重启桌面应用。")
+        self.assertNotIn("sensitive", res["message"])
+
     def test_gatcha_confirm_button_prevents_duplicate_and_restores(self):
         res = self.run_node_app_test(
             """

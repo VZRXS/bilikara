@@ -35,10 +35,12 @@ fn main() {
     let startup_log_for_setup = startup_log.clone();
     let run_result = tauri::Builder::default()
         .manage(presentation::PresentationState::default())
+        .manage(window_lifecycle::ApplicationLifecycleState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             window_lifecycle::set_window_fullscreen,
+            window_lifecycle::restart_application,
             backend_download::save_backend_download,
             presentation::get_presentation_displays,
             presentation::get_presentation_session,

@@ -47,6 +47,7 @@ struct ReadyEvent {
     base_url: String,
 }
 
+#[derive(Clone)]
 pub(crate) struct BackendProcess {
     child: Arc<Mutex<Option<Child>>>,
     base_url: Arc<Mutex<Option<String>>>,

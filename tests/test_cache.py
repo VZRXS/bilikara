@@ -5037,6 +5037,31 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         }
         return reservation, result, staging, committed
 
+    def test_cache_attempt_paths_preserve_configured_root_representation(self):
+        alias_parent = Path(self.temp_dir.name) / "path-alias"
+        alias_parent.mkdir()
+        alias_cache_dir = alias_parent / ".." / "cache"
+        item = self._add_item("path-representation")
+        token = begin_cache_attempt(self.store, item.id)
+
+        with patch("bilikara.cache.CACHE_DIR", alias_cache_dir), patch.object(
+            CacheManager, "_worker_loop", lambda self: None
+        ):
+            manager = self._manager()
+            try:
+                reservation, staging, committed = manager._cache_attempt_paths(token)
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(
+            staging,
+            alias_cache_dir / ".staging" / f"attempt-{token}",
+        )
+        self.assertEqual(
+            committed,
+            alias_cache_dir / reservation["artifact_relative_directory"],
+        )
+
     def _apply_ready_result(
         self,
         item_id: str,
@@ -5134,7 +5159,9 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         )
 
     def test_validate_media_file_returns_structured_probe_metadata(self):
-        media = self.cache_dir / "song" / "video.mp4"
+        alias_parent = Path(self.temp_dir.name) / "probe-alias"
+        alias_parent.mkdir()
+        media = alias_parent / ".." / "cache" / "song" / "video.mp4"
         media.parent.mkdir(parents=True)
         media.write_bytes(b"media")
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch.object(
@@ -6013,6 +6040,9 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                 audio = attempt / "downloaded-audio.m4a"
                 video.write_bytes(b"validated-video")
                 audio.write_bytes(b"validated-audio")
+                windows_audio_relative_path = (
+                    audio.relative_to(self.cache_dir).as_posix().replace("/", "\\")
+                )
                 result = {
                     "video_file": video,
                     "video_relative_path": str(video.relative_to(self.cache_dir)),
@@ -6022,7 +6052,7 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                             "id": "p1",
                             "label": "P1",
                             "page": 1,
-                            "audio_url": f"/media/{audio.relative_to(self.cache_dir)}",
+                            "audio_url": f"/media/{windows_audio_relative_path}",
                         }
                     ],
                     "selected_audio_variant_id": "p1",
@@ -6051,7 +6081,23 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                 self.assertEqual(result["video_file"], final_path)
                 self.assertEqual(result["validation_files"][0]["path"], final_path)
                 self.assertEqual(result["validation_metadata"][0]["path"], str(final_path))
-                self.assertNotIn(".staging", result["video_media_url"])
+                expected_video_relative_path = (
+                    f"{reservation['artifact_relative_directory']}/video-p1.mp4"
+                )
+                self.assertEqual(
+                    result["video_relative_path"], expected_video_relative_path
+                )
+                self.assertEqual(
+                    result["video_media_url"],
+                    f"/media/{expected_video_relative_path}",
+                )
+                expected_audio_relative_path = (
+                    f"{reservation['artifact_relative_directory']}/audio-p1.m4a"
+                )
+                self.assertEqual(
+                    result["audio_variants"][0]["audio_url"],
+                    f"/media/{expected_audio_relative_path}",
+                )
                 self.assertEqual(self.store.get_item(item.id).cache_status, "pending")
             finally:
                 manager.shutdown()

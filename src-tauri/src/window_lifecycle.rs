@@ -6,7 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use tauri::Manager;
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -34,6 +34,9 @@ const MIN_VISIBLE_AREA_RATIO: f64 = 0.25;
 const DEFAULT_FRAME_WIDTH: f64 = 16.0;
 const DEFAULT_FRAME_HEIGHT: f64 = 40.0;
 const MAX_FRAME_EXTENT: f64 = 160.0;
+const APPLICATION_RUNNING: u8 = 0;
+const APPLICATION_RESTARTING: u8 = 1;
+const APPLICATION_EXITING: u8 = 2;
 
 static GEOMETRY_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -113,6 +116,57 @@ struct MainWindowGeometryState {
     path: Option<PathBuf>,
     cached: Mutex<Option<StoredMainWindowGeometry>>,
     restoring: AtomicBool,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ApplicationLifecycleState {
+    phase: AtomicU8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestartClaim {
+    Accepted,
+    AlreadyAccepted,
+    ShutdownInProgress,
+}
+
+impl ApplicationLifecycleState {
+    fn claim_restart(&self) -> RestartClaim {
+        match self.phase.compare_exchange(
+            APPLICATION_RUNNING,
+            APPLICATION_RESTARTING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => RestartClaim::Accepted,
+            Err(APPLICATION_RESTARTING) => RestartClaim::AlreadyAccepted,
+            Err(_) => RestartClaim::ShutdownInProgress,
+        }
+    }
+
+    fn claim_window_shutdown(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                APPLICATION_RUNNING,
+                APPLICATION_EXITING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn restart_in_progress(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == APPLICATION_RESTARTING
+    }
+
+    fn release_restart_after_preparation_failure(&self) {
+        let _ = self.phase.compare_exchange(
+            APPLICATION_RESTARTING,
+            APPLICATION_RUNNING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
 }
 
 impl MainWindowGeometryState {
@@ -768,6 +822,84 @@ pub(crate) fn save_main_window_geometry(window: &tauri::Window) -> Result<(), St
         .persist()
 }
 
+async fn prepare_application_restart_on_main_thread(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let app = app.clone();
+    let window = window.clone();
+    app.clone()
+        .run_on_main_thread(move || {
+            // GTK/AppKit window inspection and controller teardown belong on the
+            // desktop main thread. Geometry failure remains intentionally non-fatal.
+            let result = save_main_window_geometry(&window.as_ref().window());
+            append_desktop_diagnostic(
+                "application_restart",
+                if result.is_ok() {
+                    "stage=geometry_saved status=ok"
+                } else {
+                    "stage=geometry_saved status=error_ignored"
+                },
+            );
+            presentation::prepare_app_shutdown(&app);
+            append_desktop_diagnostic(
+                "application_restart",
+                "stage=presentation_shutdown_prepared",
+            );
+            let _ = sender.try_send(());
+        })
+        .map_err(|error| format!("failed to schedule application restart cleanup: {error}"))?;
+    receiver
+        .recv()
+        .await
+        .ok_or_else(|| "application restart cleanup did not complete".to_string())
+}
+
+#[tauri::command]
+pub(crate) async fn restart_application(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    backend: tauri::State<'_, BackendProcess>,
+    lifecycle: tauri::State<'_, ApplicationLifecycleState>,
+) -> Result<(), String> {
+    presentation::authorize_window(&window, &backend, &[MAIN_WINDOW_LABEL])?;
+    match lifecycle.claim_restart() {
+        RestartClaim::Accepted => {}
+        RestartClaim::AlreadyAccepted => return Ok(()),
+        RestartClaim::ShutdownInProgress => {
+            return Err("application shutdown is already in progress".to_string());
+        }
+    }
+    append_desktop_diagnostic("application_restart", "stage=accepted");
+
+    if let Err(error) = prepare_application_restart_on_main_thread(&app, &window).await {
+        lifecycle.release_restart_after_preparation_failure();
+        append_desktop_diagnostic(
+            "application_restart",
+            "stage=main_thread_preparation status=failed",
+        );
+        return Err(error);
+    }
+
+    let backend = backend.inner().clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_process::shutdown(&backend);
+        append_desktop_diagnostic("application_restart", "stage=backend_shutdown_finished");
+        append_desktop_diagnostic("application_restart", "stage=restart_requested");
+        // Locked Tauri 2.11.2 sets restart_on_exit, requests its restart
+        // exit code, then runs App::run exit callbacks and Tauri cleanup
+        // before the core relaunch. Its request-exit failure path performs
+        // the same cleanup/core relaunch directly. Bilikara cleanup has
+        // completed above in either case.
+        app.request_restart();
+    })
+    .await
+    .map_err(|error| format!("application restart worker failed: {error}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn set_window_fullscreen(
     window: tauri::WebviewWindow,
@@ -793,7 +925,12 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
                 refresh_cached_main_window_geometry(window);
             }
             tauri::WindowEvent::CloseRequested { .. } => {
-                if save_main_window_geometry(window).is_err() {
+                let restart_in_progress = window
+                    .try_state::<ApplicationLifecycleState>()
+                    .is_some_and(|state| state.restart_in_progress());
+                if restart_in_progress {
+                    geometry_diagnostic("save_on_close", "restart_owned");
+                } else if save_main_window_geometry(window).is_err() {
                     geometry_diagnostic("save_on_close", "error_ignored");
                 } else {
                     geometry_diagnostic("save_on_close", "ok");
@@ -810,6 +947,9 @@ pub(crate) fn handle_window_event(window: &tauri::Window, event: &tauri::WindowE
     }
     if window.label() == "main"
         && let tauri::WindowEvent::Destroyed = event
+        && window
+            .try_state::<ApplicationLifecycleState>()
+            .is_none_or(|lifecycle| lifecycle.claim_window_shutdown())
         && let Some(state) = window.try_state::<BackendProcess>()
     {
         append_desktop_diagnostic("presentation_window_destroyed", "window=main cleanup=begin");
@@ -1166,5 +1306,33 @@ mod tests {
             .expect("collect directory");
         assert_eq!(entries.len(), 1, "atomic temporary file must be replaced");
         fs::remove_dir_all(&directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn accepted_application_restart_owns_shutdown_idempotently() {
+        let lifecycle = ApplicationLifecycleState::default();
+
+        assert_eq!(lifecycle.claim_restart(), RestartClaim::Accepted);
+        assert_eq!(lifecycle.claim_restart(), RestartClaim::AlreadyAccepted);
+        assert!(lifecycle.restart_in_progress());
+        assert!(!lifecycle.claim_window_shutdown());
+    }
+
+    #[test]
+    fn failed_main_thread_preparation_releases_restart_claim() {
+        let lifecycle = ApplicationLifecycleState::default();
+
+        assert_eq!(lifecycle.claim_restart(), RestartClaim::Accepted);
+        lifecycle.release_restart_after_preparation_failure();
+        assert_eq!(lifecycle.claim_restart(), RestartClaim::Accepted);
+    }
+
+    #[test]
+    fn normal_window_shutdown_rejects_a_late_restart() {
+        let lifecycle = ApplicationLifecycleState::default();
+
+        assert!(lifecycle.claim_window_shutdown());
+        assert!(!lifecycle.claim_window_shutdown());
+        assert_eq!(lifecycle.claim_restart(), RestartClaim::ShutdownInProgress);
     }
 }

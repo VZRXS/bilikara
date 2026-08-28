@@ -195,7 +195,7 @@ class FileServingPathSecurityTest(unittest.TestCase):
                 handler._serve_media(f"/media/{new_relative}")
 
         self.assertEqual(writes, [])
-        self.assertEqual(streams, [old_file, new_file])
+        self.assertEqual(streams, [old_file.resolve(), new_file.resolve()])
         self.assertEqual(leases, [old_relative, new_relative])
 
 

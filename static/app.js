@@ -163,6 +163,7 @@ const state = {
   cachePolicySaving: false,
   diagnosticsBusy: false,
   diagnosticsCopyController: null,
+  applicationRestartInFlight: false,
   avOffsetSaving: false,
   volumeSaveSeq: 0,
   playerSettingsEchoSuppressUntil: 0,
@@ -427,6 +428,8 @@ const elements = {
   appUpdateRow: document.getElementById("app-update-row"),
   appUpdateStatus: document.getElementById("app-update-status"),
   updateVersionBadge: document.getElementById("update-version-badge"),
+  applicationRestartRow: document.getElementById("application-restart-row"),
+  applicationRestartButton: document.getElementById("application-restart-button"),
   diagnosticCopyButton: document.getElementById("diagnostic-copy-button"),
   diagnosticPackageButton: document.getElementById("diagnostic-package-button"),
   currentTitle: document.getElementById("current-title"),
@@ -1095,6 +1098,41 @@ function canTogglePlayerFullscreen() {
 
 function tauriInvoke() {
   return window.__TAURI__?.core?.invoke || null;
+}
+
+function syncApplicationRestartAvailability() {
+  const available = typeof tauriInvoke() === "function";
+  elements.applicationRestartRow?.classList.toggle("hidden", !available);
+  elements.applicationRestartRow?.setAttribute("aria-hidden", available ? "false" : "true");
+  if (elements.applicationRestartButton) {
+    elements.applicationRestartButton.disabled = !available || state.applicationRestartInFlight;
+    if (state.applicationRestartInFlight) {
+      elements.applicationRestartButton.setAttribute("aria-busy", "true");
+    } else {
+      elements.applicationRestartButton.removeAttribute("aria-busy");
+    }
+  }
+  return available;
+}
+
+async function restartApplication() {
+  const invoke = tauriInvoke();
+  if (typeof invoke !== "function") {
+    throw new Error(t("service.restartApplicationFailed"));
+  }
+  if (state.applicationRestartInFlight) {
+    return false;
+  }
+  state.applicationRestartInFlight = true;
+  syncApplicationRestartAvailability();
+  try {
+    await invoke("restart_application");
+    return true;
+  } catch {
+    state.applicationRestartInFlight = false;
+    syncApplicationRestartAvailability();
+    throw new Error(t("service.restartApplicationFailed"));
+  }
 }
 
 function isTauriCommandNotFoundError(error) {
@@ -15817,6 +15855,23 @@ elements.updateCheckButton?.addEventListener("click", async (event) => {
   await checkAppUpdate(event);
 });
 
+elements.applicationRestartButton?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (!syncApplicationRestartAvailability() || state.applicationRestartInFlight) {
+    return;
+  }
+  const point = anchorPointForEvent(event, elements.applicationRestartButton);
+  openConfirm({
+    type: "restart-application",
+    message: t("service.restartApplicationConfirm"),
+    primaryLabel: t("service.restartApplication"),
+    ...point,
+    anchorElementId: "application-restart-button",
+    anchorAlign: "end",
+    anchorGap: 8,
+  });
+});
+
 elements.audioVariantBar.addEventListener("click", async (event) => {
   const toggleButton = event.target.closest('button[data-action="toggle-audio-variants"]');
   if (toggleButton) {
@@ -16160,6 +16215,7 @@ elements.confirmOk.addEventListener("click", async () => {
     elements.confirmSecondary.setAttribute("aria-busy", "true");
   }
 
+  let keepBusyUntilApplicationExit = false;
   try {
     if (intent.type === "clear-playlist") {
       await clearPlaylist();
@@ -16183,6 +16239,10 @@ elements.confirmOk.addEventListener("click", async () => {
     }
     if (intent.type === "install-app-update") {
       await installAppUpdate(Boolean(intent.includePreview));
+      return;
+    }
+    if (intent.type === "restart-application") {
+      keepBusyUntilApplicationExit = await restartApplication();
       return;
     }
     if (intent.type === "prepare-download-source") {
@@ -16252,12 +16312,14 @@ elements.confirmOk.addEventListener("click", async () => {
       setAppMessage(error.message, true);
     }
   } finally {
-    elements.confirmOk.disabled = false;
-    elements.confirmOk.removeAttribute("aria-busy");
-    elements.confirmOk.textContent = prevOkText;
-    if (elements.confirmSecondary) {
-      elements.confirmSecondary.disabled = false;
-      elements.confirmSecondary.removeAttribute("aria-busy");
+    if (!keepBusyUntilApplicationExit) {
+      elements.confirmOk.disabled = false;
+      elements.confirmOk.removeAttribute("aria-busy");
+      elements.confirmOk.textContent = prevOkText;
+      if (elements.confirmSecondary) {
+        elements.confirmSecondary.disabled = false;
+        elements.confirmSecondary.removeAttribute("aria-busy");
+      }
     }
   }
 });
@@ -16277,6 +16339,7 @@ document.addEventListener("click", (event) => {
       event.target.closest("#current-cache-retry-button") ||
       event.target.closest("#player-reset-button") ||
       event.target.closest("#update-check-button") ||
+      event.target.closest("#application-restart-button") ||
       event.target.closest("#cache-download-source-select") ||
       event.target.closest("#add-form") ||
       event.target.closest("#gatcha-uid-form") ||
@@ -17231,6 +17294,7 @@ elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
 async function startPolling() {
   hydrateLocalPreferences();
   await loadTranslations();
+  syncApplicationRestartAvailability();
   initSearchDetailController();
   await initializeLocalPresentation();
   renderLayoutMode();

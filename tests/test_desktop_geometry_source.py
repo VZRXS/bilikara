@@ -51,7 +51,9 @@ class DesktopGeometrySourceTest(unittest.TestCase):
         self.assertNotIn(".show()", self.lifecycle)
 
     def test_geometry_persistence_is_rust_only_and_main_only(self):
-        geometry = self.lifecycle[: self.lifecycle.index("#[tauri::command]")]
+        geometry = self.lifecycle[
+            : self.lifecycle.index("async fn prepare_application_restart_on_main_thread")
+        ]
         self.assertIn('const MAIN_WINDOW_LABEL: &str = "main";', self.lifecycle)
         self.assertIn("if window.label() != MAIN_WINDOW_LABEL", self.lifecycle)
         self.assertNotIn("tauri_plugin_window_state", self.lifecycle)
