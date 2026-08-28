@@ -185,6 +185,7 @@
             <span class="status-chip-label-row">
               <span class="control-label" data-i18n="service.title">服务设置</span>
               <span class="tool-status-indicator is-loading" id="service-status-indicator" aria-hidden="true"></span>
+              <span class="app-update-indicator hidden" id="service-update-indicator" role="status"></span>
             </span>
             <div class="service-mode-summary">
               <span id="playback-mode-summary">1080P 高清</span>
@@ -307,24 +308,42 @@
             <div class="cache-panel-divider"></div>
             <button type="button" class="cache-panel-menu-row" id="cache-panel-advanced-trigger" aria-expanded="false">
               <span class="cache-panel-label" data-i18n="service.advancedSettings">高级与系统维护</span>
-              <span class="cache-panel-menu-chevron" aria-hidden="true"></span>
+              <span class="cache-panel-menu-adornment">
+                <span class="app-update-indicator hidden" id="advanced-update-indicator" role="status"></span>
+                <span class="cache-panel-menu-chevron" aria-hidden="true"></span>
+              </span>
             </button>
 
             <!-- COLLAPSIBLE INLINE ADVANCED VIEW -->
             <div class="cache-advanced-inline-view hidden" id="cache-advanced-inline-view">
-              <div class="cache-panel-row cache-panel-update-row">
-                <div>
-                  <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
+              <div class="cache-panel-row cache-panel-update-row" id="app-update-row">
+                <div class="cache-app-update-copy">
+                  <div class="cache-app-update-heading">
+                    <p class="cache-panel-label" data-i18n="service.appUpdate">应用更新</p>
+                    <span class="app-update-version-badge hidden" id="update-version-badge"></span>
+                  </div>
+                  <p class="cache-panel-hint app-update-status" id="app-update-status" role="status"
+                    aria-live="polite"></p>
                 </div>
                 <div class="cache-update-control">
-                  <label class="cache-preview-field" for="update-preview-checkbox" title="同时检查预览版 Release"
-                    data-i18n-title="service.previewTitle">
-                    <span data-i18n="service.previewRelease">预览版</span>
-                    <input id="update-preview-checkbox" type="checkbox" />
-                    <span class="cache-preview-switch" aria-hidden="true">
-                      <span class="cache-preview-switch-thumb"></span>
-                    </span>
-                  </label>
+                  <div class="cache-update-preferences">
+                    <label class="cache-preview-field" for="update-automatic-checkbox" title="启动时自动检查更新"
+                      data-i18n-title="service.autoCheckUpdatesTitle">
+                      <span data-i18n="service.autoCheckUpdates">自动检查更新</span>
+                      <input id="update-automatic-checkbox" type="checkbox" checked />
+                      <span class="cache-preview-switch" aria-hidden="true">
+                        <span class="cache-preview-switch-thumb"></span>
+                      </span>
+                    </label>
+                    <label class="cache-preview-field" for="update-preview-checkbox" title="同时检查预览版 Release"
+                      data-i18n-title="service.previewTitle">
+                      <span data-i18n="service.previewRelease">预览版</span>
+                      <input id="update-preview-checkbox" type="checkbox" />
+                      <span class="cache-preview-switch" aria-hidden="true">
+                        <span class="cache-preview-switch-thumb"></span>
+                      </span>
+                    </label>
+                  </div>
                   <button type="button" class="toolbar-button cache-update-button" id="update-check-button"
                     title="检查 bilikara 新版本" data-i18n-title="service.checkUpdateTitle">
                     <span data-i18n="service.checkUpdate">检查更新</span>

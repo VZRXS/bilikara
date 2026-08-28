@@ -2536,51 +2536,72 @@ class UpdateRouteTest(unittest.TestCase):
     def test_update_check_route_returns_update_payload(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
-        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+        calls: list[bool] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            check_app_update=lambda include_preview=False: calls.append(include_preview) or {
+                "state": "checking",
+                "include_preview": include_preview,
+            },
+        )
 
         handler.path = "/api/app/update"
         handler.headers = {}
         handler._write_json = lambda payload, status=None: writes.append(payload)
 
-        with patch("bilikara.server.CONTEXT", context), patch(
-            "bilikara.server.check_for_update",
-            return_value={
-                "current_version": "v0.4.0",
-                "latest_version": "v0.4.1",
-                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.4.1",
-                "update_available": True,
-            },
-        ) as update_check:
+        with patch("bilikara.server.CONTEXT", context):
             handler.do_GET()
 
         self.assertEqual(writes[0]["ok"], True)
-        self.assertTrue(writes[0]["data"]["update_available"])
-        update_check.assert_called_once_with(include_preview=False)
+        self.assertEqual(writes[0]["data"]["state"], "checking")
+        self.assertEqual(calls, [False])
 
     def test_update_check_route_can_include_preview_releases(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)
         writes: list[dict] = []
-        context = SimpleNamespace(touch_client=lambda client_id, is_host=True: None)
+        calls: list[bool] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            check_app_update=lambda include_preview=False: calls.append(include_preview) or {
+                "state": "checking",
+                "include_preview": include_preview,
+            },
+        )
 
         handler.path = "/api/app/update?include_preview=1"
         handler.headers = {}
         handler._write_json = lambda payload, status=None: writes.append(payload)
 
-        with patch("bilikara.server.CONTEXT", context), patch(
-            "bilikara.server.check_for_update",
-            return_value={
-                "current_version": "v0.4.0",
-                "latest_version": "v0.5.0-preview.1",
-                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.5.0-preview.1",
-                "update_available": True,
-                "include_preview": True,
-            },
-        ) as update_check:
+        with patch("bilikara.server.CONTEXT", context):
             handler.do_GET()
 
         self.assertEqual(writes[0]["ok"], True)
         self.assertTrue(writes[0]["data"]["include_preview"])
-        update_check.assert_called_once_with(include_preview=True)
+        self.assertEqual(calls, [True])
+
+    def test_check_only_post_route_never_starts_install(self):
+        handler = BilikaraHandler.__new__(BilikaraHandler)
+        writes: list[dict] = []
+        calls: list[bool] = []
+        context = SimpleNamespace(
+            touch_client=lambda client_id, is_host=True: None,
+            check_app_update=lambda include_preview=False: calls.append(include_preview) or {
+                "state": "checking",
+                "include_preview": include_preview,
+            },
+            start_app_update=lambda **kwargs: self.fail("check-only route started install"),
+        )
+
+        handler.path = "/api/app/update/check"
+        handler.headers = {}
+        handler._read_json_body = lambda: {"include_preview": False}
+        handler._write_json = lambda payload, status=None: writes.append(payload)
+
+        with patch("bilikara.server.CONTEXT", context):
+            handler.do_POST()
+
+        self.assertEqual(calls, [False])
+        self.assertEqual(writes[0]["data"]["state"], "checking")
 
     def test_update_status_route_returns_update_snapshot(self):
         handler = BilikaraHandler.__new__(BilikaraHandler)

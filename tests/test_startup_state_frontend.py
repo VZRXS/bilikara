@@ -73,6 +73,7 @@ function currentAvOffsetMs() {{ return 0; }}
 function frontendPlaybackMode() {{ return "local"; }}
 function maybeShowIncomingRequestToast() {{}}
 function maybeShowSongTransitionOverlay() {{}}
+function scheduleStartupAppUpdateCheck() {{}}
 function syncLocalPlayerSettingsFromSnapshot() {{}}
 function rememberedVolumePercent() {{ return 100; }}
 function rememberedMuted() {{ return false; }}

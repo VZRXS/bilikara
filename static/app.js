@@ -84,6 +84,7 @@ const storageKeys = {
   playerMuted: "bilikara.player.muted",
   layoutMode: "bilikara.layout.mode",
   language: "bilikara.ui.language",
+  updateAutomatic: "bilikara.update.automatic",
   updatePreview: "bilikara.update.preview",
   theme: "bilikara.ui.theme",
 };
@@ -281,7 +282,11 @@ const state = {
   gatchaRefreshSaving: false,
   gatchaFavlistSaving: false,
   bbdownLoginRequesting: false,
-  updateChecking: false,
+  updateAutomaticEnabled: true,
+  updateAutomaticAttemptedChannels: new Set(),
+  startupUpdateCheckScheduled: false,
+  updateCheckRequestInFlight: false,
+  manualUpdateCheck: null,
   updatePreviewEnabled: false,
   ratingPromptElement: null,
   ratingPromptItem: null,
@@ -415,7 +420,13 @@ const elements = {
   currentCacheRetryButton: document.getElementById("current-cache-retry-button"),
   playerResetButton: document.getElementById("player-reset-button"),
   updatePreviewCheckbox: document.getElementById("update-preview-checkbox"),
+  updateAutomaticCheckbox: document.getElementById("update-automatic-checkbox"),
   updateCheckButton: document.getElementById("update-check-button"),
+  serviceUpdateIndicator: document.getElementById("service-update-indicator"),
+  advancedUpdateIndicator: document.getElementById("advanced-update-indicator"),
+  appUpdateRow: document.getElementById("app-update-row"),
+  appUpdateStatus: document.getElementById("app-update-status"),
+  updateVersionBadge: document.getElementById("update-version-badge"),
   diagnosticCopyButton: document.getElementById("diagnostic-copy-button"),
   diagnosticPackageButton: document.getElementById("diagnostic-package-button"),
   currentTitle: document.getElementById("current-title"),
@@ -2618,6 +2629,10 @@ function hydrateLocalPreferences() {
   );
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
   state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
+  state.updateAutomaticEnabled = readLocalBoolean(
+    storageKeys.updateAutomatic,
+    state.updateAutomaticEnabled,
+  );
   state.updatePreviewEnabled = readLocalBoolean(storageKeys.updatePreview, state.updatePreviewEnabled);
 
   // Hydrate and apply theme
@@ -3326,6 +3341,7 @@ async function fetchState() {
     return false;
   }
   state.hasValidStateResponse = true;
+  scheduleStartupAppUpdateCheck();
   maybeShowIncomingRequestToast(previousData, state.data);
   maybeShowSongTransitionOverlay(previousData, state.data);
 
@@ -6782,6 +6798,35 @@ function isAppUpdateBusy(update = appUpdateStatus()) {
   return ["checking", "downloading", "installing", "restarting"].includes(String(update?.state || ""));
 }
 
+function appUpdateMatchesSelectedChannel(update = appUpdateStatus()) {
+  return typeof update?.include_preview === "boolean"
+    && update.include_preview === state.updatePreviewEnabled;
+}
+
+function isEligibleCurrentChannelUpdate(update = appUpdateStatus()) {
+  if (
+    !appUpdateMatchesSelectedChannel(update)
+    || String(update?.state || "") !== "available"
+    || update?.error
+    || update?.requires_recheck
+  ) {
+    return false;
+  }
+  const eligibleActions = new Set([
+    "normal_upgrade",
+    "preview_to_stable",
+    "development_to_stable",
+    "development_to_preview",
+  ]);
+  if (!eligibleActions.has(String(update?.update_action || ""))) {
+    return false;
+  }
+  return Boolean(
+    update?.eligible_update
+    ?? (update?.update_available || update?.switch_to_release_available),
+  );
+}
+
 function appUpdateProgressPercent(update = appUpdateStatus()) {
   const totalBytes = Number(update?.total_bytes || 0);
   const downloadedBytes = Number(update?.downloaded_bytes || 0);
@@ -6797,7 +6842,7 @@ function appUpdateProgressPercent(update = appUpdateStatus()) {
 
 function appUpdateButtonText(update = appUpdateStatus()) {
   const stateValue = String(update?.state || "");
-  if (state.updateChecking || stateValue === "checking") {
+  if (state.updateCheckRequestInFlight || stateValue === "checking") {
     return t("status.checking");
   }
   if (stateValue === "downloading") {
@@ -6812,24 +6857,117 @@ function appUpdateButtonText(update = appUpdateStatus()) {
   if (stateValue === "restarting") {
     return t("service.updateRestarting");
   }
+  if (isEligibleCurrentChannelUpdate(update)) {
+    const version = String(update?.latest_version || "").trim();
+    return update?.auto_update_supported
+      ? t("service.updateToVersion", { version })
+      : t("service.viewVersion", { version });
+  }
   return t("service.checkUpdate");
+}
+
+function updateIndicatorAccessibleText(update = appUpdateStatus()) {
+  const version = String(update?.latest_version || "").trim();
+  const action = update?.auto_update_supported
+    ? t("service.updateToVersion", { version })
+    : t("service.viewVersion", { version });
+  return t("service.updateAvailableAction", { version, action });
+}
+
+function syncUpdateIndicator(element, visible, accessibleText) {
+  if (!element) {
+    return;
+  }
+  setClassToggle(element, "hidden", !visible);
+  if (visible) {
+    element.setAttribute("aria-label", accessibleText);
+  } else {
+    element.removeAttribute("aria-label");
+  }
+}
+
+function maybeReportManualUpdateCheckOutcome(update) {
+  const pending = state.manualUpdateCheck;
+  if (
+    !pending
+    || !appUpdateMatchesSelectedChannel(update)
+    || Boolean(update?.include_preview) !== pending.includePreview
+    || Number(update?.updated_at || 0) <= pending.startedAt
+    || String(update?.state || "") === "checking"
+  ) {
+    return;
+  }
+  state.manualUpdateCheck = null;
+  if (String(update?.state || "") === "failed") {
+    setAppMessage(update?.error || update?.message || t("service.updateFailed"), true);
+    return;
+  }
+  if (update?.requires_recheck) {
+    setAppMessage(t("service.updateChannelNeedsRecheck"));
+    return;
+  }
+  if (!isEligibleCurrentChannelUpdate(update)) {
+    setAppMessage(t("service.upToDate"));
+  }
 }
 
 function renderUpdatePreviewControl() {
   const update = appUpdateStatus();
-  const busy = state.updateChecking || isAppUpdateBusy(update);
+  const busy = state.updateCheckRequestInFlight || isAppUpdateBusy(update);
+  const eligible = isEligibleCurrentChannelUpdate(update);
+  const accessibleText = eligible ? updateIndicatorAccessibleText(update) : "";
+  if (elements.updateAutomaticCheckbox) {
+    elements.updateAutomaticCheckbox.checked = state.updateAutomaticEnabled;
+    elements.updateAutomaticCheckbox.disabled = false;
+  }
   if (elements.updatePreviewCheckbox) {
     elements.updatePreviewCheckbox.checked = state.updatePreviewEnabled;
-    elements.updatePreviewCheckbox.disabled = busy;
+    elements.updatePreviewCheckbox.disabled = false;
   }
   if (elements.updateCheckButton) {
     elements.updateCheckButton.disabled = busy;
+    if (busy) {
+      elements.updateCheckButton.setAttribute("aria-busy", "true");
+    } else {
+      elements.updateCheckButton.removeAttribute("aria-busy");
+    }
     setTextContent(elements.updateCheckButton, appUpdateButtonText(update));
     setElementTitle(
       elements.updateCheckButton,
-      update?.message || update?.error || t("service.checkUpdateTitle"),
+      appUpdateMatchesSelectedChannel(update)
+        ? update?.message || update?.error || t("service.checkUpdateTitle")
+        : t("service.checkUpdateTitle"),
     );
   }
+  syncUpdateIndicator(elements.serviceUpdateIndicator, eligible, accessibleText);
+  syncUpdateIndicator(elements.advancedUpdateIndicator, eligible, accessibleText);
+  setClassToggle(elements.appUpdateRow, "has-update", eligible);
+  if (elements.updateVersionBadge) {
+    setClassToggle(elements.updateVersionBadge, "hidden", !eligible);
+    setTextContent(
+      elements.updateVersionBadge,
+      eligible
+        ? t("service.newVersionBadge", { version: String(update?.latest_version || "") })
+        : "",
+    );
+    if (eligible) {
+      elements.updateVersionBadge.setAttribute("aria-label", accessibleText);
+    } else {
+      elements.updateVersionBadge.removeAttribute("aria-label");
+    }
+  }
+  if (elements.appUpdateStatus) {
+    let statusText = "";
+    if (!appUpdateMatchesSelectedChannel(update) && String(update?.state || "") !== "idle") {
+      statusText = t("service.updateChannelNeedsRecheck");
+    } else if (String(update?.state || "") === "checking") {
+      statusText = t("status.checking");
+    } else {
+      statusText = String(update?.error || update?.message || "");
+    }
+    setTextContent(elements.appUpdateStatus, statusText);
+  }
+  maybeReportManualUpdateCheckOutcome(update);
 }
 
 function renderPlaybackRepairControls(currentItem) {
@@ -13814,14 +13952,68 @@ async function resetPlayerState() {
   }
 }
 
+async function requestAppUpdateCheck({ automatic = false } = {}) {
+  const includePreview = Boolean(state.updatePreviewEnabled);
+  const channel = includePreview ? "preview" : "stable";
+  if (automatic) {
+    if (
+      !state.updateAutomaticEnabled
+      || state.updateAutomaticAttemptedChannels.has(channel)
+    ) {
+      return false;
+    }
+    state.updateAutomaticAttemptedChannels.add(channel);
+  }
+  if (state.updateCheckRequestInFlight) {
+    return false;
+  }
+  const currentUpdate = appUpdateStatus();
+  if (["downloading", "installing", "restarting"].includes(String(currentUpdate?.state || ""))) {
+    return false;
+  }
+
+  state.updateCheckRequestInFlight = true;
+  if (!automatic) {
+    state.manualUpdateCheck = {
+      includePreview,
+      startedAt: Number(currentUpdate?.updated_at || 0),
+    };
+  }
+  renderUpdatePreviewControl();
+  try {
+    await apiPost("/api/app/update/check", {
+      include_preview: includePreview,
+    }, { timeoutMs: appUpdateCheckTimeoutMs });
+    return true;
+  } catch (error) {
+    if (!automatic) {
+      state.manualUpdateCheck = null;
+      setAppMessage(error?.message || t("service.updateFailed"), true);
+    }
+    return false;
+  } finally {
+    state.updateCheckRequestInFlight = false;
+    renderUpdatePreviewControl();
+  }
+}
+
+function scheduleStartupAppUpdateCheck() {
+  if (state.startupUpdateCheckScheduled || !state.hasValidStateResponse) {
+    return false;
+  }
+  state.startupUpdateCheckScheduled = true;
+  if (!state.updateAutomaticEnabled) {
+    return false;
+  }
+  requestAppUpdateCheck({ automatic: true }).catch(() => {});
+  return true;
+}
+
 async function installAppUpdate(includePreview = false) {
   try {
     const updateStatus = await apiPost("/api/app/update/install", {
       include_preview: Boolean(includePreview),
     });
-    if (state.data) {
-      state.data.app_update = updateStatus;
-    }
     closeConfirm();
     renderUpdatePreviewControl();
     const stateValue = String(updateStatus?.state || "");
@@ -13835,69 +14027,42 @@ async function installAppUpdate(includePreview = false) {
 }
 
 async function checkAppUpdate(event) {
-  if (state.updateChecking || isAppUpdateBusy()) {
+  if (state.updateCheckRequestInFlight || isAppUpdateBusy()) {
     return;
   }
+  const update = appUpdateStatus();
+  if (!isEligibleCurrentChannelUpdate(update)) {
+    await requestAppUpdateCheck({ automatic: false });
+    return;
+  }
+
+  const version = String(update?.latest_version || "").trim();
+  if (!update?.auto_update_supported) {
+    const releaseUrl = safeHttpUrl(update?.release_url);
+    if (releaseUrl) {
+      openExternalUrl(releaseUrl);
+      setAppMessage(t("service.openedReleases"));
+    } else {
+      setAppMessage(t("service.updateReleaseUrlInvalid"), true);
+    }
+    return;
+  }
+
   const button = elements.updateCheckButton;
   const point = anchorPointForEvent(event, button || elements.cacheSettings);
-  state.updateChecking = true;
-  renderUpdatePreviewControl();
-  const controller = typeof AbortController === "function" ? new AbortController() : null;
-  const timeoutId = controller
-    ? window.setTimeout(() => controller.abort(), appUpdateCheckTimeoutMs)
-    : null;
-  try {
-    const query = state.updatePreviewEnabled ? "?include_preview=1" : "";
-    const result = await apiGet(`/api/app/update${query}`, { signal: controller?.signal });
-    const updateAction = String(result?.update_action || "");
-    const installableActions = new Set([
-      "normal_upgrade",
-      "preview_to_stable",
-      "development_to_stable",
-      "development_to_preview",
-    ]);
-    const updateInstallable = updateAction
-      ? installableActions.has(updateAction)
-      : Boolean(result?.update_installable ?? (result?.update_available || result?.switch_to_release_available));
-
-    if (updateInstallable) {
-      const isChannelSwitch = updateAction === "preview_to_stable"
-        || updateAction === "development_to_stable"
-        || updateAction === "development_to_preview"
-        || (!updateAction && result?.switch_to_release_available === true);
-      const fallbackMessage = isChannelSwitch
-        ? t("service.switchReleasePrompt")
-        : t("service.updateFoundPrompt");
-      const updateMessage = result?.message || fallbackMessage;
-      const canAutoInstall = Boolean(result?.auto_update_supported);
-      openConfirm({
-        type: canAutoInstall ? "install-app-update" : "open-release",
-        includePreview: state.updatePreviewEnabled,
-        releaseUrl: result.release_url,
-        message: canAutoInstall
-          ? t("service.installUpdatePrompt", { message: updateMessage })
-          : t("service.openReleaseWithMessage", { message: updateMessage }),
-        primaryLabel: canAutoInstall ? t("service.installUpdate") : t("service.openReleases"),
-        ...point,
-        anchorElementId: button?.id || "update-check-button",
-        anchorAlign: "end",
-        anchorGap: 8,
-      });
-      return;
-    }
-    setAppMessage(t("service.upToDate"));
-  } catch (error) {
-    const message = error?.name === "AbortError"
-      ? t("service.updateTimeout")
-      : error?.message || t("service.updateFailed");
-    setAppMessage(message, true);
-  } finally {
-    if (timeoutId !== null) {
-      window.clearTimeout(timeoutId);
-    }
-    state.updateChecking = false;
-    renderUpdatePreviewControl();
-  }
+  openConfirm({
+    type: "install-app-update",
+    includePreview: Boolean(update.include_preview),
+    releaseUrl: update.release_url,
+    message: t("service.installUpdatePrompt", {
+      message: update?.message || t("service.updateFoundPrompt"),
+    }),
+    primaryLabel: t("service.updateToVersion", { version }),
+    ...point,
+    anchorElementId: button?.id || "update-check-button",
+    anchorAlign: "end",
+    anchorGap: 8,
+  });
 }
 
 
@@ -15335,6 +15500,13 @@ elements.resetOffsetCheckbox?.addEventListener("change", async (event) => {
 elements.updatePreviewCheckbox?.addEventListener("change", (event) => {
   state.updatePreviewEnabled = Boolean(event.target.checked);
   writeLocalPreference(storageKeys.updatePreview, state.updatePreviewEnabled);
+  state.manualUpdateCheck = null;
+  renderUpdatePreviewControl();
+});
+
+elements.updateAutomaticCheckbox?.addEventListener("change", (event) => {
+  state.updateAutomaticEnabled = Boolean(event.target.checked);
+  writeLocalPreference(storageKeys.updateAutomatic, state.updateAutomaticEnabled);
   renderUpdatePreviewControl();
 });
 
@@ -16018,7 +16190,11 @@ elements.confirmOk.addEventListener("click", async () => {
       return;
     }
     if (intent.type === "open-release" && intent.releaseUrl) {
-      window.open(intent.releaseUrl, "_blank", "noopener");
+      const releaseUrl = safeHttpUrl(intent.releaseUrl);
+      if (!releaseUrl) {
+        throw new Error(t("service.updateReleaseUrlInvalid"));
+      }
+      openExternalUrl(releaseUrl);
       closeConfirm();
       setAppMessage(t("service.openedReleases"));
       return;

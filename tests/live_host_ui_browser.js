@@ -18,6 +18,11 @@ async function run() {
   const consoleErrors = [];
   const pageErrors = [];
   const hostPlayerRequests = [];
+  const updateCheckRequests = [];
+  const updateInstallRequests = [];
+  let pendingStartupUpdateRoute = null;
+  let resolveStartupUpdateSeen;
+  const startupUpdateSeen = new Promise((resolve) => { resolveStartupUpdateSeen = resolve; });
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push(message.text());
@@ -28,6 +33,35 @@ async function run() {
     if (new URL(request.url()).pathname.startsWith("/api/player/")) {
       hostPlayerRequests.push(request.url());
     }
+  });
+  await page.route("**/api/app/update/check", (route) => {
+    const payload = route.request().postDataJSON();
+    updateCheckRequests.push(payload);
+    if (updateCheckRequests.length === 1) {
+      pendingStartupUpdateRoute = route;
+      resolveStartupUpdateSeen();
+      return;
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: { state: "checking", include_preview: Boolean(payload?.include_preview) },
+      }),
+    });
+  });
+  await page.route("**/api/app/update/install", (route) => {
+    const payload = route.request().postDataJSON();
+    updateInstallRequests.push(payload);
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: { state: "checking", include_preview: Boolean(payload?.include_preview), message: "install requested" },
+      }),
+    });
   });
   await page.route("**/api/lark/search?**", (route) => {
     const items = Array.from({ length: 36 }, (_, index) => ({
@@ -59,6 +93,53 @@ async function run() {
     assert(identity.url === `${baseUrl}/`, "browser opened the wrong Host page", identity);
     assert(identity.title && identity.bodyTextLength > 0, "Host page was blank", identity);
     assert(!identity.frameworkOverlay, "Host page showed a framework error overlay", identity);
+    await Promise.race([
+      startupUpdateSeen,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("startup update check was not requested")), 3000)),
+    ]);
+    assert(await page.locator("#current-title").isVisible(), "startup update check blocked the first usable Host render");
+    assert(await page.locator("#cache-settings-toggle").isVisible(), "startup update check blocked Host settings");
+    assert(
+      await page.locator("#update-automatic-checkbox").isChecked(),
+      "automatic update checking did not default to enabled",
+    );
+    assert(
+      !await page.locator("#update-preview-checkbox").isChecked(),
+      "preview releases did not default to disabled",
+    );
+    assert(updateCheckRequests.length === 1 && updateCheckRequests[0].include_preview === false,
+      "first accepted Host state did not trigger one stable-only check", updateCheckRequests);
+    assert(!await page.locator("#app-toast").isVisible(), "automatic update startup showed an intrusive toast");
+    await pendingStartupUpdateRoute.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, data: { state: "checking", include_preview: false } }),
+    });
+    pendingStartupUpdateRoute = null;
+    await page.waitForTimeout(120);
+    await page.evaluate(() => { render(); render(); });
+    await page.waitForTimeout(1200);
+    assert(updateCheckRequests.length === 1, "repeated renders or state polls repeated the startup update check", updateCheckRequests);
+
+    const disabledAutoPage = await browser.newPage({ viewport: { width: 800, height: 700 } });
+    let disabledAutoChecks = 0;
+    await disabledAutoPage.addInitScript(() => {
+      localStorage.setItem("bilikara.update.automatic", "false");
+    });
+    await disabledAutoPage.route("**/api/app/update/check", (route) => {
+      disabledAutoChecks += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, data: { state: "checking", include_preview: false } }),
+      });
+    });
+    await disabledAutoPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await disabledAutoPage.waitForTimeout(1200);
+    assert(!await disabledAutoPage.locator("#update-automatic-checkbox").isChecked(),
+      "saved disabled automatic-check preference was not restored");
+    assert(disabledAutoChecks === 0, "disabled preference did not suppress the startup update check");
+    await disabledAutoPage.close();
 
     await page.evaluate(() => {
       document.querySelector("#lark-search-query").value = "host ui";
@@ -446,6 +527,178 @@ async function run() {
     assert(await cachePanel.isVisible(), "information Escape closed the parent service-settings panel");
     assert(await page.locator("#cache-advanced-inline-view").isVisible(), "information Escape closed advanced settings");
 
+    const serviceHealthClass = await page.locator("#service-status-indicator").getAttribute("class");
+    await page.evaluate(() => {
+      elements.appToast.classList.add("hidden");
+      if (state.appToastTimer) window.clearTimeout(state.appToastTimer);
+      state.appToastTimer = null;
+    });
+    const renderUpdateState = async (update, previewEnabled = false) => page.evaluate(
+      ({ nextUpdate, preview }) => {
+        state.updatePreviewEnabled = preview;
+        state.updateCheckRequestInFlight = false;
+        state.manualUpdateCheck = null;
+        state.data.app_update = nextUpdate;
+        renderUpdatePreviewControl();
+        return {
+          serviceIndicator: !elements.serviceUpdateIndicator.classList.contains("hidden"),
+          advancedIndicator: !elements.advancedUpdateIndicator.classList.contains("hidden"),
+          rowHighlighted: elements.appUpdateRow.classList.contains("has-update"),
+          versionBadge: elements.updateVersionBadge.classList.contains("hidden")
+            ? ""
+            : elements.updateVersionBadge.textContent,
+          buttonText: elements.updateCheckButton.textContent,
+          statusText: elements.appUpdateStatus.textContent,
+          serviceAccessible: elements.serviceUpdateIndicator.getAttribute("aria-label"),
+        };
+      },
+      { nextUpdate: update, preview: previewEnabled },
+    );
+    const noBadgeStates = {
+      unknown: { state: "idle", include_preview: false, updated_at: 10 },
+      checking: { state: "checking", operation: "check", include_preview: false, updated_at: 11 },
+      current: { state: "idle", operation: "check", include_preview: false, updated_at: 12, update_action: "no_action", message: "current" },
+      failed: { state: "failed", operation: "check", include_preview: false, updated_at: 13, error: "offline" },
+    };
+    for (const [name, update] of Object.entries(noBadgeStates)) {
+      const rendered = await renderUpdateState(update);
+      assert(
+        !rendered.serviceIndicator && !rendered.advancedIndicator
+          && !rendered.rowHighlighted && !rendered.versionBadge,
+        `${name} update state showed an availability badge`,
+        rendered,
+      );
+      assert(!await page.locator("#app-toast").isVisible(), `${name} automatic update state showed an intrusive toast`);
+    }
+
+    const installableUpdate = {
+      state: "available",
+      operation: "check",
+      include_preview: false,
+      updated_at: 14,
+      update_action: "normal_upgrade",
+      update_reason: "newer_version",
+      eligible_update: true,
+      update_available: true,
+      latest_version: "v0.8.1",
+      release_url: "https://example.test/releases/v0.8.1",
+      auto_update_supported: true,
+      message: "available",
+    };
+    const installableRendered = await renderUpdateState(installableUpdate);
+    assert(
+      installableRendered.serviceIndicator && installableRendered.advancedIndicator
+        && installableRendered.rowHighlighted
+        && installableRendered.versionBadge.includes("v0.8.1")
+        && installableRendered.buttonText.includes("v0.8.1")
+        && installableRendered.serviceAccessible?.includes("v0.8.1"),
+      "eligible installable update did not show all three restrained indicators and explicit action",
+      installableRendered,
+    );
+    assert(
+      await page.locator("#service-status-indicator").getAttribute("class") === serviceHealthClass,
+      "update availability altered the independent service-health indicator",
+    );
+    await page.locator("#cache-panel-advanced-trigger").click();
+    assert(!await page.locator("#cache-advanced-inline-view").isVisible(), "advanced settings did not collapse for indicator proof");
+    assert(await page.locator("#advanced-update-indicator").isVisible(), "collapsed advanced entry hid the update indicator");
+    await page.locator("#cache-panel-advanced-trigger").click();
+
+    await renderUpdateState(installableUpdate);
+    await page.locator("#update-check-button").click();
+    assert(await confirmPopover.isVisible(), "known installable update did not require an explicit confirmation");
+    assert(updateInstallRequests.length === 0, "update action installed before explicit confirmation");
+    await page.locator("#confirm-ok").click();
+    await page.waitForTimeout(100);
+    assert(updateInstallRequests.length === 1, "explicit update confirmation did not invoke the install route");
+
+    await page.evaluate(() => {
+      window.__openedUpdateReleaseUrls = [];
+      window.open = (url) => { window.__openedUpdateReleaseUrls.push(String(url)); return null; };
+    });
+    const viewOnlyUpdate = {
+      ...installableUpdate,
+      updated_at: 15,
+      latest_version: "v0.8.2",
+      release_url: "https://example.test/releases/v0.8.2",
+      auto_update_supported: false,
+    };
+    const viewRendered = await renderUpdateState(viewOnlyUpdate);
+    assert(viewRendered.buttonText.includes("v0.8.2"), "unsupported update did not show a version-specific view action");
+    await page.locator("#update-check-button").click();
+    const openedUpdateReleaseUrls = await page.evaluate(() => window.__openedUpdateReleaseUrls);
+    assert(
+      openedUpdateReleaseUrls.length === 1 && openedUpdateReleaseUrls[0].includes("v0.8.2"),
+      "version-specific view action did not open the validated release URL",
+    );
+    assert(updateInstallRequests.length === 1, "view-only action invoked automatic installation");
+
+    const updateChecksBeforeManual = updateCheckRequests.length;
+    await renderUpdateState({ state: "idle", operation: "check", include_preview: false, updated_at: 16 });
+    await page.locator("#update-check-button").focus();
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(100);
+    assert(
+      updateCheckRequests.length === updateChecksBeforeManual + 1
+        && updateCheckRequests.at(-1).include_preview === false,
+      "manual Check for updates did not invoke stable check-only",
+      updateCheckRequests,
+    );
+    assert(updateInstallRequests.length === 1, "manual Check for updates invoked installation");
+    await page.evaluate(() => {
+      state.data.app_update = {
+        state: "failed",
+        operation: "check",
+        include_preview: false,
+        updated_at: 17,
+        error: "manual offline",
+      };
+      renderUpdatePreviewControl();
+    });
+    assert(await page.locator("#app-toast").isVisible(), "manual check failure did not use the bounded message pattern");
+    assert((await page.locator("#app-toast").textContent()).includes("manual offline"), "manual failure message was not preserved");
+    await page.evaluate(() => {
+      elements.appToast.classList.add("hidden");
+      if (state.appToastTimer) window.clearTimeout(state.appToastTimer);
+      state.appToastTimer = null;
+    });
+
+    await renderUpdateState(installableUpdate);
+    await page.locator('label[for="update-preview-checkbox"]').click();
+    assert(await page.locator("#update-preview-checkbox").isChecked(), "preview preference was not keyboard/touch-accessible");
+    assert(!await page.locator("#service-update-indicator").isVisible(), "stable result remained current after selecting preview");
+    const updateChecksBeforePreview = updateCheckRequests.length;
+    await page.locator("#update-check-button").click();
+    await page.waitForTimeout(100);
+    assert(
+      updateCheckRequests.length === updateChecksBeforePreview + 1
+        && updateCheckRequests.at(-1).include_preview === true,
+      "preview selection did not produce an explicit preview check-only request",
+      updateCheckRequests,
+    );
+    assert(updateInstallRequests.length === 1, "preview toggle caused automatic installation");
+    const previewRendered = await renderUpdateState({
+      ...installableUpdate,
+      include_preview: true,
+      updated_at: 18,
+      latest_version: "v0.9.0-preview.1",
+    }, true);
+    assert(previewRendered.serviceIndicator, "eligible preview result did not become current on the preview channel");
+    const staleStableRendered = await renderUpdateState(installableUpdate, true);
+    assert(!staleStableRendered.serviceIndicator, "stale stable result overwrote the selected preview channel");
+    await renderUpdateState({
+      ...installableUpdate,
+      include_preview: true,
+      updated_at: 18,
+      latest_version: "v0.9.0-preview.1",
+    }, true);
+    const updateScreenshotPath = screenshotPath
+      ? screenshotPath.replace(/(\.[^./]+)$/, "-update$1")
+      : "";
+    if (updateScreenshotPath) {
+      await page.screenshot({ path: updateScreenshotPath, fullPage: false });
+    }
+
     const hostInfoVisualMetrics = await firstInfo.evaluate((button) => {
       const glyph = button.querySelector(".contextual-info-glyph");
       const buttonRect = button.getBoundingClientRect();
@@ -772,8 +1025,23 @@ async function run() {
       isMobile: true,
     });
     const coarsePage = await coarseContext.newPage();
+    const coarseUpdateChecks = [];
+    await coarsePage.route("**/api/app/update/check", (route) => {
+      const payload = route.request().postDataJSON();
+      coarseUpdateChecks.push(payload);
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, data: { state: "checking", include_preview: Boolean(payload?.include_preview) } }),
+      });
+    });
     await coarsePage.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await coarsePage.waitForTimeout(700);
+    assert(
+      coarseUpdateChecks.length === 1 && coarseUpdateChecks[0].include_preview === false,
+      "coarse Host startup did not keep the stable-only automatic check",
+      coarseUpdateChecks,
+    );
     await coarsePage.evaluate(() => {
       window.__coarsePlaybackInfoActions = 0;
       document.querySelectorAll([
@@ -827,6 +1095,12 @@ async function run() {
     assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "false", "Host playback touch outside tap did not close information");
     await coarsePage.locator("#cache-settings-toggle").click();
     await coarsePage.locator("#cache-panel-advanced-trigger").click();
+    await coarsePage.locator('label[for="update-automatic-checkbox"]').tap();
+    assert(
+      !await coarsePage.locator("#update-automatic-checkbox").isChecked()
+        && await coarsePage.evaluate(() => localStorage.getItem("bilikara.update.automatic")) === "false",
+      "coarse-pointer automatic-check preference was not touch-usable and persistent",
+    );
     const coarseHostInfo = coarsePage.locator("#cache-advanced-inline-view .cache-advanced-info-button").first();
     await coarseHostInfo.scrollIntoViewIfNeeded();
     const coarseHostMetrics = await coarseHostInfo.evaluate((button) => {
@@ -917,6 +1191,7 @@ async function run() {
         advancedInfoCount: await advancedInfoButtons.count(),
         layeredConfirmActions: true,
         qrPinning: true,
+        updateScreenshotPath,
       },
       sessionUsers: {
         emptyHeight,

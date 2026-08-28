@@ -1402,7 +1402,73 @@ h2 {
 }
 
 .cache-panel-update-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px;
+  margin: -10px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  transition: border-color 180ms ease, background 180ms ease;
+}
+
+.cache-panel-update-row.has-update {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.cache-app-update-copy {
+  min-width: 0;
+}
+
+.cache-app-update-heading {
+  display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.app-update-version-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-deep);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.app-update-status {
+  margin-top: 5px;
+  line-height: 1.45;
+}
+
+.app-update-status:empty {
+  display: none;
+}
+
+.app-update-indicator {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border: 2px solid color-mix(in srgb, var(--accent) 72%, var(--panel));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 28%, var(--panel));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
+  transform: rotate(45deg);
+}
+
+.cache-panel-menu-adornment {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .cache-panel-danger-row {
@@ -1464,10 +1530,20 @@ h2 {
 
 .cache-update-control {
   display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex: 0 0 auto;
+  width: 100%;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cache-update-preferences {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.cache-update-preferences .cache-preview-field {
+  min-height: 36px;
 }
 
 .cache-preview-field {

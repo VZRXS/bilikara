@@ -92,7 +92,7 @@ from .playlist_export import (
 )
 from .remote_identity import RemoteIdentityStore
 from .store import MAX_SAFE_JSON_INTEGER, PlaylistStore, PlaylistStoreCommandError
-from .updater import AppUpdateManager, check_for_update
+from .updater import AppUpdateManager
 
 mimetypes.add_type("video/mp4", ".mp4")
 mimetypes.add_type("video/mp4", ".m4s")
@@ -608,6 +608,9 @@ class AppContext:
 
     def start_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
         return self.update_manager.start(include_preview=include_preview)
+
+    def check_app_update(self, *, include_preview: bool = False) -> dict[str, object]:
+        return self.update_manager.check(include_preview=include_preview)
 
     def refresh_startup_gatcha_cache_in_background(self) -> bool:
         with self._startup_lock:
@@ -1404,16 +1407,18 @@ class BilikaraHandler(BaseHTTPRequestHandler):
             self._write_json({"ok": True, "data": CONTEXT.app_update_snapshot()})
             return
         if route == "/api/app/update":
-            try:
-                include_preview = str(query.get("include_preview", [""])[0]).lower() in {
-                    "1",
-                    "true",
-                    "yes",
-                    "on",
+            include_preview = str(query.get("include_preview", [""])[0]).lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            self._write_json(
+                {
+                    "ok": True,
+                    "data": CONTEXT.check_app_update(include_preview=include_preview),
                 }
-                self._write_json({"ok": True, "data": check_for_update(include_preview=include_preview)})
-            except Exception as e:
-                self._write_json({"ok": False, "error": str(e)}, status=HTTPStatus.BAD_GATEWAY)
+            )
             return
         if route == "/api/gatcha/candidate":
             try:
@@ -1788,6 +1793,20 @@ class BilikaraHandler(BaseHTTPRequestHandler):
                     "on",
                 }
                 self._write_json({"ok": True, "data": CONTEXT.start_app_update(include_preview=include_preview)})
+                return
+            if route == "/api/app/update/check":
+                include_preview = str(body.get("include_preview", body.get("includePreview", ""))).lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                self._write_json(
+                    {
+                        "ok": True,
+                        "data": CONTEXT.check_app_update(include_preview=include_preview),
+                    }
+                )
                 return
             if route == "/api/app/open-url":
                 url_to_open = str(body.get("url", "")).strip()

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
@@ -791,6 +792,194 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertEqual(calls, ["check"])
         self.assertEqual(snapshot["state"], "unsupported")
         self.assertIn("暂不支持", snapshot["message"])
+
+    def test_check_only_projects_available_update_without_install_side_effects(self):
+        side_effects: list[str] = []
+        notifications: list[str] = []
+
+        def release_checker(**kwargs):
+            self.assertFalse(kwargs["include_preview"])
+            return {
+                "current_version": "v0.7.2",
+                "latest_version": "v0.8.0",
+                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.8.0",
+                "release_name": "bilikara v0.8.0",
+                "update_action": "normal_upgrade",
+                "update_reason": "newer_version",
+                "update_installable": True,
+                "update_available": True,
+                "switch_to_release_available": False,
+                "include_preview": False,
+                "message": "发现新正式版 v0.8.0，当前版本 v0.7.2。",
+                "update_asset": {
+                    "name": "bilikara-v0.8.0-windows-x64.zip",
+                    "browser_download_url": "https://example.test/update.zip",
+                },
+                "auto_update_supported": True,
+                "platform_auto_update_supported": True,
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app_home = Path(tmpdir)
+            manager = AppUpdateManager(
+                app_home=app_home,
+                current_version="v0.7.2",
+                release_checker=release_checker,
+                downloader=lambda *args, **kwargs: side_effects.append("download"),
+                restart_helper_launcher=lambda command: side_effects.append("restart"),
+                target={"platform": "windows", "arch": "x64"},
+                frozen=True,
+                on_restart_requested=lambda: side_effects.append("shutdown"),
+                on_status_change=lambda: notifications.append("changed"),
+            )
+            manager._prepare_restart_helper = lambda **kwargs: side_effects.append("install")
+            started = manager.check(include_preview=False)
+            manager._thread.join(timeout=1.0)
+
+            self.assertEqual(started["state"], "checking")
+            snapshot = manager.snapshot()
+            self.assertEqual(snapshot["state"], "available")
+            self.assertTrue(snapshot["update_available"])
+            self.assertTrue(snapshot["asset_available"])
+            self.assertEqual(snapshot["latest_version"], "v0.8.0")
+            self.assertEqual(side_effects, [])
+            self.assertEqual(list(app_home.iterdir()), [])
+            self.assertGreaterEqual(len(notifications), 2)
+
+    def test_check_only_no_update_and_network_failure_are_terminal_and_retryable(self):
+        outcomes = [
+            {
+                "current_version": "v0.8.0",
+                "latest_version": "v0.8.0",
+                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.8.0",
+                "release_name": "bilikara v0.8.0",
+                "update_action": "no_action",
+                "update_reason": "already_current",
+                "update_installable": False,
+                "update_available": False,
+                "switch_to_release_available": False,
+                "include_preview": False,
+                "message": "当前已是最新版本（v0.8.0）。",
+                "update_asset": None,
+                "auto_update_supported": False,
+                "platform_auto_update_supported": True,
+            },
+            updater.AppUpdateError("offline"),
+        ]
+
+        def release_checker(**kwargs):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        manager = AppUpdateManager(
+            current_version="v0.8.0",
+            release_checker=release_checker,
+            target={"platform": "windows", "arch": "x64"},
+            frozen=True,
+        )
+        manager.check()
+        manager._thread.join(timeout=1.0)
+        current = manager.snapshot()
+        self.assertEqual(current["state"], "idle")
+        self.assertFalse(current["update_available"])
+
+        manager.check()
+        manager._thread.join(timeout=1.0)
+        failed = manager.snapshot()
+        self.assertEqual(failed["state"], "failed")
+        self.assertFalse(failed["busy"])
+        self.assertFalse(failed["update_available"])
+        self.assertEqual(failed["operation"], "check")
+
+    def test_concurrent_checks_coalesce_and_channel_change_requires_fresh_result(self):
+        entered = threading.Event()
+        release = threading.Event()
+        calls: list[bool] = []
+
+        def release_checker(**kwargs):
+            calls.append(bool(kwargs["include_preview"]))
+            entered.set()
+            self.assertTrue(release.wait(timeout=1.0))
+            return {
+                "current_version": "v0.8.0",
+                "latest_version": "v0.8.1",
+                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.8.1",
+                "release_name": "v0.8.1",
+                "update_action": "normal_upgrade",
+                "update_reason": "newer_version",
+                "update_installable": True,
+                "update_available": True,
+                "switch_to_release_available": False,
+                "include_preview": kwargs["include_preview"],
+                "message": "available",
+                "update_asset": None,
+                "auto_update_supported": False,
+                "platform_auto_update_supported": True,
+            }
+
+        manager = AppUpdateManager(release_checker=release_checker)
+        first = manager.check(include_preview=False)
+        self.assertTrue(entered.wait(timeout=1.0))
+        same_channel = manager.check(include_preview=False)
+        changed_channel = manager.check(include_preview=True)
+        self.assertEqual(first["updated_at"], same_channel["updated_at"])
+        self.assertTrue(changed_channel["requires_recheck"])
+        release.set()
+        manager._thread.join(timeout=1.0)
+
+        snapshot = manager.snapshot()
+        self.assertEqual(calls, [False])
+        self.assertEqual(snapshot["state"], "idle")
+        self.assertTrue(snapshot["include_preview"])
+        self.assertTrue(snapshot["requires_recheck"])
+        self.assertFalse(snapshot["update_available"])
+
+    def test_check_does_not_compete_with_explicit_install(self):
+        download_entered = threading.Event()
+        release_download = threading.Event()
+        check_calls: list[bool] = []
+
+        def release_checker(**kwargs):
+            check_calls.append(bool(kwargs["include_preview"]))
+            return {
+                "current_version": "v0.7.2",
+                "latest_version": "v0.8.0",
+                "release_url": "https://github.com/VZRXS/bilikara/releases/tag/v0.8.0",
+                "update_action": "normal_upgrade",
+                "update_reason": "newer_version",
+                "update_available": True,
+                "update_asset": {
+                    "name": "bilikara-v0.8.0-windows-x64.zip",
+                    "browser_download_url": "https://example.test/update.zip",
+                },
+            }
+
+        def downloader(url, destination, **kwargs):
+            download_entered.set()
+            self.assertTrue(release_download.wait(timeout=1.0))
+            destination.write_bytes(b"update")
+            return 6, 6
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = AppUpdateManager(
+                app_home=Path(tmpdir),
+                current_version="v0.7.2",
+                release_checker=release_checker,
+                downloader=downloader,
+                target={"platform": "windows", "arch": "x64"},
+                frozen=True,
+            )
+            manager._prepare_restart_helper = lambda **kwargs: ["prepared"]
+            manager.start(restart=False)
+            self.assertTrue(download_entered.wait(timeout=1.0))
+            during_install = manager.check(include_preview=True)
+            self.assertEqual(during_install["state"], "downloading")
+            release_download.set()
+            manager._thread.join(timeout=1.0)
+
+        self.assertEqual(check_calls, [False])
 
 
 if __name__ == "__main__":

@@ -990,6 +990,7 @@ process.stdout.write(JSON.stringify(cases));
   function t(key) {{ return key; }}
   function maybeShowIncomingRequestToast() {{ sideEffects += 1; }}
   function maybeShowSongTransitionOverlay() {{ sideEffects += 1; }}
+  function scheduleStartupAppUpdateCheck() {{ sideEffects += 1; }}
   function syncLocalPlayerSettingsFromSnapshot() {{ sideEffects += 1; }}
   function scheduleFavlistBrowseReloadFromState() {{ sideEffects += 1; }}
   function renderSignatureForData(data) {{ return JSON.stringify(data); }}
