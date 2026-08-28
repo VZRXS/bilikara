@@ -866,7 +866,7 @@ fn trace_presentation(
     stage: &str,
     detail: impl AsRef<str>,
 ) {
-    super::append_desktop_diagnostic(
+    crate::desktop_diagnostics::append_desktop_diagnostic(
         "presentation_trace",
         format!(
             "generation={} stage={} thread={:?} {}",
@@ -1734,7 +1734,7 @@ fn restore_host_window(
 
 fn controller_url(host: &tauri::WebviewWindow, generation: u64) -> Result<tauri::Url, String> {
     let mut url = host.url().map_err(|error| error.to_string())?;
-    if super::parsed_http_origin(url.as_str()).is_none() {
+    if crate::backend_process::parsed_http_origin(url.as_str()).is_none() {
         return Err("the Host is not using the local Bilikara origin".to_string());
     }
     url.set_path("/controller.html");
@@ -1755,7 +1755,10 @@ fn create_controller_window(
     let allowed_origin = url.clone();
     WebviewWindowBuilder::new(app, "controller", WebviewUrl::External(url))
         .on_navigation(move |candidate| {
-            super::window_origin_authorized(candidate.as_str(), allowed_origin.as_str())
+            crate::backend_process::window_origin_authorized(
+                candidate.as_str(),
+                allowed_origin.as_str(),
+            )
         })
         .title("Bilikara Controller")
         .visible(false)
@@ -1790,20 +1793,18 @@ fn place_controller_for_activation(
 
 pub(crate) fn authorize_window(
     window: &tauri::WebviewWindow,
-    backend: &super::BackendProcess,
+    backend: &crate::backend_process::BackendProcess,
     allowed_labels: &[&str],
 ) -> Result<(), String> {
     if !allowed_labels.contains(&window.label()) {
         return Err("this window is not authorized for the presentation command".to_string());
     }
     let backend_url = backend
-        .base_url
-        .lock()
-        .map_err(|_| "the backend address lock is unavailable".to_string())?
-        .clone()
+        .backend_url()
+        .map_err(|()| "the backend address lock is unavailable".to_string())?
         .ok_or_else(|| "the local backend is not ready".to_string())?;
     let window_url = window.url().map_err(|error| error.to_string())?;
-    if !super::window_origin_authorized(window_url.as_str(), &backend_url) {
+    if !crate::backend_process::window_origin_authorized(window_url.as_str(), &backend_url) {
         return Err("the window origin is not authorized".to_string());
     }
     Ok(())
@@ -2203,7 +2204,7 @@ fn run_on_main_thread_with_result<T: Send + 'static>(
 #[tauri::command]
 pub(crate) fn get_presentation_displays(
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
 ) -> Result<PresentationDisplayInfo, String> {
     authorize_window(&window, &backend, &["main"])?;
     let records = discover_display_records(&window)?;
@@ -2213,7 +2214,7 @@ pub(crate) fn get_presentation_displays(
 #[tauri::command]
 pub(crate) fn get_presentation_session(
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
 ) -> Result<PresentationSession, String> {
     authorize_window(&window, &backend, &["main", "controller"])?;
@@ -2226,7 +2227,7 @@ pub(crate) fn get_presentation_session(
 pub(crate) fn activate_local_presentation(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     display_id: String,
 ) -> Result<PresentationSession, String> {
@@ -2507,7 +2508,7 @@ fn run_activation_readiness_step<T>(
 pub(crate) fn mark_presentation_host_ready(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     generation: u64,
     composition: HostComposition,
@@ -2545,7 +2546,7 @@ pub(crate) fn mark_presentation_host_ready(
 pub(crate) fn mark_presentation_controller_ready(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     generation: u64,
 ) -> Result<PresentationSession, String> {
@@ -2575,7 +2576,7 @@ pub(crate) fn mark_presentation_controller_ready(
 pub(crate) fn send_presentation_command(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     request: ControllerCommandRequest,
 ) -> Result<ControllerCommandAccepted, String> {
@@ -2609,7 +2610,7 @@ pub(crate) fn send_presentation_command(
 pub(crate) fn acknowledge_presentation_command(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     generation: u64,
     sequence: u64,
@@ -2643,7 +2644,7 @@ pub(crate) fn acknowledge_presentation_command(
 pub(crate) fn publish_presentation_playback_state(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     generation: u64,
     playback_state: ControllerPlaybackState,
@@ -2666,7 +2667,7 @@ pub(crate) fn publish_presentation_playback_state(
 pub(crate) fn deactivate_local_presentation(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    backend: tauri::State<'_, super::BackendProcess>,
+    backend: tauri::State<'_, crate::backend_process::BackendProcess>,
     state: tauri::State<'_, PresentationState>,
     generation: u64,
 ) -> Result<PresentationSession, String> {
@@ -2852,7 +2853,7 @@ mod tests {
         next_sequence, run_activation_readiness_step, validate_controller_command,
         validate_playback_state, visible_restore_placement,
     };
-    use crate::{RuntimeDesktopDiagnosticEnqueue, RuntimeDesktopDiagnostics};
+    use crate::desktop_diagnostics::{RuntimeDesktopDiagnosticEnqueue, RuntimeDesktopDiagnostics};
     use std::cell::RefCell;
 
     fn host_placement() -> HostWindowPlacement {

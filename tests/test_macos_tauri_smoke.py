@@ -129,25 +129,37 @@ class MacOSTauriAutoplayConfigurationTest(unittest.TestCase):
         self.assertEqual(capability["windows"], ["main"])
 
     def test_macos_main_webview_uses_creation_time_autoplay_policy(self):
-        source = (ROOT_DIR / "src-tauri" / "src" / "main.rs").read_text(
+        main_source = (ROOT_DIR / "src-tauri" / "src" / "main.rs").read_text(
             encoding="utf-8"
         )
-        configuration_start = source.index("fn macos_autoplay_webview_configuration")
-        creation_start = source.index("fn create_macos_main_webview_window")
-        main_start = source.index("fn main()")
-        configuration = source[configuration_start:creation_start]
-        creation = source[creation_start:main_start]
-        setup_start = source.index(".setup(move |app| {")
-        backend_start = source.index("let mut resolution", setup_start)
-        setup = source[setup_start:backend_start]
+        platform_source = (
+            ROOT_DIR / "src-tauri" / "src" / "platform.rs"
+        ).read_text(
+            encoding="utf-8"
+        )
+        configuration_start = platform_source.index(
+            "fn macos_autoplay_webview_configuration"
+        )
+        creation_start = platform_source.index("fn create_macos_main_webview_window")
+        configuration = platform_source[configuration_start:creation_start]
+        creation = platform_source[creation_start:]
+        setup_start = main_source.index(".setup(move |app| {")
+        backend_start = main_source.index("backend_process::launch", setup_start)
+        setup = main_source[setup_start:backend_start]
 
-        self.assertIn('#[cfg(target_os = "macos")]', source[:configuration_start][-80:])
+        self.assertIn(
+            '#[cfg(target_os = "macos")]',
+            platform_source[:configuration_start][-80:],
+        )
         self.assertIn("WKWebViewConfiguration::new(main_thread)", configuration)
         self.assertIn(
             ".setMediaTypesRequiringUserActionForPlayback(", configuration
         )
         self.assertIn("WKAudiovisualMediaTypes::None", configuration)
-        self.assertIn('#[cfg(target_os = "macos")]', source[:creation_start][-80:])
+        self.assertIn(
+            '#[cfg(target_os = "macos")]',
+            platform_source[:creation_start][-80:],
+        )
         self.assertIn('app.get_webview_window("main").is_some()', creation)
         self.assertIn('.find(|config| config.label == "main")', creation)
         self.assertIn("WebviewWindowBuilder::from_config", creation)

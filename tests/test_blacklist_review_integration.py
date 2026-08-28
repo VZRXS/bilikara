@@ -42,11 +42,13 @@ class BlacklistReviewIntegrationTest(unittest.TestCase):
 
     def test_tauri_packages_the_shared_frontend_and_python_backend(self):
         tauri = json.loads((ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
-        main_source = (ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+        backend_source = (
+            ROOT / "src-tauri" / "src" / "backend_process.rs"
+        ).read_text(encoding="utf-8")
         bundle_source = (ROOT / "build_bundle.py").read_text(encoding="utf-8")
 
         self.assertEqual(tauri["build"]["frontendDist"], "../static")
-        self.assertIn('join("bilikara").join("bilikara.exe")', main_source)
+        self.assertIn('join("bilikara").join("bilikara.exe")', backend_source)
         self.assertIn("ROOT_DIR / 'static'", bundle_source)
 
 

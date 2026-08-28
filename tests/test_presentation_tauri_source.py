@@ -14,7 +14,16 @@ class PresentationTauriSourceTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.tauri = ROOT / "src-tauri"
         cls.main = (cls.tauri / "src" / "main.rs").read_text(encoding="utf-8")
+        cls.backend = (cls.tauri / "src" / "backend_process.rs").read_text(
+            encoding="utf-8"
+        )
+        cls.diagnostics = (
+            cls.tauri / "src" / "desktop_diagnostics.rs"
+        ).read_text(encoding="utf-8")
         cls.presentation = (cls.tauri / "src" / "presentation.rs").read_text(encoding="utf-8")
+        cls.window_lifecycle = (
+            cls.tauri / "src" / "window_lifecycle.rs"
+        ).read_text(encoding="utf-8")
         cls.build = (cls.tauri / "build.rs").read_text(encoding="utf-8")
         cls.configuration = json.loads(
             (cls.tauri / "tauri.conf.json").read_text(encoding="utf-8")
@@ -77,9 +86,9 @@ class PresentationTauriSourceTest(unittest.TestCase):
         self.assertIn("http://*:*/*", self.controller_capability["remote"]["urls"])
         self.assertIn("window_origin_authorized(window_url.as_str(), &backend_url)", self.presentation)
         self.assertIn(".on_navigation(move |candidate|", self.presentation)
-        self.assertIn(
-            "window_origin_authorized(candidate.as_str(), allowed_origin.as_str())",
+        self.assertRegex(
             self.presentation,
+            r"window_origin_authorized\(\s*candidate\.as_str\(\),\s*allowed_origin\.as_str\(\),?\s*\)",
         )
 
     def test_command_manifest_handler_and_generated_permissions_are_synchronized(self):
@@ -151,12 +160,12 @@ class PresentationTauriSourceTest(unittest.TestCase):
         self.assertIn("complete_activation_if_ready", activation)
 
     def test_presentation_native_lifecycle_is_recorded_in_diagnostic_logs(self):
-        self.assertIn('join("runtime")', self.main)
-        self.assertIn('join("logs")', self.main)
+        self.assertIn('join("runtime")', self.diagnostics)
+        self.assertIn('join("logs")', self.diagnostics)
         self.assertIn("install_runtime_desktop_diagnostics", self.main)
-        self.assertIn("sender.try_send(record)", self.main)
+        self.assertIn("sender.try_send(record)", self.diagnostics)
         self.assertNotIn("try_state::<DesktopStartupLog>", self.main)
-        self.assertIn('"presentation_window_destroyed"', self.main)
+        self.assertIn('"presentation_window_destroyed"', self.window_lifecycle)
         for stage in (
             "activation_command_begin",
             "controller_build_begin",
@@ -259,22 +268,35 @@ class PresentationTauriSourceTest(unittest.TestCase):
             self.assertIn("recover_after_activation_failure", source)
 
     def test_controller_loss_recovers_only_presentation_and_main_keeps_pr95_shutdown(self):
-        event_start = self.main.index(".on_window_event")
-        event_end = self.main.index(".run(tauri::generate_context!())", event_start)
-        event = self.main[event_start:event_end]
+        self.assertIn(
+            ".on_window_event(window_lifecycle::handle_window_event)", self.main
+        )
+        event = self.window_lifecycle
         self.assertIn('window.label() == "controller"', event)
         self.assertIn("presentation::handle_controller_destroyed", event)
         self.assertIn('window.label() == "main"', event)
         self.assertIn("presentation::prepare_app_shutdown", event)
-        self.assertIn("wait_for_active_backend_downloads", event)
-        self.assertIn("request_backend_shutdown", event)
-        self.assertIn("wait_for_child_exit", event)
-        graceful = event.index("wait_for_child_exit")
-        self.assertIn("return;", event[graceful:])
-        self.assertLess(event.index("wait_for_active_backend_downloads"), event.index("request_backend_shutdown"))
-        self.assertLess(event.index("request_backend_shutdown"), event.index("child.kill()"))
+        self.assertIn("backend_process::shutdown", event)
+        self.assertLess(
+            event.index("presentation::prepare_app_shutdown"),
+            event.index("backend_process::shutdown"),
+        )
+        shutdown_start = self.backend.index("pub(crate) fn shutdown")
+        shutdown = self.backend[shutdown_start:]
+        self.assertIn("wait_for_active_backend_downloads", shutdown)
+        self.assertIn("request_backend_shutdown", shutdown)
+        self.assertIn("wait_for_child_exit", shutdown)
+        graceful = shutdown.index("wait_for_child_exit")
+        self.assertIn("return;", shutdown[graceful:])
+        self.assertLess(
+            shutdown.index("wait_for_active_backend_downloads"),
+            shutdown.index("request_backend_shutdown"),
+        )
+        self.assertLess(
+            shutdown.index("request_backend_shutdown"), shutdown.index("child.kill()")
+        )
         controller_block = event[event.index('window.label() == "controller"') : event.index('window.label() == "main"')]
-        self.assertNotIn("request_backend_shutdown", controller_block)
+        self.assertNotIn("backend_process::shutdown", controller_block)
 
 
 if __name__ == "__main__":
