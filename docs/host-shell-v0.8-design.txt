@@ -1,0 +1,917 @@
+Bilikara v0.8 Host desktop-shell design freeze
+================================================
+
+Status: frozen IA and responsive interaction contract
+Scope: Host shell only; documentation and standalone wireframe, no production implementation
+Baseline audited: work/v0.8.0 @ eac2f25b1744598b2122b35cb985678e686e6569
+Representative frames: Wide 1600x900, Medium 1240x800, Narrow 840x760 logical px
+
+0. Freeze decisions at a glance
+--------------------------------
+
+Primary model: hybrid application shell.
+
+  global toolbar
+  +-----------------------------------------------------------------------+
+  | rail | persistent Stage + playback surface | selected work workspace |
+  |      | (one HostPlaybackSession media pair) | (width varies by goal) |
+  +-----------------------------------------------------------------------+
+
+* A persistent left tool rail selects Queue, Request / Discover, Random,
+  or Session Users. It is the primary navigation.
+* The Stage is shell infrastructure, not a workspace. Workspace changes must
+  not move, replace, clone, hide-and-recreate, or re-own its video/audio pair.
+* Queue owns History as a subview. Settings is a global drawer. QR and
+  presentation/status summaries are toolbar popovers. Song detail is a
+  contextual inspector owned by Request / Discover.
+* Queue is compact. Search is deliberately wide. Random and Session Users are
+  independently navigable even though they consume related data.
+* The shell viewport does not use body/document scrolling. Every major list
+  below has one named local scroll owner.
+* “Local library” search means cached Gatcha source metadata, not downloaded
+  media. “Followed users” currently appears to mean configured UID sources,
+  not a proven live Bilibili-following list. These semantics remain visibly
+  pending; the design does not manufacture missing contracts.
+
+1. Product goals and non-goals
+------------------------------
+
+Goals
+
+G1  Keep playback spatially and technically stable throughout a live session.
+G2  Make Queue, requesting/discovery, Random, and Session Users one action away.
+G3  Give each work context enough width and exactly one vertical scroll owner.
+G4  Preserve current functionality and view state while removing page travel.
+G5  Define coherent wide, medium, narrow, keyboard, and coarse-pointer behavior.
+G6  Make destructive effects explicit and keep application/runtime files safe.
+G7  Permit production migration in bounded slices with one HostPlaybackSession.
+
+Non-goals
+
+N1  No production DOM/CSS/JS, Python, Rust, Tauri, API, schema, or playback work.
+N2  No temporary tabs or rearrangement of the current scrolling page.
+N3  No generic component framework, Redux/store rewrite, or overlay manager.
+N4  No new Shared/Local search semantics, cleanup API, or data-retention policy.
+N5  No phone-Host optimization, Liquid Glass requirement, or brand replacement.
+N6  No second player, background playback authority, or media ownership handoff.
+
+2. Current product and source audit
+-----------------------------------
+
+Source facts
+
+* static/index.html, static/app.js, static/styles.css and static/song-detail.*
+  implement a warm, card-based Host whose document is currently the primary
+  vertical scroll surface. At <=1120px its two-column layout becomes one
+  column; at <=760px forms and headings stack, but body scrolling remains.
+* The queue card is sticky at wide widths and internally scrolls playlist or
+  history. Expanded search moves the existing search-card DOM into a modal;
+  it does not create a second search implementation. Song detail is inserted
+  into that modal and restores focus when closed.
+* static/app.js state.hostPlaybackSession owns one exact video/audio pair.
+  mountHostPlaybackSessionElements() creates one visible video and one hidden
+  audio; replaceHostPlayerView() is used for accepted playback-program
+  lifecycle changes. Same-program reconciliation reuses both elements.
+* Rust runtime AppState is authoritative for current item, playlist, session
+  users/history and player settings. Python is transport/persistence and
+  retained I/O orchestration. Tauri owns windows, presentation and restart.
+* The current search faces are local Gatcha metadata (/api/gatcha/search),
+  configured-UID browsing (/api/gatcha/browse), and shared catalog search
+  (/api/lark/search). Expanded search also exposes favorites, category,
+  name/artist browse, and secret-gated review/blacklist tools.
+* The current local Gatcha search joins configured UID video metadata and
+  fetched favorite-list metadata. It does not index data/cache media files.
+* Current overlays have independently evolved z-index values (roughly 120 to
+  1200, with fullscreen/presentation at 9999). Escape closes several layers
+  in one key event rather than a strict topmost-only stack. The final contract
+  below normalizes roles, not implementation into a global manager.
+
+Legend used in the inventory
+
+  Frequency/urgency: VH live-critical; H frequent; M occasional; L rare.
+  Life: A authoritative/persisted; P persisted preference/data; V local view;
+        D local unsaved draft; T transient.
+  Space: C compact; W wide; F near-full; H tall list; S short.
+  Survive: Y survive workspace switch; R restore selection but close layer;
+           N transient by design.
+  Owners: AppState = Rust runtime authoritative state; GRepo = Rust runtime
+          Gatcha repository; Host = Python HTTP/I/O adapter; UI = app.js/DOM;
+          Tauri = desktop shell; Ext = Bilibili/Cloudflare/Feishu/GitHub.
+
+2.1 Exact current Host function map
+
+Each F-id is one canonical placement. A later cross-reference does not create
+a second placement. Combined rows group only controls that share one user goal,
+owner, space and final destination.
+
+ID | user goal | current UI location | freq | owner / API or state | life | space | current scroll owner | survive | final location | unresolved dependency
+---|-----------|---------------------|------|----------------------|------|-------|----------------------|---------|----------------|----------------------
+F01 | Watch/hear the active song | player-frame in left player card | VH | UI HostPlaybackSession over AppState playback_program; /api/player/claim-program and retire-program | A+T | W/H | body; media itself none | Y | permanent Stage | invariant: exact video+audio pair must remain mounted across shell navigation
+F02 | Pause/resume, seek on the player surface, see time/state | custom player overlay and click/keyboard behavior | VH | UI media pair plus AppState player commands/status | A+T | W/S | none | Y | Stage essential transport strip | expose the existing action, do not create another playback authority
+F03 | Choose audio/vocal variant | audio variant bar under player | H | AppState player settings; /api/player/audio-variant | A | W/S | horizontal wrap/expand | Y | full control deck; expanded control tray when collapsed | none
+F04 | Correct A/V sync, reset or lock it | AV-delay +/-200/+/-50, number, reset, lock | H | AppState player settings; /api/player/av-delay-action | A | W/S | none | Y | full control deck/tray | none
+F05 | Set/mute playback volume | mute, range and percentage | H | AppState plus localStorage volume/muted; /api/player/volume | A+P | C/S | none | Y | mute always visible; full slider in deck/tray | hydration remains narrow existing logic
+F06 | Shift karaoke key | -1, numeric -6..6, +1, reset | H | AppState; /api/player/key-shift | A | C/S | none | Y | full control deck/tray | none
+F07 | Enter/leave audience fullscreen | Stage fullscreen button and player double-click | H | UI Fullscreen API/Tauri fullscreen | T | C/S | none | Y | essential transport strip | presentation composition remains separate
+F08 | Advance safely to the next song and understand transitions | queue Next, advance-delay countdown, incoming-request toast, transition overlay, manual-start/recovery surface | VH | AppState /api/player/next; UI clocks/overlays; server transition state | A+T | W/S | none | Y except transient toast | Next in Stage transport; status in Stage; recovery banner/layer | do not duplicate Next in Queue
+F09 | See active item, cache/progress and retry | queue current-item block | VH | AppState snapshot; /api/cache/retry | A | C/S | Queue header fixed | Y | Queue fixed current section | none
+F10 | Inspect upcoming queue | right sticky playlist face | VH | AppState playlist/cache projections | A | C/H | playlist list | Y | Queue list | none
+F11 | Sort/reorder and act on queued items | Resort; drag order; play now/move next/remove/retry menus | H | AppState playlist commands | A | C/H | playlist list | Y | Queue list rows/header | keyboard/touch reorder needs an accessible non-drag affordance
+F12 | Empty upcoming requests | clear-queue toolbar action + confirm | M/high-risk | AppState /api/playlist/clear | A+T | C/S | none | N confirm | Queue header action | confirmation must state whether current song is preserved
+F13 | Reuse or remove played requests | queue card flip to History; tail/next/remove/clear | M | AppState history and /api/history/* | A | C/H | history list | Y | Queue > History subview | none
+F14 | Export played/current-session records | History export confirm; CSV/image, page size, played/history source | L | Host /api/history/export/* and /api/played-sessions | P+T | C/H | history list / selector | R | Queue > History secondary action | archive naming/retention remains Host I/O
+F15 | Request by URL/BV/av at tail or immediately next | direct request form under Stage | H | Host metadata/part resolution then AppState /api/playlist/add | A+D | C/S | none | Y draft | Request / Discover > Quick Request | no duplicate top-toolbar form
+F16 | Bind video page and one/more audio pages when ambiguous | part-binding modal | M | Host page resolution, UI draft, playlist add | D+T | W/H | modal page options | R | task modal launched from Quick Request/search detail | modal must not cover another popover
+F17 | Attribute a request to someone | requester selector shared by add flows | H | AppState session_users; UI selection | A+V | C/S | none | Y | Request header/default requester; action flows reuse it | selection validity changes when user removed
+F18 | Search cached source metadata | default local search face | H | GRepo via /api/gatcha/search | V/P | W/H | current results/body or expanded results | Y | Request / Discover > Search > Local library | fixed label: logical UID/favorite metadata, not physical media; no cursor contract
+F19 | Search shared karaoke catalog | Lark/Cloudflare face and hitbox | H | Host/Ext via /api/lark/search, max 80, local-status annotation | V | W/H | current results/body or expanded results | Y | Request / Discover > Search > Shared catalog | no stable pagination/cursor/freshness contract
+F20 | Open a result, inspect metadata/metrics and request tail/next | expanded Search and song-detail layer | H | UI cached result + Host add/open-url | V+T | W/F | search results; detail when needed | Y selected result; R layer | Request results + contextual song-detail inspector | detail freshness is source-dependent
+F21 | Browse configured UID owners and search their cached videos | “follow browse” face, owner grid and item view | M | GRepo /api/gatcha/browse | P+V | W/H | owner grid or item results | Y | Request / Discover > Sources > Added UIDs > Videos | “Followed” is not proven live-following semantics
+F22 | Add a UID source and pull its videos | Add UID in search and Gatcha faces; preview/confirm | M | GRepo /api/gatcha/uids/preview, add | P+D+T | C/H | source content | Y draft | Request / Discover > Sources primary action | one canonical UI; Random only links here
+F23 | Refresh configured UID video metadata | Gatcha source face manual refresh/status | L | GRepo background refresh + AppState status | P+A | C/S | source content | Y | Request / Discover > Sources > Added UIDs action | refresh-all vs per-source granularity not defined
+F24 | Select/fetch Bilibili favorite collections | favorites pull UID, preview folders, selected-folder modal | M | GRepo/Ext /api/gatcha/favlist/preview and favlist | P+D+T | W/H | folder modal/list | R | Request / Discover > Sources > Favorites > Fetch collections | credential/public-access and ownership semantics need product copy
+F25 | Browse/search fetched favorite folders | expanded search Favorites folders/items | M | GRepo /api/gatcha/favlist/browse | P+V | W/H | folder grid or item results | Y | Request / Discover > Sources > Favorites | none
+F26 | Discover shared entries by category | expanded Category home/detail with incremental paging | M | Host/Ext /api/d1/category-browse | V | W/H | category results | Y | Request / Discover > Discover > Categories | existing offset/has_more contract available
+F27 | Discover shared entries by name or artist index | expanded Name/Artist alphabet, tags, items | M | Host/Ext /api/d1/browse | V | W/H | tags/results | Y | Request / Discover > Discover > Name / Artist | fixed high limits, not cursor pagination
+F28 | Moderate shared catalog when secret-gated | hidden Pending Review, Blacklist, reset tags, reject/approve/restore/delete entry or MID | L/high-risk | Host/Ext /api/admin-*; UI secret | V+D+T | W/H | review/blacklist results | Y while developer session exists | Request / Discover > Advanced catalog tools, secret-gated | developer session persistence intentionally absent
+F29 | Draw and accept/retry a random song | Gatcha card init/result faces | M | GRepo candidate and AppState add | V+A | C/S | none or result | Y | independent Random workspace | none
+F30 | Configure Random source weights/inclusions | Gatcha pool modal, UID/favorite checkboxes and weight | L | GRepo pool-config | P+D+T | W/H | modal source lists | R | Random > Pool configuration sheet | source management itself remains in Request / Sources
+F31 | See/edit current-session people | Session Users card, add, drag reorder, drag-to-trash delete | H | AppState /api/session-users/* | A+D | C/H | users list | Y | independent Session Users workspace | accessible reorder/remove for keyboard/touch required
+F32 | Connect a Remote | top QR thumbnail/hover/focus/pin and full QR card/link/copy | H at setup | Host network/QR; remote identity store | P+T | C/S | none | R pin | toolbar QR transient/pinned popover | full QR card is same function and is removed, not duplicated
+F33 | Change language/theme; legacy Basic/Full layout switch | Display chip/panel | M | UI localStorage language/theme/layout | P | C/H | panel | Y language/theme; migrate layout | Settings > Appearance; layout switch removed | Basic/Full is replaced by responsive shell behavior; old values are migration inputs only
+F34 | Start/manage a second presentation output | Presentation chip/panel, discover/select/enable/disable | M/high when used | Tauri presentation session + UI composition | A+T | C/H | display list | Y session; R panel | toolbar Presentation status/action popover | must retain host as playback authority and one renderer contract per current presentation design
+F35 | See service/player/cache health quickly | service chip indicators and summaries | H | AppState + Host capability/status | A+T | C/S | none | Y | toolbar health summary opens Settings > Service | no duplicate full settings in popover
+F36 | Configure cache window, advance delay, quality, Hi-Res, download source and AV-reset policy | service settings panel | M | AppState cache/player policy plus Host prepare/I/O | A+P | C/H | Settings drawer | Y | Settings > Playback & Cache | download-source prepare remains async guarded
+F37 | Log in/out of Bilibili/BBDown and refresh login QR | service settings panel | L/high when broken | Rust status + Host tool orchestration; BBDown.data | P+T | C/H | Settings drawer | Y credential; R QR | Settings > Accounts & Tools | whether complete user-data reset removes credentials is unresolved
+F38 | Check/install updates and choose automatic/preview channel | service advanced panel, update badge | L | Host/Rust installer + GitHub; UI localStorage prefs | P+T | C/H | Settings drawer | Y | toolbar badge -> Settings > Update | update temp retention policy separate from installed app
+F39 | Restart the desktop application safely | service advanced Restart | L/high | Tauri command `restart_application` via native invoke; no Python restart endpoint | T | C/S | none | N | Settings > Advanced | Tauri-only availability remains explicit
+F40 | Repair playback/cache for current item | recache current and reset player | L/high | Host cache + AppState reset/restart program | A+T | C/S | none | N confirm | Settings > Service > Troubleshooting | actions must keep distinct effect copy
+F41 | Clear current runtime data | current “clear all data” action | L/destructive | Host /api/data/reset -> cache clear, AppState reset, remote identity rotation | A+P | C/S | none | N confirm | Settings > Data, but current action is not approved final semantics | current scope is over-broad/under-described; see Section 12
+F42 | Diagnose/report a problem | copy diagnostic Markdown or download package | L | Host/Rust diagnostics and log sanitization | T | C/S | none | R busy state | Settings > Diagnostics | generated download is not persistent app data
+F43 | Continue/discard previous session after startup | fixed recovery banner with countdown/pause/dismiss | M/high at startup | AppState backup/archive + Host persistence | A+T | W/S | none | N after choice | critical shell banner below toolbar | countdown must honor hover/focus and reduced motion
+F44 | Confirm anchored actions and destructive tasks | generic confirm popover, modal backdrops | M | UI intents + target owner | T | C/S or W/S | none | N | confirmation roles in Section 11 | exact destructive scope must be in the surface
+F45 | Receive nonblocking outcomes and warnings | app toast, fullscreen request toast, top/status banners | H | UI transient messages + state changes | T | C/S | none | N | toast region / classified banners | toast never owns focus
+F46 | Rate played songs, switch recent/current, opt out, add owner UID | rating modal | M | Host rating submit; UI dedupe/opt-out | P+V+T | C/H | modal content if needed | R | post-play task sheet | current opt-out persistence scope must remain explicit
+F47 | Open project info and enter secret developer mode | brand GitHub link/keyboard trigger, secret modal | L | UI + Host secret verify | V+T | C/S | none | R | About link in Settings; secret-gated Advanced entry | avoid accidental activation from normal brand click
+F48 | Open per-row overflow commands | queue/history row menus | H | UI view over AppState commands | T | C/S | none | N | row action menu within owning workspace | close on action/outside/Escape, restore trigger focus
+
+Mapping check: F01-F48 cover every current Host-facing control, state surface,
+search/browse/developer mode, recovery layer, and maintenance action found in
+the audited production Host. The Remote remains a separate client; F32 maps
+the Host entry/access surfaces for it. Tauri window geometry is data, not a
+Host-facing control, and is classified in Section 12.
+
+2.2 Amended baseline delta and IA impact
+
+The exact sibling diff from a915e74dc32a1863548501cc3f97797f233d1f92 to
+eac2f25b1744598b2122b35cb985678e686e6569 changes only bilikara/cache.py,
+tests/test_cache.py and tests/test_server.py. Classification: WORDING_ONLY.
+
+* Configured cache-root aliases remain in the caller's path namespace;
+  resolved/canonical paths are used only for containment checks.
+* Published video/audio relative paths and /media URLs use stable forward
+  slashes, including when an input URL arrived with Windows separators.
+* Rust probe metadata is normalized back to the caller's media-path namespace
+  so publication can derive the configured-root-relative identity.
+* Cache tests cover the configured-root representation and forward-slash URL
+  output; the server test now expects resolved filesystem paths for serving.
+
+These are internal correctness and security-boundary details. They do not
+create a user-facing source kind, make Local library search browse data/cache,
+or change the effect categories in Section 12. Source browsing is keyed by UID,
+favorite folder and logical song metadata, never by canonical/alias directory.
+The shell may show a cache size/status or logical media URL for diagnostics, but
+must not expose configured-versus-resolved path namespaces as product concepts.
+
+2.3 Current responsive, scrolling and input audit
+
+* Body/document is the main scroll owner. The wide queue adds a second local
+  list scroll; expanded search and several modals add more local scroll roots.
+* At <=1120px player, forms, Session Users, Search and Gatcha precede a static
+  Queue vertically, forcing operators to travel away from the Stage.
+* Hover/focus/pin works for the compact QR control. Most key actions are real
+  buttons, but session-user and queue ordering still depend heavily on drag.
+* Current Host information controls measure 40px; Remote controls measure
+  44px in the browser baseline. Narrow/coarse Host must adopt 44px targets.
+* Search modal prevents body scrolling. Selection lists use overscroll
+  containment. Several animations lack a global reduced-motion override.
+
+3. Brief official-pattern comparison
+------------------------------------
+
+Pattern | useful lesson | product-specific decision
+--------|---------------|--------------------------
+OBS canvas + docks | A central live surface can remain stable while operational tools occupy docks. OBS also makes docks modular. | Keep the stable-stage/dock relationship, but do not add user-rearrangeable/floating docks in v0.8; fixed roles reduce live-session mistakes.
+Windows NavigationView | Official guidance adapts a left pane between expanded, compact and minimal modes according to available width. | Keep four always-visible compact rail destinations down to the v0.8 minimum; labels remain visible under icons, so the Host never relies on hover or a hidden hamburger.
+macOS sidebar/split view | Sidebars expose peer contexts; split views can place supplementary tools around primary content and adapt at multiple widths. | Use a shallow peer rail and variable workspace, not a deep source tree in global navigation.
+macOS inspector | An inspector describes/acts on selected content without becoming top-level navigation. | Song detail is an inspector owned by Request, not a fifth workspace.
+macOS popover | Popovers suit a small amount of temporary functionality, should not cascade, and normally close outside. | QR and presentation summaries can be popovers; Settings, search, source management and destructive reset cannot.
+
+Official references (accessed 2026-08-28):
+* https://obsproject.com/ and https://docs.obsproject.com/reference-frontend-api
+* https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/navigationview
+* https://developer.apple.com/design/human-interface-guidelines/sidebars
+* https://developer.apple.com/design/human-interface-guidelines/split-views
+* https://developer.apple.com/design/human-interface-guidelines/popovers
+* https://developer.apple.com/design/human-interface-guidelines/panels
+
+4. Navigation alternatives and decision
+---------------------------------------
+
+Alternative | result | reason
+------------|--------|-------
+Whole-screen vertical pagination | REJECT primary | Repeats page travel, separates operator from Stage, and gives no durable location for live contexts. It may remain only as motion-free scroll inside a workspace.
+Full-view tabs | REJECT primary | A full-view swap implies that Stage is one page among peers or must be duplicated outside tabs. Search also needs contextual subnavigation beyond one flat row.
+Persistent tool rail + workspace | ACCEPT foundation | Four peer goals stay one action away, selected state is explicit, and workspace width can vary independently of the Stage.
+Overlay drawers | REJECT primary; ACCEPT responsive technique | Drawers are suitable for Settings and for wide workspaces when docking would starve the Stage. If every destination were a drawer, live context and selection would feel transient.
+Hybrid | ACCEPT final | Persistent toolbar + rail + Stage; docked workspace where fit allows; overlay/near-full workspace and collapsible controls only when space requires it.
+
+Why no top-tab primary navigation: the toolbar already carries global status
+and quick actions, and horizontal labels would compete with now-playing status
+at medium widths. Why no user-customizable OBS-like docks: v0.8 needs one
+reviewable layout contract, not another layout-persistence product.
+
+5. Final information architecture
+---------------------------------
+
+Host shell
+|-- Global toolbar
+|   |-- bilikara / Host identity
+|   |-- Now playing + transition/cache status (summary only)
+|   |-- QR / Remote access popover (transient or pinned)
+|   |-- Presentation output status/action popover
+|   |-- Service health; update badge -> exact Settings subsection
+|   `-- Settings drawer trigger
+|-- Tool rail (peer work contexts)
+|   |-- Queue
+|   |   |-- Queue (default)
+|   |   `-- History (subview; export/clear secondary actions)
+|   |-- Request / Discover
+|   |   |-- Quick Request
+|   |   |-- Search
+|   |   |   |-- Shared catalog
+|   |   |   `-- Local library (cached UID/favorite metadata)
+|   |   |-- Discover
+|   |   |   |-- Categories
+|   |   |   |-- Name
+|   |   |   `-- Artist
+|   |   `-- Sources
+|   |       |-- Added UIDs (owner videos, add UID, refresh)
+|   |       `-- Favorites (fetch collections, browse folders/items)
+|   |-- Random
+|   |   |-- Draw / selected candidate / request
+|   |   `-- Pool configuration (references Sources; does not manage them)
+|   `-- Session Users
+|       |-- Add, list, order, remove
+|       `-- current requester/default attribution context
+|-- Persistent Stage (not a destination)
+|   |-- exact HostPlaybackSession video + hidden audio
+|   |-- now-playing/transition/cache state
+|   |-- essential transport strip
+|   `-- full control deck OR collapsed control tray
+`-- Contextual layers
+    |-- Settings drawer
+    |-- song-detail inspector
+    |-- task sheets: page binding, favorites, pool, rating, developer
+    |-- confirmation surface
+    |-- QR / presentation popovers
+    |-- recovery/status banners
+    `-- tooltip and toast regions
+
+Placement rule: a toolbar control can navigate to a full Settings subsection,
+but it must not duplicate that subsection’s complete form. A rail item selects
+a work context; it does not execute playback or settings actions.
+
+Rail side decision: LEFT, not implementation-dependent.
+
+* Stage priority: the narrow rail consumes a fixed 64-68px at the leading edge;
+  the Stage remains the central visual anchor while variable-width work opens
+  from the trailing edge. The rail never overlays or divides the media surface.
+* Current Queue placement: Queue stays in the familiar trailing/right work
+  region instead of moving the live list across the Stage during migration.
+* Reading order: in left-to-right locales the order is global navigation,
+  Stage/transport, then the selected task. DOM and keyboard order match it.
+* Search expansion: the 600-700px Request workspace expands/overlays from the
+  right without hiding the left rail, so operators can always change context.
+* Toolbar alignment: brand/Host identity anchors the left rail; QR,
+  Presentation, health/update and Settings remain a distinct right-side global
+  cluster rather than blending with workspace navigation.
+* Pointer travel: a right rail would be closer to row actions, but would crowd
+  the variable-width workspace edge and toolbar globals. The left rail accepts
+  a longer mouse traverse in exchange for a stable target that never moves as
+  workspace width changes; roving-arrow keyboard operation shortens this path.
+* Touch/coarse pointer: the left edge stays exposed in Wide, Medium and Narrow,
+  uses 44px-class targets, and requires neither hover nor an edge swipe. No
+  right-hand assumption is baked into the v0.8 Host.
+
+6. Search and source taxonomy contract
+--------------------------------------
+
+Decision
+
+* “Shared catalog” and “Local library” are the final two-option segmented
+  control labels inside Search. They are mutually exclusive scopes of the same query goal,
+  not global tabs and not separate rail destinations.
+* Each mode owns an independent query draft, submitted query, result set,
+  loading/error state, selected result, pagination/cursor if the backend has
+  one, and scrollTop. Switching restores the prior mode without a request.
+  A Submit/Refresh action reruns it. The existing Shared and Local endpoints
+  currently return bounded result arrays; the UI must not fake pagination.
+* Discover is adjacent to Search because category/name/artist browse the same
+  shared catalog but use browse intents rather than free-text scope switching.
+* Sources distinguishes management from content search. Added UIDs and fetched
+  Favorites are persistent source records. Search reads their cached metadata;
+  Add UID, Refresh and Fetch collections alter the source set.
+* Add UID exists once: Sources > Added UIDs. Random shows “Manage sources” as a
+  navigation link to that location, never a second Add UID form.
+* “Refresh videos” is an explicit action on Added UIDs. “Fetch collections” is
+  an explicit action on Favorites, with preview/selection in a task sheet.
+* Random remains independent: its user goal is drawing/configuring a pool, not
+  finding or maintaining an owner.
+
+Per-mode state contract
+
+Field | Shared catalog | Local library | switch/restore rule
+------|----------------|---------------|--------------------
+query draft | independent text, placeholder “Search shared catalog” | independent text, placeholder “Search your local library” | keep each draft; never copy it across modes
+submitted query | last explicitly submitted Shared query | last explicitly submitted Local query | restore without request; submit/refresh is explicit
+results | Shared result array with its own empty state | cached UID/favorite metadata result array with its own empty state | never render one mode's array under the other label
+pagination/cursor | current bounded <=80 result response; no cursor | current bounded result response; no cursor | retain a future cursor per mode only when its backend defines one; UI never fabricates paging
+loading/error | independent status and last error | independent status and last error | switching does not cancel, relabel or leak the other status; a returning request updates only its origin mode
+scroll position | result-list scrollTop | result-list scrollTop | save before switch and restore after the correct result DOM renders
+selected song/detail | Shared selection plus source/freshness metadata | Local selection plus UID/favorite provenance | keep independently; close inspector on mode switch and reopen only for that mode's explicitly retained open state
+filters/source selection | Shared table/browse filters when exposed | optional configured UID/favorite filter when backend exposes it | independent; absent controls remain absent rather than sharing a stale value
+local draft state | unsubmitted query/filter edits | unsubmitted query/filter edits | survives workspace switches; may be discarded on reload under Section 10
+
+Source taxonomy and ownership
+
+Surface | records/content | actions | relationship to Search
+--------|-----------------|---------|-----------------------
+Added UIDs | explicitly configured UID profiles and cached owner videos | Add UID through preview/confirm; refresh available UID metadata; browse an owner's videos | Local library may search their cached metadata; it does not browse their directories
+Favorites | fetched UID/folder collection records and cached items | preview a UID's folders, choose/fetch collections, browse folders/items | Local library may search fetched item metadata; it does not imply access to every authenticated favorite
+Random pool references | inclusion/exclusion and weight references to UID/favorite sources | configure in Random; “Manage sources” navigates here | consumes the same records but does not duplicate source management
+
+Quick Request remains the URL/BV/av entry with requester, tail/next and page
+binding. Search remains query/result/detail. Sources remains management plus
+hierarchical source-content browsing. Discover remains category/name/artist
+browse of Shared catalog data; sharing a backend record does not merge these
+user intents.
+
+Not ready for implementation without a product/backend decision
+
+S1  Whether “Followed users” should ever mean a live account-following list.
+    Today the source proves only added/configured UIDs.
+S2  Shared search pagination/cursor, ordering and freshness. Current contract is
+    at most 80 combined Cloudflare/Feishu results; no client cursor exists.
+S3  A physical media-cache search or local JSON import has no Host API/index
+    contract and is absent from v0.8 IA until separately specified.
+S4  Whether favorites are public-UID collections, authenticated-account
+    collections, or both; current preview/fetch is UID/folder oriented.
+
+Backend prerequisites are exact: new Shared paging needs a stable cursor,
+ordering and freshness contract; physical media search/import needs a Rust-
+authoritative index/query contract plus Host I/O boundaries; live Following
+needs an authenticated relationship API and persisted source model; favorites
+wording beyond current UID/folder fetch needs an authentication/ownership
+contract. None is simulated by the wireframe or required to migrate current
+bounded behavior.
+
+These pending semantics do not block freezing placement: existing Local,
+Shared, UID, Favorite and browse functions each have a final container. They
+block only renaming or implementing capabilities the source does not provide.
+
+7. Workspace width and scroll model
+-----------------------------------
+
+Preferred width is a workspace property, clamped to available shell width.
+No user-resizable dock or persisted split width is required in v0.8.
+
+Workspace | preferred wide width | medium behavior | narrow behavior | one vertical scroll owner
+----------|----------------------|-----------------|-----------------|--------------------------
+Queue | 400px (range 360-440) docked | 360px docked when Stage >=560px; otherwise 400px overlay | content-width workspace below mini-Stage | queue list OR history list; fixed header/current/footer
+Request / Discover - Quick | 520px docked | 520px overlay if docking starves Stage | near-full content workspace | form has no scroll; binding sheet owns its option list
+Request / Discover - Search/Discover | 640px (range 600-700) docked | 600px right overlay; never squeezed to Queue width | near-full content workspace | active results/browse content only; search controls fixed
+Request / Discover - Sources | 620px docked | 580-620px right overlay | near-full content workspace | owner/folder/content list for the active source level
+Random | 480px (range 440-520) docked | 420px docked if Stage >=560px | content-width workspace below mini-Stage | Random content only when configuration/result exceeds height; pool sheet owns its source list
+Session Users | 460px (range 420-500) docked | 400px docked if Stage >=560px | content-width workspace below mini-Stage | users list; add/actions fixed
+Settings | 480px drawer over workspace edge | 480px modal drawer from trailing edge | content-area sheet, not full OS window | settings sections
+Song detail | 360px inspector beside results when total workspace >=960px | 380px overlay inside Request | near-full content sheet | detail body only when necessary
+
+Scroll rules
+
+* html, body and the shell root are height:100%, overflow:hidden.
+* Wheel/touch deltas stay with the pointer’s active local owner. At its top or
+  bottom, overscroll-behavior:contain prevents chaining into Stage or shell.
+* Fixed local headers, segmented controls and action footers do not scroll.
+* Avoid a vertically scrollable workspace surrounding a vertically scrollable
+  list. When the list is the owner, the workspace grid is min-height:0 and
+  overflow:hidden. Horizontal chip/tab rows may scroll horizontally only.
+* A modal/sheet locks its background workspace scroll; on close, scrollTop and
+  focus are restored. An overlay workspace prevents wheel/touch reaching the
+  obscured Stage but does not pause or remount media.
+
+Surface scroll ownership
+
+Queue=queue/history list; Search=active result list; Sources=active owner/folder/
+item list; Random=random content or its task sheet (never both); Session Users=
+users list; Settings=settings sections; Song detail=detail body only if its
+fixed header/actions cannot fit.
+
+8. Responsive shell states
+--------------------------
+
+Breakpoints use available shell inline size, not user-agent or device name.
+
+  Wide:   >=1440px
+  Medium: 1040-1439px
+  Narrow: 700-1039px (v0.8 Host minimum design range)
+
+Height and Stage inline size independently select full/collapsed controls;
+width labels alone never force a less usable control set.
+
+8.1 Wide -- representative 1600x900 (target range 1500-1700 x 850-1000)
+
+Toolbar        60px; brand left, now-playing/status center, QR, Presentation,
+               service/update, Settings right. Less-important labels may
+               shorten, but icon accessible names remain.
+Stage          Permanent center-left region, minimum 720px inline size. 16:9
+               media fit plus control deck; it never enters workspace DOM.
+Rail           Leading/left 68px, four icon+short-label destinations.
+Workspace      Trailing dock at its preferred width (Queue 400, Search 640,
+               Random 480, Users 460). Selected width changes with a restrained
+               split transition; Stage element identity does not change.
+Controls       Full when Stage control container >=720px and available shell
+               content height >=620px. Essential strip remains part of deck.
+Scroll         Only the active workspace owner; no body scroll.
+Overlays       Settings 480px drawer; QR small anchored popover; detail may be a
+               360px inspector only when Request workspace totals >=960px,
+               otherwise overlays its results.
+Focus order    toolbar -> rail selected item -> Stage transport -> active
+               workspace header/controls -> its list/items. DOM/source order
+               follows this sequence even if CSS places workspace to the right.
+Touch targets  40px minimum; 44px when pointer:coarse.
+Transition     160ms max opacity/translate or immediate with reduced motion;
+               no 3D card flips. Stage/resume/play state is untouched.
+
+8.2 Medium -- representative 1240x800 (target range 1100-1350 x 700-900)
+
+Toolbar        60px. Text summaries truncate; QR/Presentation/health/Settings
+               remain individually reachable.
+Stage          Permanent main region. Queue/Random/Users may dock only while
+               calculated Stage inline size stays >=560px. It may be partly
+               obscured by a wide overlay but remains mounted and playing.
+Rail           Leading/left 64px, same four destinations and labels.
+Workspace      Queue 360px, Random 420px, Users 400px dock conditionally.
+               Quick Request 520px and Search/Sources 600px open as trailing
+               overlays whenever docking would violate Stage minimums.
+Controls       Full only under the same >=720px and >=620px fit test. An open
+               wide workspace overlay collapses the deck to the unobscured
+               essential strip and Controls trigger.
+Scroll         Active local list only. Overlay backdrop intercepts scroll over
+               obscured content; visible Stage transport remains operable.
+Overlays       Search/source overlay; Settings 480px; detail overlays only the
+               Request workspace. One interactive drawer/popover at a time.
+Focus order    toolbar -> rail -> unobscured Stage strip -> open workspace.
+               Opening an overlay focuses its heading/first control and traps
+               Tab only when it is modal at the current fit.
+Touch targets  40px minimum, 44px coarse.
+Transition     160ms trailing translate/width; reduced-motion removes movement.
+               Escape closes the overlay and restores its rail trigger.
+
+8.3 Narrow -- representative 840x760 (target range 700-1000 logical px)
+
+Toolbar        56px. Brand, concise current status, QR, health/update and
+               Settings remain; Presentation moves into toolbar overflow only
+               if all controls cannot retain 44px targets, with a text label.
+Stage          Same Stage DOM becomes a stable mini-Stage in a fixed 176px shell
+               band above the workspace. Media uses object-fit:contain; it is
+               resized by CSS, not moved or cloned. Current title/state stays.
+Rail           Leading/left 64px; four visible icon+two-line labels. No hover-
+               only navigation and no collapsed hamburger in this v0.8 range.
+Workspace      Selected workspace fills the remaining content width/height.
+               Queue/Search/Random/Users use their own internal layout rather
+               than an artificially narrow wide-panel rendition.
+Controls       Always collapsed. A 56px Controls orb at the lower trailing edge
+               has a text tooltip on focus and opens a bottom tray. The compact
+               mini-Stage strip still shows status, Play/Pause, Next, Mute,
+               Fullscreen and Controls; the tray adds variants, AV delay, full
+               volume and Key without creating media elements.
+Scroll         Active workspace list only. Tray/sheet locks background scroll.
+Overlays       Settings and song detail use the content area above the control
+               tray, not the full OS window; QR click pins a fitted popover.
+Focus order    toolbar -> rail -> mini-Stage transport -> workspace -> Controls
+               orb. When tray opens, focus enters it; close restores the orb.
+Touch targets  44px minimum with 8px separation; reorder/remove have explicit
+               buttons, not drag-only or hover-only affordances.
+Transition     Crossfade/short translate <=120ms; reduced-motion is immediate.
+               No auto-hiding controls while keyboard focus or pointer is in tray.
+
+9. Playback-control and Stage contract
+--------------------------------------
+
+Mount invariant
+
+* Exactly one session object and exact media pair from F01 exist. Shell Stage
+  is created once. Workspace selection changes classes/attributes and local
+  workspace visibility only.
+* A workspace must never call mountHostPlaybackSessionElements(),
+  replaceHostPlayerView(), claim/retire program, or media load methods.
+* Responsive changes use CSS layout on the existing Stage. Presentation keeps
+  its current explicit composition/lifecycle contract; it is not a hidden Host
+  workspace player.
+
+Always visible, including collapsed mode
+
+1. Current title plus playing/paused/preparing/transition/cache-failure status.
+2. Play/Pause (the discoverable equivalent of current player-surface toggle).
+3. Next, with existing transition/confirmation behavior.
+4. Mute state/action; the compact strip can show a numeric volume summary.
+5. Fullscreen.
+6. “Controls” trigger with aria-expanded and an explicit label/tooltip.
+
+Collapsible extended surface
+
+* Audio/vocal variants, complete AV-delay step/input/reset/lock controls,
+  volume slider/value, and complete Key shift controls.
+* It is inline below Stage in full mode and the same control surface in a
+  bottom tray in collapsed mode. It is not duplicated in both places at once;
+  one DOM subtree can be visually placed by shell CSS.
+
+Trigger conditions
+
+* Full only when measured Stage-control inline size >=720px AND shell content
+  height >=620px AND no overlay intersects the deck.
+* Otherwise collapsed. ResizeObserver/container-query style measurement is a
+  future implementation detail; viewport/device-name branching is prohibited.
+* Users may open/close the tray explicitly. It does not close on a fixed timer.
+
+Keyboard/touch
+
+* Tab reaches all controls in visual order. Space toggles playback only when
+  Stage/player has focus and no text/select/range control is active. Escape
+  closes the tray at its layer priority. No single-letter global shortcut runs
+  while an input, textarea, select or contenteditable has focus.
+* The orb is a button, 48px desktop / 56px coarse, supports Enter/Space, and is
+  never hover-only. Swipe is optional enhancement, never the sole open/close.
+* Opening/closing or switching responsive modes preserves player focus where
+  possible, current playback time, media state, control values and authority.
+
+10. State-preservation contract
+-------------------------------
+
+Category | examples | owner | workspace switch | reload/reconnect
+---------|----------|-------|------------------|-----------------
+Authoritative server state | current item, exact playback program/generation, queue/order/cache status, history, session users/order, AV delay/lock, volume/mute, Key, audio variant, cache policy, transition state | Rust AppState; Host transports/persists snapshots | always survives; no UI recomputation | restored only by existing AppState/persistence rules
+Persistent source/account data | Gatcha cached videos, configured UIDs, favorite folders/items, pool config, BBDown credentials, Remote identity digests | Rust GRepo/Host filesystem/tool status | survives | existing persistence; retention changes require explicit contract
+Persistent UI preferences | language, theme, update automatic/preview, remembered volume/mute, Tauri window geometry; legacy layout value is migration-only | current localStorage/Tauri config | survives except retired layout choice | current owners; old Basic/Full value is consumed/ignored as below
+Local view state | selected workspace/subview/submode; each Search mode submitted query/results/cursor/scroll; source selection/level/scroll; selected song/detail; Gatcha result; Settings subsection | narrow Host shell view-state object plus existing feature state | survives and restores without refetch | session-memory only in first slice; default Queue after reload unless later approved
+Local draft state | direct URL, requester selection, Search unsubmitted query per mode, Add UID, favorite selection, Gatcha config draft, session-user name/edit/reorder draft | owning form/view | survives ordinary workspace switch; validation reruns against authoritative snapshot | may be discarded on reload; no new persistence in v0.8 shell foundation
+Transient layer state | hover QR, pinned QR, open Settings, tray, confirm, task modal, toast/banner timing, focus origin | local UI | close rules below; selected underlying content remains | never restored
+
+Specific switch behavior
+
+* Queue/History selection, scroll and row selection restore.
+* Shared and Local query/result/loading-success/error/scroll states are
+  independent. Switching modes or workspaces never silently reruns a request.
+* Search/Discover/Sources each restore their last internal location. Selected
+  song metadata is retained; its inspector closes when leaving Request and
+  reopens on return only if it was explicitly open before leaving.
+* Gatcha configuration draft/result and Session Users edit draft survive a
+  normal switch. If the server snapshot invalidates a referenced UID/user,
+  show an inline conflict and require resolution; do not overwrite authority.
+* Settings remembers its subsection after close. Drawer-open is transient.
+* No generic global store rewrite: add only shell selection and per-existing-
+  view scroll/draft fields that current state does not already retain.
+
+Legacy Host Basic / Full classification
+
+Classification: REPLACED BY RESPONSIVE SHELL BEHAVIOR.
+
+The current Basic flag hides bottom-grid and search-sub-card, while Full shows
+them; it is a manual feature-visibility switch, not a distinct playback mode.
+The frozen shell keeps every function reachable through workspaces and changes
+Stage/workspace/control fit automatically. Therefore v0.8 removes the Host
+Basic/Full selector rather than renaming it to an unproven Stage Focus mode.
+During migration, stored “basic”, legacy “normal”, and “full” values all enter
+the default responsive shell and the obsolete key may be removed only after
+the new shell is live. This is migration compatibility, not a continuing
+product mode. Remote layout behavior is outside this Host-only freeze.
+
+11. Layers, focus and accessibility
+-----------------------------------
+
+Roles and priority (low to high)
+
+Level | role | close/focus contract
+------|------|---------------------
+0 | toolbar, rail, Stage, docked workspace | normal document focus order; body does not scroll
+1 | tooltip | noninteractive; hover is enhancement; also appears on focus; no focus move
+2 | QR or Presentation popover | one at a time; hover/focus transient on fine pointer, click pins; outside/Escape closes; restore trigger when pinned
+3 | medium/narrow workspace overlay | backdrop blocks background scroll; Escape returns to rail trigger; Stage media continues
+4 | Settings drawer or song-detail inspector | one contextual drawer per region; close button and Escape; selection/subsection retained; focus returns to opener/selected result
+5 | playback control tray | traps focus only when it covers most narrow content; Escape/outside explicit close returns orb; does not own playback
+6 | task sheet (page binding, favorites, pool config, rating, developer) | modal focus trap; Cancel/backdrop rules preserve or explicitly discard drafts; focus returns to invoker
+7 | confirmation | topmost interactive layer; destructive scope and consequence visible; Cancel default; Escape cancels; focus returns
+8 | recovery/critical banner | below toolbar, live region; explicit action/dismiss; no surprise focus steal
+9 | toast/status announcement | visual top layer but pointer-transparent except explicit action; aria-live; never traps/moves focus
+
+Do not open a popover over another popover. Opening Settings closes an unpinned
+popover and requests confirmation before discarding a dirty modal draft.
+
+Escape handles exactly one highest-priority open layer per press:
+
+  confirmation -> task sheet -> control tray -> inspector/Settings ->
+  workspace overlay -> pinned QR/Presentation -> row menu -> no action
+
+Recovery banners and toasts require their own controls and are not swept away
+by an unrelated Escape. Fullscreen Escape remains browser/Tauri-owned first.
+
+Navigation/accessibility contract
+
+* Rail is one aria-label="Host workspaces" single-selection list (tabs or
+  equivalent semantics). Selected destination exposes aria-selected or
+  aria-current="page"; only the selected rail item is in the arrow-key roving
+  tabindex. Up/Down move focus; Home/End jump; Enter/Space activates. Arrow
+  focus does not change workspace until activation.
+* Every icon has a visible label in v0.8 range and an accessible name. Badges
+  append accessible text, not just color. Status never relies on color alone.
+* Focus order follows Section 8. DOM order must remain stable when CSS changes
+  placement. Workspace activation focuses its heading only when triggered by
+  keyboard; pointer activation keeps predictable focus on the trigger.
+* Song rows are buttons or contain named actions. The whole card may open
+  detail, but nested request/menu actions have distinct names. Drag handles
+  gain Move up/Move down alternatives and announce the new position.
+* 40px minimum target on fine pointer, 44px on pointer:coarse. Touch has no
+  hover dependency. QR click pins; every tooltip fact is also available via
+  accessible name/description or adjacent text.
+* prefers-reduced-motion removes flips, parallax and nonessential transforms;
+  opacity may be immediate. Playback/status changes are not communicated only
+  through animation.
+
+12. Stored/runtime data and management semantics
+------------------------------------------------
+
+12.1 Read-only data inventory
+
+Data class | observed owner/location | persistence and notes
+-----------|-------------------------|----------------------
+Current queue/session/current item/player settings/history/session users | Rust AppState snapshot persisted through Host in data/state.json and playlist_backup.json | authoritative mutable state; backup/recovery effects are Rust decisions
+Played history/archive | data/played_sessions/played-*.json | persistent session archives; current reset intentionally preserves them
+Media cache/artifacts | data/cache including committed groups and .staging | disposable media artifacts, but cache status projections are AppState-owned
+UID/video/favorite/source cache | data/gatcha_cache.json, gatcha_uids.json, gatcha_favlist.json, gatcha_pool_config.json and rebuild/temp files | GRepo data; current runtime reset preserves only the first three JSON names, so pool-config retention is inconsistent
+Bilibili credentials | environment BILIKARA_BILIBILI_COOKIE and tools/bbdown/BBDown.data; temporary downloader cookie files may exist during attempts | environment value is outside app deletion; BBDown.data is persistent tool account state
+Remote identities | data/remote_identities.json stores session id and token digests/names/timestamps | current runtime reset rotates the session and identities
+UI/local preferences | browser localStorage keys for volume, mute, layout, language, theme, automatic/preview updates | not removed by current /api/data/reset
+Automatic-update preferences | browser localStorage automatic and preview flags | separate from downloaded update files
+Window geometry | Tauri app-config directory/main-window-geometry-v1.json | outside Python DATA_DIR; min/max validation is Tauri-owned
+Logs/diagnostics | data/logs and desktop-startup logs; diagnostics assembled/sanitized on demand | downloaded diagnostic package is user-chosen output, not an internal persistent archive
+Update temporary files | APP_HOME/updates/<version> and platform temporary helper/log paths | disposable after a verified update, distinct from installed destination
+Downloaded tools | APP_HOME/tools (BBDown, yt-dlp, aria2c, FFmpeg/ffprobe and credentials) | repairable runtime dependencies; not equivalent to media cache and protected by default
+Packaged application/runtime | executable/app bundle, ROOT_DIR/static, bilikara/Python files, native Rust libraries, _internal, vendor and packaged assets | product files; never user-data cleanup targets
+Windows runtime parent | frozen Windows APP_HOME is <executable-dir>/runtime, containing data, tools and potentially required runtime content | runtime/ as a whole is NEVER a disposable-data target
+
+12.2 Proposed user-facing actions
+
+Symbols: Clear=remove/reset; Keep=unchanged; Archive=write current played record
+then clear live state; Decide=product/backend decision required before exposure.
+
+Effect | Start new karaoke session | Clear downloaded media | Reset Bilikara user data (with visible scope)
+-------|----------------------------|------------------------|---------------------------------------------
+Current item/queue | Clear after transition is stopped/confirmed | Keep | Clear
+Current-session users | Clear | Keep | Clear
+Current session history/backup | Archive then Clear | Keep | Clear
+Played session archives | Keep new archive | Keep | Decide: retain by default vs explicit “also delete archives”
+Media cache/artifacts/staging | Keep subject to normal cache policy | Clear | Clear
+Configured UIDs/video metadata | Keep | Keep | Clear
+Favorite folders/items/pool config | Keep | Keep | Clear
+Bilibili/BBDown credentials | Keep | Keep | Decide: sign out vs retain; confirmation must say which
+Remote identities | Keep | Keep | Clear/rotate
+Language/theme/layout/update prefs | Keep | Keep | Clear to defaults
+Window geometry | Keep | Keep | Clear to validated default
+Logs | Keep | Keep | Decide: retain recent support logs vs delete
+Update temporary files | Keep | Keep | Clear only verified temporary update directories
+Downloaded tools | Keep | Keep | Keep; separate repair/uninstall action if ever added
+Installed app/bundle/runtime | PROTECTED | PROTECTED | PROTECTED
+
+Action wording and availability
+
+* “Start new karaoke session” is clearer than “Clear current session”: its
+  confirmation states that the live queue/users/history are archived/cleared
+  while media, sources, accounts and preferences remain. This requires a new
+  Rust AppState command/effect contract; do not emulate it in Python.
+* “Clear downloaded media” is a narrowly scoped cache action. It may use the
+  existing cache-runtime boundary after production review; confirmation says
+  queued songs may need to download again. Active playback artifacts may remain
+  physically retained until their existing reader/program ownership retires;
+  the action still reports the logical cache clear, not internal directories.
+  No confirmation or result exposes configured, alias or canonical path forms.
+* “Reset Bilikara user data” must remain disabled/marked Contract pending until
+  archive, credentials and log retention are decided and a Rust-authoritative
+  semantic command plus validated Host file effects exist. Its destructive
+  confirmation enumerates every selected category; an information tooltip is
+  insufficient.
+* Current /api/data/reset matches none of these labels cleanly: it clears cache,
+  AppState runtime/player settings and Remote identities, preserves played
+  archives/Gatcha cache/UID/favorites/localStorage, and may delete pool config.
+  It must not be relabeled as a complete reset without contract work.
+
+Protected in every action
+
+* Installed executable, macOS .app bundle and Windows install destination.
+* Packaged Rust native/runtime libraries and required Python/internal files.
+* static application assets, vendor/_internal packaged dependencies.
+* The Windows runtime/ directory as a directory; only explicitly classified
+  children may be targeted after canonical path validation.
+* APP_HOME/tools by default, including required BBDown/FFmpeg/yt-dlp/aria2c.
+* Source tree/build files in development.
+
+No cleanup uses APP_HOME, ROOT_DIR, runtime/, the app bundle or an unresolved
+environment variable as a recursive deletion root.
+
+13. Visual direction
+--------------------
+
+* Preserve bilikara’s warm cream/orange identity and friendly bilingual tone.
+* Modernization comes from fixed chrome, hierarchy, local separators, variable
+  workspace widths and fewer nested cards. Use 8-12px corner radii and compact
+  density rather than a generic dark dashboard.
+* Keep contrast at least WCAG AA for normal text/focus/status. Orange is an
+  accent/selection signal, not the only status cue.
+* Restrained shadow only distinguishes a drawer/popover. No required blur,
+  glass, dark mode, stock illustration, or ornamental motion.
+
+14. Production implementation slices after approval
+---------------------------------------------------
+
+Each slice moves an existing function once into its final container. At every
+commit, the one existing player Stage and one HostPlaybackSession remain the
+only Host media owner. No old-layout/new-layout duplicate feature split.
+
+Slice 1 -- Host shell foundation
+  Prerequisites: approved freeze; exact-media-identity regression test; current
+  Host startup/recovery and presentation lifecycle understood.
+  Files/surfaces: static/index.html shell landmarks; static/styles.css fixed
+  viewport/grid primitives; static/app.js shell selection only; existing
+  frontend Node tests plus a player-identity test.
+  State to preserve: state.hostPlaybackSession, current playback program,
+  recovery banner, global toolbar state, every existing feature state.
+  Acceptance: one Stage node and exact video/audio elements survive >=20 rail
+  switches; no body navigation scroll; toolbar/rail/workspace landmarks and
+  focus order work; production behavior is otherwise unchanged.
+  Exclusions: no feature migration, responsive tray, new API, alternate shell,
+  or temporary Basic/Full/old-vs-new toggle.
+
+Slice 2 -- Queue / History
+  Prerequisites: Slice 1 local-scroll/focus primitives; authoritative AppState
+  queue/history projections unchanged.
+  Files/surfaces: current Queue/History markup and render/event functions in
+  static/index.html/static/app.js; Queue-specific static/styles.css; existing
+  playlist/history/export frontend tests.
+  State to preserve: current item/cache progress, ordering, selected subview,
+  row menu, queue/history scroll, export selection and confirmation origin.
+  Acceptance: F09-F14 and F48 exist once; Queue/History share one compact
+  workspace; Next exists once in Stage; keyboard reorder/action alternatives
+  and one list scroll owner work.
+  Exclusions: no search/request move, queue policy change, export backend work,
+  or duplicated Next/clear implementations.
+
+Slice 3 -- Request / Discover
+  Prerequisites: per-mode state fields; final “Shared catalog”/“Local library”
+  copy; Sources destination; existing endpoint response shapes captured. S1-S4
+  block only new semantics, not migration of existing bounded behavior.
+  Files/surfaces: existing request/search/Gatcha/favorite/catalog markup and
+  handlers in static/index.html/static/app.js; static/song-detail.*; related
+  styles and existing frontend API-shape tests.
+  State to preserve: Quick Request/requester/page-binding drafts; independent
+  Shared/Local contract table fields; Discover level/filter; UID/favorite
+  selection/scroll; source task drafts; song selection/inspector focus origin.
+  Acceptance: F15-F28 and relevant F48 actions map once; mode switches restore
+  without fetch or stale cross-label results; Sources manages logical records,
+  never physical paths; Add UID appears only in Sources.
+  Exclusions: no physical cache search/import, new cursor, live Following,
+  favorites-auth semantic expansion, or shared/local backend rewrite.
+
+Slice 4 -- Random
+  Prerequisites: Slice 3 Sources destination and stable pool-config projection.
+  Files/surfaces: current Gatcha draw/result/pool markup, app.js handlers and
+  Random-specific styles/tests.
+  State to preserve: last candidate/result, draw busy/error, pool draft,
+  exclusions/weights and task-sheet focus origin.
+  Acceptance: F29-F30 exist once in an independent workspace; “Manage sources”
+  navigates to Sources; draw/retry/configure retain current behavior and state.
+  Exclusions: no Add UID/favorite fetch duplicate, source schema change, or
+  merging Random with Session Users.
+
+Slice 5 -- Session Users
+  Prerequisites: keyboard/touch reorder/remove pattern and requester invalidation
+  rule; AppState remains authoritative.
+  Files/surfaces: existing Session Users markup/render/events in static files;
+  requester selectors in request flows; session-user frontend tests.
+  State to preserve: server order, selected requester, add/edit draft, row focus,
+  users-list scroll and Remote identity consequences of removal.
+  Acceptance: F31 exists once; 44px coarse targets and explicit Move up/down/
+  Remove work without drag; removal conflicts are announced in request flows.
+  Exclusions: no Remote client redesign, identity-policy change, Random merge,
+  or Python-owned session state.
+
+Slice 6 -- Settings and data-management semantics
+  Prerequisites: drawer/focus primitive; Section 12 matrix; separate approved
+  Rust contracts before Start-new-session/full-reset enablement; Host I/O effect
+  validation; explicit archive/credential/log retention decisions.
+  Files/surfaces: existing display/service/update/account/restart/diagnostic
+  markup/handlers/styles; future rust-runtime AppState commands and Host adapter
+  endpoints only where separately approved; targeted Rust/Python/frontend tests.
+  State to preserve: language/theme/update/volume preferences, service/cache
+  policy, account/tool status, update state, Settings subsection/scroll/focus.
+  Acceptance: F33-F42 and F47 each map once; Basic/Full selector is removed with
+  responsive migration handling; confirmations enumerate effects/protection;
+  unresolved full reset stays unavailable; toolbar deep-links, never duplicates.
+  Exclusions: no relabel of /api/data/reset, broad filesystem deletion, packaged
+  runtime/tools removal, or Python business-rule fallback.
+
+Slice 7 -- Responsive control tray / mini-Stage
+  Prerequisites: Stage identity tests, measured fit rule, focus trap, coarse-
+  pointer and reduced-motion fixtures across all three representative frames.
+  Files/surfaces: Stage/control markup ownership in static/index.html/app.js;
+  container/viewport rules in static/styles.css; responsive interaction tests.
+  State to preserve: exact media elements/session, playback time/state, audio
+  variant, AV delay/lock, volume/mute, Key, focused control and tray origin.
+  Acceptance: the one extended-control subtree moves inline/tray without clone;
+  >=720px/620px/no-intersection fit is exact; narrow mini-Stage and Escape/focus
+  restoration pass at 840x760.
+  Exclusions: no second hidden player, floating state owner, permanent control
+  compression, viewport-name-only fit, or phone Host redesign.
+
+Slice 8 -- Interaction tokens and icon cleanup
+  Prerequisites: all destinations migrated and visual/a11y regression set.
+  Files/surfaces: shared Host CSS tokens and affected static markup/event tests;
+  existing SVG/icon conventions where available.
+  State to preserve: all busy/disabled/aria-busy guards, focus origins, selected
+  and expanded states, toast/banner announcements.
+  Acceptance: consistent hover/focus/active/disabled tokens; 40px fine and 44px
+  coarse targets; close/menu icons are named SVG controls; reduced motion and
+  keyboard paths pass without changing feature behavior.
+  Exclusions: no brand replacement, framework migration, generic overlay
+  manager, decorative asset project, or backend/API work.
+
+Dependency note: if Slice 1 cannot preserve exact media-element identity while
+workspaces change, stop. Do not temporarily mount the player in both shells.
+
+15. Acceptance checklist
+------------------------
+
+Freeze-artifact validation completed 2026-08-29 in Chromium 140 through the
+existing Playwright 1.55 fallback. The standalone file made no network/API
+request and produced no console error, warning, page error or failed request.
+These checks approve the contract/prototype; every production slice must repeat
+its corresponding assertions against production code.
+
+[x] F01-F48 each map to exactly one canonical destination; no Host function lost.
+[x] Stage is outside workspace replacement and exact video/audio identities persist.
+[x] Workspace switch makes no player claim/retire/load/mount call.
+[x] Queue/History is compact; Search/Discover/Sources receives 600-700px when fit.
+[x] Random and Session Users are separate rail destinations.
+[x] Toolbar contains global status/quick actions; rail contains only work contexts.
+[x] No complete function is duplicated in toolbar, rail, drawer or workspace.
+[x] Wide 1600x900, Medium 1240x800 and Narrow 840x760 behave as Section 8.
+[x] Full controls remain when fit; collapsed tray retains every current control.
+[x] Queue, Search, Sources, Random, Users, Settings and Detail have one scroll owner.
+[x] Body/document is not a primary scroll surface; overlay scroll cannot chain behind.
+[x] Search mode state/query/results/scroll restore without an implicit request.
+[x] Selected source/detail, drafts, Gatcha state, user edit and Settings section restore.
+[x] Rail, drawers, inspector and tray work with keyboard and focus restoration.
+[x] Coarse-pointer targets are >=44px and no action requires hover or drag alone.
+[x] Escape closes exactly one highest layer; reduced motion removes flips/transforms.
+[x] Destructive confirmation names each data category and protected scope.
+[x] No reset can recursively target runtime/, APP_HOME, ROOT_DIR or installed bundle.
+[x] Installed executable/app, Rust/Python runtime, static/vendor/internal files stay safe.
+[x] Local library is logical cached metadata; follow/favorite/reset ambiguities remain visibly pending, not guessed.
+[x] Migration slices move each feature once and never create a temporary second UI.
+
+16. Frozen vs pending
+---------------------
+
+Frozen by this artifact
+
+* Hybrid shell; left rail; four workspaces; Queue/History relationship.
+* Permanent Stage and exact media-pair invariant.
+* Toolbar/rail/workspace/drawer/popover/inspector roles.
+* Variable workspace widths, three responsive states and control-fit rule.
+* Final “Shared catalog” / “Local library” Search placement and independent
+  per-mode state preservation; Sources remains logical record management/browse.
+* Legacy Host Basic/Full is replaced by responsive shell behavior with bounded
+  stored-value migration, not retained or renamed as a product mode.
+* Scroll, layer, focus, keyboard/touch, reduced-motion and protected-file rules.
+* Bounded implementation slice order and prerequisites.
+
+Pending product/backend decisions (must not be guessed)
+
+P1  Decide whether live Following is a future authenticated source concept.
+P2  Define Shared pagination/freshness if more than current bounded search is wanted.
+P3  Decide played archive, BBDown credentials and logs retention for user-data reset.
+P4  Define Rust-authoritative Start-new-session/reset commands and exact Host effects.
+P5  Decide authenticated vs public-UID favorite collection wording/behavior.
+P6  Confirm whether Presentation remains toolbar-first when unavailable in browser mode.
+
+These pending items are visibly represented in the wireframe. They do not
+require a production change to complete this design audit.

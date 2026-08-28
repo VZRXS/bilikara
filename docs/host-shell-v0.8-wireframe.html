@@ -1,0 +1,1362 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bilikara v0.8 Host shell wireframe</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #2d211d;
+      --muted: #74655e;
+      --line: #e7d7cb;
+      --line-strong: #d6bfae;
+      --cream: #fffaf3;
+      --paper: #fffdf9;
+      --paper-soft: #f8f0e7;
+      --orange: #f15b3d;
+      --orange-dark: #c93f27;
+      --orange-soft: #fff0e9;
+      --green: #308b5d;
+      --blue: #326ec8;
+      --amber: #9b6500;
+      --amber-soft: #fff5cf;
+      --shadow: 0 14px 35px rgba(86, 51, 34, .16);
+      --toolbar-h: 60px;
+      --rail-w: 68px;
+      --workspace-w: 400px;
+      --motion: 160ms;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "Noto Sans", "Noto Sans CJK SC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #efe8e1; color: var(--ink); }
+    body { min-width: 720px; }
+    button, input, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible {
+      outline: 3px solid #1769d2;
+      outline-offset: 2px;
+    }
+    button[disabled] { cursor: not-allowed; opacity: .58; }
+    .hidden { display: none !important; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+
+    .review-bar {
+      min-height: 58px;
+      padding: 8px 18px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      background: rgba(44, 35, 31, .96);
+      color: #fff;
+      border-bottom: 1px solid #58473f;
+    }
+    .review-title { min-width: 285px; }
+    .review-title strong { display: block; font-size: 14px; }
+    .review-title span { display: block; margin-top: 2px; color: #d9cdc7; font-size: 11px; }
+    .review-group { display: flex; align-items: center; gap: 6px; }
+    .review-group-label { color: #cdbeb7; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .review-button {
+      min-height: 36px;
+      padding: 7px 11px;
+      border: 1px solid #75635a;
+      border-radius: 8px;
+      background: #3b302b;
+      color: #fff;
+    }
+    .review-button[aria-pressed="true"] { border-color: #ff9d86; background: #b4422e; }
+    .review-note { margin-left: auto; max-width: 365px; color: #dacfc9; font-size: 11px; line-height: 1.35; }
+
+    .preview-area {
+      padding: 18px;
+      min-height: calc(100vh - 58px);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      overflow: auto;
+    }
+    .app-frame {
+      position: relative;
+      width: 1600px;
+      height: 900px;
+      flex: 0 0 auto;
+      overflow: hidden;
+      background: var(--cream);
+      border: 1px solid #cdb6a6;
+      border-radius: 14px;
+      box-shadow: 0 24px 70px rgba(55, 35, 25, .22);
+      transition: width var(--motion), height var(--motion);
+    }
+    .app-frame[data-frame="medium"] {
+      width: 1240px;
+      height: 800px;
+      --toolbar-h: 60px;
+      --rail-w: 64px;
+    }
+    .app-frame[data-frame="narrow"] {
+      width: 840px;
+      height: 760px;
+      --toolbar-h: 56px;
+      --rail-w: 64px;
+    }
+    .app-frame[data-workspace="queue"] { --workspace-w: 400px; }
+    .app-frame[data-workspace="request"] { --workspace-w: 640px; }
+    .app-frame[data-workspace="random"] { --workspace-w: 480px; }
+    .app-frame[data-workspace="users"] { --workspace-w: 460px; }
+    .app-frame[data-frame="medium"][data-workspace="queue"] { --workspace-w: 360px; }
+    .app-frame[data-frame="medium"][data-workspace="request"] { --workspace-w: 600px; }
+    .app-frame[data-frame="medium"][data-workspace="random"] { --workspace-w: 420px; }
+    .app-frame[data-frame="medium"][data-workspace="users"] { --workspace-w: 400px; }
+
+    .app-toolbar {
+      height: var(--toolbar-h);
+      display: grid;
+      grid-template-columns: minmax(160px, 260px) minmax(260px, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      padding: 0 14px 0 18px;
+      background: rgba(255, 253, 249, .98);
+      border-bottom: 1px solid var(--line);
+      position: relative;
+      z-index: 80;
+    }
+    .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .brand-mark {
+      width: 32px; height: 32px; display: grid; place-items: center;
+      border: 2px solid var(--orange); border-radius: 10px; color: var(--orange);
+      font-weight: 900; transform: rotate(-2deg);
+    }
+    .brand-name { color: var(--orange); font-size: 23px; font-weight: 850; letter-spacing: -.04em; }
+    .host-badge {
+      padding: 3px 6px; border: 1px solid #efb7a8; border-radius: 6px;
+      color: var(--orange-dark); background: var(--orange-soft); font-size: 10px; font-weight: 750;
+    }
+    .toolbar-playing {
+      min-width: 0; display: flex; align-items: center; gap: 10px;
+      padding: 7px 11px; border: 1px solid var(--line); border-radius: 10px; background: #fff;
+    }
+    .toolbar-cover {
+      width: 34px; height: 34px; flex: 0 0 auto; border-radius: 6px;
+      background: linear-gradient(145deg, #6e4960, #e4775d 55%, #f6bf75);
+    }
+    .toolbar-playing-copy { min-width: 0; line-height: 1.2; }
+    .toolbar-playing-copy strong { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .toolbar-playing-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .live-dot { color: var(--green); }
+    .toolbar-actions { display: flex; align-items: center; gap: 6px; }
+    .toolbar-action-wrap { position: relative; }
+    .global-overflow-wrap { display: none; }
+    .toolbar-action {
+      position: relative;
+      min-width: 48px;
+      min-height: 42px;
+      padding: 5px 8px;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      display: grid;
+      grid-template-rows: 18px auto;
+      place-items: center;
+      gap: 2px;
+      background: transparent;
+      font-size: 10px;
+    }
+    .toolbar-action:hover, .toolbar-action[aria-expanded="true"] { background: var(--paper-soft); border-color: var(--line); }
+    .toolbar-icon { font-size: 17px; line-height: 1; }
+    .update-badge {
+      position: absolute; right: 3px; top: 2px; min-width: 16px; height: 16px;
+      padding: 0 4px; border-radius: 9px; background: var(--orange); color: #fff;
+      font-size: 9px; display: grid; place-items: center; border: 2px solid #fff;
+    }
+
+    .popover {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      width: 280px;
+      padding: 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-4px);
+      transition: opacity var(--motion), transform var(--motion), visibility var(--motion);
+      z-index: 95;
+    }
+    .toolbar-action-wrap:not(.is-dismissed):hover > .popover,
+    .toolbar-action-wrap:not(.is-dismissed):focus-within > .popover,
+    .toolbar-action-wrap.is-pinned > .popover {
+      opacity: 1; visibility: visible; transform: translateY(0);
+    }
+    .popover h3 { margin: 0 0 4px; font-size: 15px; }
+    .popover p { margin: 4px 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .popover-head { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+    .icon-button, .small-button, .secondary-button, .primary-button, .danger-button {
+      min-height: 40px; border-radius: 8px; border: 1px solid var(--line-strong); background: #fff;
+    }
+    .icon-button { width: 40px; padding: 0; }
+    .small-button { padding: 7px 10px; }
+    .secondary-button { padding: 8px 12px; font-weight: 650; }
+    .primary-button { padding: 8px 13px; border-color: var(--orange); background: var(--orange); color: #fff; font-weight: 750; }
+    .danger-button { padding: 8px 12px; border-color: #d34b3a; color: #b82e22; background: #fff7f5; font-weight: 700; }
+    .qr-layout { display: grid; grid-template-columns: 108px 1fr; gap: 12px; margin-top: 10px; align-items: center; }
+    .qr-code {
+      width: 108px; height: 108px; border: 6px solid #fff; box-shadow: 0 0 0 1px var(--line);
+      background:
+        linear-gradient(90deg, #2c211d 10px, transparent 10px) 0 0 / 20px 20px,
+        linear-gradient(#2c211d 10px, transparent 10px) 0 0 / 20px 20px,
+        linear-gradient(90deg, transparent 10px, #2c211d 10px) 0 0 / 20px 20px,
+        linear-gradient(transparent 10px, #2c211d 10px) 0 0 / 20px 20px,
+        #fff;
+    }
+    .pin-state { color: var(--orange-dark); font-weight: 700; }
+
+    .shell-body {
+      height: calc(100% - var(--toolbar-h));
+      display: grid;
+      grid-template-columns: var(--rail-w) minmax(0, 1fr);
+      overflow: hidden;
+      background: var(--cream);
+      position: relative;
+    }
+    .tool-rail {
+      padding: 12px 7px;
+      border-right: 1px solid var(--line);
+      background: #fffaf5;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      position: relative;
+      z-index: 50;
+    }
+    .rail-button {
+      min-width: 0;
+      min-height: 72px;
+      padding: 8px 3px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: transparent;
+      display: grid;
+      place-items: center;
+      align-content: center;
+      gap: 5px;
+      color: #594a43;
+      font-size: 10px;
+      line-height: 1.1;
+      text-align: center;
+    }
+    .rail-button .rail-icon { font-size: 22px; line-height: 1; }
+    .rail-button[aria-selected="true"] {
+      background: var(--orange-soft);
+      border-color: #efb29f;
+      color: var(--orange-dark);
+      box-shadow: inset 3px 0 0 var(--orange);
+      font-weight: 750;
+    }
+    .rail-button:hover { border-color: var(--line); }
+    .rail-spacer { flex: 1; }
+    .rail-caption { font-size: 9px; color: var(--muted); text-align: center; line-height: 1.25; }
+
+    .content-area {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) var(--workspace-w);
+      gap: 14px;
+      overflow: hidden;
+    }
+    .stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      padding: 13px;
+      display: grid;
+      grid-template-rows: auto minmax(220px, 1fr) auto auto;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+      overflow: hidden;
+      z-index: 1;
+    }
+    .stage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; }
+    .stage-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .stage-title strong { font-size: 14px; }
+    .contract-chip, .scroll-chip, .pending-chip, .status-chip {
+      display: inline-flex; align-items: center; gap: 4px; border-radius: 999px;
+      padding: 4px 7px; font-size: 9px; font-weight: 750; white-space: nowrap;
+    }
+    .contract-chip { background: #eef6ff; color: #205ba5; border: 1px solid #b9d5f7; }
+    .scroll-chip { background: #f1eee9; color: #65574f; border: 1px solid #ddd1c7; }
+    .pending-chip { background: var(--amber-soft); color: var(--amber); border: 1px solid #e7c65e; }
+    .status-chip { background: #eaf7ef; color: #286e4c; border: 1px solid #b7dec7; }
+    .stage-status { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 10px; }
+    .stage-screen {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      border: 3px solid #251e1c;
+      border-radius: 10px;
+      background:
+        radial-gradient(circle at 72% 42%, rgba(255, 224, 154, .9) 0 6%, transparent 7%),
+        linear-gradient(180deg, #64486a 0%, #cd6c65 45%, #f5ac74 66%, #4f4550 67%, #231f2d 100%);
+    }
+    #host-video { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; }
+    .skyline { position: absolute; left: 0; right: 0; bottom: 0; height: 32%; opacity: .75; background:
+      linear-gradient(90deg, #211e2c 0 8%, transparent 8% 10%, #2d2632 10% 18%, transparent 18% 20%, #171724 20% 34%, transparent 34% 36%, #332635 36% 48%, transparent 48% 50%, #1a1724 50% 65%, transparent 65% 67%, #302432 67% 78%, transparent 78% 80%, #191522 80% 100%); }
+    .stage-lyrics { position: absolute; left: 8%; right: 8%; bottom: 17%; text-align: center; color: #fff; text-shadow: 0 2px 5px #1e1316; font-weight: 850; }
+    .stage-lyrics span { display: block; font-size: clamp(16px, 2vw, 28px); margin: 5px 0; }
+    .stage-progress { position: absolute; left: 4%; right: 4%; bottom: 5%; height: 4px; border-radius: 3px; background: rgba(255,255,255,.4); }
+    .stage-progress::before { content: ""; display: block; width: 38%; height: 100%; border-radius: inherit; background: var(--orange); }
+    .stage-footer { display: flex; align-items: center; gap: 10px; min-height: 48px; }
+    .current-art { width: 40px; height: 40px; flex: 0 0 auto; border-radius: 7px; background: linear-gradient(145deg, #715269, #e27661); }
+    .current-copy { min-width: 0; margin-right: auto; }
+    .current-copy strong, .current-copy span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .current-copy strong { font-size: 12px; }
+    .current-copy span { margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .essential-controls { display: flex; align-items: center; gap: 6px; }
+    .transport-button {
+      min-width: 42px; height: 42px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; font-weight: 800;
+    }
+    .transport-button.primary { min-width: 68px; border-color: var(--orange); background: var(--orange); color: #fff; }
+    .transport-button.next { min-width: 70px; }
+    .controls-trigger[aria-expanded="true"] { color: var(--orange-dark); border-color: var(--orange); background: var(--orange-soft); }
+
+    .extended-controls {
+      min-height: 112px;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: minmax(180px, 1.1fr) minmax(220px, 1.35fr) minmax(160px, 1fr);
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fffaf6;
+    }
+    .control-group { min-width: 0; padding-right: 10px; border-right: 1px solid var(--line); }
+    .control-group:last-child { padding-right: 0; border-right: 0; }
+    .control-label { margin-bottom: 7px; color: var(--muted); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; }
+    .control-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .control-row + .control-label { margin-top: 10px; }
+    .choice-button, .step-button {
+      min-height: 40px; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; font-size: 10px;
+    }
+    .choice-button.active { color: #fff; border-color: var(--orange); background: var(--orange); }
+    .step-value { min-width: 60px; text-align: center; font-size: 11px; font-weight: 700; }
+    .volume-range { width: min(150px, 58%); accent-color: var(--orange); }
+
+    .workspace {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      background: var(--paper);
+      overflow: hidden;
+      position: relative;
+      z-index: 10;
+      transition: width var(--motion), transform var(--motion), opacity var(--motion);
+    }
+    .workspace-header {
+      min-height: 62px;
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: #fffdf9;
+    }
+    .workspace-title { min-width: 0; }
+    .workspace-title strong { display: block; font-size: 17px; }
+    .workspace-title span { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+    .workspace-body { min-height: 0; overflow: hidden; position: relative; }
+    .workspace-footer {
+      min-height: 38px; padding: 7px 12px; border-top: 1px solid var(--line);
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      background: #fffaf5; color: var(--muted); font-size: 9px;
+    }
+    .workspace-panel { height: 100%; min-height: 0; overflow: hidden; }
+    .workspace-panel[hidden] { display: none; }
+    .segmented { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-soft); }
+    .segmented button {
+      min-height: 40px; padding: 5px 10px; border: 0; border-radius: 6px; background: transparent; font-size: 10px; font-weight: 700;
+    }
+    .segmented button[aria-selected="true"], .segmented button[aria-pressed="true"] { background: #fff; color: var(--orange-dark); box-shadow: 0 1px 4px rgba(60,35,20,.12); }
+
+    .queue-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100%; min-height: 0; }
+    .queue-current { padding: 12px; border-bottom: 1px solid var(--line); background: #fffaf7; }
+    .eyebrow { margin: 0 0 6px; color: var(--orange-dark); font-size: 9px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    .queue-current-row { display: flex; align-items: center; gap: 9px; }
+    .queue-current-copy { min-width: 0; flex: 1; }
+    .queue-current-copy strong { display: block; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .queue-current-copy span { color: var(--muted); font-size: 10px; }
+    .progress-line { height: 4px; margin-top: 9px; border-radius: 3px; background: #eadfd7; }
+    .progress-line span { display: block; height: 100%; width: 78%; border-radius: inherit; background: var(--orange); }
+    .scroll-region {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-color: #b49380 transparent;
+      scrollbar-width: thin;
+    }
+    .scroll-owner-label {
+      position: sticky; top: 0; z-index: 2; padding: 5px 9px; background: #f3ece5;
+      color: #715e54; border-bottom: 1px solid var(--line); font-size: 9px; text-align: right;
+    }
+    .song-row {
+      min-height: 66px; padding: 8px 10px; display: grid; grid-template-columns: 24px minmax(0,1fr) auto;
+      align-items: center; gap: 8px; border-bottom: 1px solid #eee3db; background: #fff;
+    }
+    .song-row:hover { background: #fff8f3; }
+    .song-index { color: var(--muted); font-size: 10px; text-align: center; }
+    .song-copy { min-width: 0; }
+    .song-copy strong, .song-copy span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .song-copy strong { font-size: 11px; }
+    .song-copy span { margin-top: 3px; color: var(--muted); font-size: 9px; }
+    .requester { display: inline-block; margin-top: 4px; padding: 2px 5px; border-radius: 5px; background: #e8f1ff; color: #285e9f; font-size: 8px; }
+    .row-actions { display: flex; gap: 3px; }
+    .row-action { width: 40px; min-height: 40px; border: 1px solid transparent; border-radius: 7px; background: transparent; font-size: 12px; }
+    .row-action:hover { border-color: var(--line); background: #fff; }
+
+    .request-panel { display: grid; grid-template-rows: auto minmax(0,1fr); min-height: 0; height: 100%; }
+    .subnav { padding: 8px 10px; display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+    .subnav button { min-height: 40px; padding: 6px 11px; border: 0; border-radius: 7px; background: transparent; font-size: 10px; font-weight: 700; white-space: nowrap; }
+    .subnav button[aria-selected="true"] { color: var(--orange-dark); background: var(--orange-soft); }
+    .request-view { min-height: 0; overflow: hidden; }
+    .request-view[hidden] { display: none; }
+    .discover-view, .sources-view { overflow-y: auto; overscroll-behavior: contain; }
+    .search-view { display: grid; grid-template-rows: auto auto auto minmax(0,1fr); height: 100%; min-height: 0; }
+    .search-mode-row { padding: 9px 11px 5px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .search-form { padding: 6px 11px 10px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; }
+    .search-state-summary {
+      margin: 0 11px 8px; padding: 7px 9px; border: 1px solid #c6d8ef;
+      border-radius: 8px; background: #f2f7fd; color: #345c86;
+      font-size: 9px; line-height: 1.4;
+    }
+    .text-input, .select-input {
+      min-height: 40px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff;
+    }
+    .result-grid { padding: 0 10px 12px; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; align-content: start; }
+    .result-card { min-height: 118px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: #fff; display: grid; grid-template-columns: 58px minmax(0,1fr); gap: 8px; position: relative; }
+    .result-cover { height: 58px; border-radius: 7px; background: linear-gradient(145deg, #5f4b67, #d87665 55%, #f0b06d); }
+    .result-copy { min-width: 0; padding-right: 22px; }
+    .result-copy strong, .result-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-copy strong { font-size: 10px; }
+    .result-copy span { margin-top: 3px; color: var(--muted); font-size: 8px; }
+    .result-actions { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 5px; }
+    .source-badge { padding: 3px 5px; border-radius: 5px; color: #326b43; background: #e7f4e9; font-size: 8px; }
+    .detail-link { min-height: 40px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; font-size: 9px; }
+    .quick-view, .discover-view, .sources-view, .random-inner, .users-inner, .settings-content { padding: 14px; }
+    .form-stack { display: grid; gap: 10px; max-width: 600px; }
+    .field-label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 700; }
+    .button-row { display: flex; flex-wrap: wrap; gap: 7px; }
+    .info-box { padding: 11px; border: 1px solid #c6d8ef; border-radius: 9px; background: #f2f7fd; color: #345c86; font-size: 10px; line-height: 1.45; }
+    .pending-box { padding: 9px 10px; border: 1px solid #e4c35b; border-radius: 8px; background: var(--amber-soft); color: #72500b; font-size: 9px; line-height: 1.4; }
+    .source-grid, .category-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-top: 10px; }
+    .source-card, .category-card { padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+    .source-card strong, .category-card strong { display: block; font-size: 11px; }
+    .source-card span, .category-card span { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+
+    .random-inner { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+    .random-hero { min-height: 180px; padding: 20px; border: 1px solid #efc1b3; border-radius: 12px; background: radial-gradient(circle at 75% 20%, #ffd8bd, transparent 30%), linear-gradient(145deg, #fff1e9, #fffaf5); text-align: center; }
+    .random-orb { width: 78px; height: 78px; margin: 4px auto 12px; border-radius: 50%; display: grid; place-items: center; background: var(--orange); color: #fff; font-size: 32px; box-shadow: 0 8px 20px rgba(215,75,47,.25); }
+    .random-hero h3 { margin: 0; font-size: 18px; }
+    .random-hero p { margin: 6px 0 14px; color: var(--muted); font-size: 10px; }
+    .pool-summary { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+
+    .users-inner { height: 100%; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr); gap: 10px; }
+    .user-add { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; }
+    .user-list { padding-right: 3px; }
+    .user-row { min-height: 62px; padding: 8px; border: 1px solid var(--line); border-radius: 9px; background: #fff; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #f3ddd4; color: #7b4235; font-size: 10px; font-weight: 800; }
+    .user-copy strong { display: block; font-size: 11px; }
+    .user-copy span { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
+
+    .workspace-inspector {
+      position: absolute; top: 0; right: 0; bottom: 0; width: min(380px, 72%);
+      z-index: 35; padding: 14px; background: #fffdf9; border-left: 1px solid var(--line-strong);
+      box-shadow: -12px 0 30px rgba(68,43,30,.16); display: grid; grid-template-rows: auto minmax(0,1fr) auto;
+    }
+    .inspector-head { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+    .inspector-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 14px 2px; }
+    .detail-art { aspect-ratio: 16/9; border-radius: 10px; background: linear-gradient(145deg, #5e4b68, #d97969 55%, #f3b875); }
+    .inspector-body h3 { margin: 12px 0 5px; font-size: 16px; }
+    .inspector-body p { margin: 6px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+
+    .settings-backdrop, .confirm-backdrop, .tray-backdrop, .workspace-backdrop {
+      position: absolute; inset: var(--toolbar-h) 0 0 0; z-index: 88; background: rgba(52,37,30,.22);
+    }
+    .settings-drawer {
+      position: absolute; top: var(--toolbar-h); right: 0; bottom: 0; width: 480px;
+      z-index: 90; background: var(--paper); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow);
+      display: grid; grid-template-rows: auto minmax(0,1fr); transform: translateX(0); transition: transform var(--motion);
+    }
+    .drawer-head { min-height: 60px; padding: 11px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .drawer-head strong { font-size: 17px; }
+    .settings-layout { min-height: 0; display: grid; grid-template-columns: 142px minmax(0,1fr); }
+    .settings-nav { padding: 9px; border-right: 1px solid var(--line); background: #fff8f2; overflow-y: hidden; }
+    .settings-nav button { width: 100%; min-height: 40px; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; text-align: left; font-size: 10px; }
+    .settings-nav button[aria-selected="true"] { color: var(--orange-dark); background: var(--orange-soft); font-weight: 750; }
+    .settings-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+    .settings-content h3 { margin: 0 0 5px; font-size: 15px; }
+    .settings-content h4 { margin: 18px 0 6px; font-size: 11px; }
+    .settings-content p { color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .setting-row { min-height: 48px; padding: 8px 0; border-bottom: 1px solid #eee3db; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .setting-row span { font-size: 10px; }
+    .protected-list { margin: 8px 0; padding-left: 18px; color: var(--muted); font-size: 9px; line-height: 1.6; }
+
+    .control-orb {
+      position: absolute; right: 18px; bottom: 18px; z-index: 62; width: 56px; height: 56px;
+      border: 3px solid #fff; border-radius: 50%; background: var(--orange); color: #fff;
+      box-shadow: 0 6px 20px rgba(73,40,28,.25); font-size: 20px; font-weight: 900;
+    }
+    .control-tray {
+      position: absolute; left: calc(var(--rail-w) + 12px); right: 12px; bottom: 12px;
+      z-index: 72; padding: 11px; border: 1px solid var(--line-strong); border-radius: 13px;
+      background: var(--paper); box-shadow: 0 -10px 34px rgba(72,45,30,.22);
+    }
+    .tray-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .tray-head > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+    .tray-head strong { font-size: 14px; }
+    .tray-head span { color: var(--muted); font-size: 9px; }
+    .control-tray .extended-controls { grid-template-columns: repeat(3, minmax(0,1fr)); }
+
+    .confirm-backdrop { z-index: 110; inset: 0; display: grid; place-items: center; background: rgba(42,29,24,.42); }
+    .confirm-dialog { width: min(460px, calc(100% - 40px)); padding: 18px; border: 1px solid #d6b0a2; border-radius: 13px; background: #fffdf9; box-shadow: var(--shadow); }
+    .confirm-dialog h2 { margin: 0 0 7px; font-size: 17px; }
+    .confirm-dialog p, .confirm-dialog li { color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .confirm-dialog .button-row { justify-content: flex-end; margin-top: 14px; }
+
+    .toast {
+      position: absolute; left: 50%; bottom: 18px; z-index: 130; transform: translateX(-50%);
+      padding: 9px 13px; border-radius: 9px; background: #342923; color: #fff; font-size: 10px; box-shadow: var(--shadow);
+    }
+    .recovery-banner {
+      position: absolute; top: calc(var(--toolbar-h) + 8px); left: calc(var(--rail-w) + 22px); z-index: 65;
+      padding: 7px 9px; border: 1px solid #dfbd54; border-radius: 8px; background: var(--amber-soft);
+      color: #694a0d; font-size: 9px; box-shadow: 0 4px 10px rgba(76,51,18,.12);
+    }
+
+    .app-frame[data-frame="medium"] .content-area { padding: 12px; gap: 12px; }
+    .app-frame[data-frame="medium"][data-workspace="request"][data-workspace-overlay="open"] .content-area { display: block; }
+    .app-frame[data-frame="medium"][data-workspace="request"][data-workspace-overlay="open"] .stage { position: absolute; inset: 12px; }
+    .app-frame[data-frame="medium"][data-workspace="request"][data-workspace-overlay="open"] .workspace {
+      position: absolute; top: 12px; right: 12px; bottom: 12px; width: var(--workspace-w); z-index: 24; box-shadow: var(--shadow);
+    }
+    .app-frame[data-frame="medium"][data-workspace="request"][data-workspace-overlay="open"] .workspace-backdrop {
+      display: block; top: 12px; right: 12px; bottom: 12px; left: auto;
+      width: var(--workspace-w); z-index: 20;
+    }
+    .app-frame[data-frame="medium"][data-workspace="request"][data-workspace-overlay="closed"] .content-area {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .app-frame[data-frame="medium"][data-workspace="request"][data-workspace-overlay="closed"] .workspace { display: none; }
+    .app-frame:not([data-frame="medium"][data-workspace="request"][data-workspace-overlay="open"]) .workspace-backdrop { display: none; }
+    .app-frame[data-frame="medium"] .stage { padding: 10px; }
+    .app-frame[data-frame="medium"] .result-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+
+    .app-frame[data-frame="narrow"] .app-toolbar {
+      grid-template-columns: 150px minmax(180px,1fr) auto; gap: 7px; padding: 0 8px 0 12px;
+    }
+    .app-frame[data-frame="narrow"] .brand-name { font-size: 20px; }
+    .app-frame[data-frame="narrow"] .brand-mark { width: 29px; height: 29px; }
+    .app-frame[data-frame="narrow"] .toolbar-playing { padding: 5px 8px; }
+    .app-frame[data-frame="narrow"] .toolbar-cover { width: 30px; height: 30px; }
+    .app-frame[data-frame="narrow"] .toolbar-action { min-width: 44px; min-height: 44px; padding: 4px; }
+    .app-frame[data-frame="narrow"] .toolbar-action .toolbar-label { display: none; }
+    .app-frame[data-frame="narrow"] .presentation-wrap { display: none; }
+    .app-frame[data-frame="narrow"] .global-overflow-wrap { display: block; }
+    .app-frame[data-frame="narrow"] .global-overflow-wrap .toolbar-label { display: block; }
+    .app-frame[data-frame="narrow"] .content-area {
+      padding: 9px;
+      display: grid;
+      grid-template-columns: minmax(0,1fr);
+      grid-template-rows: 176px minmax(0,1fr);
+      gap: 9px;
+    }
+    .app-frame[data-frame="narrow"] .stage {
+      grid-row: 1;
+      padding: 8px;
+      grid-template-columns: 238px minmax(0,1fr);
+      grid-template-rows: 25px minmax(0,1fr);
+      gap: 7px 9px;
+    }
+    .app-frame[data-frame="narrow"] .stage-head { grid-column: 1 / -1; grid-row: 1; }
+    .app-frame[data-frame="narrow"] .stage-screen { grid-column: 1; grid-row: 2; min-height: 0; }
+    .app-frame[data-frame="narrow"] .stage-footer { grid-column: 2; grid-row: 2; min-width: 0; align-content: center; display: grid; grid-template-columns: 38px minmax(0,1fr); grid-template-rows: auto auto; gap: 7px; }
+    .app-frame[data-frame="narrow"] .current-art { width: 38px; height: 38px; }
+    .app-frame[data-frame="narrow"] .essential-controls { grid-column: 1 / -1; gap: 4px; }
+    .app-frame[data-frame="narrow"] .transport-button { min-width: 44px; height: 44px; }
+    .app-frame[data-frame="narrow"] .transport-button.primary, .app-frame[data-frame="narrow"] .transport-button.next { min-width: 58px; }
+    .app-frame[data-frame="narrow"] .stage-lyrics span { font-size: 12px; margin: 2px 0; }
+    .app-frame[data-frame="narrow"] .workspace { grid-row: 2; width: auto; }
+    .app-frame[data-frame="narrow"] .workspace-header { min-height: 54px; padding: 8px 11px; }
+    .app-frame[data-frame="narrow"] .result-grid { grid-template-columns: 1fr; }
+    .app-frame[data-frame="narrow"] .control-tray { left: calc(var(--rail-w) + 8px); right: 8px; bottom: 8px; }
+    .app-frame[data-frame="narrow"] .control-tray .extended-controls { grid-template-columns: 1fr; max-height: 360px; overflow-y: auto; }
+    .app-frame[data-frame="narrow"] .control-group { padding: 0 0 9px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .app-frame[data-frame="narrow"] .control-group:last-child { border-bottom: 0; }
+    .app-frame[data-frame="narrow"] .settings-drawer { width: calc(100% - var(--rail-w)); }
+    .app-frame[data-frame="narrow"] .settings-layout { grid-template-columns: 132px minmax(0,1fr); }
+    .app-frame[data-frame="narrow"] .workspace-inspector { width: 100%; }
+    .app-frame[data-frame="narrow"] .source-grid, .app-frame[data-frame="narrow"] .category-grid { grid-template-columns: 1fr; }
+    .app-frame[data-frame="narrow"] .recovery-banner { display: none; }
+    .app-frame[data-frame="narrow"] .icon-button,
+    .app-frame[data-frame="narrow"] .small-button,
+    .app-frame[data-frame="narrow"] .secondary-button,
+    .app-frame[data-frame="narrow"] .primary-button,
+    .app-frame[data-frame="narrow"] .danger-button,
+    .app-frame[data-frame="narrow"] .choice-button,
+    .app-frame[data-frame="narrow"] .step-button,
+    .app-frame[data-frame="narrow"] .text-input,
+    .app-frame[data-frame="narrow"] .select-input,
+    .app-frame[data-frame="narrow"] .detail-link,
+    .app-frame[data-frame="narrow"] .subnav button,
+    .app-frame[data-frame="narrow"] .segmented button,
+    .app-frame[data-frame="narrow"] .settings-nav button,
+    .app-frame[data-frame="narrow"] .row-action { min-height: 44px; }
+    .app-frame[data-frame="narrow"] .row-action { width: 44px; }
+
+    .app-frame[data-controls="collapsed"] #inline-controls-slot { display: none; }
+    .app-frame[data-controls="full"] .control-orb { display: none; }
+    .app-frame[data-controls="full"] .control-tray { display: none !important; }
+    .app-frame[data-controls="collapsed"] .stage { grid-template-rows: auto minmax(220px,1fr) auto; }
+    .app-frame[data-frame="narrow"][data-controls="collapsed"] .stage { grid-template-rows: 25px minmax(0,1fr); }
+
+    @media (pointer: coarse) {
+      .toolbar-action, .rail-button, .icon-button, .small-button, .secondary-button,
+      .primary-button, .danger-button, .transport-button, .choice-button, .step-button,
+      .subnav button, .segmented button, .row-action { min-height: 44px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="review-bar" aria-label="Wireframe review controls">
+    <div class="review-title">
+      <strong>Bilikara v0.8 Host shell wireframe</strong>
+      <span>Standalone mock · no API · review controls are outside production chrome</span>
+    </div>
+    <div class="review-group" role="group" aria-label="Representative frame">
+      <span class="review-group-label">Frame</span>
+      <button class="review-button frame-button" type="button" data-frame-choice="wide" aria-pressed="true">Wide 1600×900</button>
+      <button class="review-button frame-button" type="button" data-frame-choice="medium" aria-pressed="false">Medium 1240×800</button>
+      <button class="review-button frame-button" type="button" data-frame-choice="narrow" aria-pressed="false">Narrow 840×760</button>
+    </div>
+    <div class="review-group">
+      <span class="review-group-label">Proof</span>
+      <button id="control-mode-demo" class="review-button" type="button">Force collapsed controls</button>
+    </div>
+    <div id="stage-proof" class="review-note" aria-live="polite">Stage mount HS-01 · video + audio pair unchanged · workspace switches 0</div>
+  </header>
+
+  <main class="preview-area">
+    <section id="app-frame" class="app-frame" data-frame="wide" data-workspace="queue" data-workspace-overlay="open" data-controls="full" aria-label="Bilikara Host shell wide wireframe">
+      <header class="app-toolbar">
+        <div class="brand" aria-label="bilikara Host">
+          <span class="brand-mark" aria-hidden="true">B</span>
+          <span class="brand-name">bilikara</span>
+          <span class="host-badge">HOST</span>
+        </div>
+        <div class="toolbar-playing" aria-label="Now playing 夜に駆ける by YOASOBI">
+          <span class="toolbar-cover" aria-hidden="true"></span>
+          <span class="toolbar-playing-copy">
+            <strong>夜に駆ける · YOASOBI</strong>
+            <span><span class="live-dot">●</span> Playing 01:24 / 04:21 · Cache ready</span>
+          </span>
+        </div>
+        <div class="toolbar-actions">
+          <div id="qr-wrap" class="toolbar-action-wrap">
+            <button id="qr-trigger" class="toolbar-action" type="button" aria-label="Remote QR access; activate to pin" aria-expanded="false">
+              <span class="toolbar-icon" aria-hidden="true">▦</span><span class="toolbar-label">QR</span>
+            </button>
+            <section id="qr-popover" class="popover" aria-label="Remote access" aria-live="polite">
+              <div class="popover-head">
+                <div><h3>Remote access</h3><p id="qr-pin-copy">Hover/focus preview · click to pin</p></div>
+                <button id="qr-close" class="icon-button" type="button" aria-label="Close Remote access">×</button>
+              </div>
+              <div class="qr-layout"><div class="qr-code" aria-label="Mock QR code"></div><div><p><strong>192.168.1.42:8080</strong></p><p>Same Host session; Remote identity is retained until reset.</p><button class="small-button mock-action" type="button">Copy link</button></div></div>
+            </section>
+          </div>
+          <div class="toolbar-action-wrap presentation-wrap">
+            <button id="presentation-trigger" class="toolbar-action" type="button" aria-label="Presentation output, one display available" aria-expanded="false">
+              <span class="toolbar-icon" aria-hidden="true">▣</span><span class="toolbar-label">Present</span>
+            </button>
+            <section class="popover" aria-label="Presentation output"><h3>Presentation output</h3><p>Single screen · Host owns playback</p><button class="secondary-button mock-action" type="button">Choose display</button></section>
+          </div>
+          <div id="global-overflow-wrap" class="toolbar-action-wrap global-overflow-wrap">
+            <button id="global-overflow-trigger" class="toolbar-action" type="button" aria-label="More global actions; includes Presentation output" aria-haspopup="dialog" aria-expanded="false">
+              <span class="toolbar-icon" aria-hidden="true">•••</span><span class="toolbar-label">More</span>
+            </button>
+            <section class="popover" aria-label="More global actions">
+              <div class="popover-head"><div><h3>Global actions</h3><p>Presentation remains reachable without shrinking touch targets.</p></div><button id="global-overflow-close" class="icon-button" type="button" aria-label="Close global actions">×</button></div>
+              <button class="secondary-button mock-action" type="button">Presentation output</button>
+            </section>
+          </div>
+          <button id="service-trigger" class="toolbar-action" type="button" aria-label="Service health good; update 0.8 available">
+            <span class="toolbar-icon" aria-hidden="true">◉</span><span class="toolbar-label">Healthy</span><span class="update-badge">1</span>
+          </button>
+          <button id="settings-trigger" class="toolbar-action" type="button" aria-haspopup="dialog" aria-expanded="false">
+            <span class="toolbar-icon" aria-hidden="true">⚙</span><span class="toolbar-label">Settings</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="shell-body">
+        <nav class="tool-rail" role="tablist" aria-label="Host workspaces" aria-orientation="vertical">
+          <button id="rail-queue" class="rail-button" type="button" role="tab" data-workspace-choice="queue" aria-controls="workspace" aria-selected="true" tabindex="0"><span class="rail-icon" aria-hidden="true">☷</span><span>Queue</span></button>
+          <button id="rail-request" class="rail-button" type="button" role="tab" data-workspace-choice="request" aria-controls="workspace" aria-selected="false" tabindex="-1"><span class="rail-icon" aria-hidden="true">⌕</span><span>Request</span></button>
+          <button id="rail-random" class="rail-button" type="button" role="tab" data-workspace-choice="random" aria-controls="workspace" aria-selected="false" tabindex="-1"><span class="rail-icon" aria-hidden="true">↝</span><span>Random</span></button>
+          <button id="rail-users" class="rail-button" type="button" role="tab" data-workspace-choice="users" aria-controls="workspace" aria-selected="false" tabindex="-1"><span class="rail-icon" aria-hidden="true">♧</span><span>Session<br>Users</span></button>
+          <span class="rail-spacer"></span>
+          <span class="rail-caption">Direct work<br>contexts</span>
+        </nav>
+
+        <div class="content-area">
+          <section id="persistent-stage" class="stage" data-mount-token="HS-01" aria-labelledby="stage-heading">
+            <header class="stage-head">
+              <div class="stage-title"><strong id="stage-heading">Player Stage</strong><span class="contract-chip">one persistent media pair</span></div>
+              <div class="stage-status"><span class="status-chip">● Live</span><span>Transition ready</span></div>
+            </header>
+            <div class="stage-screen" aria-label="Persistent karaoke player representation">
+              <video id="host-video" data-player-role="video" aria-label="Mock persistent Host video element" playsinline></video>
+              <audio id="host-audio" data-player-role="audio" aria-label="Mock persistent Host audio element"></audio>
+              <div class="skyline" aria-hidden="true"></div>
+              <div class="stage-lyrics" aria-hidden="true"><span>騒がしい日々に笑えない君に</span><span>思いつく限り眩しい明日を</span></div>
+              <div class="stage-progress" aria-hidden="true"></div>
+            </div>
+            <div class="stage-footer">
+              <span class="current-art" aria-hidden="true"></span>
+              <span class="current-copy"><strong>夜に駆ける · YOASOBI</strong><span>Requested by 小熊软糖 · 原唱 · AV +120 ms</span></span>
+              <div class="essential-controls" aria-label="Essential playback controls">
+                <button class="transport-button" type="button" aria-label="Mute">⌁</button>
+                <button class="transport-button primary mock-action" type="button" aria-label="Pause playback">Ⅱ</button>
+                <button class="transport-button next mock-action" type="button">Next ›</button>
+                <button class="transport-button mock-action" type="button" aria-label="Fullscreen">⛶</button>
+                <button class="transport-button controls-trigger" type="button" aria-expanded="false" aria-controls="control-tray">Controls</button>
+              </div>
+            </div>
+            <div id="inline-controls-slot">
+              <section id="extended-controls" class="extended-controls" aria-label="Extended karaoke playback controls">
+                <div class="control-group">
+                  <div class="control-label">Audio / vocal variants</div>
+                  <div class="control-row"><button class="choice-button active" type="button">原唱</button><button class="choice-button" type="button">伴奏</button><button class="choice-button" type="button">纯伴奏</button></div>
+                  <div class="control-label">Volume</div>
+                  <div class="control-row"><button class="step-button" type="button">Mute</button><input class="volume-range" type="range" value="78" aria-label="Volume"><span class="step-value">78%</span></div>
+                </div>
+                <div class="control-group">
+                  <div class="control-label">A/V delay · locked to this song</div>
+                  <div class="control-row"><button class="step-button" type="button">−200</button><button class="step-button" type="button">−50</button><span class="step-value">120 ms</span><button class="step-button" type="button">+50</button><button class="step-button" type="button">+200</button><button class="step-button" type="button">Lock</button></div>
+                  <div class="control-label">Reset behavior</div>
+                  <div class="control-row"><button class="choice-button" type="button">Reset 0</button><button class="choice-button active" type="button">Keep local</button></div>
+                </div>
+                <div class="control-group">
+                  <div class="control-label">Key</div>
+                  <div class="control-row"><button class="step-button" type="button">−1</button><span class="step-value">0</span><button class="step-button" type="button">+1</button><button class="step-button" type="button">Reset</button></div>
+                  <div class="control-label">Status</div>
+                  <div class="control-row"><span class="status-chip">Audio bound</span><span class="status-chip">1080p</span></div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <div class="workspace-backdrop" aria-hidden="true"></div>
+          <section id="workspace" class="workspace" role="tabpanel" aria-labelledby="rail-queue">
+            <header class="workspace-header">
+              <div class="workspace-title"><strong id="workspace-heading" tabindex="-1">Queue</strong><span id="workspace-subtitle">Live order and cache readiness</span></div>
+              <div id="queue-segment" class="segmented" role="tablist" aria-label="Queue view">
+                <button type="button" role="tab" data-queue-view="queue" aria-selected="true">Queue 8</button>
+                <button type="button" role="tab" data-queue-view="history" aria-selected="false">History</button>
+              </div>
+            </header>
+            <div class="workspace-body">
+              <section class="workspace-panel" data-workspace-panel="queue">
+                <div class="queue-panel">
+                  <div class="queue-current"><p class="eyebrow">Current song</p><div class="queue-current-row"><span class="current-art"></span><span class="queue-current-copy"><strong>夜に駆ける · YOASOBI</strong><span>小熊软糖 · cached 100%</span></span><button class="small-button mock-action" type="button">Retry</button></div><div class="progress-line"><span></span></div></div>
+                  <div id="queue-scroll" class="scroll-region" tabindex="0" aria-label="Queued songs; local scroll owner"><div class="scroll-owner-label">Scroll owner · queue list</div></div>
+                </div>
+              </section>
+
+              <section class="workspace-panel" data-workspace-panel="request" hidden>
+                <div class="request-panel">
+                  <nav class="subnav" role="tablist" aria-label="Request and Discover sections">
+                    <button type="button" role="tab" data-request-view="quick" aria-selected="false">Quick Request</button>
+                    <button type="button" role="tab" data-request-view="search" aria-selected="true">Search</button>
+                    <button type="button" role="tab" data-request-view="discover" aria-selected="false">Discover</button>
+                    <button type="button" role="tab" data-request-view="sources" aria-selected="false">Sources</button>
+                  </nav>
+                  <section class="request-view quick-view" data-request-panel="quick" hidden>
+                    <p class="eyebrow">Direct URL / BV request</p><div class="form-stack"><label class="field-label">Requester<select class="select-input"><option>小熊软糖</option><option>阿宅</option><option>MilkTea</option></select></label><label class="field-label">Bilibili URL, BV or av<input class="text-input" value="BV1xx411c7mD"></label><div class="button-row"><button class="primary-button mock-action" type="button">Add to queue</button><button class="secondary-button mock-action" type="button">Insert next</button></div><div class="info-box">If pages are ambiguous, the existing page-binding task sheet opens here. Requester and URL drafts survive workspace switching.</div></div>
+                  </section>
+                  <section class="request-view search-view" data-request-panel="search">
+                    <div class="search-mode-row"><div class="segmented" role="tablist" aria-label="Search scope"><button type="button" role="tab" data-search-mode="shared" aria-selected="true">Shared catalog</button><button type="button" role="tab" data-search-mode="local" aria-selected="false">Local library</button></div><span id="search-contract" class="scroll-chip hidden">Cached metadata · no media paths</span></div>
+                    <form id="search-form" class="search-form"><label class="sr-only" for="search-query">Search query</label><input id="search-query" class="text-input" value="YOASOBI" autocomplete="off"><button class="primary-button" type="submit">Search</button></form>
+                    <div id="search-state-summary" class="search-state-summary" aria-live="polite"></div>
+                    <div id="search-results" class="scroll-region" tabindex="0" aria-label="Shared search results; local scroll owner"><div class="scroll-owner-label">Scroll owner · Shared catalog results · restores without rerun</div><div class="result-grid"></div></div>
+                  </section>
+                  <section class="request-view discover-view scroll-region" data-request-panel="discover" hidden tabindex="0" aria-label="Discover categories; local scroll owner"><div class="scroll-owner-label">Scroll owner · discover content</div><p class="eyebrow">Shared catalog browse</p><div class="segmented"><button type="button" aria-pressed="true">Categories</button><button type="button" aria-pressed="false">Name</button><button type="button" aria-pressed="false">Artist</button></div><div class="category-grid"><div class="category-card"><strong>Vocaloid</strong><span>V家 · VOCALOID · DECO*27</span></div><div class="category-card"><strong>Anime adaptations</strong><span>漫画改 · 游戏改 · 轻小说改</span></div><div class="category-card"><strong>Idols & bands</strong><span>BanG Dream! · LoveLive</span></div><div class="category-card"><strong>Healing</strong><span>治愈 · 催泪 · 日常</span></div></div></section>
+                  <section class="request-view sources-view scroll-region" data-request-panel="sources" hidden tabindex="0" aria-label="Configured sources; local scroll owner"><div class="scroll-owner-label">Scroll owner · active source content</div><p class="eyebrow">Source management, not search</p><div class="button-row"><button class="primary-button mock-action" type="button">Add UID</button><button class="secondary-button mock-action" type="button">Refresh videos</button><button class="secondary-button mock-action" type="button">Fetch collections</button></div><div class="pending-box">Maintainer decision: configured UIDs are not a proven live Bilibili “Following” list. Favorites remain current UID/folder fetch semantics. Browsing uses logical records, never filesystem paths.</div><div class="source-grid"><div class="source-card"><strong>Added UIDs · 12</strong><span>Cached owner video metadata</span><span>Last refresh 18:42</span></div><div class="source-card"><strong>Favorites · 4 folders</strong><span>Karaoke candidates from fetched folders</span><span>Last fetch yesterday</span></div><div class="source-card"><strong>UID 3494356589742209</strong><span>46 cached videos · open videos</span></div><div class="source-card"><strong>K songs</strong><span>128 fetched favorites · open folder</span></div></div></section>
+                </div>
+              </section>
+
+              <section class="workspace-panel" data-workspace-panel="random" hidden><div class="random-inner" tabindex="0" aria-label="Random workspace; local scroll owner"><div class="scroll-owner-label">Scroll owner · Random content</div><div class="random-hero"><div class="random-orb" aria-hidden="true">♪</div><h3>试试运气</h3><p>Draw from configured UID and favorite sources.</p><div class="button-row" style="justify-content:center"><button class="primary-button mock-action" type="button">Draw a song</button><button class="secondary-button mock-action" type="button">Retry</button></div></div><div class="pool-summary"><p class="eyebrow">Pool configuration</p><p style="font-size:11px">Added UID sources 70% · Favorite folders 30%</p><div class="button-row"><button class="secondary-button mock-action" type="button">Configure pool</button><button id="manage-sources" class="small-button" type="button">Manage sources →</button></div><p class="pending-box">Random consumes source data; it does not own Add UID or Favorite fetching.</p></div></div></section>
+
+              <section class="workspace-panel" data-workspace-panel="users" hidden><div class="users-inner"><form id="user-add" class="user-add"><label class="sr-only" for="user-name">Session user name</label><input id="user-name" class="text-input" placeholder="Add current-session user"><button class="primary-button" type="submit">Add user</button></form><div id="user-list" class="scroll-region user-list" tabindex="0" aria-label="Session users; local scroll owner"><div class="scroll-owner-label">Scroll owner · session users</div></div></div></section>
+            </div>
+            <footer class="workspace-footer"><span id="workspace-width">Preferred width · 400px</span><span id="workspace-scroll-label">Local scroll: queue list</span></footer>
+
+            <aside id="song-inspector" class="workspace-inspector hidden" role="dialog" aria-modal="false" aria-labelledby="detail-title">
+              <header class="inspector-head"><div><p class="eyebrow">Song detail inspector</p><strong id="detail-title">夜に駆ける</strong></div><button id="detail-close" class="icon-button" type="button" aria-label="Close song detail">×</button></header>
+              <div class="inspector-body" tabindex="0"><div class="detail-art"></div><h3 id="detail-song-title">夜に駆ける · YOASOBI</h3><p id="detail-meta">BV1xx411c7mD · 4:21 · shared catalog</p><p id="detail-source">Owner: Ayase / YOASOBI<br>Plays: 312万 · Rating 4.7</p><p>The selected song survives workspace switching. The inspector closes outside Request and can restore without rerunning search.</p><div class="pending-box">Metadata freshness depends on the selected catalog source.</div></div>
+              <footer class="button-row"><button class="primary-button mock-action" type="button">Request</button><button class="secondary-button mock-action" type="button">Insert next</button></footer>
+            </aside>
+          </section>
+        </div>
+      </div>
+
+      <div id="settings-backdrop" class="settings-backdrop hidden" aria-hidden="true"></div>
+      <aside id="settings-drawer" class="settings-drawer hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header class="drawer-head"><div><strong id="settings-title">Settings</strong><div style="font-size:9px;color:var(--muted)">Global configuration · local scroll</div></div><button id="settings-close" class="icon-button" type="button" aria-label="Close Settings">×</button></header>
+        <div class="settings-layout">
+          <nav class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="Settings sections"><button type="button" role="tab" aria-controls="settings-content" data-settings-section="appearance" aria-selected="false">Appearance</button><button type="button" role="tab" aria-controls="settings-content" data-settings-section="service" aria-selected="true">Playback & Cache</button><button type="button" role="tab" aria-controls="settings-content" data-settings-section="accounts" aria-selected="false">Accounts & Tools</button><button type="button" role="tab" aria-controls="settings-content" data-settings-section="update" aria-selected="false">Update <span class="pending-chip">1</span></button><button type="button" role="tab" aria-controls="settings-content" data-settings-section="data" aria-selected="false">Data</button><button type="button" role="tab" aria-controls="settings-content" data-settings-section="diagnostics" aria-selected="false">Diagnostics</button><button type="button" role="tab" aria-controls="settings-content" data-settings-section="advanced" aria-selected="false">Advanced</button></nav>
+          <section id="settings-content" class="settings-content" role="tabpanel" tabindex="0" aria-label="Settings content; local scroll owner"></section>
+        </div>
+      </aside>
+
+      <button id="control-orb" class="control-orb" type="button" aria-label="Open extended playback controls" aria-expanded="false" aria-controls="control-tray">≡</button>
+      <section id="control-tray" class="control-tray hidden" role="dialog" aria-modal="true" aria-labelledby="tray-title">
+        <header class="tray-head"><div><strong id="tray-title">Karaoke controls</strong><span>Same controls and same media pair · no remount</span></div><button id="tray-close" class="icon-button" type="button" aria-label="Close playback controls">×</button></header>
+        <div id="tray-controls-slot"></div>
+      </section>
+
+      <div id="confirm-layer" class="confirm-backdrop hidden" role="presentation">
+        <section class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-copy">
+          <h2 id="confirm-title">Clear downloaded media?</h2><p id="confirm-copy">This removes cached video/audio artifacts and staging files. Queue, users, history, sources, credentials, preferences and the installed application stay.</p><ul><li>Queued songs may need to download again.</li><li>Installed executable, bundle, runtime and tools are protected.</li></ul><div class="button-row"><button id="confirm-cancel" class="secondary-button" type="button">Cancel</button><button id="confirm-ok" class="danger-button" type="button">Clear media cache</button></div>
+        </section>
+      </div>
+
+      <div id="recovery-banner" class="recovery-banner">Previous session found · 6 songs <button class="small-button mock-action" type="button">Continue</button> <button id="recovery-dismiss" class="small-button" type="button">Dismiss</button></div>
+      <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const frame = document.getElementById("app-frame");
+      const persistentStage = document.getElementById("persistent-stage");
+      const persistentVideo = document.getElementById("host-video");
+      const persistentAudio = document.getElementById("host-audio");
+      const extendedControls = document.getElementById("extended-controls");
+      const inlineControlsSlot = document.getElementById("inline-controls-slot");
+      const trayControlsSlot = document.getElementById("tray-controls-slot");
+      const proof = document.getElementById("stage-proof");
+      const workspace = document.getElementById("workspace");
+      const workspaceHeading = document.getElementById("workspace-heading");
+      const workspaceSubtitle = document.getElementById("workspace-subtitle");
+      const workspaceWidth = document.getElementById("workspace-width");
+      const workspaceScrollLabel = document.getElementById("workspace-scroll-label");
+      const searchStateSummary = document.getElementById("search-state-summary");
+      const queueSegment = document.getElementById("queue-segment");
+      const settingsDrawer = document.getElementById("settings-drawer");
+      const settingsBackdrop = document.getElementById("settings-backdrop");
+      const settingsTrigger = document.getElementById("settings-trigger");
+      const serviceTrigger = document.getElementById("service-trigger");
+      const settingsClose = document.getElementById("settings-close");
+      const settingsContent = document.getElementById("settings-content");
+      const songInspector = document.getElementById("song-inspector");
+      const detailClose = document.getElementById("detail-close");
+      const controlTray = document.getElementById("control-tray");
+      const controlOrb = document.getElementById("control-orb");
+      const trayClose = document.getElementById("tray-close");
+      const controlModeDemo = document.getElementById("control-mode-demo");
+      const qrWrap = document.getElementById("qr-wrap");
+      const qrTrigger = document.getElementById("qr-trigger");
+      const qrClose = document.getElementById("qr-close");
+      const qrPinCopy = document.getElementById("qr-pin-copy");
+      const globalOverflowWrap = document.getElementById("global-overflow-wrap");
+      const globalOverflowTrigger = document.getElementById("global-overflow-trigger");
+      const globalOverflowClose = document.getElementById("global-overflow-close");
+      const confirmLayer = document.getElementById("confirm-layer");
+      const confirmCancel = document.getElementById("confirm-cancel");
+      const confirmOk = document.getElementById("confirm-ok");
+      const toast = document.getElementById("toast");
+      const originalIdentities = { stage: persistentStage, video: persistentVideo, audio: persistentAudio, controls: extendedControls };
+      window.__bilikaraWireframeIdentity = originalIdentities;
+
+      const workspaceMeta = {
+        queue: { title: "Queue", subtitle: "Live order and cache readiness", width: { wide: 400, medium: 360, narrow: "content" }, scroll: "queue / history list" },
+        request: { title: "Request / Discover", subtitle: "Quick request, search, browse and sources", width: { wide: 640, medium: 600, narrow: "content" }, scroll: "active result / source list" },
+        random: { title: "Random", subtitle: "Draw and configure the Gatcha pool", width: { wide: 480, medium: 420, narrow: "content" }, scroll: "Random content" },
+        users: { title: "Session Users", subtitle: "People in this karaoke session", width: { wide: 460, medium: 400, narrow: "content" }, scroll: "session users" }
+      };
+      const viewState = {
+        workspace: "queue",
+        queueView: "queue",
+        requestView: "search",
+        searchMode: "shared",
+        settingsSection: "service",
+        selectedSong: "夜に駆ける",
+        frame: "wide",
+        forcedCollapsedControls: false,
+        workspaceOverlayOpen: true,
+        workspaceSwitches: 0,
+        search: {
+          shared: { draft: "YOASOBI", submitted: "YOASOBI", placeholder: "Search shared catalog", cursor: "none · bounded ≤80", loading: false, error: "none", selected: "夜に駆ける", filter: "All shared tables", scroll: 0, detailOpen: false },
+          local: { draft: "夜", submitted: "夜", placeholder: "Search your local library", cursor: "none · bounded response", loading: false, error: "none", selected: "夜に駆ける（伴奏）", filter: "All configured sources", scroll: 0, detailOpen: false }
+        },
+        scroll: { queue: 0, users: 0 }
+      };
+
+      const searchItems = {
+        shared: [
+          ["夜に駆ける", "YOASOBI", "Shared · 4.7", "BV1xx411c7mD"],
+          ["群青", "YOASOBI", "Shared · 4.8", "BV1ab411c7mE"],
+          ["アイドル", "YOASOBI", "Shared · 4.6", "BV1cd411c7mF"],
+          ["怪物", "YOASOBI", "Shared · 4.5", "BV1ef411c7mG"],
+          ["祝福", "YOASOBI", "Shared · 4.6", "BV1gh411c7mH"],
+          ["勇者", "YOASOBI", "Shared · 4.4", "BV1ij411c7mJ"],
+          ["三原色", "YOASOBI", "Shared · 4.3", "BV1kl411c7mK"],
+          ["あの夢をなぞって", "YOASOBI", "Shared · 4.5", "BV1mn411c7mL"]
+        ],
+        local: [
+          ["夜に駆ける（伴奏）", "UID 3494356589742209", "Added UID metadata", "BV1lo411c7mM"],
+          ["アイドル KTV", "K songs", "Fetched favorite metadata", "BV1pq411c7mN"],
+          ["群青 纯伴奏", "UID 3145040", "Added UID metadata", "BV1rs411c7mP"],
+          ["怪物 off vocal", "Anime Karaoke", "Fetched favorite metadata", "BV1tu411c7mQ"]
+        ]
+      };
+      const queueItems = [
+        ["怪物", "YOASOBI", "阿宅"], ["残響散歌", "Aimer", "MilkTea"], ["アイドル", "YOASOBI", "星野爱"],
+        ["花に亡霊", "ヨルシカ", "小熊软糖"], ["打上花火", "DAOKO × 米津玄師", "阿宅"], ["ただ君に晴れ", "ヨルシカ", "MilkTea"],
+        ["Lemon", "米津玄師", "星野爱"], ["青のすみか", "キタニタツヤ", "小熊软糖"], ["紅蓮華", "LiSA", "阿宅"]
+      ];
+      const historyItems = [
+        ["紅蓮華", "LiSA", "小熊软糖"], ["God knows...", "涼宮ハルヒ", "阿宅"], ["only my railgun", "fripSide", "MilkTea"],
+        ["千本桜", "初音ミク", "星野爱"], ["Butter-Fly", "和田光司", "小熊软糖"]
+      ];
+      const users = ["小熊软糖", "阿宅", "MilkTea", "星野爱", "Miku", "Ayase", "Aimer", "ヨルシカ", "LiSA"];
+
+      function stageIdentityIsStable() {
+        return originalIdentities.stage === document.getElementById("persistent-stage") &&
+          originalIdentities.video === document.getElementById("host-video") &&
+          originalIdentities.audio === document.getElementById("host-audio") &&
+          originalIdentities.controls === document.getElementById("extended-controls");
+      }
+
+      function updateProof() {
+        const overlay = viewState.frame === "medium" && viewState.workspace === "request" ? ` · overlay ${viewState.workspaceOverlayOpen ? "open" : "closed"}` : "";
+        proof.textContent = `Stage mount HS-01 · video + audio pair ${stageIdentityIsStable() ? "unchanged" : "ERROR"} · workspace switches ${viewState.workspaceSwitches}${overlay}`;
+      }
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.classList.remove("hidden");
+        window.clearTimeout(showToast.timer);
+        showToast.timer = window.setTimeout(() => toast.classList.add("hidden"), 1600);
+      }
+
+      function renderQueueList() {
+        const root = document.getElementById("queue-scroll");
+        const label = root.querySelector(".scroll-owner-label");
+        root.textContent = "";
+        root.appendChild(label);
+        const list = viewState.queueView === "queue" ? queueItems : historyItems;
+        label.textContent = `Scroll owner · ${viewState.queueView} list`;
+        list.forEach((item, index) => {
+          const row = document.createElement("article");
+          row.className = "song-row";
+          row.innerHTML = `<span class="song-index">${index + 1}</span><span class="song-copy"><strong>${item[0]}</strong><span>${item[1]}</span><span class="requester">${item[2]}</span></span><span class="row-actions"><button class="row-action mock-action" type="button" aria-label="Move ${item[0]} up">↑</button><button class="row-action mock-action" type="button" aria-label="Move ${item[0]} down">↓</button><button class="row-action mock-action" type="button" aria-label="More actions for ${item[0]}">⋯</button></span>`;
+          root.appendChild(row);
+        });
+        root.scrollTop = viewState.scroll.queue;
+      }
+
+      function renderUsers() {
+        const root = document.getElementById("user-list");
+        const label = root.querySelector(".scroll-owner-label");
+        root.textContent = "";
+        root.appendChild(label);
+        users.forEach((name, index) => {
+          const row = document.createElement("article");
+          row.className = "user-row";
+          row.innerHTML = `<span class="avatar">${name.slice(0, 2)}</span><span class="user-copy"><strong>${name}</strong><span>${index === 0 ? "Selected requester" : `Queued ${index % 4} · Performed ${index % 3}`}</span></span><span class="row-actions"><button class="row-action mock-action" type="button" aria-label="Move ${name} up">↑</button><button class="row-action mock-action" type="button" aria-label="Move ${name} down">↓</button><button class="row-action mock-action" type="button" aria-label="Remove ${name}">×</button></span>`;
+          root.appendChild(row);
+        });
+        root.scrollTop = viewState.scroll.users;
+      }
+
+      function renderSearchResults() {
+        const root = document.querySelector("#search-results .result-grid");
+        root.textContent = "";
+        const sourceLabel = viewState.searchMode === "shared" ? "Shared catalog" : "Local library";
+        const modeState = viewState.search[viewState.searchMode];
+        searchItems[viewState.searchMode].forEach((item, index) => {
+          const card = document.createElement("article");
+          card.className = "result-card";
+          card.innerHTML = `<span class="result-cover" aria-hidden="true"></span><span class="result-copy"><strong>${item[0]}</strong><span>${item[1]}</span><span>${item[2]}</span><span>${item[3]}</span></span><span class="result-actions"><span class="source-badge">${sourceLabel}</span><span><button class="detail-link" type="button" data-open-detail="${index}">Details</button> <button class="detail-link mock-action" type="button">Add</button></span></span>`;
+          root.appendChild(card);
+        });
+        const resultScroll = document.getElementById("search-results");
+        resultScroll.setAttribute("aria-label", `${sourceLabel} results; local scroll owner`);
+        resultScroll.querySelector(".scroll-owner-label").textContent = `Scroll owner · ${sourceLabel} results · restores without rerun`;
+        resultScroll.scrollTop = modeState.scroll;
+        document.getElementById("search-contract").classList.toggle("hidden", viewState.searchMode !== "local");
+        searchStateSummary.textContent = `Independent state · submitted “${modeState.submitted}” · ${searchItems[viewState.searchMode].length} results · cursor ${modeState.cursor} · loading ${modeState.loading ? "yes" : "no"} · error ${modeState.error} · filter ${modeState.filter} · selected ${modeState.selected}`;
+      }
+
+      function renderSearchMode() {
+        document.querySelectorAll("[data-search-mode]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.searchMode === viewState.searchMode)));
+        const modeState = viewState.search[viewState.searchMode];
+        document.getElementById("search-query").value = modeState.draft;
+        document.getElementById("search-query").placeholder = modeState.placeholder;
+        renderSearchResults();
+      }
+
+      function renderRequestView() {
+        document.querySelectorAll("[data-request-view]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.requestView === viewState.requestView)));
+        document.querySelectorAll("[data-request-panel]").forEach(panel => { panel.hidden = panel.dataset.requestPanel !== viewState.requestView; });
+        if (viewState.requestView !== "search" && !songInspector.classList.contains("hidden")) {
+          closeInspector({ restore: false, preserveState: true });
+        } else if (viewState.requestView === "search" && viewState.search[viewState.searchMode].detailOpen) {
+          openInspector({ restoreFocus: false });
+        }
+      }
+
+      function renderWorkspace({ focusHeading = false } = {}) {
+        frame.dataset.workspace = viewState.workspace;
+        const meta = workspaceMeta[viewState.workspace];
+        workspaceHeading.textContent = meta.title;
+        workspaceSubtitle.textContent = meta.subtitle;
+        workspace.setAttribute("aria-labelledby", `rail-${viewState.workspace}`);
+        document.querySelectorAll("[data-workspace-choice]").forEach(button => {
+          const selected = button.dataset.workspaceChoice === viewState.workspace;
+          button.setAttribute("aria-selected", String(selected));
+          button.tabIndex = selected ? 0 : -1;
+        });
+        document.querySelectorAll("[data-workspace-panel]").forEach(panel => { panel.hidden = panel.dataset.workspacePanel !== viewState.workspace; });
+        queueSegment.classList.toggle("hidden", viewState.workspace !== "queue");
+        const width = meta.width[viewState.frame];
+        workspaceWidth.textContent = width === "content" ? "Near-full content workspace" : `Preferred width · ${width}px`;
+        workspaceScrollLabel.textContent = `Local scroll: ${meta.scroll}`;
+        if (viewState.workspace !== "request" && !songInspector.classList.contains("hidden")) {
+          closeInspector({ restore: false, preserveState: true });
+        } else if (viewState.workspace === "request" && viewState.requestView === "search" && viewState.search[viewState.searchMode].detailOpen) {
+          openInspector({ restoreFocus: false });
+        }
+        updateControlMode();
+        updateProof();
+        if (focusHeading) workspaceHeading.focus();
+      }
+
+      function selectWorkspace(name, { focusHeading = false } = {}) {
+        if (!workspaceMeta[name]) return;
+        if (name !== viewState.workspace) {
+          viewState.workspace = name;
+          viewState.workspaceSwitches += 1;
+        }
+        viewState.workspaceOverlayOpen = true;
+        frame.dataset.workspaceOverlay = "open";
+        renderWorkspace({ focusHeading });
+      }
+
+      function updateControlMode() {
+        const shouldCollapse = viewState.forcedCollapsedControls || viewState.frame === "narrow" || (viewState.frame === "medium" && viewState.workspace === "request" && viewState.workspaceOverlayOpen);
+        frame.dataset.controls = shouldCollapse ? "collapsed" : "full";
+        controlModeDemo.textContent = viewState.forcedCollapsedControls ? "Use fit-based controls" : "Force collapsed controls";
+        if (shouldCollapse) {
+          trayControlsSlot.appendChild(extendedControls);
+        } else {
+          inlineControlsSlot.appendChild(extendedControls);
+          closeTray({ restore: false });
+        }
+        document.querySelectorAll(".controls-trigger").forEach(button => button.setAttribute("aria-expanded", String(!controlTray.classList.contains("hidden"))));
+        updateProof();
+      }
+
+      function setFrame(name) {
+        viewState.frame = name;
+        viewState.workspaceOverlayOpen = true;
+        frame.dataset.frame = name;
+        frame.dataset.workspaceOverlay = "open";
+        frame.setAttribute("aria-label", `Bilikara Host shell ${name} wireframe`);
+        document.querySelectorAll("[data-frame-choice]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.frameChoice === name)));
+        updateControlMode();
+        renderWorkspace();
+      }
+
+      let lastInspectorTrigger = null;
+      function renderInspector() {
+        const modeState = viewState.search[viewState.searchMode];
+        const items = searchItems[viewState.searchMode];
+        const selected = items.find(item => item[0] === modeState.selected) || items[0];
+        document.getElementById("detail-title").textContent = selected[0];
+        document.getElementById("detail-song-title").textContent = `${selected[0]} · ${selected[1]}`;
+        document.getElementById("detail-meta").textContent = `${selected[3]} · 4:21 · ${viewState.searchMode === "shared" ? "shared catalog" : "Local library cached metadata"}`;
+        document.getElementById("detail-source").textContent = viewState.searchMode === "shared" ? "Catalog metadata · rating/freshness are source-dependent" : "Configured UID/favorite provenance · no media filesystem path";
+      }
+      function openInspector({ restoreFocus = true } = {}) {
+        if (viewState.workspace !== "request" || viewState.requestView !== "search") return;
+        if (restoreFocus) lastInspectorTrigger = document.activeElement;
+        renderInspector();
+        songInspector.classList.remove("hidden");
+        viewState.search[viewState.searchMode].detailOpen = true;
+        detailClose.focus();
+      }
+      function closeInspector({ restore = true, preserveState = false } = {}) {
+        songInspector.classList.add("hidden");
+        if (!preserveState) viewState.search[viewState.searchMode].detailOpen = false;
+        if (restore && lastInspectorTrigger instanceof HTMLElement) lastInspectorTrigger.focus();
+      }
+
+      let lastSettingsFocus = null;
+      const settingsTemplates = {
+        appearance: `<h3>Appearance</h3><p>Language and theme; responsive fit is automatic.</p><div class="setting-row"><span>Language</span><select class="select-input"><option>简体中文</option><option>日本語</option><option>English</option></select></div><div class="setting-row"><span>Theme</span><div class="segmented"><button type="button" aria-pressed="true">Warm</button><button type="button">Dark</button><button type="button">Blue</button></div></div><div class="info-box">Frozen: Host Basic / Full is replaced by responsive shell behavior. Stored basic, normal or full values migrate to the default responsive shell; there is no Stage Focus alias.</div>`,
+        service: `<h3>Playback & Cache</h3><p>Service health is summarized in the toolbar; complete configuration lives here.</p><div class="setting-row"><span>Cache window</span><select class="select-input"><option>3 songs</option><option>5 songs</option></select></div><div class="setting-row"><span>Song advance delay</span><select class="select-input"><option>3 seconds</option><option>5 seconds</option></select></div><div class="setting-row"><span>Default quality</span><select class="select-input"><option>1080p</option><option>720p</option></select></div><div class="setting-row"><span>Hi-Res audio</span><button class="secondary-button" type="button">On</button></div><div class="setting-row"><span>Download source</span><select class="select-input"><option>Rust Native</option><option>BBDown</option><option>yt-dlp</option></select></div><h4>Troubleshooting</h4><div class="button-row"><button class="secondary-button mock-action" type="button">Recache current</button><button class="secondary-button mock-action" type="button">Reset player</button></div>`,
+        accounts: `<h3>Accounts & Tools</h3><p>BBDown/Bilibili login and runtime tool status.</p><div class="setting-row"><span>Bilibili / BBDown</span><span class="status-chip">Logged in</span></div><div class="setting-row"><span>FFmpeg / ffprobe</span><span class="status-chip">Ready</span></div><div class="button-row"><button class="secondary-button mock-action" type="button">Refresh login QR</button><button class="danger-button mock-action" type="button">Log out</button></div><div class="pending-box">Credential removal during a full user-data reset is not decided.</div>`,
+        update: `<h3>Update available · v0.8.0</h3><p>Stable application update and preview-channel preferences.</p><div class="setting-row"><span>Automatic updates</span><button class="secondary-button" type="button">On</button></div><div class="setting-row"><span>Preview channel</span><button class="secondary-button" type="button">Off</button></div><div class="button-row"><button class="primary-button mock-action" type="button">Install update</button><button class="secondary-button mock-action" type="button">Check again</button></div>`,
+        data: `<h3>Data</h3><p>Every action has a narrow visible effect. No action may target runtime/ or the installed product.</p><h4>Start new karaoke session</h4><p>Archive played songs; clear current item, queue, users and current history. Keep media, sources, credentials and preferences.</p><button class="secondary-button" type="button" disabled>Contract pending</button><h4>Clear downloaded media</h4><p>Remove media artifacts and staging. Keep all queues, users, history, sources, accounts and preferences.</p><button id="clear-media-demo" class="danger-button" type="button">Review scope…</button><h4>Reset Bilikara user data</h4><div class="pending-box">Unavailable until archive, credential and log retention are explicitly decided and a Rust-authoritative command exists.</div><ul class="protected-list"><li>Protected: installed executable / app bundle</li><li>Protected: packaged Rust and Python runtime</li><li>Protected: static, vendor, _internal and tools</li><li>Never delete Windows runtime/ as a unit</li></ul>`,
+        diagnostics: `<h3>Diagnostics</h3><p>Sanitized support output; the downloaded package is user-chosen output.</p><div class="button-row"><button class="secondary-button mock-action" type="button">Copy Markdown</button><button class="secondary-button mock-action" type="button">Download package</button></div><h4>Recent status</h4><div class="info-box">Host healthy · Rust AppState ready · cache worker idle · presentation inactive</div>`,
+        advanced: `<h3>Advanced</h3><p>Rare application and developer operations.</p><div class="setting-row"><span>Application restart</span><button class="danger-button mock-action" type="button">Restart…</button></div><div class="setting-row"><span>Project</span><button class="secondary-button mock-action" type="button">About bilikara</button></div><div class="pending-box">Secret-gated catalog review/blacklist tools remain under Request / Discover because they act on catalog content.</div>`
+      };
+      function renderSettings() {
+        document.querySelectorAll("[data-settings-section]").forEach(button => button.setAttribute("aria-selected", String(button.dataset.settingsSection === viewState.settingsSection)));
+        settingsContent.innerHTML = settingsTemplates[viewState.settingsSection];
+        settingsContent.scrollTop = 0;
+      }
+      function openSettings(section = viewState.settingsSection) {
+        if (section) viewState.settingsSection = section;
+        closeQr({ restore: false });
+        closeGlobalOverflow({ restore: false });
+        if (!songInspector.classList.contains("hidden")) closeInspector({ restore: false, preserveState: true });
+        lastSettingsFocus = document.activeElement;
+        settingsDrawer.classList.remove("hidden");
+        settingsBackdrop.classList.remove("hidden");
+        settingsTrigger.setAttribute("aria-expanded", "true");
+        renderSettings();
+        settingsClose.focus();
+      }
+      function closeSettings({ restore = true } = {}) {
+        settingsDrawer.classList.add("hidden");
+        settingsBackdrop.classList.add("hidden");
+        settingsTrigger.setAttribute("aria-expanded", "false");
+        if (restore && lastSettingsFocus instanceof HTMLElement) lastSettingsFocus.focus();
+      }
+
+      function pinQr() {
+        if (qrWrap.classList.contains("is-pinned")) {
+          closeQr();
+          return;
+        }
+        qrWrap.classList.remove("is-dismissed");
+        qrWrap.classList.add("is-pinned");
+        qrTrigger.setAttribute("aria-expanded", "true");
+        qrPinCopy.textContent = "Pinned · click outside or close";
+      }
+      function closeQr({ restore = true } = {}) {
+        const wasPinned = qrWrap.classList.contains("is-pinned");
+        qrWrap.classList.remove("is-pinned");
+        if (restore) qrWrap.classList.add("is-dismissed");
+        qrTrigger.setAttribute("aria-expanded", "false");
+        qrPinCopy.textContent = "Hover/focus preview · click to pin";
+        if (restore && wasPinned) qrTrigger.focus();
+      }
+
+      function toggleGlobalOverflow() {
+        const pinned = !globalOverflowWrap.classList.contains("is-pinned");
+        globalOverflowWrap.classList.remove("is-dismissed");
+        globalOverflowWrap.classList.toggle("is-pinned", pinned);
+        globalOverflowTrigger.setAttribute("aria-expanded", String(pinned));
+      }
+      function closeGlobalOverflow({ restore = true } = {}) {
+        const wasPinned = globalOverflowWrap.classList.contains("is-pinned");
+        globalOverflowWrap.classList.remove("is-pinned");
+        if (restore) globalOverflowWrap.classList.add("is-dismissed");
+        globalOverflowTrigger.setAttribute("aria-expanded", "false");
+        if (restore && wasPinned) globalOverflowTrigger.focus();
+      }
+
+      let lastTrayFocus = null;
+      function openTray() {
+        if (frame.dataset.controls !== "collapsed") return;
+        lastTrayFocus = document.activeElement;
+        controlTray.classList.remove("hidden");
+        controlOrb.setAttribute("aria-expanded", "true");
+        document.querySelectorAll(".controls-trigger").forEach(button => button.setAttribute("aria-expanded", "true"));
+        trayClose.focus();
+      }
+      function closeTray({ restore = true } = {}) {
+        controlTray.classList.add("hidden");
+        controlOrb.setAttribute("aria-expanded", "false");
+        document.querySelectorAll(".controls-trigger").forEach(button => button.setAttribute("aria-expanded", "false"));
+        if (restore && lastTrayFocus instanceof HTMLElement) lastTrayFocus.focus();
+      }
+
+      let lastConfirmFocus = null;
+      function openConfirm() {
+        lastConfirmFocus = document.activeElement;
+        confirmLayer.classList.remove("hidden");
+        confirmCancel.focus();
+      }
+      function closeConfirm({ restore = true } = {}) {
+        confirmLayer.classList.add("hidden");
+        if (restore && lastConfirmFocus instanceof HTMLElement) lastConfirmFocus.focus();
+      }
+
+      function topLayer() {
+        if (!confirmLayer.classList.contains("hidden")) return confirmLayer;
+        if (!controlTray.classList.contains("hidden")) return controlTray;
+        if (!settingsDrawer.classList.contains("hidden")) return settingsDrawer;
+        if (!songInspector.classList.contains("hidden")) return songInspector;
+        return null;
+      }
+
+      function closeWorkspaceOverlay({ restore = true } = {}) {
+        if (!(viewState.frame === "medium" && viewState.workspace === "request" && viewState.workspaceOverlayOpen)) return false;
+        viewState.workspaceOverlayOpen = false;
+        frame.dataset.workspaceOverlay = "closed";
+        updateControlMode();
+        updateProof();
+        if (restore) document.getElementById("rail-request").focus();
+        return true;
+      }
+      function trapTab(event, root) {
+        const focusable = Array.from(root.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter(node => node.offsetParent !== null);
+        if (!focusable.length) return;
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+
+      document.querySelectorAll("[data-frame-choice]").forEach(button => button.addEventListener("click", () => setFrame(button.dataset.frameChoice)));
+      controlModeDemo.addEventListener("click", () => { viewState.forcedCollapsedControls = !viewState.forcedCollapsedControls; updateControlMode(); });
+      document.querySelectorAll("[data-workspace-choice]").forEach(button => {
+        button.addEventListener("click", () => selectWorkspace(button.dataset.workspaceChoice));
+        button.addEventListener("keydown", event => {
+          const buttons = Array.from(document.querySelectorAll("[data-workspace-choice]"));
+          const index = buttons.indexOf(button);
+          let next = null;
+          if (event.key === "ArrowDown") next = buttons[(index + 1) % buttons.length];
+          if (event.key === "ArrowUp") next = buttons[(index - 1 + buttons.length) % buttons.length];
+          if (event.key === "Home") next = buttons[0];
+          if (event.key === "End") next = buttons[buttons.length - 1];
+          if (next) { event.preventDefault(); buttons.forEach(item => item.tabIndex = -1); next.tabIndex = 0; next.focus(); }
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectWorkspace(button.dataset.workspaceChoice, { focusHeading: true }); }
+        });
+      });
+      document.querySelectorAll("[data-queue-view]").forEach(button => button.addEventListener("click", () => {
+        viewState.queueView = button.dataset.queueView;
+        document.querySelectorAll("[data-queue-view]").forEach(item => item.setAttribute("aria-selected", String(item === button)));
+        renderQueueList();
+        workspaceScrollLabel.textContent = `Local scroll: ${viewState.queueView} list`;
+      }));
+      document.querySelectorAll("[data-request-view]").forEach(button => button.addEventListener("click", () => { viewState.requestView = button.dataset.requestView; renderRequestView(); }));
+      document.querySelectorAll("[data-search-mode]").forEach(button => button.addEventListener("click", () => {
+        const resultScroll = document.getElementById("search-results");
+        const previousMode = viewState.searchMode;
+        viewState.search[previousMode].scroll = resultScroll.scrollTop;
+        viewState.search[previousMode].draft = document.getElementById("search-query").value;
+        if (!songInspector.classList.contains("hidden")) closeInspector({ restore: false, preserveState: true });
+        viewState.searchMode = button.dataset.searchMode;
+        renderSearchMode();
+        if (viewState.search[viewState.searchMode].detailOpen) openInspector({ restoreFocus: false });
+      }));
+      document.getElementById("search-query").addEventListener("input", event => { viewState.search[viewState.searchMode].draft = event.target.value; });
+      document.getElementById("search-form").addEventListener("submit", event => {
+        event.preventDefault();
+        const modeState = viewState.search[viewState.searchMode];
+        modeState.submitted = modeState.draft;
+        modeState.error = "none";
+        modeState.loading = false;
+        renderSearchResults();
+        showToast(`Mock ${viewState.searchMode} search submitted · no API request`);
+      });
+      document.getElementById("search-results").addEventListener("click", event => {
+        const trigger = event.target.closest("[data-open-detail]");
+        if (!trigger) return;
+        const item = searchItems[viewState.searchMode][Number(trigger.dataset.openDetail)];
+        if (item) viewState.search[viewState.searchMode].selected = item[0];
+        renderSearchResults();
+        lastInspectorTrigger = document.querySelector(`[data-open-detail="${trigger.dataset.openDetail}"]`);
+        openInspector({ restoreFocus: false });
+      });
+      detailClose.addEventListener("click", () => closeInspector());
+      document.getElementById("manage-sources").addEventListener("click", () => { selectWorkspace("request"); viewState.requestView = "sources"; renderRequestView(); });
+      document.getElementById("user-add").addEventListener("submit", event => { event.preventDefault(); const input = document.getElementById("user-name"); if (input.value.trim()) { users.push(input.value.trim()); input.value = ""; renderUsers(); showToast("Mock user added to current session"); } });
+      settingsTrigger.addEventListener("click", () => openSettings());
+      serviceTrigger.addEventListener("click", () => openSettings("update"));
+      settingsClose.addEventListener("click", () => closeSettings());
+      settingsBackdrop.addEventListener("click", () => closeSettings());
+      document.querySelectorAll("[data-settings-section]").forEach(button => button.addEventListener("click", () => { viewState.settingsSection = button.dataset.settingsSection; renderSettings(); }));
+      settingsContent.addEventListener("click", event => { if (event.target.closest("#clear-media-demo")) openConfirm(); });
+      qrTrigger.addEventListener("click", pinQr);
+      qrClose.addEventListener("click", event => { event.stopPropagation(); closeQr(); });
+      qrWrap.addEventListener("pointerenter", () => qrWrap.classList.remove("is-dismissed"));
+      qrWrap.addEventListener("focusin", () => {
+        if (!qrWrap.classList.contains("is-dismissed")) qrTrigger.setAttribute("aria-expanded", "true");
+      });
+      qrWrap.addEventListener("focusout", event => {
+        if (!qrWrap.contains(event.relatedTarget) && !qrWrap.classList.contains("is-pinned")) {
+          qrWrap.classList.remove("is-dismissed");
+          qrTrigger.setAttribute("aria-expanded", "false");
+        }
+      });
+      document.addEventListener("click", event => { if (!qrWrap.contains(event.target) && qrWrap.classList.contains("is-pinned")) closeQr({ restore: false }); });
+      globalOverflowTrigger.addEventListener("click", toggleGlobalOverflow);
+      globalOverflowClose.addEventListener("click", event => { event.stopPropagation(); closeGlobalOverflow(); });
+      globalOverflowWrap.addEventListener("pointerenter", () => globalOverflowWrap.classList.remove("is-dismissed"));
+      globalOverflowWrap.addEventListener("focusout", event => {
+        if (!globalOverflowWrap.contains(event.relatedTarget) && !globalOverflowWrap.classList.contains("is-pinned")) {
+          globalOverflowWrap.classList.remove("is-dismissed");
+        }
+      });
+      document.addEventListener("click", event => { if (!globalOverflowWrap.contains(event.target) && globalOverflowWrap.classList.contains("is-pinned")) closeGlobalOverflow({ restore: false }); });
+      controlOrb.addEventListener("click", openTray);
+      document.querySelectorAll(".controls-trigger").forEach(button => button.addEventListener("click", () => { if (frame.dataset.controls === "collapsed") openTray(); }));
+      trayClose.addEventListener("click", () => closeTray());
+      confirmCancel.addEventListener("click", () => closeConfirm());
+      confirmOk.addEventListener("click", () => { closeConfirm(); showToast("Wireframe only · no data was changed"); });
+      document.getElementById("recovery-dismiss").addEventListener("click", () => document.getElementById("recovery-banner").classList.add("hidden"));
+      document.addEventListener("click", event => { const mock = event.target.closest(".mock-action"); if (mock) showToast(`${mock.textContent.trim()} · wireframe only`); });
+      document.addEventListener("keydown", event => {
+        if (event.key === "Tab") { const layer = topLayer(); if (layer) trapTab(event, layer); return; }
+        if (event.key !== "Escape") return;
+        if (!confirmLayer.classList.contains("hidden")) { event.preventDefault(); closeConfirm(); return; }
+        if (!controlTray.classList.contains("hidden")) { event.preventDefault(); closeTray(); return; }
+        if (!songInspector.classList.contains("hidden")) { event.preventDefault(); closeInspector(); return; }
+        if (!settingsDrawer.classList.contains("hidden")) { event.preventDefault(); closeSettings(); return; }
+        if (qrWrap.classList.contains("is-pinned")) { event.preventDefault(); closeQr(); return; }
+        if (globalOverflowWrap.classList.contains("is-pinned")) { event.preventDefault(); closeGlobalOverflow(); return; }
+        if (closeWorkspaceOverlay()) event.preventDefault();
+      });
+      document.getElementById("queue-scroll").addEventListener("scroll", event => { viewState.scroll.queue = event.currentTarget.scrollTop; }, { passive: true });
+      document.getElementById("search-results").addEventListener("scroll", event => { viewState.search[viewState.searchMode].scroll = event.currentTarget.scrollTop; }, { passive: true });
+      document.getElementById("user-list").addEventListener("scroll", event => { viewState.scroll.users = event.currentTarget.scrollTop; }, { passive: true });
+
+      renderQueueList();
+      renderUsers();
+      renderSearchMode();
+      renderRequestView();
+      renderSettings();
+      updateControlMode();
+      renderWorkspace();
+      updateProof();
+    })();
+  </script>
+</body>
+</html>
