@@ -64,6 +64,7 @@ fn main() {
                 );
                 return Ok(());
             };
+            window_lifecycle::initialize_main_window_geometry(app, &window);
             backend_process::launch(app, window, startup_log);
             Ok(())
         })
