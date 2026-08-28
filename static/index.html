@@ -423,8 +423,17 @@
           <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
           <section class="av-sync-panel" id="av-sync-panel">
             <div class="av-sync-copy">
-              <p class="section-tag" data-i18n="player.avSyncTag">音画延迟</p>
-              <p class="av-sync-hint" data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</p>
+              <div class="cache-advanced-label-row cache-contextual-info-region playback-contextual-info-region">
+                <p class="section-tag" data-i18n="player.avSyncTag">音画延迟</p>
+                <span class="cache-advanced-info">
+                  <button type="button" class="playback-contextual-info-button cache-advanced-info-button"
+                    aria-expanded="false" aria-describedby="host-av-sync-info"
+                    data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span
+                      class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <span class="cache-advanced-tooltip" id="host-av-sync-info" role="tooltip"
+                    data-i18n="player.avSyncHint">正数表示画面提前，负数表示画面延后。</span>
+                </span>
+              </div>
             </div>
             <div class="av-sync-controls">
               <button type="button" class="toolbar-button ghost av-sync-step-button" data-step="-200">« -200</button>
@@ -444,7 +453,6 @@
           <section class="volume-panel" id="volume-panel">
             <div class="volume-copy">
               <p class="section-tag" data-i18n="player.volumeTag">播放音量</p>
-              <p class="volume-hint" data-i18n="player.volumeHint">直接控制服务端当前本地播放的音量。</p>
             </div>
             <div class="volume-controls">
               <button type="button" class="toolbar-button ghost volume-mute-button" id="volume-mute-button"
@@ -455,8 +463,17 @@
           </section>
           <section class="av-sync-panel" id="key-shift-panel">
             <div class="av-sync-copy">
-              <p class="section-tag" data-i18n="player.keyShiftTag">音调调整</p>
-              <p class="av-sync-hint" data-i18n="player.keyShiftHint">调整当前播放歌曲的音调，切歌时会自动复位。</p>
+              <div class="cache-advanced-label-row cache-contextual-info-region playback-contextual-info-region">
+                <p class="section-tag" data-i18n="player.keyShiftTag">音调调整</p>
+                <span class="cache-advanced-info">
+                  <button type="button" class="playback-contextual-info-button cache-advanced-info-button"
+                    aria-expanded="false" aria-describedby="host-key-shift-info"
+                    data-i18n-aria-label="common.moreInfo" aria-label="更多说明"><span
+                      class="contextual-info-glyph" aria-hidden="true">i</span></button>
+                  <span class="cache-advanced-tooltip" id="host-key-shift-info" role="tooltip"
+                    data-i18n="player.keyShiftHint">调整当前播放歌曲的音调，切歌时会自动复位。</span>
+                </span>
+              </div>
             </div>
             <div class="av-sync-controls">
               <button type="button" class="toolbar-button ghost av-sync-step-button"

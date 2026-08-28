@@ -75,6 +75,20 @@ class AvDelayFrontendTest(unittest.TestCase):
         self.assertEqual(floating_controls.count('aria-describedby="remote-'), 3)
         self.assertEqual(floating_controls.count('role="tooltip"'), 3)
 
+        playback_controls = self.host_html[
+            self.host_html.index('id="av-sync-panel"') :
+            self.host_html.index('class="request-panel"')
+        ]
+        self.assertEqual(playback_controls.count('class="playback-contextual-info-button'), 2)
+        self.assertEqual(playback_controls.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 2)
+        self.assertNotIn('aria-hidden="true">?</span>', playback_controls)
+        self.assertNotIn('class="av-sync-hint"', playback_controls)
+        self.assertNotIn('class="volume-hint"', playback_controls)
+        self.assertNotIn('id="volume-panel" class="volume-panel cache-contextual-info-region"', playback_controls)
+        self.assertIn('aria-describedby="host-av-sync-info"', playback_controls)
+        self.assertIn('aria-describedby="host-key-shift-info"', playback_controls)
+        self.assertEqual(playback_controls.count('role="tooltip"'), 2)
+
     def test_contextual_info_styles_cover_fine_and_coarse_pointers(self):
         self.assertIn("@media (hover: hover) and (pointer: fine)", self.host_css)
         self.assertIn("@media (hover: none), (pointer: coarse)", self.host_css)

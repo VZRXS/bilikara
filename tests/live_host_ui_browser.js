@@ -17,12 +17,18 @@ async function run() {
   const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
   const consoleErrors = [];
   const pageErrors = [];
+  const hostPlayerRequests = [];
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push(message.text());
     }
   });
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/player/")) {
+      hostPlayerRequests.push(request.url());
+    }
+  });
   await page.route("**/api/lark/search?**", (route) => {
     const items = Array.from({ length: 36 }, (_, index) => ({
       bvid: `BVHOSTUI${index}`,
@@ -158,6 +164,125 @@ async function run() {
 
     await page.locator("#search-modal-close").click();
     await page.waitForTimeout(250);
+    const playbackInfoRegions = page.locator(".playback-contextual-info-region");
+    const playbackInfoButtons = page.locator(".playback-contextual-info-button");
+    assert(await playbackInfoButtons.count() === 2, "Host A/V and Key did not expose exactly two information triggers");
+    assert(
+      await playbackInfoButtons.locator(".contextual-info-glyph").allTextContents()
+        .then((glyphs) => glyphs.every((glyph) => glyph.trim() === "i")),
+      "Host playback information did not use the lowercase i glyph",
+    );
+    assert(await page.locator("#av-sync-panel .av-sync-hint").count() === 0, "Host A/V retained its persistent explanation");
+    assert(await page.locator("#key-shift-panel .av-sync-hint").count() === 0, "Host Key retained its persistent explanation");
+    assert(await page.locator("#volume-panel .volume-hint").count() === 0, "Host volume retained its redundant explanation");
+    assert(await page.locator("#volume-panel .playback-contextual-info-button").count() === 0, "Host volume gained a mechanical information trigger");
+
+    await page.evaluate(() => {
+      window.__hostPlaybackInfoActions = 0;
+      window.__hostPlaybackInfoSession = state.hostPlaybackSession;
+      for (const selector of [
+        ".av-sync-step-button",
+        "#av-offset-input",
+        "#av-offset-reset-button",
+        "#av-delay-lock-button",
+        "#volume-mute-button",
+        "#volume-slider",
+        "#key-shift-input",
+        "#key-shift-reset-button",
+        "#player-fullscreen-button",
+        "#next-button",
+      ]) {
+        document.querySelectorAll(selector).forEach((element) => {
+          for (const eventName of ["click", "input", "change"]) {
+            element.addEventListener(eventName, () => { window.__hostPlaybackInfoActions += 1; });
+          }
+        });
+      }
+    });
+    const hostPlayerRequestCountBeforeInfo = hostPlayerRequests.length;
+    const playbackPanelGeometryBeforeInfo = await page.locator(".player-panel").evaluate((element) => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+    }));
+    const avInfo = playbackInfoButtons.first();
+    const avTooltip = page.locator(`#${await avInfo.getAttribute("aria-describedby")}`);
+    await playbackInfoRegions.first().locator(".section-tag").hover();
+    await page.waitForTimeout(220);
+    assert(await avTooltip.isVisible(), "Host A/V title hover did not expose contextual information");
+    const avTooltipBox = await avTooltip.boundingBox();
+    const playbackViewport = page.viewportSize();
+    const avPanelBox = await page.locator("#av-sync-panel").boundingBox();
+    assert(
+      avTooltipBox && avPanelBox
+        && avTooltipBox.x >= 0 && avTooltipBox.y >= 0
+        && avTooltipBox.x + avTooltipBox.width <= playbackViewport.width
+        && avTooltipBox.y + avTooltipBox.height <= playbackViewport.height
+        && avTooltipBox.y + avTooltipBox.height <= avPanelBox.y,
+      "Host A/V information was not bounded above its control panel",
+      { avTooltipBox, avPanelBox, playbackViewport },
+    );
+    await avTooltip.hover();
+    await page.waitForTimeout(140);
+    assert(await avTooltip.isVisible(), "moving into Host A/V information dismissed it");
+    await page.locator("#current-title").hover();
+    await page.waitForTimeout(330);
+    assert(!await avTooltip.isVisible(), "Host A/V pointer leave did not dismiss transient information");
+
+    const keyInfo = playbackInfoButtons.nth(1);
+    const keyTooltip = page.locator(`#${await keyInfo.getAttribute("aria-describedby")}`);
+    await keyInfo.focus();
+    assert(await keyTooltip.isVisible(), "Host Key focus did not expose contextual information");
+    assert(await keyInfo.evaluate((element) => document.activeElement === element), "Host Key information moved focus");
+    await avInfo.click();
+    assert(await avTooltip.isVisible() && await page.locator(".cache-advanced-info.is-visible").count() === 1,
+      "Host playback click did not pin exactly one explanation");
+    await page.locator("#current-title").hover();
+    assert(await avTooltip.isVisible(), "Host playback pointer leave cleared pinned information");
+    await keyInfo.click();
+    await page.waitForTimeout(180);
+    const playbackInfoTransfer = {
+      avVisible: await avTooltip.isVisible(),
+      keyVisible: await keyTooltip.isVisible(),
+      visibleCount: await page.locator(".cache-advanced-info.is-visible").count(),
+      avExpanded: await avInfo.getAttribute("aria-expanded"),
+      keyExpanded: await keyInfo.getAttribute("aria-expanded"),
+    };
+    assert(
+      !playbackInfoTransfer.avVisible && playbackInfoTransfer.keyVisible,
+      "Host playback information did not transfer one-visible ownership",
+      playbackInfoTransfer,
+    );
+    await page.locator("#current-title").click();
+    await page.waitForTimeout(180);
+    assert(!await keyTooltip.isVisible(), "Host playback outside click did not close contextual information");
+    await keyInfo.click();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(180);
+    assert(!await keyTooltip.isVisible(), "Host playback Escape did not close contextual information");
+    assert(await keyInfo.evaluate((element) => document.activeElement === element), "Host playback Escape moved focus from the trigger");
+    assert(
+      await page.evaluate(() => ({
+        actions: window.__hostPlaybackInfoActions,
+        sameSession: window.__hostPlaybackInfoSession === state.hostPlaybackSession,
+      })).then((proof) => proof.actions === 0 && proof.sameSession),
+      "Host playback information issued a control action or remounted the playback session",
+    );
+    const playbackPanelGeometryAfterInfo = await page.locator(".player-panel").evaluate((element) => ({
+      width: element.getBoundingClientRect().width,
+      height: element.getBoundingClientRect().height,
+    }));
+    assert(
+      playbackPanelGeometryAfterInfo.width === playbackPanelGeometryBeforeInfo.width
+        && playbackPanelGeometryAfterInfo.height === playbackPanelGeometryBeforeInfo.height,
+      "Host contextual information changed playback-panel geometry",
+      { playbackPanelGeometryBeforeInfo, playbackPanelGeometryAfterInfo },
+    );
+    assert(
+      hostPlayerRequests.length === hostPlayerRequestCountBeforeInfo,
+      "Host contextual information issued a player API request",
+      { before: hostPlayerRequestCountBeforeInfo, requests: hostPlayerRequests },
+    );
+
     await page.locator("#cache-settings-toggle").click();
     await page.locator("#cache-panel-advanced-trigger").click();
     const cachePanel = page.locator("#cache-panel");
@@ -194,8 +319,8 @@ async function run() {
 
     await page.locator("#cache-settings-toggle").click();
     await page.locator("#cache-panel-advanced-trigger").click();
-    const advancedInfoRegions = page.locator(".cache-contextual-info-region");
-    const advancedInfoButtons = page.locator(".cache-advanced-info-button");
+    const advancedInfoRegions = page.locator("#cache-advanced-inline-view .cache-contextual-info-region");
+    const advancedInfoButtons = page.locator("#cache-advanced-inline-view .cache-advanced-info-button");
     assert(await advancedInfoButtons.count() === 2, "advanced settings did not keep the audited two contextual explanations");
     assert(
       await advancedInfoButtons.locator(".contextual-info-glyph").allTextContents()
@@ -649,9 +774,60 @@ async function run() {
     const coarsePage = await coarseContext.newPage();
     await coarsePage.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await coarsePage.waitForTimeout(700);
+    await coarsePage.evaluate(() => {
+      window.__coarsePlaybackInfoActions = 0;
+      document.querySelectorAll([
+        ".av-sync-step-button",
+        "#av-offset-input",
+        "#av-offset-reset-button",
+        "#av-delay-lock-button",
+        "#volume-mute-button",
+        "#volume-slider",
+        "#key-shift-input",
+        "#key-shift-reset-button",
+      ].join(",")).forEach((element) => {
+        for (const eventName of ["click", "input", "change"]) {
+          element.addEventListener(eventName, () => { window.__coarsePlaybackInfoActions += 1; });
+        }
+      });
+    });
+    const coarsePlaybackInfo = coarsePage.locator(".playback-contextual-info-button").first();
+    await coarsePlaybackInfo.scrollIntoViewIfNeeded();
+    const coarsePlaybackMetrics = await coarsePlaybackInfo.evaluate((button) => {
+      const glyph = button.querySelector(".contextual-info-glyph");
+      const buttonRect = button.getBoundingClientRect();
+      const glyphRect = glyph.getBoundingClientRect();
+      return {
+        buttonWidth: buttonRect.width,
+        buttonHeight: buttonRect.height,
+        glyphWidth: glyphRect.width,
+        glyphHeight: glyphRect.height,
+        opacity: Number(getComputedStyle(button).opacity),
+      };
+    });
+    assert(
+      coarsePlaybackMetrics.buttonWidth >= 40 && coarsePlaybackMetrics.buttonHeight >= 40
+        && coarsePlaybackMetrics.buttonWidth > coarsePlaybackMetrics.glyphWidth
+        && coarsePlaybackMetrics.buttonHeight > coarsePlaybackMetrics.glyphHeight
+        && coarsePlaybackMetrics.opacity === 1,
+      "coarse-pointer Host playback information target was not discoverable and usable",
+      coarsePlaybackMetrics,
+    );
+    const coarsePlaybackBox = await coarsePlaybackInfo.boundingBox();
+    await coarsePage.touchscreen.tap(
+      coarsePlaybackBox.x + (coarsePlaybackBox.width / 2),
+      coarsePlaybackBox.y + (coarsePlaybackBox.height / 2),
+    );
+    assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "true", "Host playback touch tap did not pin information");
+    assert(
+      await coarsePage.evaluate(() => window.__coarsePlaybackInfoActions) === 0,
+      "Host playback touch tap activated an adjacent playback control",
+    );
+    await coarsePage.locator("#current-title").tap();
+    assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "false", "Host playback touch outside tap did not close information");
     await coarsePage.locator("#cache-settings-toggle").click();
     await coarsePage.locator("#cache-panel-advanced-trigger").click();
-    const coarseHostInfo = coarsePage.locator(".cache-advanced-info-button").first();
+    const coarseHostInfo = coarsePage.locator("#cache-advanced-inline-view .cache-advanced-info-button").first();
     await coarseHostInfo.scrollIntoViewIfNeeded();
     const coarseHostMetrics = await coarseHostInfo.evaluate((button) => {
       const glyph = button.querySelector(".contextual-info-glyph");
@@ -761,6 +937,7 @@ async function run() {
       },
       coarse: {
         host: coarseHostMetrics,
+        playback: coarsePlaybackMetrics,
         remote: coarseRemoteMetrics,
       },
       screenshotPath: screenshotPath || "",

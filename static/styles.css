@@ -1126,6 +1126,14 @@ h2 {
   position: relative;
 }
 
+.playback-contextual-info-region {
+  width: fit-content;
+}
+
+.playback-contextual-info-region .cache-advanced-tooltip {
+  bottom: calc(100% + 28px);
+}
+
 .cache-advanced-info {
   display: inline-flex;
   align-items: center;

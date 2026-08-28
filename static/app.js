@@ -15110,24 +15110,22 @@ elements.cachePanelAdvancedTrigger?.addEventListener("click", () => {
   syncCachePanelVisibility();
 });
 
-elements.cacheAdvancedInlineView?.addEventListener("click", (event) => {
-  const button = event.target.closest(".cache-advanced-info-button");
-  if (!button) {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  const info = button.closest(".cache-advanced-info");
-  if (info?.classList.contains("is-pinned")) {
-    closeCacheAdvancedInfo();
-    return;
-  }
-  closeCacheAdvancedInfo();
-  setCacheAdvancedInfoVisible(info, { pinned: true });
-});
-
-elements.cacheAdvancedInlineView?.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
+document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
   const info = region.querySelector(".cache-advanced-info");
+  region.addEventListener("click", (event) => {
+    const button = event.target.closest(".cache-advanced-info-button");
+    if (!button) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (info?.classList.contains("is-pinned")) {
+      closeCacheAdvancedInfo();
+      return;
+    }
+    closeCacheAdvancedInfo();
+    setCacheAdvancedInfoVisible(info, { pinned: true });
+  });
   region.addEventListener("pointerenter", (event) => {
     if (!info || !cacheAdvancedInfoSupportsHover(event) || info.classList.contains("is-visible")) {
       return;
