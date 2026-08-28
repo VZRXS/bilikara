@@ -106,9 +106,10 @@ Explicitly prohibit Rust domain code from depending upward on Python, Tauri, UI 
   fallback. These are retained I/O or historical compatibility paths, not a
   Python application core. Normal operations do not recompute Rust-owned state
   in Python.
-- FFmpeg and ffprobe CLI calls are desktop transition adapters. Media handling
-  must use a `MediaBackend` abstraction, with direct FFmpeg libraries preferred
-  for the required metadata and remux functionality.
+- The existing Rust `MediaBackend` is the preferred desktop probe/validation
+  path for supported MP4-family tracks. ffprobe is an explicit compatibility
+  adapter for unsupported containers/codecs, while FFmpeg CLI still owns the
+  retained DownKyi remux and full-packet compatibility scan.
 - Mobile production cannot depend on Python, child processes, sidecars, or CLI
   executables.
 - Tauri remains the shell and WebView integration layer. Swift and Kotlin stay

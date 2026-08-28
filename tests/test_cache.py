@@ -3617,7 +3617,7 @@ class CacheManagerPolicyTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_validate_media_file_logs_ffprobe_success(self):
+    def test_validate_media_file_logs_ffprobe_compatibility_success(self):
         log_dir = Path(self.temp_dir.name) / "logs"
         media_file = self.cache_dir / "song-a" / "video.mp4"
         media_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3626,12 +3626,16 @@ class CacheManagerPolicyTest(unittest.TestCase):
             "streams": [{"codec_type": "video", "duration": "12.34"}],
             "format": {"duration": "12.34"},
         }
-
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 log_path = manager._item_log_path("song-a")
                 with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "unsupported MP4 codec", response={}
+                    ),
+                ), patch(
                     "bilikara.cache.subprocess.run",
                     return_value=SimpleNamespace(
                         returncode=0,
@@ -3652,7 +3656,8 @@ class CacheManagerPolicyTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertTrue(run_mock.called)
-        self.assertIn("ffprobe validate 视频轨 P1: ok", log_text)
+        self.assertIn("media validate 视频轨 P1: ok", log_text)
+        self.assertIn("backend=ffprobe", log_text)
         self.assertIn("duration=12.34s", log_text)
 
     def test_validate_media_file_rejects_missing_required_stream(self):
@@ -3669,6 +3674,11 @@ class CacheManagerPolicyTest(unittest.TestCase):
             try:
                 log_path = manager._item_log_path("song-a")
                 with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "unsupported MP4 codec", response={}
+                    ),
+                ), patch(
                     "bilikara.cache.subprocess.run",
                     return_value=SimpleNamespace(
                         returncode=0,
@@ -3693,23 +3703,17 @@ class CacheManagerPolicyTest(unittest.TestCase):
         media_file = self.cache_dir / "song-a" / "audio.m4a"
         media_file.parent.mkdir(parents=True, exist_ok=True)
         media_file.write_bytes(b"media")
-        probe_payload = {
-            "streams": [{"codec_type": "video", "duration": "12.34"}],
-            "format": {"duration": "12.34"},
-        }
 
         with patch("bilikara.cache.CACHE_DIR", self.cache_dir), patch("bilikara.cache.LOG_DIR", log_dir):
             manager = CacheManager(self.store, max_cache_items=3)
             try:
                 log_path = manager._item_log_path("song-a")
-                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")), patch(
-                    "bilikara.cache.subprocess.run",
-                    return_value=SimpleNamespace(
-                        returncode=0,
-                        stdout=json.dumps(probe_payload),
-                        stderr="",
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "invalid_media", "truncated MP4", response={}
                     ),
-                ):
+                ), patch("bilikara.cache.subprocess.run") as subprocess_run:
                     with self.assertRaisesRegex(DownloadCommandError, "音轨 P1"):
                         manager._validate_cache_result(
                             "song-a",
@@ -3726,11 +3730,12 @@ class CacheManagerPolicyTest(unittest.TestCase):
                             log_path,
                             cache_attempt_token=1,
                         )
+                    subprocess_run.assert_not_called()
                 log_text = log_path.read_text(encoding="utf-8")
             finally:
                 manager.shutdown()
 
-        self.assertIn("ffprobe validate 音轨 P1: failed", log_text)
+        self.assertIn("media validate 音轨 P1: failed", log_text)
         self.assertIn("cache validation error", log_text)
         self.assertFalse(media_file.exists())
 
@@ -5073,6 +5078,28 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             file_format["duration"] = duration
         return {"streams": [stream], "format": file_format}
 
+    @staticmethod
+    def _rust_probe_payload(
+        path: Path,
+        kind: str,
+        duration: float,
+        *,
+        codec: str | None = None,
+        fragmented: bool = False,
+        fast_start: bool = True,
+    ) -> dict[str, object]:
+        return {
+            "path": str(path.resolve()),
+            "kind": kind,
+            "codec": codec or ("h264" if kind == "video" else "aac"),
+            "duration_seconds": duration,
+            "sample_count": 25,
+            "sample_bytes": 1024,
+            "file_bytes": path.stat().st_size,
+            "fragmented": fragmented,
+            "fast_start": fast_start,
+        }
+
     def test_downkyi_diagnostics_redact_signed_urls_and_cookie(self):
         safe = CacheManager._safe_url_summary(
             "https://upos.example.com/path/video.m4s?deadline=123&token=secret"
@@ -5115,13 +5142,14 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         ):
             manager = self._manager()
             try:
-                with patch("bilikara.cache.subprocess.run", return_value=SimpleNamespace(
-                    returncode=0,
-                    stdout=json.dumps(self._probe_payload("video", "120.5")),
-                    stderr="",
-                )):
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    return_value=self._rust_probe_payload(media, "video", 120.5),
+                ), patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg"
+                ) as ffprobe_resolver:
                     result = manager._validate_media_file(
-                        Path("/tools/ffprobe"),
+                        None,
                         Path("/tools/ffmpeg"),
                         media,
                         label="视频轨 P1",
@@ -5133,13 +5161,139 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
 
         self.assertEqual(result["path"], str(media))
         self.assertEqual(result["size"], 5)
-        self.assertEqual(result["format_name"], "mov,mp4,m4a")
-        self.assertEqual(result["duration"], 120.5)
-        self.assertEqual(result["start_time"], 0.0)
-        self.assertEqual(result["streams"][0]["codec_name"], "h264")
-        self.assertEqual(result["streams"][0]["codec_tag_string"], "avc1")
-        self.assertEqual(result["streams"][0]["duration_ts"], "120500")
-        self.assertEqual(result["streams"][0]["time_base"], "1/1000")
+        self.assertEqual(result["backend"], "rust")
+        self.assertEqual(result["container"], "mp4")
+        self.assertEqual(result["duration_seconds"], 120.5)
+        self.assertEqual(result["stream_count"], 1)
+        self.assertEqual(result["streams"][0]["kind"], "video")
+        self.assertEqual(result["streams"][0]["codec"], "h264")
+        self.assertEqual(result["sample_count"], 25)
+        ffprobe_resolver.assert_not_called()
+
+    def test_rust_non_unsupported_failures_never_reach_ffprobe(self):
+        media = self.cache_dir / "song" / "video.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"corrupt")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                for error_kind in ("invalid_media", "invalid_response", "io"):
+                    with self.subTest(error_kind=error_kind), patch(
+                        "bilikara.cache.rust_runtime.probe_media",
+                        side_effect=rust_runtime.RustMediaError(
+                            error_kind, "Rust probe failed", response={}
+                        ),
+                    ), patch.object(
+                        manager, "_ffprobe_path_for_ffmpeg"
+                    ) as ffprobe_resolver, patch(
+                        "bilikara.cache.subprocess.run"
+                    ) as subprocess_run:
+                        with self.assertRaisesRegex(DownloadCommandError, error_kind):
+                            manager._validate_media_file(
+                                None,
+                                Path("/tools/ffmpeg"),
+                                media,
+                                label="视频轨 P1",
+                                required_streams={"video"},
+                                log_path=self.log_path,
+                            )
+                        ffprobe_resolver.assert_not_called()
+                        subprocess_run.assert_not_called()
+            finally:
+                manager.shutdown()
+
+    def test_rust_runtime_failure_is_fail_closed_without_ffprobe(self):
+        media = self.cache_dir / "song" / "audio.m4a"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"media")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustRuntimeUnavailableError("ABI unavailable"),
+                ), patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg"
+                ) as ffprobe_resolver:
+                    with self.assertRaisesRegex(DownloadCommandError, "Rust MediaBackend 不可用"):
+                        manager._validate_media_file(
+                            None,
+                            Path("/tools/ffmpeg"),
+                            media,
+                            label="音轨 P1",
+                            required_streams={"audio"},
+                            log_path=self.log_path,
+                        )
+                ffprobe_resolver.assert_not_called()
+            finally:
+                manager.shutdown()
+
+    def test_rust_unsupported_codec_uses_normalized_ffprobe_compatibility(self):
+        media = self.cache_dir / "song" / "video.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"hevc")
+        process = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(self._probe_payload("video", "120.0")),
+            stderr="",
+        )
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "HEVC is unsupported", response={}
+                    ),
+                ), patch("bilikara.cache.subprocess.run", return_value=process):
+                    result = manager._validate_media_file(
+                        Path("/tools/ffprobe"),
+                        Path("/tools/ffmpeg"),
+                        media,
+                        label="视频轨 P1",
+                        required_streams={"video"},
+                        log_path=self.log_path,
+                    )
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(result["backend"], "ffprobe")
+        self.assertEqual(result["fallback_reason"], "unsupported_codec")
+        self.assertEqual(result["streams"], [{
+            "kind": "video",
+            "codec": "h264",
+            "duration_seconds": 120.0,
+        }])
+
+    def test_downkyi_flac_in_mp4_source_duration_uses_rust_hint(self):
+        media = self.cache_dir / "song" / "audio.flac"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"mp4-flac")
+        with patch.object(CacheManager, "_worker_loop", lambda self: None):
+            manager = self._manager()
+            try:
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    return_value=self._rust_probe_payload(
+                        media, "audio", 120.25, codec="flac"
+                    ),
+                ) as rust_probe, patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg"
+                ) as ffprobe_resolver:
+                    duration = manager._probe_original_audio_duration(
+                        None,
+                        Path("/tools/ffmpeg"),
+                        media,
+                        label="音轨 P1",
+                        log_path=self.log_path,
+                        rust_container_hint="mp4",
+                    )
+                ffprobe_resolver.assert_not_called()
+            finally:
+                manager.shutdown()
+
+        self.assertEqual(duration, 120.25)
+        self.assertEqual(rust_probe.call_args.kwargs["expected_kind"], "audio")
 
     def test_audio_stream_duration_does_not_use_video_or_container_duration(self):
         payload = {
@@ -5168,6 +5322,11 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             manager = self._manager()
             try:
                 with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "unsupported MP4 codec", response={}
+                    ),
+                ), patch(
                     "bilikara.cache.subprocess.run",
                     return_value=SimpleNamespace(
                         returncode=0,
@@ -5237,6 +5396,11 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             manager = self._manager()
             try:
                 with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=Path("/tools/ffprobe")), patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "unsupported MP4 codec", response={}
+                    ),
+                ), patch(
                     "bilikara.cache.subprocess.run",
                     return_value=SimpleNamespace(
                         returncode=0,
@@ -5265,7 +5429,7 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
 
     def test_source_audio_duration_accepts_observed_remux_delta(self):
         result = self._validate_source_audio_duration("118.0", source_duration=120.0)
-        self.assertEqual(result["duration"], 118.0)
+        self.assertEqual(result["duration_seconds"], 118.0)
 
     def test_source_audio_duration_rejects_shorter_output_beyond_tolerance(self):
         with self.assertRaisesRegex(DownloadCommandError, "与原始音轨时长不一致"):
@@ -5278,14 +5442,17 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
     def test_video_significantly_shorter_than_expected_is_rejected(self):
         self._assert_duration_rejected("video", "87", expected=243)
 
-    def test_downkyi_validation_requires_ffprobe(self):
-        media = self.cache_dir / "song" / "audio.m4a"
+    def test_downkyi_unsupported_container_requires_ffprobe(self):
+        media = self.cache_dir / "song" / "audio.flac"
         media.parent.mkdir(parents=True)
         media.write_bytes(b"media")
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
             manager = self._manager()
             try:
-                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=None):
+                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=None), patch(
+                    "bilikara.cache.rust_runtime.media_backend_available",
+                    return_value=True,
+                ):
                     with self.assertRaisesRegex(DownloadCommandError, "需要可用的 ffprobe"):
                         manager._validate_cache_result(
                             "song",
@@ -5306,16 +5473,14 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         media = self.cache_dir / "song" / "audio.m4a"
         media.parent.mkdir(parents=True)
         media.write_bytes(b"partial")
-        probe = SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(self._probe_payload("audio", "120")),
-            stderr="",
-        )
         demux = SimpleNamespace(returncode=1, stdout="", stderr="partial file: unexpected EOF")
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
             manager = self._manager()
             try:
-                with patch("bilikara.cache.subprocess.run", side_effect=[probe, demux]):
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    return_value=self._rust_probe_payload(media, "audio", 120.0),
+                ), patch("bilikara.cache.subprocess.run", return_value=demux):
                     with self.assertRaisesRegex(DownloadCommandError, "完整包扫描失败"):
                         manager._validate_media_file(
                             Path("/tools/ffprobe"),
@@ -5337,16 +5502,14 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         media = self.cache_dir / "song" / "video.mp4"
         media.parent.mkdir(parents=True)
         media.write_bytes(b"partial")
-        probe = SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(self._probe_payload("video", "120")),
-            stderr="",
-        )
         demux = SimpleNamespace(returncode=1, stdout="", stderr="partial file: unexpected EOF")
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
             manager = self._manager()
             try:
-                with patch("bilikara.cache.subprocess.run", side_effect=[probe, demux]):
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    return_value=self._rust_probe_payload(media, "video", 120.0),
+                ), patch("bilikara.cache.subprocess.run", return_value=demux):
                     with self.assertRaisesRegex(DownloadCommandError, "完整包扫描失败"):
                         manager._validate_media_file(
                             Path("/tools/ffprobe"),
@@ -5363,19 +5526,27 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_bbdown_cache_result_requires_ffprobe_for_strict_validation(self):
+    def test_bbdown_unsupported_codec_requires_ffprobe_compatibility(self):
+        media = self.cache_dir / "song" / "video.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"media")
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
             manager = self._manager()
             try:
-                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=None):
-                    with self.assertRaisesRegex(DownloadCommandError, "BBDown/DownKyi"):
+                with patch.object(manager, "_ffprobe_path_for_ffmpeg", return_value=None), patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "HEVC is unsupported", response={}
+                    ),
+                ):
+                    with self.assertRaisesRegex(DownloadCommandError, "unsupported_codec"):
                         manager._validate_cache_result(
                             "test-id",
                             {
                                 "validation_files": [
                                     {
                                         "download_source": DOWNLOAD_SOURCE_BBDOWN,
-                                        "path": Path("/fake/video.mp4"),
+                                        "path": media,
                                         "required_streams": {"video"},
                                         "label": "视频",
                                     }
@@ -5487,9 +5658,111 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                 manager.shutdown()
 
         self.assertLessEqual(
-            abs(float(metadata["duration"]) - source_duration),
+            abs(float(metadata["duration_seconds"]) - source_duration),
             SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS,
         )
+
+    def test_real_rust_and_ffprobe_agree_on_supported_mp4_decisions(self):
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        if not ffmpeg or not ffprobe or not rust_runtime.media_backend_available():
+            self.skipTest("ffmpeg/ffprobe/Rust MediaBackend unavailable")
+
+        fixture_dir = self.cache_dir / "probe-fixtures"
+        fixture_dir.mkdir(parents=True)
+        fixtures = [
+            (
+                fixture_dir / "video-tail-moov.mp4",
+                "video",
+                [
+                    "-f", "lavfi", "-i", "color=c=black:s=64x64:r=25:d=1.2",
+                    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                ],
+                False,
+                False,
+            ),
+            (
+                fixture_dir / "video-fast-start.mp4",
+                "video",
+                [
+                    "-f", "lavfi", "-i", "color=c=black:s=64x64:r=25:d=1.2",
+                    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                ],
+                False,
+                True,
+            ),
+            (
+                fixture_dir / "audio-fragmented.m4a",
+                "audio",
+                [
+                    "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=44100:duration=1.2",
+                    "-vn", "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov",
+                ],
+                True,
+                True,
+            ),
+        ]
+        for path, _kind, arguments, _fragmented, _fast_start in fixtures:
+            generated = subprocess.run(
+                [ffmpeg, "-v", "error", "-y", *arguments, str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if generated.returncode != 0:
+                self.skipTest(f"fixture generation unavailable: {generated.stderr[:120]}")
+
+        for path, kind, _arguments, fragmented, fast_start in fixtures:
+            with self.subTest(path=path.name):
+                native = rust_runtime.probe_media(source=path, expected_kind=kind)
+                external = subprocess.run(
+                    [
+                        ffprobe,
+                        "-v", "error", "-show_entries",
+                        "stream=codec_type,codec_name,duration,duration_ts,time_base",
+                        "-show_entries", "format=duration", "-of", "json", str(path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(external.returncode, 0, external.stderr)
+                payload = json.loads(external.stdout)
+                self.assertEqual(
+                    [stream["codec_type"] for stream in payload["streams"]], [kind]
+                )
+                self.assertGreater(float(native["duration_seconds"]), 1.0)
+                self.assertGreater(
+                    CacheManager._probe_stream_duration(payload, kind) or 0.0, 1.0
+                )
+                self.assertEqual(native["kind"], kind)
+                self.assertEqual(native["codec"], "h264" if kind == "video" else "aac")
+                self.assertEqual(native["fragmented"], fragmented)
+                self.assertEqual(native["fast_start"], fast_start)
+
+        valid_video = fixtures[0][0]
+        corrupt = fixture_dir / "video-truncated.mp4"
+        video_bytes = valid_video.read_bytes()
+        corrupt.write_bytes(video_bytes[: len(video_bytes) // 2])
+        for path in (fixture_dir / "empty.mp4", corrupt):
+            path.touch(exist_ok=True)
+            with self.subTest(path=path.name):
+                with self.assertRaises(rust_runtime.RustMediaError) as raised:
+                    rust_runtime.probe_media(source=path, expected_kind="video")
+                self.assertEqual(raised.exception.kind, "invalid_media")
+                external = subprocess.run(
+                    [ffprobe, "-v", "error", "-show_streams", str(path)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(external.returncode, 0)
+
+        with self.assertRaises(rust_runtime.RustMediaError) as wrong_kind:
+            rust_runtime.probe_media(source=valid_video, expected_kind="audio")
+        self.assertEqual(wrong_kind.exception.kind, "invalid_media")
 
     def test_downkyi_remux_failure_keeps_raw_file_and_rejects_cache(self):
         media = self.cache_dir / "song" / ".attempt-test" / "audio-p1.m4a"
@@ -5569,26 +5842,18 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             ]
         }
         probes = [
-            SimpleNamespace(
-                returncode=0,
-                stdout=json.dumps(self._probe_payload("video", "243")),
-                stderr="",
-            ),
-            SimpleNamespace(
-                returncode=0,
-                stdout=json.dumps(self._probe_payload("audio", "87")),
-                stderr="",
-            ),
+            self._rust_probe_payload(video, "video", 243.0),
+            self._rust_probe_payload(audio, "audio", 87.0),
         ]
 
         with patch.object(CacheManager, "_worker_loop", lambda self: None):
             manager = self._manager()
             try:
-                with patch.object(
-                    manager,
-                    "_ffprobe_path_for_ffmpeg",
-                    return_value=Path("/tools/ffprobe"),
-                ), patch("bilikara.cache.subprocess.run", side_effect=probes):
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media", side_effect=probes
+                ), patch.object(
+                    manager, "_ffprobe_path_for_ffmpeg"
+                ) as ffprobe_resolver:
                     manager._validate_cache_result(
                         "song",
                         cache_result,
@@ -5596,12 +5861,13 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
                         self.log_path,
                         cache_attempt_token=1,
                     )
+                ffprobe_resolver.assert_not_called()
             finally:
                 manager.shutdown()
 
         self.assertEqual(cache_result["validation_failure_count"], 0)
         self.assertEqual(
-            [entry["duration"] for entry in cache_result["validation_metadata"]],
+            [entry["duration_seconds"] for entry in cache_result["validation_metadata"]],
             [243.0, 87.0],
         )
 
@@ -5618,6 +5884,11 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
             manager = self._manager()
             try:
                 with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "unsupported MP4 codec", response={}
+                    ),
+                ), patch(
                     "bilikara.cache.subprocess.run",
                     return_value=SimpleNamespace(
                         returncode=0,
@@ -5647,7 +5918,12 @@ class CacheManagerMediaIntegrityEvidenceTest(unittest.TestCase):
         ):
             manager = self._manager()
             try:
-                with patch("bilikara.cache.subprocess.run", return_value=SimpleNamespace(
+                with patch(
+                    "bilikara.cache.rust_runtime.probe_media",
+                    side_effect=rust_runtime.RustMediaError(
+                        "unsupported_codec", "unsupported MP4 codec", response={}
+                    ),
+                ), patch("bilikara.cache.subprocess.run", return_value=SimpleNamespace(
                     returncode=0,
                     stdout=json.dumps(self._probe_payload(kind, actual)),
                     stderr="",

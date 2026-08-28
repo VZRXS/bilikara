@@ -121,6 +121,8 @@ ARIA2_MACOS_SOURCE_SHA256 = (
     "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b"
 )
 SOURCE_AUDIO_DURATION_TOLERANCE_SECONDS = 2.0
+RUST_MEDIA_PROBE_CONTAINER_SUFFIXES = frozenset({".m4a", ".mp4"})
+RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS = frozenset({"unsupported_codec"})
 try:
     ARIA2_CONNECTIONS_PER_TRACK = max(
         1,
@@ -4768,9 +4770,7 @@ class CacheManager:
         video_target_dir = item_dir / f"video-p{video_page}"
         video_target_dir.mkdir(parents=True, exist_ok=True)
 
-        ffprobe_path = self._ffprobe_path_for_ffmpeg(ffmpeg_path) if validate_tracks else None
-        if validate_tracks and not ffprobe_path:
-            raise DownloadCommandError("缓存校验失败: DownKyi 下载需要可用的 ffprobe")
+        ffprobe_path: Path | None = None
 
         track_args: list[tuple[dict, list[str], str, Path, str, str, dict[str, object]]] = []
         track_args.append((
@@ -4888,7 +4888,6 @@ class CacheManager:
                             attempt=attempt,
                             max_attempts=max_attempts,
                         )
-                        assert ffprobe_path is not None
                         source_audio_duration = None
                         if stream_kind == "audio":
                             source_audio_duration = self._probe_original_audio_duration(
@@ -4897,6 +4896,7 @@ class CacheManager:
                                 media_path,
                                 label=validation_label,
                                 log_path=log_path,
+                                rust_container_hint="mp4",
                             )
                         self._normalize_downkyi_media_file(
                             ffmpeg_path,
@@ -6318,26 +6318,6 @@ class CacheManager:
         if not isinstance(validation_files, list):
             return
 
-        requires_strict_validation = any(
-            isinstance(entry, dict)
-            and str(entry.get("download_source") or "") in (DOWNLOAD_SOURCE_DOWNKYI, DOWNLOAD_SOURCE_BBDOWN)
-            for entry in validation_files
-        )
-        ffprobe_path = self._ffprobe_path_for_ffmpeg(ffmpeg_path)
-        if not ffprobe_path:
-            message = "缓存校验失败: BBDown/DownKyi 下载需要可用的 ffprobe"
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] ffprobe validate: failed, ffprobe unavailable",
-            )
-            if requires_strict_validation:
-                raise DownloadCommandError(message)
-            self._append_log_line(
-                log_path,
-                f"[{self._log_timestamp()}] ffprobe validate: skipped for non-strict source",
-            )
-            return
-
         if self.store.get_item(item_id) is not None:
             self._project_cache_progress(
                 item_id,
@@ -6348,7 +6328,7 @@ class CacheManager:
             self._record_item_activity(item_id)
         self._append_log_line(
             log_path,
-            f"[{self._log_timestamp()}] ffprobe validate: start ({len(validation_files)} files)",
+            f"[{self._log_timestamp()}] media validate: start ({len(validation_files)} files)",
         )
 
         validation_errors: list[str] = []
@@ -6366,7 +6346,7 @@ class CacheManager:
                 if not isinstance(required_streams, set):
                     required_streams = set(required_streams or [])
                 metadata = self._validate_media_file(
-                    ffprobe_path,
+                    None,
                     ffmpeg_path,
                     path,
                     label=label,
@@ -6396,7 +6376,7 @@ class CacheManager:
                     self._discard_invalid_media(path)
                 self._append_log_line(
                     log_path,
-                    f"[{self._log_timestamp()}] ffprobe validate {label}: failed: {message}",
+                    f"[{self._log_timestamp()}] media validate {label}: failed: {message}",
                 )
 
         cache_result["validation_metadata"] = validation_metadata
@@ -6408,7 +6388,7 @@ class CacheManager:
                     f"[{self._log_timestamp()}] cache validation error: {message}",
                 )
             raise DownloadCommandError("；".join(validation_errors))
-        self._append_log_line(log_path, f"[{self._log_timestamp()}] ffprobe validate: ok")
+        self._append_log_line(log_path, f"[{self._log_timestamp()}] media validate: ok")
 
     def _probe_media_payload(
         self,
@@ -6466,32 +6446,36 @@ class CacheManager:
 
     def _probe_original_audio_duration(
         self,
-        ffprobe_path: Path,
+        ffprobe_path: Path | None,
         ffmpeg_path: Path,
         media_path: Path,
         *,
         label: str,
         log_path: Path,
+        rust_container_hint: str | None = None,
     ) -> float:
-        _size, payload = self._probe_media_payload(
+        metadata = self._probe_media_metadata(
             ffprobe_path,
             ffmpeg_path,
             media_path,
             label=f"{label} 原始音轨",
             log_path=log_path,
+            expected_kind="audio",
+            rust_container_hint=rust_container_hint,
         )
-        duration = self._probe_stream_duration(payload, "audio")
+        duration = self._normalized_stream_duration(metadata, "audio")
         if duration is None:
             raise DownloadCommandError(f"缓存校验失败: {label} 原始音轨未报告有效时长")
         self._append_log_line(
             log_path,
-            f"[{self._log_timestamp()}] ffprobe source audio {label}: duration={duration:.6f}s",
+            f"[{self._log_timestamp()}] media source audio {label}: "
+            f"backend={metadata['backend']}, duration={duration:.6f}s",
         )
         return duration
 
     def _validate_media_file(
         self,
-        ffprobe_path: Path,
+        ffprobe_path: Path | None,
         ffmpeg_path: Path,
         media_path: Path,
         *,
@@ -6500,15 +6484,24 @@ class CacheManager:
         log_path: Path,
         diagnostic_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        size, payload = self._probe_media_payload(
-            ffprobe_path, ffmpeg_path, media_path, label=label, log_path=log_path
+        if len(required_streams) != 1:
+            raise DownloadCommandError(f"缓存校验失败: {label}: 必须指定单一媒体流类型")
+        primary_stream_kind = next(iter(required_streams))
+        metadata = self._probe_media_metadata(
+            ffprobe_path,
+            ffmpeg_path,
+            media_path,
+            label=label,
+            log_path=log_path,
+            expected_kind=primary_stream_kind,
         )
-        streams = payload.get("streams")
+        size = int(metadata["size"])
+        streams = metadata.get("streams")
         if not isinstance(streams, list) or not streams:
             raise DownloadCommandError(f"缓存校验失败: {label}: 未识别到媒体流")
 
         detected_streams = {
-            str(stream.get("codec_type") or "").strip()
+            str(stream.get("kind") or "").strip()
             for stream in streams
             if isinstance(stream, dict)
         }
@@ -6520,13 +6513,12 @@ class CacheManager:
                 f"缓存校验失败: {label}: 缺少 {missing_label} 流，实际为 {detected_label}"
             )
 
-        primary_stream_kind = next(iter(required_streams)) if len(required_streams) == 1 else None
-        stream_duration = (
-            self._probe_stream_duration(payload, primary_stream_kind)
-            if primary_stream_kind is not None
-            else None
+        stream_duration = self._normalized_stream_duration(
+            metadata, primary_stream_kind
         )
-        duration = stream_duration or self._probe_duration(payload)
+        duration = stream_duration or self._optional_probe_float(
+            metadata.get("duration_seconds")
+        )
         context = diagnostic_context or {}
         expected_duration = self._optional_probe_float(context.get("expected_duration"))
         if expected_duration is not None and expected_duration > 0 and duration is None:
@@ -6570,32 +6562,10 @@ class CacheManager:
         stream_label = "/".join(sorted(stream for stream in detected_streams if stream)) or "unknown"
         self._append_log_line(
             log_path,
-            f"[{self._log_timestamp()}] ffprobe validate {label}: ok "
-            f"(streams={stream_label}, duration={duration_label}, size={size})",
+            f"[{self._log_timestamp()}] media validate {label}: ok "
+            f"(backend={metadata['backend']}, streams={stream_label}, "
+            f"duration={duration_label}, size={size})",
         )
-
-        file_format = payload.get("format") if isinstance(payload.get("format"), dict) else {}
-        normalized_streams = [
-            {
-                "codec_type": str(stream.get("codec_type") or ""),
-                "codec_name": str(stream.get("codec_name") or ""),
-                "codec_tag_string": str(stream.get("codec_tag_string") or ""),
-                "duration": self._optional_probe_float(stream.get("duration")),
-                "start_time": self._optional_probe_float(stream.get("start_time")),
-                "duration_ts": stream.get("duration_ts"),
-                "time_base": str(stream.get("time_base") or ""),
-            }
-            for stream in streams
-            if isinstance(stream, dict)
-        ]
-        metadata: dict[str, object] = {
-            "path": str(media_path),
-            "size": size,
-            "format_name": str(file_format.get("format_name") or ""),
-            "duration": duration,
-            "start_time": self._optional_probe_float(file_format.get("start_time")),
-            "streams": normalized_streams,
-        }
         if str(context.get("download_source") or "") == DOWNLOAD_SOURCE_DOWNKYI:
             selected = context.get("stream_metadata") if isinstance(context.get("stream_metadata"), dict) else {}
             summary = {
@@ -6617,7 +6587,7 @@ class CacheManager:
                     for candidate in media_path.parent.glob("*.aria2")
                     if candidate.is_file()
                 ],
-                "ffprobe": metadata,
+                "media_probe": metadata,
             }
             self._append_log_line(
                 log_path,
@@ -6625,6 +6595,175 @@ class CacheManager:
                 f"{json.dumps(summary, ensure_ascii=False, sort_keys=True)}",
             )
         return metadata
+
+    def _probe_media_metadata(
+        self,
+        ffprobe_path: Path | None,
+        ffmpeg_path: Path,
+        media_path: Path,
+        *,
+        label: str,
+        log_path: Path,
+        expected_kind: str,
+        rust_container_hint: str | None = None,
+    ) -> dict[str, object]:
+        if not media_path.exists():
+            raise DownloadCommandError(f"缓存校验失败: {label} 文件不存在")
+        size = media_path.stat().st_size
+        if size <= 0:
+            raise DownloadCommandError(f"缓存校验失败: {label} 文件为空")
+        use_rust = (
+            rust_container_hint == "mp4"
+            or (
+                rust_container_hint is None
+                and media_path.suffix.lower() in RUST_MEDIA_PROBE_CONTAINER_SUFFIXES
+            )
+        )
+        fallback_reason = "unsupported_container"
+        if not use_rust and not rust_runtime.media_backend_available():
+            status = rust_runtime.runtime_status()
+            message = str(status.get("error") or "Rust MediaBackend unavailable")
+            raise DownloadCommandError(
+                f"缓存校验失败: {label}: Rust MediaBackend 不可用: {message}"
+            )
+        if use_rust:
+            try:
+                probe = rust_runtime.probe_media(
+                    source=media_path,
+                    expected_kind=expected_kind,
+                )
+            except rust_runtime.RustMediaError as exc:
+                if exc.kind not in RUST_MEDIA_PROBE_FALLBACK_ERROR_KINDS:
+                    raise DownloadCommandError(
+                        f"缓存校验失败: {label}: Rust MediaBackend "
+                        f"{exc.kind}: {self._compact_probe_error(str(exc))}"
+                    ) from exc
+                fallback_reason = exc.kind
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] media probe {label}: "
+                    f"Rust unsupported ({exc.kind}), using ffprobe compatibility",
+                )
+            except rust_runtime.RustRuntimeUnavailableError as exc:
+                raise DownloadCommandError(
+                    f"缓存校验失败: {label}: Rust MediaBackend 不可用: "
+                    f"{self._compact_probe_error(str(exc))}"
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise DownloadCommandError(
+                    f"缓存校验失败: {label}: Rust MediaBackend 执行失败: "
+                    f"{self._compact_probe_error(str(exc))}"
+                ) from exc
+            else:
+                metadata = self._normalized_rust_media_probe(probe)
+                self._append_log_line(
+                    log_path,
+                    f"[{self._log_timestamp()}] media probe {label}: Rust ok "
+                    f"(codec={probe['codec']}, samples={probe['sample_count']})",
+                )
+                return metadata
+
+        resolved_ffprobe = ffprobe_path or self._ffprobe_path_for_ffmpeg(ffmpeg_path)
+        if resolved_ffprobe is None:
+            raise DownloadCommandError(
+                f"缓存校验失败: {label}: Rust MediaBackend 不支持 "
+                f"({fallback_reason})，需要可用的 ffprobe 兼容校验"
+            )
+        _size, payload = self._probe_media_payload(
+            resolved_ffprobe,
+            ffmpeg_path,
+            media_path,
+            label=label,
+            log_path=log_path,
+        )
+        metadata = self._normalized_ffprobe_media_probe(
+            payload,
+            media_path=media_path,
+            size=size,
+            fallback_reason=fallback_reason,
+        )
+        self._append_log_line(
+            log_path,
+            f"[{self._log_timestamp()}] media probe {label}: ffprobe compatibility ok "
+            f"(reason={fallback_reason})",
+        )
+        return metadata
+
+    @classmethod
+    def _normalized_rust_media_probe(
+        cls, probe: dict[str, object]
+    ) -> dict[str, object]:
+        duration = cls._optional_probe_float(probe.get("duration_seconds"))
+        kind = str(probe.get("kind") or "")
+        return {
+            "backend": "rust",
+            "path": str(probe.get("path") or ""),
+            "size": int(probe.get("file_bytes") or 0),
+            "container": "mp4",
+            "duration_seconds": duration,
+            "stream_count": 1,
+            "streams": [
+                {
+                    "kind": kind,
+                    "codec": str(probe.get("codec") or ""),
+                    "duration_seconds": duration,
+                }
+            ],
+            "sample_count": int(probe.get("sample_count") or 0),
+            "sample_bytes": int(probe.get("sample_bytes") or 0),
+            "fragmented": bool(probe.get("fragmented")),
+            "fast_start": bool(probe.get("fast_start")),
+        }
+
+    @classmethod
+    def _normalized_ffprobe_media_probe(
+        cls,
+        payload: dict[str, object],
+        *,
+        media_path: Path,
+        size: int,
+        fallback_reason: str,
+    ) -> dict[str, object]:
+        raw_streams = payload.get("streams")
+        raw_streams = raw_streams if isinstance(raw_streams, list) else []
+        streams = [
+            {
+                "kind": str(stream.get("codec_type") or ""),
+                "codec": str(stream.get("codec_name") or ""),
+                "duration_seconds": cls._probe_stream_duration(
+                    {"streams": [stream]}, str(stream.get("codec_type") or "")
+                ),
+            }
+            for stream in raw_streams
+            if isinstance(stream, dict)
+        ]
+        file_format = payload.get("format")
+        file_format = file_format if isinstance(file_format, dict) else {}
+        return {
+            "backend": "ffprobe",
+            "fallback_reason": fallback_reason,
+            "path": str(media_path),
+            "size": size,
+            "container": str(file_format.get("format_name") or ""),
+            "duration_seconds": cls._probe_duration(payload),
+            "stream_count": len(streams),
+            "streams": streams,
+        }
+
+    @classmethod
+    def _normalized_stream_duration(
+        cls, metadata: dict[str, object], stream_kind: str
+    ) -> float | None:
+        streams = metadata.get("streams")
+        if not isinstance(streams, list):
+            return None
+        for stream in streams:
+            if not isinstance(stream, dict) or str(stream.get("kind") or "") != stream_kind:
+                continue
+            duration = cls._optional_probe_float(stream.get("duration_seconds"))
+            if duration is not None and duration > 0:
+                return duration
+        return None
 
     @staticmethod
     def _duration_tolerance(expected_duration: float) -> float:

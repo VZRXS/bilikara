@@ -84,11 +84,12 @@ External-tool direction:
   resolution, selection, probing, and MP4/FLAC normalization are Rust-owned.
   BBDown, yt-dlp, aria2c, and FFmpeg CLI remain explicit desktop alternatives
   or compatibility fallbacks rather than hidden per-operation fallbacks.
-- Media backend: introduce a `MediaBackend` abstraction. Prefer direct FFmpeg
-  libraries, primarily the required `libavformat`/`libavutil` functionality;
-  remove ffprobe CLI use where the library backend covers current metadata
-  inspection. Keep FFmpeg CLI only as a desktop transition fallback. Mobile
-  production must not depend on CLI executables.
+- Media backend: the existing pure-Rust `rust-runtime` `MediaBackend` now owns
+  supported MP4-family probe/validation and normalization. ffprobe remains an
+  explicit desktop compatibility path for unsupported containers/codecs, and
+  FFmpeg CLI retains DownKyi remux and full-packet scans. Consider direct FFmpeg
+  libraries only if a later measured coverage gap justifies their packaging and
+  cross-platform cost. Mobile production must not depend on CLI executables.
 
 Casting foundation:
 

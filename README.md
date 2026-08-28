@@ -269,7 +269,7 @@ CI 的正式打包流程会先构建 Python 后端包，再构建 Tauri 桌面�
 - 播放流程以本地缓存和本地媒体播放为主；BBDown 是默认下载源，DownKyi / aria2c 与 Rust Native 是独立的可选下载源
 - Rust Native 由 `bilikara_runtime` 直接下载、校验并重封装媒体，以临时文件和完整 sample 校验后原子发布，视频输出使用 fast-start MP4
 - 当前原生媒体链路选择 AVC/H.264 视频以及常规 AAC 或可用的 Hi-Res FLAC 音轨；高解析音频处理失败时不会静默回退到外部工具
-- BBDown 源调用独立的 BBDown 与 FFmpeg / ffprobe 进程；DownKyi 源只在用户明确选择并准备 aria2c 后调用它；Rust Native 不会静默回退到 aria2c 或 Python 媒体实现
+- BBDown 与 DownKyi 的分离 MP4/M4A 轨道优先由 Rust MediaBackend 校验；仅当容器或编解码不受支持时才调用绑定的 ffprobe 兼容校验。DownKyi 的 FFmpeg 重封装与 BBDown/DownKyi 完整包扫描仍保留；Rust Native 不会静默回退到 aria2c 或 Python 媒体实现
 - 手机访问 URL 的首选地址来自系统路由决定的源 IPv4；其他活动物理网卡地址可作为备用，虚拟和隧道地址会被降级
 - BBDown 与 Rust Native 下载日志会写到应用数据目录下的 `data/logs/`
 - 本次已唱记录会单独写入 `data/played_sessions/played-YYYY-MM-DD_HH-MM-SS-ffffff.json`

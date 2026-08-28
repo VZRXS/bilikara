@@ -1311,6 +1311,49 @@ mod tests {
         write_audio_fixture(path, &samples);
     }
 
+    fn write_h264_fixture(path: &Path) {
+        let file = File::create(path).expect("create fixture");
+        let config = Mp4Config {
+            major_brand: "isom".parse().unwrap(),
+            minor_version: 512,
+            compatible_brands: vec!["isom".parse().unwrap(), "avc1".parse().unwrap()],
+            timescale: 1000,
+        };
+        let mut writer = Mp4Writer::write_start(file, &config).expect("start fixture");
+        writer
+            .add_track(&TrackConfig {
+                track_type: TrackType::Video,
+                timescale: 25_000,
+                language: "und".to_string(),
+                media_conf: MediaConfig::AvcConfig(AvcConfig {
+                    width: 64,
+                    height: 64,
+                    seq_param_set: vec![
+                        0x67, 0x42, 0xc0, 0x1e, 0xda, 0x02, 0x80, 0xb7, 0xfe, 0x5c, 0x05, 0x05,
+                        0x05, 0x02,
+                    ],
+                    pic_param_set: vec![0x68, 0xce, 0x3c, 0x80],
+                }),
+            })
+            .expect("add track");
+        for index in 0..25 {
+            writer
+                .write_sample(
+                    1,
+                    &Mp4Sample {
+                        start_time: index * 1000,
+                        duration: 1000,
+                        rendering_offset: 0,
+                        is_sync: index == 0,
+                        bytes: vec![0, 0, 0, 2, 0x65, index as u8].into(),
+                    },
+                )
+                .expect("write sample");
+        }
+        writer.write_end().expect("end fixture");
+        writer.into_writer().sync_all().expect("flush fixture");
+    }
+
     fn real_flac_parts() -> ([u8; 34], Vec<u8>) {
         let bytes = BASE64
             .decode(REAL_FLAC_FIXTURE_BASE64)
@@ -1402,6 +1445,66 @@ mod tests {
         assert_eq!(result.output.sample_bytes, 64);
         assert!(result.output.fast_start);
         assert!(destination.is_file());
+    }
+
+    #[test]
+    fn probes_supported_h264_aac_and_flac_mp4_tracks() {
+        let root = test_dir("probe-codecs");
+        let video = root.join("video.mp4");
+        let audio = root.join("audio.m4a");
+        let flac = root.join("flac.m4a");
+        write_h264_fixture(&video);
+        write_aac_fixture(&audio);
+        write_flac_mp4_fixture(&flac);
+
+        let cases = [
+            (video, ExpectedMediaKind::Video, "h264", 25),
+            (audio, ExpectedMediaKind::Audio, "aac", 4),
+            (flac, ExpectedMediaKind::Audio, "flac", 1),
+        ];
+        for (source, expected_kind, expected_codec, expected_samples) in cases {
+            let probe = probe_media(&MediaPathRequest {
+                schema_version: 1,
+                source,
+                expected_kind,
+            })
+            .expect("probe supported media");
+            assert_eq!(probe.codec, expected_codec);
+            assert_eq!(probe.sample_count, expected_samples);
+            assert!(probe.sample_bytes > 0);
+            assert!(probe.duration_seconds > 0.0);
+        }
+    }
+
+    #[test]
+    fn rejects_empty_truncated_and_zero_duration_mp4_inputs() {
+        let root = test_dir("probe-invalid");
+        let valid = root.join("valid.m4a");
+        write_aac_fixture(&valid);
+
+        let empty = root.join("empty.m4a");
+        File::create(&empty).expect("create empty fixture");
+        let truncated = root.join("truncated.m4a");
+        let bytes = fs::read(&valid).expect("read valid fixture");
+        fs::write(&truncated, &bytes[..bytes.len() / 2]).expect("write truncated fixture");
+        let zero_duration = root.join("zero-duration.m4a");
+        let mut zero_duration_bytes = bytes;
+        let stts = zero_duration_bytes
+            .windows(4)
+            .position(|value| value == b"stts")
+            .expect("stts box");
+        zero_duration_bytes[stts + 16..stts + 20].copy_from_slice(&0_u32.to_be_bytes());
+        fs::write(&zero_duration, zero_duration_bytes).expect("write zero-duration fixture");
+
+        for source in [empty, truncated, zero_duration] {
+            let error = probe_media(&MediaPathRequest {
+                schema_version: 1,
+                source,
+                expected_kind: ExpectedMediaKind::Audio,
+            })
+            .expect_err("invalid fixture should fail");
+            assert_eq!(error.kind, MediaErrorKind::InvalidMedia);
+        }
     }
 
     #[test]
