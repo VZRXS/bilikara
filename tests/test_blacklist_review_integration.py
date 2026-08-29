@@ -7,13 +7,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BlacklistReviewIntegrationTest(unittest.TestCase):
-    def test_developer_modal_exposes_blacklist_below_pending_review(self):
+    def test_developer_catalog_tools_expose_blacklist_below_pending_review(self):
         html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        review_index = html.index('data-target="review"')
-        blacklist_index = html.index('data-target="blacklist"')
+        review_index = html.index('data-catalog-tool="review"')
+        blacklist_index = html.index('data-catalog-tool="blacklist"')
 
         self.assertLess(review_index, blacklist_index)
         self.assertIn('data-i18n="search.blacklistBrowse"', html)
+        self.assertIn('class="catalog-advanced developer-only"', html)
 
     def test_frontend_separates_review_rejection_from_generic_delete(self):
         source = (ROOT / "static" / "app.js").read_text(encoding="utf-8")

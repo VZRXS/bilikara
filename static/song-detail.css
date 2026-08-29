@@ -1,4 +1,3 @@
-.selection-modal-card.search-modal-card,
 .remote-search-modal-card {
   position: relative;
   overflow: hidden;
@@ -25,13 +24,11 @@
   animation: song-detail-backdrop-out 0.2s ease-out forwards;
 }
 
-#search-modal:not(.hidden):not(.closing) > .selection-modal-card.search-modal-card,
 #search-modal:not(.hidden):not(.closing) > .remote-search-modal-card {
   transform-origin: center;
   animation: song-detail-card-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-#search-modal.closing > .selection-modal-card.search-modal-card,
 #search-modal.closing > .remote-search-modal-card {
   animation: song-detail-card-out 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
@@ -77,7 +74,7 @@
   right: -14px;
 }
 
-.selection-modal .search-modal-close,
+.request-workspace .song-detail-close,
 .selection-modal .song-detail-close,
 .remote-search-modal .remote-search-modal-close,
 .remote-search-modal .song-detail-close {
@@ -99,17 +96,9 @@
   transition: background 0.2s ease;
 }
 
-.selection-modal .search-modal-close {
-  top: 26px;
-}
-
-.selection-modal #search-modal-content-placeholder .search-head-actions {
-  margin-right: 54px;
-}
-
 @media (hover: hover) and (pointer: fine) {
-  .selection-modal .search-modal-close:hover,
-  .selection-modal .search-modal-close:focus-visible,
+  .request-workspace .song-detail-close:hover,
+  .request-workspace .song-detail-close:focus-visible,
   .selection-modal .song-detail-close:hover,
   .selection-modal .song-detail-close:focus-visible,
   .remote-search-modal .remote-search-modal-close:hover,
@@ -358,11 +347,6 @@
 
   .remote-search-modal .song-detail-close {
     padding-bottom: 3px;
-  }
-
-  .selection-modal .search-modal-close {
-    top: 18px;
-    right: 14px;
   }
 
   .song-detail-hero {

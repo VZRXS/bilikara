@@ -313,7 +313,7 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
             self.assertEqual(translations[language]["search.openOnBilibili"], value)
             self.assertNotIn("search.detailBvidLabel", translations[language])
 
-    def test_expanded_search_cards_open_details_before_ordering(self):
+    def test_direct_workspace_cards_open_details_before_ordering(self):
         host_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
 
@@ -324,7 +324,9 @@ console.log(JSON.stringify({{ firstUrl, secondUrl, before, after }}));
             self.assertIn("searchResultItemByElement.get(card)", source)
             self.assertIn("ownerAvatarFromCachedOwners(", source)
             self.assertIn("detailSource: source", source)
-            self.assertIn('container?.closest("#search-modal")', source)
+        self.assertNotIn('container?.closest("#search-modal")', host_js)
+        self.assertIn('event.target.closest("button[data-url]")', host_js)
+        self.assertIn('container?.closest("#search-modal")', remote_js)
 
     def test_detail_avatar_prefers_matching_owner_name_over_collaboration_mid(self):
         source = (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8")
@@ -936,24 +938,25 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         self.assertNotIn("transform: scale(0.5);", remote_css)
         self.assertNotIn("transform: scale(0.5);", detail_css)
 
-    def test_expanded_search_uses_x_close_buttons_and_animated_exit(self):
+    def test_song_detail_and_remote_modal_use_x_close_buttons_and_animated_exit(self):
         host_html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         remote_html = (ROOT / "static" / "remote.html").read_text(encoding="utf-8")
         host_js = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
         remote_js = (ROOT / "static" / "remote.js").read_text(encoding="utf-8")
         detail_css = (ROOT / "static" / "song-detail.css").read_text(encoding="utf-8")
 
-        for html in (host_html, remote_html):
-            close_button = re.search(r'<button[^>]+id="search-modal-close"[\s\S]*?</button>', html)
-            self.assertIsNotNone(close_button)
-            self.assertIn(">×</button>", close_button.group(0))
-            self.assertIn('data-i18n-aria-label="common.close"', close_button.group(0))
+        self.assertNotIn('id="search-modal-close"', host_html)
+        close_button = re.search(r'<button[^>]+id="search-modal-close"[\s\S]*?</button>', remote_html)
+        self.assertIsNotNone(close_button)
+        self.assertIn(">×</button>", close_button.group(0))
+        self.assertIn('data-i18n-aria-label="common.close"', close_button.group(0))
 
-        self.assertIn('elements.searchModal.classList.add("closing");', host_js)
+        self.assertIn('const container = elements.requestWorkspace;', host_js)
+        self.assertNotIn('elements.searchModal.classList.add("closing");', host_js)
         self.assertIn('elements.searchModal.classList.add("closing");', remote_js)
-        self.assertIn("}, 220);", host_js)
+        self.assertIn('root.className = "song-detail-view hidden";', (ROOT / "static" / "song-detail.js").read_text(encoding="utf-8"))
         self.assertIn("}, 220);", remote_js)
-        self.assertIn("#search-modal.closing > .selection-modal-card.search-modal-card", detail_css)
+        self.assertIn(".song-detail-view.closing .song-detail-card", detail_css)
         self.assertIn("#search-modal.closing > .remote-search-modal-card", detail_css)
         self.assertIn("animation: song-detail-card-out 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;", detail_css)
 
@@ -962,11 +965,11 @@ function anchorPointForEvent() {{ return {{ x: 0, y: 0 }}; }}
         host_css = (ROOT / "static" / "styles.css").read_text(encoding="utf-8")
         remote_css = (ROOT / "static" / "remote.css").read_text(encoding="utf-8")
 
-        self.assertIn(".selection-modal .search-modal-close,\n.selection-modal .song-detail-close", detail_css)
-        self.assertIn(".selection-modal .search-modal-close:hover", detail_css)
+        self.assertIn(".request-workspace .song-detail-close,\n.selection-modal .song-detail-close", detail_css)
+        self.assertIn(".request-workspace .song-detail-close:hover", detail_css)
         self.assertIn("width: 32px;\n  height: 32px;\n  min-height: 32px;", detail_css)
         self.assertIn("box-shadow: none;", detail_css)
-        self.assertIn("margin-right: 54px;", detail_css)
+        self.assertNotIn("#search-modal-content-placeholder", detail_css)
         self.assertIn("transition: background 0.2s ease;", detail_css)
         self.assertIn(".remote-search-modal .remote-search-modal-close,\n.remote-search-modal .song-detail-close", detail_css)
         self.assertIn("touch-action: manipulation;", detail_css)

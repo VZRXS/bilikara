@@ -559,24 +559,238 @@
           <section class="host-workspace-region" id="host-workspace-region" role="region"
             aria-labelledby="work-rail-queue" data-active-workspace="queue">
 
-        <section class="request-panel host-workspace-fragment" id="host-workspace-request" role="tabpanel"
+        <section class="request-workspace host-workspace-fragment" id="host-workspace-request" role="tabpanel"
           aria-labelledby="work-rail-request" data-host-workspace-panel="request" hidden inert>
-          <div class="request-head">
+          <header class="request-workspace-head">
             <div>
-              <p class="section-tag" data-i18n="request.tag">Song Request</p>
+              <p class="section-tag" data-i18n="request.workspaceTag">Request</p>
               <h2 id="workspace-request-heading" data-host-workspace-heading tabindex="-1"
-                data-i18n="request.title">点歌</h2>
+                data-i18n="request.workspaceTitle">点歌</h2>
             </div>
-          </div>
+            <nav class="request-subview-tabs" role="tablist" aria-label="点歌视图"
+              data-i18n-aria-label="request.viewSelector">
+              <button type="button" role="tab" data-request-view="quick" aria-controls="request-quick-panel"
+                aria-selected="false" tabindex="-1" data-i18n="request.quickTab">快速点歌</button>
+              <button type="button" role="tab" data-request-view="search" aria-controls="request-search-panel"
+                aria-selected="true" tabindex="0" data-i18n="request.searchTab">搜索</button>
+              <button type="button" role="tab" data-request-view="discover" aria-controls="request-discover-panel"
+                aria-selected="false" tabindex="-1" data-i18n="request.discoverTab">发现</button>
+              <button type="button" role="tab" data-request-view="sources" aria-controls="request-sources-panel"
+                aria-selected="false" tabindex="-1" data-i18n="request.sourcesTab">来源</button>
+            </nav>
+          </header>
 
-          <form id="add-form" class="add-form compact-form">
-            <select id="requester-select" name="requester_name"></select>
-            <input id="url-input" name="url" type="text" placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
-              data-i18n-placeholder="request.urlPlaceholder" autocomplete="off" />
-            <button type="submit" data-i18n="request.submit">点歌</button>
-            <button type="button" id="queue-next-button" class="secondary" data-i18n="request.next">顶歌到下一首</button>
-            <p class="help-text" id="form-message"></p>
-          </form>
+          <div class="request-workspace-body">
+            <section class="request-subview request-quick-view" id="request-quick-panel" role="tabpanel"
+              data-request-panel="quick" aria-labelledby="workspace-request-heading" hidden inert>
+              <div class="request-subview-copy">
+                <p class="section-tag" data-i18n="request.tag">Song Request</p>
+                <h3 data-i18n="request.quickTab">快速点歌</h3>
+              </div>
+              <form id="add-form" class="add-form compact-form">
+                <select id="requester-select" name="requester_name"></select>
+                <input id="url-input" name="url" type="text" placeholder="输入 Bilibili 视频链接、BV 号或 av 号"
+                  data-i18n-placeholder="request.urlPlaceholder" autocomplete="off" />
+                <button type="submit" data-i18n="request.submit">点歌</button>
+                <button type="button" id="queue-next-button" class="secondary"
+                  data-i18n="request.next">顶歌到下一首</button>
+                <p class="help-text message-surface message-inline" id="form-message" role="status" aria-live="polite"></p>
+              </form>
+            </section>
+
+            <section class="request-subview request-search-view" id="request-search-panel" role="tabpanel"
+              data-request-panel="search" aria-labelledby="workspace-request-heading">
+              <header class="request-mode-head">
+                <div class="request-mode-tabs" role="tablist" aria-label="搜索范围"
+                  data-i18n-aria-label="search.modeSelector">
+                  <button type="button" role="tab" data-search-mode="shared"
+                    aria-controls="request-search-shared" aria-selected="true" tabindex="0"
+                    data-i18n="search.sharedCatalog">共享曲库</button>
+                  <button type="button" role="tab" data-search-mode="local"
+                    aria-controls="request-search-local" aria-selected="false" tabindex="-1"
+                    data-i18n="search.localLibrary">本地曲库</button>
+                </div>
+                <p class="request-mode-contract" id="search-mode-contract"
+                  data-i18n="search.sharedContract">最多显示 80 条共享曲库结果</p>
+              </header>
+
+              <section class="request-mode-panel" id="request-search-shared" role="tabpanel"
+                data-search-panel="shared">
+                <form id="lark-search-form" class="search-inputs request-query-form">
+                  <div class="input-group">
+                    <input type="text" id="lark-search-query" placeholder="在 bilikara 共享数据库中搜索"
+                      data-i18n-placeholder="search.sharedPlaceholder" autocomplete="off">
+                  </div>
+                  <button type="submit" id="lark-search-button" class="next-button"
+                    data-i18n="search.submit">搜索</button>
+                </form>
+                <p class="search-message message-surface" id="lark-search-message" role="status" aria-live="polite"></p>
+                <div id="lark-search-results" class="search-results request-scroll-region hidden" tabindex="0"
+                  aria-label="共享曲库搜索结果" data-i18n-aria-label="search.sharedResultsLabel"></div>
+              </section>
+
+              <section class="request-mode-panel" id="request-search-local" role="tabpanel"
+                data-search-panel="local" hidden inert>
+                <form id="search-form" class="search-inputs request-query-form">
+                  <div class="input-group">
+                    <input type="text" id="search-query" placeholder="在已配置来源的缓存元数据中搜索"
+                      data-i18n-placeholder="search.localPlaceholder" autocomplete="off">
+                  </div>
+                  <button type="submit" id="search-button" class="next-button"
+                    data-i18n="search.submit">搜索</button>
+                </form>
+                <p class="search-message message-surface" id="search-message" role="status" aria-live="polite"></p>
+                <div id="search-results" class="search-results request-scroll-region hidden" tabindex="0"
+                  aria-label="本地曲库搜索结果" data-i18n-aria-label="search.localResultsLabel"></div>
+              </section>
+            </section>
+
+            <section class="request-subview request-discover-view" id="request-discover-panel" role="tabpanel"
+              data-request-panel="discover" aria-labelledby="workspace-request-heading" hidden inert>
+              <header class="request-mode-head">
+                <div class="request-mode-tabs" role="tablist" aria-label="发现方式"
+                  data-i18n-aria-label="discover.modeSelector">
+                  <button type="button" role="tab" data-discover-mode="categories"
+                    aria-controls="request-discover-categories" aria-selected="true" tabindex="0"
+                    data-i18n="discover.categories">类别</button>
+                  <button type="button" role="tab" data-discover-mode="name"
+                    aria-controls="request-discover-name" aria-selected="false" tabindex="-1"
+                    data-i18n="discover.name">名称</button>
+                  <button type="button" role="tab" data-discover-mode="artist"
+                    aria-controls="request-discover-artist" aria-selected="false" tabindex="-1"
+                    data-i18n="discover.artist">歌手</button>
+                </div>
+                <details class="catalog-advanced developer-only" id="catalog-advanced-menu">
+                  <summary data-i18n="discover.advanced">高级曲库工具</summary>
+                  <div class="catalog-advanced-actions">
+                    <button type="button" data-catalog-tool="review"
+                      data-i18n="search.reviewPending">待审核稿件</button>
+                    <button type="button" data-catalog-tool="blacklist"
+                      data-i18n="search.blacklistBrowse">黑名单视频一览</button>
+                  </div>
+                </details>
+              </header>
+              <section class="request-mode-panel request-scroll-region" id="request-discover-categories"
+                role="tabpanel" data-discover-panel="categories" tabindex="0"
+                aria-label="类别浏览" data-i18n-aria-label="discover.categoriesResultsLabel"></section>
+              <section class="request-mode-panel request-scroll-region" id="request-discover-name"
+                role="tabpanel" data-discover-panel="name" tabindex="0" hidden inert
+                aria-label="名称浏览" data-i18n-aria-label="discover.nameResultsLabel"></section>
+              <section class="request-mode-panel request-scroll-region" id="request-discover-artist"
+                role="tabpanel" data-discover-panel="artist" tabindex="0" hidden inert
+                aria-label="歌手浏览" data-i18n-aria-label="discover.artistResultsLabel"></section>
+              <section class="request-mode-panel request-scroll-region catalog-advanced-view" id="catalog-advanced-view"
+                tabindex="0" hidden inert aria-label="高级曲库工具">
+                <button type="button" class="toolbar-button ghost catalog-advanced-back"
+                  id="catalog-advanced-back" data-i18n="common.back">返回</button>
+                <div id="catalog-advanced-content"></div>
+              </section>
+            </section>
+
+            <section class="request-subview request-sources-view" id="request-sources-panel" role="tabpanel"
+              data-request-panel="sources" aria-labelledby="workspace-request-heading" hidden inert>
+              <header class="request-mode-head">
+                <div class="request-mode-tabs" role="tablist" aria-label="来源类型"
+                  data-i18n-aria-label="sources.modeSelector">
+                  <button type="button" role="tab" data-sources-mode="uids"
+                    aria-controls="request-sources-uids" aria-selected="true" tabindex="0"
+                    data-i18n="sources.addedUids">已添加 UID</button>
+                  <button type="button" role="tab" data-sources-mode="favorites"
+                    aria-controls="request-sources-favorites" aria-selected="false" tabindex="-1"
+                    data-i18n="sources.favorites">收藏夹</button>
+                </div>
+              </header>
+
+              <section class="request-mode-panel source-mode-panel" id="request-sources-uids" role="tabpanel"
+                data-sources-panel="uids">
+                <div class="source-action-row">
+                  <form id="modal-follow-uid-form" class="follow-search-form modal-uid-form">
+                    <input type="text" id="modal-follow-uid-input" placeholder="UID 或 UP 主空间链接"
+                      data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
+                    <button type="submit" id="modal-add-follow-uid-button" class="next-button"
+                      data-i18n="sources.addUid">添加 UID</button>
+                  </form>
+                  <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button"
+                    data-i18n="sources.refreshVideos">刷新视频</button>
+                  <button type="button" id="open-added-uids-button" class="toolbar-button ghost"
+                    data-i18n="sources.openAddedUids">打开来源列表</button>
+                </div>
+                <p class="gatcha-message source-action-message" id="gatcha-uid-message" role="status"></p>
+                <div class="source-browse-scroll request-scroll-region" id="request-sources-uids-scroll" tabindex="0"
+                  aria-label="已添加 UID 来源" data-i18n-aria-label="sources.addedUidsResultsLabel">
+                  <div class="follow-browser" id="follow-browser">
+                    <div id="follow-up-list-view" class="follow-up-list-view">
+                      <div id="follow-up-grid" class="follow-up-grid" role="list"></div>
+                    </div>
+                    <div id="follow-up-items-view" class="follow-up-items-view hidden">
+                      <div class="follow-browser-head">
+                        <button type="button" id="follow-browse-back" class="toolbar-button ghost"
+                          data-i18n="common.back">返回</button>
+                        <img id="follow-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy"
+                          referrerpolicy="no-referrer">
+                        <div class="follow-browser-title-block">
+                          <h3 id="follow-browse-title" data-i18n="follow.ownerItemsTitle">UP 主稿件</h3>
+                          <p id="follow-browse-count" class="follow-browser-count"
+                            data-i18n="follow.zeroCount">0 首</p>
+                        </div>
+                      </div>
+                      <form id="follow-search-form" class="follow-search-form">
+                        <input type="text" id="follow-search-query" placeholder="在这个 UP 的缓存稿件里搜索"
+                          data-i18n-placeholder="search.followPlaceholder" autocomplete="off">
+                        <button type="submit" id="follow-search-button" class="next-button"
+                          data-i18n="search.submit">搜索</button>
+                      </form>
+                      <div id="follow-song-results" class="search-results"></div>
+                    </div>
+                    <p class="gatcha-message" id="follow-browse-message" role="status"></p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="request-mode-panel source-mode-panel" id="request-sources-favorites" role="tabpanel"
+                data-sources-panel="favorites" hidden inert>
+                <div class="source-action-row">
+                  <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form">
+                    <input type="text" id="modal-favlist-uid-input" placeholder="UID 或 UP 主空间链接"
+                      data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
+                    <button type="submit" id="modal-pull-favlist-button" class="next-button"
+                      data-i18n="sources.fetchCollections">获取收藏夹</button>
+                  </form>
+                  <button type="button" id="open-favorites-button" class="toolbar-button ghost"
+                    data-i18n="sources.openFavorites">打开收藏夹列表</button>
+                </div>
+                <div class="source-browse-scroll request-scroll-region" id="request-sources-favorites-scroll"
+                  tabindex="0" aria-label="收藏夹来源" data-i18n-aria-label="sources.favoritesResultsLabel">
+                  <div id="favlist-browser-view" class="favlist-browser">
+                    <div id="favlist-list-view" class="follow-up-list-view">
+                      <div id="favlist-grid" class="follow-up-grid favlist-grid" role="list"></div>
+                    </div>
+                    <div id="favlist-items-view" class="follow-up-items-view hidden">
+                      <div class="follow-browser-head">
+                        <button type="button" id="favlist-browse-back" class="toolbar-button ghost"
+                          data-i18n="common.back">返回</button>
+                        <img id="favlist-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy"
+                          referrerpolicy="no-referrer">
+                        <div class="follow-browser-title-block">
+                          <h3 id="favlist-browse-title" data-i18n="favlist.browseItemsTitle">收藏夹稿件</h3>
+                          <p id="favlist-browse-count" class="follow-browser-count"
+                            data-i18n="follow.zeroCount">0 首</p>
+                        </div>
+                      </div>
+                      <form id="favlist-search-form" class="follow-search-form">
+                        <input type="text" id="favlist-search-query" placeholder="在这个收藏夹的缓存稿件里搜索"
+                          data-i18n-placeholder="favlist.searchPlaceholder" autocomplete="off">
+                        <button type="submit" id="favlist-search-button" class="next-button"
+                          data-i18n="search.submit">搜索</button>
+                      </form>
+                      <div id="favlist-song-results" class="search-results"></div>
+                    </div>
+                    <p class="gatcha-message" id="favlist-browse-message" role="status"></p>
+                  </div>
+                </div>
+              </section>
+            </section>
+          </div>
         </section>
 
         <section class="request-panel session-users-panel host-workspace-fragment" id="session-users-panel"
@@ -637,112 +851,6 @@
             </div>
           </section>
 
-          <section class="list-card sub-card search-sub-card host-workspace-fragment" id="search-panel"
-            role="tabpanel" aria-labelledby="work-rail-request" data-host-workspace-panel="request" hidden inert>
-            <div class="search-card">
-              <div id="search-card-content" class="search-card-content">
-                <div class="search-sub-card-head">
-                  <div class="search-title-row">
-                    <button type="button" id="search-expand-button" class="toolbar-button ghost search-expand-button"
-                      title="全屏展开" aria-label="全屏展开">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                        stroke-linejoin="round">
-                        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path>
-                      </svg>
-                    </button>
-                    <div>
-                      <p class="section-tag" id="search-tag" data-i18n="search.localTag">Local Search</p>
-                      <h2 id="search-title" data-i18n="search.title">搜索</h2>
-                    </div>
-                  </div>
-                  <div class="search-head-actions">
-                    <button type="button" id="search-cookie-toggle" class="toolbar-button ghost search-cookie-toggle"
-                      data-i18n="search.followBrowse">
-                      关注浏览
-                    </button>
-                    <button type="button" id="search-lark-toggle" class="toolbar-button ghost search-lark-toggle"
-                      data-i18n="search.larkSearch">
-                      bilikara 搜索
-                    </button>
-                  </div>
-                </div>
-
-                <div id="search-stage" class="search-stage">
-                  <div id="search-stage-inner" class="search-stage-inner">
-                    <div id="search-main-view" class="search-face search-face-front">
-                      <form id="search-form" class="search-inputs">
-                        <div class="input-group">
-                          <input type="text" id="search-query" placeholder="在本地歌曲目录中搜索"
-                            data-i18n-placeholder="search.localPlaceholder" autocomplete="off">
-                        </div>
-                        <button type="submit" id="search-button" class="next-button"
-                          data-i18n="search.submit">搜索</button>
-                      </form>
-                      <p class="search-message" id="search-message" role="status"></p>
-                      <div id="search-results" class="search-results hidden"></div>
-                    </div>
-
-                    <div id="search-cookie-view" class="search-face search-face-back search-cookie-view">
-                      <div class="follow-browser" id="follow-browser">
-                        <div id="follow-up-list-view" class="follow-up-list-view">
-                          <form id="modal-follow-uid-form"
-                            class="follow-search-form modal-uid-form modal-follow-uid-form">
-                            <input type="text" id="modal-follow-uid-input" placeholder="UID 或 UP 主空间链接"
-                              data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
-                            <button type="submit" id="modal-add-follow-uid-button" class="next-button"
-                              data-i18n="gatcha.add">添加</button>
-                          </form>
-                          <div id="follow-up-grid" class="follow-up-grid" role="list"></div>
-                        </div>
-                        <div id="follow-up-items-view" class="follow-up-items-view hidden">
-                          <div class="follow-browser-head">
-                            <button type="button" id="follow-browse-back" class="toolbar-button ghost"
-                              data-i18n="common.back">返回</button>
-                            <img id="follow-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy"
-                              referrerpolicy="no-referrer">
-                            <div class="follow-browser-title-block">
-                              <h3 id="follow-browse-title" data-i18n="follow.ownerItemsTitle">UP 主稿件</h3>
-                              <p id="follow-browse-count" class="follow-browser-count" data-i18n="follow.zeroCount">0 首
-                              </p>
-                            </div>
-                          </div>
-                          <form id="follow-search-form" class="follow-search-form">
-                            <input type="text" id="follow-search-query" placeholder="在这个 UP 的缓存稿件里搜索"
-                              data-i18n-placeholder="search.followPlaceholder" autocomplete="off">
-                            <button type="submit" id="follow-search-button" class="next-button"
-                              data-i18n="search.submit">搜索</button>
-                          </form>
-                          <div id="follow-song-results" class="search-results"></div>
-                        </div>
-                        <p class="gatcha-message" id="follow-browse-message" role="status"></p>
-                      </div>
-                    </div>
-                    <div id="search-lark-view" class="search-face search-face-lark">
-                      <form id="lark-search-form" class="search-inputs">
-                        <div class="input-group">
-                          <input type="text" id="lark-search-query" placeholder="在 bilikara 共享数据库中搜索"
-                            data-i18n-placeholder="search.larkPlaceholder" autocomplete="off">
-                        </div>
-                        <button type="submit" id="lark-search-button" class="next-button"
-                          data-i18n="search.submit">搜索</button>
-                      </form>
-                      <p class="search-message" id="lark-search-message" role="status"></p>
-                      <div id="lark-search-results" class="search-results hidden"></div>
-                    </div>
-                  </div>
-                  <form id="lark-search-hitbox-form" class="search-inputs lark-search-hitbox" aria-label="bilikara 搜索"
-                    data-i18n-aria-label="search.larkSearch">
-                    <div class="input-group">
-                      <input type="text" id="lark-search-hitbox-query" autocomplete="off" tabindex="-1">
-                    </div>
-                    <button type="submit" id="lark-search-hitbox-button" class="next-button" tabindex="-1"
-                      data-i18n="search.submit">搜索</button>
-                  </form>
-                </div>
-              </div>
-            </div>
-          </section>
-
           <section class="gatcha-panel host-workspace-fragment" id="gatcha-panel"
             role="tabpanel" aria-labelledby="work-rail-random" data-host-workspace-panel="random" hidden inert>
             <div class="request-head gatcha-head">
@@ -756,9 +864,9 @@
                   class="toolbar-button ghost gatcha-pool-config-toggle" data-i18n="gatcha.poolConfig">
                   自定义卡池
                 </button>
-                <button type="button" id="gatcha-uid-toggle" class="toolbar-button ghost gatcha-uid-toggle"
-                  data-i18n="gatcha.addUid">
-                  添加 UID
+                <button type="button" id="manage-sources-button" class="toolbar-button ghost"
+                  data-i18n="sources.manage">
+                  管理来源
                 </button>
               </div>
             </div>
@@ -788,25 +896,6 @@
                   </div>
                 </div>
 
-                <div id="gatcha-uid-view" class="gatcha-face gatcha-face-back gatcha-uid-view">
-                  <div class="gatcha-uid-bar">
-                    <form id="gatcha-uid-form" class="gatcha-uid-form">
-                      <div class="input-group">
-                        <input type="text" id="gatcha-uid-input" placeholder="UID 或 UP 主空间链接"
-                          data-i18n-placeholder="gatcha.uidPlaceholder">
-                      </div>
-                      <button type="submit" id="add-gatcha-uid-button" class="next-button"
-                        data-i18n="gatcha.add">添加</button>
-                    </form>
-                    <button type="button" id="refresh-gatcha-cache-button" class="toolbar-button gatcha-refresh-button">
-                      <span data-i18n="gatcha.refresh">手动更新</span>
-                    </button>
-                    <button type="button" id="pull-gatcha-favlist-button" class="toolbar-button gatcha-refresh-button">
-                      <span data-i18n="gatcha.pullFavlist">拉取收藏</span>
-                    </button>
-                    <p class="gatcha-message" id="gatcha-uid-message" role="status"></p>
-                  </div>
-                </div>
               </div>
             </div>
           </section>
@@ -1168,64 +1257,6 @@
           data-i18n="common.cancel">取消</button>
         <button type="button" id="gatcha-pool-config-modal-save" class="next-button"
           data-i18n="gatcha.poolSave">保存</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="selection-modal hidden" id="search-modal" role="dialog" aria-modal="true">
-    <div class="selection-modal-backdrop" id="search-modal-backdrop"></div>
-    <div class="selection-modal-card search-modal-card">
-      <div class="search-modal-sidebar">
-        <h2 data-i18n="search.modalLibrary">搜索库</h2>
-        <button class="search-sidebar-item active" data-target="search" data-i18n="search.modalSearch">搜索</button>
-        <button class="search-sidebar-item" data-target="favlist" data-i18n="search.favlistBrowse">按收藏夹浏览</button>
-        <button class="search-sidebar-item" data-target="category" data-i18n="search.categoryBrowse">按类别浏览</button>
-        <button class="search-sidebar-item" data-target="name" data-i18n="search.nameBrowse">按名称浏览</button>
-        <button class="search-sidebar-item" data-target="artist" data-i18n="search.artistBrowse">按歌手浏览</button>
-        <button class="search-sidebar-item developer-only" data-target="review"
-          data-i18n="search.reviewPending">待审核稿件</button>
-        <button class="search-sidebar-item developer-only" data-target="blacklist"
-          data-i18n="search.blacklistBrowse">黑名单视频一览</button>
-      </div>
-      <div class="search-modal-main">
-        <button type="button" id="search-modal-close" class="banner-close search-modal-close"
-          aria-label="关闭" data-i18n-aria-label="common.close">×</button>
-        <div id="search-modal-content-placeholder" class="search-modal-content-placeholder">
-          <!-- search-sub-card-head and search-stage will be moved here -->
-        </div>
-        <div id="favlist-browser-view" class="favlist-browser search-modal-browser-view hidden">
-          <div id="favlist-list-view" class="follow-up-list-view">
-            <form id="modal-favlist-pull-form" class="follow-search-form modal-uid-form modal-favlist-pull-form">
-              <input type="text" id="modal-favlist-uid-input" placeholder="UID 或 UP 主空间链接"
-                data-i18n-placeholder="gatcha.uidPlaceholder" autocomplete="off">
-              <button type="submit" id="modal-pull-favlist-button" class="next-button"
-                data-i18n="gatcha.pullFavlist">拉取收藏</button>
-            </form>
-            <div id="favlist-grid" class="follow-up-grid favlist-grid" role="list"></div>
-          </div>
-          <div id="favlist-items-view" class="follow-up-items-view hidden">
-            <div class="follow-browser-head">
-              <button type="button" id="favlist-browse-back" class="toolbar-button ghost"
-                data-i18n="common.back">返回</button>
-              <img id="favlist-browse-avatar" class="follow-browser-avatar hidden" alt="" loading="lazy"
-                referrerpolicy="no-referrer">
-              <div class="follow-browser-title-block">
-                <h3 id="favlist-browse-title" data-i18n="favlist.browseItemsTitle">收藏夹稿件</h3>
-                <p id="favlist-browse-count" class="follow-browser-count" data-i18n="follow.zeroCount">0 首</p>
-              </div>
-            </div>
-            <form id="favlist-search-form" class="follow-search-form">
-              <input type="text" id="favlist-search-query" placeholder="在这个收藏夹的缓存稿件里搜索"
-                data-i18n-placeholder="favlist.searchPlaceholder" autocomplete="off">
-              <button type="submit" id="favlist-search-button" class="next-button" data-i18n="search.submit">搜索</button>
-            </form>
-            <div id="favlist-song-results" class="search-results"></div>
-          </div>
-          <p class="gatcha-message" id="favlist-browse-message" role="status"></p>
-        </div>
-        <div id="search-modal-other-view" class="search-modal-other-view hidden">
-          此功能开发中...
-        </div>
       </div>
     </div>
   </div>

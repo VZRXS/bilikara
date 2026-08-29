@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -238,12 +239,138 @@ console.log(JSON.stringify({ sequence }));
         self.assertIn("overflow: auto", list_scroll_css)
         self.assertIn("overscroll-behavior: contain", list_scroll_css)
 
-    def test_all_direct_tools_share_one_width_per_shell_state(self):
+    def test_request_discover_uses_one_direct_accessible_workspace(self):
+        self.assertEqual(self.markup.count('id="host-workspace-request"'), 1)
+        self.assertEqual(self.markup.count('data-request-view="quick"'), 1)
+        self.assertEqual(self.markup.count('data-request-view="search"'), 1)
+        self.assertEqual(self.markup.count('data-request-view="discover"'), 1)
+        self.assertEqual(self.markup.count('data-request-view="sources"'), 1)
+
+        request_workspace = self.markup[
+            self.markup.index('id="host-workspace-request"') : self.markup.index(
+                'id="session-users-panel"'
+            )
+        ]
+        self.assertIn('role="tablist"', request_workspace)
+        search_tab = request_workspace[
+            request_workspace.index('data-request-view="search"') : request_workspace.index(
+                "</button>", request_workspace.index('data-request-view="search"')
+            )
+        ]
+        self.assertIn('aria-selected="true"', search_tab)
+        self.assertIn('tabindex="0"', search_tab)
+        self.assertIn('data-request-panel="search"', request_workspace)
+        self.assertNotIn('data-request-panel="search" hidden', request_workspace)
+        for panel in ("quick", "discover", "sources"):
+            panel_markup = request_workspace[
+                request_workspace.index(f'data-request-panel="{panel}"') : request_workspace.index(
+                    ">", request_workspace.index(f'data-request-panel="{panel}"')
+                )
+            ]
+            self.assertIn("hidden", panel_markup)
+            self.assertIn("inert", panel_markup)
+
+        for mode in ("shared", "local"):
+            self.assertEqual(request_workspace.count(f'data-search-mode="{mode}"'), 1)
+        for mode in ("categories", "name", "artist"):
+            self.assertEqual(request_workspace.count(f'data-discover-mode="{mode}"'), 1)
+        for mode in ("uids", "favorites"):
+            self.assertEqual(request_workspace.count(f'data-sources-mode="{mode}"'), 1)
+
+        expected_labels = {
+            "request.quickTab": {"zh": "快速点歌", "en": "Quick Request", "ja": "クイック予約"},
+            "request.searchTab": {"zh": "搜索", "en": "Search", "ja": "検索"},
+            "request.discoverTab": {"zh": "发现", "en": "Discover", "ja": "見つける"},
+            "request.sourcesTab": {"zh": "来源", "en": "Sources", "ja": "ソース"},
+            "search.sharedCatalog": {"zh": "共享曲库", "en": "Shared catalog", "ja": "共有カタログ"},
+            "search.localLibrary": {"zh": "本地曲库", "en": "Local library", "ja": "ローカルライブラリ"},
+            "sources.addedUids": {"zh": "已添加 UID", "en": "Added UIDs", "ja": "追加済み UID"},
+            "sources.favorites": {"zh": "收藏夹", "en": "Favorites", "ja": "お気に入り"},
+        }
+        for key, labels in expected_labels.items():
+            for language, expected in labels.items():
+                with self.subTest(key=key, language=language):
+                    self.assertEqual(self.i18n[language][key], expected)
+
+    def test_all_tools_and_request_subviews_share_one_width_per_shell_state(self):
         self.assertNotIn("--host-workspace-width", self.styles)
         self.assertNotIn("data-request-subview", self.styles)
         self.assertIn("--host-tool-card-width: 536px", self.styles)
         self.assertIn("--host-tool-card-width: 500px", self.styles)
         self.assertIn("--host-rail-width", self.styles)
+
+    def test_request_removes_host_search_flip_modal_and_source_duplicates(self):
+        for retired_markup in (
+            'id="search-stage"',
+            'id="search-stage-inner"',
+            'id="search-expand-button"',
+            'id="search-modal"',
+            'id="lark-search-hitbox-form"',
+        ):
+            self.assertNotIn(retired_markup, self.markup)
+        for retired_source in (
+            "searchStageView",
+            "searchStageAngle",
+            "searchFlipTimer",
+            "searchFlipFrame",
+            "syncSearchStageView",
+            "openExpandedSearchModal",
+            "closeExpandedSearchModal",
+            "searchModalPlaceholder.appendChild",
+        ):
+            self.assertNotIn(retired_source, self.source)
+        for retired_css in (
+            ".search-stage",
+            ".search-face-front",
+            ".search-modal-card",
+        ):
+            self.assertNotIn(retired_css, self.styles)
+
+        self.assertEqual(self.markup.count('id="modal-follow-uid-form"'), 1)
+        self.assertEqual(self.markup.count('id="refresh-gatcha-cache-button"'), 1)
+        self.assertEqual(self.markup.count('id="modal-favlist-pull-form"'), 1)
+        random_workspace = self.markup[
+            self.markup.index('id="gatcha-panel"') : self.markup.index(
+                'id="host-workspace-queue"'
+            )
+        ]
+        self.assertNotIn('id="gatcha-uid-form"', random_workspace)
+        self.assertNotIn('id="refresh-gatcha-cache-button"', random_workspace)
+        self.assertNotIn('id="pull-gatcha-favlist-button"', random_workspace)
+        self.assertEqual(random_workspace.count('id="manage-sources-button"'), 1)
+
+    def test_sources_owns_the_only_add_uid_command_path(self):
+        self.assertEqual(self.markup.count('id="modal-follow-uid-form"'), 1)
+        self.assertEqual(
+            len(re.findall(r"(?<!function )\baddGatchaUid\(", self.source)),
+            1,
+        )
+        self.assertNotIn("data-rating-add-up", self.source)
+        rating_render_start = self.source.index("function renderRatingPromptContent()")
+        rating_open_start = self.source.index("function openRatingPrompt(", rating_render_start)
+        rating_open_end = self.source.index("function maybeShowRatingPromptForProgress", rating_open_start)
+        rating_handler_start = self.source.index(
+            'document.addEventListener("click", async (event) => {\n'
+            "  const root = state.ratingPromptElement;"
+        )
+        rating_handler_end = self.source.index(
+            "function handleRatingFullscreenChange()", rating_handler_start
+        )
+        rating_source = (
+            self.source[rating_render_start:rating_open_start]
+            + self.source[rating_open_start:rating_open_end]
+            + self.source[rating_handler_start:rating_handler_end]
+        )
+        for source_owner in (
+            "addGatchaUid(",
+            "previewGatchaUid(",
+            "refreshGatchaCache(",
+            "previewGatchaFavlist(",
+            "fetchGatchaBrowse(",
+            "fetchGatchaFavlistBrowse(",
+        ):
+            with self.subTest(source_owner=source_owner):
+                self.assertNotIn(source_owner, rating_source)
 
     def test_reorder_actions_use_one_confirmed_exact_index_command(self):
         self.assertEqual(self.markup.count('data-action="move-up"'), 1)
@@ -279,8 +406,11 @@ console.log(JSON.stringify({ sequence }));
         escape_source = self.source[escape_start:escape_end]
         ordered_layers = (
             "if (state.confirmIntent)",
+            "closeHighestRequestTaskLayerForEscape()",
+            "searchDetailController?.isOpen?.()",
             "closeOrdinaryPopoverForEscape()",
             "if (state.stageControlTrayOpen)",
+            "closeHostWorkspaceOverlay()",
             'closeOpenMenus({ restoreFocus: true })',
         )
         positions = [escape_source.index(layer) for layer in ordered_layers]

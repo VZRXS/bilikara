@@ -167,6 +167,10 @@
     const translate = typeof options?.t === "function" ? options.t : (key) => key;
     const onRequest = typeof options?.onRequest === "function" ? options.onRequest : async () => false;
     const onOpenExternal = typeof options?.onOpenExternal === "function" ? options.onOpenExternal : null;
+    const resolveReturnFocus = typeof options?.resolveReturnFocus === "function"
+      ? options.resolveReturnFocus
+      : null;
+    const onClose = typeof options?.onClose === "function" ? options.onClose : null;
     const requestButtonClass = stringValue(options?.requestButtonClass);
     const nextButtonClass = stringValue(options?.nextButtonClass);
     if (!container) {
@@ -311,12 +315,14 @@
       return true;
     }
 
-    function close({ immediate = false } = {}) {
+    function close({ immediate = false, restoreFocus = true, reason = "dismiss" } = {}) {
       if (root.classList.contains("hidden")) {
         return;
       }
       generation += 1;
       const closeGeneration = generation;
+      const closingItem = activeItem;
+      const closingFocus = previouslyFocused;
       const finish = () => {
         if (closeGeneration !== generation) {
           return;
@@ -328,10 +334,16 @@
         activeUrl = "";
         activeBilibiliUrl = "";
         renderBilibiliMetadata(elements, null, translate);
-        if (previouslyFocused?.isConnected) {
-          previouslyFocused.focus();
+        if (restoreFocus) {
+          const focusTarget = closingFocus?.isConnected
+            ? closingFocus
+            : resolveReturnFocus?.(closingFocus, closingItem);
+          if (focusTarget?.isConnected && typeof focusTarget.focus === "function") {
+            focusTarget.focus({ preventScroll: true });
+          }
         }
         previouslyFocused = null;
+        onClose?.({ item: closingItem, reason, restoredFocus: restoreFocus });
       };
       if (immediate) {
         finish();

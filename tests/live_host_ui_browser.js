@@ -25,6 +25,12 @@ async function run() {
   const updateCheckRequests = [];
   const updateInstallRequests = [];
   const larkSearchRequests = [];
+  const localSearchRequests = [];
+  const d1BrowseRequests = [];
+  const categoryBrowseRequests = [];
+  const sourceBrowseRequests = [];
+  const sourceUidPreviewRequests = [];
+  const sourceUidAddRequests = [];
   let pendingStartupUpdateRoute = null;
   let resolveStartupUpdateSeen;
   const startupUpdateSeen = new Promise((resolve) => { resolveStartupUpdateSeen = resolve; });
@@ -82,6 +88,144 @@ async function run() {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ ok: true, data: { items } }),
+    });
+  });
+  await page.route("**/api/gatcha/search?**", (route) => {
+    localSearchRequests.push(route.request().url());
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          items: [{
+            bvid: "BVLOCALUI",
+            title: "Local configured-source result",
+            url: "https://www.bilibili.com/video/BVLOCALUI",
+            owner_name: "Local owner",
+          }],
+        },
+      }),
+    });
+  });
+  await page.route("**/api/d1/browse?**", async (route) => {
+    d1BrowseRequests.push(route.request().url());
+    const requestUrl = new URL(route.request().url());
+    const kind = requestUrl.searchParams.get("kind") || "name";
+    const tag = requestUrl.searchParams.get("tag") || "";
+    const query = requestUrl.searchParams.get("q") || "";
+    if (query === "delayed-old") {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: tag
+          ? {
+            items: Array.from({ length: 80 }, (_, index) => ({
+              bvid: `BV${kind.toUpperCase()}${tag.replace(/\W/g, "")}${index}`,
+              title: `${kind} ${tag} ${query || "items"} ${index}`,
+              url: `https://www.bilibili.com/video/BV${kind.toUpperCase()}${index}`,
+            })),
+          }
+          : {
+            tags: Array.from({ length: 70 }, (_, index) => ({
+              tag: index === 0 ? "Anime" : `${kind} tag ${index}`,
+              locale: index % 2 ? "ja" : "en",
+              count: 100 - index,
+            })),
+          },
+      }),
+    });
+  });
+  await page.route("**/api/d1/category-browse?**", async (route) => {
+    categoryBrowseRequests.push(route.request().url());
+    const requestUrl = new URL(route.request().url());
+    const offset = Number(requestUrl.searchParams.get("offset") || 0);
+    const query = requestUrl.searchParams.get("q") || "";
+    if (query === "delayed-old") {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
+    const start = offset > 0 ? offset - 1 : 0;
+    const count = offset > 0 ? 31 : 100;
+    const items = Array.from({ length: count }, (_, index) => {
+      const itemIndex = start + index;
+      return {
+        bvid: `BVCATEGORY${itemIndex}`,
+        title: `Category ${query || "items"} ${itemIndex}`,
+        url: `https://www.bilibili.com/video/BVCATEGORY${itemIndex}`,
+      };
+    });
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          items,
+          has_more: offset === 0,
+          next_offset: offset === 0 ? 100 : 130,
+        },
+      }),
+    });
+  });
+  await page.route("**/api/gatcha/browse**", (route) => {
+    sourceBrowseRequests.push(route.request().url());
+    const requestUrl = new URL(route.request().url());
+    const uid = requestUrl.searchParams.get("uid") || "";
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: uid
+          ? { selected_uid: uid, owners: [{ uid, name: "Source owner", count: 1 }], items: [{ bvid: "BVSOURCE", title: "Source song", url: "https://www.bilibili.com/video/BVSOURCE" }] }
+          : { selected_uid: "", owners: [{ uid: "42", name: "Source owner", count: 1 }], items: [] },
+      }),
+    });
+  });
+  await page.route("**/api/gatcha/favlist/browse**", (route) => {
+    sourceBrowseRequests.push(route.request().url());
+    const requestUrl = new URL(route.request().url());
+    const folderId = requestUrl.searchParams.get("folder_id") || "";
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: folderId
+          ? { selected_folder_id: folderId, folders: [{ id: folderId, title: "Favorites", media_count: 1 }], items: [{ bvid: "BVFAVORITE", title: "Favorite song", url: "https://www.bilibili.com/video/BVFAVORITE" }] }
+          : { selected_folder_id: "", folders: [{ id: "7", title: "Favorites", media_count: 1 }], items: [] },
+      }),
+    });
+  });
+  await page.route("**/api/gatcha/uids/preview", (route) => {
+    sourceUidPreviewRequests.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: { uid: "4242", name: "Canonical source", cache_mode: "incremental", already_followed: false },
+      }),
+    });
+  });
+  await page.route("**/api/gatcha/uids/add", (route) => {
+    sourceUidAddRequests.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          uid: "4242",
+          name: "Canonical source",
+          added: true,
+          cache: { mode: "incremental", added_count: 1, total_count: 1 },
+        },
+      }),
     });
   });
 
@@ -201,7 +345,7 @@ async function run() {
         featureCounts: {
           queue: document.querySelectorAll(".queue-card").length,
           directRequest: document.querySelectorAll("#add-form").length,
-          search: document.querySelectorAll("#search-panel").length,
+          search: document.querySelectorAll("#request-search-panel").length,
           random: document.querySelectorAll("#gatcha-panel").length,
           users: document.querySelectorAll("#session-users-panel").length,
         },
@@ -484,8 +628,8 @@ async function run() {
       window.__hostShellNodes = {
         ...captured,
         queue: document.querySelector(".queue-card"),
-        request: document.querySelector("#host-workspace-request-direct"),
-        search: document.querySelector("#search-panel"),
+        request: document.querySelector("#host-workspace-request"),
+        search: document.querySelector("#request-search-panel"),
         random: document.querySelector("#gatcha-panel"),
         users: document.querySelector("#session-users-panel"),
       };
@@ -752,7 +896,7 @@ async function run() {
         nextOwner: elements.nextButton.closest(".player-panel") === elements.playerPanel,
         resortOwner: elements.resortPlaylistButton.closest("#host-workspace-queue")
           === document.querySelector("#host-workspace-queue"),
-        requestHasResort: Boolean(document.querySelector("#host-workspace-request-direct #resort-playlist-button")),
+        requestHasResort: Boolean(document.querySelector("#host-workspace-request #resort-playlist-button")),
       };
     });
     assert(
@@ -876,6 +1020,41 @@ async function run() {
     assert(
       !await shellPage.locator("#history-list .menu-content").first().isVisible(),
       "hidden History retained an interactive row menu",
+    );
+
+    const layeredMenuTrigger = shellPage.locator("#playlist .menu-toggle").first();
+    await layeredMenuTrigger.click();
+    const layeredMenuAction = shellPage.locator("#playlist .menu-content:not(.hidden) button:not(:disabled)").first();
+    await layeredMenuAction.focus();
+    await shellPage.evaluate(() => {
+      openConfirm({
+        type: "escape-priority-proof",
+        message: "Escape priority proof",
+        focusElement: document.activeElement,
+        x: 320,
+        y: 220,
+      });
+      elements.confirmCancel.focus({ preventScroll: true });
+    });
+    await shellPage.keyboard.press("Escape");
+    const confirmationMenuLayer = await shellPage.evaluate(() => ({
+      confirmVisible: !elements.confirmPopover.classList.contains("hidden"),
+      menuVisible: !document.querySelector("#playlist .menu-content")?.classList.contains("hidden"),
+      activeAction: document.activeElement?.dataset?.action || "",
+      openTriggerAction: state.openRowMenuTrigger?.dataset?.action || "",
+    }));
+    assert(
+      !confirmationMenuLayer.confirmVisible
+        && confirmationMenuLayer.menuVisible
+        && await layeredMenuAction.evaluate((element) => document.activeElement === element),
+      "confirmation Escape did not leave the lower row menu open and restore its opener",
+      confirmationMenuLayer,
+    );
+    await shellPage.keyboard.press("Escape");
+    assert(
+      !await shellPage.locator("#playlist .menu-content").first().isVisible()
+        && await layeredMenuTrigger.evaluate((element) => document.activeElement === element),
+      "the next Escape did not close the row menu and restore its trigger",
     );
 
     const clearQueueCurrentId = await shellPage.evaluate(() => state.data.current_item?.id || "");
@@ -1115,6 +1294,38 @@ async function run() {
       queueAcceptance,
     );
 
+    async function collectRequestSubviewLayout(subview) {
+      await shellPage.locator(`[data-request-view="${subview}"]`).click();
+      return shellPage.evaluate((activeSubview) => {
+        const workspace = elements.requestWorkspace;
+        const panel = workspace.querySelector(`[data-request-panel="${activeSubview}"]`);
+        const owner = activeRequestScrollOwner() || panel;
+        const workspaceRect = elements.hostWorkspaceRegion.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        return {
+          subview: activeSubview,
+          width: elements.hostWorkspaceRegion.getBoundingClientRect().width,
+          overlay: state.hostWorkspaceOverlayOpen && hostRequestWorkspaceUsesOverlay(),
+          bodyScrollX: window.scrollX,
+          bodyScrollY: window.scrollY,
+          horizontalPageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          requestScrollTop: workspace.scrollTop,
+          regionScrollTop: elements.hostWorkspaceRegion.scrollTop,
+          workspaceOverflowY: getComputedStyle(workspace).overflowY,
+          ownerOverflowY: getComputedStyle(owner).overflowY,
+          ownerIsPanel: owner === panel,
+          ownerScrollHeight: owner.scrollHeight,
+          ownerClientHeight: owner.clientHeight,
+          fixedControlsFit: panelRect.left >= workspaceRect.left - 1
+            && panelRect.right <= workspaceRect.right + 1
+            && panel.scrollWidth <= panel.clientWidth + 1,
+          sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+          sameVideo: state.hostPlaybackSession?.video === window.__hostShellNodes.video,
+          sameAudio: state.hostPlaybackSession?.audio === window.__hostShellNodes.audio,
+        };
+      }, subview);
+    }
+
     const wideWidths = {};
     for (const workspace of ["queue", "history", "request", "random", "users"]) {
       await shellPage.locator(`#work-rail-${workspace}`).click();
@@ -1130,12 +1341,35 @@ async function run() {
       "wide shell did not preserve one stable tool-card width and a useful persistent Stage",
       wideWidths,
     );
+    await shellPage.locator("#work-rail-request").click();
     const wideRequestSubviews = {};
+    for (const subview of ["quick", "search", "discover", "sources"]) {
+      wideRequestSubviews[subview] = await collectRequestSubviewLayout(subview);
+    }
+    assert(
+      Object.values(wideRequestSubviews).every((entry) => (
+        Math.abs(entry.width - wideWidths.queue.workspace) <= 1
+          && !entry.overlay
+          && entry.bodyScrollX === 0
+          && entry.bodyScrollY === 0
+          && !entry.horizontalPageScroll
+          && entry.requestScrollTop === 0
+          && entry.regionScrollTop === 0
+          && entry.workspaceOverflowY === "hidden"
+          && entry.fixedControlsFit
+          && entry.sameFrame
+          && entry.sameVideo
+          && entry.sameAudio
+      )),
+      "wide Request subviews did not preserve the stable tool-card width, bounded controls, local scrolling, and Stage identity",
+      wideRequestSubviews,
+    );
+    await shellPage.locator('[data-request-view="search"]').click();
 
     const draftAndScroll = await shellPage.evaluate(() => {
       document.querySelector("#url-input").value = "BV-DRAFT-REQUEST";
       document.querySelector("#lark-search-query").value = "search draft";
-      document.querySelector("#gatcha-uid-input").value = "random draft";
+      document.querySelector("#modal-follow-uid-input").value = "source draft";
       document.querySelector("#session-user-input").value = "user draft";
       activateHostWorkspace("random", { inputOrigin: "programmatic" });
       const spacer = document.createElement("div");
@@ -1155,12 +1389,12 @@ async function run() {
         drafts: [
           document.querySelector("#url-input").value,
           document.querySelector("#lark-search-query").value,
-          document.querySelector("#gatcha-uid-input").value,
+          document.querySelector("#modal-follow-uid-input").value,
           document.querySelector("#session-user-input").value,
         ],
         sameNodes: document.querySelector(".queue-card") === window.__hostShellNodes.queue
-          && document.querySelector("#host-workspace-request-direct") === window.__hostShellNodes.request
-          && document.querySelector("#search-panel") === window.__hostShellNodes.search
+          && document.querySelector("#host-workspace-request") === window.__hostShellNodes.request
+          && document.querySelector("#request-search-panel") === window.__hostShellNodes.search
           && document.querySelector("#gatcha-panel") === window.__hostShellNodes.random
           && document.querySelector("#session-users-panel") === window.__hostShellNodes.users,
       };
@@ -1168,7 +1402,7 @@ async function run() {
     assert(
       draftAndScroll.storedBefore > 0
         && draftAndScroll.restored === draftAndScroll.storedBefore
-        && draftAndScroll.drafts.join("|") === "BV-DRAFT-REQUEST|search draft|random draft|user draft"
+        && draftAndScroll.drafts.join("|") === "BV-DRAFT-REQUEST|search draft|source draft|user draft"
         && draftAndScroll.sameNodes,
       "workspace-local draft, scroll, or DOM state did not survive switching",
       draftAndScroll,
@@ -1265,6 +1499,11 @@ async function run() {
           };
         }, workspace);
       }
+      await shellPage.locator("#work-rail-request").click();
+      const requestSubviews = {};
+      for (const subview of ["quick", "search", "discover", "sources"]) {
+        requestSubviews[subview] = await collectRequestSubviewLayout(subview);
+      }
       const shell = await shellPage.evaluate(() => {
         const toolbar = document.querySelector(".topbar").getBoundingClientRect();
         const rail = document.querySelector(".work-rail").getBoundingClientRect();
@@ -1299,6 +1538,20 @@ async function run() {
         { tools, shell },
       );
       assert(
+        Object.values(requestSubviews).every((entry) => Math.abs(entry.width - contentWidth) <= 1
+          && !entry.overlay
+          && entry.bodyScrollX === 0
+          && entry.bodyScrollY === 0
+          && !entry.horizontalPageScroll
+          && entry.workspaceOverflowY === "hidden"
+          && entry.fixedControlsFit
+          && entry.sameFrame
+          && entry.sameVideo
+          && entry.sameAudio),
+        `${label} changed dock width or media identity between Request subviews`,
+        requestSubviews,
+      );
+      assert(
         shell.toolbarHeight >= 52
           && shell.toolbarHeight <= 64
           && shell.rightEdgeDelta <= 1
@@ -1308,9 +1561,9 @@ async function run() {
           && !shell.pageVerticalScroll
           && shell.stageScrollHeight <= shell.stageClientHeight + 1,
         `${label} violated toolbar alignment, page-scroll, or fitted Stage geometry`,
-        { tools, shell },
+        { tools, requestSubviews, shell },
       );
-      return { width, height, tools, shell };
+      return { width, height, tools, requestSubviews, shell };
     }
 
     const responsiveFrames = {};
@@ -1361,25 +1614,8 @@ async function run() {
     if (queueMediumScreenshotPath) {
       await shellPage.screenshot({ path: queueMediumScreenshotPath, fullPage: false });
     }
-    await shellPage.locator("#work-rail-request").click();
-    const mediumRequestOpen = await shellPage.evaluate(() => ({
-      active: state.activeHostWorkspace,
-      overlayOpen: state.hostWorkspaceOverlayOpen
-        && hostRequestWorkspaceUsesOverlay(),
-      width: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
-      sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
-      bodyScrollY: window.scrollY,
-    }));
-    assert(
-      mediumRequestOpen.active === "request"
-        && !mediumRequestOpen.overlayOpen
-        && Math.abs(mediumRequestOpen.width - 500) <= 2
-        && mediumRequestOpen.sameFrame
-        && mediumRequestOpen.bodyScrollY === 0,
-      "medium Request did not use the same stable direct tool-card geometry",
-      mediumRequestOpen,
-    );
-    const mediumRequestSubviews = {};
+    const mediumRequestOpen = responsiveFrames.medium1240.shell;
+    const mediumRequestSubviews = responsiveFrames.medium1240.requestSubviews;
     const mediumRequestClosed = { overlayOpen: false, directDock: true };
 
     await shellPage.setViewportSize({ width: 840, height: 760 });
@@ -1488,7 +1724,7 @@ async function run() {
       && document.activeElement === elements.stageControlsToggle),
     "Stage tray Escape did not close one layer and restore its opener");
     const narrowWorkspaces = responsiveFrames.narrow840.tools;
-    const narrowRequestSubviews = {};
+    const narrowRequestSubviews = responsiveFrames.narrow840.requestSubviews;
     const narrowLocalScroll = await shellPage.evaluate(() => {
       activateHostWorkspace("random", { inputOrigin: "programmatic" });
       const spacer = document.createElement("div");
@@ -1556,16 +1792,19 @@ async function run() {
         playbackInvariant: queueAcceptance,
       },
       wideWidths,
+      wideRequestSubviews,
       draftAndScroll,
       bannerEvidence,
       mediumQueue,
       mediumRequestOpen,
+      mediumRequestSubviews,
       mediumRequestClosed,
       narrowInitial,
       narrowQueue,
       narrowHistory,
       narrowControlEvidence,
       narrowWorkspaces,
+      narrowRequestSubviews,
       narrowLocalScroll,
       consoleErrors: shellConsoleErrors,
       pageErrors: shellPageErrors,
@@ -1604,7 +1843,7 @@ async function run() {
     await disabledAutoPage.close();
 
     await page.locator("#work-rail-request").click();
-    assert(await page.locator("#search-panel").isVisible(), "Request rail did not expose the existing Search panel");
+    assert(await page.locator("#request-search-panel").isVisible(), "Request rail did not expose the existing Search panel");
     await page.evaluate(() => {
       document.querySelector("#lark-search-query").value = "host ui";
       document.querySelector("#lark-search-form").dispatchEvent(new Event("submit", {
@@ -1613,7 +1852,6 @@ async function run() {
       }));
     });
     await page.waitForSelector("#lark-search-results .search-result-item");
-    await page.click("#search-expand-button");
     const results = page.locator("#lark-search-results");
     await results.locator(".search-result-item").first().evaluate((card) => {
       const button = document.createElement("button");
@@ -1652,11 +1890,11 @@ async function run() {
     assert(wheelScrollTop.gap > 0, "wheel did not scroll over the results grid gap", wheelScrollTop);
 
     await page.evaluate(() => window.scrollTo(0, 0));
-    await page.locator(".search-modal-sidebar").hover();
+    await page.locator("#host-workspace-request").hover();
     await page.mouse.wheel(0, 500);
     await page.waitForTimeout(60);
     const backgroundScrollTop = await page.evaluate(() => window.scrollY);
-    assert(backgroundScrollTop === 0, "expanded search allowed background page scrolling", {
+    assert(backgroundScrollTop === 0, "Request workspace allowed background page scrolling", {
       backgroundScrollTop,
     });
 
@@ -1675,10 +1913,7 @@ async function run() {
     await page.waitForTimeout(250);
     const detailHidden = await detail.evaluate((element) => element.classList.contains("hidden"));
     assert(detailHidden, "blank song-detail backdrop click did not close detail");
-    assert(
-      await page.locator("#search-modal").evaluate((element) => !element.classList.contains("hidden")),
-      "closing detail also closed expanded search",
-    );
+    assert(await page.locator("#host-workspace-request").isVisible(), "closing detail also closed Request");
     assert(
       await opener.evaluate((element) => document.activeElement === element),
       "detail close did not restore focus to its result card",
@@ -1693,10 +1928,7 @@ async function run() {
       await detail.evaluate((element) => element.classList.contains("hidden")),
       "Escape did not close song detail",
     );
-    assert(
-      await page.locator("#search-modal").evaluate((element) => !element.classList.contains("hidden")),
-      "Escape on detail closed expanded search",
-    );
+    assert(await page.locator("#host-workspace-request").isVisible(), "Escape on detail closed Request");
 
     await opener.click();
     await detail.waitFor({ state: "visible" });
@@ -1707,12 +1939,43 @@ async function run() {
       "explicit detail close button did not close detail",
     );
 
-    await page.locator("#search-modal-close").click();
-    await page.waitForTimeout(250);
+    await page.evaluate(() => {
+      window.__requestSharedNode = elements.larkSearchResults;
+      window.__requestLocalNode = elements.searchResults;
+    });
+    const requestCountBeforeTabs = larkSearchRequests.length + localSearchRequests.length
+      + d1BrowseRequests.length + sourceBrowseRequests.length;
+    await page.locator('[data-search-mode="local"]').click();
+    await page.locator("#search-query").fill("local draft");
+    await page.locator('[data-search-mode="shared"]').click();
     assert(
-      await page.evaluate(() => document.querySelector("#search-card-content")?.parentElement
-        === document.querySelector("#search-panel .search-card")),
-      "Search expand did not restore the same content DOM to the Request workspace",
+      await page.locator("#lark-search-query").inputValue() === "host ui"
+        && await page.locator("#lark-search-results .search-result-item").count() === 36,
+      "Shared/Local switching lost Shared state",
+    );
+    await page.locator('[data-search-mode="shared"]').focus();
+    await page.keyboard.press("ArrowRight");
+    assert(
+      await page.evaluate(() => state.searchMode === "local"
+        && document.activeElement?.dataset.searchMode === "local"),
+      "Search tabs did not support arrow-key activation",
+    );
+    await page.keyboard.press("Home");
+    await page.locator('[data-request-view="discover"]').click();
+    await page.locator('[data-discover-mode="name"]').click();
+    await page.locator('[data-discover-mode="artist"]').click();
+    await page.locator('[data-request-view="sources"]').click();
+    await page.locator('[data-sources-mode="favorites"]').click();
+    await page.locator('[data-request-view="search"]').click();
+    const requestCountAfterTabs = larkSearchRequests.length + localSearchRequests.length
+      + d1BrowseRequests.length + sourceBrowseRequests.length;
+    assert(requestCountAfterTabs === requestCountBeforeTabs,
+      "direct Request tab switching issued a fetch",
+      { requestCountBeforeTabs, requestCountAfterTabs });
+    assert(
+      await page.evaluate(() => elements.larkSearchResults === window.__requestSharedNode
+        && elements.searchResults === window.__requestLocalNode),
+      "Request tab switching reconstructed Search results",
     );
     const larkRequestsBeforeWorkspaceRoundTrip = larkSearchRequests.length;
     await page.locator("#work-rail-queue").click();
@@ -1723,6 +1986,477 @@ async function run() {
         && larkSearchRequests.length === larkRequestsBeforeWorkspaceRoundTrip,
       "Request workspace round trip lost Search state or reran the query",
       { larkSearchRequests },
+    );
+
+    await page.locator('[data-search-mode="local"]').click();
+    await page.locator("#search-query").fill("configured source");
+    await page.locator("#search-form").evaluate((form) => form.requestSubmit());
+    await page.waitForSelector("#search-results .search-result-item");
+    assert(localSearchRequests.length === 1, "Local search did not use its existing bounded endpoint", localSearchRequests);
+    await page.locator('[data-search-mode="shared"]').click();
+    await page.locator('[data-search-mode="local"]').click();
+    assert(
+      await page.locator("#search-query").inputValue() === "configured source"
+        && await page.locator("#search-results .search-result-item").count() === 1,
+      "Local mode round trip lost its independent draft or results",
+    );
+
+    await page.setViewportSize({ width: 1200, height: 520 });
+    await page.locator('[data-request-view="discover"]').click();
+    await page.locator('[data-discover-mode="categories"]').click();
+    await page.waitForSelector('#request-discover-categories [data-category-id]');
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const categoryPanel = page.locator("#request-discover-categories");
+    const categoryHomeScroll = await categoryPanel.evaluate((element) => {
+      element.scrollTop = Math.min(173, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    assert(categoryHomeScroll > 0, "category home fixture did not expose a nonzero scroll range");
+    const retainedCategoryId = await categoryPanel.locator("[data-category-id]").nth(2).getAttribute("data-category-id");
+    await categoryPanel.locator(`[data-category-id="${retainedCategoryId}"]`).first().evaluate((button) => button.click());
+    await page.waitForFunction(() => state.categoryBrowseItems.length === 100 && !state.categoryBrowseLoading);
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const categoryDetailScroll = await categoryPanel.evaluate((element) => {
+      element.scrollTop = Math.min(281, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    assert(categoryDetailScroll > 0 && categoryDetailScroll !== categoryHomeScroll,
+      "category detail fixture did not expose a distinct nonzero scroll range");
+    const categoryRequestsBeforeBack = categoryBrowseRequests.length;
+    await categoryPanel.locator("[data-category-browse-back]").evaluate((button) => button.click());
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const categoryBackEvidence = await page.evaluate(() => ({
+      level: state.categoryBrowseLevel,
+      selectedId: state.categoryBrowseSelectedId,
+      query: state.categoryBrowseQuery,
+      offset: state.categoryBrowseOffset,
+      hasMore: state.categoryBrowseHasMore,
+      itemCount: state.categoryBrowseItems.length,
+      scrollTop: elements.discoverCategoriesPanel.scrollTop,
+      scrollHeight: elements.discoverCategoriesPanel.scrollHeight,
+      clientHeight: elements.discoverCategoriesPanel.clientHeight,
+      savedScrolls: { ...state.categoryBrowseScrollPositions },
+    }));
+    assert(
+      categoryBackEvidence.level === "home"
+        && categoryBackEvidence.selectedId === retainedCategoryId
+        && categoryBackEvidence.offset === 100
+        && categoryBackEvidence.hasMore
+        && categoryBackEvidence.itemCount === 100
+        && categoryBackEvidence.scrollTop === categoryHomeScroll
+        && categoryBrowseRequests.length === categoryRequestsBeforeBack,
+      "category Back did not restore the exact retained parent context without refetch",
+      { categoryBackEvidence, categoryHomeScroll, categoryBrowseRequests },
+    );
+    await categoryPanel.locator(`[data-category-id="${retainedCategoryId}"]`).first().evaluate((button) => button.click());
+    await page.waitForFunction(() => state.categoryBrowseLevel === "detail");
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    assert(
+      categoryBrowseRequests.length === categoryRequestsBeforeBack
+        && await categoryPanel.evaluate((element) => element.scrollTop) === categoryDetailScroll,
+      "re-entering a retained category did not restore exact detail scroll without a request",
+      { categoryDetailScroll, categoryBrowseRequests },
+    );
+    await categoryPanel.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await page.waitForFunction(() => state.categoryBrowseOffset === 130 && !state.categoryBrowseLoading);
+    const categoryPagination = await page.evaluate(() => ({
+      offset: state.categoryBrowseOffset,
+      hasMore: state.categoryBrowseHasMore,
+      itemCount: state.categoryBrowseItems.length,
+      uniqueCount: new Set(state.categoryBrowseItems.map((item) => item.bvid)).size,
+    }));
+    assert(
+      categoryPagination.offset === 130
+        && !categoryPagination.hasMore
+        && categoryPagination.itemCount === 130
+        && categoryPagination.uniqueCount === 130,
+      "category load-more changed offset/has-more semantics or duplicated rows",
+      categoryPagination,
+    );
+    await categoryPanel.locator("[data-category-browse-query]").fill("delayed-old");
+    await categoryPanel.locator("[data-category-browse-search]").evaluate((form) => form.requestSubmit());
+    const newerCategoryTab = categoryPanel.locator("[data-category-browser-tabs] [data-category-id]").nth(1);
+    const newerCategoryId = await newerCategoryTab.getAttribute("data-category-id");
+    await newerCategoryTab.evaluate((button) => button.click());
+    await page.waitForFunction((categoryId) => state.categoryBrowseSelectedId === categoryId && !state.categoryBrowseLoading,
+      newerCategoryId);
+    await page.waitForTimeout(220);
+    const categoryStaleEvidence = await page.evaluate(() => ({
+      selectedId: state.categoryBrowseSelectedId,
+      query: state.categoryBrowseQuery,
+      staleItem: state.categoryBrowseItems.some((item) => String(item.title || "").includes("delayed-old")),
+    }));
+    assert(
+      categoryStaleEvidence.selectedId === newerCategoryId
+        && categoryStaleEvidence.query === ""
+        && !categoryStaleEvidence.staleItem,
+      "a delayed old category response overwrote the newer category/query level",
+      categoryStaleEvidence,
+    );
+
+    await page.locator('[data-discover-mode="name"]').click();
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const namePanel = page.locator("#request-discover-name");
+    const nameAlphabetScroll = await namePanel.evaluate((element) => {
+      element.scrollTop = Math.min(61, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    assert(nameAlphabetScroll > 0, "Name alphabet fixture did not expose a nonzero scroll range");
+    await namePanel.locator('[data-letter="A"]').evaluate((button) => button.click());
+    await page.waitForSelector('#request-discover-name [data-tag="Anime"]');
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const nameTagsScroll = await namePanel.evaluate((element) => {
+      element.scrollTop = Math.min(149, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    await namePanel.locator('[data-tag="Anime"]').evaluate((button) => button.click());
+    await page.waitForFunction(() => state.d1BrowseKind === "name" && state.d1BrowseData?.items?.length === 80);
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const nameItemsScroll = await namePanel.evaluate((element) => {
+      element.scrollTop = Math.min(337, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    const nameRequestsBeforeBack = d1BrowseRequests.length;
+    await namePanel.locator("[data-d1-browse-back]").evaluate((button) => button.click());
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    assert(
+      d1BrowseRequests.length === nameRequestsBeforeBack
+        && await namePanel.evaluate((element) => element.scrollTop) === nameTagsScroll
+        && await page.evaluate(() => state.d1BrowseLevel === "tags" && state.d1BrowseLetter === "A"),
+      "Name results Back did not restore the exact tag-list context without refetch",
+      { nameTagsScroll, d1BrowseRequests },
+    );
+    await namePanel.locator("[data-d1-browse-back]").evaluate((button) => button.click());
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    assert(
+      d1BrowseRequests.length === nameRequestsBeforeBack
+        && await namePanel.evaluate((element) => element.scrollTop) === nameAlphabetScroll
+        && await page.evaluate(() => state.d1BrowseLevel === "alphabet"),
+      "Name tag-list Back did not restore exact alphabet context without refetch",
+      { nameAlphabetScroll, d1BrowseRequests },
+    );
+    await namePanel.locator('[data-letter="A"]').evaluate((button) => button.click());
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    await namePanel.locator('[data-tag="Anime"]').evaluate((button) => button.click());
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    assert(
+      d1BrowseRequests.length === nameRequestsBeforeBack
+        && await namePanel.evaluate((element) => element.scrollTop) === nameItemsScroll,
+      "Name retained hierarchy did not restore its exact items scroll",
+      { nameItemsScroll, d1BrowseRequests },
+    );
+
+    const requestsBeforeArtist = d1BrowseRequests.length;
+    await page.locator('[data-discover-mode="artist"]').click();
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const artistPanel = page.locator("#request-discover-artist");
+    assert(
+      d1BrowseRequests.length === requestsBeforeArtist
+        && await page.evaluate(() => state.d1BrowseKind === "artist" && state.d1BrowseLevel === "alphabet"),
+      "Name/Artist mode-only switching issued a request or shared a hierarchy level",
+      d1BrowseRequests,
+    );
+    const artistAlphabetScroll = await artistPanel.evaluate((element) => {
+      element.scrollTop = Math.min(37, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    await artistPanel.locator('[data-letter="B"]').evaluate((button) => button.click());
+    await page.waitForSelector('#request-discover-artist [data-tag="Anime"]');
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const artistTagsScroll = await artistPanel.evaluate((element) => {
+      element.scrollTop = Math.min(113, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    await artistPanel.locator('[data-tag="Anime"]').evaluate((button) => button.click());
+    await page.waitForFunction(() => state.d1BrowseKind === "artist" && state.d1BrowseData?.items?.length === 80);
+    await page.waitForFunction(() => !state.requestScrollRestoring);
+    const artistItemsScroll = await artistPanel.evaluate((element) => {
+      element.scrollTop = Math.min(263, element.scrollHeight - element.clientHeight);
+      return element.scrollTop;
+    });
+    const requestsBeforeNameReturn = d1BrowseRequests.length;
+    await page.locator('[data-discover-mode="name"]').click();
+    assert(
+      d1BrowseRequests.length === requestsBeforeNameReturn
+        && await page.evaluate(() => state.d1BrowseKind === "name" && state.d1BrowseLetter === "A" && state.d1BrowseTag === "Anime")
+        && await namePanel.evaluate((element) => element.scrollTop) === nameItemsScroll,
+      "Name/Artist round trip shared selection/scroll state or issued a request",
+      { nameItemsScroll, artistAlphabetScroll, artistTagsScroll, artistItemsScroll, d1BrowseRequests },
+    );
+    await namePanel.locator("[data-d1-browse-query]").fill("delayed-old");
+    await namePanel.locator("[data-d1-browse-search]").evaluate((form) => form.requestSubmit());
+    await namePanel.locator("[data-d1-browse-back]").evaluate((button) => button.click());
+    await page.waitForTimeout(220);
+    assert(
+      await page.evaluate(() => state.d1BrowseLevel === "tags"
+        && !JSON.stringify(state.d1BrowseData || {}).includes("delayed-old")),
+      "a delayed old Name response wrote into a newer hierarchy level",
+    );
+    await page.locator('[data-discover-mode="artist"]').click();
+    assert(
+      await page.evaluate(() => state.d1BrowseKind === "artist"
+        && state.d1BrowseLetter === "B"
+        && state.d1BrowseTag === "Anime")
+        && await artistPanel.evaluate((element) => element.scrollTop) === artistItemsScroll,
+      "Artist hierarchy did not remain independent after delayed Name work",
+    );
+    await page.setViewportSize({ width: 1200, height: 1000 });
+
+    await page.locator('[data-request-view="sources"]').click();
+    await page.locator('[data-sources-mode="uids"]').click();
+    const sourcesBeforeOpen = sourceBrowseRequests.length;
+    await page.locator("#open-added-uids-button").click();
+    await page.waitForSelector("#follow-up-grid button[data-uid='42']");
+    await page.locator("#follow-up-grid button[data-uid='42']").click();
+    await page.waitForSelector("#follow-song-results .search-result-item");
+    await page.locator("#follow-browse-back").click();
+    await page.locator('[data-sources-mode="favorites"]').click();
+    const sourcesBeforeFavoriteOpen = sourceBrowseRequests.length;
+    await page.locator("#open-favorites-button").click();
+    await page.waitForSelector("#favlist-grid button[data-folder-id='7']");
+    await page.locator("#favlist-grid button[data-folder-id='7']").click();
+    await page.waitForSelector("#favlist-song-results .search-result-item");
+    assert(
+      sourceBrowseRequests.length === sourcesBeforeFavoriteOpen + 2
+        && sourcesBeforeFavoriteOpen === sourcesBeforeOpen + 2,
+      "Sources did not load only from explicit owner/folder actions",
+      sourceBrowseRequests,
+    );
+
+    assert(sourceUidAddRequests.length === 0,
+      "a non-Sources Request/Discover/Random surface sent an Add UID command",
+      sourceUidAddRequests);
+    await page.locator('[data-sources-mode="uids"]').click();
+    await page.locator("#modal-follow-uid-input").fill("https://space.bilibili.com/4242");
+    await page.locator("#modal-follow-uid-form").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => state.confirmIntent?.type === "gatcha-uid-add");
+    assert(
+      sourceUidPreviewRequests.length === 1
+        && sourceUidPreviewRequests[0].uid === "https://space.bilibili.com/4242"
+        && sourceUidAddRequests.length === 0,
+      "canonical Sources Add UID did not stop after one preview for confirmation",
+      { sourceUidPreviewRequests, sourceUidAddRequests },
+    );
+    await page.locator("#confirm-ok").click();
+    await page.waitForFunction(() => !state.gatchaUidSaving);
+    assert(
+      sourceUidAddRequests.length === 1 && sourceUidAddRequests[0].uid === "4242",
+      "canonical Sources confirmation did not send exactly one normalized accepted Add UID command",
+      sourceUidAddRequests,
+    );
+
+    const detailOriginEvidence = [];
+    async function verifyDetailOrigin({ key, setup, resultSelector, subview, mode, source }) {
+      await setup();
+      const row = page.locator(resultSelector).first();
+      await row.waitFor({ state: "visible" });
+      await row.evaluate((element) => element.click());
+      await detail.waitFor({ state: "visible" });
+      const evidence = await page.evaluate((originKey) => {
+        const selected = state.requestDetailSelections?.[originKey];
+        return {
+          activeKey: state.activeRequestDetailOriginKey || "",
+          selectedKey: selected?.selectedKey || "",
+          origin: selected?.origin || null,
+          closedForNavigation: selected?.closedForNavigation,
+          selectedRows: document.querySelectorAll(`[data-request-result-origin="${originKey}"].is-selected`).length,
+        };
+      }, key);
+      assert(
+        evidence.activeKey === key
+          && evidence.selectedKey
+          && evidence.origin?.subview === subview
+          && evidence.origin?.mode === mode
+          && evidence.origin?.source === source
+          && evidence.closedForNavigation === false
+          && evidence.selectedRows === 1,
+        `song detail did not record exact ${key} origin and selected row`,
+        evidence,
+      );
+      detailOriginEvidence.push({ key, ...evidence });
+      await detail.locator("[data-song-detail-close]").evaluate((button) => button.click());
+      await page.waitForTimeout(250);
+      assert(await detail.evaluate((element) => element.classList.contains("hidden")),
+        `${key} detail did not close after origin inspection`);
+    }
+
+    await verifyDetailOrigin({
+      key: "shared",
+      setup: async () => {
+        await page.locator('[data-request-view="search"]').click();
+        await page.locator('[data-search-mode="shared"]').click();
+      },
+      resultSelector: "#lark-search-results .search-result-item",
+      subview: "search",
+      mode: "shared",
+      source: "lark",
+    });
+    await verifyDetailOrigin({
+      key: "local",
+      setup: async () => { await page.locator('[data-search-mode="local"]').click(); },
+      resultSelector: "#search-results .search-result-item",
+      subview: "search",
+      mode: "local",
+      source: "search",
+    });
+    await verifyDetailOrigin({
+      key: "categories",
+      setup: async () => {
+        await page.locator('[data-request-view="discover"]').click();
+        await page.locator('[data-discover-mode="categories"]').click();
+      },
+      resultSelector: "#request-discover-categories .search-result-item",
+      subview: "discover",
+      mode: "categories",
+      source: "discover",
+    });
+    await verifyDetailOrigin({
+      key: "name",
+      setup: async () => {
+        await page.locator('[data-discover-mode="name"]').click();
+        if (await page.evaluate(() => state.d1BrowseLevel !== "items")) {
+          await page.locator('#request-discover-name [data-tag="Anime"]').evaluate((button) => button.click());
+        }
+      },
+      resultSelector: "#request-discover-name .search-result-item",
+      subview: "discover",
+      mode: "name",
+      source: "discover",
+    });
+    await verifyDetailOrigin({
+      key: "artist",
+      setup: async () => { await page.locator('[data-discover-mode="artist"]').click(); },
+      resultSelector: "#request-discover-artist .search-result-item",
+      subview: "discover",
+      mode: "artist",
+      source: "discover",
+    });
+    await verifyDetailOrigin({
+      key: "uids",
+      setup: async () => {
+        await page.locator('[data-request-view="sources"]').click();
+        await page.locator('[data-sources-mode="uids"]').click();
+        if (!await page.locator("#follow-song-results .search-result-item").count()) {
+          await page.locator("#follow-up-grid button[data-uid='42']").click();
+          await page.waitForSelector("#follow-song-results .search-result-item");
+        }
+      },
+      resultSelector: "#follow-song-results .search-result-item",
+      subview: "sources",
+      mode: "uids",
+      source: "modalFollow",
+    });
+    await verifyDetailOrigin({
+      key: "favorites",
+      setup: async () => { await page.locator('[data-sources-mode="favorites"]').click(); },
+      resultSelector: "#favlist-song-results .search-result-item",
+      subview: "sources",
+      mode: "favorites",
+      source: "modalFavlist",
+    });
+    assert(
+      new Set(detailOriginEvidence.map((entry) => entry.selectedKey)).size === 7,
+      "Request result origins did not retain seven independent selections",
+      detailOriginEvidence,
+    );
+
+    await page.locator('[data-request-view="search"]').click();
+    await page.locator('[data-search-mode="shared"]').click();
+    await page.locator("#lark-search-results .search-result-item").first().evaluate((element) => element.click());
+    await detail.waitFor({ state: "visible" });
+    await page.evaluate(() => {
+      window.__requestDetailNavigationCloseCount = 0;
+      const close = searchDetailController.close.bind(searchDetailController);
+      searchDetailController.close = (options) => {
+        window.__requestDetailNavigationCloseCount += 1;
+        return close(options);
+      };
+      activateSearchMode("local");
+    });
+    const navigationCloseEvidence = await page.evaluate(() => ({
+      count: window.__requestDetailNavigationCloseCount,
+      detailHidden: searchDetailController.root.classList.contains("hidden"),
+      activeKey: state.activeRequestDetailOriginKey || "",
+      sharedClosedForNavigation: state.requestDetailSelections?.shared?.closedForNavigation,
+      localSelectedKey: state.requestDetailSelections?.local?.selectedKey || "",
+    }));
+    assert(
+      navigationCloseEvidence.count === 1
+        && navigationCloseEvidence.detailHidden
+        && !navigationCloseEvidence.activeKey
+        && navigationCloseEvidence.sharedClosedForNavigation === true
+        && navigationCloseEvidence.localSelectedKey,
+      "mode navigation did not close only the visible prior-mode detail while retaining independent selections",
+      navigationCloseEvidence,
+    );
+    await page.locator('[data-search-mode="shared"]').click();
+    assert(
+      await page.locator('#lark-search-results [data-request-result-origin="shared"].is-selected').count() === 1
+        && await detail.evaluate((element) => element.classList.contains("hidden")),
+      "returning to Shared did not restore only its selected row without reopening detail",
+    );
+
+    await page.locator('[data-search-mode="local"]').click();
+    await page.locator("#search-results .search-result-item").first().evaluate((element) => element.click());
+    await detail.waitFor({ state: "visible" });
+    await page.locator("#search-results .search-result-item").first().evaluate((element) => element.remove());
+    await detail.locator("[data-song-detail-close]").evaluate((button) => button.click());
+    await page.waitForTimeout(250);
+    const detachedFocusEvidence = await page.evaluate(() => ({
+      activeSearchMode: document.activeElement?.dataset?.searchMode || "",
+      activeId: document.activeElement?.id || "",
+      detached: !state.requestDetailSelections?.local?.focusElement?.isConnected,
+    }));
+    assert(
+      detachedFocusEvidence.detached
+        && ["local", "search-results"].includes(detachedFocusEvidence.activeSearchMode || detachedFocusEvidence.activeId),
+      "detached detail origin did not return focus to a safe owning mode control/result list",
+      detachedFocusEvidence,
+    );
+
+    await page.locator('[data-search-mode="shared"]').click();
+    const layeredDetailOpener = page.locator("#lark-search-results .search-result-item").nth(1);
+    await layeredDetailOpener.evaluate((element) => element.click());
+    await detail.waitFor({ state: "visible" });
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(250);
+    assert(
+      await detail.evaluate((element) => element.classList.contains("hidden"))
+        && await page.evaluate(() => state.hostWorkspaceOverlayOpen)
+        && await layeredDetailOpener.evaluate((element) => document.activeElement === element),
+      "song-detail Escape did not close only detail above Request overlay and restore its result",
+    );
+
+    await page.locator('[data-request-view="sources"]').click();
+    await page.locator('[data-sources-mode="uids"]').click();
+    await page.locator("#modal-add-follow-uid-button").focus();
+    await page.evaluate(() => {
+      openBindingModal({
+        source: "modalFollow",
+        focusElement: document.activeElement,
+      }, {
+        title: "Layered source task",
+        preferred_page: 1,
+        pages: [{ page: 1, part: "P1", duration: 120 }],
+      });
+      elements.bindingModalCancel.focus({ preventScroll: true });
+    });
+    await page.keyboard.press("Escape");
+    assert(
+      !await page.locator("#binding-modal").isVisible()
+        && await page.evaluate(() => state.hostWorkspaceOverlayOpen)
+        && await page.locator("#modal-add-follow-uid-button").evaluate((element) => document.activeElement === element),
+      "source/page task Escape did not close only the task above Request overlay and restore its opener",
+    );
+
+    await page.locator("#work-rail-random").click();
+    assert(await page.locator("#manage-sources-button").isVisible(), "Random lost its single Manage sources entry");
+    await page.locator("#manage-sources-button").click();
+    assert(
+      await page.evaluate(() => state.activeHostWorkspace === "request"
+        && state.requestSubview === "sources"
+        && !elements.requestWorkspace.hidden),
+      "Random Manage sources did not route to the unified Sources subview",
     );
     await page.locator("#work-rail-queue").click();
     const playbackInfoRegions = page.locator(".playback-contextual-info-region");
@@ -2232,7 +2966,15 @@ async function run() {
     assert(await cachePanel.isVisible(), "explicit QR close action closed parent service settings");
     await remoteTrigger.click();
     await page.keyboard.press("Escape");
-    assert(!await remotePopover.isVisible(), "Escape did not close pinned QR popup");
+    const qrEscapeEvidence = await page.evaluate(() => ({
+      remoteQrPinned: state.remoteQrPinned,
+      cacheSettingsOpen: state.cacheSettingsOpen,
+      overlayOpen: state.hostWorkspaceOverlayOpen,
+      activeWorkspace: state.activeHostWorkspace,
+      visibleInfo: document.querySelectorAll(".cache-advanced-info.is-visible").length,
+      rowMenu: Boolean(state.openRowMenuTrigger),
+    }));
+    assert(!await remotePopover.isVisible(), "Escape did not close pinned QR popup", qrEscapeEvidence);
     assert(await cachePanel.isVisible(), "QR Escape closed parent service settings");
     assert(await page.locator("#remote-mini-popover").count() === 1, "QR popup nodes were duplicated");
     await remoteTrigger.click();
