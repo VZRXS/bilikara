@@ -122,10 +122,12 @@ class MacOSTauriAutoplayConfigurationTest(unittest.TestCase):
         self.assertEqual(len(macos_windows), 1)
         self.assertNotIn("create", base_windows[0])
         self.assertFalse(macos_windows[0]["create"])
-        self.assertEqual(
-            {key: value for key, value in macos_windows[0].items() if key != "create"},
-            base_windows[0],
-        )
+        macos_window = macos_windows[0]
+        for key, value in base_windows[0].items():
+            self.assertEqual(macos_window[key], value, key)
+        self.assertTrue(macos_window["decorations"])
+        self.assertTrue(macos_window["hiddenTitle"])
+        self.assertEqual(macos_window["titleBarStyle"], "Overlay")
         self.assertEqual(capability["windows"], ["main"])
 
     def test_macos_main_webview_uses_creation_time_autoplay_policy(self):

@@ -11,10 +11,8 @@
         "width": 1024,
         "visible": false,
         "dragDropEnabled": false,
-        "create": false,
-        "decorations": true,
-        "hiddenTitle": true,
-        "titleBarStyle": "Overlay"
+        "decorations": false,
+        "shadow": false
       }
     ]
   }

@@ -1845,6 +1845,216 @@ process.stdout.write(JSON.stringify({
             },
         )
 
+    def test_workspace_switching_preserves_exact_session_program_and_media_pair(self):
+        shell_functions = self.source_slice(
+            "function renderHostWorkspaceSelection",
+            "function rememberedVolumePercent",
+        )
+        script = f"""
+function fakeClassList() {{
+  const values = new Set();
+  return {{
+    toggle(name, force) {{
+      const enabled = force === undefined ? !values.has(name) : Boolean(force);
+      if (enabled) values.add(name); else values.delete(name);
+      return enabled;
+    }},
+    contains(name) {{ return values.has(name); }},
+  }};
+}}
+function fakeElement(dataset = {{}}) {{
+  return {{
+    dataset: {{ ...dataset }},
+    attributes: {{}},
+    classList: fakeClassList(),
+    hidden: false,
+    inert: false,
+    scrollTop: 0,
+    tabIndex: -1,
+    focusCount: 0,
+    setAttribute(name, value) {{ this.attributes[name] = String(value); }},
+    removeAttribute(name) {{ delete this.attributes[name]; }},
+    focus() {{ this.focusCount += 1; document.activeElement = this; }},
+    querySelector(selector) {{
+      return selector === "[data-host-workspace-heading]" ? this.heading : null;
+    }},
+  }};
+}}
+const workspaceNames = ["queue", "request", "random", "users"];
+const buttons = workspaceNames.map((name) => fakeElement({{ hostWorkspace: name }}));
+const panels = workspaceNames.map((name) => {{
+  const panel = fakeElement({{ hostWorkspacePanel: name }});
+  panel.heading = fakeElement();
+  return panel;
+}});
+const workspaceBackdrop = fakeElement();
+const appShell = fakeElement();
+const hostWorkspaceRegion = fakeElement();
+const document = {{ activeElement: null }};
+const window = {{
+  matchMedia(query) {{
+    return {{ matches: query.includes("1040px") ? false : true }};
+  }},
+  localStorage: {{ removeItem() {{}} }},
+}};
+const elements = {{
+  appShell,
+  hostWorkspaceRegion,
+  hostWorkspaceButtons: buttons,
+  hostWorkspacePanels: panels,
+  hostWorkspaceBackdrop: workspaceBackdrop,
+}};
+let forbidden = {{
+  mount: 0, replace: 0, claim: 0, retire: 0, load: 0,
+  play: 0, pause: 0, seek: 0, playerRequests: 0,
+}};
+function mountHostPlaybackSessionElements() {{ forbidden.mount += 1; }}
+function replaceHostPlayerView() {{ forbidden.replace += 1; }}
+function apiPostStateSnapshot(path) {{
+  if (String(path).startsWith("/api/player/")) forbidden.playerRequests += 1;
+}}
+function acceptedScenario(phase, presentationActive = false) {{
+  const playing = phase === "playing";
+  const video = {{
+    src: "/media/program-a/video.mp4",
+    currentSrc: "/media/program-a/video.mp4",
+    currentTime: 18.5,
+    paused: !playing,
+    load() {{ forbidden.load += 1; }},
+    play() {{ forbidden.play += 1; return Promise.resolve(); }},
+    pause() {{ forbidden.pause += 1; }},
+  }};
+  let audioTime = 18.5;
+  const audio = {{
+    src: "/media/program-a/audio.m4a",
+    currentSrc: "/media/program-a/audio.m4a",
+    paused: !playing,
+    load() {{ forbidden.load += 1; }},
+    play() {{ forbidden.play += 1; return Promise.resolve(); }},
+    pause() {{ forbidden.pause += 1; }},
+    get currentTime() {{ return audioTime; }},
+    set currentTime(value) {{ forbidden.seek += 1; audioTime = value; }},
+  }};
+  const frame = fakeElement();
+  frame.children = [video, audio];
+  frame.querySelectorAll = (selector) => selector === "video" ? [video]
+    : selector === "audio" ? [audio] : [];
+  const program = Object.freeze({{
+    item_id: "song-a",
+    item_incarnation_id: "incarnation-a",
+    selected_audio_variant_id: "instrumental",
+    artifact_set_id: "artifact-a",
+  }});
+  const session = {{
+    phase,
+    playbackGeneration: 41,
+    playbackProgram: program,
+    video,
+    audio,
+    readyCommitted: phase !== "binding",
+  }};
+  state.activeHostWorkspace = "queue";
+  state.focusedHostWorkspace = "queue";
+  state.hostWorkspaceOverlayOpen = false;
+  state.hostPlaybackSession = session;
+  state.data = {{ playback_generation: 41, playback_program: program }};
+  state.presentationSession = {{ phase: presentationActive ? "active" : "inactive" }};
+  renderHostWorkspaceSelection();
+  const original = {{
+    session,
+    frame,
+    video,
+    audio,
+    videoSrc: video.src,
+    audioSrc: audio.src,
+    program,
+    generation: session.playbackGeneration,
+    currentTime: video.currentTime,
+  }};
+  let snapshotRenders = 0;
+  for (let cycle = 0; cycle < 20; cycle += 1) {{
+    for (const workspace of ["request", "random", "users", "queue"]) {{
+      activateHostWorkspace(workspace, {{ inputOrigin: "programmatic" }});
+    }}
+    if (cycle === 9) {{
+      snapshotRenders += 1;
+      renderHostWorkspaceSelection();
+    }}
+    if (playing) video.currentTime += 0.25;
+  }}
+  return {{
+    phase,
+    presentationActive,
+    snapshotRenders,
+    sessionStable: state.hostPlaybackSession === original.session,
+    programStable: state.hostPlaybackSession.playbackProgram === original.program,
+    frameStable: frame === original.frame,
+    videoStable: state.hostPlaybackSession.video === original.video,
+    audioStable: state.hostPlaybackSession.audio === original.audio,
+    videoCount: frame.querySelectorAll("video").length,
+    audioCount: frame.querySelectorAll("audio").length,
+    srcStable: video.src === original.videoSrc && audio.src === original.audioSrc,
+    generationStable: session.playbackGeneration === original.generation,
+    timeHealthy: playing ? video.currentTime > original.currentTime : video.currentTime === original.currentTime,
+    finalWorkspace: state.activeHostWorkspace,
+  }};
+}}
+const state = {{
+  activeHostWorkspace: "queue",
+  focusedHostWorkspace: "queue",
+  hostWorkspaceOverlayOpen: false,
+  hostPlaybackSession: null,
+  data: null,
+  presentationSession: {{ phase: "inactive" }},
+}};
+{shell_functions}
+const scenarios = [
+  acceptedScenario("playing"),
+  acceptedScenario("paused"),
+  acceptedScenario("binding"),
+  acceptedScenario("playing", true),
+];
+process.stdout.write(JSON.stringify({{ scenarios, forbidden }}));
+"""
+        completed = subprocess.run(
+            [self.node, "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        for scenario in result["scenarios"]:
+            self.assertEqual(scenario["snapshotRenders"], 1)
+            self.assertTrue(scenario["sessionStable"])
+            self.assertTrue(scenario["programStable"])
+            self.assertTrue(scenario["frameStable"])
+            self.assertTrue(scenario["videoStable"])
+            self.assertTrue(scenario["audioStable"])
+            self.assertEqual(scenario["videoCount"], 1)
+            self.assertEqual(scenario["audioCount"], 1)
+            self.assertTrue(scenario["srcStable"])
+            self.assertTrue(scenario["generationStable"])
+            self.assertTrue(scenario["timeHealthy"])
+            self.assertEqual(scenario["finalWorkspace"], "queue")
+        self.assertEqual(
+            result["forbidden"],
+            {
+                "mount": 0,
+                "replace": 0,
+                "claim": 0,
+                "retire": 0,
+                "load": 0,
+                "play": 0,
+                "pause": 0,
+                "seek": 0,
+                "playerRequests": 0,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,10 @@ function assert(condition, message, detail = undefined) {
   }
 }
 
+function suffixedPath(path, suffix) {
+  return path ? path.replace(/(\.[^./]+)$/, `${suffix}$1`) : "";
+}
+
 async function run() {
   const browser = await chromium.launch({ headless: true, executablePath });
   const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
@@ -20,6 +24,7 @@ async function run() {
   const hostPlayerRequests = [];
   const updateCheckRequests = [];
   const updateInstallRequests = [];
+  const larkSearchRequests = [];
   let pendingStartupUpdateRoute = null;
   let resolveStartupUpdateSeen;
   const startupUpdateSeen = new Promise((resolve) => { resolveStartupUpdateSeen = resolve; });
@@ -64,6 +69,7 @@ async function run() {
     });
   });
   await page.route("**/api/lark/search?**", (route) => {
+    larkSearchRequests.push(route.request().url());
     const items = Array.from({ length: 36 }, (_, index) => ({
       bvid: `BVHOSTUI${index}`,
       title: `Host UI result ${index}`,
@@ -121,6 +127,786 @@ async function run() {
     await page.waitForTimeout(1200);
     assert(updateCheckRequests.length === 1, "repeated renders or state polls repeated the startup update check", updateCheckRequests);
 
+    const shellPage = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+    const shellConsoleErrors = [];
+    const shellPageErrors = [];
+    const shellPlayerRequests = [];
+    await shellPage.addInitScript(() => {
+      const nativeSetInterval = window.setInterval.bind(window);
+      window.__hostShellIntervalIds = [];
+      window.setInterval = (...args) => {
+        const intervalId = nativeSetInterval(...args);
+        window.__hostShellIntervalIds.push(intervalId);
+        return intervalId;
+      };
+    });
+    shellPage.on("console", (message) => {
+      if (message.type() === "error") {
+        shellConsoleErrors.push(message.text());
+      }
+    });
+    shellPage.on("pageerror", (error) => shellPageErrors.push(error.message));
+    shellPage.on("request", (request) => {
+      if (new URL(request.url()).pathname.startsWith("/api/player/")) {
+        shellPlayerRequests.push(request.url());
+      }
+    });
+    await shellPage.route("**/api/app/update/check", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, data: { state: "checking", include_preview: false } }),
+    }));
+    await shellPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await shellPage.waitForTimeout(900);
+    await shellPage.evaluate(() => {
+      for (const intervalId of window.__hostShellIntervalIds || []) {
+        window.clearInterval(intervalId);
+      }
+    });
+
+    const shellInitial = await shellPage.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll("[data-host-workspace]"));
+      const panels = Array.from(document.querySelectorAll("[data-host-workspace-panel]"));
+      const ids = Array.from(document.querySelectorAll("[id]"), (element) => element.id);
+      const duplicateIds = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+      return {
+        activeWorkspace: state.activeHostWorkspace,
+        shellWorkspace: elements.appShell?.dataset.activeWorkspace,
+        selected: buttons.filter((button) => button.getAttribute("aria-selected") === "true")
+          .map((button) => button.dataset.hostWorkspace),
+        roving: buttons.filter((button) => button.tabIndex === 0)
+          .map((button) => button.dataset.hostWorkspace),
+        visiblePanels: [...new Set(panels.filter((panel) => !panel.hidden)
+          .map((panel) => panel.dataset.hostWorkspacePanel))],
+        inactiveInteractive: panels.some((panel) => panel.hidden && !panel.inert),
+        toolbarHeight: document.querySelector(".topbar")?.getBoundingClientRect().height || 0,
+        railWidth: document.querySelector(".work-rail")?.getBoundingClientRect().width || 0,
+        railTargetHeights: buttons.map((button) => button.getBoundingClientRect().height),
+        bodyScrollY: window.scrollY,
+        bodyOverflow: getComputedStyle(document.body).overflow,
+        htmlOverflow: getComputedStyle(document.documentElement).overflow,
+        outerScrollTops: [
+          elements.appShell,
+          document.querySelector(".shell-body"),
+          document.querySelector(".layout"),
+          document.querySelector(".host-content-region"),
+        ].map((element) => element?.scrollTop || 0),
+        duplicateIds,
+        playerFrameCount: document.querySelectorAll("#player-frame").length,
+        featureCounts: {
+          queue: document.querySelectorAll(".queue-card").length,
+          directRequest: document.querySelectorAll("#add-form").length,
+          search: document.querySelectorAll("#search-panel").length,
+          random: document.querySelectorAll("#gatcha-panel").length,
+          users: document.querySelectorAll("#session-users-panel").length,
+        },
+        retiredLayoutSelector: document.querySelectorAll("#layout-mode-switch, #display-layout-summary").length,
+      };
+    });
+    assert(
+      shellInitial.activeWorkspace === "queue"
+        && shellInitial.shellWorkspace === "queue"
+        && shellInitial.selected.join(",") === "queue"
+        && shellInitial.roving.join(",") === "queue"
+        && shellInitial.visiblePanels.join(",") === "queue"
+        && !shellInitial.inactiveInteractive,
+      "Queue was not the one accessible default Host workspace",
+      shellInitial,
+    );
+    assert(shellInitial.toolbarHeight < 102, "global toolbar was not materially compacted", shellInitial);
+    assert(
+      Math.abs(shellInitial.railWidth - 104) <= 2
+        && shellInitial.railTargetHeights.every((height) => height >= 40),
+      "wide work rail did not preserve its intended width and fine-pointer targets",
+      shellInitial,
+    );
+    assert(
+      shellInitial.bodyScrollY === 0
+        && shellInitial.bodyOverflow === "hidden"
+        && shellInitial.htmlOverflow === "hidden"
+        && shellInitial.outerScrollTops.every((scrollTop) => scrollTop === 0),
+      "document/body retained primary Host navigation scrolling",
+      shellInitial,
+    );
+    assert(shellInitial.duplicateIds.length === 0, "Host shell introduced duplicate ids", shellInitial.duplicateIds);
+    assert(
+      shellInitial.playerFrameCount === 1
+        && Object.values(shellInitial.featureCounts).every((count) => count === 1),
+      "Host shell duplicated a Stage or feature subtree",
+      shellInitial,
+    );
+    assert(shellInitial.retiredLayoutSelector === 0, "retired Host Basic/Full UI remained visible", shellInitial);
+
+    const queueNodeBeforeFlip = await shellPage.locator(".queue-card").evaluate((element) => {
+      window.__hostShellQueueBeforeFlip = element;
+      return Boolean(element);
+    });
+    await shellPage.locator("#history-toggle-button").click();
+    await shellPage.waitForTimeout(520);
+    assert(
+      queueNodeBeforeFlip
+        && await shellPage.evaluate(() => state.listView === "history"
+          && document.querySelector(".queue-card") === window.__hostShellQueueBeforeFlip),
+      "Queue workspace did not retain its existing History flip on the same card",
+    );
+    await shellPage.locator("#history-toggle-button").click();
+    await shellPage.waitForTimeout(520);
+    assert(
+      await shellPage.evaluate(() => state.listView === "queue"
+        && document.querySelector(".queue-card") === window.__hostShellQueueBeforeFlip),
+      "History did not return to Queue on the existing feature node",
+    );
+
+    await shellPage.locator("#work-rail-queue").focus();
+    await shellPage.keyboard.press("ArrowDown");
+    let navigationState = await shellPage.evaluate(() => ({
+      active: state.activeHostWorkspace,
+      focused: document.activeElement?.dataset?.hostWorkspace || "",
+      roving: Array.from(elements.hostWorkspaceButtons || [])
+        .filter((button) => button.tabIndex === 0)
+        .map((button) => button.dataset.hostWorkspace),
+    }));
+    assert(
+      navigationState.active === "queue"
+        && navigationState.focused === "request"
+        && navigationState.roving.join(",") === "request",
+      "ArrowDown activated instead of only moving manual rail focus",
+      navigationState,
+    );
+    await shellPage.keyboard.press("End");
+    assert(
+      await shellPage.evaluate(() => document.activeElement?.dataset?.hostWorkspace) === "users"
+        && await shellPage.evaluate(() => state.activeHostWorkspace) === "queue",
+      "End did not move rail focus without activation",
+    );
+    await shellPage.keyboard.press("Home");
+    assert(
+      await shellPage.evaluate(() => document.activeElement?.dataset?.hostWorkspace) === "queue",
+      "Home did not return rail focus to Queue",
+    );
+    await shellPage.keyboard.press("ArrowUp");
+    assert(
+      await shellPage.evaluate(() => document.activeElement?.dataset?.hostWorkspace) === "users",
+      "ArrowUp did not wrap manual rail focus",
+    );
+    await shellPage.keyboard.press("Space");
+    navigationState = await shellPage.evaluate(() => ({
+      active: state.activeHostWorkspace,
+      activeElement: document.activeElement?.id || "",
+      visible: [...new Set(Array.from(elements.hostWorkspacePanels || [])
+        .filter((panel) => !panel.hidden)
+        .map((panel) => panel.dataset.hostWorkspacePanel))],
+    }));
+    assert(
+      navigationState.active === "users"
+        && navigationState.activeElement === "workspace-users-heading"
+        && navigationState.visible.join(",") === "users",
+      "Space activation did not select Users and focus its heading",
+      navigationState,
+    );
+    await shellPage.locator("#work-rail-request").focus();
+    await shellPage.keyboard.press("Enter");
+    assert(
+      await shellPage.evaluate(() => state.activeHostWorkspace === "request"
+        && document.activeElement?.id === "workspace-request-heading"),
+      "Enter activation did not select Request and focus its heading",
+    );
+    await shellPage.locator("#work-rail-random").click();
+    assert(
+      await shellPage.evaluate(() => state.activeHostWorkspace === "random"
+        && document.activeElement?.id === "work-rail-random"),
+      "pointer activation did not retain predictable focus on its rail trigger",
+    );
+
+    const switchFetchCount = await shellPage.evaluate(() => {
+      let requestCount = 0;
+      const nativeFetch = window.fetch;
+      window.fetch = (...args) => {
+        requestCount += 1;
+        return nativeFetch(...args);
+      };
+      for (let cycle = 0; cycle < 20; cycle += 1) {
+        for (const workspace of ["queue", "request", "random", "users", "queue"]) {
+          activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
+        }
+      }
+      window.fetch = nativeFetch;
+      return requestCount;
+    });
+    assert(switchFetchCount === 0, "workspace switching issued a fetch", switchFetchCount);
+
+    const legacyLayoutValues = ["basic", "normal", "full", "malformed", null];
+    const legacyLayoutEvidence = await shellPage.evaluate((values) => values.map((value) => {
+      if (value === null) {
+        localStorage.removeItem("bilikara.layout.mode");
+      } else {
+        localStorage.setItem("bilikara.layout.mode", value);
+      }
+      initializeHostShell();
+      const visibleByWorkspace = {};
+      for (const workspace of ["queue", "request", "random", "users"]) {
+        activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
+        visibleByWorkspace[workspace] = Array.from(elements.hostWorkspacePanels || [])
+          .filter((panel) => !panel.hidden)
+          .every((panel) => panel.dataset.hostWorkspacePanel === workspace);
+      }
+      return {
+        value,
+        removed: localStorage.getItem("bilikara.layout.mode") === null,
+        visibleByWorkspace,
+        oldClasses: elements.appShell?.classList.contains("layout-mode-basic")
+          || elements.appShell?.classList.contains("layout-mode-full"),
+      };
+    }), legacyLayoutValues);
+    assert(
+      legacyLayoutEvidence.every((entry) => entry.removed
+        && !entry.oldClasses
+        && Object.values(entry.visibleByWorkspace).every(Boolean)),
+      "a legacy Host layout value still hid a feature",
+      legacyLayoutEvidence,
+    );
+
+    const playerRequestsBeforeSwitching = shellPlayerRequests.length;
+    const playerIdentity = await shellPage.evaluate(() => {
+      const program = Object.freeze({
+        item_id: "browser-shell-item",
+        item_incarnation_id: "browser-shell-incarnation",
+        selected_audio_variant_id: "browser-shell-audio",
+        artifact_set_id: "browser-shell-artifact",
+      });
+      const currentItem = {
+        id: "browser-shell-item",
+        item_incarnation_id: "browser-shell-incarnation",
+        title: "Browser shell identity",
+        url: "https://www.bilibili.com/video/BVSHELL",
+        bvid: "BVSHELL",
+        status: "ready",
+        video_media_url: "/browser-shell-video.mp4",
+        audio_variants: [{ id: "browser-shell-audio", audio_url: "/browser-shell-audio.m4a" }],
+      };
+      state.data = {
+        ...(state.data || {}),
+        current_item: currentItem,
+        playback_mode: "local",
+        playback_generation: 701,
+        playback_program: program,
+        playlist: [],
+        history: [],
+      };
+      const session = createHostPlaybackSession(701, program);
+      state.hostPlaybackSession = session;
+      setHostPlaybackSessionPhase(session, "binding");
+      const pair = mountHostPlaybackSessionElements(session, currentItem, {
+        videoUrl: "/browser-shell-video.mp4",
+        audioUrl: "/browser-shell-audio.m4a",
+        mountable: true,
+      });
+      session.readyCommitted = true;
+      session.logicalPlayIntent = true;
+      setHostPlaybackSessionPhase(session, "playing");
+      const frame = elements.playerFrame;
+      const video = pair.video;
+      const audio = pair.audio;
+      const captured = {
+        session,
+        program,
+        frame,
+        video,
+        audio,
+        videoSrc: video.src,
+        videoCurrentSrc: video.currentSrc,
+        audioSrc: audio.src,
+        audioCurrentSrc: audio.currentSrc,
+        generation: session.playbackGeneration,
+        currentTime: video.currentTime,
+      };
+      window.__hostShellNodes = {
+        ...captured,
+        queue: document.querySelector(".queue-card"),
+        request: document.querySelector("#host-workspace-request-direct"),
+        search: document.querySelector("#search-panel"),
+        random: document.querySelector("#gatcha-panel"),
+        users: document.querySelector("#session-users-panel"),
+      };
+
+      const forbidden = {
+        mount: 0,
+        replace: 0,
+        claim: 0,
+        retire: 0,
+        load: 0,
+        play: 0,
+        pause: 0,
+        seekEvents: 0,
+        playerApiCalls: 0,
+      };
+      const originalMount = mountHostPlaybackSessionElements;
+      const originalReplace = replaceHostPlayerView;
+      const originalClaim = beginHostPlaybackSessionOwnershipClaim;
+      const originalRetire = retireHostPlaybackSession;
+      const originalApiPost = apiPost;
+      const originalApiPostStateSnapshot = apiPostStateSnapshot;
+      mountHostPlaybackSessionElements = (...args) => {
+        forbidden.mount += 1;
+        return originalMount(...args);
+      };
+      replaceHostPlayerView = (...args) => {
+        forbidden.replace += 1;
+        return originalReplace(...args);
+      };
+      beginHostPlaybackSessionOwnershipClaim = (...args) => {
+        forbidden.claim += 1;
+        return originalClaim(...args);
+      };
+      retireHostPlaybackSession = (...args) => {
+        forbidden.retire += 1;
+        return originalRetire(...args);
+      };
+      apiPost = (path, ...args) => {
+        if (String(path).startsWith("/api/player/")) forbidden.playerApiCalls += 1;
+        return originalApiPost(path, ...args);
+      };
+      apiPostStateSnapshot = (path, ...args) => {
+        if (String(path).startsWith("/api/player/")) forbidden.playerApiCalls += 1;
+        return originalApiPostStateSnapshot(path, ...args);
+      };
+      for (const media of [video, audio]) {
+        Object.defineProperty(media, "load", {
+          configurable: true,
+          value: () => { forbidden.load += 1; },
+        });
+        Object.defineProperty(media, "play", {
+          configurable: true,
+          value: () => { forbidden.play += 1; return Promise.resolve(); },
+        });
+        Object.defineProperty(media, "pause", {
+          configurable: true,
+          value: () => { forbidden.pause += 1; },
+        });
+        media.addEventListener("seeking", () => { forbidden.seekEvents += 1; });
+        media.addEventListener("seeked", () => { forbidden.seekEvents += 1; });
+      }
+      const frameObserver = new MutationObserver(() => {});
+      frameObserver.observe(frame, { childList: true, subtree: true });
+      let switchFrameMutations = 0;
+      let snapshotFrameMutations = 0;
+      let mediaMutations = 0;
+      const consumeFrameMutations = (bucket) => {
+        const records = frameObserver.takeRecords();
+        if (bucket === "switch") switchFrameMutations += records.length;
+        if (bucket === "snapshot") snapshotFrameMutations += records.length;
+        mediaMutations += records.filter((record) => (
+          [...record.addedNodes, ...record.removedNodes].some((node) => (
+            node === video
+            || node === audio
+            || (node instanceof Element && Boolean(node.querySelector("video, audio")))
+          ))
+        )).length;
+      };
+      const scenarios = [];
+      for (const scenario of [
+        { phase: "playing", presentation: false, snapshot: false },
+        { phase: "paused", presentation: false, snapshot: false },
+        { phase: "binding", presentation: false, snapshot: true },
+        { phase: "playing", presentation: true, snapshot: false },
+      ]) {
+        setHostPlaybackSessionPhase(session, scenario.phase);
+        session.readyCommitted = scenario.phase !== "binding";
+        if (scenario.presentation) {
+          document.body.classList.add("is-presentation-stage-only");
+        }
+        for (let cycle = 0; cycle < 20; cycle += 1) {
+          for (const workspace of ["request", "random", "users", "queue"]) {
+            activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
+            consumeFrameMutations("switch");
+          }
+          if (scenario.snapshot && cycle === 9) {
+            render();
+            consumeFrameMutations("snapshot");
+          }
+        }
+        document.body.classList.remove("is-presentation-stage-only");
+        scenarios.push({
+          ...scenario,
+          healthy: isCurrentHostPlaybackSession(session, video, audio),
+          sessionStable: state.hostPlaybackSession === captured.session,
+          programStable: session.playbackProgram === captured.program
+            && state.data.playback_program === captured.program,
+          frameStable: elements.playerFrame === captured.frame,
+          videoStable: session.video === captured.video,
+          audioStable: session.audio === captured.audio,
+        });
+      }
+      consumeFrameMutations("snapshot");
+      frameObserver.disconnect();
+      mountHostPlaybackSessionElements = originalMount;
+      replaceHostPlayerView = originalReplace;
+      beginHostPlaybackSessionOwnershipClaim = originalClaim;
+      retireHostPlaybackSession = originalRetire;
+      apiPost = originalApiPost;
+      apiPostStateSnapshot = originalApiPostStateSnapshot;
+      setHostPlaybackSessionPhase(session, "paused");
+      session.readyCommitted = true;
+      return {
+        scenarios,
+        forbidden,
+        switchFrameMutations,
+        snapshotNonMediaFrameMutations: snapshotFrameMutations - mediaMutations,
+        mediaMutations,
+        videoCount: frame.querySelectorAll("video").length,
+        audioCount: frame.querySelectorAll("audio").length,
+        videoVisible: getComputedStyle(video).display !== "none",
+        audioHidden: getComputedStyle(audio).display === "none",
+        sourcesStable: video.src === captured.videoSrc
+          && video.currentSrc === captured.videoCurrentSrc
+          && audio.src === captured.audioSrc
+          && audio.currentSrc === captured.audioCurrentSrc,
+        generationStable: session.playbackGeneration === captured.generation
+          && state.data.playback_generation === captured.generation,
+        currentTimeStable: video.currentTime === captured.currentTime,
+        finalWorkspace: state.activeHostWorkspace,
+      };
+    });
+    assert(
+      playerIdentity.scenarios.every((scenario) => scenario.healthy
+        && scenario.sessionStable
+        && scenario.programStable
+        && scenario.frameStable
+        && scenario.videoStable
+        && scenario.audioStable),
+      "rail cycling changed accepted playback ownership in a browser",
+      playerIdentity,
+    );
+    assert(
+      playerIdentity.videoCount === 1
+        && playerIdentity.audioCount === 1
+        && playerIdentity.videoVisible
+        && playerIdentity.audioHidden
+        && playerIdentity.sourcesStable
+        && playerIdentity.generationStable
+        && playerIdentity.currentTimeStable
+        && playerIdentity.switchFrameMutations === 0
+        && playerIdentity.mediaMutations === 0
+        && Object.values(playerIdentity.forbidden).every((count) => count === 0)
+        && playerIdentity.finalWorkspace === "queue",
+      "workspace switching remounted or operated on the exact media pair",
+      playerIdentity,
+    );
+    assert(
+      shellPlayerRequests.length === playerRequestsBeforeSwitching,
+      "workspace switching issued a network player request",
+      shellPlayerRequests,
+    );
+
+    const wideWidths = {};
+    for (const workspace of ["queue", "request", "random", "users"]) {
+      await shellPage.locator(`#work-rail-${workspace}`).click();
+      wideWidths[workspace] = await shellPage.evaluate(() => ({
+        workspace: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
+        stage: document.querySelector(".left-column")?.getBoundingClientRect().width || 0,
+        railIndependent: document.querySelector(".layout > .work-rail")?.parentElement
+          === document.querySelector(".layout"),
+        railGap: document.querySelector(".work-rail").getBoundingClientRect().left
+          - elements.hostWorkspaceRegion.getBoundingClientRect().right,
+        stageToolGap: elements.hostWorkspaceRegion.getBoundingClientRect().left
+          - elements.playerPanel.getBoundingClientRect().right,
+        sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+      }));
+    }
+    assert(
+      Object.values(wideWidths).every((entry) => Math.abs(entry.workspace - 536) <= 2)
+        && Object.values(wideWidths).every((entry) => entry.railIndependent
+          && Math.abs(entry.railGap - 12) <= 1
+          && Math.abs(entry.stageToolGap - 12) <= 1)
+        && Object.values(wideWidths).every((entry) => entry.stage >= 760 && entry.sameFrame),
+      "wide shell did not preserve one stable tool-card width and a useful persistent Stage",
+      wideWidths,
+    );
+
+    const draftAndScroll = await shellPage.evaluate(() => {
+      document.querySelector("#url-input").value = "BV-DRAFT-REQUEST";
+      document.querySelector("#lark-search-query").value = "search draft";
+      document.querySelector("#gatcha-uid-input").value = "random draft";
+      document.querySelector("#session-user-input").value = "user draft";
+      activateHostWorkspace("random", { inputOrigin: "programmatic" });
+      const spacer = document.createElement("div");
+      spacer.id = "host-shell-scroll-proof";
+      spacer.style.height = "1800px";
+      spacer.style.flex = "0 0 1800px";
+      document.querySelector("#gatcha-main-view").appendChild(spacer);
+      elements.gatchaStage.scrollTop = 275;
+      const storedBefore = elements.gatchaStage.scrollTop;
+      activateHostWorkspace("queue", { inputOrigin: "programmatic" });
+      activateHostWorkspace("random", { inputOrigin: "programmatic" });
+      const restored = elements.gatchaStage.scrollTop;
+      spacer.remove();
+      return {
+        storedBefore,
+        restored,
+        drafts: [
+          document.querySelector("#url-input").value,
+          document.querySelector("#lark-search-query").value,
+          document.querySelector("#gatcha-uid-input").value,
+          document.querySelector("#session-user-input").value,
+        ],
+        sameNodes: document.querySelector(".queue-card") === window.__hostShellNodes.queue
+          && document.querySelector("#host-workspace-request-direct") === window.__hostShellNodes.request
+          && document.querySelector("#search-panel") === window.__hostShellNodes.search
+          && document.querySelector("#gatcha-panel") === window.__hostShellNodes.random
+          && document.querySelector("#session-users-panel") === window.__hostShellNodes.users,
+      };
+    });
+    assert(
+      draftAndScroll.storedBefore > 0
+        && draftAndScroll.restored === draftAndScroll.storedBefore
+        && draftAndScroll.drafts.join("|") === "BV-DRAFT-REQUEST|search draft|random draft|user draft"
+        && draftAndScroll.sameNodes,
+      "workspace-local draft, scroll, or DOM state did not survive switching",
+      draftAndScroll,
+    );
+
+    const bannerEvidence = await shellPage.evaluate(async () => {
+      const banner = document.querySelector("#backup-banner");
+      const region = document.querySelector("#critical-banner-region");
+      const frame = elements.playerFrame;
+      const collapsed = region.getBoundingClientRect().height;
+      banner.classList.remove("hidden");
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const expanded = region.getBoundingClientRect().height;
+      const sameFrameExpanded = elements.playerFrame === frame;
+      banner.classList.add("hidden");
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return {
+        collapsed,
+        expanded,
+        collapsedAgain: region.getBoundingClientRect().height,
+        sameFrameExpanded,
+        sameFrameCollapsed: elements.playerFrame === frame,
+      };
+    });
+    assert(
+      bannerEvidence.collapsed === 0
+        && bannerEvidence.expanded > 0
+        && bannerEvidence.collapsedAgain === 0
+        && bannerEvidence.sameFrameExpanded
+        && bannerEvidence.sameFrameCollapsed,
+      "critical banner row did not expand/collapse without recreating the Stage",
+      bannerEvidence,
+    );
+
+    await shellPage.locator("#work-rail-queue").click();
+    await shellPage.locator("#display-settings-toggle").click();
+    assert(await shellPage.locator("#display-settings-panel").isVisible(), "compact toolbar lost Display settings");
+    await shellPage.locator("#display-settings-toggle").click();
+    await shellPage.locator("#cache-settings-toggle").click();
+    assert(await shellPage.locator("#cache-panel").isVisible(), "compact toolbar lost Service settings");
+    await shellPage.locator("#cache-settings-toggle").click();
+
+    const shellWideScreenshotPath = suffixedPath(screenshotPath, "-wide");
+    const shellMediumScreenshotPath = suffixedPath(screenshotPath, "-medium");
+    const shellNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow");
+    if (shellWideScreenshotPath) {
+      await shellPage.locator("#work-rail-request").click();
+      await shellPage.screenshot({ path: shellWideScreenshotPath, fullPage: false });
+    }
+
+    await shellPage.setViewportSize({ width: 1240, height: 800 });
+    await shellPage.locator("#work-rail-queue").click();
+    const mediumQueue = await shellPage.evaluate(() => ({
+      railWidth: document.querySelector(".work-rail")?.getBoundingClientRect().width || 0,
+      workspaceWidth: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
+      stageWidth: document.querySelector(".left-column")?.getBoundingClientRect().width || 0,
+      sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+    }));
+    assert(
+      Math.abs(mediumQueue.railWidth - 100) <= 2
+        && Math.abs(mediumQueue.workspaceWidth - 500) <= 2
+        && mediumQueue.stageWidth >= 580
+        && mediumQueue.sameFrame,
+      "medium Queue did not remain docked beside a useful Stage",
+      mediumQueue,
+    );
+    await shellPage.locator("#work-rail-request").click();
+    const mediumRequestOpen = await shellPage.evaluate(() => ({
+      active: state.activeHostWorkspace,
+      overlayOpen: state.hostWorkspaceOverlayOpen
+        && hostRequestWorkspaceUsesOverlay(),
+      width: elements.hostWorkspaceRegion?.getBoundingClientRect().width || 0,
+      sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+      sameSearch: document.querySelector("#search-panel") === window.__hostShellNodes.search,
+      draft: document.querySelector("#url-input").value,
+      bodyScrollY: window.scrollY,
+    }));
+    assert(
+      mediumRequestOpen.active === "request"
+        && !mediumRequestOpen.overlayOpen
+        && Math.abs(mediumRequestOpen.width - 500) <= 2
+        && mediumRequestOpen.sameFrame
+        && mediumRequestOpen.sameSearch
+        && mediumRequestOpen.draft === "BV-DRAFT-REQUEST"
+        && mediumRequestOpen.bodyScrollY === 0,
+      "medium Request did not use the same stable direct tool-card geometry",
+      mediumRequestOpen,
+    );
+    if (shellMediumScreenshotPath) {
+      await shellPage.screenshot({ path: shellMediumScreenshotPath, fullPage: false });
+    }
+    const mediumRequestClosed = { overlayOpen: false, directDock: true };
+
+    await shellPage.setViewportSize({ width: 840, height: 760 });
+    await shellPage.locator("#work-rail-queue").click();
+    const narrowInitial = await shellPage.evaluate(() => ({
+      mode: elements.appShell?.dataset.stageMode,
+      sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+      bodyScrollY: window.scrollY,
+      bodyOverflow: getComputedStyle(document.body).overflow,
+      stageClientHeight: document.querySelector(".left-column")?.clientHeight || 0,
+      stageScrollHeight: document.querySelector(".left-column")?.scrollHeight || 0,
+      railIndependent: document.querySelector(".layout > .work-rail")?.parentElement
+        === document.querySelector(".layout"),
+    }));
+    assert(
+      narrowInitial.mode === "narrow"
+        && narrowInitial.sameFrame
+        && narrowInitial.bodyScrollY === 0
+        && narrowInitial.bodyOverflow === "hidden"
+        && narrowInitial.stageScrollHeight <= narrowInitial.stageClientHeight + 1
+        && narrowInitial.railIndependent,
+      "narrow shell did not keep a bounded Stage beside its independent rail",
+      narrowInitial,
+    );
+    await shellPage.locator("#stage-controls-toggle").click();
+    await shellPage.waitForTimeout(180);
+    const narrowControlEvidence = await shellPage.evaluate(() => ({
+      open: !elements.stageControlTray.hidden && !elements.stageControlTray.inert,
+      backdrop: !elements.stageControlBackdrop.hidden && !elements.stageControlBackdrop.inert,
+      focusAtClose: document.activeElement === elements.stageControlsClose,
+      oneDeck: document.querySelectorAll("#stage-extended-controls").length,
+      controls: ["#av-offset-input", "#volume-slider", "#key-shift-input"].map((selector) => {
+        const control = document.querySelector(selector);
+        return Boolean(control?.offsetWidth || control?.offsetHeight || control?.getClientRects().length);
+      }),
+      sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+      geometry: (() => {
+        const player = elements.playerPanel.getBoundingClientRect();
+        const trigger = elements.stageControlsToggle.getBoundingClientRect();
+        const tray = elements.stageControlTray.getBoundingClientRect();
+        return {
+          triggerAtLowerLeft: trigger.left - player.left <= 32
+            && player.bottom - trigger.bottom <= 32,
+          expandsRightAndUp: tray.right > trigger.right && tray.top < trigger.top,
+          trayInsideViewport: tray.left >= 0 && tray.top >= 0
+            && tray.right <= window.innerWidth + 1 && tray.bottom <= window.innerHeight + 1,
+        };
+      })(),
+    }));
+    assert(
+      narrowControlEvidence.open
+        && narrowControlEvidence.backdrop
+        && narrowControlEvidence.focusAtClose
+        && narrowControlEvidence.oneDeck === 1
+        && narrowControlEvidence.controls.every(Boolean)
+        && Object.values(narrowControlEvidence.geometry).every(Boolean)
+        && narrowControlEvidence.sameFrame,
+      "narrow floating playback panel did not expose the one existing control deck",
+      narrowControlEvidence,
+    );
+    await shellPage.locator("#stage-control-backdrop").click({ position: { x: 4, y: 4 } });
+    assert(await shellPage.evaluate(() => elements.stageControlTray.hidden
+      && elements.stageControlBackdrop.hidden
+      && document.activeElement === elements.stageControlsToggle),
+    "Stage control backdrop did not close the panel and restore its opener");
+    const narrowWorkspaces = {};
+    for (const workspace of ["queue", "request", "random", "users"]) {
+      await shellPage.locator(`#work-rail-${workspace}`).click();
+      narrowWorkspaces[workspace] = await shellPage.evaluate((name) => ({
+        active: state.activeHostWorkspace,
+        visible: Array.from(elements.hostWorkspacePanels || [])
+          .filter((panel) => !panel.hidden)
+          .every((panel) => panel.dataset.hostWorkspacePanel === name),
+        bodyScrollY: window.scrollY,
+        sameFrame: elements.playerFrame === window.__hostShellNodes.frame,
+        requestOverlay: state.hostWorkspaceOverlayOpen && hostRequestWorkspaceUsesOverlay(),
+      }), workspace);
+    }
+    assert(
+      Object.entries(narrowWorkspaces).every(([workspace, entry]) => entry.active === workspace
+        && entry.visible
+        && entry.bodyScrollY === 0
+        && entry.sameFrame
+        && !entry.requestOverlay),
+      "not every workspace remained reachable in the interim narrow shell",
+      narrowWorkspaces,
+    );
+    const narrowLocalScroll = await shellPage.evaluate(() => {
+      activateHostWorkspace("random", { inputOrigin: "programmatic" });
+      const spacer = document.createElement("div");
+      spacer.style.height = "1500px";
+      spacer.style.flex = "0 0 1500px";
+      document.querySelector("#gatcha-main-view").appendChild(spacer);
+      elements.gatchaStage.scrollTop = 360;
+      const evidence = {
+        workspaceScrollTop: elements.gatchaStage.scrollTop,
+        workspaceClientHeight: elements.gatchaStage.clientHeight,
+        workspaceScrollHeight: elements.gatchaStage.scrollHeight,
+        bodyScrollY: window.scrollY,
+      };
+      spacer.remove();
+      return evidence;
+    });
+    assert(
+      narrowLocalScroll.workspaceScrollTop > 0
+        && narrowLocalScroll.workspaceScrollHeight > narrowLocalScroll.workspaceClientHeight
+        && narrowLocalScroll.bodyScrollY === 0,
+      "active narrow workspace did not own its bounded local scroll",
+      narrowLocalScroll,
+    );
+    if (shellNarrowScreenshotPath) {
+      await shellPage.evaluate(() => {
+        activateHostWorkspace("queue", { inputOrigin: "programmatic" });
+        state.hostWorkspaceScrollPositions.queue = 0;
+        elements.hostWorkspaceRegion.scrollTop = 0;
+        document.querySelector(".left-column").scrollTop = 0;
+        for (const owner of [
+          elements.appShell,
+          document.querySelector(".shell-body"),
+          document.querySelector(".layout"),
+          document.querySelector(".host-content-region"),
+        ]) {
+          owner.scrollTop = 0;
+        }
+      });
+      await shellPage.screenshot({ path: shellNarrowScreenshotPath, fullPage: false });
+    }
+    assert(shellPageErrors.length === 0, "unexpected Host shell page errors", shellPageErrors);
+    assert(shellConsoleErrors.length === 0, "unexpected Host shell console errors", shellConsoleErrors);
+    const shellEvidence = {
+      initial: shellInitial,
+      navigation: navigationState,
+      switchFetchCount,
+      legacyLayoutEvidence,
+      playerIdentity,
+      playerRequestCount: shellPlayerRequests.length - playerRequestsBeforeSwitching,
+      wideWidths,
+      draftAndScroll,
+      bannerEvidence,
+      mediumQueue,
+      mediumRequestOpen,
+      mediumRequestClosed,
+      narrowInitial,
+      narrowControlEvidence,
+      narrowWorkspaces,
+      narrowLocalScroll,
+      consoleErrors: shellConsoleErrors,
+      pageErrors: shellPageErrors,
+      screenshots: {
+        wide: shellWideScreenshotPath,
+        medium: shellMediumScreenshotPath,
+        narrow: shellNarrowScreenshotPath,
+      },
+    };
+    await shellPage.close();
+
     const disabledAutoPage = await browser.newPage({ viewport: { width: 800, height: 700 } });
     let disabledAutoChecks = 0;
     await disabledAutoPage.addInitScript(() => {
@@ -141,6 +927,8 @@ async function run() {
     assert(disabledAutoChecks === 0, "disabled preference did not suppress the startup update check");
     await disabledAutoPage.close();
 
+    await page.locator("#work-rail-request").click();
+    assert(await page.locator("#search-panel").isVisible(), "Request rail did not expose the existing Search panel");
     await page.evaluate(() => {
       document.querySelector("#lark-search-query").value = "host ui";
       document.querySelector("#lark-search-form").dispatchEvent(new Event("submit", {
@@ -245,6 +1033,24 @@ async function run() {
 
     await page.locator("#search-modal-close").click();
     await page.waitForTimeout(250);
+    assert(
+      await page.evaluate(() => document.querySelector("#search-card-content")?.parentElement
+        === document.querySelector("#search-panel .search-card")),
+      "Search expand did not restore the same content DOM to the Request workspace",
+    );
+    const larkRequestsBeforeWorkspaceRoundTrip = larkSearchRequests.length;
+    await page.locator("#work-rail-queue").click();
+    await page.locator("#work-rail-request").click();
+    assert(
+      await page.locator("#lark-search-results .search-result-item").count() === 36
+        && await page.locator("#lark-search-query").inputValue() === "host ui"
+        && larkSearchRequests.length === larkRequestsBeforeWorkspaceRoundTrip,
+      "Request workspace round trip lost Search state or reran the query",
+      { larkSearchRequests },
+    );
+    await page.locator("#work-rail-queue").click();
+    await page.locator("#stage-controls-toggle").click();
+    await page.waitForTimeout(180);
     const playbackInfoRegions = page.locator(".playback-contextual-info-region");
     const playbackInfoButtons = page.locator(".playback-contextual-info-button");
     assert(await playbackInfoButtons.count() === 2, "Host A/V and Key did not expose exactly two information triggers");
@@ -297,15 +1103,14 @@ async function run() {
       avTooltipBox && avPanelBox
         && avTooltipBox.x >= 0 && avTooltipBox.y >= 0
         && avTooltipBox.x + avTooltipBox.width <= playbackViewport.width
-        && avTooltipBox.y + avTooltipBox.height <= playbackViewport.height
-        && avTooltipBox.y + avTooltipBox.height <= avPanelBox.y,
-      "Host A/V information was not bounded above its control panel",
+        && avTooltipBox.y + avTooltipBox.height <= playbackViewport.height,
+      "Host A/V information was not bounded within the compact control tray viewport",
       { avTooltipBox, avPanelBox, playbackViewport },
     );
     await avTooltip.hover();
     await page.waitForTimeout(140);
     assert(await avTooltip.isVisible(), "moving into Host A/V information dismissed it");
-    await page.locator("#current-title").hover();
+    await page.locator("#stage-control-tray-title").hover();
     await page.waitForTimeout(330);
     assert(!await avTooltip.isVisible(), "Host A/V pointer leave did not dismiss transient information");
 
@@ -317,7 +1122,7 @@ async function run() {
     await avInfo.click();
     assert(await avTooltip.isVisible() && await page.locator(".cache-advanced-info.is-visible").count() === 1,
       "Host playback click did not pin exactly one explanation");
-    await page.locator("#current-title").hover();
+    await page.locator("#stage-control-tray-title").hover();
     assert(await avTooltip.isVisible(), "Host playback pointer leave cleared pinned information");
     await keyInfo.click();
     await page.waitForTimeout(180);
@@ -333,7 +1138,7 @@ async function run() {
       "Host playback information did not transfer one-visible ownership",
       playbackInfoTransfer,
     );
-    await page.locator("#current-title").click();
+    await page.locator("#stage-control-tray-title").click();
     await page.waitForTimeout(180);
     assert(!await keyTooltip.isVisible(), "Host playback outside click did not close contextual information");
     await keyInfo.click();
@@ -364,6 +1169,7 @@ async function run() {
       { before: hostPlayerRequestCountBeforeInfo, requests: hostPlayerRequests },
     );
 
+    await page.locator("#stage-controls-close").click();
     await page.locator("#cache-settings-toggle").click();
     await page.locator("#cache-panel-advanced-trigger").click();
     const cachePanel = page.locator("#cache-panel");
@@ -541,7 +1347,7 @@ async function run() {
         state.data.app_update = nextUpdate;
         renderUpdatePreviewControl();
         return {
-          serviceIndicator: !elements.serviceUpdateIndicator.classList.contains("hidden"),
+          serviceRing: elements.serviceUpdateIndicator.classList.contains("has-update"),
           advancedIndicator: !elements.advancedUpdateIndicator.classList.contains("hidden"),
           rowHighlighted: elements.appUpdateRow.classList.contains("has-update"),
           versionBadge: elements.updateVersionBadge.classList.contains("hidden")
@@ -563,7 +1369,7 @@ async function run() {
     for (const [name, update] of Object.entries(noBadgeStates)) {
       const rendered = await renderUpdateState(update);
       assert(
-        !rendered.serviceIndicator && !rendered.advancedIndicator
+        !rendered.serviceRing && !rendered.advancedIndicator
           && !rendered.rowHighlighted && !rendered.versionBadge,
         `${name} update state showed an availability badge`,
         rendered,
@@ -587,12 +1393,12 @@ async function run() {
     };
     const installableRendered = await renderUpdateState(installableUpdate);
     assert(
-      installableRendered.serviceIndicator && installableRendered.advancedIndicator
+      installableRendered.serviceRing && installableRendered.advancedIndicator
         && installableRendered.rowHighlighted
         && installableRendered.versionBadge.includes("v0.8.1")
         && installableRendered.buttonText.includes("v0.8.1")
         && installableRendered.serviceAccessible?.includes("v0.8.1"),
-      "eligible installable update did not show all three restrained indicators and explicit action",
+      "eligible installable update did not ring Service health and show its detailed action",
       installableRendered,
     );
     assert(
@@ -605,8 +1411,24 @@ async function run() {
     await page.locator("#cache-panel-advanced-trigger").click();
 
     await renderUpdateState(installableUpdate);
+    const installablePrecondition = await page.evaluate(() => ({
+      eligible: isEligibleCurrentChannelUpdate(),
+      update: state.data.app_update,
+      previewEnabled: state.updatePreviewEnabled,
+      panelOpen: state.cacheSettingsOpen,
+      buttonDisabled: elements.updateCheckButton.disabled,
+    }));
+    assert(installablePrecondition.eligible, "known installable update lost its deterministic action precondition", installablePrecondition);
     await page.locator("#update-check-button").click();
-    assert(await confirmPopover.isVisible(), "known installable update did not require an explicit confirmation");
+    assert(await confirmPopover.isVisible(), "known installable update did not require an explicit confirmation", {
+      installablePrecondition,
+      after: await page.evaluate(() => ({
+        eligible: isEligibleCurrentChannelUpdate(),
+        update: state.data.app_update,
+        confirmIntent: state.confirmIntent,
+        confirmHidden: elements.confirmPopover.classList.contains("hidden"),
+      })),
+    });
     assert(updateInstallRequests.length === 0, "update action installed before explicit confirmation");
     await page.locator("#confirm-ok").click();
     await page.waitForTimeout(100);
@@ -666,7 +1488,10 @@ async function run() {
     await renderUpdateState(installableUpdate);
     await page.locator('label[for="update-preview-checkbox"]').click();
     assert(await page.locator("#update-preview-checkbox").isChecked(), "preview preference was not keyboard/touch-accessible");
-    assert(!await page.locator("#service-update-indicator").isVisible(), "stable result remained current after selecting preview");
+    assert(
+      !await page.locator("#service-update-indicator").evaluate((element) => element.classList.contains("has-update")),
+      "stable result remained current after selecting preview",
+    );
     const updateChecksBeforePreview = updateCheckRequests.length;
     await page.locator("#update-check-button").click();
     await page.waitForTimeout(100);
@@ -683,9 +1508,9 @@ async function run() {
       updated_at: 18,
       latest_version: "v0.9.0-preview.1",
     }, true);
-    assert(previewRendered.serviceIndicator, "eligible preview result did not become current on the preview channel");
+    assert(previewRendered.serviceRing, "eligible preview result did not become current on the preview channel");
     const staleStableRendered = await renderUpdateState(installableUpdate, true);
-    assert(!staleStableRendered.serviceIndicator, "stale stable result overwrote the selected preview channel");
+    assert(!staleStableRendered.serviceRing, "stale stable result overwrote the selected preview channel");
     await renderUpdateState({
       ...installableUpdate,
       include_preview: true,
@@ -757,6 +1582,7 @@ async function run() {
     assert(!await remotePopover.isVisible(), "true outside click did not close pinned QR popup");
     assert(!await cachePanel.isVisible(), "true outside click did not retain parent outside-click behavior");
 
+    await page.locator("#work-rail-users").click();
     const sessionUserList = page.locator("#session-user-list");
     await sessionUserList.scrollIntoViewIfNeeded();
     const emptyHeight = await sessionUserList.locator(".session-user-empty").evaluate(
@@ -783,7 +1609,10 @@ async function run() {
     await page.mouse.wheel(0, 200);
     await page.waitForTimeout(60);
     assert(await sessionUserList.evaluate((element) => element.scrollTop) === 0, "fitting user list consumed wheel movement");
-    assert(await page.evaluate(() => window.scrollY) > pageScrollBefore, "wheel did not pass through a fitting user list");
+    assert(
+      await page.evaluate(() => window.scrollY) === pageScrollBefore,
+      "wheel over a fitting user list escaped into document/body scrolling",
+    );
 
     await sessionUserList.evaluate((element) => {
       element.innerHTML = Array.from({ length: 5 }, (_, index) => (
@@ -820,7 +1649,7 @@ async function run() {
       "overflowing user list did not scroll natively",
       overflowingMetrics,
     );
-    await page.setViewportSize({ width: 680, height: 1000 });
+    await page.setViewportSize({ width: 840, height: 1000 });
     assert(
       await sessionUserList.evaluate((element) => element.scrollHeight > element.clientHeight),
       "responsive resize lost overflowing user-list ownership",
@@ -1042,6 +1871,22 @@ async function run() {
       "coarse Host startup did not keep the stable-only automatic check",
       coarseUpdateChecks,
     );
+    const coarseRailTrigger = coarsePage.locator("#work-rail-random");
+    const coarseRailBox = await coarseRailTrigger.boundingBox();
+    assert(
+      coarseRailBox && coarseRailBox.height >= 44,
+      "coarse-pointer rail destination was smaller than 44px",
+      coarseRailBox,
+    );
+    await coarsePage.touchscreen.tap(
+      coarseRailBox.x + (coarseRailBox.width / 2),
+      coarseRailBox.y + (coarseRailBox.height / 2),
+    );
+    assert(
+      await coarsePage.evaluate(() => state.activeHostWorkspace) === "random"
+        && await coarsePage.locator("#gatcha-panel").isVisible(),
+      "touch activation did not switch to Random exactly once",
+    );
     await coarsePage.evaluate(() => {
       window.__coarsePlaybackInfoActions = 0;
       document.querySelectorAll([
@@ -1059,6 +1904,8 @@ async function run() {
         }
       });
     });
+    await coarsePage.locator("#stage-controls-toggle").click();
+    await coarsePage.waitForTimeout(180);
     const coarsePlaybackInfo = coarsePage.locator(".playback-contextual-info-button").first();
     await coarsePlaybackInfo.scrollIntoViewIfNeeded();
     const coarsePlaybackMetrics = await coarsePlaybackInfo.evaluate((button) => {
@@ -1091,8 +1938,9 @@ async function run() {
       await coarsePage.evaluate(() => window.__coarsePlaybackInfoActions) === 0,
       "Host playback touch tap activated an adjacent playback control",
     );
-    await coarsePage.locator("#current-title").tap();
+    await coarsePage.locator("#stage-control-tray-title").tap();
     assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "false", "Host playback touch outside tap did not close information");
+    await coarsePage.locator("#stage-controls-close").click();
     await coarsePage.locator("#cache-settings-toggle").click();
     await coarsePage.locator("#cache-panel-advanced-trigger").click();
     await coarsePage.locator('label[for="update-automatic-checkbox"]').tap();
@@ -1187,6 +2035,7 @@ async function run() {
       wheelScrollTop,
       backgroundScrollTop,
       detailHidden,
+      shell: shellEvidence,
       settings: {
         advancedInfoCount: await advancedInfoButtons.count(),
         layeredConfirmActions: true,

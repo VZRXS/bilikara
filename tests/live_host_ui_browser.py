@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Narrow rendered-browser smoke for bounded Host UI interactions."""
+"""Rendered-browser Host/Remote regression and Host-shell acceptance harness."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def main(args: argparse.Namespace) -> int:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=60,
+            timeout=120,
             )
         finally:
             httpd.shutdown()

@@ -38,7 +38,7 @@ class AppUpdateFrontendTest(unittest.TestCase):
         start_index = self.source.index(start)
         return self.source[start_index : self.source.index(end, start_index)]
 
-    def test_update_preferences_and_three_level_indicator_markup(self):
+    def test_update_preferences_and_service_health_ring_markup(self):
         self.assertIn('updateAutomatic: "bilikara.update.automatic"', self.source)
         self.assertIn("updateAutomaticEnabled: true", self.source)
         self.assertIn('id="update-automatic-checkbox"', self.html)
@@ -46,6 +46,8 @@ class AppUpdateFrontendTest(unittest.TestCase):
         self.assertIn('id="advanced-update-indicator"', self.html)
         self.assertIn('id="update-version-badge"', self.html)
         self.assertIn('id="app-update-status"', self.html)
+        self.assertIn('class="service-status-ring"', self.html)
+        self.assertIn(".service-status-ring.has-update", self.css)
         self.assertIn(".app-update-indicator", self.css)
         self.assertIn('"service.autoCheckUpdates"', self.i18n)
 
@@ -72,7 +74,7 @@ class AppUpdateFrontendTest(unittest.TestCase):
 
     def test_preference_defaults_and_startup_check_are_executable_and_bounded(self):
         hydrate_source = self.source_slice(
-            "function hydrateLocalPreferences", "function normalizeLayoutMode"
+            "function hydrateLocalPreferences", "function renderHostWorkspaceSelection"
         )
         operation_source = self.source_slice(
             "async function requestAppUpdateCheck", "async function addSessionUser"
@@ -80,11 +82,11 @@ class AppUpdateFrontendTest(unittest.TestCase):
         script = f"""
 const stored = new Map();
 const storageKeys = {{
-  playerVolume: "volume", playerMuted: "muted", layoutMode: "layout",
+  playerVolume: "volume", playerMuted: "muted",
   updateAutomatic: "automatic", updatePreview: "preview", theme: "theme",
 }};
 const state = {{
-  localPlayerVolume: 1, localPlayerMuted: false, layoutMode: "full", theme: "light",
+  localPlayerVolume: 1, localPlayerMuted: false, theme: "light",
   updateAutomaticEnabled: true, updatePreviewEnabled: false,
   updateAutomaticAttemptedChannels: new Set(), startupUpdateCheckScheduled: false,
   updateCheckRequestInFlight: false, manualUpdateCheck: null,
@@ -96,7 +98,6 @@ const messages = [];
 function readLocalNumber(key, fallback) {{ return stored.has(key) ? Number(stored.get(key)) : fallback; }}
 function readLocalBoolean(key, fallback) {{ return stored.has(key) ? stored.get(key) === "true" : fallback; }}
 function readLocalString(key, fallback) {{ return stored.has(key) ? stored.get(key) : fallback; }}
-function normalizeLayoutMode(value) {{ return value === "basic" ? "basic" : "full"; }}
 function normalizeTheme(value) {{ return value === "dark" ? "dark" : "light"; }}
 function applyTheme(value) {{ state.theme = value; }}
 function appUpdateStatus() {{ return state.data.app_update; }}
@@ -146,6 +147,17 @@ async function apiPost(path, payload) {{ posts.push({{ path, payload }}); return
         )
         self.assertEqual(result["disabledPostCount"], 0)
         self.assertEqual(result["messages"], [])
+
+    def test_host_basic_full_preference_is_retired_without_a_hidden_toggle(self):
+        self.assertNotIn('layoutMode: "bilikara.layout.mode"', self.source)
+        self.assertNotIn("function normalizeLayoutMode", self.source)
+        self.assertNotIn("function renderLayoutMode", self.source)
+        self.assertNotIn("function setLayoutMode", self.source)
+        self.assertNotIn('id="layout-mode-switch"', self.html)
+        self.assertNotIn('id="display-layout-summary"', self.html)
+        self.assertNotIn(".app-shell.layout-mode-basic", self.css)
+        self.assertNotIn(".app-shell.layout-mode-full", self.css)
+        self.assertEqual(self.source.count('removeItem("bilikara.layout.mode")'), 1)
 
     def test_indicator_rendering_and_manual_actions_are_executable(self):
         render_source = self.source_slice(
@@ -199,7 +211,7 @@ async function apiPost(path, payload) {{ posts.push({{ path, payload }}); return
 {operation_source}
 function indicatorState() {{
   return {{
-    service: !elements.serviceUpdateIndicator.classList.contains("hidden"),
+    service: elements.serviceUpdateIndicator.classList.contains("has-update"),
     advanced: !elements.advancedUpdateIndicator.classList.contains("hidden"),
     row: elements.appUpdateRow.classList.contains("has-update"),
     badge: !elements.updateVersionBadge.classList.contains("hidden"),

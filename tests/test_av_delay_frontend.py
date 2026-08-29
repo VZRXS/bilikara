@@ -77,7 +77,7 @@ class AvDelayFrontendTest(unittest.TestCase):
 
         playback_controls = self.host_html[
             self.host_html.index('id="av-sync-panel"') :
-            self.host_html.index('class="request-panel"')
+            self.host_html.index('id="host-workspace-request-direct"')
         ]
         self.assertEqual(playback_controls.count('class="playback-contextual-info-button'), 2)
         self.assertEqual(playback_controls.count('class="contextual-info-glyph" aria-hidden="true">i</span>'), 2)

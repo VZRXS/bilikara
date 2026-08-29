@@ -1,3 +1,17 @@
+PACKAGED-BUILD REVIEW SUPERSESSION
+----------------------------------
+
+The authoritative correction is
+`docs/host-shell-v0.8-build-review-addendum.txt`. It records that Queue and History are direct destinations,
+Next is Stage-owned Next, the shell uses a stable tool card plus an independent fixed right-side tool rail,
+every responsive state has stable tool width, and the implementation has width-and-height measured Stage modes
+with one lower-left floating control button, the Service update
+state rings its existing health check, the shell keeps a one-line icon-plus-label global toolbar,
+and desktop builds use platform-specific integrated window chrome.
+Its exact Scroll-owner table and corrected Request/Gatcha naming supersede every
+conflicting historical statement below. The original freeze remains for audit
+history only.
+
 Bilikara v0.8 Host desktop-shell design freeze
 ================================================
 

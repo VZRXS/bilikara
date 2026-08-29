@@ -82,7 +82,6 @@ const developerDeletePreferredFieldKeys = [
 const storageKeys = {
   playerVolume: "bilikara.player.volume",
   playerMuted: "bilikara.player.muted",
-  layoutMode: "bilikara.layout.mode",
   language: "bilikara.ui.language",
   updateAutomatic: "bilikara.update.automatic",
   updatePreview: "bilikara.update.preview",
@@ -143,6 +142,13 @@ const state = {
   localPlayerControlsHideTimer: null,
   localPlayerControlsHideGeneration: 0,
   localWebKitStartRetryDone: false,
+  stageControlTrayOpen: false,
+  stageControlTrayFocusHandler: null,
+  stageResizeObserver: null,
+  stageMeasureFrame: null,
+  openRowMenuTrigger: null,
+  playedSessionsLoaded: false,
+  playedSessionsLoadPromise: null,
   listView: "queue",
   listStageView: "",
   listFlipTimer: null,
@@ -337,7 +343,15 @@ const state = {
   presentationListenersReady: false,
   presentationUnlisteners: [],
   presentationCursorHideTimer: null,
-  layoutMode: "full",
+  activeHostWorkspace: "queue",
+  focusedHostWorkspace: "queue",
+  hostWorkspaceOverlayOpen: false,
+  hostWorkspaceScrollPositions: {
+    queue: 0,
+    request: 0,
+    random: 0,
+    users: 0,
+  },
   language: "zh",
   translations: {},
   translationsLoaded: false,
@@ -387,6 +401,12 @@ Object.defineProperty(state, "localPlaybackStartState", {
 
 const elements = {
   appShell: document.getElementById("app-shell"),
+  topbar: document.querySelector(".topbar"),
+  leftColumn: document.querySelector(".left-column"),
+  hostWorkspaceRegion: document.getElementById("host-workspace-region"),
+  hostWorkspaceButtons: document.querySelectorAll("[data-host-workspace]"),
+  hostWorkspacePanels: document.querySelectorAll("[data-host-workspace-panel]"),
+  hostWorkspaceBackdrop: document.getElementById("host-workspace-backdrop"),
   developerModeTrigger: document.getElementById("developer-mode-trigger"),
   serviceStatusIndicator: document.getElementById("service-status-indicator"),
   playbackModeSummary: document.getElementById("playback-mode-summary"),
@@ -436,6 +456,11 @@ const elements = {
   playerPanel: document.querySelector(".player-panel"),
   playerFrame: document.getElementById("player-frame"),
   playerFullscreenButton: document.getElementById("player-fullscreen-button"),
+  stageControlsToggle: document.getElementById("stage-controls-toggle"),
+  stageControlsClose: document.getElementById("stage-controls-close"),
+  stageControlBackdrop: document.getElementById("stage-control-backdrop"),
+  stageControlTray: document.getElementById("stage-control-tray"),
+  stageExtendedControls: document.getElementById("stage-extended-controls"),
   fullscreenRequestToast: document.getElementById("fullscreen-request-toast"),
   audioVariantBar: document.getElementById("audio-variant-bar"),
   avSyncPanel: document.getElementById("av-sync-panel"),
@@ -471,6 +496,7 @@ const elements = {
   playlist: document.getElementById("playlist"),
   historyList: document.getElementById("history-list"),
   queueCount: document.getElementById("queue-count"),
+  historyCount: document.getElementById("history-count"),
   queueCurrent: document.getElementById("queue-current"),
   queueCurrentProgressBadge: document.getElementById("queue-current-progress-badge"),
   queueCurrentIconWrap: document.getElementById("queue-current-icon-wrap"),
@@ -484,7 +510,6 @@ const elements = {
   displaySettings: document.getElementById("display-settings"),
   displaySettingsToggle: document.getElementById("display-settings-toggle"),
   displaySettingsPanel: document.getElementById("display-settings-panel"),
-  displayLayoutSummary: document.getElementById("display-layout-summary"),
   presentationSettings: document.getElementById("presentation-settings"),
   presentationSettingsToggle: document.getElementById("presentation-settings-toggle"),
   presentationSettingsPanel: document.getElementById("presentation-settings-panel"),
@@ -495,7 +520,6 @@ const elements = {
   presentationStateDot: document.getElementById("presentation-state-dot"),
   presentationDisplayList: document.getElementById("presentation-display-list"),
   presentationRefreshButton: document.getElementById("presentation-refresh-button"),
-  layoutModeSwitch: document.getElementById("layout-mode-switch"),
   languageSwitch: document.getElementById("language-switch"),
   themeSwitch: document.getElementById("theme-switch"),
   nextButton: document.getElementById("next-button"),
@@ -556,6 +580,11 @@ const elements = {
   remotePopoverQrPlaceholder: document.getElementById("remote-popover-qr-placeholder"),
   remotePopoverUrlLink: document.getElementById("remote-popover-url-link"),
   remotePopoverUrlHint: document.getElementById("remote-popover-url-hint"),
+  windowDragRegion: document.getElementById("window-drag-region"),
+  windowControls: document.getElementById("window-controls"),
+  windowMinimize: document.getElementById("window-minimize"),
+  windowMaximize: document.getElementById("window-maximize"),
+  windowClose: document.getElementById("window-close"),
   remoteMiniControl: document.getElementById("remote-mini-control"),
   remoteMiniTrigger: document.getElementById("remote-mini-trigger"),
   remoteMiniPopover: document.getElementById("remote-mini-popover"),
@@ -1775,8 +1804,14 @@ function renderPresentationOutputControl() {
     return;
   }
   const nativeAvailable = typeof tauriInvoke() === "function";
-  settings.classList.toggle("hidden", !nativeAvailable);
+  settings.classList.toggle("hidden", false);
   if (!nativeAvailable) {
+    button.disabled = true;
+    button.removeAttribute("aria-busy");
+    setElementAttribute(button, "aria-label", t("display.presentationUnavailable"));
+    setTextContent(status, t("display.presentationUnavailable"));
+    setTextContent(elements.presentationOutputSummary, t("display.outputOff"));
+    setTextContent(elements.presentationOutputMeta, t("display.presentationUnavailable"));
     return;
   }
   const session = state.presentationSession;
@@ -2666,7 +2701,6 @@ function hydrateLocalPreferences() {
     Math.min(1, readLocalNumber(storageKeys.playerVolume, state.localPlayerVolume)),
   );
   state.localPlayerMuted = readLocalBoolean(storageKeys.playerMuted, state.localPlayerMuted);
-  state.layoutMode = normalizeLayoutMode(readLocalString(storageKeys.layoutMode, state.layoutMode));
   state.updateAutomaticEnabled = readLocalBoolean(
     storageKeys.updateAutomatic,
     state.updateAutomaticEnabled,
@@ -2678,33 +2712,410 @@ function hydrateLocalPreferences() {
   applyTheme(state.theme);
 }
 
-function normalizeLayoutMode(value) {
-  if (value === "basic" || value === "normal") {
-    return "basic";
+function renderHostWorkspaceSelection() {
+  const activeWorkspace = normalizeHostWorkspaceName(state.activeHostWorkspace, "queue");
+  const focusedWorkspace = normalizeHostWorkspaceName(
+    state.focusedHostWorkspace,
+    activeWorkspace,
+  );
+  const requestOverlay = activeWorkspace === "request"
+    && state.hostWorkspaceOverlayOpen
+    && hostRequestWorkspaceUsesOverlay();
+  const requestOverlayClosed = activeWorkspace === "request"
+    && !state.hostWorkspaceOverlayOpen
+    && hostRequestWorkspaceUsesOverlay();
+
+  state.activeHostWorkspace = activeWorkspace;
+  state.focusedHostWorkspace = focusedWorkspace;
+  if (elements.appShell) {
+    elements.appShell.dataset.activeWorkspace = activeWorkspace;
+    elements.appShell.classList.toggle("host-workspace-overlay-open", requestOverlay);
   }
-  return "full";
-}
-
-function renderLayoutMode() {
-  const layoutMode = normalizeLayoutMode(state.layoutMode);
-  elements.appShell?.classList.toggle("layout-mode-basic", layoutMode === "basic");
-  elements.appShell?.classList.toggle("layout-mode-full", layoutMode === "full");
-  elements.layoutModeSwitch?.querySelectorAll("button[data-layout-mode]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.layoutMode === layoutMode);
+  if (elements.hostWorkspaceRegion) {
+    elements.hostWorkspaceRegion.dataset.activeWorkspace = activeWorkspace;
+    elements.hostWorkspaceRegion.setAttribute(
+      "aria-labelledby",
+      `work-rail-${activeWorkspace}`,
+    );
+  }
+  elements.hostWorkspaceButtons?.forEach((button) => {
+    const workspace = normalizeHostWorkspaceName(button.dataset.hostWorkspace, "");
+    const selected = workspace === activeWorkspace;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = workspace === focusedWorkspace ? 0 : -1;
   });
-  const layoutKey = layoutMode === "basic" ? "layout.basicLayout" : "layout.fullLayout";
-  setTextContent(elements.displayLayoutSummary, t(layoutKey));
+  elements.hostWorkspacePanels?.forEach((panel) => {
+    const workspace = normalizeHostWorkspaceName(panel.dataset.hostWorkspacePanel, "");
+    const visible = workspace === activeWorkspace && !requestOverlayClosed;
+    panel.hidden = !visible;
+    panel.inert = !visible;
+    panel.setAttribute("aria-hidden", String(!visible));
+  });
+  if (elements.hostWorkspaceBackdrop) {
+    elements.hostWorkspaceBackdrop.hidden = !requestOverlay;
+    elements.hostWorkspaceBackdrop.inert = !requestOverlay;
+    elements.hostWorkspaceBackdrop.setAttribute("aria-hidden", String(!requestOverlay));
+  }
 }
 
-function setLayoutMode(mode) {
-  const nextMode = normalizeLayoutMode(mode);
-  if (state.layoutMode === nextMode) {
-    renderLayoutMode();
+function normalizeHostWorkspaceName(value, fallback = "queue") {
+  const candidate = String(value || "").trim().toLowerCase();
+  return ["queue", "request", "random", "users"].includes(candidate)
+    ? candidate
+    : fallback;
+}
+
+function hostRequestWorkspaceUsesOverlay() {
+  return false;
+}
+
+function hostWorkspaceButton(workspace) {
+  const normalized = normalizeHostWorkspaceName(workspace, "");
+  return Array.from(elements.hostWorkspaceButtons || []).find(
+    (button) => button.dataset.hostWorkspace === normalized,
+  ) || null;
+}
+
+function rememberHostWorkspaceScrollPosition(workspace = state.activeHostWorkspace) {
+  const normalized = normalizeHostWorkspaceName(workspace, "");
+  if (!normalized || !elements.hostWorkspaceRegion) {
     return;
   }
-  state.layoutMode = nextMode;
-  writeLocalPreference(storageKeys.layoutMode, nextMode);
-  renderLayoutMode();
+  state.hostWorkspaceScrollPositions ||= {};
+  state.hostWorkspaceScrollPositions[normalized] = Math.max(
+    0,
+    Number(elements.hostWorkspaceRegion.scrollTop || 0),
+  );
+}
+
+function restoreHostWorkspaceScrollPosition(workspace = state.activeHostWorkspace) {
+  const normalized = normalizeHostWorkspaceName(workspace, "");
+  if (!normalized || !elements.hostWorkspaceRegion) {
+    return;
+  }
+  const scrollTop = Math.max(
+    0,
+    Number(state.hostWorkspaceScrollPositions?.[normalized] || 0),
+  );
+  elements.hostWorkspaceRegion.scrollTop = scrollTop;
+}
+
+function activateHostWorkspace(workspace, { inputOrigin = "pointer" } = {}) {
+  const nextWorkspace = normalizeHostWorkspaceName(workspace, "");
+  if (!nextWorkspace) {
+    return false;
+  }
+  rememberHostWorkspaceScrollPosition();
+  const changed = state.activeHostWorkspace !== nextWorkspace;
+  if (changed) {
+    if (typeof closeOpenMenus === "function") {
+      closeOpenMenus({ restoreFocus: false });
+    }
+  }
+  state.activeHostWorkspace = nextWorkspace;
+  state.focusedHostWorkspace = nextWorkspace;
+  state.hostWorkspaceOverlayOpen = nextWorkspace === "request";
+  renderHostWorkspaceSelection();
+  restoreHostWorkspaceScrollPosition(nextWorkspace);
+
+  const trigger = hostWorkspaceButton(nextWorkspace);
+  if (inputOrigin === "pointer") {
+    trigger?.focus({ preventScroll: true });
+  } else if (inputOrigin === "keyboard") {
+    const heading = Array.from(elements.hostWorkspacePanels || [])
+      .find((panel) => (
+        panel.dataset.hostWorkspacePanel === nextWorkspace && !panel.hidden
+      ))
+      ?.querySelector("[data-host-workspace-heading]");
+    heading?.focus({ preventScroll: true });
+  }
+  return changed;
+}
+
+function focusHostWorkspaceRailItem(workspace) {
+  const nextWorkspace = normalizeHostWorkspaceName(workspace, "");
+  const trigger = hostWorkspaceButton(nextWorkspace);
+  if (!nextWorkspace || !trigger) {
+    return false;
+  }
+  state.focusedHostWorkspace = nextWorkspace;
+  elements.hostWorkspaceButtons?.forEach((button) => {
+    button.tabIndex = button === trigger ? 0 : -1;
+  });
+  trigger.focus({ preventScroll: true });
+  return true;
+}
+
+function handleHostWorkspaceRailKeydown(event) {
+  const currentWorkspace = normalizeHostWorkspaceName(
+    event.currentTarget?.dataset?.hostWorkspace,
+    state.focusedHostWorkspace,
+  );
+  const workspaces = ["queue", "request", "random", "users"];
+  const currentIndex = Math.max(0, workspaces.indexOf(currentWorkspace));
+  let targetIndex = null;
+  if (event.key === "ArrowDown") {
+    targetIndex = (currentIndex + 1) % workspaces.length;
+  } else if (event.key === "ArrowUp") {
+    targetIndex = (currentIndex - 1 + workspaces.length) % workspaces.length;
+  } else if (event.key === "Home") {
+    targetIndex = 0;
+  } else if (event.key === "End") {
+    targetIndex = workspaces.length - 1;
+  } else if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    activateHostWorkspace(currentWorkspace, { inputOrigin: "keyboard" });
+    return true;
+  } else {
+    return false;
+  }
+  event.preventDefault();
+  focusHostWorkspaceRailItem(workspaces[targetIndex]);
+  return true;
+}
+
+function closeHostWorkspaceOverlay({ restoreFocus = true } = {}) {
+  if (
+    state.activeHostWorkspace !== "request"
+    || !state.hostWorkspaceOverlayOpen
+    || !hostRequestWorkspaceUsesOverlay()
+  ) {
+    return false;
+  }
+  rememberHostWorkspaceScrollPosition("request");
+  state.hostWorkspaceOverlayOpen = false;
+  renderHostWorkspaceSelection();
+  if (restoreFocus) {
+    state.focusedHostWorkspace = "request";
+    focusHostWorkspaceRailItem("request");
+  }
+  return true;
+}
+
+function hostWorkspaceHasHigherEscapeLayer() {
+  const visibleSelectionModal = Array.from(document.querySelectorAll?.(".selection-modal") || [])
+    .some((modal) => !modal.classList.contains("hidden"));
+  return Boolean(
+    visibleSelectionModal
+    || state.confirmIntent
+    || state.cacheSettingsOpen
+    || state.displaySettingsOpen
+    || state.presentationSettingsOpen
+    || state.remoteQrPinned
+  );
+}
+
+function closeOrdinaryPopoverForEscape() {
+  const infoTrigger = document.querySelector(
+    ".cache-advanced-info.is-visible .cache-advanced-info-button",
+  );
+  if (closeCacheAdvancedInfo()) {
+    infoTrigger?.focus({ preventScroll: true });
+    return true;
+  }
+  if (state.remoteQrPinned) {
+    setRemoteQrPinned(false, { dismissTransient: true });
+    elements.remoteMiniTrigger?.focus({ preventScroll: true });
+    elements.remoteMiniControl?.classList.add("is-qr-dismissed");
+    return true;
+  }
+  if (state.cacheSettingsOpen) {
+    state.cacheSettingsOpen = false;
+    syncCachePanelVisibility();
+    elements.cacheSettingsToggle?.focus({ preventScroll: true });
+    return true;
+  }
+  if (state.displaySettingsOpen) {
+    state.displaySettingsOpen = false;
+    syncDisplayPanelVisibility();
+    elements.displaySettingsToggle?.focus({ preventScroll: true });
+    return true;
+  }
+  if (state.presentationSettingsOpen) {
+    state.presentationSettingsOpen = false;
+    syncPresentationPanelVisibility();
+    elements.presentationSettingsToggle?.focus({ preventScroll: true });
+    return true;
+  }
+  if (elements.catalogAdvancedMenu?.open) {
+    elements.catalogAdvancedMenu.open = false;
+    elements.catalogAdvancedMenu.querySelector("summary")?.focus({ preventScroll: true });
+    return true;
+  }
+  return false;
+}
+
+function positionStageControlTray() {
+  if (!elements.stageControlTray || !elements.stageControlsToggle) {
+    return;
+  }
+  const anchor = elements.stageControlsToggle.getBoundingClientRect();
+  const toolbar = elements.topbar?.getBoundingClientRect();
+  const rail = document.querySelector(".layout > .work-rail")?.getBoundingClientRect();
+  const viewportInset = 12;
+  const topBoundary = Math.max(viewportInset, Number(toolbar?.bottom || 0) + 8);
+  const rightBoundary = Math.min(
+    window.innerWidth - viewportInset,
+    Number(rail?.left || window.innerWidth) - viewportInset,
+  );
+  const left = Math.max(viewportInset, Math.min(anchor.left, rightBoundary - 280));
+  const width = Math.max(280, Math.min(680, rightBoundary - left));
+  const maxHeight = Math.max(220, window.innerHeight - topBoundary - viewportInset);
+  const naturalHeight = Math.min(560, maxHeight, elements.stageControlTray.scrollHeight || maxHeight);
+  const top = Math.max(topBoundary, anchor.top - 10 - naturalHeight);
+  const originY = Math.max(24, Math.min(naturalHeight - 24, anchor.top + (anchor.height / 2) - top));
+  elements.stageControlTray.style.left = `${Math.round(left)}px`;
+  elements.stageControlTray.style.top = `${Math.round(top)}px`;
+  elements.stageControlTray.style.width = `${Math.round(width)}px`;
+  elements.stageControlTray.style.maxHeight = `${Math.round(maxHeight)}px`;
+  elements.stageControlTray.style.transformOrigin = `0 ${Math.round(originY)}px`;
+}
+
+function setStageControlTrayOpen(open, { restoreFocus = false } = {}) {
+  if (state.stageControlTrayFocusHandler && elements.stageControlTray) {
+    elements.stageControlTray.removeEventListener("transitionend", state.stageControlTrayFocusHandler);
+    state.stageControlTrayFocusHandler = null;
+  }
+  state.stageControlTrayOpen = Boolean(open);
+  if (state.stageControlTrayOpen) {
+    closeCacheAdvancedInfo();
+    setRemoteQrPinned(false, { dismissTransient: true });
+    state.cacheSettingsOpen = false;
+    state.displaySettingsOpen = false;
+    state.presentationSettingsOpen = false;
+    syncCachePanelVisibility();
+    syncDisplayPanelVisibility();
+    syncPresentationPanelVisibility();
+    if (elements.stageControlTray) {
+      elements.stageControlTray.hidden = false;
+      elements.stageControlTray.inert = false;
+      elements.stageControlTray.setAttribute("aria-hidden", "false");
+    }
+    if (elements.stageControlBackdrop) {
+      elements.stageControlBackdrop.hidden = false;
+      elements.stageControlBackdrop.inert = false;
+      elements.stageControlBackdrop.setAttribute("aria-hidden", "false");
+    }
+    positionStageControlTray();
+  }
+  elements.stageControlTray?.classList.toggle("is-open", state.stageControlTrayOpen);
+  elements.stageControlsToggle?.setAttribute("aria-expanded", String(state.stageControlTrayOpen));
+  if (state.stageControlTrayOpen) {
+    const focusCloseAfterOpen = (event) => {
+      if (event.target !== elements.stageControlTray || event.propertyName !== "opacity") {
+        return;
+      }
+      elements.stageControlTray.removeEventListener("transitionend", focusCloseAfterOpen);
+      state.stageControlTrayFocusHandler = null;
+      if (state.stageControlTrayOpen && !elements.stageControlTray.inert) {
+        elements.stageControlsClose?.focus({ preventScroll: true });
+      }
+    };
+    state.stageControlTrayFocusHandler = focusCloseAfterOpen;
+    elements.stageControlTray?.addEventListener("transitionend", focusCloseAfterOpen);
+    elements.stageControlsClose?.focus({ preventScroll: true });
+    window.requestAnimationFrame(() => {
+      if (state.stageControlTrayOpen && !elements.stageControlTray?.inert) {
+        elements.stageControlsClose?.focus({ preventScroll: true });
+      }
+    });
+    return;
+  }
+  if (elements.stageControlTray) {
+    elements.stageControlTray.hidden = true;
+    elements.stageControlTray.inert = true;
+    elements.stageControlTray.setAttribute("aria-hidden", "true");
+  }
+  if (elements.stageControlBackdrop) {
+    elements.stageControlBackdrop.hidden = true;
+    elements.stageControlBackdrop.inert = true;
+    elements.stageControlBackdrop.setAttribute("aria-hidden", "true");
+  }
+  if (restoreFocus) {
+    elements.stageControlsToggle?.focus({ preventScroll: true });
+  }
+}
+
+function measurePersistentStage() {
+  state.stageMeasureFrame = null;
+  if (!elements.appShell || !elements.leftColumn || !elements.playerPanel) {
+    return "compact";
+  }
+  const available = elements.leftColumn.getBoundingClientRect();
+  const headerHeight = elements.playerPanel.querySelector(".panel-head")?.getBoundingClientRect().height || 0;
+  const playerWidth = Math.max(0, available.width - 32);
+  const fittedPlayerHeight = Math.max(176, Math.min(480, playerWidth * (9 / 16)));
+  const measuredFullHeight = headerHeight + fittedPlayerHeight + 26;
+  const narrowShell = Boolean(window.matchMedia?.("(max-width: 1039px)")?.matches);
+  const mode = narrowShell
+    ? "narrow"
+    : available.width >= 720 && available.height >= measuredFullHeight
+      ? "full"
+      : "compact";
+  const previousMode = elements.appShell.dataset.stageMode;
+  elements.appShell.dataset.stageMode = mode;
+  if (state.stageControlTrayOpen && previousMode !== mode) {
+    positionStageControlTray();
+  }
+  return mode;
+}
+
+function schedulePersistentStageMeasurement() {
+  if (state.stageMeasureFrame !== null) {
+    return;
+  }
+  state.stageMeasureFrame = window.requestAnimationFrame(measurePersistentStage);
+}
+
+function initializePersistentStageFitting() {
+  if (typeof ResizeObserver === "function") {
+    state.stageResizeObserver?.disconnect?.();
+    state.stageResizeObserver = new ResizeObserver(schedulePersistentStageMeasurement);
+    state.stageResizeObserver.observe(elements.leftColumn);
+    state.stageResizeObserver.observe(elements.playerPanel);
+  }
+  schedulePersistentStageMeasurement();
+}
+
+function initializeWindowChrome() {
+  const tauriWindowApi = window.__TAURI__?.window;
+  const appWindow = tauriWindowApi?.getCurrentWindow?.();
+  const userAgent = String(navigator.userAgent || "");
+  const platform = /Windows/i.test(userAgent)
+    ? "windows"
+    : /Macintosh|Mac OS X/i.test(userAgent)
+      ? "macos"
+      : "linux";
+  document.body.dataset.tauriPlatform = appWindow ? platform : "browser";
+  if (!appWindow) {
+    return;
+  }
+  if (platform === "windows") {
+    elements.windowControls.hidden = false;
+    elements.windowMinimize?.addEventListener("click", () => appWindow.minimize().catch(() => {}));
+    elements.windowMaximize?.addEventListener("click", () => appWindow.toggleMaximize().catch(() => {}));
+    elements.windowClose?.addEventListener("click", () => appWindow.close().catch(() => {}));
+  }
+  elements.windowDragRegion?.addEventListener("dblclick", (event) => {
+    if (event.button !== 0 || platform !== "windows") {
+      return;
+    }
+    appWindow.toggleMaximize().catch(() => {});
+  });
+}
+
+function initializeHostShell() {
+  state.activeHostWorkspace = "queue";
+  state.focusedHostWorkspace = "queue";
+  state.hostWorkspaceOverlayOpen = false;
+  renderHostWorkspaceSelection();
+  initializeWindowChrome();
+  initializePersistentStageFitting();
+  try {
+    window.localStorage?.removeItem("bilikara.layout.mode");
+  } catch {
+    // The retired Host preference is optional; responsive shell behavior is unconditional.
+  }
 }
 
 function rememberedVolumePercent() {
@@ -6296,7 +6707,7 @@ function render() {
   renderCacheSettings(data.bbdown, data.ffmpeg, data.cache_policy);
   renderPlaybackRepairControls(currentItem);
   renderRemoteAccess(data.remote_access);
-  renderLayoutMode();
+  renderHostWorkspaceSelection();
 
   const playbackMode = frontendPlaybackMode(data.playback_mode);
   renderAudioVariantBar(currentItem, playbackMode);
@@ -6505,7 +6916,6 @@ function normalizeWheelDelta(event, container) {
   }
   return event.deltaY;
 }
-
 function renderRequesterSelect(sessionUsers) {
   const users = Array.isArray(sessionUsers) ? sessionUsers : [];
   const signature = JSON.stringify(users);
@@ -6756,8 +7166,8 @@ function renderListHeader(playlist, history) {
   const queueCount = isHistoryView ? t("history.count", { count: history.length }) : t("list.count", { count: playlist.length });
   const historyButtonText = isHistoryView ? t("list.title") : t("history.title");
   const signature = JSON.stringify({
-    isHistoryView,
-    queueCount,
+    queueCount: playlist.length,
+    historyCount: history.length,
     language: state.language,
   });
 
@@ -6977,7 +7387,14 @@ function renderUpdatePreviewControl() {
         : t("service.checkUpdateTitle"),
     );
   }
-  syncUpdateIndicator(elements.serviceUpdateIndicator, eligible, accessibleText);
+  setClassToggle(elements.serviceUpdateIndicator, "has-update", eligible);
+  if (elements.serviceUpdateIndicator) {
+    if (eligible) {
+      elements.serviceUpdateIndicator.setAttribute("aria-label", accessibleText);
+    } else {
+      elements.serviceUpdateIndicator.removeAttribute("aria-label");
+    }
+  }
   syncUpdateIndicator(elements.advancedUpdateIndicator, eligible, accessibleText);
   setClassToggle(elements.appUpdateRow, "has-update", eligible);
   if (elements.updateVersionBadge) {
@@ -7458,6 +7875,33 @@ function validatedHostSnapshotIdentity(snapshot) {
   return { stateRevision, rustRevision, playbackGeneration, program };
 }
 
+const hostReadinessSnapshotFields = Object.freeze([
+  "remote_access",
+  "bbdown",
+  "ffmpeg",
+  "cache_policy",
+  "gatcha",
+  "gatcha_pool_config",
+  "gatcha_favlist_updated_at",
+  "app_update",
+]);
+
+function hostReadinessSnapshotSignature(snapshot) {
+  return JSON.stringify(Object.fromEntries(
+    hostReadinessSnapshotFields.map((field) => [field, snapshot?.[field]]),
+  ));
+}
+
+function mergeHostReadinessSnapshot(snapshot) {
+  const merged = { ...state.data };
+  hostReadinessSnapshotFields.forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(snapshot, field)) {
+      merged[field] = snapshot[field];
+    }
+  });
+  return merged;
+}
+
 function acceptHostStateSnapshot(snapshot) {
   const next = validatedHostSnapshotIdentity(snapshot);
   if (!next) {
@@ -7471,6 +7915,7 @@ function acceptHostStateSnapshot(snapshot) {
   const sameProgram = current
     ? playbackProgramDescriptorsEqual(current.program, next.program)
     : false;
+  let readinessOnly = false;
   if (current) {
     if (next.stateRevision < current.stateRevision) {
       return false;
@@ -7483,7 +7928,11 @@ function acceptHostStateSnapshot(snapshot) {
       ) {
         return false;
       }
-      return false;
+      if (hostReadinessSnapshotSignature(snapshot) === hostReadinessSnapshotSignature(state.data)) {
+        return false;
+      }
+      snapshot = mergeHostReadinessSnapshot(snapshot);
+      readinessOnly = true;
     }
     if (
       next.rustRevision < current.rustRevision
@@ -7498,6 +7947,9 @@ function acceptHostStateSnapshot(snapshot) {
     }
   }
   state.data = snapshot;
+  if (readinessOnly) {
+    return true;
+  }
   if (
     !current
     || next.playbackGeneration !== current.playbackGeneration
@@ -13958,7 +14410,6 @@ async function resetRuntimeData() {
         disposeSharedAudioContext();
         closeConfirm();
         dismissBackupBanner();
-        state.listView = "queue";
         setAppMessage(t("service.dataCleared"));
         render();
       },
@@ -15387,6 +15838,55 @@ document.querySelectorAll(".cache-contextual-info-region").forEach((region) => {
   });
 });
 
+elements.hostWorkspaceButtons?.forEach((button) => {
+  button.addEventListener("click", () => {
+    activateHostWorkspace(button.dataset.hostWorkspace, { inputOrigin: "pointer" });
+  });
+  button.addEventListener("keydown", handleHostWorkspaceRailKeydown);
+});
+
+elements.stageControlsToggle?.addEventListener("click", (event) => {
+  event.preventDefault();
+  setStageControlTrayOpen(!state.stageControlTrayOpen);
+});
+
+elements.stageControlsClose?.addEventListener("click", () => {
+  setStageControlTrayOpen(false, { restoreFocus: true });
+});
+
+elements.stageControlBackdrop?.addEventListener("click", () => {
+  setStageControlTrayOpen(false, { restoreFocus: true });
+});
+
+elements.stageControlTray?.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab" || !state.stageControlTrayOpen) {
+    return;
+  }
+  const focusable = [...elements.stageControlTray.querySelectorAll(
+    'button:not(:disabled):not([hidden]), input:not(:disabled):not([hidden]), select:not(:disabled):not([hidden]), [tabindex]:not([tabindex="-1"]):not([hidden])',
+  )].filter((element) => !element.closest("[hidden], [inert]"));
+  if (!focusable.length) {
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus({ preventScroll: true });
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus({ preventScroll: true });
+  }
+});
+
+for (const eventName of ["wheel", "touchmove"]) {
+  elements.hostWorkspaceBackdrop?.addEventListener(
+    eventName,
+    (event) => event.preventDefault(),
+    { passive: false },
+  );
+}
+
 elements.remoteMiniTrigger?.addEventListener("focus", () => {
   elements.remoteMiniControl?.classList.remove("is-qr-dismissed");
 });
@@ -15675,7 +16175,6 @@ elements.historyToggleButton.addEventListener("click", () => {
     });
   }
 });
-
 elements.playerFullscreenButton?.addEventListener("click", async () => {
   await togglePlayerFullscreen();
   renderPlayerFullscreenButton();
@@ -15770,14 +16269,6 @@ elements.modeSwitch?.addEventListener("click", async (event) => {
   } catch (error) {
     setAppMessage(error.message, true);
   }
-});
-
-elements.layoutModeSwitch?.addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-layout-mode]");
-  if (!button) {
-    return;
-  }
-  setLayoutMode(button.dataset.layoutMode);
 });
 
 elements.languageSwitch?.addEventListener("click", (event) => {
@@ -16412,6 +16903,25 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
   }
+  if (state.confirmIntent) {
+    closeConfirm();
+    event.preventDefault();
+    return;
+  }
+  if (closeOrdinaryPopoverForEscape()) {
+    event.preventDefault();
+    return;
+  }
+  if (state.stageControlTrayOpen) {
+    setStageControlTrayOpen(false, { restoreFocus: true });
+    event.preventDefault();
+    return;
+  }
+  if (closeOpenMenus({ restoreFocus: true })) {
+    event.preventDefault();
+    return;
+  }
+  const workspaceOverlayBlocked = hostWorkspaceHasHigherEscapeLayer();
   if (state.bindingIntent) {
     closeBindingModal();
   }
@@ -16443,6 +16953,9 @@ document.addEventListener("keydown", (event) => {
   if (state.presentationSettingsOpen) {
     state.presentationSettingsOpen = false;
     syncPresentationPanelVisibility();
+  }
+  if (!workspaceOverlayBlocked) {
+    closeHostWorkspaceOverlay();
   }
 });
 
@@ -17294,10 +17807,10 @@ elements.modalFavlistPullForm?.addEventListener("submit", async (event) => {
 async function startPolling() {
   hydrateLocalPreferences();
   await loadTranslations();
+  initializeHostShell();
   syncApplicationRestartAvailability();
   initSearchDetailController();
   await initializeLocalPresentation();
-  renderLayoutMode();
   try {
     await reportMediaCapabilities();
   } catch {
@@ -17393,7 +17906,11 @@ async function restartHostPlaybackAfterPageRestore() {
   return accepted;
 }
 
-window.addEventListener("resize", scheduleConfirmPopoverPositionSync);
+window.addEventListener("resize", () => {
+  scheduleConfirmPopoverPositionSync();
+  renderHostWorkspaceSelection();
+  schedulePersistentStageMeasurement();
+});
 window.addEventListener("scroll", scheduleConfirmPopoverPositionSync, true);
 
 window.addEventListener("pagehide", () => {

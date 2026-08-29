@@ -10,21 +10,9 @@
 </head>
 
 <body>
-  <div class="app-shell layout-mode-full" id="app-shell">
-    <section class="backup-banner hidden" id="backup-banner">
-      <div class="backup-copy">
-        <p class="backup-title" id="backup-title" data-i18n="backup.tag">Auto Restore</p>
-        <p class="backup-text" id="backup-text" data-i18n="backup.detected">检测到上次未完成的点歌列表</p>
-      </div>
-      <div class="backup-actions">
-        <button type="button" id="backup-action-button" class="banner-action" data-i18n="backup.clear">清空备份</button>
-        <button type="button" id="dismiss-backup-button" class="banner-close" aria-label="关闭"
-          data-i18n-aria-label="common.close">×</button>
-      </div>
-    </section>
-
-    <header class="topbar">
-      <div>
+  <div class="app-shell" id="app-shell" data-active-workspace="queue" data-stage-mode="compact">
+    <header class="topbar" aria-label="Global toolbar" data-i18n-aria-label="shell.globalToolbar">
+      <div class="host-brand">
         <p class="eyebrow" data-i18n="brand.eyebrow">bilikara host</p>
         <h1 data-i18n="brand.name">bilikara</h1>
         <p class="project-link" id="developer-mode-trigger" role="button" tabindex="0">
@@ -35,11 +23,16 @@
           <span data-i18n="brand.projectLink">VZRXS/bilikara</span>
         </p>
       </div>
+      <div class="window-drag-region" id="window-drag-region" data-tauri-drag-region aria-hidden="true"></div>
       <div class="top-controls">
         <div class="mode-control remote-mini-control" id="remote-mini-control">
-          <span class="control-label" data-i18n="top.mobileRemote">手机点歌</span>
           <button type="button" class="remote-mini-trigger" id="remote-mini-trigger" aria-expanded="false"
             aria-haspopup="dialog" aria-controls="remote-mini-popover">
+            <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="7" y="2.5" width="10" height="19" rx="2"></rect><path d="M10 5h4M11 18.5h2"></path>
+            </svg>
+            <span class="control-label" data-i18n="top.mobileRemote">手机点歌</span>
             <span class="remote-mini-qr-wrap">
               <img id="remote-mini-qr-image" class="remote-mini-qr-image hidden" alt="手机访问二维码缩略图"
                 data-i18n-alt="remote.miniQrAlt" />
@@ -73,25 +66,15 @@
           </div>
         </div>
         <div class="status-chip" id="display-settings">
-          <button type="button" class="status-chip-toggle" id="display-settings-toggle" aria-expanded="false">
+          <button type="button" class="status-chip-toggle" id="display-settings-toggle" aria-expanded="false"
+            aria-controls="display-settings-panel">
             <span class="status-chip-label-row">
+              <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.5"></circle><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"></path>
+              </svg>
               <span class="control-label" data-i18n="top.displaySettings">界面设置</span>
             </span>
-            <div class="service-mode-summary">
-              <span id="display-layout-summary">完整布局</span>
-            </div>
-            <p class="cache-chip-meta"
-              style="display: flex; align-items: center; gap: 4px; justify-content: flex-start; margin-top: 0;">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                stroke-linejoin="round" style="width: 12px; height: 12px; color: var(--muted); opacity: 0.8;">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="2" y1="12" x2="22" y2="12"></line>
-                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z">
-                </path>
-              </svg>
-              <span
-                style="font-size: 10px; color: var(--muted); font-weight: normal; letter-spacing: 0.05em; text-transform: uppercase;">Language</span>
-            </p>
           </button>
           <div class="cache-panel hidden" id="display-settings-panel">
             <div class="cache-panel-row" style="align-items: center; width: 100%;">
@@ -103,16 +86,6 @@
                 <button class="mode-button" data-language="en">EN</button>
                 <button class="mode-button" data-language="ja">JA</button>
                 <button class="mode-button active" data-language="zh">ZH</button>
-              </div>
-            </div>
-            <div class="cache-panel-row" style="align-items: center; width: 100%;">
-              <div>
-                <p class="cache-panel-label" data-i18n="top.layout">切换布局</p>
-                <p class="cache-panel-hint" data-i18n="display.layoutHint">基础或完整界面布局</p>
-              </div>
-              <div class="mode-switch" id="layout-mode-switch" style="margin: 0;">
-                <button class="mode-button" data-layout-mode="basic" data-i18n="layout.basic">基础</button>
-                <button class="mode-button active" data-layout-mode="full" data-i18n="layout.full">完整</button>
               </div>
             </div>
             <div class="cache-panel-row" style="align-items: center; width: 100%;">
@@ -138,6 +111,10 @@
           <button type="button" class="status-chip-toggle" id="presentation-settings-toggle" aria-expanded="false"
             aria-controls="presentation-settings-panel">
             <span class="status-chip-label-row">
+              <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2.5" y="4" width="13" height="10" rx="1.5"></rect><path d="M7 18h4M9 14v4"></path><rect x="14.5" y="8" width="7" height="9" rx="1.4"></rect>
+              </svg>
               <span class="control-label" data-i18n="display.outputTitle">双屏 / 投屏</span>
               <span class="presentation-state-dot" id="presentation-state-dot" aria-hidden="true"></span>
             </span>
@@ -183,9 +160,14 @@
         <div class="status-chip" id="cache-settings">
           <button type="button" class="status-chip-toggle" id="cache-settings-toggle" aria-expanded="false">
             <span class="status-chip-label-row">
+              <svg class="global-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"></path>
+              </svg>
               <span class="control-label" data-i18n="service.title">服务设置</span>
-              <span class="tool-status-indicator is-loading" id="service-status-indicator" aria-hidden="true"></span>
-              <span class="app-update-indicator hidden" id="service-update-indicator" role="status"></span>
+              <span class="service-status-ring" id="service-update-indicator" role="status">
+                <span class="tool-status-indicator is-loading" id="service-status-indicator" aria-hidden="true"></span>
+              </span>
             </span>
             <div class="service-mode-summary">
               <span id="playback-mode-summary">1080P 高清</span>
@@ -430,19 +412,51 @@
           </div>
         </div>
       </div>
+      <div class="window-controls" id="window-controls" hidden aria-label="Window controls">
+        <button type="button" class="window-control-button" id="window-minimize" aria-label="Minimize" title="Minimize">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5h8" /></svg>
+        </button>
+        <button type="button" class="window-control-button" id="window-maximize" aria-label="Maximize or restore" title="Maximize or restore">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
+        </button>
+        <button type="button" class="window-control-button window-close-button" id="window-close" aria-label="Close" title="Close">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" /></svg>
+        </button>
+      </div>
     </header>
 
-    <main class="layout">
-      <section class="left-column">
+    <div class="critical-banner-region" id="critical-banner-region">
+      <section class="backup-banner hidden" id="backup-banner" aria-live="polite">
+        <div class="backup-copy">
+          <p class="backup-title" id="backup-title" data-i18n="backup.tag">Auto Restore</p>
+          <p class="backup-text" id="backup-text" data-i18n="backup.detected">检测到上次未完成的点歌列表</p>
+        </div>
+        <div class="backup-actions">
+          <button type="button" id="backup-action-button" class="banner-action"
+            data-i18n="backup.clear">清空备份</button>
+          <button type="button" id="dismiss-backup-button" class="banner-close" aria-label="关闭"
+            data-i18n-aria-label="common.close">×</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="shell-body">
+      <main class="layout">
+        <section class="host-content-region">
+          <section class="left-column" aria-label="Stage" data-i18n-aria-label="shell.stage">
         <section class="player-panel">
           <div class="panel-head">
             <div>
               <p class="section-tag" data-i18n="player.tag">Now Playing</p>
               <h2 id="current-title" data-i18n="player.noSong">还没有歌曲</h2>
             </div>
-            <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false" disabled>
-              全屏显示
-            </button>
+            <span class="stage-actions">
+              <button type="button" class="next-button stage-next-button" id="next-button"
+                data-i18n="player.nextSong">切歌</button>
+              <button type="button" id="player-fullscreen-button" class="toolbar-button" aria-pressed="false" disabled>
+                全屏显示
+              </button>
+            </span>
           </div>
 
           <div class="player-frame" id="player-frame">
@@ -451,6 +465,23 @@
             </div>
           </div>
           <div class="fullscreen-request-toast hidden" id="fullscreen-request-toast" aria-live="polite"></div>
+          <button type="button" id="stage-controls-toggle" class="stage-controls-toggle"
+            aria-expanded="false" aria-controls="stage-control-tray" aria-label="播放控制" title="播放控制"
+            data-i18n-aria-label="player.controls" data-i18n-title="player.controls">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"></path>
+            </svg>
+          </button>
+          <div class="stage-control-backdrop" id="stage-control-backdrop" hidden inert aria-hidden="true"></div>
+          <div class="stage-control-tray" id="stage-control-tray" role="dialog" aria-modal="true"
+            aria-labelledby="stage-control-tray-title" hidden inert aria-hidden="true">
+            <div class="stage-control-tray-head">
+              <strong id="stage-control-tray-title" data-i18n="player.controls">播放控制</strong>
+              <button type="button" id="stage-controls-close" class="banner-close" aria-label="关闭"
+                data-i18n-aria-label="common.close">×</button>
+            </div>
+            <div class="stage-extended-controls" id="stage-extended-controls">
           <div class="audio-variant-bar hidden" id="audio-variant-bar"></div>
           <section class="av-sync-panel" id="av-sync-panel">
             <div class="av-sync-copy">
@@ -519,13 +550,22 @@
                 style="flex: 0 0 52px; padding-inline: 8px;" disabled data-i18n="common.resetShort">复位</button>
             </div>
           </section>
+            </div>
+          </div>
         </section>
 
-        <section class="request-panel">
+          </section>
+          <div class="host-workspace-backdrop" id="host-workspace-backdrop" hidden aria-hidden="true"></div>
+          <section class="host-workspace-region" id="host-workspace-region" role="region"
+            aria-labelledby="work-rail-queue" data-active-workspace="queue">
+
+        <section class="request-panel host-workspace-fragment" id="host-workspace-request-direct" role="tabpanel"
+          aria-labelledby="work-rail-request" data-host-workspace-panel="request" hidden inert>
           <div class="request-head">
             <div>
               <p class="section-tag" data-i18n="request.tag">Song Request</p>
-              <h2 data-i18n="request.title">点歌</h2>
+              <h2 id="workspace-request-heading" data-host-workspace-heading tabindex="-1"
+                data-i18n="request.title">点歌</h2>
             </div>
             <button type="button" id="resort-playlist-button" class="toolbar-button ghost"
               data-i18n="request.resort">重新排序</button>
@@ -541,11 +581,13 @@
           </form>
         </section>
 
-        <section class="request-panel session-users-panel" id="session-users-panel">
+        <section class="request-panel session-users-panel host-workspace-fragment" id="session-users-panel"
+          role="tabpanel" aria-labelledby="work-rail-users" data-host-workspace-panel="users" hidden inert>
           <div class="request-head">
             <div>
               <p class="section-tag" data-i18n="session.tag">Singer Order</p>
-              <h2 data-i18n="session.title">本场用户</h2>
+              <h2 id="workspace-users-heading" data-host-workspace-heading tabindex="-1"
+                data-i18n="session.title">本场用户</h2>
             </div>
           </div>
 
@@ -554,7 +596,7 @@
               data-i18n-placeholder="session.namePlaceholder" autocomplete="off" />
             <button type="submit" data-i18n="session.addUser">添加用户</button>
           </form>
-          <p class="help-text" data-i18n="session.help">点歌会按这里的顺序轮转插入，可以拖拽调整顺序，拖到右下角删除。</p>
+          <p class="help-text message-surface message-info" data-i18n="session.help">点歌会按这里的顺序轮转插入，可以拖拽调整顺序，拖到右下角删除。</p>
           <div class="session-user-stage" id="session-user-stage">
             <div id="session-user-list" class="session-user-list"></div>
             <div id="session-user-trash" class="session-user-trash">
@@ -568,7 +610,7 @@
         </section>
 
         <div class="bottom-grid">
-          <section class="remote-panel">
+          <section class="remote-panel legacy-remote-panel hidden" aria-hidden="true" inert>
             <div class="request-head remote-head">
               <div>
                 <p class="section-tag" data-i18n="remote.tag">Mobile Remote</p>
@@ -597,7 +639,8 @@
             </div>
           </section>
 
-          <section class="list-card sub-card search-sub-card" id="search-panel">
+          <section class="list-card sub-card search-sub-card host-workspace-fragment" id="search-panel"
+            role="tabpanel" aria-labelledby="work-rail-request" data-host-workspace-panel="request" hidden inert>
             <div class="search-card">
               <div id="search-card-content" class="search-card-content">
                 <div class="search-sub-card-head">
@@ -702,11 +745,13 @@
             </div>
           </section>
 
-          <section class="gatcha-panel" id="gatcha-panel">
+          <section class="gatcha-panel host-workspace-fragment" id="gatcha-panel"
+            role="tabpanel" aria-labelledby="work-rail-random" data-host-workspace-panel="random" hidden inert>
             <div class="request-head gatcha-head">
               <div>
-                <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">gatcha Draw</p>
-                <h2 id="gatcha-title" data-i18n="gatcha.title">试试运气</h2>
+                <p class="section-tag" id="gatcha-tag" data-i18n="gatcha.tag">Gatcha</p>
+                <h2 id="gatcha-title" data-host-workspace-heading tabindex="-1"
+                  data-i18n="gatcha.title">Gatcha</h2>
               </div>
               <div class="gatcha-head-actions">
                 <button type="button" id="gatcha-pool-config-toggle"
@@ -768,14 +813,14 @@
             </div>
           </section>
         </div>
-      </section>
 
-      <aside class="queue-card list-card">
+      <aside class="queue-card list-card host-workspace-fragment" id="host-workspace-queue" role="tabpanel"
+        aria-labelledby="work-rail-queue" data-host-workspace-panel="queue">
         <div class="queue-card-head">
           <div>
             <p class="section-tag" id="list-tag" data-i18n="list.tag">Requests</p>
-            <h2><span id="list-title" data-i18n="list.title">点歌列表</span> <span class="queue-count"
-                id="queue-count">(0首)</span></h2>
+            <h2 id="workspace-queue-heading" data-host-workspace-heading tabindex="-1"><span id="list-title"
+                data-i18n="list.title">点歌列表</span> <span class="queue-count" id="queue-count">(0首)</span></h2>
           </div>
           <div class="queue-toolbar">
             <button type="button" id="clear-playlist-button" class="toolbar-button ghost"
@@ -833,7 +878,6 @@
                   <p class="queue-current-requester hidden" id="queue-current-requester"></p>
                   <p class="queue-current-cache-detail hidden" id="queue-current-cache-detail"></p>
                 </div>
-                <button class="next-button queue-current-next" id="next-button" data-i18n="player.nextSong">切歌</button>
               </section>
               <div id="playlist" class="playlist"></div>
             </section>
@@ -843,7 +887,39 @@
           </div>
         </div>
       </aside>
-    </main>
+
+      </section>
+        </section>
+
+      <nav class="work-rail" id="work-rail" role="tablist" aria-orientation="vertical"
+        aria-label="Host workspaces" data-i18n-aria-label="shell.workspaces">
+        <button type="button" class="work-rail-button" id="work-rail-queue" role="tab"
+          data-host-workspace="queue" aria-controls="host-workspace-queue" aria-selected="true" tabindex="0">
+          <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5h12M6 12h12M6 19h12"></path><circle cx="3" cy="5" r=".7" fill="currentColor"></circle><circle cx="3" cy="12" r=".7" fill="currentColor"></circle><circle cx="3" cy="19" r=".7" fill="currentColor"></circle></svg>
+          <span class="work-rail-label" data-i18n="shell.queue">Queue</span>
+        </button>
+        <button type="button" class="work-rail-button" id="work-rail-request" role="tab"
+          data-host-workspace="request" aria-controls="host-workspace-request-direct search-panel" aria-selected="false" tabindex="-1">
+          <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="5.5"></circle><path d="m14 14 5 5M10 7.5v5M7.5 10h5"></path></svg>
+          <span class="work-rail-label" data-i18n="shell.request">Request</span>
+        </button>
+        <button type="button" class="work-rail-button" id="work-rail-random" role="tab"
+          data-host-workspace="random" aria-controls="gatcha-panel" aria-selected="false" tabindex="-1">
+          <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"></path><circle cx="7" cy="7" r=".8" fill="currentColor"></circle><circle cx="17" cy="7" r=".8" fill="currentColor"></circle><circle cx="7" cy="17" r=".8" fill="currentColor"></circle><circle cx="17" cy="17" r=".8" fill="currentColor"></circle></svg>
+          <span class="work-rail-label" data-i18n="shell.random">Gatcha</span>
+        </button>
+        <button type="button" class="work-rail-button" id="work-rail-users" role="tab"
+          data-host-workspace="users" aria-controls="session-users-panel" aria-selected="false" tabindex="-1">
+          <svg class="work-rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"></circle><circle cx="17" cy="9" r="2.5"></circle><path d="M3.5 19c.5-3.5 2.4-5.2 5.5-5.2s5 1.7 5.5 5.2M14 14.5c3.4-.7 5.6.8 6.5 4.5"></path></svg>
+          <span class="work-rail-label" data-i18n="shell.users">Session Users</span>
+        </button>
+      </nav>
+      </main>
+    </div>
 
   </div>
   <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
