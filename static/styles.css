@@ -375,6 +375,19 @@ p {
   width: min(780px, calc(100vw - 32px));
 }
 
+.selection-modal-grid.pool-config-source-list {
+  align-items: start;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+
+.gatcha-pool-config-card .selection-option-list {
+  overflow: visible;
+}
+
 .selection-modal-head,
 .selection-modal-actions {
   display: flex;
@@ -4126,8 +4139,10 @@ select:disabled {
   background: var(--panel);
   backdrop-filter: blur(20px);
   box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .gatcha-head {
@@ -4159,38 +4174,45 @@ select:disabled {
 
 .gatcha-stage {
   position: relative;
-  flex: 1;
-  min-height: 220px;
+  min-height: 0;
   margin-top: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .gatcha-stage-inner {
-  position: relative;
   width: 100%;
-  height: 100%;
-  min-height: 0;
+  min-height: 100%;
+  display: flex;
 }
 
-.gatcha-face {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  min-height: 0;
-  pointer-events: auto;
-}
-
-.gatcha-content {
-  flex: 1;
-  height: 100%;
+.gatcha-main-view {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: flex-start;
   gap: 12px;
   background: rgba(255, 255, 255, 0.4);
   border-radius: 22px;
   padding: 20px 16px 16px;
   text-align: center;
+}
+
+.gatcha-state-view {
+  flex: 1 1 auto;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.gatcha-state-view[hidden],
+.gatcha-actions button[hidden] {
+  display: none;
 }
 
 .gatcha-icon {
@@ -4221,7 +4243,7 @@ select:disabled {
 }
 
 #gatcha-result-view {
-  justify-content: stretch;
+  justify-content: center;
 }
 
 .gatcha-result-copy {
@@ -4239,11 +4261,7 @@ select:disabled {
   font-size: 15px;
   color: var(--accent-deep);
   margin: 0;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  line-clamp: 4;
-  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .gatcha-actions {
@@ -4251,7 +4269,8 @@ select:disabled {
   gap: 8px;
   width: 100%;
   justify-content: center;
-  margin-top: auto;
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 
 .gatcha-main-btn {
@@ -7305,7 +7324,7 @@ body.is-presentation-stage-only.is-presentation-cursor-hidden * {
   color: var(--red);
 }
 
-:root:is([data-theme="dark"], [data-theme="blue"]) .gatcha-content,
+:root:is([data-theme="dark"], [data-theme="blue"]) .gatcha-main-view,
 :root:is([data-theme="dark"], [data-theme="blue"]) .bbdown-login-qr {
   background: var(--dark-inner-card-bg);
 }
@@ -7642,7 +7661,10 @@ body {
   overflow: hidden;
 }
 
-.host-workspace-region[data-active-workspace="random"],
+.host-workspace-region[data-active-workspace="random"] {
+  overflow: hidden;
+}
+
 .host-workspace-region[data-active-workspace="users"] {
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -7966,7 +7988,11 @@ body {
   border-radius: 18px;
 }
 
-.host-workspace-region .gatcha-panel,
+.host-workspace-region .gatcha-panel {
+  height: 100%;
+  min-height: 0;
+}
+
 .host-workspace-region .session-users-panel {
   height: max-content;
   min-height: min(100%, 320px);
@@ -8133,7 +8159,24 @@ body {
 
   .request-subview-tabs button,
   .request-mode-tabs button,
-  .source-action-row button {
+  .source-action-row button,
+  .gatcha-head-actions button,
+  .gatcha-actions button,
+  .gatcha-pool-config-card button,
+  .gatcha-pool-config-card input[type="range"],
+  .gatcha-pool-config-card .selection-option {
+    min-height: 44px;
+  }
+
+  .gatcha-pool-config-card .pool-config-bulk-actions .toolbar-button,
+  .gatcha-pool-config-card .pool-config-head-actions .toolbar-button {
+    min-height: 44px;
+  }
+
+  .gatcha-pool-config-card .banner-close {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
     min-height: 44px;
   }
 

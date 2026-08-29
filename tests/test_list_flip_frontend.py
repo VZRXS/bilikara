@@ -339,6 +339,81 @@ console.log(JSON.stringify({ sequence }));
         self.assertNotIn('id="pull-gatcha-favlist-button"', random_workspace)
         self.assertEqual(random_workspace.count('id="manage-sources-button"'), 1)
 
+    def test_gatcha_is_one_direct_state_workspace_with_local_scroll(self):
+        self.assertEqual(self.markup.count('id="gatcha-panel"'), 1)
+        self.assertEqual(self.markup.count('id="gatcha-pool-config-modal"'), 1)
+        self.assertEqual(self.markup.count('id="manage-sources-button"'), 1)
+        self.assertEqual(self.markup.count('id="gatcha-button"'), 1)
+        self.assertEqual(self.markup.count('id="gatcha-retry-button"'), 1)
+        self.assertEqual(self.markup.count('id="gatcha-confirm-button"'), 1)
+        for view in ("idle", "drawing", "candidate", "error"):
+            with self.subTest(view=view):
+                self.assertEqual(self.markup.count(f'data-gatcha-view="{view}"'), 1)
+
+        random_workspace = self.markup[
+            self.markup.index('id="gatcha-panel"') : self.markup.index(
+                'id="host-workspace-queue"'
+            )
+        ]
+        self.assertIn('id="gatcha-stage"', random_workspace)
+        self.assertIn('data-i18n-aria-label="gatcha.scrollLabel"', random_workspace)
+        self.assertNotIn("gatcha-face", random_workspace)
+        self.assertNotIn("perspective", self.styles[self.styles.index(".gatcha-panel {") :])
+        self.assertNotIn("rotateY", self.styles[self.styles.index(".gatcha-panel {") :])
+
+        random_owner_rule = re.search(
+            r'\.host-workspace-region\[data-active-workspace="random"\]\s*\{([^}]*)\}',
+            self.styles,
+        )
+        self.assertIsNotNone(random_owner_rule)
+        self.assertIn("overflow: hidden", random_owner_rule.group(1))
+        gatcha_body_rule = re.search(r"\.gatcha-stage\s*\{([^}]*)\}", self.styles)
+        self.assertIsNotNone(gatcha_body_rule)
+        self.assertIn("overflow-y: auto", gatcha_body_rule.group(1))
+        self.assertIn("overscroll-behavior: contain", gatcha_body_rule.group(1))
+
+    def test_gatcha_state_and_pool_ownership_are_narrow_and_stale_safe(self):
+        for field in (
+            "gatchaView",
+            "gatchaDrawBusy",
+            "gatchaDrawSequence",
+            "gatchaDrawError",
+            "gatchaScrollTop",
+            "poolConfigAccepted",
+            "poolConfigDraft",
+            "poolConfigLoading",
+            "poolConfigLoadSequence",
+            "poolConfigSaveSequence",
+        ):
+            with self.subTest(field=field):
+                self.assertIn(field, self.source)
+        self.assertIn("renderGatchaWorkspace();", self.source)
+        self.assertIn("state.gatchaDrawSequence !== drawSequence", self.source)
+        self.assertIn("state.poolConfigLoadSequence !== loadSequence", self.source)
+        self.assertIn("state.poolConfigSaveSequence !== saveSequence", self.source)
+
+        random_workspace = self.markup[
+            self.markup.index('id="gatcha-panel"') : self.markup.index(
+                'id="host-workspace-queue"'
+            )
+        ]
+        pool_sheet = self.markup[
+            self.markup.index('id="gatcha-pool-config-modal"') : self.markup.index(
+                'id="bilikara-secret-modal"'
+            )
+        ]
+        for forbidden in (
+            'id="modal-follow-uid-form"',
+            'id="refresh-gatcha-cache-button"',
+            'id="modal-favlist-pull-form"',
+            "/api/gatcha/uids/add",
+            "/api/gatcha/refresh",
+            "/api/gatcha/favlist",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, random_workspace)
+                self.assertNotIn(forbidden, pool_sheet)
+
     def test_sources_owns_the_only_add_uid_command_path(self):
         self.assertEqual(self.markup.count('id="modal-follow-uid-form"'), 1)
         self.assertEqual(

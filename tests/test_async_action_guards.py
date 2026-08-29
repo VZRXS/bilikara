@@ -379,12 +379,13 @@ class AsyncActionGuardsTest(unittest.TestCase):
             gatchaBtn.click();
             const callsAfterSecondClick = submitCalls;
 
-            resolveSubmit({ playlist: [] });
+            resolveSubmit(true);
 
             setTimeout(() => {
               process.stdout.write(JSON.stringify({
                 stateDuringRun,
                 callsAfterSecondClick,
+                candidate: global.state.gatchaCandidate,
                 finalDisabled: gatchaBtn.disabled,
                 finalAriaBusy: gatchaBtn.attributes["aria-busy"] || null,
                 finalText: gatchaBtn.textContent,
@@ -396,9 +397,109 @@ class AsyncActionGuardsTest(unittest.TestCase):
         self.assertEqual(res["callsAfterSecondClick"], 1)
         self.assertTrue(res["stateDuringRun"]["disabled"])
         self.assertEqual(res["stateDuringRun"]["ariaBusy"], "true")
+        self.assertIsNone(res["candidate"])
         self.assertFalse(res["finalDisabled"])
         self.assertIsNone(res["finalAriaBusy"])
         self.assertEqual(res["finalText"], "确定点歌")
+
+    def test_gatcha_draw_is_single_flight_and_exposes_busy_state(self):
+        res = self.run_node_app_test(
+            """
+            let fetchCalls = 0;
+            let resolveFetch;
+            global.fetch = function() {
+              fetchCalls += 1;
+              return new Promise(resolve => { resolveFetch = resolve; });
+            };
+
+            const drawButton = global.elements.gatchaButton;
+            drawButton.textContent = "Draw";
+            drawButton.click();
+            const during = {
+              fetchCalls,
+              disabled: drawButton.disabled,
+              ariaBusy: drawButton.attributes["aria-busy"] || null,
+              text: drawButton.textContent,
+            };
+            drawButton.click();
+            const callsAfterRepeat = fetchCalls;
+            resolveFetch({
+              ok: true,
+              json() {
+                return { ok: true, data: { url: "https://bilibili.com/video/BVdraw", title: "Drawn Song" } };
+              },
+            });
+
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                during,
+                callsAfterRepeat,
+                candidate: global.state.gatchaCandidate,
+                drawBusy: global.state.gatchaDrawBusy,
+                finalDisabled: drawButton.disabled,
+                finalAriaBusy: drawButton.attributes["aria-busy"] || null,
+              }));
+            }, 10);
+            """
+        )
+        self.assertEqual(res["during"]["fetchCalls"], 1)
+        self.assertEqual(res["callsAfterRepeat"], 1)
+        self.assertTrue(res["during"]["disabled"])
+        self.assertEqual(res["during"]["ariaBusy"], "true")
+        self.assertEqual(res["during"]["text"], "gatcha.drawing")
+        self.assertEqual(res["candidate"]["title"], "Drawn Song")
+        self.assertFalse(res["drawBusy"])
+        self.assertFalse(res["finalDisabled"])
+        self.assertIsNone(res["finalAriaBusy"])
+
+    def test_stale_gatcha_add_retains_candidate(self):
+        res = self.run_node_app_test(
+            """
+            global.state.gatchaCandidate = {
+              url: "https://bilibili.com/video/BVstale",
+              title: "Retained Song",
+            };
+            global.validatedRequesterNameForAdd = function() { return "Exact User"; };
+            global.submitAddRequest = function() { return Promise.resolve(false); };
+            global.elements.gatchaConfirmButton.click();
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                candidate: global.state.gatchaCandidate,
+                message: global.elements.gatchaMessage.textContent,
+              }));
+            }, 10);
+            """
+        )
+        self.assertEqual(res["candidate"]["title"], "Retained Song")
+        self.assertEqual(res["message"], "error.requestFailed")
+
+    def test_gatcha_duplicate_confirmation_keeps_exact_source_and_requester(self):
+        res = self.run_node_app_test(
+            """
+            global.state.gatchaCandidate = {
+              url: "https://bilibili.com/video/BVduplicate",
+              title: "Duplicate Song",
+            };
+            global.validatedRequesterNameForAdd = function() { return "Exact User"; };
+            global.submitAddRequest = function() {
+              const error = new Error("duplicate");
+              error.code = "duplicate_session_request";
+              error.payload = {};
+              return Promise.reject(error);
+            };
+            global.elements.gatchaConfirmButton.click();
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                candidate: global.state.gatchaCandidate,
+                intent: global.state.confirmIntent,
+              }));
+            }, 10);
+            """
+        )
+        self.assertEqual(res["candidate"]["title"], "Duplicate Song")
+        self.assertEqual(res["intent"]["type"], "duplicate-add")
+        self.assertEqual(res["intent"]["source"], "gatcha")
+        self.assertEqual(res["intent"]["requesterName"], "Exact User")
 
     def test_remote_gatcha_confirm_button_prevents_duplicate_and_restores(self):
         source = self.remote_js.read_text(encoding="utf-8")

@@ -271,11 +271,106 @@ async function run() {
     await page.waitForTimeout(1200);
     assert(updateCheckRequests.length === 1, "repeated renders or state polls repeated the startup update check", updateCheckRequests);
 
+    const startupReadinessEvidence = await page.evaluate(() => {
+      const originalData = state.data;
+      const originalRemoteSignature = state.remoteAccessRenderSignature;
+      const originalRenderRemoteAccess = renderRemoteAccess;
+      let remoteRenderCalls = 0;
+      renderRemoteAccess = (...args) => {
+        remoteRenderCalls += 1;
+        return originalRenderRemoteAccess(...args);
+      };
+      const loading = {
+        ...originalData,
+        remote_access: null,
+        bbdown: { available: false, status: "loading" },
+        ffmpeg: { available: false, status: "loading" },
+      };
+      state.data = loading;
+      state.remoteAccessRenderSignature = "";
+      render();
+      const ready = {
+        ...loading,
+        remote_access: {
+          preferred_url: "http://192.0.2.44:8000/remote",
+          local_url: "http://127.0.0.1:8000/remote",
+          lan_urls: ["http://192.0.2.44:8000/remote"],
+        },
+        bbdown: { available: true, status: "ready" },
+        ffmpeg: { available: true, status: "ready" },
+      };
+      const accepted = acceptHostStateSnapshot(ready);
+      if (accepted) {
+        render();
+      }
+      const link = elements.remoteUrlLink.href;
+      const qrSource = elements.remoteQrImage.src;
+      elements.remoteQrImage.onload?.(new Event("load"));
+      const delayedSuccess = !elements.remoteQrImage.classList.contains("hidden")
+        && elements.remoteQrPlaceholder.classList.contains("hidden");
+      elements.remoteQrImage.onerror?.(new Event("error"));
+      const failure = elements.remoteQrImage.classList.contains("hidden")
+        && !elements.remoteQrPlaceholder.classList.contains("hidden")
+        && Boolean(elements.remoteQrPlaceholder.textContent.trim())
+        && elements.remoteUrlLink.href === link;
+      state.data = originalData;
+      state.remoteAccessRenderSignature = "";
+      renderRemoteAccess = originalRenderRemoteAccess;
+      render();
+      state.remoteAccessRenderSignature = originalRemoteSignature;
+      return {
+        accepted,
+        remoteRenderCalls,
+        link,
+        qrSource,
+        delayedSuccess,
+        failure,
+      };
+    });
+    assert(
+      startupReadinessEvidence.accepted
+        && startupReadinessEvidence.remoteRenderCalls >= 2
+        && startupReadinessEvidence.link.includes("192.0.2.44")
+        && startupReadinessEvidence.qrSource.includes("api.qrserver.com")
+        && startupReadinessEvidence.delayedSuccess
+        && startupReadinessEvidence.failure,
+      "same-revision startup readiness or delayed QR success/failure required user interaction",
+      startupReadinessEvidence,
+    );
+
     const shellPage = await browser.newPage({ viewport: { width: 1600, height: 900 } });
     const shellConsoleErrors = [];
     const shellPageErrors = [];
     const shellPlayerRequests = [];
     const shellPlayedSessionRequests = [];
+    const shellGatchaCandidateRequests = [];
+    const shellGatchaCandidateRoutes = [];
+    const shellPoolConfigRequests = [];
+    const shellPoolConfigRoutes = [];
+    const shellSourceManagementRequests = [];
+    const fulfillJson = (route, data, { status = 200, ok = status < 400 } = {}) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(ok ? { ok: true, data } : { ok: false, error: data }),
+    });
+    const longPoolProjection = (uidWeight, suffix = "accepted") => ({
+      uid_weight: uidWeight,
+      favlist_weight: 100 - uidWeight,
+      excluded_uids: [],
+      excluded_favlist_folders: [],
+      updated_at: uidWeight,
+      uid_options: Array.from({ length: 36 }, (_, index) => ({
+        uid: `uid-${suffix}-${index}`,
+        name: `A deliberately long configured uploader ${suffix} ${index}`,
+        count: 100 + index,
+      })),
+      favlist_folder_options: Array.from({ length: 34 }, (_, index) => ({
+        id: `folder-${suffix}-${index}`,
+        uid: `owner-${index}`,
+        title: `A deliberately long favorite folder ${suffix} ${index}`,
+        count: 80 + index,
+      })),
+    });
     await shellPage.addInitScript(() => {
       const nativeSetInterval = window.setInterval.bind(window);
       window.__hostShellIntervalIds = [];
@@ -299,12 +394,35 @@ async function run() {
       if (pathname === "/api/played-sessions") {
         shellPlayedSessionRequests.push(request.url());
       }
+      if (
+        pathname === "/api/gatcha/browse"
+        || pathname === "/api/gatcha/favlist/browse"
+        || pathname.startsWith("/api/gatcha/uids/")
+        || pathname === "/api/gatcha/refresh"
+        || pathname === "/api/gatcha/favlist"
+      ) {
+        shellSourceManagementRequests.push({
+          method: request.method(),
+          pathname,
+        });
+      }
     });
     await shellPage.route("**/api/app/update/check", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ ok: true, data: { state: "checking", include_preview: false } }),
     }));
+    await shellPage.route("**/api/gatcha/candidate", (route) => {
+      shellGatchaCandidateRequests.push(route.request().url());
+      shellGatchaCandidateRoutes.push(route);
+    });
+    await shellPage.route("**/api/gatcha/pool-config", (route) => {
+      shellPoolConfigRequests.push({
+        method: route.request().method(),
+        payload: route.request().method() === "POST" ? route.request().postDataJSON() : null,
+      });
+      shellPoolConfigRoutes.push(route);
+    });
     await shellPage.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await shellPage.waitForTimeout(900);
     await shellPage.evaluate(() => {
@@ -329,6 +447,22 @@ async function run() {
           .map((panel) => panel.dataset.hostWorkspacePanel))],
         inactiveInteractive: panels.some((panel) => panel.hidden && !panel.inert),
         toolbarHeight: document.querySelector(".topbar")?.getBoundingClientRect().height || 0,
+        globalActions: [
+          "#remote-mini-trigger",
+          "#display-settings-toggle",
+          "#presentation-settings-toggle",
+          "#cache-settings-toggle",
+        ].map((selector) => {
+          const action = document.querySelector(selector);
+          const rect = action.getBoundingClientRect();
+          return {
+            selector,
+            visible: Boolean(action.offsetWidth || action.offsetHeight || action.getClientRects().length),
+            width: rect.width,
+            height: rect.height,
+            labelSize: Number.parseFloat(getComputedStyle(action.querySelector(".control-label")).fontSize),
+          };
+        }),
         railWidth: document.querySelector(".work-rail")?.getBoundingClientRect().width || 0,
         railTargetHeights: buttons.map((button) => button.getBoundingClientRect().height),
         bodyScrollY: window.scrollY,
@@ -364,7 +498,14 @@ async function run() {
     );
     assert(shellInitial.toolbarHeight < 102, "global toolbar was not materially compacted", shellInitial);
     assert(
-      shellInitial.railWidth >= 67 && shellInitial.railWidth <= 69
+      shellInitial.globalActions.every((action) => action.visible
+        && action.height >= 40
+        && action.labelSize >= 13),
+      "browser Host lost a readable one-line global toolbar action",
+      shellInitial.globalActions,
+    );
+    assert(
+      shellInitial.railWidth >= 99 && shellInitial.railWidth <= 105
         && shellInitial.railTargetHeights.every((height) => height >= 40),
       "wide work rail did not preserve its intended width and fine-pointer targets",
       shellInitial,
@@ -531,7 +672,7 @@ async function run() {
         return nativeFetch(...args);
       };
       for (let cycle = 0; cycle < 20; cycle += 1) {
-        for (const workspace of ["queue", "history", "request", "random", "users", "queue"]) {
+        for (const workspace of ["queue", "request", "random", "users", "queue"]) {
           activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
         }
       }
@@ -549,7 +690,7 @@ async function run() {
       }
       initializeHostShell();
       const visibleByWorkspace = {};
-      for (const workspace of ["queue", "history", "request", "random", "users"]) {
+      for (const workspace of ["queue", "request", "random", "users"]) {
         activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
         visibleByWorkspace[workspace] = Array.from(elements.hostWorkspacePanels || [])
           .filter((panel) => !panel.hidden)
@@ -1336,9 +1477,10 @@ async function run() {
       }));
     }
     assert(
-      Object.values(wideWidths).every((entry) => Math.abs(entry.workspace - 536) <= 2)
+      Object.values(wideWidths).every((entry) => Math.abs(entry.workspace - wideWidths.queue.workspace) <= 1)
+        && Math.abs(wideWidths.queue.workspace + shellInitial.railWidth - 640) <= 2
         && Object.values(wideWidths).every((entry) => entry.stage >= 760 && entry.sameFrame),
-      "wide shell did not preserve one stable tool-card width and a useful persistent Stage",
+      "wide shell did not preserve one 640px tool-dock width and a useful persistent Stage",
       wideWidths,
     );
     await shellPage.locator("#work-rail-request").click();
@@ -1361,7 +1503,7 @@ async function run() {
           && entry.sameVideo
           && entry.sameAudio
       )),
-      "wide Request subviews did not preserve the stable tool-card width, bounded controls, local scrolling, and Stage identity",
+      "wide Request subviews did not preserve the stable dock width, bounded controls, local scrolling, and Stage identity",
       wideRequestSubviews,
     );
     await shellPage.locator('[data-request-view="search"]').click();
@@ -1448,6 +1590,8 @@ async function run() {
     const shellWideScreenshotPath = suffixedPath(screenshotPath, "-wide");
     const shellMediumScreenshotPath = suffixedPath(screenshotPath, "-medium");
     const shellNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow");
+    const shellDefaultScreenshotPath = suffixedPath(screenshotPath, "-default-1024x700");
+    const shellShortScreenshotPath = suffixedPath(screenshotPath, "-short-1280x640");
     const queueWideScreenshotPath = suffixedPath(screenshotPath, "-wide-queue");
     const historyWideScreenshotPath = suffixedPath(screenshotPath, "-wide-history");
     const queueMediumScreenshotPath = suffixedPath(screenshotPath, "-medium-queue");
@@ -1581,8 +1725,14 @@ async function run() {
       if (label === "medium1240" && shellMediumScreenshotPath) {
         await shellPage.screenshot({ path: shellMediumScreenshotPath, fullPage: false });
       }
+      if (label === "default1024" && shellDefaultScreenshotPath) {
+        await shellPage.screenshot({ path: shellDefaultScreenshotPath, fullPage: false });
+      }
       if (label === "narrow840" && shellNarrowScreenshotPath) {
         await shellPage.screenshot({ path: shellNarrowScreenshotPath, fullPage: false });
+      }
+      if (label === "short1280" && shellShortScreenshotPath) {
+        await shellPage.screenshot({ path: shellShortScreenshotPath, fullPage: false });
       }
     }
     assert(
@@ -1655,6 +1805,7 @@ async function run() {
     if (historyNarrowScreenshotPath) {
       await shellPage.screenshot({ path: historyNarrowScreenshotPath, fullPage: false });
     }
+
     await shellPage.locator("#stage-controls-toggle").click();
     await shellPage.waitForTimeout(180);
     const narrowControlEvidence = await shellPage.evaluate(() => ({
@@ -1729,42 +1880,1054 @@ async function run() {
       activateHostWorkspace("random", { inputOrigin: "programmatic" });
       const spacer = document.createElement("div");
       spacer.style.height = "1500px";
-      spacer.style.flex = "0 0 1500px";
-      document.querySelector("#gatcha-panel").appendChild(spacer);
-      elements.hostWorkspaceRegion.scrollTop = 360;
+      document.querySelector("#gatcha-main-view").appendChild(spacer);
+      elements.gatchaStage.scrollTop = 360;
       const evidence = {
-        workspaceScrollTop: elements.hostWorkspaceRegion.scrollTop,
-        workspaceClientHeight: elements.hostWorkspaceRegion.clientHeight,
-        workspaceScrollHeight: elements.hostWorkspaceRegion.scrollHeight,
+        workspaceScrollTop: elements.gatchaStage.scrollTop,
+        workspaceClientHeight: elements.gatchaStage.clientHeight,
+        workspaceScrollHeight: elements.gatchaStage.scrollHeight,
         bodyScrollY: window.scrollY,
       };
       spacer.remove();
       return evidence;
     });
+    assert(narrowLocalScroll.workspaceScrollTop > 0
+      && narrowLocalScroll.workspaceScrollHeight > narrowLocalScroll.workspaceClientHeight
+      && narrowLocalScroll.bodyScrollY === 0,
+    "active narrow workspace did not own its bounded local scroll", narrowLocalScroll);
+
+    const gatchaWideScreenshotPath = suffixedPath(screenshotPath, "-wide-gatcha");
+    const gatchaErrorScreenshotPath = suffixedPath(screenshotPath, "-wide-gatcha-error");
+    const gatchaPoolScreenshotPath = suffixedPath(screenshotPath, "-wide-gatcha-pool");
+    const gatchaMediumScreenshotPath = suffixedPath(screenshotPath, "-medium-gatcha");
+    const gatchaNarrowScreenshotPath = suffixedPath(screenshotPath, "-narrow-gatcha");
+    const playerRequestsBeforeGatcha = shellPlayerRequests.length;
+    await shellPage.evaluate(() => {
+      window.__gatchaInvariant = {
+        mount: 0,
+        replace: 0,
+        claim: 0,
+        retire: 0,
+        originalMount: mountHostPlaybackSessionElements,
+        originalReplace: replaceHostPlayerView,
+        originalClaim: beginHostPlaybackSessionOwnershipClaim,
+        originalRetire: retireHostPlaybackSession,
+      };
+      mountHostPlaybackSessionElements = (...args) => {
+        window.__gatchaInvariant.mount += 1;
+        return window.__gatchaInvariant.originalMount(...args);
+      };
+      replaceHostPlayerView = (...args) => {
+        window.__gatchaInvariant.replace += 1;
+        return window.__gatchaInvariant.originalReplace(...args);
+      };
+      beginHostPlaybackSessionOwnershipClaim = (...args) => {
+        window.__gatchaInvariant.claim += 1;
+        return window.__gatchaInvariant.originalClaim(...args);
+      };
+      retireHostPlaybackSession = (...args) => {
+        window.__gatchaInvariant.retire += 1;
+        return window.__gatchaInvariant.originalRetire(...args);
+      };
+    });
+    await shellPage.setViewportSize({ width: 1600, height: 900 });
+    await shellPage.waitForTimeout(120);
+    await shellPage.locator("#work-rail-random").click();
+    const gatchaInitial = await shellPage.evaluate(() => {
+      state.data = {
+        ...(state.data || {}),
+        session_users: ["Exact Requester"],
+      };
+      renderRequesterSelect(state.data.session_users);
+      elements.requesterSelect.value = "Exact Requester";
+      window.__gatchaNodes = {
+        panel: elements.gatchaPanel,
+        stage: elements.gatchaStage,
+        main: elements.gatchaMainView,
+        session: state.hostPlaybackSession,
+        frame: elements.playerFrame,
+        video: state.hostPlaybackSession?.video,
+        audio: state.hostPlaybackSession?.audio,
+      };
+      return {
+        view: state.gatchaView,
+        candidate: state.gatchaCandidate,
+        visibleViews: Array.from(elements.gatchaStateViews)
+          .filter((view) => !view.hidden)
+          .map((view) => view.dataset.gatchaView),
+        drawVisible: !elements.gatchaButton.hidden,
+        poolVisible: !elements.gatchaPoolConfigToggle.hidden,
+        manageVisible: !elements.manageSourcesButton.hidden,
+        candidateCount: document.querySelectorAll("#gatcha-panel").length,
+        poolCount: document.querySelectorAll("#gatcha-pool-config-modal").length,
+        manageCount: document.querySelectorAll("#manage-sources-button").length,
+        bodyScrollY: window.scrollY,
+      };
+    });
     assert(
-      narrowLocalScroll.workspaceScrollTop > 0
-        && narrowLocalScroll.workspaceScrollHeight > narrowLocalScroll.workspaceClientHeight
-        && narrowLocalScroll.bodyScrollY === 0,
-      "active narrow workspace did not own its bounded local scroll",
-      narrowLocalScroll,
+      gatchaInitial.view === "idle"
+        && gatchaInitial.candidate === null
+        && gatchaInitial.visibleViews.join(",") === "idle"
+        && gatchaInitial.drawVisible
+        && gatchaInitial.poolVisible
+        && gatchaInitial.manageVisible
+        && gatchaInitial.candidateCount === 1
+        && gatchaInitial.poolCount === 1
+        && gatchaInitial.manageCount === 1
+        && gatchaInitial.bodyScrollY === 0
+        && shellGatchaCandidateRequests.length === 0
+        && shellPoolConfigRequests.length === 0,
+      "fresh Gatcha was not one honest idle workspace or fetched implicitly",
+      { gatchaInitial, shellGatchaCandidateRequests, shellPoolConfigRequests },
     );
-    if (shellNarrowScreenshotPath) {
-      await shellPage.evaluate(() => {
-        activateHostWorkspace("queue", { inputOrigin: "programmatic" });
-        state.hostWorkspaceScrollPositions.queue = 0;
-        elements.hostWorkspaceRegion.scrollTop = 0;
-        document.querySelector(".left-column").scrollTop = 0;
-        for (const owner of [
-          elements.appShell,
-          document.querySelector(".shell-body"),
-          document.querySelector(".layout"),
-          document.querySelector(".host-content-region"),
-        ]) {
-          owner.scrollTop = 0;
-        }
-      });
-      await shellPage.screenshot({ path: shellNarrowScreenshotPath, fullPage: false });
+
+    await shellPage.locator("#gatcha-button").click();
+    await shellPage.waitForTimeout(40);
+    const gatchaDrawing = await shellPage.evaluate(() => ({
+      view: state.gatchaView,
+      busy: state.gatchaDrawBusy,
+      disabled: elements.gatchaButton.disabled,
+      ariaBusy: elements.gatchaButton.getAttribute("aria-busy"),
+      label: elements.gatchaButton.textContent,
+      candidate: state.gatchaCandidate,
+    }));
+    await shellPage.locator("#gatcha-button").evaluate((button) => {
+      button.click();
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      button.dispatchEvent(new PointerEvent("pointerup", { pointerType: "touch", bubbles: true }));
+    });
+    await shellPage.locator("#work-rail-queue").click();
+    await shellPage.locator("#work-rail-random").click();
+    assert(
+      gatchaDrawing.view === "drawing"
+        && gatchaDrawing.busy
+        && gatchaDrawing.disabled
+        && gatchaDrawing.ariaBusy === "true"
+        && gatchaDrawing.label.length > 0
+        && gatchaDrawing.candidate === null
+        && shellGatchaCandidateRequests.length === 1
+        && shellPoolConfigRequests.length === 0,
+      "Draw did not expose one immediate busy request across a workspace round trip",
+      { gatchaDrawing, requests: shellGatchaCandidateRequests.length },
+    );
+    const firstDrawRoute = shellGatchaCandidateRoutes.shift();
+    assert(firstDrawRoute, "Draw did not leave one deferred candidate route");
+    await fulfillJson(firstDrawRoute, {
+      bvid: "BVGATCHA1",
+      url: "https://www.bilibili.com/video/BVGATCHA1",
+      title: "First accepted Gatcha candidate",
+    });
+    await shellPage.waitForFunction(() => state.gatchaView === "candidate" && !state.gatchaDrawBusy);
+    const gatchaRoundTrip = await shellPage.evaluate(() => {
+      const spacer = document.createElement("div");
+      spacer.id = "gatcha-round-trip-spacer";
+      spacer.style.height = "1200px";
+      spacer.style.flex = "0 0 1200px";
+      elements.gatchaMainView.appendChild(spacer);
+      elements.gatchaStage.scrollTop = 167;
+      const before = elements.gatchaStage.scrollTop;
+      for (const workspace of ["queue", "request", "users", "random"]) {
+        activateHostWorkspace(workspace, { inputOrigin: "programmatic" });
+      }
+      render();
+      render();
+      const evidence = {
+        title: state.gatchaCandidate?.title,
+        view: state.gatchaView,
+        scrollBefore: before,
+        scrollAfter: elements.gatchaStage.scrollTop,
+        samePanel: elements.gatchaPanel === window.__gatchaNodes.panel,
+        sameStage: elements.gatchaStage === window.__gatchaNodes.stage,
+        sameMain: elements.gatchaMainView === window.__gatchaNodes.main,
+        sameSession: state.hostPlaybackSession === window.__gatchaNodes.session,
+        sameFrame: elements.playerFrame === window.__gatchaNodes.frame,
+        sameVideo: state.hostPlaybackSession?.video === window.__gatchaNodes.video,
+        sameAudio: state.hostPlaybackSession?.audio === window.__gatchaNodes.audio,
+      };
+      spacer.remove();
+      return evidence;
+    });
+    assert(
+      gatchaRoundTrip.title === "First accepted Gatcha candidate"
+        && gatchaRoundTrip.view === "candidate"
+        && gatchaRoundTrip.scrollBefore > 0
+        && gatchaRoundTrip.scrollAfter === gatchaRoundTrip.scrollBefore
+        && gatchaRoundTrip.samePanel
+        && gatchaRoundTrip.sameStage
+        && gatchaRoundTrip.sameMain
+        && gatchaRoundTrip.sameSession
+        && gatchaRoundTrip.sameFrame
+        && gatchaRoundTrip.sameVideo
+        && gatchaRoundTrip.sameAudio
+        && shellGatchaCandidateRequests.length === 1
+        && shellPoolConfigRequests.length === 0,
+      "accepted Gatcha state, scroll, DOM, or playback identity did not survive render/workspace round trips",
+      gatchaRoundTrip,
+    );
+
+    await shellPage.locator("#gatcha-retry-button").click();
+    await shellPage.waitForTimeout(30);
+    const oldDrawRoute = shellGatchaCandidateRoutes.shift();
+    assert(oldDrawRoute, "stale draw proof did not capture the older route");
+    await shellPage.evaluate(() => {
+      state.gatchaDrawBusy = false;
+      state.gatchaView = "error";
+      renderGatchaWorkspace();
+    });
+    await shellPage.locator("#gatcha-retry-button").click();
+    await shellPage.waitForTimeout(30);
+    const newDrawRoute = shellGatchaCandidateRoutes.shift();
+    assert(newDrawRoute, "stale draw proof did not capture the newer route");
+    await fulfillJson(newDrawRoute, {
+      bvid: "BVGATCHA2",
+      url: "https://www.bilibili.com/video/BVGATCHA2",
+      title: "Newer accepted Gatcha candidate",
+    });
+    await shellPage.waitForFunction(() => state.gatchaCandidate?.bvid === "BVGATCHA2");
+    await fulfillJson(oldDrawRoute, {
+      bvid: "BVGATCHAOLD",
+      url: "https://www.bilibili.com/video/BVGATCHAOLD",
+      title: "Obsolete delayed candidate",
+    });
+    await shellPage.waitForTimeout(80);
+    const staleDraw = await shellPage.evaluate(() => ({
+      bvid: state.gatchaCandidate?.bvid,
+      title: state.gatchaCandidate?.title,
+      view: state.gatchaView,
+      busy: state.gatchaDrawBusy,
+    }));
+    assert(
+      staleDraw.bvid === "BVGATCHA2"
+        && staleDraw.title === "Newer accepted Gatcha candidate"
+        && staleDraw.view === "candidate"
+        && !staleDraw.busy,
+      "a delayed older draw overwrote the newer accepted candidate",
+      staleDraw,
+    );
+
+    await shellPage.locator("#gatcha-retry-button").click();
+    await shellPage.waitForTimeout(30);
+    const failedDrawRoute = shellGatchaCandidateRoutes.shift();
+    await fulfillJson(
+      failedDrawRoute,
+      "A bounded but deliberately long Gatcha draw error that remains inside the workspace and offers a retry action.",
+      { ok: false },
+    );
+    await shellPage.waitForFunction(() => state.gatchaView === "error" && !state.gatchaDrawBusy);
+    const drawError = await shellPage.evaluate(() => ({
+      view: state.gatchaView,
+      retainedBvid: state.gatchaCandidate?.bvid,
+      retryVisible: !elements.gatchaRetryButton.hidden,
+      message: elements.gatchaMessage.textContent,
+      bodyScrollY: window.scrollY,
+    }));
+    assert(
+      drawError.view === "error"
+        && drawError.retainedBvid === "BVGATCHA2"
+        && drawError.retryVisible
+        && drawError.message.includes("deliberately long")
+        && drawError.bodyScrollY === 0,
+      "failed Draw did not retain the last accepted candidate and an honest bounded retry state",
+      drawError,
+    );
+    if (gatchaErrorScreenshotPath) {
+      await shellPage.screenshot({ path: gatchaErrorScreenshotPath, fullPage: false });
     }
+    await shellPage.locator("#gatcha-retry-button").click();
+    await shellPage.waitForTimeout(30);
+    await fulfillJson(shellGatchaCandidateRoutes.shift(), {
+      bvid: "BVGATCHA3",
+      url: "https://www.bilibili.com/video/BVGATCHA3",
+      title: "Recovered candidate with deliberately long copy ".repeat(8),
+    });
+    await shellPage.waitForFunction(() => state.gatchaCandidate?.bvid === "BVGATCHA3");
+    if (gatchaWideScreenshotPath) {
+      await shellPage.screenshot({ path: gatchaWideScreenshotPath, fullPage: false });
+    }
+
+    const sourceCountsBeforeManage = {
+      candidate: shellGatchaCandidateRequests.length,
+      pool: shellPoolConfigRequests.length,
+      management: shellSourceManagementRequests.length,
+    };
+    await shellPage.locator("#manage-sources-button").click();
+    const manageSources = await shellPage.evaluate(() => ({
+      workspace: state.activeHostWorkspace,
+      subview: state.requestSubview,
+      sourcesMode: state.sourcesMode,
+      candidateBvid: state.gatchaCandidate?.bvid,
+      samePanel: elements.gatchaPanel === window.__gatchaNodes.panel,
+    }));
+    assert(
+      manageSources.workspace === "request"
+        && manageSources.subview === "sources"
+        && manageSources.candidateBvid === "BVGATCHA3"
+        && manageSources.samePanel
+        && shellGatchaCandidateRequests.length === sourceCountsBeforeManage.candidate
+        && shellPoolConfigRequests.length === sourceCountsBeforeManage.pool
+        && shellSourceManagementRequests.length === sourceCountsBeforeManage.management,
+      "Manage sources changed Gatcha state or issued a source/Gatcha request",
+      { manageSources, sourceCountsBeforeManage },
+    );
+    await shellPage.locator("#work-rail-random").click();
+
+    await shellPage.evaluate(() => {
+      window.__gatchaAddCalls = [];
+      window.__gatchaAddPlan = [];
+      window.__originalGatchaSubmitAddRequest = submitAddRequest;
+      submitAddRequest = async (url, position, options = {}) => {
+        window.__gatchaAddCalls.push({ url, position, options: { ...options } });
+        const plan = window.__gatchaAddPlan.shift() || { accepted: true };
+        if (plan.type === "failure") {
+          throw new Error(plan.message || "Gatcha add failed");
+        }
+        if (plan.type === "binding") {
+          const error = new Error("manual binding required");
+          error.code = "manual_binding_required";
+          error.payload = {
+            binding: {
+              title: "Multipart Gatcha candidate",
+              preferred_page: 1,
+              pages: [
+                { page: 1, part: "Video", duration: 180 },
+                { page: 2, part: "Instrumental", duration: 180 },
+              ],
+            },
+          };
+          throw error;
+        }
+        if (plan.type === "duplicate") {
+          const error = new Error("duplicate request");
+          error.code = "duplicate_session_request";
+          error.payload = {
+            duplicate_item: { display_title: "Duplicate Gatcha candidate" },
+            session_entry: { request_count: 2 },
+          };
+          throw error;
+        }
+        return plan.accepted !== false;
+      };
+      elements.urlInput.value = "BV-QUICK-DRAFT-MUST-SURVIVE";
+    });
+    const seedCandidate = async (suffix) => shellPage.evaluate((value) => {
+      state.gatchaCandidate = {
+        bvid: `BVADD${value}`,
+        url: `https://www.bilibili.com/video/BVADD${value}`,
+        title: `Gatcha request candidate ${value}`,
+      };
+      state.gatchaView = "candidate";
+      state.gatchaDrawError = "";
+      setGatchaMessage("");
+      renderGatchaWorkspace();
+    }, suffix);
+
+    await seedCandidate("FAIL");
+    await shellPage.evaluate(() => { window.__gatchaAddPlan = [{ type: "failure", message: "visible add failure" }]; });
+    await shellPage.locator("#gatcha-confirm-button").click();
+    await shellPage.waitForFunction(() => !state.gatchaRequestBusy);
+    const failedAdd = await shellPage.evaluate(() => ({
+      candidate: state.gatchaCandidate?.bvid,
+      message: state.gatchaMessage,
+      call: window.__gatchaAddCalls.at(-1),
+      quickDraft: elements.urlInput.value,
+    }));
+    assert(
+      failedAdd.candidate === "BVADDFAIL"
+        && failedAdd.message === "visible add failure"
+        && failedAdd.call.url.endsWith("BVADDFAIL")
+        && failedAdd.call.position === "tail"
+        && failedAdd.call.options.requesterName === "Exact Requester"
+        && failedAdd.quickDraft === "BV-QUICK-DRAFT-MUST-SURVIVE",
+      "failed Gatcha request lost the candidate, requester, Tail position, or Quick Request draft",
+      failedAdd,
+    );
+
+    await seedCandidate("STALE");
+    await shellPage.evaluate(() => { window.__gatchaAddPlan = [{ accepted: false }]; });
+    await shellPage.locator("#gatcha-confirm-button").click();
+    await shellPage.waitForFunction(() => !state.gatchaRequestBusy);
+    assert(
+      await shellPage.evaluate(() => state.gatchaCandidate?.bvid === "BVADDSTALE"
+        && state.gatchaMessageIsError),
+      "stale Gatcha add cleared its candidate",
+    );
+
+    await seedCandidate("BINDCANCEL");
+    await shellPage.evaluate(() => { window.__gatchaAddPlan = [{ type: "binding" }]; });
+    await shellPage.locator("#gatcha-confirm-button").click();
+    await shellPage.waitForSelector("#binding-modal:not(.hidden)");
+    await shellPage.locator("#binding-modal-cancel").click();
+    assert(
+      await shellPage.evaluate(() => state.gatchaCandidate?.bvid === "BVADDBINDCANCEL"
+        && document.activeElement === elements.gatchaConfirmButton),
+      "cancelled manual binding did not retain the candidate and restore its action focus",
+    );
+
+    await seedCandidate("BIND");
+    await shellPage.evaluate(() => { window.__gatchaAddPlan = [{ type: "binding" }, { accepted: true }]; });
+    await shellPage.locator("#gatcha-confirm-button").click();
+    await shellPage.waitForSelector("#binding-modal:not(.hidden)");
+    await shellPage.locator('#binding-audio-options input[value="2"]').check();
+    await shellPage.locator("#binding-modal-confirm").click();
+    await shellPage.waitForFunction(() => !state.bindingIntent && !state.gatchaCandidate);
+    const bindingAdd = await shellPage.evaluate(() => ({
+      calls: window.__gatchaAddCalls.slice(-2),
+      focus: document.activeElement?.id,
+      quickDraft: elements.urlInput.value,
+    }));
+    assert(
+      bindingAdd.calls.length === 2
+        && bindingAdd.calls[0].position === "tail"
+        && bindingAdd.calls[0].options.requesterName === "Exact Requester"
+        && bindingAdd.calls[1].options.selectedVideoPage === 1
+        && bindingAdd.calls[1].options.selectedAudioPages.join(",") === "2"
+        && bindingAdd.focus === "gatcha-button"
+        && bindingAdd.quickDraft === "BV-QUICK-DRAFT-MUST-SURVIVE",
+      "manual binding did not reuse the exact Gatcha Tail/requester path or settle focus safely",
+      bindingAdd,
+    );
+
+    await seedCandidate("DUPLICATE");
+    await shellPage.evaluate(() => { window.__gatchaAddPlan = [{ type: "duplicate" }, { accepted: true }]; });
+    const callsBeforeDuplicate = await shellPage.evaluate(() => window.__gatchaAddCalls.length);
+    await shellPage.locator("#gatcha-confirm-button").click();
+    await shellPage.waitForTimeout(100);
+    const duplicateOpenState = await shellPage.evaluate(() => ({
+      intent: state.confirmIntent,
+      candidate: state.gatchaCandidate,
+      requestBusy: state.gatchaRequestBusy,
+      buttonDisabled: elements.gatchaConfirmButton.disabled,
+      calls: window.__gatchaAddCalls,
+      plan: window.__gatchaAddPlan,
+      message: state.gatchaMessage,
+    }));
+    assert(
+      duplicateOpenState.intent?.type === "duplicate-add",
+      "Gatcha duplicate attempt did not open the existing confirmation flow",
+      duplicateOpenState,
+    );
+    const duplicatePending = await shellPage.evaluate(() => ({
+      candidate: state.gatchaCandidate?.bvid,
+      source: state.confirmIntent?.source,
+      requesterName: state.confirmIntent?.requesterName,
+      position: state.confirmIntent?.position,
+      quickDraft: elements.urlInput.value,
+    }));
+    await shellPage.locator("#confirm-ok").evaluate((button) => {
+      button.click();
+      button.click();
+    });
+    await shellPage.waitForFunction(() => !state.confirmIntent && !state.gatchaCandidate);
+    const duplicateAccepted = await shellPage.evaluate((before) => ({
+      addedCalls: window.__gatchaAddCalls.length - before,
+      repeatCall: window.__gatchaAddCalls.at(-1),
+      focus: document.activeElement?.id,
+      quickDraft: elements.urlInput.value,
+    }), callsBeforeDuplicate);
+    assert(
+      duplicatePending.candidate === "BVADDDUPLICATE"
+        && duplicatePending.source === "gatcha"
+        && duplicatePending.requesterName === "Exact Requester"
+        && duplicatePending.position === "tail"
+        && duplicatePending.quickDraft === "BV-QUICK-DRAFT-MUST-SURVIVE"
+        && duplicateAccepted.addedCalls === 2
+        && duplicateAccepted.repeatCall.options.allowRepeat === true
+        && duplicateAccepted.repeatCall.options.requesterName === "Exact Requester"
+        && duplicateAccepted.focus === "gatcha-button"
+        && duplicateAccepted.quickDraft === "BV-QUICK-DRAFT-MUST-SURVIVE",
+      "duplicate confirmation lost Gatcha routing or allowed more than one accepted enqueue attempt",
+      { duplicatePending, duplicateAccepted },
+    );
+
+    const gatchaRequest = {
+      failed: failedAdd,
+      binding: bindingAdd,
+      duplicatePending,
+      duplicateAccepted,
+      allCalls: await shellPage.evaluate(() => window.__gatchaAddCalls),
+    };
+
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    const poolLoading = await shellPage.evaluate(() => ({
+      visible: !elements.poolConfigModal.classList.contains("hidden"),
+      loading: state.poolConfigLoading,
+      saving: state.poolConfigSaving,
+      focus: document.activeElement?.id,
+      accepted: state.poolConfigAccepted,
+      draft: state.poolConfigDraft,
+      sourceListCount: document.querySelectorAll("#gatcha-pool-source-list").length,
+    }));
+    assert(
+      poolLoading.visible
+        && poolLoading.loading
+        && !poolLoading.saving
+        && poolLoading.focus === "gatcha-pool-config-modal-close"
+        && poolLoading.sourceListCount === 1
+        && shellPoolConfigRequests.length === 1
+        && shellPoolConfigRequests[0].method === "GET",
+      "Configure did not open one focused task sheet with one explicit GET",
+      { poolLoading, shellPoolConfigRequests },
+    );
+    await fulfillJson(shellPoolConfigRoutes.shift(), longPoolProjection(60, "first"));
+    await shellPage.waitForFunction(() => !state.poolConfigLoading);
+    const poolLoaded = await shellPage.evaluate(() => ({
+      acceptedWeight: state.poolConfigAccepted?.uid_weight,
+      draftWeight: state.poolConfigDraft?.uid_weight,
+      distinct: state.poolConfigAccepted !== state.poolConfigDraft,
+      uidCount: state.poolConfigDraft?.uid_options?.length,
+      folderCount: state.poolConfigDraft?.favlist_folder_options?.length,
+    }));
+    assert(
+      poolLoaded.acceptedWeight === 60
+        && poolLoaded.draftWeight === 60
+        && poolLoaded.distinct
+        && poolLoaded.uidCount === 36
+        && poolLoaded.folderCount === 34,
+      "loaded pool projection and mutable draft were not distinct",
+      poolLoaded,
+    );
+
+    await shellPage.locator("#gatcha-pool-weight-slider").evaluate((slider) => {
+      slider.value = "70";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await shellPage.locator("#gatcha-pool-uid-select-none").click();
+    await shellPage.locator("#gatcha-pool-favlist-select-all").click();
+    const poolDraftBeforeReset = await shellPage.evaluate(() => ({
+      acceptedWeight: state.poolConfigAccepted.uid_weight,
+      acceptedExcluded: state.poolConfigAccepted.excluded_uids.length,
+      draftWeight: state.poolConfigDraft.uid_weight,
+      draftExcluded: state.poolConfigDraft.excluded_uids.length,
+    }));
+    assert(
+      poolDraftBeforeReset.acceptedWeight === 60
+        && poolDraftBeforeReset.acceptedExcluded === 0
+        && poolDraftBeforeReset.draftWeight === 70
+        && poolDraftBeforeReset.draftExcluded === 36
+        && shellPoolConfigRequests.filter((entry) => entry.method === "POST").length === 0,
+      "pool draft controls mutated the accepted projection or saved before Save",
+      poolDraftBeforeReset,
+    );
+    await shellPage.locator("#gatcha-pool-config-modal-reset").click();
+    const poolReset = await shellPage.evaluate(() => ({
+      acceptedWeight: state.poolConfigAccepted.uid_weight,
+      acceptedExcluded: state.poolConfigAccepted.excluded_uids.length,
+      draftWeight: state.poolConfigDraft.uid_weight,
+      draftExcludedUids: state.poolConfigDraft.excluded_uids.length,
+      draftExcludedFolders: state.poolConfigDraft.excluded_favlist_folders.length,
+    }));
+    assert(
+      poolReset.acceptedWeight === 60
+        && poolReset.acceptedExcluded === 0
+        && poolReset.draftWeight === 50
+        && poolReset.draftExcludedUids === 0
+        && poolReset.draftExcludedFolders === 0
+        && shellPoolConfigRequests.filter((entry) => entry.method === "POST").length === 0,
+      "Reset did not remain a draft-only operation",
+      poolReset,
+    );
+    await shellPage.keyboard.press("Escape");
+    const poolCancelled = await shellPage.evaluate(() => ({
+      hidden: elements.poolConfigModal.classList.contains("hidden"),
+      acceptedWeight: state.poolConfigAccepted?.uid_weight,
+      draft: state.poolConfigDraft,
+      focus: document.activeElement?.id,
+    }));
+    assert(
+      poolCancelled.hidden
+        && poolCancelled.acceptedWeight === 60
+        && poolCancelled.draft === null
+        && poolCancelled.focus === "gatcha-pool-config-toggle",
+      "Escape did not discard the unaccepted pool draft and restore the exact opener",
+      poolCancelled,
+    );
+
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    const stalePoolLoadRoute = shellPoolConfigRoutes.shift();
+    await shellPage.locator("#gatcha-pool-config-modal-backdrop").evaluate((backdrop) => backdrop.click());
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    const freshPoolLoadRoute = shellPoolConfigRoutes.shift();
+    assert(stalePoolLoadRoute && freshPoolLoadRoute, "pool stale-load proof did not capture both GET routes");
+    await fulfillJson(freshPoolLoadRoute, longPoolProjection(80, "fresh"));
+    await shellPage.waitForFunction(() => !state.poolConfigLoading && state.poolConfigDraft?.uid_weight === 80);
+    await fulfillJson(stalePoolLoadRoute, longPoolProjection(20, "obsolete"));
+    await shellPage.waitForTimeout(80);
+    const stalePoolLoad = await shellPage.evaluate(() => ({
+      acceptedWeight: state.poolConfigAccepted?.uid_weight,
+      draftWeight: state.poolConfigDraft?.uid_weight,
+      firstUid: state.poolConfigDraft?.uid_options?.[0]?.uid,
+      visible: !elements.poolConfigModal.classList.contains("hidden"),
+    }));
+    assert(
+      stalePoolLoad.acceptedWeight === 80
+        && stalePoolLoad.draftWeight === 80
+        && stalePoolLoad.firstUid === "uid-fresh-0"
+        && stalePoolLoad.visible,
+      "an older pool GET overwrote a newer open/draft generation",
+      stalePoolLoad,
+    );
+
+    await shellPage.locator("#gatcha-pool-weight-slider").evaluate((slider) => {
+      slider.value = "65";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await shellPage.locator('#gatcha-pool-uid-options input[value="uid-fresh-0"]').uncheck();
+    const acceptedBeforeSave = await shellPage.evaluate(() => state.poolConfigAccepted.uid_weight);
+    const postsBeforeSave = shellPoolConfigRequests.filter((entry) => entry.method === "POST").length;
+    await shellPage.locator("#gatcha-pool-config-modal-save").click();
+    await shellPage.waitForTimeout(30);
+    const poolSaveBusy = await shellPage.evaluate(() => ({
+      saving: state.poolConfigSaving,
+      disabled: elements.poolConfigModalSave.disabled,
+      ariaBusy: elements.poolConfigModalSave.getAttribute("aria-busy"),
+      acceptedWeight: state.poolConfigAccepted.uid_weight,
+      draftWeight: state.poolConfigDraft.uid_weight,
+    }));
+    await shellPage.locator("#gatcha-pool-config-modal-save").evaluate((button) => button.click());
+    const saveRequest = shellPoolConfigRequests.filter((entry) => entry.method === "POST").at(-1);
+    assert(
+      poolSaveBusy.saving
+        && poolSaveBusy.disabled
+        && poolSaveBusy.ariaBusy === "true"
+        && poolSaveBusy.acceptedWeight === acceptedBeforeSave
+        && poolSaveBusy.draftWeight === 65
+        && shellPoolConfigRequests.filter((entry) => entry.method === "POST").length === postsBeforeSave + 1
+        && saveRequest.payload.uid_weight === 65
+        && saveRequest.payload.favlist_weight === 35
+        && saveRequest.payload.excluded_uids.join(",") === "uid-fresh-0"
+        && saveRequest.payload.excluded_favlist_folders.length === 0,
+      "Save did not send the exact existing payload once with immediate busy state",
+      { poolSaveBusy, saveRequest },
+    );
+    await fulfillJson(shellPoolConfigRoutes.shift(), {
+      ...longPoolProjection(65, "saved"),
+      excluded_uids: ["uid-fresh-0"],
+    });
+    await shellPage.waitForFunction(() => elements.poolConfigModal.classList.contains("hidden"));
+    const poolSaved = await shellPage.evaluate(() => ({
+      acceptedWeight: state.poolConfigAccepted?.uid_weight,
+      acceptedExcluded: state.poolConfigAccepted?.excluded_uids,
+      draft: state.poolConfigDraft,
+      snapshotWeight: state.data?.gatcha_pool_config?.uid_weight,
+      focus: document.activeElement?.id,
+    }));
+    assert(
+      poolSaved.acceptedWeight === 65
+        && poolSaved.acceptedExcluded.join(",") === "uid-fresh-0"
+        && poolSaved.draft === null
+        && poolSaved.snapshotWeight === 65
+        && poolSaved.focus === "gatcha-pool-config-toggle",
+      "accepted pool Save did not update the accepted projection, close, and restore focus",
+      poolSaved,
+    );
+
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    await fulfillJson(shellPoolConfigRoutes.shift(), {
+      ...longPoolProjection(65, "saved"),
+      excluded_uids: ["uid-fresh-0"],
+    });
+    await shellPage.waitForFunction(() => !state.poolConfigLoading);
+    await shellPage.locator("#gatcha-pool-weight-slider").evaluate((slider) => {
+      slider.value = "55";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await shellPage.locator("#gatcha-pool-config-modal-save").click();
+    await shellPage.waitForTimeout(30);
+    await fulfillJson(shellPoolConfigRoutes.shift(), "visible pool save failure", { ok: false });
+    await shellPage.waitForFunction(() => !state.poolConfigSaving);
+    const failedPoolSave = await shellPage.evaluate(() => ({
+      visible: !elements.poolConfigModal.classList.contains("hidden"),
+      acceptedWeight: state.poolConfigAccepted?.uid_weight,
+      draftWeight: state.poolConfigDraft?.uid_weight,
+      message: elements.poolConfigMessage.textContent,
+      isError: elements.poolConfigMessage.classList.contains("is-error"),
+    }));
+    assert(
+      failedPoolSave.visible
+        && failedPoolSave.acceptedWeight === 65
+        && failedPoolSave.draftWeight === 55
+        && failedPoolSave.message.includes("visible pool save failure")
+        && failedPoolSave.isError,
+      "failed pool Save did not retain its draft and honest error",
+      failedPoolSave,
+    );
+
+    await shellPage.locator("#gatcha-pool-config-modal-save").click();
+    await shellPage.waitForTimeout(30);
+    const stalePoolSaveRoute = shellPoolConfigRoutes.shift();
+    await shellPage.locator("#gatcha-pool-config-modal-cancel").click();
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    const newerPoolLoadRoute = shellPoolConfigRoutes.shift();
+    await fulfillJson(newerPoolLoadRoute, longPoolProjection(77, "newer"));
+    await shellPage.waitForFunction(() => !state.poolConfigLoading && state.poolConfigDraft?.uid_weight === 77);
+    await fulfillJson(stalePoolSaveRoute, longPoolProjection(10, "stale-save"));
+    await shellPage.waitForTimeout(80);
+    const stalePoolSave = await shellPage.evaluate(() => ({
+      visible: !elements.poolConfigModal.classList.contains("hidden"),
+      acceptedWeight: state.poolConfigAccepted?.uid_weight,
+      draftWeight: state.poolConfigDraft?.uid_weight,
+      firstUid: state.poolConfigDraft?.uid_options?.[0]?.uid,
+    }));
+    assert(
+      stalePoolSave.visible
+        && stalePoolSave.acceptedWeight === 77
+        && stalePoolSave.draftWeight === 77
+        && stalePoolSave.firstUid === "uid-newer-0",
+      "an older pool Save overwrote or closed a newer accepted/draft generation",
+      stalePoolSave,
+    );
+
+    await shellPage.evaluate(() => openConfirm({
+      type: "browser-layer-proof",
+      message: "Child confirmation",
+      focusElement: elements.poolConfigModalSave,
+    }));
+    await shellPage.keyboard.press("Escape");
+    const poolAfterChildEscape = await shellPage.evaluate(() => ({
+      confirmClosed: !state.confirmIntent,
+      poolVisible: !elements.poolConfigModal.classList.contains("hidden"),
+    }));
+    await shellPage.keyboard.press("Escape");
+    const poolAfterOwnEscape = await shellPage.evaluate(() => ({
+      poolHidden: elements.poolConfigModal.classList.contains("hidden"),
+      focus: document.activeElement?.id,
+    }));
+    assert(
+      poolAfterChildEscape.confirmClosed
+        && poolAfterChildEscape.poolVisible
+        && poolAfterOwnEscape.poolHidden
+        && poolAfterOwnEscape.focus === "gatcha-pool-config-toggle",
+      "Escape did not close exactly one child/task layer and restore the pool opener",
+      { poolAfterChildEscape, poolAfterOwnEscape },
+    );
+
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    await fulfillJson(shellPoolConfigRoutes.shift(), longPoolProjection(77, "switch"));
+    await shellPage.waitForFunction(() => !state.poolConfigLoading);
+    await shellPage.locator("#gatcha-pool-weight-slider").evaluate((slider) => {
+      slider.value = "66";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await shellPage.evaluate(() => activateHostWorkspace("queue", { inputOrigin: "programmatic" }));
+    const poolAcrossWorkspace = await shellPage.evaluate(() => ({
+      workspace: state.activeHostWorkspace,
+      poolVisible: !elements.poolConfigModal.classList.contains("hidden"),
+      draftWeight: state.poolConfigDraft?.uid_weight,
+    }));
+    await shellPage.keyboard.press("Escape");
+    const poolSafeDestinationFocus = await shellPage.evaluate(() => document.activeElement?.id);
+    assert(
+      poolAcrossWorkspace.workspace === "queue"
+        && poolAcrossWorkspace.poolVisible
+        && poolAcrossWorkspace.draftWeight === 66
+        && poolSafeDestinationFocus === "work-rail-queue",
+      "pool task did not remain modal with its draft or restore safe destination focus after a workspace switch",
+      { poolAcrossWorkspace, poolSafeDestinationFocus },
+    );
+
+    await shellPage.locator("#work-rail-random").click();
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    await fulfillJson(shellPoolConfigRoutes.shift(), longPoolProjection(50, "scroll"));
+    await shellPage.waitForFunction(() => !state.poolConfigLoading);
+    const poolScroll = await shellPage.evaluate(() => {
+      const owner = elements.poolConfigSourceList;
+      owner.scrollTop = 260;
+      return {
+        ownerScrollTop: owner.scrollTop,
+        ownerClientHeight: owner.clientHeight,
+        ownerScrollHeight: owner.scrollHeight,
+        ownerOverflow: getComputedStyle(owner).overflowY,
+        uidOverflow: getComputedStyle(elements.poolConfigUidOptions).overflowY,
+        favOverflow: getComputedStyle(elements.poolConfigFavlistOptions).overflowY,
+        workspaceScrollTop: elements.hostWorkspaceRegion.scrollTop,
+        bodyScrollY: window.scrollY,
+      };
+    });
+    assert(
+      poolScroll.ownerScrollTop > 0
+        && poolScroll.ownerScrollHeight > poolScroll.ownerClientHeight
+        && poolScroll.ownerOverflow === "auto"
+        && poolScroll.uidOverflow === "visible"
+        && poolScroll.favOverflow === "visible"
+        && poolScroll.workspaceScrollTop === 0
+        && poolScroll.bodyScrollY === 0,
+      "pool task did not own one bounded source-list scroll without background/body scrolling",
+      poolScroll,
+    );
+    if (gatchaPoolScreenshotPath) {
+      await shellPage.screenshot({ path: gatchaPoolScreenshotPath, fullPage: false });
+    }
+    await shellPage.locator("#gatcha-pool-config-modal-cancel").click();
+
+    const gatchaPool = {
+      loading: poolLoading,
+      loaded: poolLoaded,
+      draftBeforeReset: poolDraftBeforeReset,
+      reset: poolReset,
+      cancelled: poolCancelled,
+      staleLoad: stalePoolLoad,
+      saveBusy: poolSaveBusy,
+      saved: poolSaved,
+      failedSave: failedPoolSave,
+      staleSave: stalePoolSave,
+      layering: { poolAfterChildEscape, poolAfterOwnEscape },
+      acrossWorkspace: poolAcrossWorkspace,
+      scroll: poolScroll,
+      requests: shellPoolConfigRequests,
+    };
+
+    await seedCandidate("RESPONSIVE");
+    await shellPage.evaluate(() => {
+      state.gatchaCandidate.title = "A responsive Gatcha candidate with long wrapping text ".repeat(9);
+      renderGatchaWorkspace();
+    });
+    await shellPage.setViewportSize({ width: 1600, height: 900 });
+    const gatchaWide = await shellPage.evaluate(() => {
+      const spacer = document.createElement("div");
+      spacer.style.height = "900px";
+      spacer.style.flex = "0 0 900px";
+      elements.gatchaMainView.appendChild(spacer);
+      const headerTop = document.querySelector(".gatcha-head").getBoundingClientRect().top;
+      elements.gatchaStage.scrollTop = 220;
+      const evidence = {
+        workspaceWidth: elements.hostWorkspaceRegion.getBoundingClientRect().width,
+        stageWidth: document.querySelector(".left-column").getBoundingClientRect().width,
+        headerTop,
+        headerTopAfterScroll: document.querySelector(".gatcha-head").getBoundingClientRect().top,
+        ownerScrollTop: elements.gatchaStage.scrollTop,
+        ownerOverflow: getComputedStyle(elements.gatchaStage).overflowY,
+        outerOverflow: getComputedStyle(elements.hostWorkspaceRegion).overflowY,
+        bodyScrollY: window.scrollY,
+      };
+      spacer.remove();
+      elements.gatchaStage.scrollTop = 0;
+      return evidence;
+    });
+    assert(
+      Math.abs(gatchaWide.workspaceWidth - responsiveFrames.wide1600.tools.random.contentWidth) <= 2
+        && gatchaWide.stageWidth >= 720
+        && gatchaWide.headerTopAfterScroll === gatchaWide.headerTop
+        && gatchaWide.ownerScrollTop > 0
+        && gatchaWide.ownerOverflow === "auto"
+        && gatchaWide.outerOverflow === "hidden"
+        && gatchaWide.bodyScrollY === 0,
+      "wide Gatcha did not keep the stable dock width, fixed header, and sole local scroll owner",
+      gatchaWide,
+    );
+
+    await shellPage.setViewportSize({ width: 1240, height: 800 });
+    await shellPage.waitForTimeout(120);
+    const gatchaMedium = await shellPage.evaluate(() => ({
+      workspaceWidth: elements.hostWorkspaceRegion.getBoundingClientRect().width,
+      stageWidth: document.querySelector(".left-column").getBoundingClientRect().width,
+      headerHeight: document.querySelector(".gatcha-head").getBoundingClientRect().height,
+      regionHeight: elements.hostWorkspaceRegion.getBoundingClientRect().height,
+      horizontalPageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      bodyScrollY: window.scrollY,
+      actionsFit: document.querySelector(".gatcha-head-actions").getBoundingClientRect().right
+        <= elements.hostWorkspaceRegion.getBoundingClientRect().right + 1,
+    }));
+    assert(
+      Math.abs(gatchaMedium.workspaceWidth - responsiveFrames.medium1240.tools.random.contentWidth) <= 2
+        && gatchaMedium.stageWidth >= 500
+        && gatchaMedium.headerHeight < gatchaMedium.regionHeight
+        && !gatchaMedium.horizontalPageScroll
+        && gatchaMedium.bodyScrollY === 0
+        && gatchaMedium.actionsFit,
+      "medium Gatcha did not keep the shared dock width, useful Stage width, and fitted actions",
+      gatchaMedium,
+    );
+    if (gatchaMediumScreenshotPath) {
+      await shellPage.screenshot({ path: gatchaMediumScreenshotPath, fullPage: false });
+    }
+
+    await shellPage.setViewportSize({ width: 840, height: 760 });
+    await shellPage.waitForTimeout(120);
+    const gatchaNarrow = await shellPage.evaluate(() => {
+      const region = elements.hostWorkspaceRegion.getBoundingClientRect();
+      const stage = document.querySelector(".left-column").getBoundingClientRect();
+      const header = document.querySelector(".gatcha-head").getBoundingClientRect();
+      return {
+        classification: elements.appShell.dataset.stageMode,
+        regionTop: region.top,
+        stageBottom: stage.bottom,
+        regionWidth: region.width,
+        headerHeight: header.height,
+        regionHeight: region.height,
+        drawReachable: !elements.gatchaButton.hidden,
+        retryReachable: !elements.gatchaRetryButton.hidden,
+        confirmReachable: !elements.gatchaConfirmButton.hidden,
+        configureVisible: !elements.gatchaPoolConfigToggle.hidden,
+        manageVisible: !elements.manageSourcesButton.hidden,
+        horizontalPageScroll: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        bodyScrollY: window.scrollY,
+      };
+    });
+    assert(
+      gatchaNarrow.classification === "narrow"
+        && gatchaNarrow.regionTop >= gatchaNarrow.stageBottom - 1
+        && gatchaNarrow.regionWidth > 700
+        && gatchaNarrow.headerHeight < gatchaNarrow.regionHeight
+        && gatchaNarrow.retryReachable
+        && gatchaNarrow.confirmReachable
+        && gatchaNarrow.configureVisible
+        && gatchaNarrow.manageVisible
+        && !gatchaNarrow.horizontalPageScroll
+        && gatchaNarrow.bodyScrollY === 0,
+      "narrow Gatcha lost reachable actions, local fit, or the compact Stage foundation",
+      gatchaNarrow,
+    );
+    await shellPage.locator("#gatcha-confirm-button").scrollIntoViewIfNeeded();
+    const gatchaNarrowActionScroll = await shellPage.evaluate(() => {
+      const confirm = elements.gatchaConfirmButton.getBoundingClientRect();
+      const retry = elements.gatchaRetryButton.getBoundingClientRect();
+      const owner = elements.gatchaStage.getBoundingClientRect();
+      return {
+        ownerScrollTop: elements.gatchaStage.scrollTop,
+        ownerClientHeight: elements.gatchaStage.clientHeight,
+        ownerScrollHeight: elements.gatchaStage.scrollHeight,
+        confirmVisible: confirm.top >= owner.top && confirm.bottom <= owner.bottom,
+        retryVisible: retry.top >= owner.top && retry.bottom <= owner.bottom,
+        bodyScrollY: window.scrollY,
+      };
+    });
+    assert(
+      (gatchaNarrowActionScroll.ownerScrollTop > 0
+        || gatchaNarrowActionScroll.ownerScrollHeight <= gatchaNarrowActionScroll.ownerClientHeight + 1)
+        && gatchaNarrowActionScroll.confirmVisible
+        && gatchaNarrowActionScroll.retryVisible
+        && gatchaNarrowActionScroll.bodyScrollY === 0,
+      "narrow candidate actions were not reachable through the Gatcha-local scroll owner",
+      gatchaNarrowActionScroll,
+    );
+    if (gatchaNarrowScreenshotPath) {
+      await shellPage.screenshot({ path: gatchaNarrowScreenshotPath, fullPage: false });
+    }
+
+    await shellPage.locator("#gatcha-pool-config-toggle").click();
+    await shellPage.waitForTimeout(30);
+    await fulfillJson(shellPoolConfigRoutes.shift(), longPoolProjection(50, "narrow"));
+    await shellPage.waitForFunction(() => !state.poolConfigLoading);
+    const narrowPool = await shellPage.evaluate(() => {
+      const card = document.querySelector(".gatcha-pool-config-card").getBoundingClientRect();
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
+      return {
+        card,
+        viewport,
+        sourceListHeight: elements.poolConfigSourceList.clientHeight,
+        sourceListScrollable: elements.poolConfigSourceList.scrollHeight > elements.poolConfigSourceList.clientHeight,
+        saveVisible: elements.poolConfigModalSave.getBoundingClientRect().bottom <= viewport.height,
+        cancelVisible: elements.poolConfigModalCancel.getBoundingClientRect().bottom <= viewport.height,
+        bodyScrollY: window.scrollY,
+      };
+    });
+    assert(
+      narrowPool.card.left >= 0
+        && narrowPool.card.right <= narrowPool.viewport.width
+        && narrowPool.card.top >= 0
+        && narrowPool.card.bottom <= narrowPool.viewport.height
+        && narrowPool.sourceListHeight > 0
+        && narrowPool.sourceListScrollable
+        && narrowPool.saveVisible
+        && narrowPool.cancelVisible
+        && narrowPool.bodyScrollY === 0,
+      "narrow pool task clipped its controls or lost local source-list scrolling",
+      narrowPool,
+    );
+    await shellPage.locator("#gatcha-pool-config-modal-cancel").click();
+
+    await shellPage.emulateMedia({ reducedMotion: "reduce" });
+    const reducedMotion = await shellPage.evaluate(() => {
+      const before = state.gatchaView;
+      state.gatchaView = "error";
+      renderGatchaWorkspace();
+      const errorVisible = !elements.gatchaErrorView.hidden;
+      state.gatchaView = "candidate";
+      renderGatchaWorkspace();
+      return {
+        before,
+        errorVisible,
+        candidateVisible: !elements.gatchaResultView.hidden,
+        workspaceTransition: getComputedStyle(elements.hostWorkspaceRegion).transitionDuration,
+      };
+    });
+    assert(
+      reducedMotion.errorVisible
+        && reducedMotion.candidateVisible
+        && reducedMotion.workspaceTransition === "0s",
+      "reduced-motion Gatcha did not switch direct states without shell movement",
+      reducedMotion,
+    );
+    await shellPage.emulateMedia({ reducedMotion: "no-preference" });
+
+    const gatchaPlayback = await shellPage.evaluate(() => {
+      const invariant = window.__gatchaInvariant;
+      mountHostPlaybackSessionElements = invariant.originalMount;
+      replaceHostPlayerView = invariant.originalReplace;
+      beginHostPlaybackSessionOwnershipClaim = invariant.originalClaim;
+      retireHostPlaybackSession = invariant.originalRetire;
+      submitAddRequest = window.__originalGatchaSubmitAddRequest;
+      return {
+        sameSession: state.hostPlaybackSession === window.__gatchaNodes.session,
+        sameFrame: elements.playerFrame === window.__gatchaNodes.frame,
+        sameVideo: state.hostPlaybackSession?.video === window.__gatchaNodes.video,
+        sameAudio: state.hostPlaybackSession?.audio === window.__gatchaNodes.audio,
+        frameCount: document.querySelectorAll("#player-frame").length,
+        videoCount: elements.playerFrame.querySelectorAll("video").length,
+        audioCount: elements.playerFrame.querySelectorAll("audio").length,
+        remounts: {
+          mount: invariant.mount,
+          replace: invariant.replace,
+          claim: invariant.claim,
+          retire: invariant.retire,
+        },
+        bodyScrollY: window.scrollY,
+      };
+    });
+    gatchaPlayback.playerRequests = shellPlayerRequests.length - playerRequestsBeforeGatcha;
+    assert(
+      gatchaPlayback.sameSession
+        && gatchaPlayback.sameFrame
+        && gatchaPlayback.sameVideo
+        && gatchaPlayback.sameAudio
+        && gatchaPlayback.frameCount === 1
+        && gatchaPlayback.videoCount === 1
+        && gatchaPlayback.audioCount === 1
+        && Object.values(gatchaPlayback.remounts).every((count) => count === 0)
+        && gatchaPlayback.playerRequests === 0
+        && gatchaPlayback.bodyScrollY === 0,
+      "Gatcha navigation/draw/request/pool/responsive work changed exact playback identity or sent player work",
+      gatchaPlayback,
+    );
+
+    const gatchaResponsive = {
+      wide: gatchaWide,
+      medium: gatchaMedium,
+      narrow: gatchaNarrow,
+      narrowActionScroll: gatchaNarrowActionScroll,
+      narrowPool,
+      reducedMotion,
+    };
+    const gatchaAcceptance = {
+      initial: gatchaInitial,
+      drawing: gatchaDrawing,
+      roundTrip: gatchaRoundTrip,
+      staleDraw,
+      error: drawError,
+      manageSources,
+      request: gatchaRequest,
+      pool: gatchaPool,
+      responsive: gatchaResponsive,
+      playback: gatchaPlayback,
+      candidateRequestCount: shellGatchaCandidateRequests.length,
+    };
     assert(shellPageErrors.length === 0, "unexpected Host shell page errors", shellPageErrors);
     assert(shellConsoleErrors.length === 0, "unexpected Host shell console errors", shellConsoleErrors);
     const shellEvidence = {
@@ -1793,6 +2956,7 @@ async function run() {
       },
       wideWidths,
       wideRequestSubviews,
+      responsiveFrames,
       draftAndScroll,
       bannerEvidence,
       mediumQueue,
@@ -1806,18 +2970,26 @@ async function run() {
       narrowWorkspaces,
       narrowRequestSubviews,
       narrowLocalScroll,
+      gatcha: gatchaAcceptance,
       consoleErrors: shellConsoleErrors,
       pageErrors: shellPageErrors,
       screenshots: {
         wide: shellWideScreenshotPath,
         medium: shellMediumScreenshotPath,
         narrow: shellNarrowScreenshotPath,
+        default1024x700: shellDefaultScreenshotPath,
+        short1280x640: shellShortScreenshotPath,
         queueWide: queueWideScreenshotPath,
         historyWide: historyWideScreenshotPath,
         queueMedium: queueMediumScreenshotPath,
         queueNarrow: queueNarrowScreenshotPath,
         historyNarrow: historyNarrowScreenshotPath,
         narrowControls: narrowControlsScreenshotPath,
+        gatchaWide: gatchaWideScreenshotPath,
+        gatchaError: gatchaErrorScreenshotPath,
+        gatchaPool: gatchaPoolScreenshotPath,
+        gatchaMedium: gatchaMediumScreenshotPath,
+        gatchaNarrow: gatchaNarrowScreenshotPath,
       },
     };
     await shellPage.close();
@@ -2459,6 +3631,9 @@ async function run() {
       "Random Manage sources did not route to the unified Sources subview",
     );
     await page.locator("#work-rail-queue").click();
+    if (await page.locator("#stage-controls-toggle").isVisible()) {
+      await page.locator("#stage-controls-toggle").click();
+    }
     const playbackInfoRegions = page.locator(".playback-contextual-info-region");
     const playbackInfoButtons = page.locator(".playback-contextual-info-button");
     assert(await playbackInfoButtons.count() === 2, "Host A/V and Key did not expose exactly two information triggers");
@@ -2511,9 +3686,8 @@ async function run() {
       avTooltipBox && avPanelBox
         && avTooltipBox.x >= 0 && avTooltipBox.y >= 0
         && avTooltipBox.x + avTooltipBox.width <= playbackViewport.width
-        && avTooltipBox.y + avTooltipBox.height <= playbackViewport.height
-        && avTooltipBox.y + avTooltipBox.height <= avPanelBox.y,
-      "Host A/V information was not bounded above its control panel",
+        && avTooltipBox.y + avTooltipBox.height <= playbackViewport.height,
+      "Host A/V information was not bounded within the compact control tray viewport",
       { avTooltipBox, avPanelBox, playbackViewport },
     );
     await avTooltip.hover();
@@ -2577,6 +3751,9 @@ async function run() {
       "Host contextual information issued a player API request",
       { before: hostPlayerRequestCountBeforeInfo, requests: hostPlayerRequests },
     );
+    if (await page.locator("#stage-controls-close").isVisible()) {
+      await page.locator("#stage-controls-close").click();
+    }
 
     await page.locator("#cache-settings-toggle").click();
     await page.locator("#cache-panel-advanced-trigger").click();
@@ -3264,6 +4441,20 @@ async function run() {
         body: JSON.stringify({ ok: true, data: { state: "checking", include_preview: Boolean(payload?.include_preview) } }),
       });
     });
+    await coarsePage.route("**/api/gatcha/pool-config", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          uid_weight: 50,
+          excluded_uids: [],
+          excluded_favlist_folders: [],
+          uid_options: [{ mid: "touch-uid", name: "Touch UID" }],
+          favlist_options: [{ media_id: "touch-fav", title: "Touch favorite" }],
+        },
+      }),
+    }));
     await coarsePage.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await coarsePage.waitForTimeout(700);
     assert(
@@ -3287,6 +4478,44 @@ async function run() {
         && await coarsePage.locator("#gatcha-panel").isVisible(),
       "touch activation did not switch to Random exactly once",
     );
+    const coarseGatchaMetrics = await coarsePage.evaluate(() => {
+      const ids = ["gatcha-pool-config-toggle", "manage-sources-button", "gatcha-button"];
+      return Object.fromEntries(ids.map((id) => {
+        const rect = document.getElementById(id).getBoundingClientRect();
+        return [id, { width: rect.width, height: rect.height }];
+      }));
+    });
+    assert(
+      Object.values(coarseGatchaMetrics).every(({ height }) => height >= 44),
+      "coarse-pointer Gatcha actions were smaller than 44px",
+      coarseGatchaMetrics,
+    );
+    await coarsePage.locator("#gatcha-pool-config-toggle").tap();
+    await coarsePage.waitForFunction(() => !state.poolConfigLoading);
+    const coarsePoolMetrics = await coarsePage.evaluate(() => {
+      const selectors = [
+        "#gatcha-pool-config-modal-close",
+        "#gatcha-pool-config-modal-cancel",
+        "#gatcha-pool-config-modal-save",
+        "#gatcha-pool-uid-select-all",
+        "#gatcha-pool-uid-select-none",
+        "#gatcha-pool-config-modal-reset",
+        ".pool-config-option",
+      ];
+      return Object.fromEntries(selectors.map((selector) => {
+        const rect = document.querySelector(selector).getBoundingClientRect();
+        return [selector, { width: rect.width, height: rect.height }];
+      }));
+    });
+    assert(
+      Object.values(coarsePoolMetrics).every(({ height }) => height >= 44),
+      "coarse-pointer pool task controls were smaller than 44px",
+      coarsePoolMetrics,
+    );
+    await coarsePage.locator("#gatcha-pool-config-modal-cancel").tap();
+    if (await coarsePage.locator("#stage-controls-toggle").isVisible()) {
+      await coarsePage.locator("#stage-controls-toggle").tap();
+    }
     await coarsePage.evaluate(() => {
       window.__coarsePlaybackInfoActions = 0;
       document.querySelectorAll([
@@ -3336,7 +4565,7 @@ async function run() {
       await coarsePage.evaluate(() => window.__coarsePlaybackInfoActions) === 0,
       "Host playback touch tap activated an adjacent playback control",
     );
-    await coarsePage.locator("#current-title").tap();
+    await coarsePage.locator("#stage-control-tray .stage-control-tray-head strong").tap();
     assert(await coarsePlaybackInfo.getAttribute("aria-expanded") === "false", "Host playback touch outside tap did not close information");
     await coarsePage.locator("#stage-controls-close").tap();
     await coarsePage.locator("#cache-settings-toggle").click();
@@ -3430,6 +4659,7 @@ async function run() {
     return {
       passed: true,
       identity,
+      startupReadinessEvidence,
       wheelScrollTop,
       backgroundScrollTop,
       detailHidden,
@@ -3461,6 +4691,8 @@ async function run() {
         host: coarseHostMetrics,
         playback: coarsePlaybackMetrics,
         remote: coarseRemoteMetrics,
+        gatcha: coarseGatchaMetrics,
+        pool: coarsePoolMetrics,
       },
       screenshotPath: screenshotPath || "",
     };

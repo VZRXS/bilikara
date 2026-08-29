@@ -871,31 +871,45 @@
               </div>
             </div>
 
-            <div id="gatcha-stage" class="gatcha-stage">
+            <div id="gatcha-stage" class="gatcha-stage" tabindex="0"
+              aria-label="随机点歌内容；局部滚动区域" data-i18n-aria-label="gatcha.scrollLabel">
               <div class="gatcha-stage-inner">
-                <div id="gatcha-main-view" class="gatcha-face gatcha-face-front">
-                  <div id="gatcha-init-view" class="gatcha-content">
+                <div id="gatcha-main-view" class="gatcha-main-view">
+                  <section id="gatcha-init-view" class="gatcha-state-view" data-gatcha-view="idle">
                     <div class="gatcha-icon">🎲</div>
                     <p class="gatcha-desc" data-i18n="gatcha.description">从关注的投稿中随机抽取一首歌曲</p>
-                    <button type="button" id="gatcha-button" class="next-button gatcha-main-btn"
-                      data-i18n="gatcha.title">试试运气</button>
-                    <p class="gatcha-message" id="gatcha-message" role="status"></p>
-                  </div>
+                  </section>
 
-                  <div id="gatcha-result-view" class="gatcha-content hidden">
+                  <section id="gatcha-drawing-view" class="gatcha-state-view" data-gatcha-view="drawing"
+                    hidden inert aria-hidden="true">
+                    <div class="gatcha-icon" aria-hidden="true">🎲</div>
+                    <p class="gatcha-desc" data-i18n="gatcha.drawing">正在寻找幸运投稿...</p>
+                  </section>
+
+                  <section id="gatcha-result-view" class="gatcha-state-view" data-gatcha-view="candidate"
+                    hidden inert aria-hidden="true">
                     <div class="gatcha-result-copy">
                       <p class="gatcha-label" data-i18n="gatcha.resultLabel">运气不错，抽到了：</p>
                       <h3 id="gatcha-candidate-title" data-i18n="gatcha.titleLoading">歌曲标题加载中...</h3>
                     </div>
-                    <div class="gatcha-actions">
-                      <button type="button" id="gatcha-confirm-button" class="next-button"
-                        data-i18n="gatcha.confirm">确定点歌</button>
-                      <button type="button" id="gatcha-retry-button" class="toolbar-button"
-                        data-i18n="gatcha.retry">重新再来</button>
-                    </div>
+                  </section>
+
+                  <section id="gatcha-error-view" class="gatcha-state-view" data-gatcha-view="error"
+                    hidden inert aria-hidden="true">
+                    <div class="gatcha-icon" aria-hidden="true">↻</div>
+                    <p class="gatcha-desc" data-i18n="gatcha.drawFailed">获取幸运歌曲失败</p>
+                  </section>
+
+                  <p class="gatcha-message message-surface" id="gatcha-message" role="status" aria-live="polite"></p>
+                  <div class="gatcha-actions">
+                    <button type="button" id="gatcha-button" class="next-button gatcha-main-btn"
+                      data-i18n="gatcha.draw">试试运气</button>
+                    <button type="button" id="gatcha-confirm-button" class="next-button" hidden
+                      data-i18n="gatcha.confirm">确定点歌</button>
+                    <button type="button" id="gatcha-retry-button" class="toolbar-button" hidden
+                      data-i18n="gatcha.retry">重新再来</button>
                   </div>
                 </div>
-
               </div>
             </div>
           </section>
@@ -1225,7 +1239,8 @@
         <strong id="gatcha-pool-weight-label">UID 50% | 收藏夹 50%</strong>
         <input type="range" id="gatcha-pool-weight-slider" min="0" max="100" step="1" value="50" />
       </div>
-      <div class="selection-modal-grid">
+      <div id="gatcha-pool-source-list" class="selection-modal-grid pool-config-source-list" tabindex="0"
+        aria-label="卡池来源列表" data-i18n-aria-label="gatcha.poolSourceListLabel">
         <section class="selection-modal-column pool-config-column">
           <div class="pool-config-list-head">
             <h3 data-i18n="gatcha.uidPool">关注 UID 池</h3>

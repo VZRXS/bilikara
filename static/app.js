@@ -216,8 +216,15 @@ const state = {
   bilikaraSecretOpener: null,
   developerTagResetOpener: null,
   ratingPromptOpener: null,
-  poolConfigData: null,
+  poolConfigAccepted: null,
+  poolConfigDraft: null,
+  poolConfigLoading: false,
   poolConfigSaving: false,
+  poolConfigOpenGeneration: 0,
+  poolConfigLoadSequence: 0,
+  poolConfigSaveSequence: 0,
+  poolConfigMessage: "",
+  poolConfigMessageIsError: false,
   developerMode: false,
   bilikaraSecret: "",
   bilikaraSecretVerifying: false,
@@ -226,6 +233,15 @@ const state = {
   developerTagResetSaving: false,
   retryActivityById: {},
   gatchaCandidate: null,
+  gatchaView: "idle",
+  gatchaDrawBusy: false,
+  gatchaDrawSequence: 0,
+  gatchaDrawControlId: "gatcha-button",
+  gatchaDrawError: "",
+  gatchaMessage: "",
+  gatchaMessageIsError: false,
+  gatchaRequestBusy: false,
+  gatchaScrollTop: 0,
   requestSubview: "search",
   focusedRequestSubview: "search",
   searchMode: "shared",
@@ -600,6 +616,7 @@ const elements = {
   poolConfigModalCancel: document.getElementById("gatcha-pool-config-modal-cancel"),
   poolConfigModalReset: document.getElementById("gatcha-pool-config-modal-reset"),
   poolConfigModalSave: document.getElementById("gatcha-pool-config-modal-save"),
+  poolConfigSourceList: document.getElementById("gatcha-pool-source-list"),
   poolConfigWeightSlider: document.getElementById("gatcha-pool-weight-slider"),
   poolConfigWeightLabel: document.getElementById("gatcha-pool-weight-label"),
   poolConfigUidOptions: document.getElementById("gatcha-pool-uid-options"),
@@ -682,7 +699,10 @@ const elements = {
   gatchaRetryButton: document.getElementById("gatcha-retry-button"),
   gatchaMessage: document.getElementById("gatcha-message"),
   gatchaInitView: document.getElementById("gatcha-init-view"),
+  gatchaDrawingView: document.getElementById("gatcha-drawing-view"),
   gatchaResultView: document.getElementById("gatcha-result-view"),
+  gatchaErrorView: document.getElementById("gatcha-error-view"),
+  gatchaStateViews: document.querySelectorAll("[data-gatcha-view]"),
   gatchaCandidateTitle: document.getElementById("gatcha-candidate-title"),
   searchForm: document.getElementById("search-form"),
   searchQuery: document.getElementById("search-query"),
@@ -3581,6 +3601,7 @@ function initializeHostShell() {
   state.searchMode = "shared";
   state.focusedSearchMode = "shared";
   renderHostWorkspaceSelection();
+  renderGatchaWorkspace();
   initializeWindowChrome();
   initializePersistentStageFitting();
   if (typeof syncRequestSubviewSelection === "function") {
@@ -6974,33 +6995,156 @@ async function previewGatchaFavlistFromInput(input, {
   }
 }
 
-async function handleGatchaDraw() {
+function normalizedGatchaView(value) {
+  const candidate = String(value || "").trim().toLowerCase();
+  return ["idle", "drawing", "candidate", "error"].includes(candidate)
+    ? candidate
+    : "idle";
+}
+
+function setGatchaControlVisibility(control, visible) {
+  if (!control) {
+    return;
+  }
+  control.hidden = !visible;
+  control.inert = !visible;
+  control.setAttribute("aria-hidden", String(!visible));
+}
+
+function renderGatchaWorkspace() {
+  let view = normalizedGatchaView(state.gatchaView);
+  if (state.gatchaDrawBusy) {
+    view = "drawing";
+  } else if (view === "candidate" && !state.gatchaCandidate) {
+    view = state.gatchaDrawError ? "error" : "idle";
+  }
+  state.gatchaView = view;
+
+  elements.gatchaStateViews?.forEach((panel) => {
+    const visible = panel.dataset.gatchaView === view;
+    panel.hidden = !visible;
+    panel.inert = !visible;
+    panel.setAttribute("aria-hidden", String(!visible));
+  });
+  if (elements.gatchaCandidateTitle) {
+    elements.gatchaCandidateTitle.textContent = state.gatchaCandidate?.title || t("gatcha.titleLoading");
+  }
+  if (elements.gatchaMessage) {
+    elements.gatchaMessage.textContent = state.gatchaMessage || "";
+    elements.gatchaMessage.classList.toggle("is-error", Boolean(state.gatchaMessageIsError));
+  }
+
+  const drawingWithRetry = state.gatchaDrawBusy
+    && state.gatchaDrawControlId === "gatcha-retry-button";
+  setGatchaControlVisibility(
+    elements.gatchaButton,
+    view === "idle" || (view === "drawing" && !drawingWithRetry),
+  );
+  setGatchaControlVisibility(elements.gatchaConfirmButton, view === "candidate");
+  setGatchaControlVisibility(
+    elements.gatchaRetryButton,
+    view === "candidate" || view === "error" || drawingWithRetry,
+  );
+
+  const drawingControl = drawingWithRetry ? elements.gatchaRetryButton : elements.gatchaButton;
+  [elements.gatchaButton, elements.gatchaRetryButton].forEach((button) => {
+    if (!button) {
+      return;
+    }
+    const busy = state.gatchaDrawBusy && button === drawingControl;
+    button.disabled = state.gatchaDrawBusy;
+    button.textContent = busy
+      ? t("gatcha.drawing")
+      : t(button === elements.gatchaRetryButton ? "gatcha.retry" : "gatcha.title");
+    if (busy) {
+      button.setAttribute("aria-busy", "true");
+    } else {
+      button.removeAttribute("aria-busy");
+    }
+  });
+  if (elements.gatchaConfirmButton) {
+    elements.gatchaConfirmButton.disabled = state.gatchaRequestBusy;
+    elements.gatchaConfirmButton.textContent = state.gatchaRequestBusy
+      ? t("search.adding")
+      : t("gatcha.confirm");
+    if (state.gatchaRequestBusy) {
+      elements.gatchaConfirmButton.setAttribute("aria-busy", "true");
+    } else {
+      elements.gatchaConfirmButton.removeAttribute("aria-busy");
+    }
+  }
+}
+
+function clearAcceptedGatchaCandidate({ focusDraw = true } = {}) {
+  state.gatchaCandidate = null;
+  state.gatchaView = "idle";
+  state.gatchaDrawError = "";
+  renderGatchaWorkspace();
+  if (
+    focusDraw
+    && state.activeHostWorkspace === "random"
+    && elements.gatchaButton?.isConnected
+  ) {
+    elements.gatchaButton.focus({ preventScroll: true });
+  }
+}
+
+async function handleGatchaDraw(event = null) {
+  if (state.gatchaDrawBusy) {
+    return false;
+  }
+  const control = event?.currentTarget === elements.gatchaRetryButton
+    ? elements.gatchaRetryButton
+    : elements.gatchaButton;
+  const idleLabel = control?.textContent || "";
+  const drawSequence = state.gatchaDrawSequence + 1;
+  state.gatchaDrawSequence = drawSequence;
+  state.gatchaDrawControlId = control?.id || "gatcha-button";
+  state.gatchaDrawBusy = true;
+  state.gatchaView = "drawing";
+  state.gatchaDrawError = "";
   setGatchaMessage(t("gatcha.drawing"));
+  renderGatchaWorkspace();
   try {
     const response = await fetch("/api/gatcha/candidate", { headers: clientHeaders() });
     const payload = await response.json();
+    if (state.gatchaDrawSequence !== drawSequence) {
+      return false;
+    }
     if (!response.ok || !payload.ok) {
       throw new Error(localizedApiMessage(payload.error) || t("gatcha.drawFailed"));
     }
 
     state.gatchaCandidate = payload.data;
-    elements.gatchaCandidateTitle.textContent = state.gatchaCandidate.title;
-
-    // 切换界面
-    elements.gatchaInitView.classList.add("hidden");
-    elements.gatchaResultView.classList.remove("hidden");
+    state.gatchaView = "candidate";
+    state.gatchaDrawError = "";
     setGatchaMessage("");
+    return true;
   } catch (error) {
-    setGatchaMessage(error.message, true);
+    if (state.gatchaDrawSequence === drawSequence) {
+      state.gatchaView = "error";
+      state.gatchaDrawError = error.message;
+      setGatchaMessage(error.message, true);
+    }
+    return false;
+  } finally {
+    if (state.gatchaDrawSequence === drawSequence) {
+      state.gatchaDrawBusy = false;
+      renderGatchaWorkspace();
+      if (control) {
+        control.textContent = idleLabel;
+      }
+    }
   }
 }
 
 function setGatchaMessage(message, isError = false) {
-  if (!elements.gatchaMessage) {
-    return;
+  state.gatchaMessage = message || "";
+  state.gatchaMessageIsError = Boolean(isError);
+  if (elements.gatchaMessage) {
+    elements.gatchaMessage.textContent = state.gatchaMessage;
+    elements.gatchaMessage.classList.toggle("is-error", state.gatchaMessageIsError);
   }
-  elements.gatchaMessage.textContent = message || "";
-  elements.gatchaMessage.classList.toggle("is-error", Boolean(isError));
 }
 
 function setFollowBrowseMessage(message, isError = false) {
@@ -7293,6 +7437,7 @@ function render() {
   renderPlaybackRepairControls(currentItem);
   renderRemoteAccess(data.remote_access);
   renderHostWorkspaceSelection();
+  renderGatchaWorkspace();
 
   const playbackMode = frontendPlaybackMode(data.playback_mode);
   renderAudioVariantBar(currentItem, playbackMode);
@@ -13934,12 +14079,32 @@ function poolConfigFolderId(folder) {
   return String(folder?.id || folder?.folder_id || "").trim();
 }
 
+function clonePoolConfigProjection(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    ...source,
+    excluded_uids: Array.isArray(source.excluded_uids)
+      ? source.excluded_uids.map(String)
+      : [],
+    excluded_favlist_folders: Array.isArray(source.excluded_favlist_folders)
+      ? source.excluded_favlist_folders.map(String)
+      : [],
+    uid_options: Array.isArray(source.uid_options)
+      ? source.uid_options.map((entry) => ({ ...entry }))
+      : source.uid_options,
+    favlist_folder_options: Array.isArray(source.favlist_folder_options)
+      ? source.favlist_folder_options.map((entry) => ({ ...entry }))
+      : source.favlist_folder_options,
+  };
+}
+
 function poolConfigSetMessage(message, isError = false) {
-  if (!elements.poolConfigMessage) {
-    return;
+  state.poolConfigMessage = message || "";
+  state.poolConfigMessageIsError = Boolean(isError);
+  if (elements.poolConfigMessage) {
+    elements.poolConfigMessage.textContent = state.poolConfigMessage;
+    elements.poolConfigMessage.classList.toggle("is-error", state.poolConfigMessageIsError);
   }
-  elements.poolConfigMessage.textContent = message || "";
-  elements.poolConfigMessage.classList.toggle("is-error", Boolean(isError));
 }
 
 function updatePoolConfigWeightLabel() {
@@ -13962,6 +14127,7 @@ function renderPoolConfigOption({ type, id, title, meta, checked }) {
   input.name = type === "uid" ? "gatcha-pool-uid" : "gatcha-pool-favlist";
   input.value = String(id || "");
   input.checked = Boolean(checked);
+  input.disabled = state.poolConfigLoading || state.poolConfigSaving;
 
   const copy = document.createElement("div");
   const titleEl = document.createElement("div");
@@ -13976,14 +14142,17 @@ function renderPoolConfigOption({ type, id, title, meta, checked }) {
 }
 
 function renderPoolConfigModal() {
-  const data = state.poolConfigData || {};
+  const data = state.poolConfigDraft || {};
   const excludedUids = new Set((Array.isArray(data.excluded_uids) ? data.excluded_uids : []).map(String));
   const excludedFolders = new Set((Array.isArray(data.excluded_favlist_folders) ? data.excluded_favlist_folders : []).map(String));
   const uidWeight = Math.max(0, Math.min(100, Number(data.uid_weight ?? 50)));
+  const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
 
   if (elements.poolConfigWeightSlider) {
     elements.poolConfigWeightSlider.value = String(uidWeight);
-    elements.poolConfigWeightSlider.disabled = state.poolConfigSaving;
+    elements.poolConfigWeightSlider.disabled = state.poolConfigLoading
+      || state.poolConfigSaving
+      || !detailLoaded;
   }
   updatePoolConfigWeightLabel();
 
@@ -14038,19 +14207,26 @@ function renderPoolConfigModal() {
   const hasUidOptions = Boolean(elements.poolConfigUidOptions?.querySelector('input[name="gatcha-pool-uid"]'));
   const hasFavlistOptions = Boolean(elements.poolConfigFavlistOptions?.querySelector('input[name="gatcha-pool-favlist"]'));
   [elements.poolConfigUidSelectAll, elements.poolConfigUidSelectNone].forEach((button) => {
-    if (button) button.disabled = state.poolConfigSaving || !hasUidOptions;
+    if (button) button.disabled = state.poolConfigLoading || state.poolConfigSaving || !hasUidOptions;
   });
   [elements.poolConfigFavlistSelectAll, elements.poolConfigFavlistSelectNone].forEach((button) => {
-    if (button) button.disabled = state.poolConfigSaving || !hasFavlistOptions;
+    if (button) button.disabled = state.poolConfigLoading || state.poolConfigSaving || !hasFavlistOptions;
   });
   if (elements.poolConfigModalReset) {
-    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
-    elements.poolConfigModalReset.disabled = state.poolConfigSaving || !detailLoaded;
+    elements.poolConfigModalReset.disabled = state.poolConfigLoading || state.poolConfigSaving || !detailLoaded;
   }
   if (elements.poolConfigModalSave) {
-    const detailLoaded = Array.isArray(data.uid_options) || Array.isArray(data.favlist_folder_options);
-    elements.poolConfigModalSave.disabled = state.poolConfigSaving || !detailLoaded;
+    elements.poolConfigModalSave.disabled = state.poolConfigLoading || state.poolConfigSaving || !detailLoaded;
     elements.poolConfigModalSave.textContent = state.poolConfigSaving ? t("gatcha.poolSaving") : t("gatcha.poolSave");
+    if (state.poolConfigSaving) {
+      elements.poolConfigModalSave.setAttribute("aria-busy", "true");
+    } else {
+      elements.poolConfigModalSave.removeAttribute("aria-busy");
+    }
+  }
+  if (elements.poolConfigMessage) {
+    elements.poolConfigMessage.textContent = state.poolConfigMessage || "";
+    elements.poolConfigMessage.classList.toggle("is-error", Boolean(state.poolConfigMessageIsError));
   }
 }
 
@@ -14058,47 +14234,111 @@ async function openPoolConfigModal() {
   if (!elements.poolConfigModal || !elements.poolConfigModal.classList.contains("hidden")) {
     return;
   }
+  const openGeneration = state.poolConfigOpenGeneration + 1;
+  const loadSequence = state.poolConfigLoadSequence + 1;
+  state.poolConfigOpenGeneration = openGeneration;
+  state.poolConfigLoadSequence = loadSequence;
+  state.poolConfigSaveSequence += 1;
+  state.poolConfigLoading = true;
   state.poolConfigSaving = false;
   state.poolConfigOpener = document.activeElement;
-  state.poolConfigData = state.data?.gatcha_pool_config || {};
+  state.poolConfigDraft = clonePoolConfigProjection(
+    state.poolConfigAccepted || state.data?.gatcha_pool_config || {},
+  );
   elements.poolConfigModal.classList.remove("hidden");
-  renderPoolConfigModal();
   poolConfigSetMessage(t("gatcha.poolLoading"));
-  try {
-    state.poolConfigData = await fetchPoolConfig();
-    poolConfigSetMessage("");
-  } catch (error) {
-    poolConfigSetMessage(error.message, true);
-  }
   renderPoolConfigModal();
+  elements.poolConfigModalClose?.focus({ preventScroll: true });
+  try {
+    const loaded = await fetchPoolConfig();
+    if (
+      state.poolConfigLoadSequence !== loadSequence
+      || state.poolConfigOpenGeneration !== openGeneration
+      || elements.poolConfigModal.classList.contains("hidden")
+    ) {
+      return false;
+    }
+    state.poolConfigAccepted = clonePoolConfigProjection(loaded);
+    state.poolConfigDraft = clonePoolConfigProjection(loaded);
+    poolConfigSetMessage("");
+    return true;
+  } catch (error) {
+    if (
+      state.poolConfigLoadSequence === loadSequence
+      && state.poolConfigOpenGeneration === openGeneration
+      && !elements.poolConfigModal.classList.contains("hidden")
+    ) {
+      poolConfigSetMessage(error.message, true);
+    }
+    return false;
+  } finally {
+    if (
+      state.poolConfigLoadSequence === loadSequence
+      && state.poolConfigOpenGeneration === openGeneration
+      && !elements.poolConfigModal.classList.contains("hidden")
+    ) {
+      state.poolConfigLoading = false;
+      renderPoolConfigModal();
+    }
+  }
 }
 
 function closePoolConfigModal({ restoreFocus = true } = {}) {
-  state.poolConfigData = null;
+  state.poolConfigOpenGeneration += 1;
+  state.poolConfigLoadSequence += 1;
+  state.poolConfigSaveSequence += 1;
+  state.poolConfigLoading = false;
   state.poolConfigSaving = false;
+  state.poolConfigDraft = null;
   elements.poolConfigModal?.classList.add("hidden");
   poolConfigSetMessage("");
   const opener = state.poolConfigOpener;
   state.poolConfigOpener = null;
-  if (restoreFocus && opener?.isConnected) {
-    opener.focus({ preventScroll: true });
+  if (restoreFocus) {
+    const openerIsVisible = opener?.isConnected
+      && !(typeof opener.closest === "function" && opener.closest("[hidden], [inert]"));
+    const focusTarget = openerIsVisible
+      ? opener
+      : hostWorkspaceButton(state.activeHostWorkspace);
+    focusTarget?.focus({ preventScroll: true });
   }
+}
+
+function capturePoolConfigDraftFromControls() {
+  if (!state.poolConfigDraft) {
+    return null;
+  }
+  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  state.poolConfigDraft = {
+    ...state.poolConfigDraft,
+    uid_weight: uidWeight,
+    favlist_weight: 100 - uidWeight,
+    excluded_uids: poolConfigExcludedValues("gatcha-pool-uid"),
+    excluded_favlist_folders: poolConfigExcludedValues("gatcha-pool-favlist"),
+  };
+  return state.poolConfigDraft;
 }
 
 function setPoolConfigChecked(name, checked) {
   document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
     input.checked = Boolean(checked);
   });
+  capturePoolConfigDraftFromControls();
 }
 
 function resetPoolConfigControls() {
-  if (elements.poolConfigWeightSlider) {
-    elements.poolConfigWeightSlider.value = "50";
+  if (!state.poolConfigDraft || state.poolConfigLoading || state.poolConfigSaving) {
+    return;
   }
-  updatePoolConfigWeightLabel();
-  setPoolConfigChecked("gatcha-pool-uid", true);
-  setPoolConfigChecked("gatcha-pool-favlist", true);
+  state.poolConfigDraft = {
+    ...state.poolConfigDraft,
+    uid_weight: 50,
+    favlist_weight: 50,
+    excluded_uids: [],
+    excluded_favlist_folders: [],
+  };
   poolConfigSetMessage("");
+  renderPoolConfigModal();
 }
 
 function poolConfigExcludedValues(name) {
@@ -14109,41 +14349,62 @@ function poolConfigExcludedValues(name) {
 }
 
 async function submitPoolConfigModal() {
-  if (state.poolConfigSaving) {
-    return;
+  if (state.poolConfigSaving || state.poolConfigLoading || !state.poolConfigDraft) {
+    return false;
   }
-  const uidWeight = Math.max(0, Math.min(100, Number(elements.poolConfigWeightSlider?.value || 50)));
+  const draft = capturePoolConfigDraftFromControls();
   const payload = {
-    uid_weight: uidWeight,
-    favlist_weight: 100 - uidWeight,
-    excluded_uids: poolConfigExcludedValues("gatcha-pool-uid"),
-    excluded_favlist_folders: poolConfigExcludedValues("gatcha-pool-favlist"),
+    uid_weight: draft.uid_weight,
+    favlist_weight: draft.favlist_weight,
+    excluded_uids: [...draft.excluded_uids],
+    excluded_favlist_folders: [...draft.excluded_favlist_folders],
   };
-  state.poolConfigData = {
-    ...(state.poolConfigData || {}),
-    ...payload,
-  };
+  const openGeneration = state.poolConfigOpenGeneration;
+  const saveSequence = state.poolConfigSaveSequence + 1;
+  state.poolConfigSaveSequence = saveSequence;
   state.poolConfigSaving = true;
-  renderPoolConfigModal();
   poolConfigSetMessage(t("gatcha.poolSaving"));
+  renderPoolConfigModal();
   try {
-    state.poolConfigData = await savePoolConfig(payload);
+    const saved = await savePoolConfig(payload);
+    if (
+      state.poolConfigSaveSequence !== saveSequence
+      || state.poolConfigOpenGeneration !== openGeneration
+      || elements.poolConfigModal.classList.contains("hidden")
+    ) {
+      return false;
+    }
+    state.poolConfigAccepted = clonePoolConfigProjection(saved);
+    state.poolConfigDraft = clonePoolConfigProjection(saved);
     if (state.data) {
       state.data.gatcha_pool_config = {
-        uid_weight: state.poolConfigData.uid_weight,
-        favlist_weight: state.poolConfigData.favlist_weight,
-        excluded_uids: state.poolConfigData.excluded_uids || [],
-        excluded_favlist_folders: state.poolConfigData.excluded_favlist_folders || [],
-        updated_at: state.poolConfigData.updated_at || 0,
+        uid_weight: state.poolConfigAccepted.uid_weight,
+        favlist_weight: state.poolConfigAccepted.favlist_weight,
+        excluded_uids: state.poolConfigAccepted.excluded_uids || [],
+        excluded_favlist_folders: state.poolConfigAccepted.excluded_favlist_folders || [],
+        updated_at: state.poolConfigAccepted.updated_at || 0,
       };
     }
     closePoolConfigModal();
     setAppMessage(t("gatcha.poolSaved"));
+    return true;
   } catch (error) {
-    poolConfigSetMessage(error.message, true);
+    if (
+      state.poolConfigSaveSequence === saveSequence
+      && state.poolConfigOpenGeneration === openGeneration
+      && !elements.poolConfigModal.classList.contains("hidden")
+    ) {
+      poolConfigSetMessage(error.message, true);
+    }
+    return false;
   } finally {
-    state.poolConfigSaving = false;
-    if (elements.poolConfigModal && !elements.poolConfigModal.classList.contains("hidden")) {
+    if (
+      state.poolConfigSaveSequence === saveSequence
+      && state.poolConfigOpenGeneration === openGeneration
+      && elements.poolConfigModal
+      && !elements.poolConfigModal.classList.contains("hidden")
+    ) {
+      state.poolConfigSaving = false;
       renderPoolConfigModal();
     }
   }
@@ -14175,24 +14436,26 @@ async function confirmBindingModal() {
   }
 
   try {
-    await submitAddRequest(intent.url, intent.position || "tail", {
+    const accepted = await submitAddRequest(intent.url, intent.position || "tail", {
       requesterName: intent.requesterName || selectedRequesterName(),
       allowRepeat: Boolean(intent.allowRepeat),
       selectedVideoPage,
       selectedAudioPages,
     });
-    closeBindingModal();
+    if (!accepted && source === "gatcha") {
+      setMessageForSource(source, t("error.requestFailed"), true);
+      return;
+    }
+    closeBindingModal({ restoreFocus: source !== "gatcha" });
     if (intent.originatedFromDetail) {
       if (typeof searchDetailController !== "undefined") searchDetailController?.close({ immediate: true });
     }
-    if (!intent.preserveInput) {
+    if (source !== "gatcha" && !intent.preserveInput) {
       elements.urlInput.value = "";
     }
     if (source === "gatcha") {
-      state.gatchaCandidate = null;
-      elements.gatchaResultView.classList.add("hidden");
-      elements.gatchaInitView.classList.remove("hidden");
       setGatchaMessage(t("gatcha.nozomi"));
+      clearAcceptedGatchaCandidate();
     }
     const message = intent.position === "next" ? t("binding.addedNext") : t("binding.addedTail");
     setMessageForSource(source, message);
@@ -17173,7 +17436,42 @@ elements.poolConfigModalBackdrop?.addEventListener("click", () => {
 });
 
 elements.poolConfigWeightSlider?.addEventListener("input", () => {
+  capturePoolConfigDraftFromControls();
   updatePoolConfigWeightLabel();
+});
+
+[elements.poolConfigUidOptions, elements.poolConfigFavlistOptions].forEach((list) => {
+  list?.addEventListener("change", (event) => {
+    if (event.target?.matches?.('input[type="checkbox"]')) {
+      capturePoolConfigDraftFromControls();
+      poolConfigSetMessage("");
+    }
+  });
+});
+
+elements.poolConfigModal?.addEventListener("keydown", (event) => {
+  if (
+    event.key !== "Tab"
+    || state.confirmIntent
+    || elements.poolConfigModal.classList.contains("hidden")
+  ) {
+    return;
+  }
+  const focusable = [...elements.poolConfigModal.querySelectorAll(
+    'button:not(:disabled):not([hidden]), input:not(:disabled):not([hidden]), [tabindex]:not([tabindex="-1"]):not([hidden])',
+  )].filter((element) => !element.closest("[hidden], [inert]"));
+  if (!focusable.length) {
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus({ preventScroll: true });
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus({ preventScroll: true });
+  }
 });
 
 elements.poolConfigModalReset?.addEventListener("click", () => {
@@ -17344,24 +17642,33 @@ elements.confirmOk.addEventListener("click", async () => {
     }
     if (intent.type === "duplicate-add" && intent.url) {
       const source = intent.source || "request-form";
-      await submitAddRequest(intent.url, intent.position || "tail", {
+      const accepted = await submitAddRequest(intent.url, intent.position || "tail", {
         requesterName: intent.requesterName || selectedRequesterName(),
         allowRepeat: true,
         selectedVideoPage: Number.isInteger(intent.selectedVideoPage) ? intent.selectedVideoPage : undefined,
         selectedAudioPages: Array.isArray(intent.selectedAudioPages) ? intent.selectedAudioPages : undefined,
       });
-      closeConfirm();
+      if (!accepted && source === "gatcha") {
+        setMessageForSource(source, t("error.requestFailed"), true);
+        return;
+      }
+      closeConfirm({ restoreFocus: source !== "gatcha" });
       if (intent.originatedFromDetail) {
         if (typeof searchDetailController !== "undefined") searchDetailController?.close({ immediate: true });
       }
-      if (!intent.preserveInput) {
-        elements.urlInput.value = "";
-      } else {
-        elements.urlInput.value = "";
+      if (source !== "gatcha") {
+        if (!intent.preserveInput) {
+          elements.urlInput.value = "";
+        } else {
+          elements.urlInput.value = "";
+        }
       }
       const message = intent.position === "next" ? t("request.confirmedNext") : t("request.confirmedTail");
       setMessageForSource(source, message);
       setAppMessage(message);
+      if (source === "gatcha") {
+        clearAcceptedGatchaCandidate();
+      }
       render();
     }
   } catch (error) {
@@ -18202,34 +18509,42 @@ elements.sourcesFavoritesScroll?.addEventListener("scroll", () => {
   state.requestScrollPositions.sources.favorites = bucket.favorites;
 });
 
+elements.gatchaStage?.addEventListener("scroll", () => {
+  state.gatchaScrollTop = Math.max(0, Number(elements.gatchaStage.scrollTop || 0));
+});
+
 elements.gatchaPoolConfigToggle?.addEventListener("click", async () => {
   await openPoolConfigModal();
 });
 
-elements.gatchaConfirmButton.addEventListener("click", async () => {
-  if (!state.gatchaCandidate || elements.gatchaConfirmButton.disabled) return;
-
-  const url = state.gatchaCandidate.url;
-  const requesterName = validatedRequesterNameForAdd(setGatchaMessage);
-  if (!requesterName) {
-    return;
+async function confirmGatchaCandidate(event = null) {
+  event?.stopPropagation?.();
+  if (!state.gatchaCandidate || state.gatchaRequestBusy) {
+    return false;
   }
 
-  const prevText = elements.gatchaConfirmButton.textContent;
-  elements.gatchaConfirmButton.disabled = true;
-  elements.gatchaConfirmButton.setAttribute("aria-busy", "true");
-  elements.gatchaConfirmButton.textContent = t("search.adding");
+  const url = state.gatchaCandidate.url;
+  const title = state.gatchaCandidate.title;
+  const idleLabel = elements.gatchaConfirmButton.textContent;
+  const requesterName = validatedRequesterNameForAdd(setGatchaMessage);
+  if (!requesterName) {
+    renderGatchaWorkspace();
+    return false;
+  }
 
+  state.gatchaRequestBusy = true;
   setGatchaMessage(t("gatcha.nozomi"));
+  renderGatchaWorkspace();
   try {
-    await submitAddRequest(url, "tail", { requesterName });
-    setFormMessage(t("gatcha.requestSuccess", { title: state.gatchaCandidate.title }));
-
-
-    state.gatchaCandidate = null;
-    elements.gatchaResultView.classList.add("hidden");
-    elements.gatchaInitView.classList.remove("hidden");
+    const accepted = await submitAddRequest(url, "tail", { requesterName });
+    if (!accepted) {
+      setGatchaMessage(t("error.requestFailed"), true);
+      return false;
+    }
+    setFormMessage(t("gatcha.requestSuccess", { title }));
+    clearAcceptedGatchaCandidate();
     render();
+    return true;
   } catch (error) {
     if (error.code === "manual_binding_required") {
       openBindingModal(
@@ -18239,11 +18554,12 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
           requesterName,
           preserveInput: false,
           source: "gatcha",
-          title: state.gatchaCandidate.title,
+          title,
+          focusElement: elements.gatchaConfirmButton,
         },
         error.payload?.binding,
       );
-      return;
+      return false;
     }
     if (error.code === "duplicate_session_request") {
       const point = anchorPointForEvent({}, elements.gatchaConfirmButton);
@@ -18251,7 +18567,11 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
         type: "duplicate-add",
         url,
         position: "tail",
+        requesterName,
         preserveInput: false,
+        source: "gatcha",
+        title,
+        focusElement: elements.gatchaConfirmButton,
         message: duplicateConfirmMessage(
           error.payload?.duplicate_item,
           error.payload?.session_entry,
@@ -18260,15 +18580,18 @@ elements.gatchaConfirmButton.addEventListener("click", async () => {
         x: point.x,
         y: point.y,
       });
-      return;
+      return false;
     }
     setGatchaMessage(error.message, true);
+    return false;
   } finally {
-    elements.gatchaConfirmButton.disabled = false;
-    elements.gatchaConfirmButton.removeAttribute("aria-busy");
-    elements.gatchaConfirmButton.textContent = prevText;
+    state.gatchaRequestBusy = false;
+    renderGatchaWorkspace();
+    elements.gatchaConfirmButton.textContent = idleLabel;
   }
-});
+}
+
+elements.gatchaConfirmButton.addEventListener("click", confirmGatchaCandidate);
 
 elements.modalFollowUidForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
